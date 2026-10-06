@@ -29,9 +29,9 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/haiwen/git-remote-seafile"
-Documentation = "https://github.com/haiwen/git-remote-seafile/blob/main/USER_GUIDE.md"
-Issues = "https://github.com/haiwen/git-remote-seafile/issues"
+Homepage = "https://github.com/tkittich/git-remote-seafile"
+Documentation = "https://github.com/tkittich/git-remote-seafile/blob/main/USER_GUIDE.md"
+Issues = "https://github.com/tkittich/git-remote-seafile/issues"
 
 [project.scripts]
 git-remote-seafile = "git_remote_seafile.cli:main"

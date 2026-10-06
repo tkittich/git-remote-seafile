@@ -226,7 +226,7 @@ Before developing `git-remote-seafile`, extensive real-world testing and diagnos
 ### Windows Installation
 1. Clone or download `git-remote-seafile`:
    ```powershell
-   git clone https://github.com/haiwen/git-remote-seafile.git
+   git clone https://github.com/tkittich/git-remote-seafile.git
    cd git-remote-seafile
    pip install -e .
    ```
@@ -234,7 +234,7 @@ Before developing `git-remote-seafile`, extensive real-world testing and diagnos
 
 ### Linux & macOS Installation
 ```bash
-git clone https://github.com/haiwen/git-remote-seafile.git
+git clone https://github.com/tkittich/git-remote-seafile.git
 cd git-remote-seafile
 pip install -e .
 ```

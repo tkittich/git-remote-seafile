@@ -1,6 +1,6 @@
 # git-remote-seafile
 
-[![CI](https://github.com/haiwen/git-remote-seafile/actions/workflows/ci.yml/badge.svg)](https://github.com/haiwen/git-remote-seafile/actions/workflows/ci.yml)
+[![CI](https://github.com/tkittich/git-remote-seafile/actions/workflows/ci.yml/badge.svg)](https://github.com/tkittich/git-remote-seafile/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 [![Python](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
 

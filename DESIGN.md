@@ -135,7 +135,7 @@ sequenceDiagram
 ## 8. Upstream Integration Path for Haiwen / Seafile
 
 To incorporate this capability into the official Seafile ecosystem:
-1. **Repository Home**: Can live as `haiwen/git-remote-seafile` or bundled within the `haiwen/seafile` client distribution.
+1. **Repository Home**: Hosted at `tkittich/git-remote-seafile`; can be adopted upstream as `haiwen/git-remote-seafile` or bundled within official client distributions.
 2. **Packaging**: Distributed via PyPI (`pip install git-remote-seafile`) and bundled into Seafile Windows/macOS client installers.
 3. **Desktop Applet Integration**: A ready-to-merge Qt patch is provided in `contrib/seafile-client-context-menu.patch`, adding a *"Copy Git Remote URL"* action to the Seafile desktop applet's right-click context menu.
 

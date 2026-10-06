@@ -8,7 +8,7 @@ Thank you for your interest in improving `git-remote-seafile`! We welcome bug re
 
 1. **Clone the repository**:
    ```bash
-   git clone https://github.com/haiwen/git-remote-seafile.git
+   git clone https://github.com/tkittich/git-remote-seafile.git
    cd git-remote-seafile
    ```
 
