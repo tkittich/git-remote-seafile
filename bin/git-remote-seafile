@@ -1,0 +1,4 @@
+#!/usr/bin/env sh
+DIR="$(cd "$(dirname "$0")/.." && pwd)"
+export PYTHONPATH="$DIR:$PYTHONPATH"
+exec python -m git_remote_seafile.cli "$@"

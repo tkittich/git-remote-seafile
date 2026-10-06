@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "git-remote-seafile"
+version = "0.1.0"
+description = "Transparent Git remote helper for Seafile servers"
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.8"
+keywords = ["seafile", "git", "remote-helper", "version-control", "cloud-storage"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Software Development :: Version Control :: Git",
+]
+dependencies = [
+    "requests>=2.25.0"
+]
+
+[project.urls]
+Homepage = "https://github.com/haiwen/git-remote-seafile"
+Documentation = "https://github.com/haiwen/git-remote-seafile/blob/main/USER_GUIDE.md"
+Issues = "https://github.com/haiwen/git-remote-seafile/issues"
+
+[project.scripts]
+git-remote-seafile = "git_remote_seafile.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["git_remote_seafile*"]

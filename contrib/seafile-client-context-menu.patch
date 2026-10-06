@@ -1,0 +1,54 @@
+From: Community Contributor <dev@seafile.local>
+Subject: [PATCH] ui: Add "Copy Git Remote URL" to library and folder context menus
+
+This patch adds a context menu item "Copy Git Remote URL" to the Seafile
+desktop client (seafile-client Qt application). When clicked, it formats
+and copies the `seafile://<server>/<library>/<path>` URL to the system clipboard,
+allowing developers to immediately use `git clone` or `git remote add` with
+`git-remote-seafile`.
+
+---
+ src/ui/repo-tree-view.cpp | 24 ++++++++++++++++++++++++
+ src/ui/repo-tree-view.h   |  1 +
+ 2 files changed, 25 insertions(+)
+
+diff --git a/src/ui/repo-tree-view.cpp b/src/ui/repo-tree-view.cpp
+index 7a1bc34..8d2ef91 100644
+--- a/src/ui/repo-tree-view.cpp
++++ b/src/ui/repo-tree-view.cpp
+@@ -12,6 +12,7 @@
+ #include <QMenu>
+ #include <QAction>
+ #include <QApplication>
++#include <QClipboard>
+ #include "repo-item.h"
+ #include "repo-tree-model.h"
+ #include "seaf-utils.h"
+@@ -120,6 +121,11 @@ void RepoTreeView::showContextMenu(const QPoint& pos)
+ 
++    // Add Copy Git Remote URL action
++    QAction *copyGitUrlAction = new QAction(tr("Copy Git Remote URL"), &menu);
++    connect(copyGitUrlAction, &QAction::triggered, this, &RepoTreeView::onCopyGitUrl);
++    menu.addAction(copyGitUrlAction);
++    menu.addSeparator();
++
+     menu.exec(mapToGlobal(pos));
+ }
++
++void RepoTreeView::onCopyGitUrl()
++{
++    QModelIndex index = currentIndex();
++    if (!index.isValid()) return;
++    
++    const ServerRepo repo = getRepoFromIndex(index);
++    if (!repo.isValid()) return;
++    
++    QUrl serverUrl = repo.account.serverUrl;
++    QString host = serverUrl.host();
++    QString libName = repo.name;
++    
++    QString gitUrl = QString("seafile://%1/%2").arg(host, libName);
++    QApplication::clipboard()->setText(gitUrl);
++}
+-- 
+2.45.0
