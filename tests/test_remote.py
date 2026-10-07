@@ -386,6 +386,90 @@ class TestRemoteHelper(unittest.TestCase):
         self.assertEqual(lib2, "library-name")
         self.assertEqual(path2, "/sub/project")
 
+    def test_helper_run_protocol_loop(self):
+        h = RemoteHelper.__new__(RemoteHelper)
+        h.cmd_capabilities = MagicMock()
+        h.cmd_list = MagicMock()
+        h.cmd_push = MagicMock()
+        h.cmd_fetch = MagicMock()
+
+        # Simulate git sending capabilities, list, push, fetch, unknown command, and EOF
+        commands = (
+            "capabilities\n"
+            "list\n"
+            "list for-push\n"
+            "push refs/heads/main:refs/heads/main\n"
+            "push refs/heads/dev:refs/heads/dev\n"
+            "\n"
+            "fetch sha1\n"
+            "fetch sha2\n"
+            "\n"
+            "unknown-cmd\n"
+            "\n"
+        )
+        with patch("sys.stdin", io.StringIO(commands)), patch("sys.stdout", io.StringIO()):
+            h.run()
+
+        h.cmd_capabilities.assert_called_once()
+        self.assertEqual(h.cmd_list.call_count, 2)
+        h.cmd_list.assert_any_call(for_push=False)
+        h.cmd_list.assert_any_call(for_push=True)
+        h.cmd_push.assert_called_once_with([
+            "refs/heads/main:refs/heads/main",
+            "refs/heads/dev:refs/heads/dev"
+        ])
+        h.cmd_fetch.assert_called_once_with(["sha1", "sha2"])
+
+    @patch("git_remote_seafile.helper.rev_parse", return_value=None)
+    def test_cmd_push_local_ref_not_found(self, mock_rev):
+        h = RemoteHelper.__new__(RemoteHelper)
+        h.client = MagicMock()
+        h.repo_id = "repo1"
+        h.repo_path = "/git-repo"
+        h._refs_cache = {}
+
+        out = io.StringIO()
+        with patch("sys.stdout", out), patch("git_remote_seafile.helper.RemoteLock"):
+            h.cmd_push(["refs/heads/missing:refs/heads/missing"])
+
+        self.assertIn("error refs/heads/missing local ref does not exist", out.getvalue())
+
+    @patch("git_remote_seafile.helper.rev_parse", return_value="local_sha")
+    @patch("git_remote_seafile.helper.is_ancestor", return_value=False)
+    def test_cmd_push_non_fast_forward_rejected(self, mock_ancestor, mock_rev):
+        h = RemoteHelper.__new__(RemoteHelper)
+        h.client = MagicMock()
+        h.repo_id = "repo1"
+        h.repo_path = "/git-repo"
+        h._refs_cache = {"refs/heads/main": "remote_sha"}
+
+        out = io.StringIO()
+        with patch("sys.stdout", out), patch("git_remote_seafile.helper.RemoteLock"):
+            h.cmd_push(["refs/heads/main:refs/heads/main"])
+
+        self.assertIn("error refs/heads/main non-fast-forward", out.getvalue())
+
+    def test_cmd_push_branch_deletion(self):
+        h = RemoteHelper.__new__(RemoteHelper)
+        h.client = MagicMock()
+        h.repo_id = "repo1"
+        h.repo_path = "/git-repo"
+        h._refs_cache = {}
+
+        # Success case
+        h.client.delete_entry.return_value = True
+        out = io.StringIO()
+        with patch("sys.stdout", out), patch("git_remote_seafile.helper.RemoteLock"):
+            h.cmd_push([":refs/heads/feature"])
+        self.assertIn("ok refs/heads/feature", out.getvalue())
+
+        # Exception case
+        h.client.delete_entry.side_effect = RuntimeError("Delete failed")
+        out = io.StringIO()
+        with patch("sys.stdout", out), patch("git_remote_seafile.helper.RemoteLock"):
+            h.cmd_push([":refs/heads/feature"])
+        self.assertIn("error refs/heads/feature Delete failed", out.getvalue())
+
 
 class TestConcurrencyAndLocking(unittest.TestCase):
     def test_lock_acquire_and_release(self):
