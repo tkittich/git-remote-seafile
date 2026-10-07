@@ -50,7 +50,7 @@ git clone seafile://seafile.example.com/code/myproject
 - **Git LFS Integration**: Implements the official Git LFS Custom Transfer Agent protocol (`lfs-transfer`), allowing multi-gigabyte models, datasets, or video assets to stream into Seafile storage.
 - **Remote Packfile Compaction & Auto-GC (`gc`)**: Re-packs accumulated remote packs, delta-compresses history, and automatically prunes unreachable commits from rolled-back branches.
 - **Zero-Config Auth**: Automatically detects active logins from Windows, macOS, Linux, and `seaf-cli` local desktop client SQLite databases (`accounts.db`), or falls back to `~/.git-seafile.json` / environment variables.
-- **Production-Grade Test Suite**: Includes 38 automated unit tests with full CI across Windows, Linux, and macOS (Python 3.8–3.14).
+- **Test Suite**: Includes 38 automated unit tests tested on Windows, with CI workflows configured for Windows, Linux, and macOS (Python 3.8–3.14).
 
 ### Proposal to Haiwen / Upstream Integration
 
@@ -59,7 +59,7 @@ I would love to donate or upstream this project into the official Seafile ecosys
 2. Distribute via PyPI and package with Seafile desktop installers.
 3. Integrate a context-menu option in the Seafile desktop client (*"Copy Git Remote URL"*, patch ready in repo).
 
-*Transparency & Authorship Note*: In the spirit of open-source transparency, this project (codebase, test suite, and documentation) was authored primarily using generative AI assistance (Google DeepMind's Antigravity / Gemini) in collaboration with human architectural design, real-world forensic diagnostics, and verification.
+*Transparency & Authorship Note*: In the spirit of open-source transparency, this project (codebase, test suite, and documentation) was authored primarily using generative AI assistance (Google DeepMind's Antigravity / Gemini) in collaboration with human architectural design, real-world forensic diagnostics, and testing on Windows.
 
 Feedback, suggestions, and thoughts from the maintainers (@daniel.pan, @Jonathan) and community are warmly welcome!
 
@@ -96,7 +96,7 @@ The ready-to-apply patch is documented in `contrib/seafile-client-context-menu.p
 https://github.com/tkittich/git-remote-seafile/blob/main/contrib/seafile-client-context-menu.patch
 
 ### Checklist
-- [x] Tested on Seafile desktop client Qt 5/6 builds.
+- [x] Patch prepared against seafile-client RepoTreeView context menu.
 - [x] No changes to network protocol or server daemons.
 - [x] Non-intrusive UI addition.
 
@@ -127,7 +127,7 @@ We have developed and released **`git-remote-seafile`** (https://github.com/tkit
 - **Concurrency & Safety**: Distributed lease locking (`.git-lock.json` with 60s auto-expiry) and fast-forward verification prevent race conditions.
 - **Remote Compaction**: Built-in `git-remote-seafile gc` consolidates remote packfiles and prunes unreachable commits.
 - **Zero-Config Auth**: Automatically discovers tokens from local Seafile client `accounts.db` (Windows, macOS, Linux, seaf-cli).
-- **Quality & Testing**: 38 automated unit tests with cross-platform CI (Ubuntu, Windows, macOS on Python 3.8–3.14).
+- **Quality & Testing**: 38 automated unit tests tested on Windows, with GitHub Actions CI configured for cross-platform validation (Python 3.8–3.14).
 
 ### Upstream Roadmap & Resources
 - **Repository**: https://github.com/tkittich/git-remote-seafile
@@ -137,4 +137,4 @@ We have developed and released **`git-remote-seafile`** (https://github.com/tkit
 
 We would be glad to transfer/donate this project to the `haiwen` organization (`haiwen/git-remote-seafile`) or collaborate on packaging it with official client releases.
 
-*(Authorship note: In open-source transparency, this project was developed primarily using generative AI assistance from Google DeepMind's Antigravity / Gemini under human architectural guidance, debugging, and verification).*
+*(Authorship note: In open-source transparency, this project was developed primarily using generative AI assistance from Google DeepMind's Antigravity / Gemini under human architectural guidance, debugging, and testing on Windows).*
