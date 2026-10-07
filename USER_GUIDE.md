@@ -530,3 +530,9 @@ git-remote-seafile test seafile://code/myproject
 - [Git LFS Custom Transfer Agent Protocol](https://github.com/git-lfs/git-lfs/blob/main/docs/custom-transfers.md): Official Git LFS specification for line-based stdio custom transfer agents.
 - [Seafile Web API v2.1](https://manual.seafile.com/develop/web_api_v2.1/): The underlying REST API provided by Seafile Ltd.
 
+---
+
+## 16. AI Disclosure & Authorship
+
+This project—including its source code, test suites, architecture specifications, and documentation—was authored primarily with generative AI assistance (Google DeepMind's Antigravity / Gemini) in collaboration with human architectural design, real-world forensic diagnostics, and verification by [@tkittich](https://github.com/tkittich). All code and protocol implementations are fully open source, tested across Linux, Windows, and macOS, and licensed under the Apache License 2.0.
+

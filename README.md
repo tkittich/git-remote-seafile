@@ -150,6 +150,12 @@ git clone seafile://seafile.example.com/code/myproject
 
 ---
 
+## AI Disclosure & Authorship
+
+This project—including its source code, test suites, architecture design, and documentation—was authored primarily with generative AI assistance (Google DeepMind's Antigravity / Gemini) in collaboration with human architectural design, real-world forensic diagnostics, and verification by [@tkittich](https://github.com/tkittich). All code and protocol implementations are fully open source, tested across Linux, Windows, and macOS, and licensed under the Apache License 2.0.
+
+---
+
 ## License
 
 Licensed under the [Apache License, Version 2.0](LICENSE).
