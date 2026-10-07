@@ -38,8 +38,8 @@ class TestRemoteHelper(unittest.TestCase):
         self.assertEqual(path, "/myproject")
 
         h3 = RemoteHelper.__new__(RemoteHelper)
-        server, lib, path = h3._parse_url("seafile://https://seafile.zero.myth.in.th/code/repo")
-        self.assertEqual(server, "https://seafile.zero.myth.in.th")
+        server, lib, path = h3._parse_url("seafile://https://cloud.example.com/code/repo")
+        self.assertEqual(server, "https://cloud.example.com")
         self.assertEqual(lib, "code")
         self.assertEqual(path, "/repo")
 

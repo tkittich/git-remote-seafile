@@ -133,7 +133,7 @@ If you prefer keeping remote repositories within an existing synced library (suc
 `git-remote-seafile` includes built-in automated pre-flight checks that inspect your local Seafile desktop client configuration (`repo.db`) and active Git working tree to protect you from common misconfigurations:
 
 #### 🛡️ Trap 1: Working Tree & Remote Path Collision (Hard Block)
-- **The Hazard**: Setting your remote URL to the exact same library path as your local working tree (e.g., local code at `D:\theera\Documents\code\myproject` and remote at `seafile://Documents/code/myproject`).
+- **The Hazard**: Setting your remote URL to the exact same library path as your local working tree (e.g., local code at `C:\Users\<username>\Documents\code\myproject` and remote at `seafile://Documents/code/myproject`).
 - **The Consequence**: Pushing uploads bare Git packfiles and refs (`objects/pack/`, `refs/heads/main`) to the server. The desktop sync client would see these files on the server and download them directly into your working copy, corrupting your index, spraying bare packfiles across your project, and creating sync conflicts.
 - **The Guardrail**: The helper detects the collision between your local working tree and the remote destination and **aborts the push immediately**, suggesting either an unsynced library or an ignored subfolder (`seafile-git/`).
 
