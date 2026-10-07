@@ -7,9 +7,19 @@ on:
     tags:
       - 'v*'
 
+# Least privilege by default; the publish step below needs to mint an OIDC
+# token to authenticate to PyPI (trusted publishing).
+permissions:
+  contents: read
+
 jobs:
   build-and-publish:
     runs-on: ubuntu-latest
+    # Required for PyPI trusted publishing (OIDC). Without it the publish step
+    # fails with "OpenID Connect token retrieval failed ... ACTIONS_ID_TOKEN_
+    # REQUEST_TOKEN was unset" whenever no PYPI_API_TOKEN secret is present.
+    permissions:
+      id-token: write
     steps:
     - uses: actions/checkout@v4
 
@@ -26,6 +36,10 @@ jobs:
     - name: Build sdist and wheel
       run: python -m build
 
+    # Two ways to authenticate. If the PYPI_API_TOKEN secret is set, the
+    # password below is used. If it is unset (empty), the action falls back to
+    # trusted publishing via OIDC -- which needs `id-token: write` above AND a
+    # Trusted Publisher configured for this repo on PyPI.
     - name: Publish to PyPI
       uses: pypa/gh-action-pypi-publish@release/v1
       with:
