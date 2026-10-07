@@ -23,6 +23,19 @@ from .git_util import (
 )
 
 
+def _looks_like_host(segment: str) -> bool:
+    """Heuristic: does this URL segment name a server rather than a library?
+
+    A port ("host:8443") or a dot ("seafile.example.com") is a strong hint.
+    This is only consulted for the bare form, and only when a library and a
+    path follow, so a library whose name merely contains a dot is never caught
+    by it.
+    """
+    if ":" in segment:
+        return True
+    return "." in segment.split("@")[-1]
+
+
 class RemoteHelper:
     """Implements Git remote-helper protocol over Seafile Web API."""
 
@@ -42,12 +55,22 @@ class RemoteHelper:
         self._refs_cache: dict[str, str] = {}  # refname -> sha1
 
     def _parse_url(self, url: str) -> tuple[str | None, str, str]:
-        """Parse seafile:// URL into (server_url, library_name, repo_path).
-        
-        Supported formats:
-          seafile://host.example.com/library_name/repo_path
-          seafile://https://host.example.com/library_name/repo_path
-          seafile://library_name/repo_path
+        """Parse a seafile:// URL into (server_url, library_name, repo_path).
+
+        Accepted forms:
+
+          seafile://<library>/<path>                  server from credentials
+          seafile://<library>/<sub>/<path>            ditto, nested path
+          seafile://<host>/<library>/<path>           server from the first segment
+          seafile://https://<host>/<library>/<path>   server stated explicitly
+
+        The third form is the only ambiguous one, so it is kept deliberately
+        narrow: the first segment is read as a host only when a library *and* a
+        path follow it, and it actually looks like a hostname.  A two-segment
+        URL is therefore always <library>/<path> -- previously a library whose
+        name merely contained a dot ("my.library/repo") was read as a host, and
+        the library silently became "repo".  When a name really is ambiguous,
+        the explicit-scheme form above settles it.
         """
         stripped = url.removeprefix("seafile://")
         server_url = None
@@ -58,7 +81,7 @@ class RemoteHelper:
             path_parts = [p for p in parsed.path.strip("/").split("/") if p]
         else:
             parts = [p for p in stripped.strip("/").split("/") if p]
-            if len(parts) >= 2 and ("." in parts[0] or ":" in parts[0]):
+            if len(parts) >= 3 and _looks_like_host(parts[0]):
                 server_url = f"https://{parts[0]}"
                 path_parts = parts[1:]
             else:
@@ -66,6 +89,17 @@ class RemoteHelper:
 
         if not path_parts:
             raise ValueError(f"Invalid Seafile URL format: {url}")
+
+        # A lone hostname-shaped segment is a server with no library named.
+        # Saying that here is far clearer than treating "seafile.example.com" as
+        # a library and reporting "library not found" much later, after a
+        # round-trip to the server.
+        if server_url is None and len(path_parts) == 1 and _looks_like_host(path_parts[0]):
+            raise ValueError(
+                f"'{url}' names a server but no library. Write "
+                f"seafile://{path_parts[0]}/<library>/<path>, or "
+                f"seafile://https://{path_parts[0]}/<library>/<path> to be explicit."
+            )
 
         library_name = path_parts[0]
         repo_path = "/" + "/".join(path_parts[1:]) if len(path_parts) > 1 else "/git-repo"

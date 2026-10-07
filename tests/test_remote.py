@@ -1045,5 +1045,65 @@ class TestCLISubcommands(unittest.TestCase):
         self.assertNotIn("\n", non_empty[0])
 
 
+class TestUrlParsing(unittest.TestCase):
+    """The bare URL forms are ambiguous, so the parser must fail safely.
+
+    `seafile://a.b/c` could be "library a.b, path /c" or "host a.b, library c".
+    The old rule -- "a dot in the first segment means it is a host" -- resolved
+    that in favour of the host, so a library whose name merely contained a dot
+    was silently split: the library became "c" and the path "/git-repo".
+    """
+
+    @staticmethod
+    def _parse(url: str):
+        return RemoteHelper.__new__(RemoteHelper)._parse_url(url)
+
+    def test_a_dotted_library_name_is_not_mistaken_for_a_host(self):
+        server, lib, path = self._parse("seafile://my.library/repo")
+        self.assertIsNone(server, "a two-segment URL is always <library>/<path>")
+        self.assertEqual(lib, "my.library")
+        self.assertEqual(path, "/repo")
+
+    def test_a_host_form_still_needs_a_library_and_a_path(self):
+        # The documented host form keeps working: three segments, first is a host.
+        server, lib, path = self._parse("seafile://seafile.example.com/code/myproject")
+        self.assertEqual(server, "https://seafile.example.com")
+        self.assertEqual(lib, "code")
+        self.assertEqual(path, "/myproject")
+
+    def test_a_nested_library_path_is_not_read_as_a_host(self):
+        server, lib, path = self._parse("seafile://Documents/seafile-git/myproject")
+        self.assertIsNone(server)
+        self.assertEqual(lib, "Documents")
+        self.assertEqual(path, "/seafile-git/myproject")
+
+    def test_a_bare_host_with_no_library_is_rejected_with_a_fix(self):
+        with self.assertRaises(ValueError) as ctx:
+            self._parse("seafile://seafile.example.com")
+        message = str(ctx.exception)
+        self.assertIn("no library", message)
+        # The error must say how to write it instead.
+        self.assertIn("seafile://https://seafile.example.com/", message)
+
+    def test_a_single_segment_that_is_not_host_like_is_still_a_library(self):
+        server, lib, path = self._parse("seafile://Documents/")
+        self.assertIsNone(server)
+        self.assertEqual(lib, "Documents")
+        self.assertEqual(path, "/git-repo")
+
+    def test_an_empty_url_is_rejected(self):
+        for url in ("seafile://", "seafile:///"):
+            with self.subTest(url=url):
+                with self.assertRaises(ValueError):
+                    self._parse(url)
+
+    def test_explicit_scheme_form_is_unambiguous(self):
+        # The escape hatch for genuinely ambiguous names.
+        server, lib, path = self._parse("seafile://https://my.library/repo")
+        self.assertEqual(server, "https://my.library")
+        self.assertEqual(lib, "repo")
+        self.assertEqual(path, "/git-repo")
+
+
 if __name__ == "__main__":
     unittest.main()
