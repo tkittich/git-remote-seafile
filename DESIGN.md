@@ -153,6 +153,15 @@ sequenceDiagram
 - Handles `init`, `upload`, and `download` events over standard I/O.
 - Allows large binary assets to be stored directly in Seafile `/lfs/` while maintaining small, agile Git commit histories.
 
+### 7.4 Automated Pre-Flight Safety Guardrails (`safety.py`)
+To prevent data loss and filesystem thrashing, `git-remote-seafile` enforces pre-flight safety verification before any push operation:
+1. **Zero-Configuration Client Discovery**: Reads local Seafile desktop client SQLite configuration (`repo.db` discovered via `<ccnet>/seafile.ini`) to map all actively synced local libraries and their root directories.
+2. **Trap 1 (Working Tree & Remote Collision)**: Detects if the current Git working tree resides inside a synced library and shares the exact path with the remote URL. Hard-aborts immediately before locking or uploading to prevent server packfiles from downloading over the active working tree. Recommends pushing to an unsynced library or an ignored subfolder (`seafile-git/`).
+3. **Trap 2 (Download Reflection Loop)**: Detects pushes into synced libraries where the remote subfolder is not listed in `seafile-ignore.txt`. Aborts to prevent the desktop client from downloading server packfiles right back to the local drive.
+4. **Library Typo Suggestions**: Uses fuzzy matching (`difflib.get_close_matches`) against `/api2/repos/` to provide helpful suggestions when library names are misspelled.
+5. **Git Protocol Conformance**: Emits standard `error <dst> safety check failed: ...` protocol lines on `stdout` and full human-readable diagnostic guidance on `stderr`.
+6. **Bypass Controls**: Supports non-interactive CI environments and automated testing via `SEAFILE_SKIP_SAFETY_CHECKS=1` or `git config seafile.skipsafetychecks true`.
+
 ---
 
 ## 8. Upstream Integration Path for Haiwen / Seafile

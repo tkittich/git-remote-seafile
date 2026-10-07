@@ -19,6 +19,7 @@ def print_help() -> None:
     print()
     print("Commands:")
     print("  git-remote-seafile test <seafile://url>           Test connection and discover refs")
+    print("  git-remote-seafile check-safety <seafile://url>  Run pre-flight safety checks (Trap 1 & 2)")
     print("  git-remote-seafile check-auth                    Verify active Seafile login")
     print("  git-remote-seafile gc <seafile://url>            Compact multiple remote packfiles")
     print("  git-remote-seafile lfs-transfer <seafile://url>  Git LFS Custom Transfer Agent")
@@ -58,6 +59,45 @@ def main() -> int:
             print(f"Error: {ex}")
             return 1
 
+    if args[0] == "check-safety":
+        if len(args) < 2:
+            print("Usage: git-remote-seafile check-safety <seafile://url>")
+            return 1
+        url = args[1]
+        try:
+            from .safety import check_preflight_safety, SafetyError, discover_local_synced_libraries, get_local_work_tree
+            helper = RemoteHelper("check-safety", url)
+            wt = get_local_work_tree()
+            synced = discover_local_synced_libraries()
+            print(f"Target Server     : {helper.client.server_url}")
+            print(f"Target Library    : {helper.library_name}")
+            print(f"Remote Path       : {helper.repo_path}")
+            print(f"Local Working Tree: {wt if wt else '(none detected)'}")
+            print(f"Synced Libraries  : {len(synced)} active on this machine")
+            for s in synced:
+                print(f"  - {s['name']} -> {s['worktree']}")
+
+            print("\nEvaluating safety guardrails (Trap 1 & Trap 2)...")
+            warnings = check_preflight_safety(
+                helper.client,
+                helper.library_name,
+                helper.repo_path,
+                local_worktree=wt,
+                push_mode=True,
+                synced_libs=synced,
+            )
+            for w in warnings:
+                print(f"\n[Warning]\n{w}")
+
+            print("\n[PASSED] Pre-flight safety checks completed successfully with no blocking issues.")
+            return 0
+        except SafetyError as safe_err:
+            print(f"\n[BLOCKED - SAFETY ERROR]\n{safe_err}")
+            return 1
+        except Exception as ex:
+            print(f"Safety check error: {ex}")
+            return 1
+
     if args[0] == "test":
         if len(args) < 2:
             print("Usage: git-remote-seafile test <seafile://url>")
@@ -71,7 +111,15 @@ def main() -> int:
             print("Fetching remote ref list...")
             helper.cmd_list()
             print("Connection successful!")
+
+            from .safety import check_preflight_safety, SafetyError
+            warnings = check_preflight_safety(helper.client, helper.library_name, helper.repo_path, push_mode=False)
+            for w in warnings:
+                print(f"[Warning] {w}")
             return 0
+        except SafetyError as safe_err:
+            print(f"[Safety Warning] {safe_err}")
+            return 1
         except Exception as ex:
             print(f"Test failed: {ex}")
             return 1

@@ -9,6 +9,7 @@ from urllib.parse import urlparse
 
 from .client import SeafileClient, SeafileAPIError
 from .lock import RemoteLock
+from .safety import check_preflight_safety, SafetyError
 from .git_util import (
     create_packfile,
     get_objects_to_push,
@@ -29,7 +30,14 @@ class RemoteHelper:
         self.raw_url = url
         self.server_url, self.library_name, self.repo_path = self._parse_url(url)
         self.client = SeafileClient(server_url=self.server_url)
-        self.repo_id = self.client.get_repo_id(self.library_name)
+        try:
+            self.repo_id = self.client.get_repo_id(self.library_name)
+        except Exception as ex:
+            try:
+                check_preflight_safety(self.client, self.library_name, self.repo_path, push_mode=False)
+            except SafetyError:
+                raise
+            raise ex
         self._refs_cache: dict[str, str] = {}  # refname -> sha1
 
     def _parse_url(self, url: str) -> tuple[str | None, str, str]:
@@ -115,6 +123,31 @@ class RemoteHelper:
 
     def cmd_push(self, push_specs: list[str]) -> None:
         """Process push instructions."""
+        # Pre-flight safety checks (Trap 1, Trap 2, root pollution, typos)
+        try:
+            warnings = check_preflight_safety(
+                self.client,
+                getattr(self, "library_name", ""),
+                getattr(self, "repo_path", ""),
+                push_mode=True,
+            )
+            for w in warnings:
+                sys.stderr.write(f"\n[git-remote-seafile NOTICE]\n{w}\n\n")
+                sys.stderr.flush()
+        except SafetyError as safe_err:
+            sys.stderr.write("\n====================================================================\n")
+            sys.stderr.write("[git-remote-seafile PRE-FLIGHT SAFETY BLOCK]\n")
+            sys.stderr.write(f"{safe_err}\n")
+            sys.stderr.write("====================================================================\n\n")
+            sys.stderr.flush()
+            first_line = str(safe_err).splitlines()[0]
+            for spec in push_specs:
+                dst = spec.lstrip("+").split(":", 1)[1] if ":" in spec else spec
+                sys.stdout.write(f"error {dst} safety check failed: {first_line}\n")
+            sys.stdout.write("\n")
+            sys.stdout.flush()
+            return
+
         try:
             with RemoteLock(self.client, self.repo_id, self.repo_path):
                 for spec in push_specs:

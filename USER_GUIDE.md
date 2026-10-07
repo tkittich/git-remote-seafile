@@ -98,6 +98,59 @@ If you currently have a project inside a Seafile-synced directory, follow these 
    ```
 6. **Re-enable sync**: In your Seafile desktop client, re-enable auto sync. Your active working files and `.git/` folder are now completely isolated from sync interference!
 
+### 2.3 Two Supported Architecture Workflows
+
+Depending on your library organization, two safe workflows are supported:
+
+#### Workflow A (Recommended): Dedicated Unsynced Library
+Create a dedicated Seafile library on your server (e.g. `code` or `git-vault`) that is **never synced** to your local desktop client:
+- **Local working tree**: `C:\code\myproject` or `D:\Dev\myproject` (outside synced libraries)
+- **Remote destination**: `seafile://code/myproject`
+- **Advantages**: Complete physical and logical separation. Zero chance of desktop client sync collisions or disk reflection.
+
+#### Workflow B: Ignored Subfolder in a Synced Library (`seafile-git/`)
+If you prefer keeping remote repositories within an existing synced library (such as `Documents`), or your local working tree is inside an ignored subfolder like `Documents/code/myproject`:
+1. Store remote repositories under a designated subfolder named **`seafile-git/`**:
+   ```bash
+   git remote add origin seafile://Documents/seafile-git/myproject
+   ```
+2. Add `seafile-git/` to `seafile-ignore.txt` at the root of the synced library (`<library-root>/seafile-ignore.txt`).
+
+> [!NOTE]
+> **Why `seafile-git/` instead of hidden dot-names?**
+> We deliberately use **`seafile-git/`** rather than dot-prefixed names like `.git-remotes`. Folders starting with `.git` resemble Git internal plumbing, causing confusion with Git commands and toolchains. `seafile-git/` is clear, explicit, and easily managed in the Seafile Web UI.
+
+### 2.4 Automated Pre-Flight Safety Guardrails
+
+`git-remote-seafile` includes built-in automated pre-flight checks that inspect your local Seafile desktop client configuration (`repo.db`) and active Git working tree to protect you from common misconfigurations:
+
+#### 🛡️ Trap 1: Working Tree & Remote Path Collision (Hard Block)
+- **The Hazard**: Setting your remote URL to the exact same library path as your local working tree (e.g., local code at `D:\theera\Documents\code\myproject` and remote at `seafile://Documents/code/myproject`).
+- **The Consequence**: Pushing uploads bare Git packfiles and refs (`objects/pack/`, `refs/heads/main`) to the server. The desktop sync client would see these files on the server and download them directly into your working copy, corrupting your index, spraying bare packfiles across your project, and creating sync conflicts.
+- **The Guardrail**: The helper detects the collision between your local working tree and the remote destination and **aborts the push immediately**, suggesting either an unsynced library or an ignored subfolder (`seafile-git/`).
+
+#### 🛡️ Trap 2: Download Reflection in Synced Library (Hard Block)
+- **The Hazard**: Pushing to a remote path inside an actively synced library when that subfolder is NOT ignored in `seafile-ignore.txt` (e.g., remote is `seafile://Documents/seafile-git/myproject` but `seafile-git/` is missing from `seafile-ignore.txt`).
+- **The Consequence**: Every push uploads packfiles to Seafile server; seconds later, your desktop client detects them on the server and downloads them back down to your local drive. This wastes disk space, network bandwidth, and triggers CPU churn.
+- **The Guardrail**: The helper parses `seafile-ignore.txt` at the library root. If the remote path is not explicitly ignored, it **aborts the push and displays exact instructions** on how to add the folder to `seafile-ignore.txt`.
+
+#### 🛡️ Library Root Pollution Protection
+- Pushing directly to the library root (`seafile://Documents/`) is hard-blocked to prevent cluttering the top level with bare objects and refs.
+
+#### 🛡️ Library Typo Detection & Suggestions
+- If you misspell a library name in the remote URL (e.g. `seafile://docment/myproject`), the helper queries available libraries on the server and provides fuzzy-matched suggestions (`Did you mean: Documents?`).
+
+#### 🔍 Pre-Flight Verification via CLI
+You can test any remote URL against your local environment before pushing:
+```bash
+git-remote-seafile check-safety seafile://Documents/seafile-git/myproject
+```
+
+#### ⚙️ Bypassing Safety Checks (CI / Headless Environments)
+In automated CI runners or headless servers without a local desktop client, safety checks gracefully pass automatically. If you ever need to manually bypass checks:
+- **Environment variable**: `export SEAFILE_SKIP_SAFETY_CHECKS=1` (or `$env:SEAFILE_SKIP_SAFETY_CHECKS="1"` on Windows)
+- **Git configuration**: `git config seafile.skipsafetychecks true`
+
 ---
 
 ## 3. In-Depth Comparison: `git-remote-seafile` vs. "Move Code Out + Git Remotes"
@@ -513,7 +566,10 @@ git-remote-seafile test seafile://code/myproject
 | Error | Cause | Resolution |
 | :--- | :--- | :--- |
 | `fatal: remote helper 'seafile' not found` | Helper binary not in `PATH` | Ensure `git-remote-seafile` or `git-remote-seafile.bat` is in a folder listed in your system `PATH`. |
-| `Seafile library not found: 'XYZ'` | Library name typo or permissions | Verify the library name in the Seafile Web UI or use the library UUID directly. |
+| `DANGEROUS PATH COLLISION DETECTED (Trap 1)` | Local working tree is inside synced library at identical remote path | Change remote to an unsynced library (`seafile://code/repo`) or use an ignored subfolder (`seafile://Documents/seafile-git/repo`). |
+| `UNIGNORED REMOTE PATH IN SYNCED LIBRARY (Trap 2)` | Remote destination in synced library is not in `seafile-ignore.txt` | Add `seafile-git/` (or target top folder) to `seafile-ignore.txt` at the synced library root. |
+| `Cannot use the library root '/'` | Remote URL points to library root without project subfolder | Specify a subfolder name, e.g. `seafile://library/myproject` or `seafile://library/seafile-git/myproject`. |
+| `Seafile library not found: 'XYZ'` | Library name typo or permissions | Verify the library name in the Seafile Web UI or use the library UUID directly. The helper will suggest close matches. |
 | `HTTP 401 Unauthorized` | Invalid or expired token | Run `git-remote-seafile check-auth` and verify credentials in `~/.git-seafile.json`. |
 | `HTTP 403 Forbidden` on push | Read-only library permissions | Ensure your Seafile account has Read-Write permission on the target library. |
 | `fatal: remote locked by user@host` | Concurrent push in progress or stale lock | Wait 15 seconds for the other push to finish. If a previous client crashed, the lock automatically expires in 60 seconds. |

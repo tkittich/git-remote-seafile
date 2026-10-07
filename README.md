@@ -20,6 +20,7 @@ Storing active Git repositories inside Seafile desktop-synced folders (e.g. `Doc
 ### The Solution
 Instead of syncing the local `.git/` folder, `git-remote-seafile` communicates directly with the **Seafile Web API v2.1**:
 - **Zero Daemon Churn**: The desktop sync client never scans or indexes your working repository.
+- **Automated Pre-Flight Safety**: Built-in guardrails detect and block path collisions (Trap 1) and download reflection loops (Trap 2) before any data is transferred.
 - **Fast & Efficient**: Commits are packed using Git packfiles (`.pack` and `.idx`). Pushing 100 commits uploads only **two files**.
 - **Rollback & Branch Safe**: Clean ref management handles branches, force-pushes, and automatic unreachable commit pruning.
 - **No Extra Servers**: Uses your existing Seafile server without needing GitLab, Gitea, or third-party Git hosts.
@@ -34,11 +35,14 @@ Instead of syncing the local `.git/` folder, `git-remote-seafile` communicates d
 > 
 > Your active Git repository (the directory containing your working tree and `.git/`) **MUST be located outside of any folder actively synced by the Seafile desktop client**.
 > 
-> - **Safe locations**: Any folder that Seafile does not watch or sync, such as `C:\code\myproject`, `C:\Projects\myproject`, or `~/code/myproject`. (If your `Documents` folder is **not** synced by Seafile, it is also safe to use).
+> - **Safe locations**: Any folder that Seafile does not watch or sync, such as `C:\code\myproject`, `C:\Projects\myproject`, or `~/code/myproject`.
 > - **Unsafe locations**: Any local directory currently mapped to a Seafile library in your desktop client (such as `C:\Users\<username>\Seafile\...` or a synced folder).
 > 
 > **Why?**
 > If your local repository directory is actively watched by the Seafile desktop client, the sync daemon will continuously monitor, lock, and re-index the internal `.git/` files on every commit or branch switch. `git-remote-seafile` communicates directly with your Seafile server over HTTP/HTTPS Web API v2.1—just like GitHub or GitLab. Keeping your working folder unsynced allows Git to operate at native filesystem speed with zero desktop client interference.
+> 
+> **Need to store remotes in a synced library?**
+> If you store remotes in a synced library like `Documents`, use an ignored subfolder like **`seafile-git/`** (`seafile://Documents/seafile-git/myproject`) and add `seafile-git/` to `<library-root>/seafile-ignore.txt`. The built-in pre-flight guardrails will automatically verify this and guide you! Test your setup anytime with `git-remote-seafile check-safety <seafile://url>`.
 
 ---
 
