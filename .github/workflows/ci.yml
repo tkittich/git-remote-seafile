@@ -10,6 +10,11 @@ jobs:
   test:
     runs-on: ${{ matrix.os }}
     strategy:
+      # One failing job must not cancel the other 17.  With fail-fast on, the
+      # first failure hides every other platform/version -- which is how a
+      # 3.8-only dependency failure masked a 3.10-only test failure for
+      # several commits.
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
         python-version: ["3.9", "3.10", "3.11", "3.12", "3.13", "3.14"]
@@ -29,4 +34,10 @@ jobs:
 
     - name: Run unit tests
       run: |
-        python -m unittest discover tests
+        python -m unittest discover tests > unittest-output.txt 2>&1
+
+    # Runs even when the step above fails.  Workflow logs need admin rights to
+    # download; annotations do not, so the failing test names stay visible.
+    - name: Report test results
+      if: always()
+      run: python .github/ci_report_failures.py unittest-output.txt
