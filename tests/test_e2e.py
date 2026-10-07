@@ -94,6 +94,57 @@ class TestFaultInjection(E2ETestCase):
                         f"expected a visible error, got:\n{combined}")
 
 
+class TestFetchFailureIsLoud(E2ETestCase):
+    """A clone whose pack transfer fails must fail, not produce an empty repo.
+
+    Regression guard for the fetch half of the silent-success class: cmd_fetch
+    caught the error, wrote the protocol terminator and returned normally, so
+    the helper exited 0 and `git clone` "succeeded" with an empty repository.
+    The failure only surfaced later, as missing objects.
+
+    The stub's `raw_pack` fault fails *only* the pack download, so the ref
+    listing still succeeds and the fetch stage is isolated.
+    """
+
+    def test_clone_fails_when_the_pack_transfer_fails(self):
+        src = init_repo(self.work / "src_fetchfail", self.env)
+        commit_file(src, "a.txt", "hello\n", "base commit", self.env)
+        run_git(["remote", "add", "origin", self.url("fetchfail")], src, self.env)
+        run_git(["push", "-u", "origin", "main"], src, self.env)
+
+        self.stub.faults["raw_pack"] = 500
+
+        dest = self.work / "clone_fetchfail"
+        proc = run_git(
+            ["clone", self.url("fetchfail"), str(dest)], self.work, self.env, check=False
+        )
+
+        self.assertNotEqual(proc.returncode, 0, "git must not report a successful clone")
+        combined = proc.stdout + proc.stderr
+
+        # The helper must report the failure *itself*, naming the transfer that
+        # failed.  Previously it wrote the protocol terminator and exited 0, so
+        # git only discovered the damage later and blamed the object graph:
+        # "fatal: remote did not send all necessary objects" -- which names
+        # neither the pack nor the transfer that actually failed.
+        self.assertIn("git-remote-seafile fatal error:", combined)
+        self.assertIn("HTTP 500", combined)
+
+    def test_a_healthy_clone_still_succeeds(self):
+        # The control: with no fault injected the same sequence must work, so a
+        # passing test above cannot be an artefact of the setup.
+        src = init_repo(self.work / "src_fetchok", self.env)
+        commit_file(src, "a.txt", "hello\n", "base commit", self.env)
+        run_git(["remote", "add", "origin", self.url("fetchok")], src, self.env)
+        run_git(["push", "-u", "origin", "main"], src, self.env)
+
+        dest = self.work / "clone_fetchok"
+        run_git(["clone", self.url("fetchok"), str(dest)], self.work, self.env)
+
+        listing = run_git(["log", "--oneline"], dest, self.env)
+        self.assertIn("base commit", listing.stdout)
+
+
 class TestNestedBranchRefs(E2ETestCase):
     """refs/heads/<a>/<b> must be advertised, fetched, and survive gc.
 

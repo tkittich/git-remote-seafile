@@ -1105,5 +1105,86 @@ class TestUrlParsing(unittest.TestCase):
         self.assertEqual(path, "/git-repo")
 
 
+class TestFetchFailureIsLoud(unittest.TestCase):
+    """A failed fetch must never look like a successful one.
+
+    cmd_fetch caught every exception, wrote the protocol terminator and
+    returned normally, so the helper exited 0.  Git then reported a successful
+    fetch of nothing: `git clone` produced an *empty* repository and exited 0,
+    and the user only found out later.  This is the fetch half of the same
+    silent-success class as the refs-listing bug.
+    """
+
+    @staticmethod
+    def _helper(client):
+        h = RemoteHelper.__new__(RemoteHelper)
+        h.client = client
+        h.repo_id = "repo1"
+        h.repo_path = "/git-repo"
+        return h
+
+    def test_a_listing_error_propagates_and_emits_no_terminator(self):
+        with tempfile.TemporaryDirectory() as td:
+            local_git = Path(td) / ".git"
+            (local_git / "objects" / "pack").mkdir(parents=True)
+
+            client = MagicMock()
+            client.list_dir.side_effect = SeafileAPIError("HTTP 500 server error")
+            h = self._helper(client)
+
+            out = io.StringIO()
+            with patch("git_remote_seafile.helper.get_git_dir", return_value=local_git):
+                with patch("sys.stdout", out), patch("sys.stderr", new_callable=io.StringIO):
+                    with self.assertRaises(SeafileAPIError):
+                        h.cmd_fetch(["refs/heads/main"])
+
+            self.assertEqual(
+                out.getvalue(), "",
+                "a failed fetch must not write the success terminator -- that is "
+                "what made git report an empty repository as a successful clone",
+            )
+
+    def test_an_advertised_pack_that_cannot_be_downloaded_is_an_error(self):
+        with tempfile.TemporaryDirectory() as td:
+            local_git = Path(td) / ".git"
+            (local_git / "objects" / "pack").mkdir(parents=True)
+
+            client = MagicMock()
+            client.list_dir.return_value = [
+                {"name": "pack-ffffffffffffffffffffffffffffffffffffffff.pack"},
+            ]
+            client.get_file_bytes.return_value = None  # 404 on the download link
+            h = self._helper(client)
+
+            with patch("git_remote_seafile.helper.get_git_dir", return_value=local_git):
+                with patch("sys.stdout", new_callable=io.StringIO):
+                    with patch("sys.stderr", new_callable=io.StringIO):
+                        with self.assertRaises(SeafileAPIError) as ctx:
+                            h.cmd_fetch(["refs/heads/main"])
+
+            self.assertIn("pack-ffffffffffffffffffffffffffffffffffffffff.pack", str(ctx.exception))
+
+    def test_a_successful_fetch_still_emits_the_terminator(self):
+        # The guard against false failure: a healthy fetch must stay quiet and
+        # terminate the protocol normally.
+        with tempfile.TemporaryDirectory() as td:
+            local_git = Path(td) / ".git"
+            (local_git / "objects" / "pack").mkdir(parents=True)
+
+            client = MagicMock()
+            client.list_dir.return_value = [{"name": "pack-1.pack"}]
+            client.get_file_bytes.return_value = b"PACKBYTES"
+            h = self._helper(client)
+
+            out = io.StringIO()
+            with patch("git_remote_seafile.helper.get_git_dir", return_value=local_git):
+                with patch("git_remote_seafile.helper.install_packfile") as install:
+                    with patch("sys.stdout", out), patch("sys.stderr", new_callable=io.StringIO):
+                        h.cmd_fetch(["refs/heads/main"])
+
+            install.assert_called_once()
+            self.assertEqual(out.getvalue(), "\n")
+
+
 if __name__ == "__main__":
     unittest.main()

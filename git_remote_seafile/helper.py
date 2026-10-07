@@ -346,7 +346,14 @@ class RemoteHelper:
         sys.stdout.flush()
 
     def cmd_fetch(self, fetch_specs: list[str]) -> None:
-        """Download remote packfiles to local .git/objects/pack/."""
+        """Download remote packfiles to local .git/objects/pack/.
+
+        Failures must not be swallowed.  This used to catch every exception,
+        write the protocol terminator and return, so a transport error looked
+        like a *successful* fetch of nothing: ``git clone`` finished with an
+        empty repository and exited 0, and the user found out much later.  The
+        error is now re-raised, so the helper exits non-zero and git says so.
+        """
         try:
             git_dir = get_git_dir()
             local_pack_dir = git_dir / "objects" / "pack"
@@ -366,15 +373,30 @@ class RemoteHelper:
                 pack_bytes = self.client.get_file_bytes(self.repo_id, f"{remote_pack_dir}/{pack_name}")
                 idx_bytes = self.client.get_file_bytes(self.repo_id, f"{remote_pack_dir}/{idx_name}")
 
-                if pack_bytes:
-                    install_packfile(pack_name, pack_bytes, idx_bytes)
+                if not pack_bytes:
+                    # The listing advertised this pack a moment ago, so failing
+                    # to download it would leave the repository without objects
+                    # its refs point at.  A compaction landing between the
+                    # listing and the download does exactly this; retrying picks
+                    # up the consolidated pack.  Either way, do not carry on as
+                    # though the fetch had succeeded.
+                    raise SeafileAPIError(
+                        f"Packfile {pack_name} is listed at {remote_pack_dir} but could not be "
+                        "downloaded -- the local repository would be missing objects. Retry the "
+                        "fetch, or run 'git-remote-seafile test <url>' to diagnose."
+                    )
+                install_packfile(pack_name, pack_bytes, idx_bytes)
 
             sys.stdout.write("\n")
             sys.stdout.flush()
         except Exception as ex:
+            # Deliberately no protocol terminator and no normal return: writing
+            # "\n" here made git treat the fetch as complete, so a clone of a
+            # repository whose packs could not be downloaded "succeeded" as an
+            # empty repository with exit code 0.  Re-raise instead.
             sys.stderr.write(f"Fetch failed: {ex}\n")
-            sys.stdout.write("\n")
-            sys.stdout.flush()
+            sys.stderr.flush()
+            raise
 
     def run(self) -> None:
         """Main protocol loop reading stdin from Git."""
