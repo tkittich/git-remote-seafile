@@ -764,6 +764,36 @@ class TestSeafileClientOperations(unittest.TestCase):
         client.session.delete.return_value = MagicMock(status_code=500)
         self.assertFalse(client.delete_entry("repo1", "/refs/heads/feature"))
 
+    def test_dir_exists_and_duplicate_prevention(self):
+        client = SeafileClient.__new__(SeafileClient)
+        client.server_url = "https://seafile.example.com"
+        client.timeout = 10
+        client.session = MagicMock()
+        client._known_dirs = set()
+
+        # Root always exists without HTTP call
+        self.assertTrue(client.dir_exists("repo1", "/"))
+        self.assertEqual(client.session.get.call_count, 0)
+
+        # Non-existing dir returns False
+        client.session.get.return_value = MagicMock(status_code=404)
+        self.assertFalse(client.dir_exists("repo1", "/new-folder"))
+
+        # Existing dir returns True and caches
+        client.session.get.return_value = MagicMock(status_code=200)
+        self.assertTrue(client.dir_exists("repo1", "/existing-folder"))
+        self.assertIn(("repo1", "/existing-folder"), client._known_dirs)
+
+        # Second check hits cache (no GET call)
+        get_calls_before = client.session.get.call_count
+        self.assertTrue(client.dir_exists("repo1", "/existing-folder"))
+        self.assertEqual(client.session.get.call_count, get_calls_before)
+
+        # mkdir_p on already existing directory does NOT call POST mkdir
+        client.session.post.reset_mock()
+        self.assertTrue(client.mkdir_p("repo1", "/existing-folder"))
+        self.assertEqual(client.session.post.call_count, 0)
+
 
 class TestCLISubcommands(unittest.TestCase):
     @patch("git_remote_seafile.cli.RemoteHelper")

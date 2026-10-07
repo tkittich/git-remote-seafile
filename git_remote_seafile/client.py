@@ -35,6 +35,7 @@ class SeafileClient:
         self.timeout = timeout
         self.session = requests.Session()
         self._repos_cache: dict[str, str] = {}  # name_or_id -> id
+        self._known_dirs: set[tuple[str, str]] = set()  # (repo_id, clean_path)
 
         if not self.server_url or not self.token:
             self._load_credentials()
@@ -146,21 +147,53 @@ class SeafileClient:
             raise SeafileAPIError(f"Failed to list dir {clean_path}: HTTP {resp.status_code} {resp.text}")
         return resp.json()
 
+    def dir_exists(self, repo_id: str, dir_path: str) -> bool:
+        """Check if directory exists on Seafile."""
+        clean_path = ("/" + dir_path.strip("/")).rstrip("/") or "/"
+        if clean_path == "/":
+            return True
+        if (repo_id, clean_path) in getattr(self, "_known_dirs", set()):
+            return True
+        url = f"{self.server_url}/api2/repos/{repo_id}/dir/?p={clean_path}"
+        resp = self.session.get(url, timeout=self.timeout)
+        if resp.status_code == 200:
+            if hasattr(self, "_known_dirs"):
+                self._known_dirs.add((repo_id, clean_path))
+            return True
+        return False
+
     def mkdir_p(self, repo_id: str, dir_path: str) -> bool:
-        """Recursively ensure a directory path exists."""
-        parts = [p for p in dir_path.strip("/").split("/") if p]
+        """Recursively ensure a directory path exists without duplicate creation."""
+        clean_dir = ("/" + dir_path.strip("/")).rstrip("/")
+        if not clean_dir or clean_dir == "/":
+            return True
+
+        parts = [p for p in clean_dir.strip("/").split("/") if p]
         current = ""
+        known = getattr(self, "_known_dirs", None)
         for part in parts:
             current = f"{current}/{part}"
+            if known is not None and (repo_id, current) in known:
+                continue
+            if self.dir_exists(repo_id, current):
+                if known is not None:
+                    known.add((repo_id, current))
+                continue
+
             url = f"{self.server_url}/api2/repos/{repo_id}/dir/?p={current}"
             resp = self.session.post(url, data={"operation": "mkdir"}, timeout=self.timeout)
             if resp.status_code in (200, 201):
+                if known is not None:
+                    known.add((repo_id, current))
                 continue
             if resp.status_code == 400 and "already exists" in resp.text.lower():
+                if known is not None:
+                    known.add((repo_id, current))
                 continue
-            # Some Seafile versions return 400 if it already exists or path invalid
             entries = self.list_dir(repo_id, current)
             if entries is not None:
+                if known is not None:
+                    known.add((repo_id, current))
                 continue
         return True
 
