@@ -783,6 +783,36 @@ class TestCLISubcommands(unittest.TestCase):
             replace=True,
         )
 
+    def test_cmd_push_multiline_error_sanitized(self):
+        h = RemoteHelper.__new__(RemoteHelper)
+        h.client = MagicMock()
+        h.repo_id = "repo1"
+        h.repo_path = "/git-repo"
+        h.library_name = "test-repo"
+        h._refs_cache = {}
+
+        # Simulate multi-line exception during upload
+        h.client.upload_file.side_effect = Exception("line 1 error\nline 2 fatal error\nline 3 details")
+
+        out = io.StringIO()
+        err = io.StringIO()
+        with patch("sys.stdout", out), patch("sys.stderr", err), \
+             patch("git_remote_seafile.helper.rev_parse", return_value="sha123"), \
+             patch("git_remote_seafile.helper.is_ancestor", return_value=True), \
+             patch("git_remote_seafile.helper.get_objects_to_push", return_value=[]), \
+             patch("git_remote_seafile.helper.RemoteLock"):
+            h.cmd_push(["refs/heads/main:refs/heads/main"])
+
+        output_lines = out.getvalue().splitlines()
+        # Verify stdout lines obey git protocol: single error line followed by terminator newline
+        non_empty = [line for line in output_lines if line]
+        self.assertEqual(len(non_empty), 1)
+        self.assertTrue(non_empty[0].startswith("error refs/heads/main "))
+        self.assertIn("line 1 error", non_empty[0])
+        self.assertIn("line 2 fatal error", non_empty[0])
+        # Ensure raw unhandled newlines were replaced so git protocol does not break
+        self.assertNotIn("\n", non_empty[0])
+
 
 if __name__ == "__main__":
     unittest.main()

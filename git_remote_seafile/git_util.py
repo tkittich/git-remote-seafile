@@ -81,7 +81,15 @@ def create_packfile(object_shas: list[str]) -> tuple[str, bytes, bytes]:
     if not object_shas:
         return "", b"", b""
 
-    with tempfile.TemporaryDirectory(prefix="git-seaf-pack-") as td:
+    # Use .git directory as parent for temporary pack directory to guarantee
+    # it resides on the same filesystem/drive, preventing cross-device 'Improper link' (EXDEV)
+    # errors during git pack-objects atomic rename on Windows and multi-volume systems.
+    try:
+        tmp_parent = get_git_dir()
+    except Exception:
+        tmp_parent = None
+
+    with tempfile.TemporaryDirectory(prefix="git-seaf-pack-", dir=str(tmp_parent) if tmp_parent else None) as td:
         tmp_dir = Path(td)
         pack_prefix = tmp_dir / "pack"
 
@@ -92,7 +100,8 @@ def create_packfile(object_shas: list[str]) -> tuple[str, bytes, bytes]:
             input_bytes=input_data,
         )
         if code != 0:
-            raise GitError(f"git pack-objects failed: {err.decode('utf-8', errors='replace')}")
+            err_msg = err.decode("utf-8", errors="replace").strip()
+            raise GitError(f"git pack-objects failed: {err_msg}")
 
         pack_sha = out.decode("utf-8").strip()
         pack_file = tmp_dir / f"pack-{pack_sha}.pack"
@@ -105,7 +114,8 @@ def create_packfile(object_shas: list[str]) -> tuple[str, bytes, bytes]:
         if not idx_file.is_file():
             _, err, code = run_git(["index-pack", "-o", str(idx_file), str(pack_file)])
             if code != 0:
-                raise GitError(f"git index-pack failed: {err.decode('utf-8', errors='replace')}")
+                err_msg = err.decode("utf-8", errors="replace").strip()
+                raise GitError(f"git index-pack failed: {err_msg}")
 
         pack_bytes = pack_file.read_bytes()
         idx_bytes = idx_file.read_bytes()

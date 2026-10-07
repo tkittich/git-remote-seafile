@@ -226,7 +226,10 @@ class RemoteHelper:
                         self._refs_cache[dst] = local_sha
                         sys.stdout.write(f"ok {dst}\n")
                     except Exception as ex:
-                        sys.stdout.write(f"error {dst} {ex}\n")
+                        err_line = str(ex).replace("\r", " ").replace("\n", " ").strip()
+                        sys.stdout.write(f"error {dst} {err_line}\n")
+                        sys.stderr.write(f"\nPush error for {dst}: {ex}\n")
+                        sys.stderr.flush()
 
                 # Check remote packfile threshold for compaction
                 try:
@@ -253,9 +256,12 @@ class RemoteHelper:
                 except Exception:
                     pass
         except Exception as lock_err:
+            err_line = str(lock_err).replace("\r", " ").replace("\n", " ").strip()
             for spec in push_specs:
                 dst = spec.lstrip("+").split(":", 1)[1] if ":" in spec else spec
-                sys.stdout.write(f"error {dst} {lock_err}\n")
+                sys.stdout.write(f"error {dst} {err_line}\n")
+            sys.stderr.write(f"\nPush failed: {lock_err}\n")
+            sys.stderr.flush()
 
         sys.stdout.write("\n")
         sys.stdout.flush()
