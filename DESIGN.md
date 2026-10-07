@@ -187,5 +187,5 @@ To incorporate this capability into the official Seafile ecosystem:
 
 ## 10. AI Disclosure & Authorship
 
-This design specification and the underlying implementation were authored primarily with generative AI assistance (Google DeepMind's Antigravity / Gemini) in collaboration with human architectural design, real-world forensic diagnostics, and verification on Windows by [@tkittich](https://github.com/tkittich). All code and protocol implementations are fully open source and licensed under the Apache License 2.0.
+This design specification and the underlying implementation were authored primarily with generative AI assistance from multiple AI systems, in collaboration with human architectural design, real-world forensic diagnostics, and verification on Windows by [@tkittich](https://github.com/tkittich). All code and protocol implementations are fully open source and licensed under the Apache License 2.0.
 
