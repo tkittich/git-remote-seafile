@@ -83,20 +83,28 @@ If you currently have a project inside a Seafile-synced directory, follow these 
      ```bash
      mv ~/Seafile/code/myproject ~/code/myproject
      ```
-3. **Navigate to the new location**:
+3. **Create or designate your remote library on Seafile**:
+   - **Option A (Recommended)**: Log in to the Seafile Web UI (e.g. `https://seafile.example.com`), click **New Library**, and create a dedicated library named `code` (or `git-vault`). **Do NOT sync this library** in your Seafile desktop client applet.
+   - **Option B (Using existing synced library, e.g. `Documents`)**: If you prefer keeping the bare remote inside your existing library, store it under the designated subfolder `seafile-git/` and add `seafile-git/` to `<library-root>/seafile-ignore.txt`.
+4. **Navigate to the new location**:
    ```bash
    cd C:/code/myproject  # or cd ~/code/myproject
    ```
-4. **Set the Seafile remote URL**:
+5. **Set the Seafile remote URL**:
    ```bash
    git remote remove origin  # if origin pointed to old sync location
+
+   # Option A (Dedicated unsynced library):
    git remote add origin seafile://code/myproject
+
+   # Option B (Ignored subfolder in synced library):
+   # git remote add origin seafile://Documents/seafile-git/myproject
    ```
-5. **Push your branches**:
+6. **Push your branches**:
    ```bash
    git push -u origin main
    ```
-6. **Re-enable sync**: In your Seafile desktop client, re-enable auto sync. Your active working files and `.git/` folder are now completely isolated from sync interference!
+7. **Re-enable sync**: In your Seafile desktop client, re-enable auto sync. Your active working files and `.git/` folder are now completely isolated from sync interference!
 
 ### 2.3 Two Supported Architecture Workflows
 
@@ -352,12 +360,19 @@ Remotes use the `seafile://` URL scheme:
 | **HTTPS scheme** | `seafile://https://seafile.example.com/code/myproject` | Fully qualified URL |
 | **Short URL** | `seafile://code/myproject` | Uses server from default configured account |
 
-- **Library**: Name of the Seafile library (e.g. `code` or `Documents`) or the library UUID.
+- **Library**: Name of the Seafile library (e.g. `code` or `Documents`) or the library UUID. **The library must exist on your Seafile server before pushing.** (Create it via the Seafile Web UI if you haven't already).
 - **Path**: Path inside the library where bare repository objects will reside.
 
 ---
 
 ## 8. Daily Workflows
+
+### 8.0 Prerequisite: Create Your Remote Library on Seafile
+Before pushing your first repository to Seafile:
+1. Log into your Seafile Web UI (`https://seafile.example.com`).
+2. Click **New Library** and create a dedicated library (e.g. named `code` or `git-vault`).
+3. **Important**: Leave this library **unsynced** in your Seafile desktop client applet. Do not sync it to your local drive.
+*(Alternatively, if storing within an existing synced library like `Documents`, store under `seafile-git/` and add `seafile-git/` to `seafile-ignore.txt` as explained in Section 2.3).*
 
 ### 8.1 Push an Existing Project to Seafile
 ```bash
@@ -569,7 +584,7 @@ git-remote-seafile test seafile://code/myproject
 | `DANGEROUS PATH COLLISION DETECTED (Trap 1)` | Local working tree is inside synced library at identical remote path | Change remote to an unsynced library (`seafile://code/repo`) or use an ignored subfolder (`seafile://Documents/seafile-git/repo`). |
 | `UNIGNORED REMOTE PATH IN SYNCED LIBRARY (Trap 2)` | Remote destination in synced library is not in `seafile-ignore.txt` | Add `seafile-git/` (or target top folder) to `seafile-ignore.txt` at the synced library root. |
 | `Cannot use the library root '/'` | Remote URL points to library root without project subfolder | Specify a subfolder name, e.g. `seafile://library/myproject` or `seafile://library/seafile-git/myproject`. |
-| `Seafile library not found: 'XYZ'` | Library name typo or permissions | Verify the library name in the Seafile Web UI or use the library UUID directly. The helper will suggest close matches. |
+| `Seafile library not found: 'XYZ'` | Library not yet created, name typo, or permissions | Create the library via the Seafile Web UI, or verify spelling. The helper will suggest close matches. |
 | `HTTP 401 Unauthorized` | Invalid or expired token | Run `git-remote-seafile check-auth` and verify credentials in `~/.git-seafile.json`. |
 | `HTTP 403 Forbidden` on push | Read-only library permissions | Ensure your Seafile account has Read-Write permission on the target library. |
 | `fatal: remote locked by user@host` | Concurrent push in progress or stale lock | Wait 15 seconds for the other push to finish. If a previous client crashed, the lock automatically expires in 60 seconds. |

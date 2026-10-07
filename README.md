@@ -117,7 +117,14 @@ git-remote-seafile check-auth
 # Output: Authenticated successfully with https://seafile.example.com as user@example.com
 ```
 
-### 3. Push Any Repository
+### 3. Create a Remote Library on Seafile (One-Time Setup)
+Before pushing for the first time, you need a target library on your Seafile server:
+1. Open the Seafile Web UI (e.g. `https://seafile.example.com`).
+2. Click **New Library** and name it `code` (or `git-vault`).
+3. **Important**: Do **NOT** sync this library in your Seafile desktop client applet. Leave it in the cloud to prevent local daemon sync conflicts.
+*(Alternatively, if storing inside an existing synced library like `Documents`, see the `seafile-git/` workflow in the User Guide).*
+
+### 4. Push Any Repository
 ```bash
 cd C:\code\myproject
 
@@ -128,7 +135,7 @@ git remote add origin seafile://code/myproject
 git push -u origin main
 ```
 
-### 4. Clone on Another Machine
+### 5. Clone on Another Machine
 ```bash
 git clone seafile://seafile.example.com/code/myproject
 ```
