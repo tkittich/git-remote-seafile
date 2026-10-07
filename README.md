@@ -152,6 +152,7 @@ git clone seafile://seafile.example.com/code/myproject
 
 - [User's Guide (USER_GUIDE.md)](USER_GUIDE.md): Full walkthrough of setup, configuration files, multi-account usage, and dual-remote (GitHub + Seafile) setups.
 - [Architecture & Design Spec (DESIGN.md)](DESIGN.md): Technical protocol specifications and upstream RFC for Seafile maintainers.
+- [Changelog (CHANGELOG.md)](CHANGELOG.md): What changed in each release.
 - [Contributing Guidelines (CONTRIBUTING.md)](CONTRIBUTING.md): How to contribute, run tests, and adhere to development standards.
 
 ---

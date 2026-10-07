@@ -1,0 +1,175 @@
+# Changelog
+
+All notable changes to this project are documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [Unreleased]
+
+Fixes from a cross-review of v0.2.1 by three independent reviewers, landing after
+the v0.3.0 release. Each one is covered by a regression test that was watched to
+fail before the fix.
+
+### Fixed
+
+- **Clone and fetch now run the pre-flight guardrails.** They previously ran only
+  on push, so `git clone seafile://Documents/code/myproject` executed from inside
+  the synced `Documents/` library was not blocked — it wrote a whole repository
+  into the synced tree and started the download-reflection cycle the guardrails
+  exist to prevent. Trap 1 blocks fetch/clone; Trap 2 stays push-only by design,
+  since a fetch uploads nothing. During `git clone` the helper runs in the parent
+  of the directory being created, which is not yet a repository, so Git cannot
+  name a working tree — the check falls back to its own working directory.
+- **A failed fetch fails instead of reporting success.** `cmd_fetch` caught every
+  exception, wrote the protocol terminator and returned, so a transport error
+  looked like a successful fetch of nothing: `git clone` finished with an *empty*
+  repository and exited 0. It now exits non-zero with a diagnostic naming the
+  pack and the failure.
+- **Transfers go through the session and retry transient failures.** Download and
+  upload used bare `requests.get`/`post`, bypassing connection reuse, TLS/proxy
+  settings and retries, so a dropped connection part-way through a packfile
+  download failed the whole fetch. Retries cover `429/500/502/503/504`; uploads
+  are never re-sent, because a retried `POST` can duplicate work we cannot undo.
+- **LFS payloads stream instead of being buffered in RAM.** Upload read the whole
+  object with `f.read()` and download fetched it whole with `get_file_bytes`,
+  putting roughly twice the object size in memory — the one documented claim
+  ("multi-gigabyte models and datasets") the code contradicted outright. Objects
+  are now streamed in both directions.
+- **Returned file-link hosts are no longer forced onto the API server.** The
+  rewrite fixed a reverse proxy reporting an internal host, but broke
+  split/clustered deployments, where the file server genuinely lives elsewhere
+  and the rewritten URL 404s. See `seafile.forcefilehost` under Added. Completing
+  a *relative* link against the server still always happens.
+- **`desktop-url` no longer requires a token.** It only needs to know which
+  server to name, so it failed for users with the desktop client installed but no
+  reachable token. It now reports "cannot determine the Seafile server" instead of
+  a credential error when the server itself is missing.
+- **A dotted library name is no longer read as a host.** `seafile://my.lib/repo`
+  was parsed as server `https://my.lib` with library `repo`, making the library
+  `my.lib` unreachable via the short URL. The host form is now only recognised
+  when a library *and* a path follow it.
+- **URL parsing rejects a server with no library.** `seafile://seafile.example.com`
+  is now reported as a missing library immediately, rather than after a round trip
+  as a baffling "library not found".
+- **An unknown subcommand reports itself.** A typo such as
+  `git-remote-seafile chck-auth` was passed to the helper as the *remote URL* and
+  surfaced as an auth or library error. It now prints the help text and exits 2.
+
+### Added
+
+- **`seafile.forcefilehost`** (git config) / **`SEAFILE_FORCE_FILE_HOST`**
+  (environment) — opt in to forcing download/upload links onto your configured
+  server host, for a reverse proxy that returns an unreachable internal host.
+  Default off; an explicit `0`/`false`/`off` in the environment overrides a
+  `true` config.
+- **`SeafileClient.download_file_to(repo_id, file_path, dest)`** — streams a
+  remote file to disk instead of returning it as `bytes`.
+- **`SeafileClient.upload_file`** now accepts a path or an open binary file
+  object as well as `bytes`, and streams it. Because a file object is seekable,
+  the request still carries a `Content-Length` rather than falling back to
+  chunked encoding.
+- **A `CHANGELOG.md`**, which this project should have had from the start.
+
+### Documentation
+
+- `seafile.forcefilehost` and the remaining fetch memory ceiling are documented,
+  along with the fact that the guardrails now cover clone and fetch.
+- The DESIGN delete-endpoint description matched neither the code nor the reason
+  for it: `refs/heads/feature/auth` is stored as a *directory*, and Seafile's
+  `/file/` endpoint deletes files and directories while `/dir/` returns 404 for a
+  file.
+
+## [0.3.0] - 2026-10-08
+
+Data-loss and silent-failure fixes, and the Python floor raised to 3.9.
+
+### Fixed
+
+- **Nested branch references are discovered recursively.** Refs with a slash in
+  the name (`refs/heads/feature/auth`, `bugfix/*`, …) live on Seafile as a
+  *directory* containing a file, and single-level listings silently omitted them.
+  `clone`/`fetch` reported success while omitting whole branches, and `gc` then
+  treated their commits as unreachable and **deleted them**. This was the only
+  unrecoverable remote data-loss bug, and it was triggered by ordinary branch
+  names.
+- **`gc` refuses unsafe compaction** when no refs could be read or a repack
+  produced no packs. A transient failure on the refs listing made a populated
+  repository look ref-less, after which every object looked unreachable.
+- **Failed operations no longer report success.** A 404 on the refs listing used
+  to make `clone`, `fetch` and `ls-remote` exit 0 with an empty result.
+- **Atomic packfile installation.** Packfiles are staged and published with
+  `os.replace`, so a truncated or interrupted download can no longer poison the
+  local repository.
+- **Auto-compaction actually runs.** `seafile.autogc` self-deadlocked on the
+  remote lock, then ran its scratch-repo commands against the caller's repository;
+  failures were swallowed.
+- **`mkdir_p` surfaces failure** instead of reporting success for a directory it
+  did not create.
+- **Remote lock hardening.** `release()` no longer deletes a lock another machine
+  has taken over, and the lock payload no longer leaks the first characters of the
+  API token.
+- **Force-push over diverged history** no longer fails with `bad object` when the
+  remote tip is a commit this clone has never fetched.
+
+### Changed
+
+- **Python 3.9+ is now required and enforced** at import, with a message naming
+  the version found. The code had always used `str.removeprefix`,
+  `str.removesuffix` and `pathlib.Path.is_relative_to` at runtime.
+- **Live database reads.** The desktop client's `repo.db`/`accounts.db` are copied
+  before being read, including SQLite's WAL sidecar files. Reading in place risked
+  blocking the running client, and a main-file-only copy of a WAL database returns
+  **no rows at all**, which silently disabled the pre-flight safety checks.
+
+### Added
+
+- **Offline end-to-end test harness**: a stub Seafile API plus a real `git`
+  subprocess, exercising `list → push → fetch → gc` over a real socket, with fault
+  injection for the failure paths a healthy server never produces. The bugs above
+  were found with it, not with mocks.
+- Authorship is disclosed as generative AI assistance from multiple AI systems.
+
+### Testing
+
+- 146 tests. CI reports every failing job instead of cancelling at the first one,
+  and surfaces failing test names as annotations.
+
+## [0.2.1] - 2026-10-07
+
+### Added
+
+- Comprehensive unit-test suites for `git_util`, `client`, `cli`, and protocol
+  edge cases.
+
+## [0.2.0] - 2026-10-07
+
+### Added
+
+- **Pre-flight safety guardrails**: Trap 1 (working tree / remote path collision)
+  and Trap 2 (download reflection in a synced library), plus library-root
+  pollution protection and typo suggestions.
+- The `seafile-git/` subfolder convention for pushing inside a synced library.
+
+### Fixed
+
+- `delete_entry` now deletes both files and directories (Seafile's `/dir/`
+  endpoint returns 404 when deleting a file).
+- `mkdir_p` checks for existing directories, preventing duplicate numbered
+  folders.
+- Cross-volume packfile creation no longer fails with an "Improper link" error,
+  and multi-line push errors are sanitised before reaching the protocol stream.
+
+## [0.1.0] - 2026-10-07
+
+### Added
+
+- Initial release: a transparent Git remote helper over the Seafile Web API v2.1,
+  with zero-config desktop-client token discovery, distributed locking, remote
+  packfile compaction, and a Git LFS custom transfer agent.
+
+[Unreleased]: https://github.com/tkittich/git-remote-seafile/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/tkittich/git-remote-seafile/compare/v0.2.1...v0.3.0
+[0.2.1]: https://github.com/tkittich/git-remote-seafile/compare/v0.2.0...v0.2.1
+[0.2.0]: https://github.com/tkittich/git-remote-seafile/compare/v0.1.0...v0.2.0
+[0.1.0]: https://github.com/tkittich/git-remote-seafile/releases/tag/v0.1.0

@@ -91,7 +91,8 @@ Within the designated Seafile library (created via the Seafile Web UI, such as a
 4. **Packfile & Ref Upload**:
    - `GET /api2/repos/{repo-id}/upload-link/?p=/{repo-path}/objects/pack/`
    - `POST {upload-link}` with `multipart/form-data` and `replace=1`.
-5. **Branch Deletion**: `DELETE /api2/repos/{repo-id}/dir/?p=/{repo-path}/refs/heads/{branch}`
+5. **Download Link**: `GET /api2/repos/{repo-id}/file/?p=/{repo-path}/{file}` returns a short-lived URL, which is then fetched directly.
+6. **Branch Deletion**: `DELETE /api2/repos/{repo-id}/file/?p=/{repo-path}/refs/heads/{branch}`, falling back to `/dir/`. Seafile's `/file/` endpoint deletes both files and directories, while `/dir/` returns 404 for a file — and a ref can be either, since `refs/heads/feature/auth` is stored as a directory containing a file `auth`.
 
 ---
 

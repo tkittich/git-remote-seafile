@@ -155,6 +155,14 @@ If you prefer keeping remote repositories within an existing synced library (suc
   > - **Must be placed at the library root**: It must be `<library-root>/seafile-ignore.txt`, not inside a subfolder.
   > - **Must be configured before first sync**: It only ignores never-synced files. If the subfolder was already synced by the desktop client, the ignore rule has no effect retroactively.
 
+#### 🛡️ Guardrails Also Cover Clone and Fetch
+A `git clone` writes a whole repository into the target directory, so the same collisions matter there — and they used to go unchecked, because the guardrails only ran on push. `git clone seafile://Documents/code/myproject` executed from inside the synced `Documents/` library would download packfiles straight into the synced tree and start the reflection cycle described above.
+
+Trap 1 therefore blocks clone and fetch as well. Trap 2 stays push-only **by design**: it guards against *uploading* into a synced folder, and a fetch uploads nothing.
+
+> [!NOTE]
+> During `git clone` the helper runs in the *parent* of the directory being created, which is not yet a Git repository, so Git cannot name a working tree for it. The helper falls back to its own working directory — which is exactly the directory that needs checking.
+
 #### 🛡️ Library Root Pollution Protection
 - Pushing directly to the library root (`seafile://Documents/`) is hard-blocked to prevent cluttering the top level with bare objects and refs.
 
@@ -361,6 +369,29 @@ Expected output:
 Authenticated successfully with https://seafile.example.com as user@example.com
 ```
 
+### Behavioural Configuration
+
+| Git config key | Environment variable | Default | Purpose |
+| :--- | :--- | :--- | :--- |
+| `seafile.skipsafetychecks` | `SEAFILE_SKIP_SAFETY_CHECKS` | `false` | Bypass the pre-flight guardrails (Trap 1, Trap 2, root pollution). |
+| `seafile.autogc` | — | `false` | Compact the remote automatically once the packfile threshold is reached. |
+| `seafile.gcthreshold` | — | `20` | Packfile count at which the `gc` tip appears (or auto-GC triggers). |
+| `seafile.forcefilehost` | `SEAFILE_FORCE_FILE_HOST` | `false` | Force download/upload links onto your server's host. |
+
+```bash
+# Examples
+git config seafile.autogc true
+git config seafile.gcthreshold 25
+git config seafile.forcefilehost true
+```
+
+**`seafile.forcefilehost`** deserves a note. Seafile returns a short-lived URL for every file transfer, and normally that URL points at your server, so nothing needs rewriting. Two situations differ:
+
+- A **reverse proxy** may return a link naming an internal host (`http://internal-docker-host:8082/...`) that your machine cannot reach. Setting this to `true` rewrites the link's host onto your configured server, which fixes it.
+- A **clustered or object-store-backed** deployment genuinely serves files from a different host. Forcing the link onto the API host would make it 404, so the setting defaults to **off** and the server's own answer is trusted.
+
+A *relative* link (a bare path rather than a full URL) is always completed against your server regardless of this setting — that is not a rewrite, it is the only way the link can be used at all.
+
 ---
 
 ## 7. URL Syntax
@@ -555,6 +586,20 @@ git push origin main
 ```
 - Git pushes small commit pointers through `git-remote-seafile`.
 - Git LFS invokes `git-remote-seafile lfs-transfer` to stream large binaries directly into the Seafile repository's `/lfs/` storage.
+
+### 11.3 Memory Behaviour on Large Transfers
+
+LFS objects are **streamed**, not buffered, so peak memory does not grow with the size of the object:
+
+- **Upload** reads the file from disk in chunks as `requests` sends the multipart body. Because the file is seekable, the request still carries a `Content-Length` rather than falling back to chunked encoding.
+- **Download** streams the response straight to disk in 1 MiB chunks.
+
+A multi-gigabyte model therefore does not need multi-gigabytes of RAM.
+
+> [!NOTE]
+> **One ceiling remains, and it is not in the LFS path.** `git fetch` / `git clone` downloads each packfile into memory before installing it, so peak memory during a fetch is roughly the size of the *largest single packfile*. Packs are push-deltas and normally small, and a repository accumulates many small packs rather than one large one — running `git-remote-seafile gc` keeps them that way. Streaming packfile downloads is a known, tracked improvement.
+>
+> Transfers also do not yet emit Git LFS `progress` events, so a very large upload or download reports no incremental status while it runs.
 
 ---
 
