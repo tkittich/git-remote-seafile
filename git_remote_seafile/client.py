@@ -221,6 +221,12 @@ class SeafileClient:
     def delete_entry(self, repo_id: str, path: str) -> bool:
         """Delete file or directory at path."""
         clean_path = "/" + path.strip("/")
-        url = f"{self.server_url}/api2/repos/{repo_id}/dir/?p={clean_path}"
+        # Seafile's /file/ endpoint deletes both files and directories,
+        # while /dir/ returns 404 when deleting a file. Try /file/ first.
+        url = f"{self.server_url}/api2/repos/{repo_id}/file/?p={clean_path}"
         resp = self.session.delete(url, timeout=self.timeout)
-        return resp.status_code == 200
+        if resp.status_code == 200:
+            return True
+        dir_url = f"{self.server_url}/api2/repos/{repo_id}/dir/?p={clean_path}"
+        resp_dir = self.session.delete(dir_url, timeout=self.timeout)
+        return resp_dir.status_code == 200

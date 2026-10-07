@@ -751,10 +751,16 @@ class TestSeafileClientOperations(unittest.TestCase):
         client.session.post.return_value = MagicMock(status_code=200)
         self.assertTrue(client.mkdir_p("repo1", "/a/b/c"))
 
-        # Mock delete response 200 vs 500
+        # Mock delete response: 200 on /file/
         client.session.delete.return_value = MagicMock(status_code=200)
         self.assertTrue(client.delete_entry("repo1", "/refs/heads/feature"))
 
+        # Mock fallback: 404 on /file/, 200 on /dir/
+        client.session.delete.side_effect = [MagicMock(status_code=404), MagicMock(status_code=200)]
+        self.assertTrue(client.delete_entry("repo1", "/somedir"))
+
+        # Mock failure on both
+        client.session.delete.side_effect = None
         client.session.delete.return_value = MagicMock(status_code=500)
         self.assertFalse(client.delete_entry("repo1", "/refs/heads/feature"))
 
