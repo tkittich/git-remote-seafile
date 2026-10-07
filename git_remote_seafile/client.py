@@ -30,6 +30,7 @@ class SeafileClient:
         server_url: str | None = None,
         token: str | None = None,
         timeout: int = 30,
+        require_credentials: bool = True,
     ):
         self.server_url = (server_url or "").rstrip("/")
         self.token = token
@@ -38,18 +39,28 @@ class SeafileClient:
         self._repos_cache: dict[str, str] = {}  # name_or_id -> id
         self._known_dirs: set[tuple[str, str]] = set()  # (repo_id, clean_path)
 
-        if not self.server_url or not self.token:
-            self._load_credentials()
+        # `require_credentials=False` is for commands that need to know which
+        # server they are talking about but never authenticate -- `desktop-url`
+        # only builds a URL from it.  Such a command still needs the server;
+        # demanding a token as well made it fail for users who have the desktop
+        # client installed but no reachable token.
+        if not self.server_url or (require_credentials and not self.token):
+            self._load_credentials(require_token=require_credentials)
 
         if self.token:
             self.session.headers.update({"Authorization": f"Token {self.token}"})
 
-    def _load_credentials(self) -> None:
-        """Load credentials from env vars, config file, or local Seafile client."""
+    def _load_credentials(self, require_token: bool = True) -> None:
+        """Load credentials from env vars, config file, or local Seafile client.
+
+        ``require_token=False`` accepts a server URL on its own.  With the
+        default (``True``) the search is unchanged: it keeps looking until it
+        finds a server *and* a token, and raises if it cannot.
+        """
         # 1. Environment variables
         env_server = os.environ.get("SEAFILE_SERVER")
         env_token = os.environ.get("SEAFILE_TOKEN")
-        if env_server and env_token:
+        if env_server and (env_token or not require_token):
             self.server_url = env_server.rstrip("/")
             self.token = env_token
             return
@@ -59,9 +70,9 @@ class SeafileClient:
         if config_path.is_file():
             try:
                 cfg = json.loads(config_path.read_text(encoding="utf-8"))
-                if cfg.get("server") and cfg.get("token"):
+                if cfg.get("server") and (cfg.get("token") or not require_token):
                     self.server_url = cfg["server"].rstrip("/")
-                    self.token = cfg["token"]
+                    self.token = cfg.get("token")
                     return
             except Exception:
                 pass
@@ -100,15 +111,20 @@ class SeafileClient:
                         row = con.execute("SELECT url, token FROM Accounts ORDER BY lastVisited DESC LIMIT 1").fetchone()
                 except Exception:
                     continue
-            if row and row[0] and row[1]:
+            if row and row[0] and (row[1] or not require_token):
                 self.server_url = row[0].rstrip("/")
                 self.token = row[1]
                 return
 
-        if not self.server_url or not self.token:
+        if not self.server_url or (require_token and not self.token):
+            if require_token:
+                raise SeafileAuthError(
+                    "Could not find Seafile credentials. Set SEAFILE_SERVER and SEAFILE_TOKEN "
+                    "or configure ~/.git-seafile.json"
+                )
             raise SeafileAuthError(
-                "Could not find Seafile credentials. Set SEAFILE_SERVER and SEAFILE_TOKEN "
-                "or configure ~/.git-seafile.json"
+                "Could not determine the Seafile server URL. Set SEAFILE_SERVER or "
+                "configure ~/.git-seafile.json"
             )
 
     def _adjust_url(self, raw_url: str) -> str:

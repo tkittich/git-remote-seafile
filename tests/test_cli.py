@@ -9,6 +9,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from git_remote_seafile.cli import main, print_help
+from git_remote_seafile.client import SeafileAuthError
 from git_remote_seafile.safety import SafetyError
 
 
@@ -301,6 +302,40 @@ class TestCLIDesktopUrl(unittest.TestCase):
                         code = main()
                         self.assertEqual(code, 1)
                         self.assertIn("Could not match", mock_out.getvalue())
+
+    @patch("git_remote_seafile.cli.SeafileClient")
+    def test_desktop_url_builds_the_client_without_requiring_credentials(self, mock_client_cls):
+        """The client must be constructed without demanding a token.
+
+        `desktop-url` makes no authenticated request, so requiring credentials
+        made it fail with "Could not find Seafile credentials" for users who
+        have the desktop client installed but no reachable token -- the exact
+        audience for the command.
+        """
+        import tempfile
+
+        mock_client = MagicMock()
+        mock_client_cls.return_value = mock_client
+        mock_client.server_url = "https://seafile.example.com"
+
+        with tempfile.TemporaryDirectory() as td:
+            with patch("pathlib.Path.home", return_value=Path(td)):
+                with patch.object(sys, "argv", ["git-remote-seafile", "desktop-url", str(Path(td) / "x")]):
+                    with patch("sys.stdout", new_callable=io.StringIO):
+                        main()
+
+        mock_client_cls.assert_called_once_with(require_credentials=False)
+
+    @patch("git_remote_seafile.cli.SeafileClient")
+    def test_desktop_url_names_the_real_problem_when_no_server_is_known(self, mock_client_cls):
+        mock_client_cls.side_effect = SeafileAuthError("Could not determine the Seafile server URL.")
+
+        with patch.object(sys, "argv", ["git-remote-seafile", "desktop-url", "/tmp/whatever"]):
+            with patch("sys.stdout", new_callable=io.StringIO) as mock_out:
+                code = main()
+
+        self.assertEqual(code, 1)
+        self.assertIn("Cannot determine the Seafile server", mock_out.getvalue())
 
 
 if __name__ == "__main__":

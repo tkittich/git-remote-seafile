@@ -58,6 +58,46 @@ class TestClientCredentials(unittest.TestCase):
                 with self.assertRaises(SeafileAuthError):
                     SeafileClient()
 
+    def test_server_url_is_available_without_a_token_when_not_required(self):
+        """`desktop-url` only needs to know which server to name.
+
+        It used to build a fully credentialed client, so it failed with
+        "Could not find Seafile credentials" for anyone who has the desktop
+        client installed but no reachable token -- even though that command
+        never makes an authenticated request.
+        """
+        with patch.dict("os.environ", {"SEAFILE_SERVER": "https://server-only.example.com"}, clear=True):
+            client = SeafileClient(require_credentials=False)
+            self.assertEqual(client.server_url, "https://server-only.example.com")
+            self.assertIsNone(client.token)
+            self.assertNotIn("Authorization", client.session.headers)
+
+    def test_requiring_credentials_remains_the_default(self):
+        # A server URL alone must NOT be enough for the normal code paths: the
+        # helper needs a token to talk to the API.
+        with tempfile.TemporaryDirectory() as td:
+            with patch.dict("os.environ", {"SEAFILE_SERVER": "https://server-only.example.com"}, clear=True):
+                with patch("pathlib.Path.home", return_value=Path(td)):
+                    with self.assertRaises(SeafileAuthError):
+                        SeafileClient()
+
+    def test_a_server_is_still_required_even_when_credentials_are_not(self):
+        # Dropping the token requirement must not turn into "no configuration
+        # needed at all" -- without a server there is nothing to point at.
+        with tempfile.TemporaryDirectory() as td:
+            with patch.dict("os.environ", {}, clear=True), patch("pathlib.Path.home", return_value=Path(td)):
+                with self.assertRaises(SeafileAuthError) as ctx:
+                    SeafileClient(require_credentials=False)
+                self.assertIn("server", str(ctx.exception).lower())
+
+    def test_no_credential_search_when_a_server_is_given_and_not_required(self):
+        # Passing a server explicitly and not requiring a token must not go
+        # looking through the environment or the desktop client's databases.
+        with patch.dict("os.environ", {"SEAFILE_TOKEN": "should-not-be-used"}, clear=True):
+            client = SeafileClient(server_url="https://explicit.example.com", require_credentials=False)
+            self.assertEqual(client.server_url, "https://explicit.example.com")
+            self.assertIsNone(client.token)
+
 
 class TestClientAPI(unittest.TestCase):
     """Test Seafile REST API methods with mocked requests."""

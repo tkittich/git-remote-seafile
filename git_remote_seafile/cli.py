@@ -5,7 +5,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 from .helper import RemoteHelper
-from .client import SeafileClient
+from .client import SeafileAuthError, SeafileClient
 from .sqlite_read import open_live_sqlite_ro
 
 
@@ -195,7 +195,16 @@ def main() -> int:
             return 1
         target_path = Path(args[1]).resolve()
         try:
-            client = SeafileClient()
+            client = SeafileClient(require_credentials=False)
+        except SeafileAuthError as auth_err:
+            # Only the server URL is needed here: this command builds a URL and
+            # makes no authenticated request.  Requiring a token made it fail
+            # for users who have the desktop client installed but no reachable
+            # credentials, which is exactly the audience for this command.
+            print(f"Cannot determine the Seafile server: {auth_err}")
+            return 1
+
+        try:
             # Try to resolve against repo.db libraries
             candidates = []
             for ini_path in [Path.home() / "ccnet" / "seafile.ini", Path.home() / ".ccnet" / "seafile.ini"]:
