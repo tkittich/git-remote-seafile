@@ -359,10 +359,31 @@ class SeafileClient:
         repo_id: str,
         parent_dir: str,
         filename: str,
-        content: bytes,
+        content: Any,
         replace: bool = True,
     ) -> bool:
-        """Upload file content to a parent directory."""
+        """Upload file content to a parent directory.
+
+        ``content`` may be ``bytes``, an open binary file object, or a path.
+        A file object or path is *streamed* to the server rather than read into
+        memory first -- that is what makes the multi-gigabyte LFS objects the
+        docs advertise possible, and because a file object supports seek/tell,
+        ``requests`` still sends a Content-Length instead of chunked encoding.
+        Passing ``bytes`` stays supported for small payloads (packfiles, refs).
+        """
+        if isinstance(content, (str, os.PathLike)):
+            with open(content, "rb") as fh:
+                return self._upload(repo_id, parent_dir, filename, fh, replace)
+        return self._upload(repo_id, parent_dir, filename, content, replace)
+
+    def _upload(
+        self,
+        repo_id: str,
+        parent_dir: str,
+        filename: str,
+        payload: Any,
+        replace: bool,
+    ) -> bool:
         clean_parent = ("/" + parent_dir.strip("/")).rstrip("/") or "/"
         self.mkdir_p(repo_id, clean_parent)
 
@@ -374,8 +395,9 @@ class SeafileClient:
 
         upload_url = self._adjust_url(resp.text.strip('"'))
 
-        # 2. Post file
-        files = {"file": (filename, content)}
+        # 2. Post file.  `requests` streams a file object; passing it straight
+        # through is what keeps the payload out of memory.
+        files = {"file": (filename, payload)}
         data = {"parent_dir": clean_parent, "replace": "1" if replace else "0"}
         up_resp = self._transfer_session(upload_url).post(
             upload_url, files=files, data=data, timeout=self.timeout
@@ -383,6 +405,43 @@ class SeafileClient:
         if up_resp.status_code not in (200, 201):
             raise SeafileAPIError(f"Failed to upload {filename} to {clean_parent}: HTTP {up_resp.status_code} {up_resp.text}")
         return True
+
+    def download_file_to(self, repo_id: str, file_path: str, dest: Any) -> bool:
+        """Stream a remote file to *dest* without holding it in memory.
+
+        Returns False when the object does not exist.  ``get_file_bytes`` stays
+        for small payloads (packfiles, refs); this is the path for LFS objects,
+        where the whole point is that they may not fit in RAM.  Without
+        ``stream=True`` `requests` reads the entire body into memory before the
+        first chunk is written, which is the bug this exists to avoid.
+        """
+        clean_path = "/" + file_path.strip("/")
+        url = f"{self.server_url}/api2/repos/{repo_id}/file/?p={clean_path}"
+        resp = self.session.get(url, timeout=self.timeout)
+        if resp.status_code == 404:
+            return False
+        if resp.status_code != 200:
+            raise SeafileAPIError(f"Failed to get download link for {clean_path}: HTTP {resp.status_code}")
+
+        dl_url = self._adjust_url(resp.text.strip('"'))
+        file_resp = self._transfer_session(dl_url).get(
+            dl_url, timeout=self.timeout, stream=True
+        )
+        try:
+            if file_resp.status_code == 404:
+                return False
+            if file_resp.status_code != 200:
+                raise SeafileAPIError(f"Failed to download file from {dl_url}: HTTP {file_resp.status_code}")
+
+            dest_path = Path(dest)
+            dest_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(dest_path, "wb") as fh:
+                for chunk in file_resp.iter_content(chunk_size=1024 * 1024):
+                    if chunk:
+                        fh.write(chunk)
+            return True
+        finally:
+            file_resp.close()
 
     def delete_entry(self, repo_id: str, path: str) -> bool:
         """Delete file or directory at path."""

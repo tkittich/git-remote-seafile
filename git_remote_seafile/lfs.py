@@ -46,9 +46,12 @@ class LFSTransferAgent:
 
         parent_dir, filename = self._object_subpath(oid)
         try:
-            with open(local_path, "rb") as f:
-                content = f.read()
-            self.client.upload_file(self.repo_id, parent_dir, filename, content, replace=True)
+            # Hand the client the *path*, not the bytes.  An LFS object is
+            # routinely far larger than RAM, and reading it in first is exactly
+            # what LFS exists to avoid; the client streams it from disk.
+            self.client.upload_file(
+                self.repo_id, parent_dir, filename, Path(local_path), replace=True
+            )
             self._send_json({"event": "complete", "oid": oid})
         except Exception as ex:
             self._send_json({
@@ -64,8 +67,10 @@ class LFSTransferAgent:
         file_path = f"{parent_dir}/{filename}"
 
         try:
-            content = self.client.get_file_bytes(self.repo_id, file_path)
-            if content is None:
+            temp_dest = Path(self._temp_dir.name) / oid
+            # Streamed straight to disk: `get_file_bytes` would hold the whole
+            # object in memory before writing it.
+            if not self.client.download_file_to(self.repo_id, file_path, temp_dest):
                 self._send_json({
                     "event": "complete",
                     "oid": oid,
@@ -73,8 +78,6 @@ class LFSTransferAgent:
                 })
                 return
 
-            temp_dest = Path(self._temp_dir.name) / oid
-            temp_dest.write_bytes(content)
             self._send_json({
                 "event": "complete",
                 "oid": oid,

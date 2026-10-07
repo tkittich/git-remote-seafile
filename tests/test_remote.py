@@ -771,6 +771,31 @@ class TestLFSTransferAgent(unittest.TestCase):
             agent._temp_dir.cleanup()
             Path(temp_path).unlink(missing_ok=True)
 
+    def test_lfs_upload_streams_from_disk(self):
+        """An LFS object can be far larger than RAM, so it must not be read in."""
+        mock_client = MagicMock()
+        agent = LFSTransferAgent(mock_client, "repo1", "/git-test")
+        try:
+            with tempfile.NamedTemporaryFile(delete=False) as tf:
+                tf.write(b"SAMPLE-LFS-CONTENT")
+                temp_path = tf.name
+
+            stdout_buf = io.StringIO()
+            with patch("sys.stdout", stdout_buf):
+                agent.handle_upload({"event": "upload", "oid": "abcdef01", "path": temp_path})
+
+            resp = json.loads(stdout_buf.getvalue().strip())
+            self.assertEqual(resp["event"], "complete")
+
+            args, _ = mock_client.upload_file.call_args
+            self.assertNotIsInstance(
+                args[3], (bytes, bytearray),
+                "the LFS payload must be a path or file object, not the file's bytes",
+            )
+        finally:
+            agent._temp_dir.cleanup()
+            Path(temp_path).unlink(missing_ok=True)
+
     def test_lfs_upload_file_not_found(self):
         mock_client = MagicMock()
         agent = LFSTransferAgent(mock_client, "repo1", "/git-test")
@@ -788,7 +813,12 @@ class TestLFSTransferAgent(unittest.TestCase):
 
     def test_lfs_download_success(self):
         mock_client = MagicMock()
-        mock_client.get_file_bytes.return_value = b"BINARY-OBJECT-BYTES"
+
+        def fake_download(repo_id, file_path, dest):
+            Path(dest).write_bytes(b"BINARY-OBJECT-BYTES")
+            return True
+
+        mock_client.download_file_to = MagicMock(side_effect=fake_download)
         agent = LFSTransferAgent(mock_client, "repo1", "/git-test")
         try:
             stdout_buf = io.StringIO()
@@ -800,12 +830,13 @@ class TestLFSTransferAgent(unittest.TestCase):
             self.assertEqual(resp["oid"], "abcdef0123456789")
             self.assertTrue(Path(resp["path"]).is_file())
             self.assertEqual(Path(resp["path"]).read_bytes(), b"BINARY-OBJECT-BYTES")
+            mock_client.get_file_bytes.assert_not_called()
         finally:
             agent._temp_dir.cleanup()
 
     def test_lfs_download_not_found_404(self):
         mock_client = MagicMock()
-        mock_client.get_file_bytes.return_value = None
+        mock_client.download_file_to.return_value = False
         agent = LFSTransferAgent(mock_client, "repo1", "/git-test")
         try:
             stdout_buf = io.StringIO()

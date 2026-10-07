@@ -281,6 +281,161 @@ class TestClientAPI(unittest.TestCase):
             self.client.upload_file("repo1", "/seafile", "test.txt", b"content")
 
 
+class TestStreamingTransfers(unittest.TestCase):
+    """Large payloads must stream, not be materialised in RAM (#4).
+
+    The docs advertise multi-gigabyte LFS objects, but the client read the whole
+    file into a `bytes` object and then handed those bytes to `requests` --
+    roughly twice the object size in RAM, which is precisely the case LFS exists
+    for.  A file object streams from disk and, because it supports seek/tell,
+    still gives `requests` a Content-Length.
+    """
+
+    def setUp(self):
+        self.client = SeafileClient(
+            server_url="https://seafile.example.com", token="test-tok"
+        )
+        self.client.dir_exists = MagicMock(return_value=True)
+        self.client.session.get = MagicMock(
+            return_value=MagicMock(
+                status_code=200,
+                text='"https://seafile.example.com/seafhttp/upload/xyz"',
+            )
+        )
+
+    def _capture_upload(self):
+        """Capture the multipart payload handed to the transfer."""
+        captured = {}
+
+        def fake_post(url, files=None, data=None, **kwargs):
+            payload = files["file"][1]
+            captured["payload"] = payload
+            # Read it while the caller's `with open(...)` is still holding it.
+            if hasattr(payload, "read"):
+                captured["content"] = payload.read()
+            else:
+                captured["content"] = payload
+            return MagicMock(status_code=200)
+
+        self.client.session.post = MagicMock(side_effect=fake_post)
+        return captured
+
+    def test_upload_from_a_path_streams_a_file_object(self):
+        captured = self._capture_upload()
+
+        with tempfile.NamedTemporaryFile(delete=False) as tf:
+            tf.write(b"LARGE-LFS-PAYLOAD")
+            path = Path(tf.name)
+        try:
+            self.assertTrue(self.client.upload_file("repo1", "/lfs", "oid", path))
+        finally:
+            path.unlink(missing_ok=True)
+
+        self.assertNotIsInstance(
+            captured["payload"], (bytes, bytearray),
+            "the file must be handed over as a file object, not read into bytes",
+        )
+        self.assertTrue(hasattr(captured["payload"], "read"))
+        self.assertEqual(captured["content"], b"LARGE-LFS-PAYLOAD")
+
+    def test_upload_still_accepts_bytes(self):
+        """Small payloads (packfiles, refs) keep working unchanged."""
+        captured = self._capture_upload()
+        self.assertTrue(self.client.upload_file("repo1", "/seafile", "test.txt", b"content"))
+        self.assertEqual(captured["payload"], b"content")
+
+    def test_download_file_to_streams_to_disk(self):
+        payload = MagicMock(status_code=200)
+        payload.iter_content = MagicMock(side_effect=lambda chunk_size: iter([b"AAA", b"BBB", b""]))
+        self.client.session.get = MagicMock(
+            side_effect=[
+                MagicMock(
+                    status_code=200,
+                    text='"https://seafile.example.com/seafhttp/files/1/a.bin"',
+                ),
+                payload,
+            ]
+        )
+
+        with tempfile.TemporaryDirectory() as td:
+            dest = Path(td) / "nested" / "a.bin"
+            self.assertTrue(self.client.download_file_to("repo1", "/a.bin", dest))
+            self.assertEqual(dest.read_bytes(), b"AAABBB")
+
+        transfer_kwargs = self.client.session.get.call_args_list[1].kwargs
+        self.assertTrue(
+            transfer_kwargs.get("stream"),
+            "without stream=True requests buffers the whole body in memory",
+        )
+        payload.close.assert_called_once()
+
+    def test_download_file_to_reports_a_missing_object(self):
+        self.client.session.get = MagicMock(return_value=MagicMock(status_code=404))
+        with tempfile.TemporaryDirectory() as td:
+            self.assertFalse(
+                self.client.download_file_to("repo1", "/missing.bin", Path(td) / "x")
+            )
+
+    def test_a_path_upload_transmits_the_file_over_a_real_socket(self):
+        """The mechanism assertions above need one real transfer behind them.
+
+        A file object is what lets `requests` set Content-Length; if it silently
+        fell back to chunked encoding the upload would still "work" against a
+        mock and fail against a real server.
+        """
+        import http.server
+        import threading
+
+        received = {}
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *args):
+                pass
+
+            def do_GET(self):
+                port = self.server.server_address[1]
+                body = json.dumps(f"http://127.0.0.1:{port}/upload/xyz").encode()
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def do_POST(self):
+                length = int(self.headers.get("Content-Length") or 0)
+                received["body"] = self.rfile.read(length)
+                received["content_length"] = length
+                received["transfer_encoding"] = self.headers.get("Transfer-Encoding")
+                self.send_response(200)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+
+        server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            client = SeafileClient(
+                server_url=f"http://127.0.0.1:{server.server_address[1]}", token="t"
+            )
+            client.dir_exists = MagicMock(return_value=True)
+
+            with tempfile.NamedTemporaryFile(delete=False) as tf:
+                tf.write(b"STREAMED-PAYLOAD-BYTES")
+                path = Path(tf.name)
+            try:
+                self.assertTrue(client.upload_file("repo1", "/lfs", "oid.bin", path))
+            finally:
+                path.unlink(missing_ok=True)
+        finally:
+            server.shutdown()
+            server.server_close()
+
+        self.assertIn(b"STREAMED-PAYLOAD-BYTES", received["body"])
+        self.assertGreater(received["content_length"], 0)
+        self.assertIsNone(
+            received["transfer_encoding"],
+            "a seekable file object should give requests a Content-Length, not chunked encoding",
+        )
+
+
 class TestTransferSession(unittest.TestCase):
     """File transfers must reuse the session -- but not its credentials (#7).
 
