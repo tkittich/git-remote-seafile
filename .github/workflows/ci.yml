@@ -21,6 +21,13 @@ jobs:
 
     steps:
     - uses: actions/checkout@v4
+      with:
+        # Full history, including tags.  The release-notes guard checks that a
+        # notes file's Full Changelog link compares against a tag that really
+        # exists, and the default shallow clone fetches no tags at all -- which
+        # made that guard fail on every runner.  The repository is small, so
+        # this costs almost nothing.
+        fetch-depth: 0
 
     - name: Set up Python ${{ matrix.python-version }}
       uses: actions/setup-python@v5

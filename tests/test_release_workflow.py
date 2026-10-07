@@ -183,7 +183,11 @@ class TestReleaseNotesFormat(unittest.TestCase):
             ["git", "tag", "-l"], cwd=str(REPO_ROOT),
             capture_output=True, text=True,
         ).stdout.split()
-        self.assertTrue(existing, "no git tags found")
+        if not existing:
+            # actions/checkout@v4 clones shallow and fetches no tags, so there
+            # is nothing to compare against here.  CI passes `fetch-depth: 0` to
+            # keep this check meaningful; a bare `git clone --depth=1` cannot.
+            self.skipTest("no tags in this clone (shallow checkout)")
         for path in self.files:
             match = COMPARE_LINK.match(
                 [ln for ln in path.read_text(encoding="utf-8").splitlines() if ln.strip()][-1]
