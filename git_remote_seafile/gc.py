@@ -12,6 +12,7 @@ from typing import Any
 
 from .client import SeafileClient
 from .lock import RemoteLock
+from .refs import REF_NAMESPACES, iter_refs
 
 
 def compact_repository(
@@ -78,24 +79,16 @@ def compact_repository(
                         capture_output=True,
                     )
 
-            # 4. Mirror remote refs so git repack knows all roots are reachable
-            heads = client.list_dir(repo_id, f"{clean_repo}/refs/heads")
-            for h in heads:
-                if h.get("type") == "file":
-                    sha = client.get_file_text(repo_id, f"{clean_repo}/refs/heads/{h['name']}")
-                    if sha:
-                        ref_file = bare_repo / "refs" / "heads" / h["name"]
-                        ref_file.parent.mkdir(parents=True, exist_ok=True)
-                        ref_file.write_text(f"{sha}\n", encoding="utf-8")
-
-            tags = client.list_dir(repo_id, f"{clean_repo}/refs/tags")
-            for t in tags:
-                if t.get("type") == "file":
-                    sha = client.get_file_text(repo_id, f"{clean_repo}/refs/tags/{t['name']}")
-                    if sha:
-                        ref_file = bare_repo / "refs" / "tags" / t["name"]
-                        ref_file.parent.mkdir(parents=True, exist_ok=True)
-                        ref_file.write_text(f"{sha}\n", encoding="utf-8")
+            # 4. Mirror remote refs so git repack knows all roots are reachable.
+            # This walk must be recursive: a nested ref that is not mirrored
+            # here makes its objects look unreachable, and "repack -a -d" would
+            # then delete them from the consolidated packfile -- silently and
+            # irreversibly.
+            for namespace in REF_NAMESPACES:
+                for ref_name, sha in iter_refs(client, repo_id, clean_repo, namespace):
+                    ref_file = bare_repo / ref_name
+                    ref_file.parent.mkdir(parents=True, exist_ok=True)
+                    ref_file.write_text(f"{sha}\n", encoding="utf-8")
 
             # 5. Run git repack -a -d -l
             if verbose:

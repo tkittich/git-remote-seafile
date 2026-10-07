@@ -9,6 +9,7 @@ from urllib.parse import urlparse
 
 from .client import SeafileClient, SeafileAPIError
 from .lock import RemoteLock
+from .refs import REF_NAMESPACES, iter_refs
 from .safety import check_preflight_safety, SafetyError
 from .git_util import (
     create_packfile,
@@ -86,31 +87,16 @@ class RemoteHelper:
         """List references on the remote Seafile repository."""
         self._refs_cache.clear()
 
-        # 1. Discover branches (refs/heads/*)
-        heads_path = self._full_path("refs/heads")
-        heads_entries = self.client.list_dir(self.repo_id, heads_path)
-        for entry in heads_entries:
-            if entry.get("type") == "file":
-                branch_name = entry["name"]
-                ref_name = f"refs/heads/{branch_name}"
-                sha = self.client.get_file_text(self.repo_id, f"{heads_path}/{branch_name}")
-                if sha:
-                    self._refs_cache[ref_name] = sha
-                    sys.stdout.write(f"{sha} {ref_name}\n")
+        # 1. Discover branches and tags.  iter_refs walks recursively, so refs
+        # whose names contain a slash ("refs/heads/feature/auth") are included.
+        # A single-level listing would hide them -- and a hidden ref is not just
+        # missing from the advert, it is also treated as garbage by compaction.
+        for namespace in REF_NAMESPACES:
+            for ref_name, sha in iter_refs(self.client, self.repo_id, self.repo_path, namespace):
+                self._refs_cache[ref_name] = sha
+                sys.stdout.write(f"{sha} {ref_name}\n")
 
-        # 2. Discover tags (refs/tags/*)
-        tags_path = self._full_path("refs/tags")
-        tags_entries = self.client.list_dir(self.repo_id, tags_path)
-        for entry in tags_entries:
-            if entry.get("type") == "file":
-                tag_name = entry["name"]
-                ref_name = f"refs/tags/{tag_name}"
-                sha = self.client.get_file_text(self.repo_id, f"{tags_path}/{tag_name}")
-                if sha:
-                    self._refs_cache[ref_name] = sha
-                    sys.stdout.write(f"{sha} {ref_name}\n")
-
-        # 3. Read HEAD symbolic ref
+        # 2. Read HEAD symbolic ref
         head_path = self._full_path("HEAD")
         head_content = self.client.get_file_text(self.repo_id, head_path)
         if head_content and head_content.startswith("ref:"):
