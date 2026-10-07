@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/tkittich/git-remote-seafile/actions/workflows/ci.yml/badge.svg)](https://github.com/tkittich/git-remote-seafile/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
-[![Python](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
+[![Python](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
 
 A transparent, zero-thrash **Git remote helper** for Seafile servers.
 

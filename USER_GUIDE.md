@@ -293,7 +293,7 @@ Before developing `git-remote-seafile`, extensive real-world testing and diagnos
 ## 5. Installation
 
 ### Requirements
-- Python 3.8+
+- Python 3.9+
 - Git 2.20+
 - `requests` library
 
