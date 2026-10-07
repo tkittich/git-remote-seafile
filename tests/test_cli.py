@@ -194,6 +194,43 @@ class TestCLISetHeadAndLFSTransfer(unittest.TestCase):
             mock_agent.run.assert_called_once()
 
 
+class TestCLIUnknownCommand(unittest.TestCase):
+    """A mistyped subcommand must not be handed to the remote-helper path.
+
+    Git invokes the helper as ``git-remote-seafile <remote> <url>``, or with the
+    URL alone.  The CLI treated *anything* it did not recognise as such a call,
+    so ``git-remote-seafile chck-auth`` parsed "chck-auth" as the remote URL and
+    failed with a baffling "library not found" or an authentication error --
+    instead of simply saying the command does not exist.
+    """
+
+    @patch("git_remote_seafile.cli.RemoteHelper")
+    def test_unknown_command_reports_usage_and_exits_2(self, mock_helper_cls):
+        for typo in ("chck-auth", "verison", "lfs-transfe", "--bogus"):
+            with self.subTest(arg=typo):
+                mock_helper_cls.reset_mock()
+                with patch.object(sys, "argv", ["git-remote-seafile", typo]):
+                    with patch("sys.stdout", new_callable=io.StringIO) as out:
+                        with patch("sys.stderr", new_callable=io.StringIO) as err:
+                            code = main()
+                self.assertEqual(code, 2, f"{typo}: expected exit 2, got {code}")
+                self.assertIn("Commands:", out.getvalue(), f"{typo}: no help shown")
+                self.assertIn(typo, err.getvalue(), f"{typo}: not named in the error")
+                mock_helper_cls.assert_not_called()
+
+    @patch("git_remote_seafile.cli.RemoteHelper")
+    def test_invocation_without_a_seafile_url_is_not_a_helper_call(self, mock_helper_cls):
+        # Two arguments, but neither is a seafile:// URL -- still a typo, not a
+        # helper invocation.
+        with patch.object(sys, "argv", ["git-remote-seafile", "origin", "not-a-seafile-url"]):
+            with patch("sys.stdout", new_callable=io.StringIO) as out:
+                with patch("sys.stderr", new_callable=io.StringIO):
+                    code = main()
+        self.assertEqual(code, 2)
+        self.assertIn("Commands:", out.getvalue())
+        mock_helper_cls.assert_not_called()
+
+
 class TestCLIRemoteHelperInvocation(unittest.TestCase):
     @patch("git_remote_seafile.cli.RemoteHelper")
     def test_remote_helper_run(self, mock_helper_cls):

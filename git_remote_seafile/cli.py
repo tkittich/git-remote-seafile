@@ -238,6 +238,16 @@ def main() -> int:
             return 1
 
     # Standard Git remote helper invocation: git-remote-seafile <remote-name> <url>
+    # or git-remote-seafile <url> when Git is handed a URL directly.  Both forms
+    # carry the seafile:// URL, so an invocation with no such URL is not a helper
+    # call at all -- it is a mistyped subcommand.  Without this check a typo like
+    # `git-remote-seafile chck-auth` was passed to the helper as the *remote URL*
+    # and surfaced as a baffling "library not found" or auth error.
+    if not any(arg.startswith("seafile://") for arg in args):
+        sys.stderr.write(f"git-remote-seafile: unknown command '{args[0]}'\n\n")
+        print_help()
+        return 2
+
     remote_name = args[0]
     url = args[1] if len(args) > 1 else args[0]
     try:
