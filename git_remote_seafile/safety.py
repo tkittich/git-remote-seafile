@@ -225,6 +225,18 @@ def check_preflight_safety(
 
     if local_worktree is None:
         local_worktree = get_local_work_tree()
+    if local_worktree is None:
+        # `git clone` runs the helper in the directory the user is standing in,
+        # which is the *parent* of the directory being created -- and that
+        # parent is not a repository yet, so git cannot name a work tree.
+        # Checking it is the whole point: `git clone seafile://Documents/code/x`
+        # run from inside the synced Documents/ library is exactly the Trap 1
+        # collision the README warns about, and until now clone was unguarded.
+        # The process's own cwd is the best available stand-in.
+        try:
+            local_worktree = Path.cwd()
+        except OSError:
+            local_worktree = None
 
     # Find if the target library is actively synced locally
     target_synced_lib = None

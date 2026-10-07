@@ -170,25 +170,47 @@ class RemoteHelper:
         sys.stdout.write("\n")
         sys.stdout.flush()
 
-    def cmd_push(self, push_specs: list[str]) -> None:
-        """Process push instructions."""
-        # Pre-flight safety checks (Trap 1, Trap 2, root pollution, typos)
+    @staticmethod
+    def _report_safety_warnings(warnings: list[str]) -> None:
+        """Print the non-fatal guardrail notices (safety.py check 6)."""
+        for w in warnings:
+            sys.stderr.write(f"\n[git-remote-seafile NOTICE]\n{w}\n\n")
+        sys.stderr.flush()
+
+    @staticmethod
+    def _report_safety_block(safe_err: SafetyError) -> None:
+        """Print the guardrail banner for a condition that must block."""
+        sys.stderr.write("\n====================================================================\n")
+        sys.stderr.write("[git-remote-seafile PRE-FLIGHT SAFETY BLOCK]\n")
+        sys.stderr.write(f"{safe_err}\n")
+        sys.stderr.write("====================================================================\n\n")
+        sys.stderr.flush()
+
+    def _preflight_safety(self, push_mode: bool) -> list[str]:
+        """Run the guardrails for this remote, printing notices as it goes.
+
+        Raises SafetyError when the operation must be blocked; the caller
+        decides how to signal that in its own half of the protocol.
+        """
         try:
             warnings = check_preflight_safety(
                 self.client,
                 getattr(self, "library_name", ""),
                 getattr(self, "repo_path", ""),
-                push_mode=True,
+                push_mode=push_mode,
             )
-            for w in warnings:
-                sys.stderr.write(f"\n[git-remote-seafile NOTICE]\n{w}\n\n")
-                sys.stderr.flush()
         except SafetyError as safe_err:
-            sys.stderr.write("\n====================================================================\n")
-            sys.stderr.write("[git-remote-seafile PRE-FLIGHT SAFETY BLOCK]\n")
-            sys.stderr.write(f"{safe_err}\n")
-            sys.stderr.write("====================================================================\n\n")
-            sys.stderr.flush()
+            self._report_safety_block(safe_err)
+            raise
+        self._report_safety_warnings(warnings)
+        return warnings
+
+    def cmd_push(self, push_specs: list[str]) -> None:
+        """Process push instructions."""
+        # Pre-flight safety checks (Trap 1, Trap 2, root pollution, typos)
+        try:
+            self._preflight_safety(push_mode=True)
+        except SafetyError as safe_err:
             first_line = str(safe_err).splitlines()[0]
             for spec in push_specs:
                 dst = spec.lstrip("+").split(":", 1)[1] if ":" in spec else spec
@@ -353,7 +375,20 @@ class RemoteHelper:
         like a *successful* fetch of nothing: ``git clone`` finished with an
         empty repository and exited 0, and the user found out much later.  The
         error is now re-raised, so the helper exits non-zero and git says so.
+
+        The guardrails run here too.  They used to run only on push, so
+        ``git clone seafile://Documents/code/myproject`` executed from inside
+        the synced ``Documents/`` library was not blocked: the clone wrote a
+        whole repository into a synced folder and started exactly the
+        churn/reflection cycle they exist to prevent.  Fetch is read-only
+        against the *server*, but it writes a repository locally, and that is
+        what the collision check is about.
         """
+        # The fetch half of the protocol has no ``error <ref>`` line, so a block
+        # here can only be signalled by exiting non-zero -- the same reasoning as
+        # the failure path below.  The banner is already on stderr.
+        self._preflight_safety(push_mode=False)
+
         try:
             git_dir = get_git_dir()
             local_pack_dir = git_dir / "objects" / "pack"

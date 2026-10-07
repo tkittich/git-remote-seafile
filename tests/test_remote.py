@@ -22,6 +22,7 @@ from git_remote_seafile.git_util import (
 from git_remote_seafile.helper import RemoteHelper
 from git_remote_seafile.lfs import LFSTransferAgent
 from git_remote_seafile.lock import RemoteLock, RepositoryLockedError
+from git_remote_seafile.safety import SafetyError, check_preflight_safety
 
 
 class TestRemoteHelper(unittest.TestCase):
@@ -1103,6 +1104,164 @@ class TestUrlParsing(unittest.TestCase):
         self.assertEqual(server, "https://my.library")
         self.assertEqual(lib, "repo")
         self.assertEqual(path, "/git-repo")
+
+
+class TestFetchSafety(unittest.TestCase):
+    """The guardrails must run on fetch/clone, not only on push (#13).
+
+    ``git clone seafile://Documents/code/myproject`` run from inside the synced
+    ``Documents/`` library used to sail through: the clone downloaded packfiles
+    straight into the synced tree and started the churn/reflection cycle the
+    guardrails exist to prevent.  Fetch is read-only against the *server*, but
+    it writes a whole repository into the local directory, and that directory is
+    what the collision check is about.
+
+    These tests drive the real ``check_preflight_safety`` -- only the desktop
+    client's repo.db discovery is stubbed -- so the path logic under test is the
+    shipping code.
+    """
+
+    @staticmethod
+    def _helper(library_name="Documents", repo_path="/code/myproject"):
+        h = RemoteHelper.__new__(RemoteHelper)
+        h.client = MagicMock()
+        h.repo_id = "repo1"
+        h.repo_path = repo_path
+        h.library_name = library_name
+        h._refs_cache = {}
+        return h
+
+    def test_fetch_runs_the_guardrails_in_fetch_mode(self):
+        """cmd_fetch must consult the guardrails, and with push_mode=False."""
+        seen = {}
+
+        def fake_check(client, library, path, push_mode=True, **kwargs):
+            seen["push_mode"] = push_mode
+            seen["library"] = library
+            seen["path"] = path
+            return []
+
+        h = self._helper()
+        with patch(
+            "git_remote_seafile.helper.check_preflight_safety", side_effect=fake_check
+        ), patch(
+            "git_remote_seafile.helper.get_git_dir",
+            side_effect=RuntimeError("reached the fetch body"),
+        ):
+            with patch("sys.stderr", new_callable=io.StringIO):
+                with self.assertRaises(RuntimeError):
+                    h.cmd_fetch(["refs/heads/main"])
+
+        self.assertIs(
+            seen["push_mode"], False,
+            "a fetch must be checked in fetch mode -- the push-only reflection "
+            "gate (Trap 2) would otherwise block legitimate fetches",
+        )
+        self.assertEqual(seen["library"], "Documents")
+        self.assertEqual(seen["path"], "/code/myproject")
+
+    def test_clone_inside_the_synced_library_is_blocked(self):
+        """The reviewer's exact scenario: clone into the tree it warns about.
+
+        ``git clone`` runs the helper with cwd = the parent of the directory
+        being created, which is not a repository yet -- so git cannot name a
+        work tree and the cwd fallback is what catches this.
+        """
+        h = self._helper()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            doc_dir = Path(tmpdir) / "Documents"
+            inside = doc_dir / "code" / "myproject"
+            inside.mkdir(parents=True)
+
+            libs = [
+                {"repo_id": "r1", "name": "Documents", "worktree": doc_dir,
+                 "server_url": "https://seafile.example.com"}
+            ]
+
+            original_cwd = os.getcwd()
+            os.chdir(inside)
+            try:
+                with patch(
+                    "git_remote_seafile.safety.discover_local_synced_libraries",
+                    return_value=libs,
+                ), patch(
+                    "git_remote_seafile.safety.get_local_work_tree",
+                    return_value=None,
+                ), patch(
+                    "git_remote_seafile.safety.get_git_config_bool",
+                    return_value=False,
+                ), patch(
+                    "git_remote_seafile.helper.get_git_dir",
+                    side_effect=AssertionError(
+                        "the fetch body ran despite the Trap 1 collision"
+                    ),
+                ):
+                    with patch("sys.stderr", new_callable=io.StringIO):
+                        with self.assertRaises(SafetyError) as ctx:
+                            h.cmd_fetch(["refs/heads/main"])
+            finally:
+                os.chdir(original_cwd)
+
+        self.assertIn("Trap 1", str(ctx.exception))
+
+    def test_the_reflection_gate_still_blocks_a_push(self):
+        """Fetch skips Trap 2; the identical push is still blocked by it.
+
+        Without the paired push assertion this test would also pass if Trap 2
+        had simply been broken for everyone.
+        """
+        h = self._helper(repo_path="/elsewhere/repo")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            doc_dir = Path(tmpdir) / "Documents"
+            doc_dir.mkdir()
+            outside = Path(tmpdir) / "outside"
+            outside.mkdir()
+
+            libs = [
+                {"repo_id": "r1", "name": "Documents", "worktree": doc_dir,
+                 "server_url": "https://seafile.example.com"}
+            ]
+
+            with patch(
+                "git_remote_seafile.safety.get_git_config_bool", return_value=False
+            ), patch.dict(os.environ, {"SEAFILE_SKIP_SAFETY_CHECKS": ""}):
+                # push: the un-ignored path in a synced library is blocked
+                with self.assertRaises(SafetyError) as ctx:
+                    check_preflight_safety(
+                        h.client, "Documents", "/elsewhere/repo",
+                        local_worktree=outside, push_mode=True, synced_libs=libs,
+                    )
+                self.assertIn("Trap 2", str(ctx.exception))
+
+                # fetch: the same inputs must pass, and reach the fetch body
+                # -- and the spy proves the guardrails actually ran, in fetch
+                # mode, rather than never being consulted at all.
+                modes_seen = []
+                real_check = check_preflight_safety
+
+                def spy(client, library, path, **kwargs):
+                    modes_seen.append(kwargs.get("push_mode"))
+                    return real_check(client, library, path, **kwargs)
+
+                with patch(
+                    "git_remote_seafile.helper.check_preflight_safety", side_effect=spy
+                ), patch(
+                    "git_remote_seafile.safety.discover_local_synced_libraries",
+                    return_value=libs,
+                ), patch(
+                    "git_remote_seafile.helper.get_git_dir",
+                    side_effect=RuntimeError("reached the fetch body"),
+                ):
+                    with patch("sys.stderr", new_callable=io.StringIO):
+                        with self.assertRaises(RuntimeError):
+                            h.cmd_fetch(["refs/heads/main"])
+
+                self.assertEqual(
+                    modes_seen, [False],
+                    "the fetch must be checked exactly once, in fetch mode",
+                )
 
 
 class TestFetchFailureIsLoud(unittest.TestCase):

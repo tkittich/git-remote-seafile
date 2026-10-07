@@ -239,6 +239,86 @@ class TestSafetyGuardrails(unittest.TestCase):
         h.client.upload_file.assert_not_called()
 
 
+class TestWorkingTreeFallback(unittest.TestCase):
+    """The collision check needs a directory even when git cannot supply one.
+
+    During `git clone` the helper runs in the directory being created, which is
+    not a repository yet, so `git rev-parse --show-toplevel` fails.  That
+    directory is exactly the one that must be checked for a collision with the
+    remote path -- and it is where the process's cwd points.
+    """
+
+    def test_falls_back_to_cwd_when_git_cannot_name_a_work_tree(self):
+        client = MagicMock()
+        client.get_repo_id.return_value = "repo1"
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            doc_dir = Path(tmpdir) / "Documents"
+            proj_dir = doc_dir / "code" / "myproject"
+            proj_dir.mkdir(parents=True)
+
+            synced_libs = [
+                {"repo_id": "r1", "name": "Documents", "worktree": doc_dir,
+                 "server_url": "https://seafile.example.com"}
+            ]
+
+            original_cwd = os.getcwd()
+            os.chdir(proj_dir)
+            try:
+                with patch(
+                    "git_remote_seafile.safety.get_local_work_tree", return_value=None
+                ):
+                    with self.assertRaises(SafetyError) as ctx:
+                        check_preflight_safety(
+                            client,
+                            "Documents",
+                            "/code/myproject",
+                            local_worktree=None,
+                            push_mode=False,
+                            synced_libs=synced_libs,
+                        )
+            finally:
+                os.chdir(original_cwd)
+
+            self.assertIn("DANGEROUS PATH COLLISION DETECTED (Trap 1)", str(ctx.exception))
+
+    def test_an_explicit_work_tree_still_wins_over_cwd(self):
+        # The fallback must not override a work tree that was determined
+        # properly.  Here cwd *is* inside the synced library and would collide,
+        # while the explicit (correct) work tree is outside it -- so if the code
+        # preferred cwd, this would raise.
+        client = MagicMock()
+        client.get_repo_id.return_value = "repo1"
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            doc_dir = Path(tmpdir) / "Documents"
+            inside = doc_dir / "code" / "myproject"
+            inside.mkdir(parents=True)
+            elsewhere = Path(tmpdir) / "elsewhere"
+            elsewhere.mkdir()
+
+            synced_libs = [
+                {"repo_id": "r1", "name": "Documents", "worktree": doc_dir,
+                 "server_url": "https://seafile.example.com"}
+            ]
+
+            original_cwd = os.getcwd()
+            os.chdir(inside)
+            try:
+                warnings = check_preflight_safety(
+                    client,
+                    "Documents",
+                    "/code/myproject",
+                    local_worktree=elsewhere,
+                    push_mode=False,
+                    synced_libs=synced_libs,
+                )
+            finally:
+                os.chdir(original_cwd)
+
+            self.assertEqual(warnings, [])
+
+
 class TestDiscoverLocalSyncedLibraries(unittest.TestCase):
     """The client runs in WAL mode, so the rows sit in repo.db-wal.
 
