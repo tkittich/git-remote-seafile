@@ -85,7 +85,7 @@ If you currently have a project inside a Seafile-synced directory, follow these 
      ```
 3. **Create or designate your remote library on Seafile**:
    - **Option A (Recommended)**: Log in to the Seafile Web UI (e.g. `https://seafile.example.com`), click **New Library**, and choose any name you like (such as `code`, `git-repos`, or `projects`). In our examples, we use `code`. **Do NOT sync this library** in your Seafile desktop client applet.
-   - **Option B (Using existing synced library, e.g. `Documents`)**: If you prefer keeping the bare remote inside an existing synced library, store it under an ignored subfolder (such as `seafile-git/`, `git-vault/`, or any folder name of your choice) and add that subfolder name to `<library-root>/seafile-ignore.txt`.
+   - **Option B (Using existing synced library, e.g. `Documents`)**: If you prefer keeping the bare remote inside an existing synced library, store it under an ignored subfolder (such as `seafile-git/`, `git-vault/`, or any folder name of your choice) and add that subfolder name to `<library-root>/seafile-ignore.txt` **before** pushing. *(Note: `seafile-ignore.txt` only works at the library root and only on files that have never been synced yet).*
 4. **Navigate to the new location**:
    ```bash
    cd C:/code/myproject  # or cd ~/code/myproject
@@ -124,6 +124,13 @@ If you prefer keeping remote repositories within an existing synced library (suc
    ```
 2. Add the subfolder name (e.g. `seafile-git/`) to `seafile-ignore.txt` at the root of the synced library (`<library-root>/seafile-ignore.txt`).
 
+> [!WARNING]
+> **Two Critical Traps of `seafile-ignore.txt`**:
+> 1. **Root Library Only**: `seafile-ignore.txt` **must** be placed directly in the root directory of the synced library (e.g. `<library-root>/seafile-ignore.txt`). Unlike Git's `.gitignore`, placing `seafile-ignore.txt` in a subfolder (such as `Documents/seafile-git/seafile-ignore.txt`) is silently ignored by the Seafile desktop client daemon!
+> 2. **Never-Synced Files Only (No Retroactive Ignore)**: As documented in the official Seafile manual, `seafile-ignore.txt` **only affects files and folders that have never been synced**. If the subfolder or files were already synced to the server or local disk prior to adding the ignore rule, Seafile will continue syncing them regardless! Adding ignore rules does *not* untrack or delete already-synced files. (If this happens, you must delete the folder locally and remotely or un-sync and re-sync the entire library).
+> 
+> **Why Workflow A is Recommended**: This is why **Workflow A (Dedicated Unsynced Library)** is strongly recommended over Workflow B. An unsynced library bypasses all `seafile-ignore.txt` limitations, root placement requirements, and retroactive sync traps entirely.
+
 > [!NOTE]
 > **Is `seafile-git/` mandatory?**
 > **No.** The folder name `seafile-git/` is not mandatory or hardcoded in `git-remote-seafile`. You can name this subfolder whatever you prefer (e.g. `git-vault/`, `my-remotes/`, `remote-repos/`). Any subfolder works as long as it is listed in `<library-root>/seafile-ignore.txt` so the Seafile desktop client does not sync it.
@@ -143,6 +150,10 @@ If you prefer keeping remote repositories within an existing synced library (suc
 - **The Hazard**: Pushing to a remote path inside an actively synced library when that subfolder is NOT ignored in `seafile-ignore.txt` (e.g., remote is `seafile://Documents/seafile-git/myproject` but `seafile-git/` is missing from `seafile-ignore.txt`).
 - **The Consequence**: Every push uploads packfiles to Seafile server; seconds later, your desktop client detects them on the server and downloads them back down to your local drive. This wastes disk space, network bandwidth, and triggers CPU churn.
 - **The Guardrail**: The helper parses `seafile-ignore.txt` at the library root. If the remote path is not explicitly ignored, it **aborts the push and displays exact instructions** on how to add the folder to `seafile-ignore.txt`.
+  > [!IMPORTANT]
+  > **Remember the Two Rules of `seafile-ignore.txt`**:
+  > - **Must be placed at the library root**: It must be `<library-root>/seafile-ignore.txt`, not inside a subfolder.
+  > - **Must be configured before first sync**: It only ignores never-synced files. If the subfolder was already synced by the desktop client, the ignore rule has no effect retroactively.
 
 #### 🛡️ Library Root Pollution Protection
 - Pushing directly to the library root (`seafile://Documents/`) is hard-blocked to prevent cluttering the top level with bare objects and refs.
@@ -374,7 +385,7 @@ Before pushing your first repository to Seafile:
 1. Log into your Seafile Web UI (`https://seafile.example.com`).
 2. Click **New Library** and choose any name you like (such as `code`, `git-repos`, or `projects`). We will use `code` in the examples below.
 3. **Important**: Leave this library **unsynced** in your Seafile desktop client applet. Do not sync it to your local drive.
-*(Alternatively, if storing within an existing synced library like `Documents`, store under an ignored subfolder such as `seafile-git/` and add it to `seafile-ignore.txt` as explained in Section 2.3).*
+*(Alternatively, if storing within an existing synced library like `Documents`, store under an ignored subfolder such as `seafile-git/` and add it to `<library-root>/seafile-ignore.txt` before pushing, noting that `seafile-ignore.txt` only applies at the library root and cannot retroactively ignore already-synced folders).*
 
 ### 8.1 Push an Existing Project to Seafile
 ```bash
