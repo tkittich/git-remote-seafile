@@ -84,7 +84,7 @@ If you currently have a project inside a Seafile-synced directory, follow these 
      mv ~/Seafile/code/myproject ~/code/myproject
      ```
 3. **Create or designate your remote library on Seafile**:
-   - **Option A (Recommended)**: Log in to the Seafile Web UI (e.g. `https://seafile.example.com`), click **New Library**, and create a dedicated library named `code` (or `git-vault`). **Do NOT sync this library** in your Seafile desktop client applet.
+   - **Option A (Recommended)**: Log in to the Seafile Web UI (e.g. `https://seafile.example.com`), click **New Library**, and choose any name you like (such as `code`, `git-repos`, or `projects`). In our examples, we use `code`. **Do NOT sync this library** in your Seafile desktop client applet.
    - **Option B (Using existing synced library, e.g. `Documents`)**: If you prefer keeping the bare remote inside your existing library, store it under the designated subfolder `seafile-git/` and add `seafile-git/` to `<library-root>/seafile-ignore.txt`.
 4. **Navigate to the new location**:
    ```bash
@@ -111,7 +111,7 @@ If you currently have a project inside a Seafile-synced directory, follow these 
 Depending on your library organization, two safe workflows are supported:
 
 #### Workflow A (Recommended): Dedicated Unsynced Library
-Create a dedicated Seafile library on your server (e.g. `code` or `git-vault`) that is **never synced** to your local desktop client:
+Create a dedicated library on your Seafile server with any name you like (such as `code`, `git-repos`, or `projects`) that is **never synced** to your local desktop client:
 - **Local working tree**: `C:\code\myproject` or `D:\Dev\myproject` (outside synced libraries)
 - **Remote destination**: `seafile://code/myproject`
 - **Advantages**: Complete physical and logical separation. Zero chance of desktop client sync collisions or disk reflection.
@@ -370,7 +370,7 @@ Remotes use the `seafile://` URL scheme:
 ### 8.0 Prerequisite: Create Your Remote Library on Seafile
 Before pushing your first repository to Seafile:
 1. Log into your Seafile Web UI (`https://seafile.example.com`).
-2. Click **New Library** and create a dedicated library (e.g. named `code` or `git-vault`).
+2. Click **New Library** and choose any name you like (such as `code`, `git-repos`, or `projects`). We will use `code` in the examples below.
 3. **Important**: Leave this library **unsynced** in your Seafile desktop client applet. Do not sync it to your local drive.
 *(Alternatively, if storing within an existing synced library like `Documents`, store under `seafile-git/` and add `seafile-git/` to `seafile-ignore.txt` as explained in Section 2.3).*
 

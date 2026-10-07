@@ -56,7 +56,7 @@ Instead of synchronizing the local `.git/` directory, the developer's working tr
 
 ## 3. Remote Storage Architecture
 
-Within the designated Seafile library (created via the Seafile Web UI, e.g. an unsynced `code` library or inside `Documents/seafile-git/`), each Git repository is stored in a clean, bare-like layout:
+Within the designated Seafile library (created via the Seafile Web UI, such as an unsynced dedicated library like `code` or inside a synced library's `seafile-git/` subfolder), each Git repository is stored in a clean, bare-like layout:
 
 ```text
 /<repo-path>/

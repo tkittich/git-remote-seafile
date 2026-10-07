@@ -250,7 +250,7 @@ def check_preflight_safety(
                     f"and your remote URL points to the EXACT SAME path.\n"
                     f"Pushing bare Git packfiles and refs here will overwrite and corrupt your active files!\n\n"
                     f"Recommended Solutions:\n"
-                    f"  1. (Recommended) Push to a dedicated, unsynced library:\n"
+                    f"  1. (Recommended) Push to a dedicated, unsynced library (e.g. 'code'):\n"
                     f"     git remote set-url origin seafile://code/{Path(clean_repo_path).name}\n"
                     f"  2. Push to an ignored subfolder within '{library_name}':\n"
                     f"     git remote set-url origin seafile://{library_name}/seafile-git/{Path(clean_repo_path).name}\n"
@@ -274,7 +274,7 @@ def check_preflight_safety(
                 f"If you push here, the desktop client will detect the uploaded packfiles on the server "
                 f"and immediately download them back down to your local drive.\n\n"
                 f"Recommended Solutions:\n"
-                f"  1. (Recommended) Push to a dedicated, unsynced library:\n"
+                f"  1. (Recommended) Push to a dedicated, unsynced library (e.g. 'code'):\n"
                 f"     git remote set-url origin seafile://code/{clean_repo_path}\n"
                 f"  2. Add '{top_folder}/' to {worktree_path / 'seafile-ignore.txt'} at the library root before pushing."
             )
