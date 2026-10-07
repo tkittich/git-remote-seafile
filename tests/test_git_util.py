@@ -11,6 +11,7 @@ from unittest.mock import patch, MagicMock
 
 from git_remote_seafile.git_util import (
     GitError,
+    clean_git_env,
     create_packfile,
     get_git_config,
     get_git_config_bool,
@@ -193,6 +194,38 @@ class TestInstallPackfileAtomicity(unittest.TestCase):
             pack_dir = Path(td) / "objects" / "pack"
             all_files = sorted(p.name for p in pack_dir.iterdir()) if pack_dir.is_dir() else []
             self.assertEqual(all_files, [], f"stray files left in the pack directory: {all_files}")
+
+
+class TestCleanGitEnv(unittest.TestCase):
+    """git commands aimed at a scratch repository must not inherit GIT_DIR.
+
+    A remote helper is launched by git, which exports GIT_DIR pointing at the
+    caller's repository.  That variable overrides -C, so a compaction running
+    inside a helper would otherwise try to repack the caller's repo instead of
+    its own scratch copy and fail with "not a git repository".
+    """
+
+    def test_removes_repo_locating_vars(self):
+        with patch.dict(
+            os.environ,
+            {"GIT_DIR": ".git", "GIT_WORK_TREE": "/w", "GIT_INDEX_FILE": "/i", "PATH": "/bin"},
+            clear=True,
+        ):
+            env = clean_git_env()
+        self.assertNotIn("GIT_DIR", env)
+        self.assertNotIn("GIT_WORK_TREE", env)
+        self.assertNotIn("GIT_INDEX_FILE", env)
+        self.assertEqual(env.get("PATH"), "/bin")
+
+    def test_keeps_unrelated_variables(self):
+        with patch.dict(
+            os.environ,
+            {"GIT_AUTHOR_NAME": "someone", "SEAFILE_TOKEN": "tok"},
+            clear=True,
+        ):
+            env = clean_git_env()
+        self.assertEqual(env.get("GIT_AUTHOR_NAME"), "someone")
+        self.assertEqual(env.get("SEAFILE_TOKEN"), "tok")
 
 
 if __name__ == "__main__":

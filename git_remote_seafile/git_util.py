@@ -37,6 +37,36 @@ def get_git_dir() -> Path:
     return p.resolve()
 
 
+#: Variables git uses to decide which repository it is operating on.  A remote
+#: helper is launched *by* git, which exports these pointing at the caller's
+#: repository; they take precedence over -C, so a command meant for a
+#: *different* repository (the scratch bare repo used by compaction) must not
+#: inherit them.
+_GIT_REPO_ENV_VARS = (
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_COMMON_DIR",
+    "GIT_NAMESPACE",
+    "GIT_PREFIX",
+    "GIT_CEILING_DIRECTORIES",
+)
+
+
+def clean_git_env() -> dict[str, str]:
+    """Return a copy of the environment with git's repo-locating vars removed.
+
+    Use this for git commands that must operate on a repository other than the
+    one this process was launched in.
+    """
+    env = dict(os.environ)
+    for var in _GIT_REPO_ENV_VARS:
+        env.pop(var, None)
+    return env
+
+
 def rev_parse(ref: str) -> str | None:
     """Resolve a reference to its SHA-1 hash."""
     out, _, code = run_git(["rev-parse", "--verify", ref])

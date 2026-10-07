@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from .client import SeafileClient
+from .git_util import clean_git_env
 from .lock import RemoteLock
 from .refs import REF_NAMESPACES, iter_refs
 
@@ -49,8 +50,14 @@ def compact_repository(
             tmp = Path(td)
             bare_repo = tmp / "bare.git"
 
-            # 2. Initialize temporary bare Git repository
-            subprocess.run(["git", "init", "--bare", str(bare_repo)], check=True, capture_output=True)
+            # 2. Initialize temporary bare Git repository.  Every git command
+            # below targets this scratch repo, not the caller's, so it must run
+            # with a scrubbed environment: when a helper is launched by git,
+            # GIT_DIR points at the caller's repository and overrides -C.
+            scratch_env = clean_git_env()
+            subprocess.run(
+                ["git", "init", "--bare", str(bare_repo)], check=True, capture_output=True, env=scratch_env
+            )
 
             local_pack_dir = bare_repo / "objects" / "pack"
             local_pack_dir.mkdir(parents=True, exist_ok=True)
@@ -77,6 +84,7 @@ def compact_repository(
                         ["git", "index-pack", "-o", str(local_pack_dir / idx_name), str(local_pack_dir / pack_name)],
                         check=True,
                         capture_output=True,
+                        env=scratch_env,
                     )
 
             # 4. Mirror remote refs so git repack knows all roots are reachable.
@@ -111,6 +119,7 @@ def compact_repository(
                 ["git", "-C", str(bare_repo), "repack", "-a", "-d", "-l"],
                 capture_output=True,
                 text=True,
+                env=scratch_env,
             )
             if res.returncode != 0:
                 raise RuntimeError(f"git repack failed: {res.stderr}")

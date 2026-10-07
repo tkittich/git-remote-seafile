@@ -163,6 +163,10 @@ class RemoteHelper:
             sys.stdout.flush()
             return
 
+        # Set while the push lock is held, acted on after it is released.
+        auto_gc_min_packs = 0
+        auto_gc_pack_count = 0
+
         try:
             with RemoteLock(self.client, self.repo_id, self.repo_path):
                 for spec in push_specs:
@@ -246,7 +250,11 @@ class RemoteHelper:
                         sys.stderr.write(f"\nPush error for {dst}: {ex}\n")
                         sys.stderr.flush()
 
-                # Check remote packfile threshold for compaction
+                # Decide whether compaction is due -- but only *decide* here.
+                # Running it inside this block self-deadlocks: compact_repository
+                # acquires the same lock, RemoteLock is not reentrant, so the
+                # inner acquire would read back our own unexpired lease, wait out
+                # the timeout and fail.
                 try:
                     pack_entries = self.client.list_dir(self.repo_id, self._full_path("objects/pack"))
                     remote_packs = [e["name"] for e in pack_entries if e["name"].endswith(".pack")]
@@ -255,12 +263,8 @@ class RemoteHelper:
 
                     if len(remote_packs) >= threshold:
                         if auto_gc:
-                            sys.stderr.write(
-                                f"Auto-compacting remote repository ({len(remote_packs)} packfiles detected)...\n"
-                            )
-                            sys.stderr.flush()
-                            from .gc import compact_repository
-                            compact_repository(self.client, self.repo_id, self.repo_path, min_packs=threshold, verbose=True)
+                            auto_gc_min_packs = threshold
+                            auto_gc_pack_count = len(remote_packs)
                         else:
                             sys.stderr.write(
                                 f"\nNotice: Remote repository has {len(remote_packs)} packfiles (threshold: {threshold}).\n"
@@ -277,6 +281,32 @@ class RemoteHelper:
                 sys.stdout.write(f"error {dst} {err_line}\n")
             sys.stderr.write(f"\nPush failed: {lock_err}\n")
             sys.stderr.flush()
+
+        # Compaction runs here, after the push lock is released, so that it can
+        # take the lock for itself.  It must never disturb the per-ref ok/error
+        # lines written above: the push already succeeded, and a compaction
+        # problem is a separate, recoverable event (gc can always be run by
+        # hand).  Under genuine contention with another machine this may still
+        # time out, which is correct -- it just must not self-inflict it.
+        if auto_gc_min_packs:
+            try:
+                sys.stderr.write(
+                    f"Auto-compacting remote repository ({auto_gc_pack_count} packfiles detected)...\n"
+                )
+                sys.stderr.flush()
+                from .gc import compact_repository
+
+                compact_repository(
+                    self.client,
+                    self.repo_id,
+                    self.repo_path,
+                    min_packs=auto_gc_min_packs,
+                    verbose=True,
+                )
+            except Exception as ex:
+                err_line = str(ex).replace("\r", " ").replace("\n", " ").strip()
+                sys.stderr.write(f"Auto-compaction skipped: {err_line}\n")
+                sys.stderr.flush()
 
         sys.stdout.write("\n")
         sys.stdout.flush()

@@ -252,5 +252,37 @@ class TestRefsListingFailureIsNotSilent(E2ETestCase):
         )
 
 
+class TestAutoGcDoesNotDeadlock(E2ETestCase):
+    """`seafile.autogc` must actually compact, not stall on its own lock.
+
+    cmd_push held RemoteLock and then called compact_repository, which acquires
+    the same lock again.  RemoteLock is not reentrant, so the inner acquire read
+    back the caller's own unexpired lease, waited out the full timeout and
+    failed -- and that failure was swallowed.  Auto-GC therefore never compacted
+    anything, and every threshold-crossing push stalled for the whole timeout.
+    """
+
+    def test_push_compacts_once_threshold_is_reached(self):
+        src = init_repo(self.work / "src_autogc", self.env)
+        run_git(["config", "seafile.autogc", "true"], src, self.env)
+        run_git(["config", "seafile.gcthreshold", "2"], src, self.env)
+
+        commit_file(src, "a.txt", "one\n", "c1", self.env)
+        run_git(["remote", "add", "origin", self.url("autogc")], src, self.env)
+        run_git(["push", "-u", "origin", "main"], src, self.env)
+
+        # Second push brings the pack count to the configured threshold.
+        commit_file(src, "b.txt", "two\n", "c2", self.env)
+        run_git(["push", "origin", "main"], src, self.env)
+
+        packs = sorted(p for p in self.stub.packs("/autogc") if p.endswith(".pack"))
+        self.assertEqual(len(packs), 1, f"auto-GC did not compact the remote: {packs}")
+
+        # The repository must still be intact and cloneable after compaction.
+        dst = self.work / "clone_autogc"
+        run_git(["clone", self.url("autogc"), str(dst)], self.work, self.env)
+        self.assertIn("c2", run_git(["log", "--oneline"], dst, self.env).stdout)
+
+
 if __name__ == "__main__":
     unittest.main()
