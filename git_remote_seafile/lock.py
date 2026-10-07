@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
-import os
 import socket
 import sys
 import time
@@ -38,6 +38,9 @@ class RemoteLock:
         self.timeout = timeout
         self.lease = lease
         self.acquired = False
+        # (owner, machine) of the lease we wrote, so that release() can tell our
+        # own lock apart from one another machine has since taken over.
+        self._identity: tuple[str, str] | None = None
 
     def _get_lock_info(self) -> dict[str, Any] | None:
         raw = self.client.get_file_text(self.repo_id, self.lock_file_path)
@@ -48,11 +51,25 @@ class RemoteLock:
         except Exception:
             return None
 
+    def _owner_id(self) -> str:
+        """A stable, non-secret identifier for the credentials in use.
+
+        The lock payload is stored inside the repository, where anyone with
+        access can read it, so it must not carry anything derived from the API
+        token in the clear -- the previous implementation wrote the token's first
+        eight characters there.  A truncated hash still identifies one client
+        consistently without disclosing the secret.
+        """
+        tok = getattr(self.client, "token", None)
+        if not tok:
+            return "user"
+        return hashlib.sha256(str(tok).encode("utf-8")).hexdigest()[:8]
+
     def acquire(self) -> None:
         start_time = time.time()
         hostname = socket.gethostname()
-        tok = getattr(self.client, "token", None)
-        owner = str(tok)[:8] if tok is not None else "user"
+        owner = self._owner_id()
+        self._identity = (owner, hostname)
 
         while True:
             info = self._get_lock_info()
@@ -105,12 +122,26 @@ class RemoteLock:
     def release(self) -> None:
         if not self.acquired:
             return
+        self.acquired = False
+
+        # Only remove a lock that is still ours.  If our lease expired while we
+        # were working, another machine may have taken it in the meantime, and
+        # deleting then would revoke a lock we no longer hold -- letting two
+        # writers into the repository at once.  A missing or unreadable lock
+        # file tells us nothing, so fall through to the delete in that case.
+        info = self._get_lock_info()
+        if info is not None and (info.get("owner"), info.get("machine")) != self._identity:
+            sys.stderr.write(
+                "Not releasing the remote lock: it is now held by "
+                f"'{info.get('owner')}' on '{info.get('machine')}'.\n"
+            )
+            sys.stderr.flush()
+            return
+
         try:
             self.client.delete_entry(self.repo_id, self.lock_file_path)
         except Exception:
             pass
-        finally:
-            self.acquired = False
 
     def __enter__(self) -> RemoteLock:
         self.acquire()

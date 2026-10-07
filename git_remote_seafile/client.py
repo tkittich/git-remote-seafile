@@ -190,11 +190,22 @@ class SeafileClient:
                 if known is not None:
                     known.add((repo_id, current))
                 continue
-            entries = self.list_dir(repo_id, current)
-            if entries is not None:
+
+            # The mkdir did not report success.  Before giving up, check whether
+            # the directory is there anyway -- it may have been created
+            # concurrently, or the server may answer with an unexpected status.
+            # Note that list_dir returns [] (never None) for a missing
+            # directory, so testing a listing for emptiness silently reports
+            # success for a directory that was never created, and caches it as
+            # known so it is never retried.
+            if self.dir_exists(repo_id, current):
                 if known is not None:
                     known.add((repo_id, current))
                 continue
+
+            raise SeafileAPIError(
+                f"Failed to create directory {current}: HTTP {resp.status_code} {resp.text}"
+            )
         return True
 
     def get_file_text(self, repo_id: str, file_path: str) -> str | None:

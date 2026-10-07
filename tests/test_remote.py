@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import os
@@ -12,7 +13,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from git_remote_seafile.client import SeafileClient
+from git_remote_seafile.client import SeafileAPIError, SeafileClient
 from git_remote_seafile.gc import compact_repository
 from git_remote_seafile.git_util import (
     get_git_config_bool,
@@ -587,6 +588,69 @@ class TestConcurrencyAndLocking(unittest.TestCase):
         first_worker = results[0].split("_")[0]
         self.assertEqual(results[1], f"{first_worker}_end")
 
+    def test_release_does_not_delete_a_lock_another_machine_took_over(self):
+        """A lease can expire mid-operation, and someone else then holds it.
+
+        Releasing unconditionally would delete *their* lock, letting two writers
+        into the repository at once.
+        """
+        mock_client = MagicMock()
+        mock_client.token = "token123"
+        mock_client.get_file_text.return_value = None
+
+        lock = RemoteLock(mock_client, "repo1", "/path", timeout=5, lease=60)
+        lock.acquire()
+        self.assertTrue(lock.acquired)
+
+        # Our lease expired while we worked; another machine took the lock.
+        mock_client.get_file_text.return_value = json.dumps({
+            "owner": "someone-else",
+            "machine": "otherhost",
+            "timestamp": time.time(),
+            "lease": 60,
+        })
+        err = io.StringIO()
+        with patch("sys.stderr", err):
+            lock.release()
+
+        mock_client.delete_entry.assert_not_called()
+        self.assertFalse(lock.acquired)
+        self.assertIn("otherhost", err.getvalue())
+
+    def test_release_removes_its_own_lock(self):
+        mock_client = MagicMock()
+        mock_client.token = "token123"
+        mock_client.get_file_text.return_value = None
+
+        lock = RemoteLock(mock_client, "repo1", "/path", timeout=5, lease=60)
+        lock.acquire()
+        # The payload on the remote is our own.
+        mock_client.get_file_text.return_value = mock_client.upload_file.call_args[0][3].decode("utf-8")
+        lock.release()
+
+        mock_client.delete_entry.assert_called_once_with("repo1", "/path/.git-lock.json")
+
+    def test_lock_payload_does_not_leak_the_api_token(self):
+        """The payload is stored in the repository, so it must not carry the token.
+
+        The previous implementation wrote the token's first eight characters
+        into it.
+        """
+        secret = "s3cr3t-token-value"
+        mock_client = MagicMock()
+        mock_client.token = secret
+        mock_client.get_file_text.return_value = None
+
+        lock = RemoteLock(mock_client, "repo1", "/path", timeout=5, lease=60)
+        lock.acquire()
+
+        payload = mock_client.upload_file.call_args[0][3].decode("utf-8")
+        self.assertNotIn("s3cr3t", payload)
+        self.assertEqual(
+            json.loads(payload)["owner"],
+            hashlib.sha256(secret.encode("utf-8")).hexdigest()[:8],
+        )
+
 
 class TestRemoteGC(unittest.TestCase):
     def test_gc_skipped_below_threshold(self):
@@ -883,6 +947,47 @@ class TestSeafileClientOperations(unittest.TestCase):
         client.session.post.reset_mock()
         self.assertTrue(client.mkdir_p("repo1", "/existing-folder"))
         self.assertEqual(client.session.post.call_count, 0)
+
+    def test_mkdir_p_fails_loudly_when_the_directory_was_not_created(self):
+        """A rejected mkdir must not be reported as success.
+
+        list_dir answers [] (never None) for a missing directory, so an
+        emptiness test always passes: a failed mkdir used to be cached as
+        created, after which every upload into it failed for no visible reason.
+        """
+        client = SeafileClient.__new__(SeafileClient)
+        client.server_url = "https://seafile.example.com"
+        client.timeout = 10
+        client.session = MagicMock()
+        client._known_dirs = set()
+
+        # The directory does not exist and the server refuses to create it.
+        client.session.get.return_value = MagicMock(status_code=404)
+        client.session.post.return_value = MagicMock(status_code=500, text="boom")
+
+        with self.assertRaises(SeafileAPIError):
+            client.mkdir_p("repo1", "/a/b")
+
+        self.assertNotIn(("repo1", "/a/b"), client._known_dirs)
+
+    def test_mkdir_p_succeeds_when_the_directory_appears_concurrently(self):
+        """A rejected mkdir is still fine if the directory turns up anyway."""
+        client = SeafileClient.__new__(SeafileClient)
+        client.server_url = "https://seafile.example.com"
+        client.timeout = 10
+        client.session = MagicMock()
+        client._known_dirs = set()
+
+        # First existence check says "absent"; the mkdir is rejected; the
+        # follow-up check finds it (someone else created it in between).
+        client.session.get.side_effect = [
+            MagicMock(status_code=404),
+            MagicMock(status_code=200),
+        ]
+        client.session.post.return_value = MagicMock(status_code=500, text="boom")
+
+        self.assertTrue(client.mkdir_p("repo1", "/a"))
+        self.assertIn(("repo1", "/a"), client._known_dirs)
 
 
 class TestCLISubcommands(unittest.TestCase):
