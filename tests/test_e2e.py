@@ -318,5 +318,49 @@ class TestForcePushOverDivergedHistory(E2ETestCase):
         self.assertIn(a_head, ls.stdout, f"remote main is not A's HEAD:\n{ls.stdout}")
 
 
+class TestHarnessDoesNotNeedAmbientGitIdentity(E2ETestCase):
+    """`commit_file` must not depend on the machine's git identity.
+
+    A clone does not inherit the local ``user.name``/``user.email`` that
+    ``init_repo()`` sets, and CI runners have no global identity -- so
+    committing in a clone failed there with "Author identity unknown" while
+    passing on developer machines and on GitHub's macOS images.
+
+    Every other E2E test commits only in a repository that ``init_repo()``
+    configured, which is why exactly one test failed, and only on Linux and
+    Windows.  This test blanks every config source that could supply an
+    identity, so the dependency cannot come back unnoticed.
+    """
+
+    def test_commit_in_a_clone_succeeds_without_any_ambient_identity(self):
+        src = init_repo(self.work / "src_ident", self.env)
+        commit_file(src, "a.txt", "base\n", "base commit", self.env)
+        run_git(["remote", "add", "origin", self.url("ident")], src, self.env)
+        run_git(["push", "-u", "origin", "main"], src, self.env)
+
+        clone = self.work / "clone_ident"
+        run_git(["clone", self.url("ident"), str(clone)], self.work, self.env)
+
+        # Hide every config source that could supply an identity.
+        empty_cfg = self.work / "empty-gitconfig"
+        empty_cfg.write_text("", encoding="utf-8")
+        clean_env = dict(self.env)
+        clean_env["GIT_CONFIG_GLOBAL"] = str(empty_cfg)
+        clean_env["GIT_CONFIG_SYSTEM"] = str(empty_cfg)
+
+        self.assertEqual(
+            run_git(["config", "user.email"], clone, clean_env, check=False).stdout.strip(),
+            "",
+            "precondition: the clone must have no identity of its own",
+        )
+
+        commit_file(clone, "b.txt", "from the clone\n", "commit from the clone", clean_env)
+
+        self.assertIn(
+            "commit from the clone",
+            run_git(["log", "--oneline"], clone, clean_env).stdout,
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

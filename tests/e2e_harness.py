@@ -378,7 +378,19 @@ def init_repo(path: Path, env: dict) -> Path:
 def commit_file(repo: Path, name: str, content: str, message: str, env: dict) -> None:
     (repo / name).write_text(content, encoding="utf-8")
     run_git(["add", "--", name], repo, env)
-    run_git(["commit", "-q", "-m", message], repo, env)
+    # Pass the identity explicitly instead of relying on ambient config.  A
+    # clone does not inherit the local user.name/user.email that init_repo()
+    # sets, and CI runners have no global identity -- GitHub's macOS images do,
+    # which is why this failed only on Linux and Windows.
+    run_git(
+        [
+            "-c", "user.email=e2e@example.com",
+            "-c", "user.name=E2E Tester",
+            "commit", "-q", "-m", message,
+        ],
+        repo,
+        env,
+    )
 
 
 __all__ = [
