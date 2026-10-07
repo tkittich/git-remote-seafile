@@ -1,4 +1,4 @@
-name: Publish to PyPI
+name: Release
 
 on:
   release:
@@ -66,3 +66,28 @@ jobs:
         echo "    PUBLISH_TO_PYPI repository variable to 'true'."
         echo "Then re-run this workflow, or move the tag to a commit that includes"
         echo "the current workflow file."
+
+  # Pushing a tag used to leave nothing behind but a bare tag: a GitHub Release
+  # is a separate object and had to be created by hand every time, which is how
+  # v0.3.0 ended up with a tag but no release.  Create it automatically from the
+  # tag, using the workflow's own token, so no personal token is involved.
+  #
+  # Separate job so that only this one gets `contents: write`; the publish job
+  # above runs a third-party action and keeps the narrower permission set.
+  github-release:
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+    steps:
+    - name: Create the GitHub Release
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+          echo "Release $GITHUB_REF_NAME already exists; leaving it untouched."
+        else
+          gh release create "$GITHUB_REF_NAME" \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes
+        fi
