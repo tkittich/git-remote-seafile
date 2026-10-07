@@ -42,7 +42,7 @@ Instead of syncing the local `.git/` folder, `git-remote-seafile` communicates d
 > If your local repository directory is actively watched by the Seafile desktop client, the sync daemon will continuously monitor, lock, and re-index the internal `.git/` files on every commit or branch switch. `git-remote-seafile` communicates directly with your Seafile server over HTTP/HTTPS Web API v2.1—just like GitHub or GitLab. Keeping your working folder unsynced allows Git to operate at native filesystem speed with zero desktop client interference.
 > 
 > **Need to store remotes in a synced library?**
-> If you store remotes in a synced library like `Documents`, use an ignored subfolder like **`seafile-git/`** (`seafile://Documents/seafile-git/myproject`) and add `seafile-git/` to `<library-root>/seafile-ignore.txt`. The built-in pre-flight guardrails will automatically verify this and guide you! Test your setup anytime with `git-remote-seafile check-safety <seafile://url>`.
+> If you store remotes in a synced library like `Documents`, store them under an ignored subfolder such as **`seafile-git/`** (`seafile://Documents/seafile-git/myproject`) or any folder name of your choice (e.g. `git-vault/`), and add that subfolder name to `<library-root>/seafile-ignore.txt`. The name `seafile-git/` is not mandatory—any folder name works as long as it is ignored! The built-in pre-flight guardrails will automatically verify this and guide you. Test your setup anytime with `git-remote-seafile check-safety <seafile://url>`.
 
 ---
 
@@ -122,7 +122,7 @@ Before pushing for the first time, create a library on your Seafile server to ho
 1. Open the Seafile Web UI (e.g. `https://seafile.example.com`).
 2. Click **New Library** and choose any name you like (e.g. `code`, `git-repos`, or `projects`). We will use `code` in the examples below.
 3. **Important**: Do **not** sync this library in your desktop client applet. Leave it in the cloud to prevent local sync interference.
-*(Alternatively, to store remotes inside an existing synced library like `Documents`, see the `seafile-git/` workflow in the User Guide).*
+*(Alternatively, to store remotes inside an existing synced library like `Documents`, see the ignored subfolder workflow (e.g. `seafile-git/`) in the User Guide).*
 
 ### 4. Push Any Repository
 ```bash
