@@ -5,11 +5,11 @@ from __future__ import annotations
 import difflib
 import fnmatch
 import os
-import sqlite3
 import sys
 from pathlib import Path
 
 from .git_util import get_git_config_bool, run_git
+from .sqlite_read import open_live_sqlite_ro
 
 
 class SafetyError(Exception):
@@ -90,32 +90,31 @@ def discover_local_synced_libraries() -> list[dict]:
     seen_ids = set()
 
     for rdb in candidates:
-        if not rdb.is_file():
-            continue
-        try:
-            con = sqlite3.connect(f"file:{rdb.as_posix()}?mode=ro", uri=True)
-            props: dict[str, dict[str, str]] = {}
-            for rid, k, v in con.execute("SELECT repo_id, key, value FROM RepoProperty"):
-                props.setdefault(rid, {})[k] = v
-            con.close()
+        props: dict[str, dict[str, str]] = {}
+        with open_live_sqlite_ro(rdb) as con:
+            if con is None:
+                continue
+            try:
+                for rid, k, v in con.execute("SELECT repo_id, key, value FROM RepoProperty"):
+                    props.setdefault(rid, {})[k] = v
+            except Exception:
+                continue
 
-            for rid, kv in props.items():
-                if rid in seen_ids:
-                    continue
-                wt = kv.get("worktree")
-                if wt:
-                    wt_path = Path(wt).resolve()
-                    if wt_path.is_dir():
-                        seen_ids.add(rid)
-                        results.append({
-                            "repo_id": rid,
-                            "worktree": wt_path,
-                            "name": wt_path.name,
-                            "server_url": kv.get("server-url", ""),
-                            "username": kv.get("username", ""),
-                        })
-        except Exception:
-            continue
+        for rid, kv in props.items():
+            if rid in seen_ids:
+                continue
+            wt = kv.get("worktree")
+            if wt:
+                wt_path = Path(wt).resolve()
+                if wt_path.is_dir():
+                    seen_ids.add(rid)
+                    results.append({
+                        "repo_id": rid,
+                        "worktree": wt_path,
+                        "name": wt_path.name,
+                        "server_url": kv.get("server-url", ""),
+                        "username": kv.get("username", ""),
+                    })
 
     return results
 

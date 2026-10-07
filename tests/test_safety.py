@@ -2,6 +2,7 @@
 
 import io
 import os
+import sqlite3
 import sys
 import tempfile
 import unittest
@@ -236,6 +237,64 @@ class TestSafetyGuardrails(unittest.TestCase):
         self.assertIn("Cannot use the library root '/'", err_output)
         # Verify RemoteLock was never instantiated
         h.client.upload_file.assert_not_called()
+
+
+class TestDiscoverLocalSyncedLibraries(unittest.TestCase):
+    """The client runs in WAL mode, so the rows sit in repo.db-wal.
+
+    A read that copied only repo.db would find no libraries at all, and the
+    pre-flight check would then silently pass on a worktree that is in fact
+    inside a synced library -- which is the situation the check exists to catch.
+    """
+
+    def _seed(self, home: Path, worktree: Path, journal: str) -> sqlite3.Connection:
+        ccnet = home / "ccnet"
+        ccnet.mkdir(parents=True, exist_ok=True)
+        worktree.mkdir(parents=True, exist_ok=True)
+        con = sqlite3.connect(str(ccnet / "repo.db"))
+        con.execute(f"PRAGMA journal_mode={journal}")
+        con.execute("CREATE TABLE RepoProperty (repo_id TEXT, key TEXT, value TEXT)")
+        con.executemany(
+            "INSERT INTO RepoProperty VALUES (?,?,?)",
+            [
+                ("repo-1", "worktree", str(worktree)),
+                ("repo-1", "server-url", "https://seafile.example"),
+                ("repo-1", "username", "alice"),
+            ],
+        )
+        con.commit()
+        return con  # left open: stands in for the running desktop client
+
+    def test_finds_library_while_client_holds_a_wal_database_open(self):
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td) / "home"
+            worktree = Path(td) / "MyLibrary"
+            con = self._seed(home, worktree, "wal")
+            try:
+                self.assertTrue(
+                    (home / "ccnet" / "repo.db-wal").is_file(),
+                    "precondition: the rows must still be sitting in the WAL",
+                )
+                with patch("pathlib.Path.home", return_value=home):
+                    libs = discover_local_synced_libraries()
+                self.assertEqual(len(libs), 1, f"expected the synced library, got {libs}")
+                self.assertEqual(libs[0]["repo_id"], "repo-1")
+                self.assertEqual(libs[0]["worktree"], worktree.resolve())
+                self.assertEqual(libs[0]["username"], "alice")
+            finally:
+                con.close()
+
+    def test_finds_library_in_rollback_journal_mode(self):
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td) / "home"
+            worktree = Path(td) / "OtherLibrary"
+            con = self._seed(home, worktree, "delete")
+            try:
+                with patch("pathlib.Path.home", return_value=home):
+                    libs = discover_local_synced_libraries()
+                self.assertEqual([lib["repo_id"] for lib in libs], ["repo-1"])
+            finally:
+                con.close()
 
 
 if __name__ == "__main__":

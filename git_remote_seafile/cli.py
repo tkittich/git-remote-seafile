@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 from .helper import RemoteHelper
 from .client import SeafileClient
+from .sqlite_read import open_live_sqlite_ro
 
 
 def print_help() -> None:
@@ -195,8 +196,7 @@ def main() -> int:
         target_path = Path(args[1]).resolve()
         try:
             client = SeafileClient()
-            # Try to resolve against accounts.db libraries
-            import sqlite3
+            # Try to resolve against repo.db libraries
             candidates = []
             for ini_path in [Path.home() / "ccnet" / "seafile.ini", Path.home() / ".ccnet" / "seafile.ini"]:
                 if ini_path.is_file():
@@ -214,20 +214,23 @@ def main() -> int:
                 Path.home() / "Library" / "Application Support" / "Seafile" / "repo.db",
             ])
             for rdb in candidates:
-                if rdb.is_file():
-                    con = sqlite3.connect(f"file:{rdb.as_posix()}?mode=ro", uri=True)
-                    props = {}
-                    for rid, k, v in con.execute("SELECT repo_id, key, value FROM RepoProperty"):
-                        props.setdefault(rid, {})[k] = v
-                    con.close()
-                    for rid, kv in props.items():
-                        wt = kv.get("worktree")
-                        if wt and target_path.is_relative_to(Path(wt).resolve()):
-                            rel = target_path.relative_to(Path(wt).resolve())
-                            lib_name = Path(wt).name
-                            server_host = client.server_url.replace("https://", "").replace("http://", "")
-                            print(f"seafile://{server_host}/{lib_name}/{rel.as_posix()}")
-                            return 0
+                props: dict[str, dict[str, str]] = {}
+                with open_live_sqlite_ro(rdb) as con:
+                    if con is None:
+                        continue
+                    try:
+                        for rid, k, v in con.execute("SELECT repo_id, key, value FROM RepoProperty"):
+                            props.setdefault(rid, {})[k] = v
+                    except Exception:
+                        continue
+                for rid, kv in props.items():
+                    wt = kv.get("worktree")
+                    if wt and target_path.is_relative_to(Path(wt).resolve()):
+                        rel = target_path.relative_to(Path(wt).resolve())
+                        lib_name = Path(wt).name
+                        server_host = client.server_url.replace("https://", "").replace("http://", "")
+                        print(f"seafile://{server_host}/{lib_name}/{rel.as_posix()}")
+                        return 0
             print(f"Could not match '{target_path}' to any local Seafile library worktree.")
             return 1
         except Exception as ex:

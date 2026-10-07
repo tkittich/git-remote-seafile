@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import json
 import os
-import sqlite3
 import sys
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse, urlunparse
 
 import requests
+
+from .sqlite_read import open_live_sqlite_ro
 
 
 class SeafileAuthError(Exception):
@@ -84,10 +85,11 @@ class SeafileClient:
             Path.home() / ".config" / "seafile" / "accounts.db",
         ])
         for db_path in candidates:
-            if db_path.is_file():
+            row = None
+            with open_live_sqlite_ro(db_path) as con:
+                if con is None:
+                    continue
                 try:
-                    con = sqlite3.connect(f"file:{db_path.as_posix()}?mode=ro", uri=True)
-                    row = None
                     if self.server_url:
                         host = urlparse(self.server_url).netloc
                         row = con.execute(
@@ -96,13 +98,12 @@ class SeafileClient:
                         ).fetchone()
                     if not row:
                         row = con.execute("SELECT url, token FROM Accounts ORDER BY lastVisited DESC LIMIT 1").fetchone()
-                    con.close()
-                    if row and row[0] and row[1]:
-                        self.server_url = row[0].rstrip("/")
-                        self.token = row[1]
-                        return
                 except Exception:
                     continue
+            if row and row[0] and row[1]:
+                self.server_url = row[0].rstrip("/")
+                self.token = row[1]
+                return
 
         if not self.server_url or not self.token:
             raise SeafileAuthError(
