@@ -169,5 +169,88 @@ class TestGcPreservesNestedRefs(E2ETestCase):
         self.assertIn("topic only commit", log)
 
 
+class TestGcRefusesUnsafeCompaction(E2ETestCase):
+    """gc must never delete packfiles it cannot prove are superseded.
+
+    compact_repository mirrors remote refs into a scratch bare repo so that
+    ``git repack -a -d`` can tell reachable objects from garbage.  If the ref
+    listing fails, the mirror comes up empty, every object looks unreachable,
+    and gc deletes the lot -- while reporting success.
+    """
+
+    def test_gc_refuses_when_ref_listing_is_empty(self):
+        src = init_repo(self.work / "src_gcunsafe", self.env)
+        commit_file(src, "a.txt", "base\n", "base commit", self.env)
+        run_git(["remote", "add", "origin", self.url("gcunsafe")], src, self.env)
+        run_git(["push", "-u", "origin", "main"], src, self.env)
+        commit_file(src, "b.txt", "more\n", "second commit", self.env)
+        run_git(["push", "origin", "main"], src, self.env)
+
+        before = sorted(p for p in self.stub.packs("/gcunsafe") if p.endswith(".pack"))
+        self.assertGreaterEqual(len(before), 2, f"need >=2 packs to compact, got {before}")
+
+        # A transient failure on the refs listing makes a populated repo look
+        # ref-less.  gc must not treat that as "everything is unreachable".
+        self.stub.faults["dir_404"] = "refs/"
+        res = run_helper(["gc", self.url("gcunsafe")], self.work, self.env, check=False)
+
+        after = sorted(p for p in self.stub.packs("/gcunsafe") if p.endswith(".pack"))
+        self.assertEqual(after, before, "gc destroyed remote packfiles after an empty ref listing")
+        self.assertNotEqual(res.returncode, 0, f"gc reported success:\n{res.stdout}\n{res.stderr}")
+
+
+class TestRefsListingFailureIsNotSilent(E2ETestCase):
+    """A failed refs listing must not be reported as an empty repository.
+
+    Seafile answers 404 for a directory that does not exist, which is the
+    correct answer for a brand-new repo.  But the same status is produced by a
+    transient failure, and the helper cannot tell them apart -- so a populated
+    repo silently looks empty and clone/fetch/ls-remote all "succeed" while
+    doing nothing.
+    """
+
+    def _seed(self, name: str) -> None:
+        src = init_repo(self.work / f"src_{name}", self.env)
+        commit_file(src, "a.txt", "hello\n", "initial commit", self.env)
+        run_git(["remote", "add", "origin", self.url(name)], src, self.env)
+        run_git(["push", "-u", "origin", "main"], src, self.env)
+
+    def test_ls_remote_fails_loudly_when_refs_listing_fails(self):
+        self._seed("refs404a")
+        self.stub.faults["dir_404"] = "refs/"
+        proc = run_git(["ls-remote", self.url("refs404a")], self.work, self.env, check=False)
+        self.assertNotEqual(
+            proc.returncode, 0,
+            f"ls-remote claimed success on a failed refs listing:\n{proc.stdout}",
+        )
+
+    def test_clone_does_not_silently_produce_an_empty_repo(self):
+        self._seed("refs404b")
+        self.stub.faults["dir_404"] = "refs/"
+        proc = run_git(
+            ["clone", self.url("refs404b"), str(self.work / "clone_refs404")],
+            self.work, self.env, check=False,
+        )
+        self.assertNotEqual(
+            proc.returncode, 0,
+            f"clone claimed success while the refs listing had failed:\n{proc.stderr}",
+        )
+
+    def test_genuinely_empty_remote_still_clones_as_empty(self):
+        """Guard against a false positive: a new, empty remote is not an error.
+
+        The empty-listing check must only fire when the object store proves the
+        repository is not empty, otherwise a brand-new remote becomes unusable.
+        """
+        proc = run_git(
+            ["clone", self.url("brandnew"), str(self.work / "clone_brandnew")],
+            self.work, self.env, check=False,
+        )
+        self.assertEqual(
+            proc.returncode, 0,
+            f"cloning a new empty remote failed:\n{proc.stderr}",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

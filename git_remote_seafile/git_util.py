@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import tempfile
 from pathlib import Path
@@ -123,7 +124,16 @@ def create_packfile(object_shas: list[str]) -> tuple[str, bytes, bytes]:
 
 
 def install_packfile(pack_name: str, pack_bytes: bytes, idx_bytes: bytes | None = None) -> None:
-    """Save a packfile into the local repository's .git/objects/pack/ directory."""
+    """Install a packfile into the local repository's .git/objects/pack/.
+
+    The pack and its index are staged in a scratch directory and only moved to
+    their final names once both are complete, so ``os.replace`` publishes them
+    atomically.  This matters because cmd_fetch decides whether to download a
+    pack by checking whether a file of that *name* already exists: a truncated
+    .pack written straight to the final path would never be retried and would
+    poison the object store permanently.  Nothing may appear at the final path
+    until it is known-good.
+    """
     git_dir = get_git_dir()
     pack_dir = git_dir / "objects" / "pack"
     pack_dir.mkdir(parents=True, exist_ok=True)
@@ -132,15 +142,33 @@ def install_packfile(pack_name: str, pack_bytes: bytes, idx_bytes: bytes | None 
     target_pack = pack_dir / f"{base_name}.pack"
     target_idx = pack_dir / f"{base_name}.idx"
 
-    target_pack.write_bytes(pack_bytes)
+    # Stage beside objects/ rather than inside objects/pack: git scans that
+    # directory for pack-*.pack / pack-*.idx, and "git index-pack -o" insists
+    # that the index it writes is named *.idx -- so a staged file cannot be
+    # renamed out of the way there.  A sibling of objects/ is still on the same
+    # filesystem, which is what keeps the final os.replace atomic.
+    staging_dir = Path(tempfile.mkdtemp(prefix="grs-staging-", dir=str(git_dir)))
+    try:
+        staged_pack = staging_dir / f"{base_name}.pack"
+        staged_idx = staging_dir / f"{base_name}.idx"
 
-    if idx_bytes:
-        target_idx.write_bytes(idx_bytes)
-    else:
-        # Generate index locally
-        _, err, code = run_git(["index-pack", "-o", str(target_idx), str(target_pack)])
-        if code != 0:
-            raise GitError(f"git index-pack failed on installed pack: {err.decode('utf-8', errors='replace')}")
+        staged_pack.write_bytes(pack_bytes)
+
+        if idx_bytes:
+            staged_idx.write_bytes(idx_bytes)
+        else:
+            # Generate index locally
+            _, err, code = run_git(["index-pack", "-o", str(staged_idx), str(staged_pack)])
+            if code != 0:
+                raise GitError(f"git index-pack failed on installed pack: {err.decode('utf-8', errors='replace')}")
+
+        # Both artefacts are complete; publish them.
+        os.replace(staged_idx, target_idx)
+        os.replace(staged_pack, target_pack)
+    finally:
+        # After a successful publish the staged files have been renamed away;
+        # after a failure this is what keeps the final path clean for a retry.
+        shutil.rmtree(staging_dir, ignore_errors=True)
 
 
 def get_git_config(key: str, default: str | None = None) -> str | None:

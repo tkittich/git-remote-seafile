@@ -76,6 +76,20 @@ class RemoteHelper:
         clean_rel = rel_path.strip("/")
         return f"{self.repo_path}/{clean_rel}".rstrip("/")
 
+    def _repository_has_objects(self) -> bool:
+        """True if the remote already holds at least one packfile.
+
+        Used to tell a genuinely empty repository apart from one whose ref
+        listing failed.  Returns False when the question cannot be answered, so
+        that a brand-new repository -- whose objects/pack does not exist yet --
+        is never mistaken for a broken one.
+        """
+        try:
+            entries = self.client.list_dir(self.repo_id, self._full_path("objects/pack"))
+        except Exception:
+            return False
+        return any(e.get("name", "").endswith(".pack") for e in entries)
+
     def cmd_capabilities(self) -> None:
         """Report supported capabilities to Git."""
         sys.stdout.write("fetch\n")
@@ -91,10 +105,25 @@ class RemoteHelper:
         # whose names contain a slash ("refs/heads/feature/auth") are included.
         # A single-level listing would hide them -- and a hidden ref is not just
         # missing from the advert, it is also treated as garbage by compaction.
+        listed_any = False
         for namespace in REF_NAMESPACES:
             for ref_name, sha in iter_refs(self.client, self.repo_id, self.repo_path, namespace):
                 self._refs_cache[ref_name] = sha
                 sys.stdout.write(f"{sha} {ref_name}\n")
+                listed_any = True
+
+        # An empty ref listing is the correct answer for a brand-new repository.
+        # But Seafile reports a missing directory as 404, which is also what a
+        # transient failure looks like, and from the listing alone the two are
+        # indistinguishable.  So cross-check the object store: a repository that
+        # already holds packfiles is not empty, and advertising it as empty makes
+        # clone/fetch/ls-remote quietly do nothing while exiting 0.
+        if not listed_any and self._repository_has_objects():
+            raise SeafileAPIError(
+                f"{self.library_name}:{self.repo_path} contains packfiles but no refs could be "
+                "listed. Refusing to report an empty repository -- this is usually a transient "
+                "server error. Retry, or run 'git-remote-seafile test <url>' to diagnose."
+            )
 
         # 2. Read HEAD symbolic ref
         head_path = self._full_path("HEAD")

@@ -165,5 +165,35 @@ class TestGitUtilErrorHandling(unittest.TestCase):
             create_packfile(["abcd1234abcd1234abcd1234abcd1234abcd1234"])
 
 
+class TestInstallPackfileAtomicity(unittest.TestCase):
+    """A failed install must not leave a partial packfile at the final path.
+
+    cmd_fetch decides whether to download a pack by checking whether a file of
+    that *name* already exists.  A truncated .pack left behind by a failed
+    install is therefore never retried and poisons the object store for good,
+    so the final path must only ever be populated by a complete, verified pack.
+    """
+
+    def test_failed_install_leaves_no_packfile_behind(self):
+        with tempfile.TemporaryDirectory() as td:
+            with patch("git_remote_seafile.git_util.get_git_dir", return_value=Path(td)):
+                with self.assertRaises(GitError):
+                    install_packfile("pack-deadbeef.pack", b"this is not a packfile", None)
+
+            pack_dir = Path(td) / "objects" / "pack"
+            leftovers = sorted(p.name for p in pack_dir.glob("pack-deadbeef*")) if pack_dir.is_dir() else []
+            self.assertEqual(leftovers, [], f"partial packfile left at the final path: {leftovers}")
+
+    def test_failed_install_leaves_no_stray_temp_files(self):
+        with tempfile.TemporaryDirectory() as td:
+            with patch("git_remote_seafile.git_util.get_git_dir", return_value=Path(td)):
+                with self.assertRaises(GitError):
+                    install_packfile("pack-deadbeef.pack", b"still not a packfile", None)
+
+            pack_dir = Path(td) / "objects" / "pack"
+            all_files = sorted(p.name for p in pack_dir.iterdir()) if pack_dir.is_dir() else []
+            self.assertEqual(all_files, [], f"stray files left in the pack directory: {all_files}")
+
+
 if __name__ == "__main__":
     unittest.main()

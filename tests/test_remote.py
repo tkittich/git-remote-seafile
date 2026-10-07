@@ -600,11 +600,17 @@ class TestRemoteGC(unittest.TestCase):
     @patch("subprocess.run")
     def test_gc_compaction_flow(self, mock_subprocess):
         mock_client = MagicMock()
-        mock_client.list_dir.return_value = [
-            {"name": "pack-1.pack"},
-            {"name": "pack-2.pack"},
-        ]
+        # list_dir must answer per path: the compactor reads both the pack
+        # directory and the ref namespace, and it now refuses to run at all when
+        # no refs can be read -- an empty ref listing is exactly what a failed
+        # request looks like, and compacting on that guess destroys history.
+        mock_client.list_dir.side_effect = lambda repo_id, path: (
+            [{"name": "pack-1.pack"}, {"name": "pack-2.pack"}] if "objects/pack" in path
+            else [{"type": "file", "name": "main"}] if "refs/heads" in path
+            else []
+        )
         mock_client.get_file_bytes.return_value = b"PACK-DATA"
+        mock_client.get_file_text.return_value = "sha-main"
 
         # Mock git pack-objects writing a packfile
         def fake_subprocess(cmd, **kwargs):

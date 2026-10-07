@@ -84,11 +84,25 @@ def compact_repository(
             # here makes its objects look unreachable, and "repack -a -d" would
             # then delete them from the consolidated packfile -- silently and
             # irreversibly.
+            mirrored_refs = 0
             for namespace in REF_NAMESPACES:
                 for ref_name, sha in iter_refs(client, repo_id, clean_repo, namespace):
                     ref_file = bare_repo / ref_name
                     ref_file.parent.mkdir(parents=True, exist_ok=True)
                     ref_file.write_text(f"{sha}\n", encoding="utf-8")
+                    mirrored_refs += 1
+
+            # Compaction is only safe when we know what is reachable.  With no
+            # refs mirrored, "git repack -a -d" treats every object as
+            # unreachable and step 7 deletes the lot.  An empty ref listing is
+            # far more likely to be a failed request than a genuinely empty
+            # repository, so refuse rather than guess: a skipped compaction is
+            # cheap, deleted history is not.
+            if mirrored_refs == 0:
+                raise RuntimeError(
+                    f"refusing to compact {clean_repo}: no refs could be read, so no object can be "
+                    "proven reachable. Nothing was deleted."
+                )
 
             # 5. Run git repack -a -d -l
             if verbose:
@@ -101,11 +115,16 @@ def compact_repository(
             if res.returncode != 0:
                 raise RuntimeError(f"git repack failed: {res.stderr}")
 
-            # 6. Locate the single consolidated packfile
+            # 6. Locate the consolidated packfile
             new_packs = list(local_pack_dir.glob("pack-*.pack"))
-            if len(new_packs) != 1:
-                # If there are still multiple packs (e.g. unreachable objects), keep them all
-                pass
+            if not new_packs:
+                # Repacking produced nothing, so the existing packfiles cannot
+                # be proven superseded.  Deleting them at step 7 would destroy
+                # history, so stop here and leave the remote untouched.
+                raise RuntimeError(
+                    "refusing to compact: repacking produced no packfile, so the existing "
+                    "packfiles cannot be proven superseded. Nothing was deleted."
+                )
 
             if verbose:
                 sys.stderr.write("  Uploading consolidated packfile(s) to Seafile...\n")

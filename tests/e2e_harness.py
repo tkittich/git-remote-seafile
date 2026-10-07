@@ -133,6 +133,12 @@ class _Handler(BaseHTTPRequestHandler):
             if f.get("dir"):
                 return self._send(f["dir"], b"injected failure")
             rid, p = self._rid(), self._query_p()
+            # Simulate a transient 404 on a scoped subset of listings (e.g. the
+            # refs namespace) while the rest of the repo stays readable.  This
+            # is how a healthy-looking server can make a populated repo look
+            # empty.
+            if f.get("dir_404") and f["dir_404"] in p:
+                return self._send(404, b"[]")
             if p != "/" and not self.stub.has_under(rid, p):
                 return self._send(404, b"[]")
             return self._json(self.stub.list_dir(rid, p))
@@ -154,10 +160,15 @@ class _Handler(BaseHTTPRequestHandler):
             return self._send(200, json.dumps(link).encode("utf-8"))
 
         if path.startswith("/raw/"):
-            if f.get("raw"):
-                return self._send(f["raw"], b"injected failure")
             rid, p = path.split("/")[2], _norm(self._query_p())
             self.stub.raw_hits.append(p)
+            if f.get("raw"):
+                return self._send(f["raw"], b"injected failure")
+            # Fail only the pack download, so the ref listing still succeeds.
+            # This isolates the fetch stage: git has been told which objects to
+            # expect, and then the transfer of those objects fails.
+            if f.get("raw_pack") and "/objects/pack/" in p:
+                return self._send(f["raw_pack"], b"injected failure")
             return self._send(200, self.stub.files.get(rid, {}).get(p, b""), "application/octet-stream")
 
         return self._send(404, b"{}")
