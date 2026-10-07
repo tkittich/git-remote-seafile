@@ -13,6 +13,7 @@ from git_remote_seafile.git_util import (
     GitError,
     clean_git_env,
     create_packfile,
+    filter_existing_objects,
     get_git_config,
     get_git_config_bool,
     get_git_config_int,
@@ -92,6 +93,30 @@ class TestGitUtilWithRealGit(unittest.TestCase):
         # Single string exclude
         new_objs_single = get_objects_to_push(c2, exclude_shas=c1)
         self.assertEqual(new_objs, new_objs_single)
+
+    def test_get_objects_to_push_ignores_exclusions_it_does_not_have(self):
+        """An exclusion absent locally must be ignored, not fatal.
+
+        Over diverged history the remote tip is a commit this clone has never
+        fetched, and handing it to "rev-list --not" fails with "bad object" --
+        which made a legitimate force-push impossible.
+        """
+        head = rev_parse("HEAD")
+        missing = "0" * 40
+        self.assertEqual(
+            get_objects_to_push(head, exclude_shas=[missing]),
+            get_objects_to_push(head),
+        )
+
+    def test_filter_existing_objects(self):
+        head = rev_parse("HEAD")
+        missing = "0" * 40
+        self.assertEqual(filter_existing_objects([head, missing]), [head])
+        self.assertEqual(filter_existing_objects([head, head]), [head])  # de-duplicated
+        self.assertEqual(filter_existing_objects(head), [head])          # bare string
+        self.assertEqual(filter_existing_objects([missing]), [])
+        self.assertEqual(filter_existing_objects([]), [])
+        self.assertEqual(filter_existing_objects(None), [])
 
     def test_create_and_install_packfile(self):
         c1 = rev_parse("HEAD")

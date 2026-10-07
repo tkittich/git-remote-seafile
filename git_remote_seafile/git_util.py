@@ -81,15 +81,49 @@ def is_ancestor(ancestor_sha: str, descendant_sha: str) -> bool:
     return code == 0
 
 
+def filter_existing_objects(shas: list[str] | str | None) -> list[str]:
+    """Return those SHAs that exist in the local object store, in order.
+
+    Checked in a single git process, because one call per ref would be
+    needlessly slow on a repository with many branches.
+    """
+    if not shas:
+        return []
+    if isinstance(shas, str):
+        shas = [shas]
+    candidates = list(dict.fromkeys(s for s in shas if s))
+    if not candidates:
+        return []
+
+    proc = subprocess.Popen(
+        ["git", "cat-file", "--batch-check"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    out, _ = proc.communicate(("\n".join(candidates) + "\n").encode("utf-8"))
+
+    existing = []
+    for line in out.decode("utf-8", errors="replace").splitlines():
+        # "<sha> <type> <size>" when present, "<sha> missing" when absent.
+        parts = line.split()
+        if len(parts) >= 2 and parts[1] != "missing":
+            existing.append(parts[0])
+    return existing
+
+
 def get_objects_to_push(local_sha: str, exclude_shas: list[str] | str | None = None) -> list[str]:
-    """Find all git object SHAs reachable from local_sha but not in exclude_shas."""
+    """Find all git object SHAs reachable from local_sha but not in exclude_shas.
+
+    Exclusions that are not in the local object store are ignored rather than
+    handed to git.  Over diverged history the remote tip can be a commit this
+    clone has never fetched, and "rev-list --not <unknown>" fails with
+    "bad object" instead of simply excluding nothing -- which made a legitimate
+    force-push impossible.
+    """
     args = ["rev-list", "--objects", local_sha]
-    if exclude_shas:
-        if isinstance(exclude_shas, str):
-            exclude_shas = [exclude_shas]
-        for ex in exclude_shas:
-            if ex:
-                args.extend(["--not", ex])
+    for ex in filter_existing_objects(exclude_shas):
+        args.extend(["--not", ex])
 
     out, err, code = run_git(args)
     if code != 0:

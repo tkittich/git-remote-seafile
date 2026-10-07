@@ -284,5 +284,39 @@ class TestAutoGcDoesNotDeadlock(E2ETestCase):
         self.assertIn("c2", run_git(["log", "--oneline"], dst, self.env).stdout)
 
 
+class TestForcePushOverDivergedHistory(E2ETestCase):
+    """A force-push must work when the remote tip is unknown locally.
+
+    cmd_push excludes the remote tip from the object set so the pack stays
+    small, but over diverged history that tip is a commit this clone has never
+    fetched.  "git rev-list --not <unknown>" then dies with "bad object", so a
+    perfectly legitimate force-push fails.
+    """
+
+    def test_force_push_succeeds_when_remote_tip_is_not_held_locally(self):
+        # Machine A creates the repository.
+        a = init_repo(self.work / "src_fp_a", self.env)
+        commit_file(a, "a.txt", "base\n", "base commit", self.env)
+        run_git(["remote", "add", "origin", self.url("diverged")], a, self.env)
+        run_git(["push", "-u", "origin", "main"], a, self.env)
+
+        # Machine B clones, commits and pushes.  A never learns of this commit.
+        b = self.work / "clone_fp_b"
+        run_git(["clone", self.url("diverged"), str(b)], self.work, self.env)
+        commit_file(b, "b.txt", "from B\n", "commit from B", self.env)
+        run_git(["push", "origin", "main"], b, self.env)
+
+        # A has diverged from a tip it does not have, and force-pushes over it.
+        commit_file(a, "a2.txt", "from A\n", "commit from A", self.env)
+        proc = run_git(["push", "--force", "origin", "main"], a, self.env, check=False)
+
+        self.assertEqual(proc.returncode, 0, f"force-push failed:\n{proc.stdout}\n{proc.stderr}")
+
+        # The remote branch must now be exactly A's HEAD.
+        a_head = run_git(["rev-parse", "HEAD"], a, self.env).stdout.strip()
+        ls = run_git(["ls-remote", self.url("diverged"), "refs/heads/main"], self.work, self.env)
+        self.assertIn(a_head, ls.stdout, f"remote main is not A's HEAD:\n{ls.stdout}")
+
+
 if __name__ == "__main__":
     unittest.main()
