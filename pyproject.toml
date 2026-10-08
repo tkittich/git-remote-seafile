@@ -8,7 +8,11 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "git-remote-seafile"
-version = "0.3.0"
+# Declared once, in the package.  This used to be a second copy of the same
+# fact -- `version = "0.3.0"` here and `__version__` in __init__.py -- kept in
+# step by a test.  The build reads the package attribute instead; see
+# [tool.setuptools.dynamic] below.
+dynamic = ["version"]
 description = "Transparent Git remote helper for Seafile servers"
 readme = "README.md"
 license = "Apache-2.0"
@@ -41,3 +45,9 @@ git-remote-seafile = "git_remote_seafile.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["git_remote_seafile*"]
+
+[tool.setuptools.dynamic]
+# setuptools resolves this by parsing __init__.py, not by importing the package,
+# as long as __version__ stays a plain string literal.  test_version_consistency
+# keeps both halves of that true.
+version = {attr = "git_remote_seafile.__version__"}
