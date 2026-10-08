@@ -3,45 +3,51 @@
 
 Why this exists: ``python -m unittest discover tests`` is single-threaded, and
 the end-to-end module dominates the run.  Measured on a 12-core / 24-thread
-machine (AMD 5900X), 223 tests:
+machine (AMD 5900X), 268 tests:
 
-    python -m unittest discover tests       170.2 s    <- the baseline
-    this runner,  -j 1                      218.1 s    <- not a baseline; see below
-    this runner,  -j 2                      116.7 s
-    this runner,  -j 4                       67.8 s
-    this runner,  -j 6                       52.3 s
-    this runner, -j 12                       43.1 s    <- default here (one per CPU)
-    this runner, -j 24                       42.5 s
+    python -m unittest discover tests       204.4 s    <- the baseline
+    this runner,  -j 1                      261.1 s    <- not a baseline; see below
+    this runner,  -j 2                      141.2 s
+    this runner,  -j 4                       84.6 s
+    this runner,  -j 6                       66.1 s
+    this runner, -j 12                       52.7 s    <- default here (one per CPU)
+    this runner, -j 24                       50.4 s
+
+Repeated ``-j 12`` runs land between 52.7 s and 56.5 s, so read the column as
+indicative rather than exact.  The ordering, and the shape of the curve, are
+what the numbers are here to show.
 
 ``test_e2e`` is most of the suite because every case shells out to a real
-``git`` and starts a stub HTTP server: its ten classes are about two thirds of
-the total.  So distributing the work takes the wall time down towards the
-longest single unit of work -- 18.8 s here -- and not towards zero.
+``git`` and starts a stub HTTP server: its ten classes are 117.8 s of the 204.4 s
+serial run, close to three fifths.  So distributing the work takes the wall time
+down towards the longest single unit of work -- 37.0 s here -- and not towards
+zero.
 
 ``-j 1`` is *slower* than the plain serial command, and that is the granularity
 argument in miniature: one process per class pays an interpreter start-up and a
-fresh ``import requests`` for each of the 56 targets, about 1.1 s apiece and
-~60 s over the run.  Use ``python -m unittest discover tests`` for a baseline;
+fresh ``import requests`` for each of the 68 targets, about 0.8 s apiece and
+~57 s over the run.  Use ``python -m unittest discover tests`` for a baseline;
 ``-j 1`` is not one.
 
 **Granularity is the test class.**  Not the module, and not the test:
 
-    class granularity, -j 12                43.1 s    <- the default
-    test  granularity, -j 12                70.4 s
+    class granularity, -j 12                52.7 s    <- the default
+    test  granularity, -j 12                89.1 s
 
-* Per module would leave the whole of ``test_e2e`` on one worker -- about 1.5x,
-  which is not worth the complexity.
+* Per module would leave the whole of ``test_e2e`` on one worker, and that module
+  alone takes 117.8 s in a single process -- 2.2x the class-granularity wall time
+  above -- which is not worth the complexity.
 * Per test is *worse*, which is not obvious.  ``E2ETestCase`` does its expensive
   work in ``setUpClass`` (a temp directory, a stub HTTP server, a git
   environment); scheduling per test repeats all of that for every test in the
-  class.  The 223 extra interpreter start-ups cost less than the setup they
+  class.  The 200 extra interpreter start-ups cost less than the setup they
   duplicate.
 
 **The curve flattens early.**  Twelve workers are 1.6x four, not 3x, and 24
-workers buy 0.6 s over 12.  The heavy targets are themselves multi-process --
-each E2E case runs ``git`` several times and serves HTTP -- so a dozen of them
-at once contend for the same cores.  Six to twelve workers is the useful range
-on this machine.
+workers buy only a couple of seconds over 12 -- less than the run-to-run
+spread.  The heavy targets are themselves multi-process -- each E2E case runs
+``git`` several times and serves HTTP -- so a dozen of them at once contend for
+the same cores.  Six to twelve workers is the useful range on this machine.
 
 A class is the smallest thing ``unittest`` can load on its own, and each worker
 is handed the next class the moment it finishes, so one slow class does not

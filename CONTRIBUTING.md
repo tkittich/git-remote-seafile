@@ -45,21 +45,22 @@ python tools/run_tests_parallel.py -k e2e   # only matching classes
 python tools/run_tests_parallel.py --list   # show the units of work
 ```
 
-Measured on a 12-core AMD 5900X, 223 tests, same result either way:
+Measured on a 12-core AMD 5900X, 268 tests, same result either way:
 
 | workers | wall time |
 | ------- | --------- |
-| serial (`python -m unittest discover tests`) | 170.2 s |
-| 2 | 116.7 s |
-| 4 | 67.8 s |
-| 6 | 52.3 s |
-| 12 (the default here) | 43.1 s |
+| serial (`python -m unittest discover tests`) | 204.4 s |
+| 2 | 141.2 s |
+| 4 | 84.6 s |
+| 6 | 66.1 s |
+| 12 (the default here) | 52.7 s |
 
-The wall time is bounded by the slowest single unit of work (18.8 s), not by
+The wall time is bounded by the slowest single unit of work (37.0 s), not by
 throughput, and the curve flattens early: twelve workers are 1.6x four, not 3x,
-because the heavy cases are themselves multi-process. The unit of work is the
-test class — see the module docstring for why per-test scheduling is measurably
-*worse* here.
+because the heavy cases are themselves multi-process. Repeated twelve-worker
+runs land between 52.7 s and 56.5 s, so treat the column as indicative rather
+than exact. The unit of work is the test class — see the module docstring for
+why per-test scheduling is measurably *worse* here.
 
 Note that `-j 1` is *slower* than the serial command above, because it pays an
 interpreter start-up per class. Use the serial command for a baseline.
