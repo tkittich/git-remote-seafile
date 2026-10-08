@@ -1,4 +1,22 @@
 #!/usr/bin/env sh
+# Source-checkout launcher.  Most users run the console script that
+# `pip install` creates; this one exists so the helper can be tried without
+# installing it.
+#
+# It must not assume the interpreter is called `python`.  On macOS and on most
+# Linux distributions the name `python` is either absent or, worse, still
+# Python 2 -- only `python3` is guaranteed.  Naming it wrong made every git
+# operation fail with "python: command not found" from inside the helper.
 DIR="$(cd "$(dirname "$0")/.." && pwd)"
 export PYTHONPATH="$DIR:$PYTHONPATH"
-exec python -m git_remote_seafile.cli "$@"
+
+if command -v python3 >/dev/null 2>&1; then
+    PY=python3
+elif command -v python >/dev/null 2>&1; then
+    PY=python
+else
+    echo "git-remote-seafile: neither python3 nor python is on PATH" >&2
+    exit 127
+fi
+
+exec "$PY" -m git_remote_seafile.cli "$@"

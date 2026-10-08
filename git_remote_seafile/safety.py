@@ -5,7 +5,6 @@ from __future__ import annotations
 import difflib
 import fnmatch
 import os
-import sys
 from pathlib import Path
 
 from .git_util import get_git_config_bool, run_git

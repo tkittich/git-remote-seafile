@@ -14,7 +14,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from git_remote_seafile.client import SeafileAPIError, SeafileClient
-from git_remote_seafile.gc import compact_repository
+from git_remote_seafile.gc import compact_repository, describe_size_delta
 from git_remote_seafile.git_util import (
     get_git_config_bool,
     get_git_config_int,
@@ -92,7 +92,11 @@ class TestRemoteHelper(unittest.TestCase):
         h.client = MagicMock()
         h.repo_id = "repo1"
         h.repo_path = "/git-repo"
-        h._refs_cache = {}
+        # A SHA learned from the ref advertisement.  It is only usable as a push
+        # exclusion while the ref exists on the remote, so a delete has to drop
+        # it -- leaving it behind would have a later push exclude objects on the
+        # authority of a ref that is gone.
+        h._refs_cache = {"refs/heads/old-branch": "stale-sha"}
 
         out = io.StringIO()
         with patch("sys.stdout", out), patch("git_remote_seafile.helper.RemoteLock"):
@@ -101,6 +105,23 @@ class TestRemoteHelper(unittest.TestCase):
         output = out.getvalue()
         self.assertIn("ok refs/heads/old-branch", output)
         h.client.delete_entry.assert_called_with("repo1", "/git-repo/refs/heads/old-branch")
+        self.assertNotIn("refs/heads/old-branch", h._refs_cache)
+
+    def test_a_failed_delete_keeps_the_cached_sha(self):
+        """Nothing was deleted, so the cache is still an accurate picture."""
+        h = RemoteHelper.__new__(RemoteHelper)
+        h.client = MagicMock()
+        h.client.delete_entry.return_value = False
+        h.repo_id = "repo1"
+        h.repo_path = "/git-repo"
+        h._refs_cache = {"refs/heads/old-branch": "still-there"}
+
+        out = io.StringIO()
+        with patch("sys.stdout", out), patch("git_remote_seafile.helper.RemoteLock"):
+            h.cmd_push([":refs/heads/old-branch"])
+
+        self.assertIn("failed to delete", out.getvalue())
+        self.assertEqual(h._refs_cache["refs/heads/old-branch"], "still-there")
 
     @patch("git_remote_seafile.helper.rev_parse", return_value="newsha123")
     @patch("git_remote_seafile.helper.is_ancestor", return_value=False)
@@ -654,6 +675,24 @@ class TestConcurrencyAndLocking(unittest.TestCase):
 
 
 class TestRemoteGC(unittest.TestCase):
+    def test_a_growth_is_not_reported_as_a_saving(self):
+        """Compaction can enlarge a repository, and the message must not lie.
+
+        Repacking can produce a slightly larger pack when the existing packs
+        were already tight.  The delta is signed because that is the honest
+        value, but printing it raw produced ``(saved -12 KB)`` -- which reads
+        like a bug and calls a growth a saving.
+        """
+        self.assertEqual(describe_size_delta(100), "saved ~100 KB")
+
+        grown = describe_size_delta(-12)
+        self.assertIn("grew", grown)
+        self.assertIn("12", grown)
+        self.assertNotIn("-12", grown)
+
+    def test_an_unchanged_size_is_not_called_a_growth(self):
+        self.assertEqual(describe_size_delta(0), "saved ~0 KB")
+
     def test_gc_skipped_below_threshold(self):
         mock_client = MagicMock()
         mock_client.list_dir.return_value = [{"name": "pack-1.pack"}]

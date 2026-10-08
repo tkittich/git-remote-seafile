@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import os
 import sys
-from pathlib import Path
 from urllib.parse import urlparse
 
 from .client import SeafileClient, SeafileAPIError
@@ -237,6 +236,13 @@ class RemoteHelper:
                             if not self.client.delete_entry(self.repo_id, ref_file):
                                 sys.stdout.write(f"error {dst} failed to delete ref on remote\n")
                             else:
+                                # Forget it here as well.  The cache is read back
+                                # as a push exclusion list, and it is only
+                                # truthful while the ref still exists on the
+                                # remote -- a stale SHA would have a later push
+                                # exclude objects on the strength of a ref that
+                                # is gone.
+                                self._refs_cache.pop(dst, None)
                                 sys.stdout.write(f"ok {dst}\n")
                         except Exception as ex:
                             sys.stdout.write(f"error {dst} {ex}\n")

@@ -140,6 +140,31 @@ class TestCLITestsAndGC(unittest.TestCase):
 
     @patch("git_remote_seafile.cli.RemoteHelper")
     @patch("git_remote_seafile.gc.compact_repository")
+    def test_cli_gc_reports_a_growth_honestly(self, mock_gc, mock_helper_cls):
+        """Pin the printed line, because that is what a user actually reads.
+
+        ``compact_repository`` is mocked but ``describe_size_delta`` is not, so
+        this also proves the CLI routes the value through the helper instead of
+        formatting it inline -- reverting the call site fails this test.
+        """
+        mock_helper = MagicMock()
+        mock_helper_cls.return_value = mock_helper
+        mock_helper.client = MagicMock()
+        mock_helper.repo_id = "repo1"
+        mock_helper.repo_path = "repo"
+
+        mock_gc.return_value = {"status": "ok", "old_packs": 3, "new_packs": 1, "saved_kb": -7}
+        with patch.object(sys, "argv", ["git-remote-seafile", "gc", "seafile://code/repo"]):
+            with patch("sys.stdout", new_callable=io.StringIO) as mock_out:
+                code = main()
+
+        output = mock_out.getvalue()
+        self.assertEqual(code, 0)
+        self.assertIn("grew by ~7 KB", output)
+        self.assertNotIn("saved -7", output)
+
+    @patch("git_remote_seafile.cli.RemoteHelper")
+    @patch("git_remote_seafile.gc.compact_repository")
     def test_cli_gc_command(self, mock_gc, mock_helper_cls):
         mock_helper = MagicMock()
         mock_helper_cls.return_value = mock_helper

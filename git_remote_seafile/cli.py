@@ -140,10 +140,13 @@ def main() -> int:
                     pass
         try:
             helper = RemoteHelper("gc", url)
-            from .gc import compact_repository
+            from .gc import compact_repository, describe_size_delta
             res = compact_repository(helper.client, helper.repo_id, helper.repo_path, min_packs=min_packs)
             if res.get("status") == "ok":
-                print(f"Compacted {res['old_packs']} packfiles into {res['new_packs']} (saved {res['saved_kb']} KB).")
+                print(
+                    f"Compacted {res['old_packs']} packfiles into {res['new_packs']} "
+                    f"({describe_size_delta(res['saved_kb'])})."
+                )
             else:
                 print(res.get("message", "Compaction skipped."))
             return 0

@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import os
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -14,6 +12,24 @@ from .client import SeafileClient
 from .git_util import clean_git_env
 from .lock import RemoteLock
 from .refs import REF_NAMESPACES, iter_refs
+
+
+def describe_size_delta(saved_kb: int) -> str:
+    """Phrase a compaction's size change, including the negative case.
+
+    Consolidating packfiles usually shrinks a repository, but not always:
+    repacking can produce a slightly *larger* pack when the originals were
+    already tightly packed, or when the new pack happens to delta less well.
+    The delta is reported as a signed number because that is the honest value,
+    but printing it raw produced ``(saved -12 KB)`` -- which reads like a bug,
+    and calls a growth a saving.  So the negative case says what happened.
+    """
+    if saved_kb < 0:
+        return (
+            f"grew by ~{abs(saved_kb)} KB "
+            "(repacking can do this when the existing packs were already tight)"
+        )
+    return f"saved ~{saved_kb} KB"
 
 
 def compact_repository(
@@ -159,12 +175,15 @@ def compact_repository(
                     deleted_count += 1
 
             new_total_bytes = sum(np.stat().st_size for np in new_packs)
+            # Signed on purpose: compaction can grow a repository, and the
+            # callers need to be able to tell.  `describe_size_delta` is what
+            # turns it into a sentence.
             saved_kb = (total_old_bytes - new_total_bytes) // 1024
 
             if verbose:
                 sys.stderr.write(
                     f"Compaction complete: consolidated {len(old_packs)} packfiles into {len(new_packs)} "
-                    f"(saved ~{saved_kb} KB).\n"
+                    f"({describe_size_delta(saved_kb)}).\n"
                 )
 
             return {
