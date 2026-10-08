@@ -118,8 +118,12 @@ def filter_existing_objects(shas: list[str] | str | None) -> list[str]:
     return existing
 
 
-def get_objects_to_push(local_sha: str, exclude_shas: list[str] | str | None = None) -> list[str]:
-    """Find all git object SHAs reachable from local_sha but not in exclude_shas.
+def get_objects_to_push(local_sha: list[str] | str, exclude_shas: list[str] | str | None = None) -> list[str]:
+    """Find all git object lines reachable from local_sha but not in exclude_shas.
+
+    local_sha may be a single SHA string or a list of SHAs (for multi-spec pushes).
+    Preserves full '<sha> <path>' lines emitted by 'rev-list --objects' so that
+    'pack-objects' receives file path hints for optimal delta compression windows.
 
     Exclusions that are not in the local object store are ignored rather than
     handed to git.  Over diverged history the remote tip can be a commit this
@@ -127,7 +131,15 @@ def get_objects_to_push(local_sha: str, exclude_shas: list[str] | str | None = N
     "bad object" instead of simply excluding nothing -- which made a legitimate
     force-push impossible.
     """
-    args = ["rev-list", "--objects", local_sha]
+    if isinstance(local_sha, str):
+        shas = [local_sha]
+    else:
+        shas = list(local_sha)
+    unique_shas = list(dict.fromkeys(s for s in shas if s))
+    if not unique_shas:
+        return []
+
+    args = ["rev-list", "--objects"] + unique_shas
     for ex in filter_existing_objects(exclude_shas):
         args.append(f"^{ex}")
 
@@ -136,11 +148,7 @@ def get_objects_to_push(local_sha: str, exclude_shas: list[str] | str | None = N
         raise GitError(f"Failed to list objects to push: {err.decode('utf-8', errors='replace')}")
 
     lines = out.decode("utf-8").splitlines()
-    objects = []
-    for line in lines:
-        parts = line.strip().split()
-        if parts:
-            objects.append(parts[0])
+    objects = [line.strip() for line in lines if line.strip()]
     return objects
 
 

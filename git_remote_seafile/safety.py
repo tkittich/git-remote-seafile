@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 
 from .git_util import get_git_config_bool, run_git
+from .seafile_paths import get_candidate_db_paths
 from .sqlite_read import open_live_sqlite_ro
 
 
@@ -63,27 +64,7 @@ def discover_local_synced_libraries() -> list[dict]:
     Reads repo.db from local Seafile client configuration.
     Returns list of dicts: [{'repo_id': str, 'worktree': Path, 'name': str, 'server_url': str}]
     """
-    candidates = []
-    for ini_path in [
-        Path.home() / "ccnet" / "seafile.ini",
-        Path.home() / ".ccnet" / "seafile.ini",
-    ]:
-        if ini_path.is_file():
-            try:
-                data_dir = Path(ini_path.read_text(encoding="utf-8").strip())
-                candidates.append(data_dir / "repo.db")
-            except Exception:
-                pass
-
-    candidates.extend([
-        Path.home() / "ccnet" / "repo.db",
-        Path.home() / ".ccnet" / "repo.db",
-        Path.home() / "Seafile" / "seafile-data" / "repo.db",
-        Path.home() / ".seafile-data" / "repo.db",
-        Path.home() / "Seafile" / ".seafile-data" / "repo.db",
-        Path.home() / "Library" / "Application Support" / "Seafile" / "repo.db",
-        Path.home() / ".config" / "seafile" / "repo.db",
-    ])
+    candidates = get_candidate_db_paths("repo.db")
 
     results = []
     seen_ids = set()

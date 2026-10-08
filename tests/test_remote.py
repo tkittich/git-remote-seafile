@@ -307,6 +307,36 @@ class TestRemoteHelper(unittest.TestCase):
         self.assertIn("main", uploaded_files)
         self.assertIn("feature-auth", uploaded_files)
 
+    @patch("git_remote_seafile.helper.rev_parse", side_effect=lambda ref: f"sha_{ref.split('/')[-1]}")
+    @patch("git_remote_seafile.helper.is_ancestor", return_value=True)
+    @patch("git_remote_seafile.helper.create_packfile", return_value=("batch1234", b"BATCH_PACK", b"BATCH_IDX"))
+    @patch("git_remote_seafile.helper.get_objects_to_push", return_value=["objA", "objB"])
+    def test_cmd_push_multiple_branches_batches_single_pack(self, mock_objs, mock_pack, mock_ancestor, mock_rev):
+        h = RemoteHelper.__new__(RemoteHelper)
+        h.client = MagicMock()
+        h.client.get_file_text.return_value = None
+        h.repo_id = "repo1"
+        h.repo_path = "/git-repo"
+        h._refs_cache = {}
+
+        out = io.StringIO()
+        with patch("sys.stdout", out), patch("git_remote_seafile.helper.RemoteLock"):
+            h.cmd_push([
+                "refs/heads/b1:refs/heads/b1",
+                "refs/heads/b2:refs/heads/b2",
+            ])
+
+        output = out.getvalue()
+        self.assertIn("ok refs/heads/b1", output)
+        self.assertIn("ok refs/heads/b2", output)
+        mock_objs.assert_called_once_with(["sha_b1", "sha_b2"], [])
+        mock_pack.assert_called_once_with(["objA", "objB"])
+        uploaded_files = [call.args[2] for call in h.client.upload_file.call_args_list]
+        self.assertEqual(uploaded_files.count("pack-batch1234.pack"), 1)
+        self.assertEqual(uploaded_files.count("pack-batch1234.idx"), 1)
+        self.assertIn("b1", uploaded_files)
+        self.assertIn("b2", uploaded_files)
+
     @patch("git_remote_seafile.helper.rev_parse", return_value="local_sha_feature")
     @patch("git_remote_seafile.helper.is_ancestor", return_value=True)
     @patch("git_remote_seafile.helper.get_objects_to_push", return_value=[])
@@ -1032,9 +1062,14 @@ class TestLFSTransferAgent(unittest.TestCase):
             with patch("sys.stdout", stdout_buf):
                 agent.handle_upload({"event": "upload", "oid": "1234567890abcdef", "path": temp_path})
 
-            resp = json.loads(stdout_buf.getvalue().strip())
+            msgs = [json.loads(line) for line in stdout_buf.getvalue().strip().splitlines() if line]
+            resp = msgs[-1]
             self.assertEqual(resp["event"], "complete")
             self.assertEqual(resp["oid"], "1234567890abcdef")
+            progress_events = [m for m in msgs if m.get("event") == "progress"]
+            self.assertEqual(len(progress_events), 1)
+            self.assertEqual(progress_events[0]["oid"], "1234567890abcdef")
+            self.assertEqual(progress_events[0]["bytesSoFar"], len(b"SAMPLE-LFS-CONTENT"))
             mock_client.upload_file.assert_called_once()
         finally:
             agent._temp_dir.cleanup()
@@ -1053,7 +1088,8 @@ class TestLFSTransferAgent(unittest.TestCase):
             with patch("sys.stdout", stdout_buf):
                 agent.handle_upload({"event": "upload", "oid": "abcdef01", "path": temp_path})
 
-            resp = json.loads(stdout_buf.getvalue().strip())
+            msgs = [json.loads(line) for line in stdout_buf.getvalue().strip().splitlines() if line]
+            resp = msgs[-1]
             self.assertEqual(resp["event"], "complete")
 
             args, _ = mock_client.upload_file.call_args
@@ -1094,12 +1130,64 @@ class TestLFSTransferAgent(unittest.TestCase):
             with patch("sys.stdout", stdout_buf):
                 agent.handle_download({"event": "download", "oid": "abcdef0123456789"})
 
-            resp = json.loads(stdout_buf.getvalue().strip())
+            msgs = [json.loads(line) for line in stdout_buf.getvalue().strip().splitlines() if line]
+            resp = msgs[-1]
             self.assertEqual(resp["event"], "complete")
             self.assertEqual(resp["oid"], "abcdef0123456789")
             self.assertTrue(Path(resp["path"]).is_file())
             self.assertEqual(Path(resp["path"]).read_bytes(), b"BINARY-OBJECT-BYTES")
+            progress_events = [m for m in msgs if m.get("event") == "progress"]
+            self.assertEqual(len(progress_events), 1)
             mock_client.get_file_bytes.assert_not_called()
+        finally:
+            agent._temp_dir.cleanup()
+
+    def test_lfs_upload_skips_duplicate_existing_file(self):
+        mock_client = MagicMock()
+        mock_client.list_dir.return_value = [
+            {"name": "1234567890abcdef", "size": len(b"SAMPLE-LFS-CONTENT"), "type": "file"}
+        ]
+        agent = LFSTransferAgent(mock_client, "repo1", "/git-test")
+        try:
+            with tempfile.NamedTemporaryFile(delete=False) as tf:
+                tf.write(b"SAMPLE-LFS-CONTENT")
+                temp_path = tf.name
+
+            stdout_buf = io.StringIO()
+            with patch("sys.stdout", stdout_buf):
+                agent.handle_upload({"event": "upload", "oid": "1234567890abcdef", "path": temp_path})
+
+            msgs = [json.loads(line) for line in stdout_buf.getvalue().strip().splitlines() if line]
+            resp = msgs[-1]
+            self.assertEqual(resp["event"], "complete")
+            self.assertEqual(resp["oid"], "1234567890abcdef")
+            # Upload should be skipped
+            mock_client.upload_file.assert_not_called()
+        finally:
+            agent._temp_dir.cleanup()
+            Path(temp_path).unlink(missing_ok=True)
+
+    def test_lfs_rejects_invalid_oid_path_traversal(self):
+        mock_client = MagicMock()
+        agent = LFSTransferAgent(mock_client, "repo1", "/git-test")
+        try:
+            # Traversal in upload
+            stdout_buf = io.StringIO()
+            with patch("sys.stdout", stdout_buf):
+                agent.handle_upload({"event": "upload", "oid": "../../etc/passwd", "path": "/some/path"})
+            resp = json.loads(stdout_buf.getvalue().strip())
+            self.assertEqual(resp["event"], "complete")
+            self.assertEqual(resp["error"]["code"], 400)
+            self.assertIn("Invalid OID", resp["error"]["message"])
+
+            # Traversal in download
+            stdout_buf_dl = io.StringIO()
+            with patch("sys.stdout", stdout_buf_dl):
+                agent.handle_download({"event": "download", "oid": "../../etc/shadow"})
+            resp_dl = json.loads(stdout_buf_dl.getvalue().strip())
+            self.assertEqual(resp_dl["event"], "complete")
+            self.assertEqual(resp_dl["error"]["code"], 400)
+            self.assertIn("Invalid OID", resp_dl["error"]["message"])
         finally:
             agent._temp_dir.cleanup()
 

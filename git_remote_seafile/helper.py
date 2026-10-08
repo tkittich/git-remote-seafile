@@ -42,6 +42,12 @@ def _looks_like_host(segment: str) -> bool:
 
 class RemoteHelper:
     """Implements Git remote-helper protocol over Seafile Web API."""
+    remote_name: str = ""
+    raw_url: str = ""
+    server_url: str | None = None
+    library_name: str = ""
+    repo_path: str = ""
+    repo_id: str = ""
 
     def __init__(self, remote_name: str, url: str):
         self.remote_name = remote_name
@@ -205,8 +211,8 @@ class RemoteHelper:
         try:
             warnings = check_preflight_safety(
                 self.client,
-                getattr(self, "library_name", ""),
-                getattr(self, "repo_path", ""),
+                self.library_name,
+                self.repo_path,
                 push_mode=push_mode,
             )
         except SafetyError as safe_err:
@@ -237,6 +243,8 @@ class RemoteHelper:
 
         try:
             with RemoteLock(self.client, self.repo_id, self.repo_path):
+                pending_updates: list[tuple[str, str, str | None]] = []
+
                 for spec in push_specs:
                     force = spec.startswith("+")
                     clean_spec = spec.lstrip("+")
@@ -267,7 +275,7 @@ class RemoteHelper:
                         reported_specs.add(dst)
                         continue
 
-                    # Case 2: Normal / Fast-forward push
+                    # Case 2: Normal / Fast-forward push - validate and stage for batched packing
                     try:
                         local_sha = rev_parse(src)
                         if not local_sha:
@@ -291,12 +299,25 @@ class RemoteHelper:
                                 reported_specs.add(dst)
                                 continue
 
-                        # Compute and pack missing objects
-                        known_remote_shas = {s for s in self._refs_cache.values() if s}
-                        if remote_sha:
-                            known_remote_shas.add(remote_sha)
-                        exclude = list(known_remote_shas)
-                        objects_to_push = get_objects_to_push(local_sha, exclude)
+                        pending_updates.append((dst, local_sha, remote_sha))
+                    except Exception as ex:
+                        err_line = str(ex).replace("\r", " ").replace("\n", " ").strip()
+                        sys.stdout.write(f"error {dst} {err_line}\n")
+                        sys.stderr.write(f"\nPush error for {dst}: {ex}\n")
+                        sys.stderr.flush()
+                        reported_specs.add(dst)
+
+                # Batch packfile generation and upload for all valid update targets
+                if pending_updates:
+                    known_remote_shas = {s for s in self._refs_cache.values() if s}
+                    for _, _, r_sha in pending_updates:
+                        if r_sha:
+                            known_remote_shas.add(r_sha)
+                    exclude = list(known_remote_shas)
+                    target_shas = [u[1] for u in pending_updates]
+
+                    try:
+                        objects_to_push = get_objects_to_push(target_shas, exclude)
                         if objects_to_push:
                             pack_sha, pack_bytes, idx_bytes = create_packfile(objects_to_push)
                             if pack_bytes:
@@ -310,40 +331,50 @@ class RemoteHelper:
                                 self.client.upload_file(
                                     self.repo_id, pack_dir, f"pack-{pack_sha}.idx", idx_bytes, replace=True
                                 )
-
-                        # Update remote ref file
-                        dst_parent = self._full_path(os.path.dirname(dst))
-                        dst_filename = os.path.basename(dst)
-                        self.client.upload_file(
-                            self.repo_id,
-                            dst_parent,
-                            dst_filename,
-                            f"{local_sha}\n".encode("utf-8"),
-                            replace=True,
-                        )
-
-                        # If HEAD does not exist, set default branch
-                        # Only point HEAD to a branch in refs/heads/, never to a tag
-                        if dst.startswith("refs/heads/"):
-                            head_path = self._full_path("HEAD")
-                            if not self.client.get_file_text(self.repo_id, head_path):
-                                self.client.upload_file(
-                                    self.repo_id,
-                                    self.repo_path,
-                                    "HEAD",
-                                    f"ref: {dst}\n".encode("utf-8"),
-                                    replace=True,
-                                )
-
-                        self._refs_cache[dst] = local_sha
-                        sys.stdout.write(f"ok {dst}\n")
-                        reported_specs.add(dst)
                     except Exception as ex:
                         err_line = str(ex).replace("\r", " ").replace("\n", " ").strip()
-                        sys.stdout.write(f"error {dst} {err_line}\n")
-                        sys.stderr.write(f"\nPush error for {dst}: {ex}\n")
+                        for dst, _, _ in pending_updates:
+                            sys.stdout.write(f"error {dst} {err_line}\n")
+                            reported_specs.add(dst)
+                        sys.stderr.write(f"\nPush pack upload error: {ex}\n")
                         sys.stderr.flush()
-                        reported_specs.add(dst)
+                        pending_updates.clear()
+
+                    # Update remote ref files and report ok for each updated target
+                    for dst, local_sha, _ in pending_updates:
+                        try:
+                            dst_parent = self._full_path(os.path.dirname(dst))
+                            dst_filename = os.path.basename(dst)
+                            self.client.upload_file(
+                                self.repo_id,
+                                dst_parent,
+                                dst_filename,
+                                f"{local_sha}\n".encode("utf-8"),
+                                replace=True,
+                            )
+
+                            # If HEAD does not exist, set default branch
+                            # Only point HEAD to a branch in refs/heads/, never to a tag
+                            if dst.startswith("refs/heads/"):
+                                head_path = self._full_path("HEAD")
+                                if not self.client.get_file_text(self.repo_id, head_path):
+                                    self.client.upload_file(
+                                        self.repo_id,
+                                        self.repo_path,
+                                        "HEAD",
+                                        f"ref: {dst}\n".encode("utf-8"),
+                                        replace=True,
+                                    )
+
+                            self._refs_cache[dst] = local_sha
+                            sys.stdout.write(f"ok {dst}\n")
+                            reported_specs.add(dst)
+                        except Exception as ex:
+                            err_line = str(ex).replace("\r", " ").replace("\n", " ").strip()
+                            sys.stdout.write(f"error {dst} {err_line}\n")
+                            sys.stderr.write(f"\nPush error for {dst}: {ex}\n")
+                            sys.stderr.flush()
+                            reported_specs.add(dst)
 
                 # Decide whether compaction is due -- but only *decide* here.
                 # Running it inside this block self-deadlocks: compact_repository
@@ -455,13 +486,12 @@ class RemoteHelper:
                     staged_idx = staging_dir / idx_name
 
                     downloaded = False
-                    if hasattr(self.client, "download_file_to"):
-                        try:
-                            downloaded = self.client.download_file_to(
-                                self.repo_id, f"{remote_pack_dir}/{pack_name}", staged_pack
-                            ) and staged_pack.is_file()
-                        except Exception:
-                            downloaded = False
+                    try:
+                        downloaded = bool(self.client.download_file_to(
+                            self.repo_id, f"{remote_pack_dir}/{pack_name}", staged_pack
+                        )) and staged_pack.is_file()
+                    except Exception:
+                        downloaded = False
 
                     if not downloaded:
                         pack_bytes = self.client.get_file_bytes(self.repo_id, f"{remote_pack_dir}/{pack_name}")
@@ -485,13 +515,12 @@ class RemoteHelper:
 
                     # Download idx
                     idx_downloaded = False
-                    if hasattr(self.client, "download_file_to"):
-                        try:
-                            idx_downloaded = self.client.download_file_to(
-                                self.repo_id, f"{remote_pack_dir}/{idx_name}", staged_idx
-                            ) and staged_idx.is_file()
-                        except Exception:
-                            idx_downloaded = False
+                    try:
+                        idx_downloaded = bool(self.client.download_file_to(
+                            self.repo_id, f"{remote_pack_dir}/{idx_name}", staged_idx
+                        )) and staged_idx.is_file()
+                    except Exception:
+                        idx_downloaded = False
 
                     if not idx_downloaded:
                         idx_bytes = self.client.get_file_bytes(self.repo_id, f"{remote_pack_dir}/{idx_name}")

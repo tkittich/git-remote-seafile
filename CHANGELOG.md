@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-10-08
+
+Multi-spec packfile batching, delta compression path hint preservation, Git LFS transfer agent
+hardening, unified Seafile client path discovery, and code hygiene.
+
+### Added & Optimized
+
+- **Multi-spec packfile batching.** Multi-branch pushes (`git push origin b1 b2`) now batch all
+  missing objects across all push specs into a single `.pack` and `.idx` upload rather than
+  creating and uploading separate packfiles per branch.
+- **Delta compression path hint preservation.** `get_objects_to_push` preserves full `<sha> <path>`
+  lines from `rev-list --objects` when feeding `git pack-objects`, restoring path-name hashing
+  for optimal delta compression windowing.
+- **Git LFS transfer agent hardening.** Validates OID strings against strict patterns to prevent path
+  traversal (`..`), checks remote object existence and byte size to skip redundant uploads, and
+  reports standard `progress` events during transfers.
+
+### Refactored & Code Hygiene
+
+- **Unified client path discovery.** Extracted desktop client configuration and SQLite database
+  path resolution into a shared `seafile_paths.py` module, deduplicating search logic across
+  `client.py`, `safety.py`, and `tools/seafile_doctor.py`.
+- **Mock-guard cleanup.** Replaced defensive `getattr`/`hasattr` guards on client and helper
+  instances with proper default class attributes and property descriptors.
+
 ## [0.4.1] - 2026-10-08
 
 URL percent-decoding, remote branch verification on `set-head`, compaction and CLI diagnostics,

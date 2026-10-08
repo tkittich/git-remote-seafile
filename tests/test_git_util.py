@@ -98,6 +98,13 @@ class TestGitUtilWithRealGit(unittest.TestCase):
         new_objs_single = get_objects_to_push(c2, exclude_shas=c1)
         self.assertEqual(new_objs, new_objs_single)
 
+        # Delta compression hint preservation: blob objects should have path hints ("<sha> <path>")
+        self.assertTrue(any(" " in obj for obj in all_objs), "Path hints should be preserved for pack-objects")
+
+        # Multi-spec / list of SHAs support
+        multi_objs = get_objects_to_push([c1, c2])
+        self.assertEqual(set(all_objs), set(multi_objs))
+
     def test_get_objects_to_push_multiple_exclusions(self):
         # Base commit
         c1 = rev_parse("HEAD")

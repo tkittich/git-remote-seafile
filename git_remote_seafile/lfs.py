@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import tempfile
 from pathlib import Path
@@ -27,6 +28,21 @@ class LFSTransferAgent:
         parent = f"{self.lfs_dir}/{oid[:2]}/{oid[2:4]}"
         return parent, oid
 
+    def _is_valid_oid(self, oid: Any) -> bool:
+        """Validate OID is a safe hex/alphanumeric string with no path traversal."""
+        if not isinstance(oid, str) or not re.fullmatch(r"[0-9a-zA-Z_-]{4,64}", oid):
+            return False
+        return ".." not in oid and "/" not in oid and "\\" not in oid
+
+    def _send_progress(self, oid: str, bytes_so_far: int, bytes_since_last: int) -> None:
+        """Emit Git LFS progress event."""
+        self._send_json({
+            "event": "progress",
+            "oid": oid,
+            "bytesSoFar": bytes_so_far,
+            "bytesSinceLast": bytes_since_last,
+        })
+
     def handle_init(self, msg: dict[str, Any]) -> None:
         """Handle LFS init handshake."""
         # Acknowledge initialization with an empty JSON object
@@ -34,7 +50,15 @@ class LFSTransferAgent:
 
     def handle_upload(self, msg: dict[str, Any]) -> None:
         """Upload a local file to Seafile LFS object store."""
-        oid = msg["oid"]
+        oid = msg.get("oid")
+        if not self._is_valid_oid(oid):
+            self._send_json({
+                "event": "complete",
+                "oid": oid or "",
+                "error": {"code": 400, "message": f"Invalid OID: {oid}"},
+            })
+            return
+
         local_path = msg.get("path")
         if not local_path or not os.path.isfile(local_path):
             self._send_json({
@@ -45,6 +69,25 @@ class LFSTransferAgent:
             return
 
         parent_dir, filename = self._object_subpath(oid)
+        local_size = os.path.getsize(local_path)
+
+        # Check if remote object already exists with the identical byte size to skip duplicate upload
+        already_exists = False
+        try:
+            entries = self.client.list_dir(self.repo_id, parent_dir)
+            if isinstance(entries, list):
+                for entry in entries:
+                    if isinstance(entry, dict) and entry.get("name") == filename and entry.get("size") == local_size:
+                        already_exists = True
+                        break
+        except Exception:
+            already_exists = False
+
+        if already_exists:
+            self._send_progress(oid, local_size, local_size)
+            self._send_json({"event": "complete", "oid": oid})
+            return
+
         try:
             # Hand the client the *path*, not the bytes.  An LFS object is
             # routinely far larger than RAM, and reading it in first is exactly
@@ -52,6 +95,7 @@ class LFSTransferAgent:
             self.client.upload_file(
                 self.repo_id, parent_dir, filename, Path(local_path), replace=True
             )
+            self._send_progress(oid, local_size, local_size)
             self._send_json({"event": "complete", "oid": oid})
         except Exception as ex:
             self._send_json({
@@ -62,7 +106,15 @@ class LFSTransferAgent:
 
     def handle_download(self, msg: dict[str, Any]) -> None:
         """Download an LFS object from Seafile into a local temp file."""
-        oid = msg["oid"]
+        oid = msg.get("oid")
+        if not self._is_valid_oid(oid):
+            self._send_json({
+                "event": "complete",
+                "oid": oid or "",
+                "error": {"code": 400, "message": f"Invalid OID: {oid}"},
+            })
+            return
+
         parent_dir, filename = self._object_subpath(oid)
         file_path = f"{parent_dir}/{filename}"
 
@@ -78,6 +130,8 @@ class LFSTransferAgent:
                 })
                 return
 
+            size = temp_dest.stat().st_size if temp_dest.is_file() else 0
+            self._send_progress(oid, size, size)
             self._send_json({
                 "event": "complete",
                 "oid": oid,

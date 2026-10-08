@@ -87,11 +87,12 @@ def compact_repository(
                 pack_file = local_pack_dir / pack_name
                 idx_file = local_pack_dir / idx_name
 
-                # Stream packfile directly to disk if download_file_to is available,
-                # falling back to get_file_bytes for backwards-compatibility with test mocks.
+                # Stream packfile directly to disk, falling back to get_file_bytes if needed.
                 downloaded = False
-                if hasattr(client, "download_file_to"):
-                    downloaded = client.download_file_to(repo_id, f"{pack_dir}/{pack_name}", pack_file) and pack_file.is_file()
+                try:
+                    downloaded = bool(client.download_file_to(repo_id, f"{pack_dir}/{pack_name}", pack_file)) and pack_file.is_file()
+                except Exception:
+                    downloaded = False
                 if not downloaded:
                     pack_bytes = client.get_file_bytes(repo_id, f"{pack_dir}/{pack_name}")
                     if not pack_bytes:
@@ -102,8 +103,10 @@ def compact_repository(
                 total_old_bytes += pack_file.stat().st_size
 
                 idx_downloaded = False
-                if hasattr(client, "download_file_to"):
-                    idx_downloaded = client.download_file_to(repo_id, f"{pack_dir}/{idx_name}", idx_file) and idx_file.is_file()
+                try:
+                    idx_downloaded = bool(client.download_file_to(repo_id, f"{pack_dir}/{idx_name}", idx_file)) and idx_file.is_file()
+                except Exception:
+                    idx_downloaded = False
                 if not idx_downloaded:
                     idx_bytes = client.get_file_bytes(repo_id, f"{pack_dir}/{idx_name}")
                     if idx_bytes:

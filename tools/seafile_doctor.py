@@ -35,6 +35,12 @@ import sys
 import tempfile
 from pathlib import Path
 
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from git_remote_seafile.seafile_paths import ccnet_dir, seafile_data
+
 # --------------------------------------------------------------------------
 # Sync error ids.  Authoritative source: haiwen/seafile include/seafile-error.h
 # --------------------------------------------------------------------------
@@ -92,26 +98,9 @@ def err_text(code: int) -> str:
 
 
 # --------------------------------------------------------------------------
-# Locating the client
+# Locating the client is re-exported from git_remote_seafile.seafile_paths
 # --------------------------------------------------------------------------
-def ccnet_dir() -> Path:
-    """The client's config dir.  ~/ccnet on Windows, ~/.ccnet elsewhere."""
-    for cand in (Path.home() / "ccnet", Path.home() / ".ccnet"):
-        if cand.is_dir():
-            return cand
-    raise SystemExit("no ccnet directory found - is the Seafile client installed?")
 
-
-def seafile_data(ccnet: Path) -> Path:
-    """seafile-data location is recorded in <ccnet>/seafile.ini (one line)."""
-    ini = ccnet / "seafile.ini"
-    if ini.is_file():
-        raw = ini.read_text(encoding="utf-8", errors="replace").strip()
-        if raw:
-            p = Path(raw)
-            if p.is_dir():
-                return p
-    raise SystemExit("could not resolve seafile-data (looked in %s)" % ini)
 
 
 _SIDECAR_SUFFIXES = ("-wal", "-shm", "-journal")

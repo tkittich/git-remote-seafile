@@ -16,6 +16,7 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 from .git_util import get_git_config_bool
+from .seafile_paths import get_candidate_db_paths
 from .sqlite_read import open_live_sqlite_ro
 
 
@@ -220,23 +221,7 @@ class SeafileClient:
                 pass
 
         # 3. Read directly from local Seafile client accounts.db (Windows, Linux, macOS, seaf-cli)
-        candidates = []
-        for ini_path in [Path.home() / "ccnet" / "seafile.ini", Path.home() / ".ccnet" / "seafile.ini"]:
-            if ini_path.is_file():
-                try:
-                    data_dir = Path(ini_path.read_text(encoding="utf-8").strip())
-                    candidates.append(data_dir / "accounts.db")
-                except Exception:
-                    pass
-        candidates.extend([
-            Path.home() / "ccnet" / "accounts.db",
-            Path.home() / ".ccnet" / "accounts.db",
-            Path.home() / "Seafile" / "seafile-data" / "accounts.db",
-            Path.home() / ".seafile-data" / "accounts.db",
-            Path.home() / "Seafile" / ".seafile-data" / "accounts.db",
-            Path.home() / "Library" / "Application Support" / "Seafile" / "accounts.db",
-            Path.home() / ".config" / "seafile" / "accounts.db",
-        ])
+        candidates = get_candidate_db_paths("accounts.db")
         for db_path in candidates:
             row = None
             with open_live_sqlite_ro(db_path) as con:
@@ -445,18 +430,27 @@ class SeafileClient:
             raise SeafileAPIError(f"Failed to list dir {clean_path}: HTTP {resp.status_code} {resp.text}")
         return resp.json()
 
+    @property
+    def _known_dirs(self) -> set[tuple[str, str]]:
+        if not hasattr(self, "_known_dirs_cache"):
+            self._known_dirs_cache: set[tuple[str, str]] = set()
+        return self._known_dirs_cache
+
+    @_known_dirs.setter
+    def _known_dirs(self, val: set[tuple[str, str]]) -> None:
+        self._known_dirs_cache = val
+
     def dir_exists(self, repo_id: str, dir_path: str) -> bool:
         """Check if directory exists on Seafile."""
         clean_path = ("/" + dir_path.strip("/")).rstrip("/") or "/"
         if clean_path == "/":
             return True
-        if (repo_id, clean_path) in getattr(self, "_known_dirs", set()):
+        if (repo_id, clean_path) in self._known_dirs:
             return True
         url = f"{self.server_url}/api2/repos/{repo_id}/dir/?p={quote(clean_path, safe='/')}"
         resp = self.session.get(url, timeout=self.timeout)
         if resp.status_code == 200:
-            if hasattr(self, "_known_dirs"):
-                self._known_dirs.add((repo_id, clean_path))
+            self._known_dirs.add((repo_id, clean_path))
             return True
         return False
 
@@ -468,25 +462,21 @@ class SeafileClient:
 
         parts = [p for p in clean_dir.strip("/").split("/") if p]
         current = ""
-        known = getattr(self, "_known_dirs", None)
         for part in parts:
             current = f"{current}/{part}"
-            if known is not None and (repo_id, current) in known:
+            if (repo_id, current) in self._known_dirs:
                 continue
             if self.dir_exists(repo_id, current):
-                if known is not None:
-                    known.add((repo_id, current))
+                self._known_dirs.add((repo_id, current))
                 continue
 
             url = f"{self.server_url}/api2/repos/{repo_id}/dir/?p={quote(current, safe='/')}"
             resp = self.session.post(url, data={"operation": "mkdir"}, timeout=self.timeout)
             if resp.status_code in (200, 201):
-                if known is not None:
-                    known.add((repo_id, current))
+                self._known_dirs.add((repo_id, current))
                 continue
             if resp.status_code == 400 and "already exists" in resp.text.lower():
-                if known is not None:
-                    known.add((repo_id, current))
+                self._known_dirs.add((repo_id, current))
                 continue
 
             # The mkdir did not report success.  Before giving up, check whether
@@ -497,8 +487,7 @@ class SeafileClient:
             # success for a directory that was never created, and caches it as
             # known so it is never retried.
             if self.dir_exists(repo_id, current):
-                if known is not None:
-                    known.add((repo_id, current))
+                self._known_dirs.add((repo_id, current))
                 continue
 
             raise SeafileAPIError(
