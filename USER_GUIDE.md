@@ -602,7 +602,7 @@ Transfers are **streamed**, not buffered in RAM:
 A multi-gigabyte repository transfer or model therefore does not need multi-gigabytes of RAM.
 
 > [!NOTE]
-> Transfers do not yet emit Git LFS `progress` events, so a very large upload or download reports no incremental status while it runs.
+> Transfers emit standard Git LFS `progress` events during sustained transfers, allowing Git LFS to render incremental progress counters during large uploads and downloads.
 
 ---
 

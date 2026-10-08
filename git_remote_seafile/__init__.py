@@ -40,4 +40,4 @@ def check_python_version(version_info: tuple[int, int] | None = None) -> None:
 # instead of raising a cryptic AttributeError in the middle of a git operation.
 check_python_version()
 
-__version__ = "0.4.4"
+__version__ = "0.4.5"

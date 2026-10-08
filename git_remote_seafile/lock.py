@@ -30,6 +30,9 @@ def _is_pid_alive(pid: int) -> bool:
             kernel32 = ctypes.windll.kernel32
             handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, wintypes.DWORD(pid))
             if not handle:
+                ERROR_ACCESS_DENIED = 5
+                if kernel32.GetLastError() == ERROR_ACCESS_DENIED:
+                    return True
                 return False
             try:
                 exit_code = wintypes.DWORD()
@@ -192,101 +195,60 @@ class RemoteLock:
         self._identity = (owner, hostname)
         self._nonce = nonce
 
-        while True:
-            now = self._get_server_time()
+        try:
+            while True:
+                now = self._get_server_time()
 
-            # 1. Check legacy lock file (.git-lock.json)
-            legacy_info = self._get_lock_info()
-            if isinstance(legacy_info, dict):
-                leg_nonce = legacy_info.get("nonce")
-                if leg_nonce != nonce:
-                    if self._is_lock_active(legacy_info, now):
-                        lock_owner = legacy_info.get("owner", "another user")
-                        lock_machine = legacy_info.get("machine", "another machine")
-                        try:
-                            leg_time = float(legacy_info.get("timestamp", 0))
-                            leg_lease = float(legacy_info.get("lease", self.lease))
-                        except (ValueError, TypeError):
-                            leg_time = 0.0
-                            leg_lease = 0.0
-                        exp = leg_time + leg_lease
-                        if time.monotonic() - start_time >= self.timeout:
-                            raise RepositoryLockedError(
-                                f"Repository is locked by '{lock_owner}' on '{lock_machine}'. "
-                                f"Lock expires in {max(0, int(exp - now))}s."
-                            )
-                        sys.stderr.write(f"Repository locked by {lock_machine}; waiting for lock...\n")
-                        sys.stderr.flush()
-                        time.sleep(2)
-                        continue
-                    else:
-                        sys.stderr.write("Overriding expired lock from previous session.\n")
-                        sys.stderr.flush()
-                        try:
-                            self.client.delete_entry(self.repo_id, self.lock_file_path)
-                        except Exception:
-                            pass
+                # 1. Check legacy lock file (.git-lock.json)
+                legacy_info = self._get_lock_info()
+                if isinstance(legacy_info, dict):
+                    leg_nonce = legacy_info.get("nonce")
+                    if leg_nonce != nonce:
+                        if self._is_lock_active(legacy_info, now):
+                            lock_owner = legacy_info.get("owner", "another user")
+                            lock_machine = legacy_info.get("machine", "another machine")
+                            try:
+                                leg_time = float(legacy_info.get("timestamp", 0))
+                                leg_lease = float(legacy_info.get("lease", self.lease))
+                            except (ValueError, TypeError):
+                                leg_time = 0.0
+                                leg_lease = 0.0
+                            exp = leg_time + leg_lease
+                            if time.monotonic() - start_time >= self.timeout:
+                                raise RepositoryLockedError(
+                                    f"Repository is locked by '{lock_owner}' on '{lock_machine}'. "
+                                    f"Lock expires in {max(0, int(exp - now))}s."
+                                )
+                            sys.stderr.write(f"Repository locked by {lock_machine}; waiting for lock...\n")
+                            sys.stderr.flush()
+                            time.sleep(2)
+                            continue
+                        else:
+                            sys.stderr.write("Overriding expired lock from previous session.\n")
+                            sys.stderr.flush()
+                            try:
+                                self.client.delete_entry(self.repo_id, self.lock_file_path)
+                            except Exception:
+                                pass
 
-            # 2. Upload ticket
-            lock_payload = {
-                "owner": owner,
-                "machine": hostname,
-                "nonce": nonce,
-                "timestamp": now,
-                "lease": self.lease,
-                "pid": os.getpid(),
-            }
-            payload_bytes = json.dumps(lock_payload).encode("utf-8")
-            try:
-                self.client.upload_file(
-                    self.repo_id,
-                    self.lock_dir,
-                    f"{nonce}.json",
-                    payload_bytes,
-                    replace=True,
-                )
-            except Exception as ex:
-                if isinstance(ex, RepositoryLockedError):
-                    raise
-                if time.monotonic() - start_time >= self.timeout:
-                    raise RepositoryLockedError(f"Failed to acquire lock: {ex}") from ex
-                time.sleep(2)
-                continue
-
-            # 3. Check candidate tickets in .git-lock.d
-            tickets = self._scan_tickets(now)
-            if not any(t.get("nonce") == nonce for t in tickets):
-                my_ticket = dict(lock_payload)
-                my_ticket["_order_key"] = (now, now, nonce)
-                my_ticket["_path"] = f"{self.lock_dir}/{nonce}.json"
-                tickets.append(my_ticket)
-
-            tickets.sort(key=lambda t: t.get("_order_key", (0, 0, "")))
-            winner = tickets[0]
-
-            if winner.get("nonce") == nonce:
-                # We won the ticket! Also mirror to legacy .git-lock.json for backward compatibility
+                # 2. Upload ticket
+                lock_payload = {
+                    "owner": owner,
+                    "machine": hostname,
+                    "nonce": nonce,
+                    "timestamp": now,
+                    "lease": self.lease,
+                    "pid": os.getpid(),
+                }
+                payload_bytes = json.dumps(lock_payload).encode("utf-8")
                 try:
                     self.client.upload_file(
                         self.repo_id,
-                        self.repo_path,
-                        ".git-lock.json",
+                        self.lock_dir,
+                        f"{nonce}.json",
                         payload_bytes,
                         replace=True,
                     )
-                    # Verify our legacy write wasn't overwritten by concurrent writer
-                    verify = self._get_lock_info()
-                    if isinstance(verify, dict) and verify.get("nonce") and verify.get("nonce") != nonce:
-                        if time.monotonic() - start_time >= self.timeout:
-                            raise RepositoryLockedError("Lock acquisition collided with another client.")
-                        sys.stderr.write("Lock acquisition collided; retrying...\n")
-                        sys.stderr.flush()
-                        time.sleep(1)
-                        continue
-
-                    self.acquired = True
-                    self._last_renewed = time.monotonic()
-                    return
                 except Exception as ex:
                     if isinstance(ex, RepositoryLockedError):
                         raise
@@ -294,26 +256,74 @@ class RemoteLock:
                         raise RepositoryLockedError(f"Failed to acquire lock: {ex}") from ex
                     time.sleep(2)
                     continue
-            else:
-                # Another ticket won
-                winner_owner = winner.get("owner", "another user")
-                winner_mach = winner.get("machine", "another machine")
+
+                # 3. Check candidate tickets in .git-lock.d
+                tickets = self._scan_tickets(now)
+                if not any(t.get("nonce") == nonce for t in tickets):
+                    my_ticket = dict(lock_payload)
+                    my_ticket["_order_key"] = (now, now, nonce)
+                    my_ticket["_path"] = f"{self.lock_dir}/{nonce}.json"
+                    tickets.append(my_ticket)
+
+                tickets.sort(key=lambda t: t.get("_order_key", (0, 0, "")))
+                winner = tickets[0]
+
+                if winner.get("nonce") == nonce:
+                    # We won the ticket! Also mirror to legacy .git-lock.json for backward compatibility
+                    try:
+                        self.client.upload_file(
+                            self.repo_id,
+                            self.repo_path,
+                            ".git-lock.json",
+                            payload_bytes,
+                            replace=True,
+                        )
+                        # Verify our legacy write wasn't overwritten by concurrent writer
+                        verify = self._get_lock_info()
+                        if isinstance(verify, dict) and verify.get("nonce") and verify.get("nonce") != nonce:
+                            if time.monotonic() - start_time >= self.timeout:
+                                raise RepositoryLockedError("Lock acquisition collided with another client.")
+                            sys.stderr.write("Lock acquisition collided; retrying...\n")
+                            sys.stderr.flush()
+                            time.sleep(1)
+                            continue
+
+                        self.acquired = True
+                        self._last_renewed = time.monotonic()
+                        return
+                    except Exception as ex:
+                        if isinstance(ex, RepositoryLockedError):
+                            raise
+                        if time.monotonic() - start_time >= self.timeout:
+                            raise RepositoryLockedError(f"Failed to acquire lock: {ex}") from ex
+                        time.sleep(2)
+                        continue
+                else:
+                    # Another ticket won
+                    winner_owner = winner.get("owner", "another user")
+                    winner_mach = winner.get("machine", "another machine")
+                    try:
+                        w_time = float(winner.get("timestamp", 0))
+                        w_lease = float(winner.get("lease", self.lease))
+                    except (ValueError, TypeError):
+                        w_time = 0.0
+                        w_lease = 0.0
+                    winner_exp = w_time + w_lease
+                    if time.monotonic() - start_time >= self.timeout:
+                        raise RepositoryLockedError(
+                            f"Repository is locked by '{winner_owner}' on '{winner_mach}'. "
+                            f"Lock expires in {max(0, int(winner_exp - now))}s."
+                        )
+                    sys.stderr.write(f"Repository locked by ticket from {winner_mach}; waiting for lock...\n")
+                    sys.stderr.flush()
+                    time.sleep(2)
+                    continue
+        finally:
+            if not self.acquired and self._nonce:
                 try:
-                    w_time = float(winner.get("timestamp", 0))
-                    w_lease = float(winner.get("lease", self.lease))
-                except (ValueError, TypeError):
-                    w_time = 0.0
-                    w_lease = 0.0
-                winner_exp = w_time + w_lease
-                if time.monotonic() - start_time >= self.timeout:
-                    raise RepositoryLockedError(
-                        f"Repository is locked by '{winner_owner}' on '{winner_mach}'. "
-                        f"Lock expires in {max(0, int(winner_exp - now))}s."
-                    )
-                sys.stderr.write(f"Repository locked by ticket from {winner_mach}; waiting for lock...\n")
-                sys.stderr.flush()
-                time.sleep(2)
-                continue
+                    self.client.delete_entry(self.repo_id, f"{self.lock_dir}/{self._nonce}.json")
+                except Exception:
+                    pass
 
     def renew(self) -> bool:
         """Renew the lease on an actively held lock."""

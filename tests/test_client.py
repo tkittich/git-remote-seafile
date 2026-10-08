@@ -480,11 +480,15 @@ class TestStreamingTransfers(unittest.TestCase):
                 payload = files["file"][1]
             elif hasattr(data, "file_obj"):
                 payload = data.file_obj
+                if hasattr(data, "read"):
+                    _ = data.read()
             else:
                 payload = data
             captured["payload"] = payload
             # Read it while the caller's `with open(...)` is still holding it.
             if hasattr(payload, "read"):
+                if hasattr(payload, "seek"):
+                    payload.seek(0)
                 captured["content"] = payload.read()
             else:
                 captured["content"] = payload
@@ -585,7 +589,63 @@ class TestStreamingTransfers(unittest.TestCase):
                 "repo1", "/test", "file.txt", b"12345", progress_callback=on_progress
             )
         )
+        self.assertEqual(captured.get("content"), b"12345")
         self.assertEqual(calls, [(5, 5)])
+
+    def test_streaming_multipart_file_seek_stateless(self):
+        """Seeking/rewinding must calculate transferred progress statelessly."""
+        from git_remote_seafile.client import StreamingMultipartFile
+        calls = []
+        def on_progress(transferred, total):
+            calls.append((transferred, total))
+
+        raw_data = b"0123456789"
+        stream = io.BytesIO(raw_data)
+        mp = StreamingMultipartFile(
+            fields={},
+            file_field="file",
+            filename="data.bin",
+            file_obj=stream,
+            file_size=len(raw_data),
+            progress_callback=on_progress,
+        )
+        # Read entire stream
+        _ = mp.read()
+        self.assertEqual(calls[-1], (10, 10))
+
+        # Rewind to start as happens on HTTP redirect/retry
+        mp.seek(0)
+        calls.clear()
+        _ = mp.read()
+        # After rewind, progress must report 10 again, not 20
+        self.assertEqual(calls[-1], (10, 10))
+
+    def test_download_file_to_triggers_progress_callback(self):
+        calls = []
+        def on_progress(transferred, total):
+            calls.append((transferred, total))
+
+        self.client.session.get.return_value = MagicMock(
+            status_code=200, text='"https://seafile.example.com/seafhttp/files/abc"'
+        )
+        fake_transfer_resp = MagicMock(status_code=200)
+        fake_transfer_resp.headers = {"Content-Length": "12"}
+        fake_transfer_resp.iter_content.return_value = [b"chunk1", b"chunk2"]
+        with patch.object(self.client, "_transfer_session") as mock_ts:
+            mock_sess = MagicMock()
+            mock_sess.get.return_value = fake_transfer_resp
+            mock_ts.return_value = mock_sess
+
+            with tempfile.NamedTemporaryFile(delete=False) as tf:
+                dest_path = Path(tf.name)
+            try:
+                ok = self.client.download_file_to(
+                    "repo1", "/path/file.bin", dest_path, progress_callback=on_progress
+                )
+                self.assertTrue(ok)
+                self.assertEqual(calls, [(6, 12), (12, 12)])
+            finally:
+                dest_path.unlink(missing_ok=True)
 
     def test_server_time_offset_from_date_header(self):
         """HTTP Date header passively calibrates estimated server time."""

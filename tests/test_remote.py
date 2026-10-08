@@ -1020,6 +1020,40 @@ class TestConcurrencyAndLocking(unittest.TestCase):
 
         self.assertTrue(lock.unlock())
 
+    def test_abandoned_ticket_cleaned_up_on_acquire_timeout(self):
+        """When acquire() times out, its candidate ticket must be deleted immediately."""
+        mock_client = MagicMock()
+        mock_client.token = "token123"
+        # Competitor holds lock
+        mock_client.get_file_text.return_value = json.dumps({
+            "owner": "competitor",
+            "machine": "other-machine",
+            "nonce": "competitor-nonce",
+            "timestamp": time.time(),
+            "lease": 60,
+        })
+        lock = RemoteLock(mock_client, "repo1", "/path", timeout=0, lease=60)
+        with self.assertRaises(RepositoryLockedError):
+            lock.acquire()
+
+        self.assertFalse(lock.acquired)
+        self.assertTrue(bool(lock._nonce))
+        # Verify the client attempted to delete its own ticket in .git-lock.d/
+        expected_ticket_path = f"/path/.git-lock.d/{lock._nonce}.json"
+        mock_client.delete_entry.assert_any_call("repo1", expected_ticket_path)
+
+    def test_windows_is_pid_alive_handles_access_denied(self):
+        """On Windows, OpenProcess failing with ERROR_ACCESS_DENIED (5) must treat PID as alive."""
+        from git_remote_seafile.lock import _is_pid_alive
+        with patch("sys.platform", "win32"):
+            mock_kernel32 = MagicMock()
+            mock_kernel32.OpenProcess.return_value = 0
+            mock_kernel32.GetLastError.return_value = 5  # ERROR_ACCESS_DENIED
+            mock_ctypes = MagicMock()
+            mock_ctypes.windll.kernel32 = mock_kernel32
+            with patch.dict("sys.modules", {"ctypes": mock_ctypes, "ctypes.wintypes": MagicMock()}):
+                self.assertTrue(_is_pid_alive(1234))
+
 
 class TestRemoteGC(unittest.TestCase):
     def test_a_growth_is_not_reported_as_a_saving(self):

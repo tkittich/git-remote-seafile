@@ -92,9 +92,17 @@ class LFSTransferAgent:
             # Hand the client the *path*, not the bytes.  An LFS object is
             # routinely far larger than RAM, and reading it in first is exactly
             # what LFS exists to avoid; the client streams it from disk.
-            self.client.upload_file(
-                self.repo_id, parent_dir, filename, Path(local_path), replace=True
-            )
+            def on_upload_progress(transferred: int, total: int) -> None:
+                self._send_progress(oid, transferred, total or local_size)
+
+            try:
+                self.client.upload_file(
+                    self.repo_id, parent_dir, filename, Path(local_path), replace=True, progress_callback=on_upload_progress
+                )
+            except TypeError:
+                self.client.upload_file(
+                    self.repo_id, parent_dir, filename, Path(local_path), replace=True
+                )
             self._send_progress(oid, local_size, local_size)
             self._send_json({"event": "complete", "oid": oid})
         except Exception as ex:
@@ -122,7 +130,18 @@ class LFSTransferAgent:
             temp_dest = Path(self._temp_dir.name) / oid
             # Streamed straight to disk: `get_file_bytes` would hold the whole
             # object in memory before writing it.
-            if not self.client.download_file_to(self.repo_id, file_path, temp_dest):
+            def on_download_progress(transferred: int, total: int) -> None:
+                self._send_progress(oid, transferred, total)
+
+            download_ok = False
+            try:
+                download_ok = self.client.download_file_to(
+                    self.repo_id, file_path, temp_dest, progress_callback=on_download_progress
+                )
+            except TypeError:
+                download_ok = self.client.download_file_to(self.repo_id, file_path, temp_dest)
+
+            if not download_ok:
                 self._send_json({
                     "event": "complete",
                     "oid": oid,

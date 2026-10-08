@@ -347,9 +347,17 @@ class RemoteHelper:
                     try:
                         objects_to_push = get_objects_to_push(target_shas, exclude)
                         if objects_to_push:
-                            pack_sha, pack_bytes, idx_bytes = create_packfile(objects_to_push)
-                            if pack_bytes:
-                                size_kb = max(1, len(pack_bytes) // 1024)
+                            pack_sha, pack_data, idx_data = create_packfile(objects_to_push)
+                            if isinstance(pack_data, (bytes, bytearray)):
+                                pack_size = len(pack_data)
+                                has_pack = bool(pack_size)
+                            else:
+                                pack_path = Path(pack_data)
+                                has_pack = pack_path.is_file()
+                                pack_size = pack_path.stat().st_size if has_pack else 0
+
+                            if has_pack:
+                                size_kb = max(1, pack_size // 1024)
                                 sys.stderr.write(f"Uploading packfile pack-{pack_sha[:8]} ({size_kb} KB)...\n")
                                 sys.stderr.flush()
                                 pack_dir = self._full_path("objects/pack")
@@ -357,12 +365,12 @@ class RemoteHelper:
                                     self.repo_id,
                                     pack_dir,
                                     f"pack-{pack_sha}.pack",
-                                    pack_bytes,
+                                    pack_data,
                                     replace=True,
                                     progress_callback=on_upload_progress,
                                 )
                                 self.client.upload_file(
-                                    self.repo_id, pack_dir, f"pack-{pack_sha}.idx", idx_bytes, replace=True
+                                    self.repo_id, pack_dir, f"pack-{pack_sha}.idx", idx_data, replace=True
                                 )
                     except Exception as ex:
                         err_line = str(ex).replace("\r", " ").replace("\n", " ").strip()

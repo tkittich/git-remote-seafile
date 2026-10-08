@@ -152,10 +152,15 @@ def get_objects_to_push(local_sha: list[str] | str, exclude_shas: list[str] | st
     return objects
 
 
-def create_packfile(object_shas: list[str]) -> tuple[str, bytes, bytes]:
+def create_packfile(
+    object_shas: list[str],
+    staged_dir: Path | str | None = None,
+) -> tuple[str, bytes | Path, bytes | Path]:
     """Generate a .pack file and corresponding .idx file for the given object SHAs.
-    
-    Returns (pack_sha, pack_bytes, idx_bytes).
+
+    If *staged_dir* is provided, the pack and idx are created directly in that
+    directory and their Path objects are returned, avoiding buffering the packfile
+    into memory. Otherwise, returns (pack_sha, pack_bytes, idx_bytes).
     """
     if not object_shas:
         return "", b"", b""
@@ -167,6 +172,37 @@ def create_packfile(object_shas: list[str]) -> tuple[str, bytes, bytes]:
         tmp_parent = get_git_dir()
     except Exception:
         tmp_parent = None
+
+    if staged_dir is not None:
+        tmp_dir = Path(staged_dir)
+        tmp_dir.mkdir(parents=True, exist_ok=True)
+        pack_prefix = tmp_dir / "pack"
+
+        # 1. Generate packfile
+        input_data = ("\n".join(object_shas) + "\n").encode("utf-8")
+        out, err, code = run_git(
+            ["pack-objects", str(pack_prefix)],
+            input_bytes=input_data,
+        )
+        if code != 0:
+            err_msg = err.decode("utf-8", errors="replace").strip()
+            raise GitError(f"git pack-objects failed: {err_msg}")
+
+        pack_sha = out.decode("utf-8").strip()
+        pack_file = tmp_dir / f"pack-{pack_sha}.pack"
+        idx_file = tmp_dir / f"pack-{pack_sha}.idx"
+
+        if not pack_file.is_file():
+            raise GitError(f"Expected packfile not created: {pack_file}")
+
+        # If .idx was not automatically generated, create it
+        if not idx_file.is_file():
+            _, err, code = run_git(["index-pack", "-o", str(idx_file), str(pack_file)])
+            if code != 0:
+                err_msg = err.decode("utf-8", errors="replace").strip()
+                raise GitError(f"git index-pack failed: {err_msg}")
+
+        return pack_sha, pack_file, idx_file
 
     with tempfile.TemporaryDirectory(prefix="git-seaf-pack-", dir=str(tmp_parent) if tmp_parent else None) as td:
         tmp_dir = Path(td)

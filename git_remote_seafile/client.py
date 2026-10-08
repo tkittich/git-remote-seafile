@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import Counter
+import io
 import json
 import os
 from pathlib import Path
@@ -124,10 +125,11 @@ class StreamingMultipartFile:
             chunks.append(chunk)
             self._pos += len(chunk)
             needed -= len(chunk)
-            self._uploaded_file_bytes += len(chunk)
+            file_transferred = min(self.file_size, max(0, self._pos - file_start))
+            self._uploaded_file_bytes = file_transferred
             if self.progress_callback:
                 try:
-                    self.progress_callback(self._uploaded_file_bytes, self.file_size)
+                    self.progress_callback(file_transferred, self.file_size)
                 except Exception:
                     pass
 
@@ -617,6 +619,23 @@ class SeafileClient:
             up_resp = self._transfer_session(upload_url).post(
                 upload_url, data=mp, headers=headers, timeout=self.timeout
             )
+        elif isinstance(payload, (bytes, bytearray)) and progress_callback is not None:
+            bio = io.BytesIO(payload)
+            mp = StreamingMultipartFile(
+                fields={"parent_dir": clean_parent, "replace": "1" if replace else "0"},
+                file_field="file",
+                filename=filename,
+                file_obj=bio,
+                file_size=len(payload),
+                progress_callback=progress_callback,
+            )
+            headers = {
+                "Content-Type": mp.content_type,
+                "Content-Length": str(len(mp)),
+            }
+            up_resp = self._transfer_session(upload_url).post(
+                upload_url, data=mp, headers=headers, timeout=self.timeout
+            )
         else:
             files = {"file": (filename, payload)}
             data = {"parent_dir": clean_parent, "replace": "1" if replace else "0"}
@@ -642,7 +661,7 @@ class SeafileClient:
             )
         return True
 
-    def download_file_to(self, repo_id: str, file_path: str, dest: Any) -> bool:
+    def download_file_to(self, repo_id: str, file_path: str, dest: Any, progress_callback: Any = None) -> bool:
         """Stream a remote file to *dest* without holding it in memory.
 
         Returns False when the object does not exist.  ``get_file_bytes`` stays
@@ -671,10 +690,23 @@ class SeafileClient:
 
             dest_path = Path(dest)
             dest_path.parent.mkdir(parents=True, exist_ok=True)
+            total_size = 0
+            if "Content-Length" in file_resp.headers:
+                try:
+                    total_size = int(file_resp.headers["Content-Length"])
+                except Exception:
+                    total_size = 0
+            transferred = 0
             with open(dest_path, "wb") as fh:
                 for chunk in file_resp.iter_content(chunk_size=1024 * 1024):
                     if chunk:
                         fh.write(chunk)
+                        transferred += len(chunk)
+                        if progress_callback:
+                            try:
+                                progress_callback(transferred, total_size or transferred)
+                            except Exception:
+                                pass
             return True
         finally:
             file_resp.close()

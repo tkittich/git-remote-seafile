@@ -197,6 +197,9 @@ def main() -> int:
             if head_target not in existing_branches:
                 sys.stderr.write(f"Error: branch '{head_target}' does not exist on remote {url}\n")
                 return 1
+            # set-head is an explicit administrative maintenance command. It bypasses
+            # RemoteLock to allow recovering remotes where an interrupted operation left a
+            # broken HEAD or stale lock, while strictly validating that the target branch exists.
             head_content = f"ref: {head_target}\n".encode("utf-8")
             helper.client.upload_file(
                 helper.repo_id,

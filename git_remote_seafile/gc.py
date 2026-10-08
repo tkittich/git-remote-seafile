@@ -5,6 +5,7 @@ from __future__ import annotations
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 from typing import Any
 
@@ -43,7 +44,22 @@ def compact_repository(
     clean_repo = repo_path.rstrip("/")
     pack_dir = f"{clean_repo}/objects/pack"
 
-    with RemoteLock(client, repo_id, clean_repo):
+    with RemoteLock(client, repo_id, clean_repo) as lock:
+        last_renew = [time.monotonic()]
+
+        def maybe_renew() -> None:
+            now = time.monotonic()
+            if now - last_renew[0] >= 20.0:
+                try:
+                    if hasattr(lock, "renew"):
+                        lock.renew()
+                    last_renew[0] = now
+                except Exception:
+                    pass
+
+        def on_upload_progress(transferred: int, total: int) -> None:
+            maybe_renew()
+
         # 1. Discover all remote packfiles
         entries = client.list_dir(repo_id, pack_dir)
         old_packs = [e["name"] for e in entries if e["name"].endswith(".pack")]
@@ -81,6 +97,7 @@ def compact_repository(
             # 3. Download all packfiles and indices
             total_old_bytes = 0
             for pack_name in old_packs:
+                maybe_renew()
                 if verbose:
                     sys.stderr.write(f"  Downloading {pack_name}...\n")
                 idx_name = pack_name.removesuffix(".pack") + ".idx"
@@ -145,6 +162,7 @@ def compact_repository(
                 )
 
             # 5. Run git repack -a -d -l
+            maybe_renew()
             if verbose:
                 sys.stderr.write("  Repacking objects with delta compression...\n")
             res = subprocess.run(
@@ -153,6 +171,7 @@ def compact_repository(
                 text=True,
                 env=scratch_env,
             )
+            maybe_renew()
             if res.returncode != 0:
                 raise RuntimeError(f"git repack failed: {res.stderr}")
 
@@ -174,16 +193,21 @@ def compact_repository(
             for np in new_packs:
                 new_pack_names.add(np.name)
                 n_idx = np.with_suffix(".idx")
-                client.upload_file(repo_id, pack_dir, np.name, np, replace=True)
+                client.upload_file(
+                    repo_id, pack_dir, np.name, np, replace=True, progress_callback=on_upload_progress
+                )
                 if n_idx.is_file():
                     new_pack_names.add(n_idx.name)
-                    client.upload_file(repo_id, pack_dir, n_idx.name, n_idx, replace=True)
+                    client.upload_file(
+                        repo_id, pack_dir, n_idx.name, n_idx, replace=True, progress_callback=on_upload_progress
+                    )
 
             # 7. Delete obsolete old packs from Seafile
             if verbose:
                 sys.stderr.write("  Cleaning up obsolete remote packfiles...\n")
             deleted_count = 0
             for old_p in old_packs:
+                maybe_renew()
                 if old_p not in new_pack_names:
                     old_idx = old_p.removesuffix(".pack") + ".idx"
                     client.delete_entry(repo_id, f"{pack_dir}/{old_p}")

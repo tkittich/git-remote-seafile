@@ -21,7 +21,6 @@ from git_remote_seafile.git_util import (
     get_objects_to_push,
     install_packfile,
     is_ancestor,
-    GitError,
     rev_parse,
     run_git,
 )
@@ -169,6 +168,16 @@ class TestGitUtilWithRealGit(unittest.TestCase):
         self.assertTrue(pack_sha)
         self.assertGreater(len(pack_bytes), 0)
         self.assertGreater(len(idx_bytes), 0)
+
+        # Test staged_dir creates and returns Path objects
+        with tempfile.TemporaryDirectory() as stage_td:
+            s_sha, s_pack, s_idx = create_packfile(objs, staged_dir=stage_td)
+            self.assertEqual(s_sha, pack_sha)
+            self.assertTrue(isinstance(s_pack, Path))
+            self.assertTrue(isinstance(s_idx, Path))
+            self.assertTrue(s_pack.is_file())
+            self.assertTrue(s_idx.is_file())
+            self.assertEqual(s_pack.read_bytes(), pack_bytes)
 
         # Create another bare repo and install packfile into it
         with tempfile.TemporaryDirectory() as td2:
