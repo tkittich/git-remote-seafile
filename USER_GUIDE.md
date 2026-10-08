@@ -596,8 +596,9 @@ git push origin main
 
 Transfers are **streamed**, not buffered in RAM:
 
-- **Upload** streams the file in chunks with calculated `Content-Length` via `StreamingMultipartFile` (pure-Python streaming generator), avoiding monolithic multipart RAM buffering.
+- **Upload** streams the file in chunks with calculated `Content-Length` via `StreamingMultipartFile` (pure-Python streaming generator), avoiding monolithic multipart RAM buffering. Packfiles generated during `push` are staged directly onto disk inside `.git` scratch storage rather than buffered in RAM, and are cleaned up immediately following transfer.
 - **Download** streams responses directly to temporary disk files in chunks (both for LFS objects and Git packfiles during fetch/clone).
+- **Smart Pack Fetch Filtering**: During `fetch`, the helper inspects requested commit objects against local availability. If all requested commits already exist locally, remote pack downloads are bypassed entirely.
 
 A multi-gigabyte repository transfer or model therefore does not need multi-gigabytes of RAM.
 

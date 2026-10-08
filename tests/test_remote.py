@@ -331,7 +331,9 @@ class TestRemoteHelper(unittest.TestCase):
         self.assertIn("ok refs/heads/b1", output)
         self.assertIn("ok refs/heads/b2", output)
         mock_objs.assert_called_once_with(["sha_b1", "sha_b2"], [])
-        mock_pack.assert_called_once_with(["objA", "objB"])
+        mock_pack.assert_called_once()
+        self.assertEqual(mock_pack.call_args[0][0], ["objA", "objB"])
+        self.assertIn("staged_dir", mock_pack.call_args[1])
         uploaded_files = [call.args[2] for call in h.client.upload_file.call_args_list]
         self.assertEqual(uploaded_files.count("pack-batch1234.pack"), 1)
         self.assertEqual(uploaded_files.count("pack-batch1234.idx"), 1)
@@ -1985,6 +1987,97 @@ class TestFetchFailureIsLoud(unittest.TestCase):
             client.download_file_to.assert_called()
             install.assert_called_once()
             self.assertEqual(out.getvalue(), "\n")
+
+
+class TestSmartPackFetchFiltering(unittest.TestCase):
+    """Smart Pack Fetch Filtering (M-9):
+
+    If all requested commit objects in fetch_specs are already present in
+    the local object store, cmd_fetch terminates cleanly without downloading
+    redundant remote packfiles.
+    """
+
+    @staticmethod
+    def _helper(client):
+        h = RemoteHelper.__new__(RemoteHelper)
+        h.client = client
+        h.repo_id = "repo1"
+        h.repo_path = "/git-repo"
+        return h
+
+    def test_fetch_skips_pack_download_when_all_objects_exist_locally(self):
+        client = MagicMock()
+        h = self._helper(client)
+        sha1 = "1111111111111111111111111111111111111111"
+        sha2 = "2222222222222222222222222222222222222222"
+        out = io.StringIO()
+
+        with patch("git_remote_seafile.helper.filter_existing_objects", return_value=[sha1, sha2]):
+            with patch("sys.stdout", out), patch("sys.stderr", new_callable=io.StringIO):
+                h.cmd_fetch([f"{sha1} refs/heads/main", f"{sha2} refs/heads/feature"])
+
+        self.assertEqual(out.getvalue(), "\n")
+        # client.list_dir should NOT even be called because packs are bypassed
+        client.list_dir.assert_not_called()
+
+    def test_fetch_downloads_packs_when_objects_missing_locally(self):
+        with tempfile.TemporaryDirectory() as td:
+            local_git = Path(td) / ".git"
+            (local_git / "objects" / "pack").mkdir(parents=True)
+
+            client = MagicMock()
+            client.list_dir.return_value = [{"name": "pack-1.pack"}]
+            client.get_file_bytes.return_value = b"PACKBYTES"
+            h = self._helper(client)
+            sha1 = "1111111111111111111111111111111111111111"
+            sha2 = "2222222222222222222222222222222222222222"
+            out = io.StringIO()
+
+            # Only sha1 exists locally, sha2 is missing
+            with patch("git_remote_seafile.helper.filter_existing_objects", return_value=[sha1]):
+                with patch("git_remote_seafile.helper.get_git_dir", return_value=local_git):
+                    with patch("git_remote_seafile.helper.install_packfile") as install:
+                        with patch("sys.stdout", out), patch("sys.stderr", new_callable=io.StringIO):
+                            h.cmd_fetch([f"{sha1} refs/heads/main", f"{sha2} refs/heads/feature"])
+
+            self.assertEqual(out.getvalue(), "\n")
+            client.list_dir.assert_called_once()
+            install.assert_called_once()
+
+
+class TestPushStagingCleanup(unittest.TestCase):
+    """Push Staging Cleanup (H-1):
+
+    Ensure temporary push staging directory is cleaned up after upload.
+    """
+
+    def test_cmd_push_cleans_up_staging_directory(self):
+        h = RemoteHelper.__new__(RemoteHelper)
+        h.client = MagicMock()
+        h.client.get_file_text.return_value = None
+        h.repo_id = "repo1"
+        h.repo_path = "/git-repo"
+        h._refs_cache = {}
+
+        created_staging_dir = []
+        original_mkdtemp = tempfile.mkdtemp
+
+        def track_mkdtemp(*args, **kwargs):
+            path = original_mkdtemp(*args, **kwargs)
+            created_staging_dir.append(Path(path))
+            return path
+
+        with patch("git_remote_seafile.helper.rev_parse", return_value="sha_main"):
+            with patch("git_remote_seafile.helper.is_ancestor", return_value=True):
+                with patch("git_remote_seafile.helper.get_objects_to_push", return_value=["obj1"]):
+                    with patch("tempfile.mkdtemp", side_effect=track_mkdtemp):
+                        with patch("git_remote_seafile.helper.create_packfile", return_value=("pack1", b"PACK", b"IDX")):
+                            with patch("sys.stdout", io.StringIO()), patch("sys.stderr", io.StringIO()):
+                                with patch("git_remote_seafile.helper.RemoteLock"):
+                                    h.cmd_push(["refs/heads/main:refs/heads/main"])
+
+        self.assertEqual(len(created_staging_dir), 1)
+        self.assertFalse(created_staging_dir[0].exists(), "Push staging directory must be cleaned up")
 
 
 if __name__ == "__main__":

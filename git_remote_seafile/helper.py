@@ -15,7 +15,9 @@ from .lock import RemoteLock
 from .refs import REF_NAMESPACES, iter_refs
 from .safety import check_preflight_safety, SafetyError
 from .git_util import (
+    _HEX_SHA_RE,
     create_packfile,
+    filter_existing_objects,
     get_objects_to_push,
     install_packfile,
     is_ancestor,
@@ -342,32 +344,40 @@ class RemoteHelper:
                         lock.maybe_renew(20.0)
                         objects_to_push = get_objects_to_push(target_shas, exclude)
                         if objects_to_push:
-                            pack_sha, pack_data, idx_data = create_packfile(objects_to_push)
-                            lock.maybe_renew(20.0)
-                            if isinstance(pack_data, (bytes, bytearray)):
-                                pack_size = len(pack_data)
-                                has_pack = bool(pack_size)
-                            else:
-                                pack_path = Path(pack_data)
-                                has_pack = pack_path.is_file()
-                                pack_size = pack_path.stat().st_size if has_pack else 0
+                            try:
+                                git_dir = get_git_dir()
+                            except Exception:
+                                git_dir = None
+                            staging_dir = Path(tempfile.mkdtemp(prefix="grs-push-", dir=str(git_dir) if git_dir else None))
+                            try:
+                                pack_sha, pack_data, idx_data = create_packfile(objects_to_push, staged_dir=staging_dir)
+                                lock.maybe_renew(20.0)
+                                if isinstance(pack_data, (bytes, bytearray)):
+                                    pack_size = len(pack_data)
+                                    has_pack = bool(pack_size)
+                                else:
+                                    pack_path = Path(pack_data)
+                                    has_pack = pack_path.is_file()
+                                    pack_size = pack_path.stat().st_size if has_pack else 0
 
-                            if has_pack:
-                                size_kb = max(1, pack_size // 1024)
-                                sys.stderr.write(f"Uploading packfile pack-{pack_sha[:8]} ({size_kb} KB)...\n")
-                                sys.stderr.flush()
-                                pack_dir = self._full_path("objects/pack")
-                                self.client.upload_file(
-                                    self.repo_id,
-                                    pack_dir,
-                                    f"pack-{pack_sha}.pack",
-                                    pack_data,
-                                    replace=True,
-                                    progress_callback=on_upload_progress,
-                                )
-                                self.client.upload_file(
-                                    self.repo_id, pack_dir, f"pack-{pack_sha}.idx", idx_data, replace=True
-                                )
+                                if has_pack:
+                                    size_kb = max(1, pack_size // 1024)
+                                    sys.stderr.write(f"Uploading packfile pack-{pack_sha[:8]} ({size_kb} KB)...\n")
+                                    sys.stderr.flush()
+                                    pack_dir = self._full_path("objects/pack")
+                                    self.client.upload_file(
+                                        self.repo_id,
+                                        pack_dir,
+                                        f"pack-{pack_sha}.pack",
+                                        pack_data,
+                                        replace=True,
+                                        progress_callback=on_upload_progress,
+                                    )
+                                    self.client.upload_file(
+                                        self.repo_id, pack_dir, f"pack-{pack_sha}.idx", idx_data, replace=True
+                                    )
+                            finally:
+                                shutil.rmtree(staging_dir, ignore_errors=True)
                     except Exception as ex:
                         err_line = str(ex).replace("\r", " ").replace("\n", " ").strip()
                         for dst, _, _ in pending_updates:
@@ -498,6 +508,28 @@ class RemoteHelper:
         self._preflight_safety(push_mode=False)
 
         try:
+            # Smart Pack Fetch Filtering (M-9):
+            # If all requested commit objects already exist in the local repository,
+            # skip downloading redundant remote packfiles.
+            requested_shas: list[str] = []
+            for spec in fetch_specs:
+                parts = spec.split()
+                if parts and _HEX_SHA_RE.match(parts[0]):
+                    requested_shas.append(parts[0])
+                else:
+                    requested_shas = []
+                    break
+
+            if requested_shas and len(requested_shas) == len(fetch_specs):
+                try:
+                    existing = set(filter_existing_objects(requested_shas))
+                    if len(existing) == len(set(requested_shas)):
+                        sys.stdout.write("\n")
+                        sys.stdout.flush()
+                        return
+                except Exception:
+                    pass
+
             git_dir = get_git_dir()
             local_pack_dir = git_dir / "objects" / "pack"
             local_packs = {p.name for p in local_pack_dir.glob("pack-*.pack")} if local_pack_dir.is_dir() else set()

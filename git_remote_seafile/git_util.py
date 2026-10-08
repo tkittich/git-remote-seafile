@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -87,6 +88,9 @@ def is_ancestor(ancestor_sha: str, descendant_sha: str) -> bool:
     )
 
 
+_HEX_SHA_RE = re.compile(r"^[0-9a-fA-F]{40}(?:[0-9a-fA-F]{24})?$")
+
+
 def filter_existing_objects(shas: list[str] | str | None) -> list[str]:
     """Return those SHAs that exist in the local object store, in order.
 
@@ -97,17 +101,32 @@ def filter_existing_objects(shas: list[str] | str | None) -> list[str]:
         return []
     if isinstance(shas, str):
         shas = [shas]
-    candidates = list(dict.fromkeys(s for s in shas if s))
+    candidates = [s for s in dict.fromkeys(shas) if s and _HEX_SHA_RE.match(s)]
     if not candidates:
         return []
 
-    proc = subprocess.Popen(
-        ["git", "cat-file", "--batch-check"],
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
-    out, _ = proc.communicate(("\n".join(candidates) + "\n").encode("utf-8"))
+    try:
+        git_dir = get_git_dir()
+    except Exception:
+        git_dir = None
+
+    cmd = ["git"]
+    if git_dir is not None:
+        cmd.extend(["--git-dir", str(git_dir)])
+    cmd.extend(["cat-file", "--batch-check"])
+
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        out, _ = proc.communicate(("\n".join(candidates) + "\n").encode("utf-8"))
+        if proc.returncode != 0:
+            return []
+    except Exception:
+        return []
 
     existing = []
     for line in out.decode("utf-8", errors="replace").splitlines():

@@ -21,7 +21,9 @@ Storing active Git repositories inside Seafile desktop-synced folders (e.g. `Doc
 Instead of syncing the local `.git/` folder, `git-remote-seafile` communicates directly with the **Seafile Web API (`/api2`)**:
 - **Zero Daemon Churn**: The desktop sync client never scans or indexes your working repository.
 - **Automated Pre-Flight Safety**: Built-in guardrails detect and block path collisions (Trap 1) and download reflection loops (Trap 2) before any data is transferred.
-- **Fast & Efficient**: Commits are packed using Git packfiles (`.pack` and `.idx`). Pushing 100 commits uploads only **two files**.
+- **Fast & Efficient**: Commits are packed using Git packfiles (`.pack` and `.idx`). Pushing 100 commits uploads only **two files**, with zero-copy disk staging avoiding memory spikes.
+- **Concurrent Ref Discovery**: Discovers remote branches and tags concurrently using a worker pool while strictly preserving deterministic alphabetical sort order.
+- **Smart Pack Filtering**: Bypasses redundant remote pack downloads during fetch when requested commits already exist locally.
 - **Fast-forward Protection**: Rejects non-fast-forward pushes unless force-pushed, preventing accidental clobbering.
 - **Ticket-Based Distributed Locking**: Prevents push collisions with server-timestamped lock tickets (`.git-lock.d/<nonce>.json`), dead PID fast-reclaim, and in-transfer lease renewal.
 - **Lock Management CLI**: Built-in `lock-status` and `unlock [--force]` subcommands for operator inspection and emergency recovery.

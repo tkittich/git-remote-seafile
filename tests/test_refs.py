@@ -84,6 +84,54 @@ class TestIterRefs(unittest.TestCase):
     def test_namespaces_constant_order(self):
         self.assertEqual(REF_NAMESPACES, ("refs/heads", "refs/tags"))
 
+    def test_parallel_ref_enumeration_deterministic_order(self):
+        """Refs are yielded in deterministic sorted order regardless of directory discovery order."""
+        tree = {
+            "/git-repo/refs/heads": {"zebra": "file:z", "alpha": "file:a", "middle": "file:m"}
+        }
+        got = list(iter_refs(FakeClient(tree), "rid", "/git-repo", "refs/heads", max_workers=4))
+        self.assertEqual(got, [
+            ("refs/heads/alpha", "a"),
+            ("refs/heads/middle", "m"),
+            ("refs/heads/zebra", "z"),
+        ])
+
+    def test_parallel_ref_enumeration_concurrency(self):
+        """Multiple refs are fetched concurrently across threads."""
+        import threading
+        import time
+
+        seen_threads = set()
+        lock = threading.Lock()
+
+        class ConcurrentClient(FakeClient):
+            def get_file_text(self, repo_id, path):
+                with lock:
+                    seen_threads.add(threading.get_ident())
+                time.sleep(0.01)
+                return super().get_file_text(repo_id, path)
+
+        tree = {
+            "/git-repo/refs/heads": {f"branch-{i}": f"file:sha{i}" for i in range(8)}
+        }
+        got = dict(iter_refs(ConcurrentClient(tree), "rid", "/git-repo", "refs/heads", max_workers=4))
+        self.assertEqual(len(got), 8)
+        self.assertGreater(len(seen_threads), 1)
+
+    def test_parallel_ref_enumeration_handles_fetch_exception(self):
+        """Exceptions during individual ref fetches are skipped gracefully."""
+        class FailingClient(FakeClient):
+            def get_file_text(self, repo_id, path):
+                if "broken" in path:
+                    raise RuntimeError("simulated network failure")
+                return super().get_file_text(repo_id, path)
+
+        tree = {
+            "/git-repo/refs/heads": {"good": "file:aaa", "broken": "file:bbb"}
+        }
+        got = dict(iter_refs(FailingClient(tree), "rid", "/git-repo", "refs/heads", max_workers=2))
+        self.assertEqual(got, {"refs/heads/good": "aaa"})
+
 
 if __name__ == "__main__":
     unittest.main()
