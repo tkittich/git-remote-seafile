@@ -147,6 +147,20 @@ git push -u origin main
 git clone seafile://seafile.example.com/code/myproject
 ```
 
+### 6. Built-in CLI Subcommands
+`git-remote-seafile` provides CLI subcommands for verification, diagnostics, and lock management:
+
+| Command | Description |
+| :--- | :--- |
+| `git-remote-seafile check-auth` | Verify authentication credentials against the Seafile server. |
+| `git-remote-seafile check-safety <url>` | Test pre-flight safety guardrails (Trap 1 & 2 path collisions). |
+| `git-remote-seafile lock-status <url>` | Inspect remote repository lock status and lease holder details. |
+| `git-remote-seafile unlock <url> [--force]` | Release a held lock or forcibly break an abandoned lock. |
+| `git-remote-seafile gc <url> [--min-packs N]` | Consolidate and delta-compress remote packfiles. |
+| `git-remote-seafile set-head <url> <branch>` | Set default branch (`HEAD`) pointer after verifying branch exists. |
+| `git-remote-seafile test <url>` | Discover refs and verify connectivity without cloning. |
+| `git-remote-seafile desktop-url <path>` | Convert a local synced directory path to a `seafile://` remote URL. |
+
 ---
 
 ## Documentation

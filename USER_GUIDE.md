@@ -622,15 +622,31 @@ Check whether a remote repository is currently locked:
 ```bash
 git-remote-seafile lock-status seafile://code/myproject
 ```
+Example outputs:
+```text
+LOCKED
+  Owner: user_a1b2c3d4
+  Machine: workstation-1
+  PID: 12345
+  Nonce: e6b1f24d78a945b0
+  Protocol: ticket
+  Expires in: 42s
+```
+or when idle:
+```text
+UNLOCKED (Repository is available)
+```
 
 ### Breaking or Clearing a Lock (`unlock`)
 Release a stale lock held by your machine, or forcibly break an abandoned lock:
 ```bash
 # Release cooperative lock held by your machine/account
 git-remote-seafile unlock seafile://code/myproject
+# Output: Unlocked repository seafile://code/myproject
 
 # Forcibly break any active lock (emergency recovery)
 git-remote-seafile unlock seafile://code/myproject --force
+# Output: Forcibly unlocked repository seafile://code/myproject
 ```
 
 ---

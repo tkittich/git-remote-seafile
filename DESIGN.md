@@ -63,6 +63,9 @@ Within the designated Seafile library (created via the Seafile Web UI, such as a
 ```text
 /<repo-path>/
 ├── HEAD                        <- Symbolic ref ("ref: refs/heads/main\n")
+├── .git-lock.json              <- Legacy cooperative lease lock mutex (JSON)
+├── .git-lock.d/                <- Distributed ticket directory (v0.4.3)
+│   └── <nonce>.json            <- Deterministic client lock ticket
 ├── refs/
 │   ├── heads/
 │   │   ├── main                <- Commit SHA ("3a8f94b15c...\n")
