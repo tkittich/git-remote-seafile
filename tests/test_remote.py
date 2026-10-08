@@ -6,6 +6,7 @@ import hashlib
 import io
 import json
 import os
+import socket
 import tempfile
 import threading
 import time
@@ -491,6 +492,29 @@ class TestRemoteHelper(unittest.TestCase):
         output = out.getvalue()
         self.assertIn("error refs/heads/protected-branch failed to delete ref on remote", output)
 
+    def test_cmd_push_delete_prunes_empty_nested_directories(self):
+        h = RemoteHelper.__new__(RemoteHelper)
+        h.client = MagicMock()
+        h.repo_id = "repo1"
+        h.repo_path = "/git-repo"
+        h._refs_cache = {"refs/heads/feature/auth": "sha123"}
+        h.client._known_dirs = {("repo1", "/git-repo/refs/heads/feature")}
+        h.client.delete_entry.return_value = True
+
+        def fake_list(repo_id, path):
+            if path.endswith("/feature"):
+                return []
+            return [{"name": "main"}]
+        h.client.list_dir.side_effect = fake_list
+
+        out = io.StringIO()
+        with patch("sys.stdout", out), patch("git_remote_seafile.helper.RemoteLock"):
+            h.cmd_push([":refs/heads/feature/auth"])
+
+        self.assertIn("ok refs/heads/feature/auth", out.getvalue())
+        h.client.delete_entry.assert_any_call("repo1", "/git-repo/refs/heads/feature")
+        self.assertNotIn(("repo1", "/git-repo/refs/heads/feature"), h.client._known_dirs)
+
     @patch("git_remote_seafile.helper.rev_parse", return_value="sha123")
     @patch("git_remote_seafile.helper.get_objects_to_push", return_value=["obj1"])
     @patch("git_remote_seafile.helper.create_packfile", return_value=("pack1", b"PACK", b"IDX"))
@@ -651,9 +675,9 @@ class TestConcurrencyAndLocking(unittest.TestCase):
         lock = RemoteLock(mock_client, "repo1", "/path", timeout=5, lease=60)
         with lock:
             self.assertTrue(lock.acquired)
-            mock_client.upload_file.assert_called_once()
+            self.assertEqual(mock_client.upload_file.call_count, 2)
         self.assertFalse(lock.acquired)
-        mock_client.delete_entry.assert_called_once_with("repo1", "/path/.git-lock.json")
+        mock_client.delete_entry.assert_any_call("repo1", "/path/.git-lock.json")
 
     def test_active_lock_timeout(self):
         mock_client = MagicMock()
@@ -711,10 +735,12 @@ class TestConcurrencyAndLocking(unittest.TestCase):
 
         def fake_upload(repo_id, parent, filename, content, replace=True):
             if shared_remote_storage["lock"] is not None:
-                # Collision simulation if already locked
+                # Collision simulation if already locked by another client
                 info = json.loads(shared_remote_storage["lock"])
+                new_info = json.loads(content)
                 if time.time() < info["timestamp"] + info["lease"]:
-                    raise Exception("Concurrent write rejected")
+                    if info.get("nonce") != new_info.get("nonce"):
+                        raise Exception("Concurrent write rejected")
             shared_remote_storage["lock"] = content.decode("utf-8")
 
         def fake_delete(repo_id, path):
@@ -798,7 +824,7 @@ class TestConcurrencyAndLocking(unittest.TestCase):
         mock_client.get_file_text.return_value = mock_client.upload_file.call_args[0][3].decode("utf-8")
         lock.release()
 
-        mock_client.delete_entry.assert_called_once_with("repo1", "/path/.git-lock.json")
+        mock_client.delete_entry.assert_any_call("repo1", "/path/.git-lock.json")
 
     def test_release_does_not_delete_same_machine_lock_if_overridden(self):
         """When lease expires and same machine re-acquires with new nonce, release must not delete it."""
@@ -892,6 +918,108 @@ class TestConcurrencyAndLocking(unittest.TestCase):
         with self.assertRaises(RepositoryLockedError):
             lock.acquire()
 
+    def test_dead_pid_fast_reclaim_on_local_machine(self):
+        """A lock held by the same machine with a dead PID should be fast-reclaimed."""
+        mock_client = MagicMock()
+        mock_client.token = "token123"
+        dead_pid = 999999
+        with patch("git_remote_seafile.lock._is_pid_alive", return_value=False):
+            stale_lock = json.dumps({
+                "owner": "crashed-local-user",
+                "machine": socket.gethostname(),
+                "nonce": "crashed-nonce",
+                "timestamp": time.time(),
+                "lease": 60,
+                "pid": dead_pid,
+            })
+            call_count = [0]
+            def fake_read(repo_id, path):
+                call_count[0] += 1
+                if call_count[0] == 1:
+                    return stale_lock
+                return None
+            mock_client.get_file_text.side_effect = fake_read
+            lock = RemoteLock(mock_client, "repo1", "/path", timeout=0, lease=60)
+            err = io.StringIO()
+            with patch("sys.stderr", err):
+                lock.acquire()
+            self.assertTrue(lock.acquired)
+            self.assertIn("Reclaiming stale lock from dead local process", err.getvalue())
+
+    def test_alive_pid_on_local_machine_blocks(self):
+        """A lock held by the same machine with an alive PID must not be stolen."""
+        mock_client = MagicMock()
+        mock_client.token = "token123"
+        alive_pid = os.getpid()
+        with patch("git_remote_seafile.lock._is_pid_alive", return_value=True):
+            mock_client.get_file_text.return_value = json.dumps({
+                "owner": "running-local-user",
+                "machine": socket.gethostname(),
+                "nonce": "alive-nonce",
+                "timestamp": time.time(),
+                "lease": 60,
+                "pid": alive_pid,
+            })
+            lock = RemoteLock(mock_client, "repo1", "/path", timeout=0, lease=60)
+            with self.assertRaises(RepositoryLockedError):
+                lock.acquire()
+
+    def test_ticket_based_ordering_earliest_wins(self):
+        """When multiple tickets exist, the earliest ticket wins."""
+        mock_client = MagicMock()
+        mock_client.token = "token123"
+        now = time.time()
+
+        ticket_a = json.dumps({
+            "owner": "alice",
+            "machine": "nodeA",
+            "nonce": "ticketA",
+            "timestamp": now - 10,
+            "lease": 60,
+            "pid": 1234,
+        })
+        mock_client.get_file_text.side_effect = lambda repo_id, path: ticket_a if "ticketA" in path else None
+        mock_client.list_dir.return_value = [
+            {"name": "ticketA.json", "mtime": int(now - 10)},
+        ]
+
+        lock = RemoteLock(mock_client, "repo1", "/path", timeout=0, lease=60)
+        with self.assertRaises(RepositoryLockedError) as ctx:
+            lock.acquire()
+        self.assertIn("locked by 'alice'", str(ctx.exception))
+
+    def test_lock_lease_renew(self):
+        """Lease renewal updates timestamps on both ticket and legacy lock."""
+        mock_client = MagicMock()
+        mock_client.token = "token123"
+        mock_client.get_file_text.return_value = None
+
+        lock = RemoteLock(mock_client, "repo1", "/path", timeout=5, lease=60)
+        lock.acquire()
+        upload_count_before = mock_client.upload_file.call_count
+
+        res = lock.renew()
+        self.assertTrue(res)
+        self.assertEqual(mock_client.upload_file.call_count, upload_count_before + 2)
+
+    def test_lock_status_and_unlock(self):
+        """get_status and unlock methods inspect and clear locks."""
+        mock_client = MagicMock()
+        mock_client.token = "token123"
+        mock_client.get_file_text.return_value = None
+
+        lock = RemoteLock(mock_client, "repo1", "/path", timeout=5, lease=60)
+        status_unlocked = lock.get_status()
+        self.assertFalse(status_unlocked["locked"])
+
+        lock.acquire()
+        mock_client.get_file_text.return_value = mock_client.upload_file.call_args[0][3].decode("utf-8")
+        status_locked = lock.get_status()
+        self.assertTrue(status_locked["locked"])
+        self.assertEqual(status_locked["owner"], lock._owner_id())
+
+        self.assertTrue(lock.unlock())
+
 
 class TestRemoteGC(unittest.TestCase):
     def test_a_growth_is_not_reported_as_a_saving(self):
@@ -959,8 +1087,8 @@ class TestRemoteGC(unittest.TestCase):
             res = compact_repository(mock_client, "repo1", "/path", min_packs=2, verbose=False)
             self.assertEqual(res["status"], "ok")
             self.assertEqual(res["old_packs"], 2)
-            # Verify obsolete packs were deleted plus the lock release (4 + 1 = 5)
-            self.assertEqual(mock_client.delete_entry.call_count, 5)
+            # Verify obsolete packs were deleted plus the lock release (4 obsolete files + ticket + legacy lock = 6)
+            self.assertEqual(mock_client.delete_entry.call_count, 6)
             mock_client.delete_entry.assert_any_call("repo1", "/path/.git-lock.json")
 
     @patch("subprocess.run")

@@ -24,6 +24,8 @@ def print_help() -> None:
     print("  git-remote-seafile gc <seafile://url>            Compact multiple remote packfiles")
     print("  git-remote-seafile lfs-transfer <seafile://url>  Git LFS Custom Transfer Agent")
     print("  git-remote-seafile set-head <seafile://url> <branch> Set default branch (HEAD) on remote")
+    print("  git-remote-seafile lock-status <seafile://url>   Inspect repository lock state")
+    print("  git-remote-seafile unlock <seafile://url> [--force] Clear repository lock")
     print("  git-remote-seafile desktop-url <path>            Generate seafile:// URL from local path")
     print("  git-remote-seafile version                       Display version")
 
@@ -207,6 +209,56 @@ def main() -> int:
             return 0
         except Exception as ex:
             print(f"Failed to set HEAD: {ex}")
+            return 1
+
+    if args[0] == "lock-status":
+        if len(args) < 2:
+            print("Usage: git-remote-seafile lock-status <seafile://url>")
+            return 1
+        url = args[1]
+        try:
+            helper = RemoteHelper("lock-status", url)
+            from .lock import RemoteLock
+            lock = RemoteLock(helper.client, helper.repo_id, helper.repo_path)
+            status = lock.get_status()
+            if not status.get("locked"):
+                print(f"Repository at {url} is UNLOCKED.")
+                return 0
+            print(f"Repository at {url} is LOCKED:")
+            print(f"  Owner    : {status.get('owner')}")
+            print(f"  Machine  : {status.get('machine')}")
+            if status.get("pid"):
+                print(f"  PID      : {status.get('pid')}")
+            if status.get("nonce"):
+                print(f"  Nonce    : {status.get('nonce')}")
+            print(f"  Protocol : {status.get('protocol')}")
+            print(f"  Expires  : in {status.get('expires_in')}s")
+            return 0
+        except Exception as ex:
+            print(f"Failed to check lock status: {ex}")
+            return 1
+
+    if args[0] == "unlock":
+        if len(args) < 2:
+            print("Usage: git-remote-seafile unlock <seafile://url> [--force]")
+            return 1
+        url = args[1]
+        force = "--force" in args
+        try:
+            helper = RemoteHelper("unlock", url)
+            from .lock import RemoteLock, RepositoryLockedError
+            lock = RemoteLock(helper.client, helper.repo_id, helper.repo_path)
+            lock.unlock(force=force)
+            if force:
+                print(f"Forcibly unlocked repository at {url}.")
+            else:
+                print(f"Unlocked repository at {url}.")
+            return 0
+        except RepositoryLockedError as rle:
+            sys.stderr.write(f"Error: {rle}\n")
+            return 1
+        except Exception as ex:
+            sys.stderr.write(f"Failed to unlock repository: {ex}\n")
             return 1
 
     if args[0] == "desktop-url":

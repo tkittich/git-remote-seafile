@@ -421,5 +421,99 @@ class TestCLIDesktopUrl(unittest.TestCase):
         self.assertIn("Cannot determine the Seafile server", mock_out.getvalue())
 
 
+class TestCLILockManagement(unittest.TestCase):
+    def test_lock_status_missing_args(self):
+        with patch.object(sys, "argv", ["git-remote-seafile", "lock-status"]):
+            with patch("sys.stdout", new_callable=io.StringIO) as mock_out:
+                code = main()
+                self.assertEqual(code, 1)
+                self.assertIn("Usage:", mock_out.getvalue())
+
+    @patch("git_remote_seafile.lock.RemoteLock")
+    @patch("git_remote_seafile.cli.RemoteHelper")
+    def test_lock_status_unlocked(self, mock_helper_cls, mock_lock_cls):
+        mock_lock = MagicMock()
+        mock_lock_cls.return_value = mock_lock
+        mock_lock.get_status.return_value = {"locked": False}
+
+        with patch.object(sys, "argv", ["git-remote-seafile", "lock-status", "seafile://code/myrepo"]):
+            with patch("sys.stdout", new_callable=io.StringIO) as mock_out:
+                code = main()
+                self.assertEqual(code, 0)
+                self.assertIn("UNLOCKED", mock_out.getvalue())
+
+    @patch("git_remote_seafile.lock.RemoteLock")
+    @patch("git_remote_seafile.cli.RemoteHelper")
+    def test_lock_status_locked(self, mock_helper_cls, mock_lock_cls):
+        mock_lock = MagicMock()
+        mock_lock_cls.return_value = mock_lock
+        mock_lock.get_status.return_value = {
+            "locked": True,
+            "owner": "alice",
+            "machine": "nodeA",
+            "pid": 1234,
+            "nonce": "nonce123",
+            "protocol": "ticket",
+            "expires_in": 45,
+        }
+
+        with patch.object(sys, "argv", ["git-remote-seafile", "lock-status", "seafile://code/myrepo"]):
+            with patch("sys.stdout", new_callable=io.StringIO) as mock_out:
+                code = main()
+                self.assertEqual(code, 0)
+                output = mock_out.getvalue()
+                self.assertIn("LOCKED", output)
+                self.assertIn("alice", output)
+                self.assertIn("nodeA", output)
+                self.assertIn("1234", output)
+
+    def test_unlock_missing_args(self):
+        with patch.object(sys, "argv", ["git-remote-seafile", "unlock"]):
+            with patch("sys.stdout", new_callable=io.StringIO) as mock_out:
+                code = main()
+                self.assertEqual(code, 1)
+                self.assertIn("Usage:", mock_out.getvalue())
+
+    @patch("git_remote_seafile.lock.RemoteLock")
+    @patch("git_remote_seafile.cli.RemoteHelper")
+    def test_unlock_success(self, mock_helper_cls, mock_lock_cls):
+        mock_lock = MagicMock()
+        mock_lock_cls.return_value = mock_lock
+
+        with patch.object(sys, "argv", ["git-remote-seafile", "unlock", "seafile://code/myrepo"]):
+            with patch("sys.stdout", new_callable=io.StringIO) as mock_out:
+                code = main()
+                self.assertEqual(code, 0)
+                self.assertIn("Unlocked repository", mock_out.getvalue())
+                mock_lock.unlock.assert_called_once_with(force=False)
+
+    @patch("git_remote_seafile.lock.RemoteLock")
+    @patch("git_remote_seafile.cli.RemoteHelper")
+    def test_unlock_force(self, mock_helper_cls, mock_lock_cls):
+        mock_lock = MagicMock()
+        mock_lock_cls.return_value = mock_lock
+
+        with patch.object(sys, "argv", ["git-remote-seafile", "unlock", "seafile://code/myrepo", "--force"]):
+            with patch("sys.stdout", new_callable=io.StringIO) as mock_out:
+                code = main()
+                self.assertEqual(code, 0)
+                self.assertIn("Forcibly unlocked repository", mock_out.getvalue())
+                mock_lock.unlock.assert_called_once_with(force=True)
+
+    @patch("git_remote_seafile.lock.RemoteLock")
+    @patch("git_remote_seafile.cli.RemoteHelper")
+    def test_unlock_held_by_other_fails_without_force(self, mock_helper_cls, mock_lock_cls):
+        from git_remote_seafile.lock import RepositoryLockedError
+        mock_lock = MagicMock()
+        mock_lock_cls.return_value = mock_lock
+        mock_lock.unlock.side_effect = RepositoryLockedError("Repository is locked by bob on otherhost")
+
+        with patch.object(sys, "argv", ["git-remote-seafile", "unlock", "seafile://code/myrepo"]):
+            with patch("sys.stderr", new_callable=io.StringIO) as mock_err:
+                code = main()
+                self.assertEqual(code, 1)
+                self.assertIn("Error: Repository is locked by bob on otherhost", mock_err.getvalue())
+
+
 if __name__ == "__main__":
     unittest.main()

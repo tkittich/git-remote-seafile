@@ -6,6 +6,7 @@ import io
 import json
 import sqlite3
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -541,6 +542,58 @@ class TestStreamingTransfers(unittest.TestCase):
         captured = self._capture_upload()
         self.assertTrue(self.client.upload_file("repo1", "/seafile", "test.txt", b"content"))
         self.assertEqual(captured["payload"], b"content")
+
+    def test_streaming_multipart_file_progress_callback(self):
+        """StreamingMultipartFile invokes progress callback as chunks are read."""
+        from git_remote_seafile.client import StreamingMultipartFile
+        calls = []
+
+        def on_progress(transferred, total):
+            calls.append((transferred, total))
+
+        raw_data = b"HELLO_STREAMING_PROGRESS"
+        stream = io.BytesIO(raw_data)
+        mp = StreamingMultipartFile(
+            fields={"parent_dir": "/x", "replace": "1"},
+            file_field="file",
+            filename="data.bin",
+            file_obj=stream,
+            file_size=len(raw_data),
+            progress_callback=on_progress,
+        )
+
+        read_data = []
+        while True:
+            chunk = mp.read(8)
+            if not chunk:
+                break
+            read_data.append(chunk)
+
+        full_content = b"".join(read_data)
+        self.assertIn(raw_data, full_content)
+        self.assertTrue(len(calls) > 0)
+        self.assertEqual(calls[-1], (len(raw_data), len(raw_data)))
+
+    def test_upload_bytes_triggers_progress_callback(self):
+        calls = []
+        def on_progress(transferred, total):
+            calls.append((transferred, total))
+
+        captured = self._capture_upload()
+        self.assertTrue(
+            self.client.upload_file(
+                "repo1", "/test", "file.txt", b"12345", progress_callback=on_progress
+            )
+        )
+        self.assertEqual(calls, [(5, 5)])
+
+    def test_server_time_offset_from_date_header(self):
+        """HTTP Date header passively calibrates estimated server time."""
+        from email.utils import formatdate
+        resp = MagicMock()
+        resp.headers = {"Date": formatdate(time.time() + 100, usegmt=True)}
+        self.client._record_server_date_header(resp)
+        self.assertAlmostEqual(self.client.get_server_time(), time.time() + 100, delta=2)
 
     def test_download_file_to_streams_to_disk(self):
         payload = MagicMock(status_code=200)

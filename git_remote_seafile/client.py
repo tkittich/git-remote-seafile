@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import sys
+import time
 from typing import Any
 import uuid
 from urllib.parse import quote, urlparse, urlunparse
@@ -63,10 +64,13 @@ class StreamingMultipartFile:
         file_obj: Any,
         file_size: int,
         boundary: str | None = None,
+        progress_callback: Any = None,
     ):
         self.boundary = boundary or f"----GRSBoundary{uuid.uuid4().hex}"
         self.file_obj = file_obj
         self.file_size = file_size
+        self.progress_callback = progress_callback
+        self._uploaded_file_bytes = 0
 
         prefix = []
         for name, val in fields.items():
@@ -120,6 +124,12 @@ class StreamingMultipartFile:
             chunks.append(chunk)
             self._pos += len(chunk)
             needed -= len(chunk)
+            self._uploaded_file_bytes += len(chunk)
+            if self.progress_callback:
+                try:
+                    self.progress_callback(self._uploaded_file_bytes, self.file_size)
+                except Exception:
+                    pass
 
         # 3. Footer suffix
         if needed > 0 and self._pos >= file_end:
@@ -160,6 +170,7 @@ class SeafileClient:
         self.token = token
         self.timeout = timeout
         self._force_file_host: bool | None = None  # resolved lazily; see below
+        self._server_time_offset: float | None = None
         self.session = requests.Session()
         # File transfers go through a session as well, so they get connection
         # reuse, the `verify`/proxy settings and the retry adapter.  This second
@@ -169,6 +180,8 @@ class SeafileClient:
         self._file_session = requests.Session()
         self._mount_retries(self.session)
         self._mount_retries(self._file_session)
+        self.session.hooks["response"].append(self._record_server_date_header)
+        self._file_session.hooks["response"].append(self._record_server_date_header)
         self._repos_cache: dict[str, str] = {}  # name_or_id -> id
         self._known_dirs: set[tuple[str, str]] = set()  # (repo_id, clean_path)
 
@@ -182,6 +195,22 @@ class SeafileClient:
 
         if self.token:
             self.session.headers.update({"Authorization": f"Token {self.token}"})
+
+    def _record_server_date_header(self, resp: requests.Response, *args: Any, **kwargs: Any) -> None:
+        date_hdr = resp.headers.get("Date") if hasattr(resp, "headers") else None
+        if date_hdr:
+            try:
+                from email.utils import parsedate_to_datetime
+                server_ts = parsedate_to_datetime(date_hdr).timestamp()
+                self._server_time_offset = server_ts - time.time()
+            except Exception:
+                pass
+
+    def get_server_time(self) -> float:
+        """Return estimated server timestamp synchronized with HTTP Date response header."""
+        if self._server_time_offset is not None:
+            return time.time() + self._server_time_offset
+        return time.time()
 
     def _load_credentials(self, require_token: bool = True) -> None:
         """Load credentials from env vars, config file, or local Seafile client.
@@ -528,6 +557,7 @@ class SeafileClient:
         filename: str,
         content: Any,
         replace: bool = True,
+        progress_callback: Any = None,
     ) -> bool:
         """Upload file content to a parent directory.
 
@@ -540,8 +570,8 @@ class SeafileClient:
         """
         if isinstance(content, (str, os.PathLike)):
             with open(content, "rb") as fh:
-                return self._upload(repo_id, parent_dir, filename, fh, replace)
-        return self._upload(repo_id, parent_dir, filename, content, replace)
+                return self._upload(repo_id, parent_dir, filename, fh, replace, progress_callback)
+        return self._upload(repo_id, parent_dir, filename, content, replace, progress_callback)
 
     def _upload(
         self,
@@ -550,6 +580,7 @@ class SeafileClient:
         filename: str,
         payload: Any,
         replace: bool,
+        progress_callback: Any = None,
     ) -> bool:
         clean_parent = ("/" + parent_dir.strip("/")).rstrip("/") or "/"
         self.mkdir_p(repo_id, clean_parent)
@@ -577,6 +608,7 @@ class SeafileClient:
                 filename=filename,
                 file_obj=payload,
                 file_size=file_size,
+                progress_callback=progress_callback,
             )
             headers = {
                 "Content-Type": mp.content_type,
@@ -591,6 +623,12 @@ class SeafileClient:
             up_resp = self._transfer_session(upload_url).post(
                 upload_url, files=files, data=data, timeout=self.timeout
             )
+            if progress_callback:
+                try:
+                    payload_len = len(payload) if hasattr(payload, "__len__") else 0
+                    progress_callback(payload_len, payload_len)
+                except Exception:
+                    pass
         if up_resp.status_code not in (200, 201):
             # Name the endpoint that was actually hit.  A wrong scheme or host
             # here is the difference between a working push and an opaque

@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.3] - 2026-10-08
+
+Ticket-based distributed lock protocol, in-transfer lease renewal without daemon threads,
+stale lock fast-reclamation for dead local processes, remote D/F ref conflict directory pruning,
+and lock management CLI subcommands (`lock-status` and `unlock`).
+
+### Added & Optimized
+
+- **Ticket-based distributed locking (H-5 Phase 3).** Evolution of the cooperative lock protocol
+  to deterministic ticket files (`.git-lock.d/<nonce>.json`). Tickets are ordered by Seafile server
+  `mtime` and HTTP `Date:` response headers to eliminate client clock drift and write-write collision races.
+  Maintains mirrored `.git-lock.json` for full backward compatibility with older clients.
+- **In-transfer lock lease renewal.** Streaming multipart file uploads hook progress updates directly
+  into `RemoteLock.renew()`, refreshing the lock lease every 20 seconds of sustained upload progress
+  during multi-gigabyte packfile transfers without spawning background daemon threads.
+- **Dead local PID fast-reclaim.** Stale locks left by crashed processes on the same machine are verified
+  via cross-platform PID liveness checks (`OpenProcess` on Windows, `os.kill` on Unix) and immediately
+  reclaimed without waiting for the lease timeout.
+- **Remote D/F ref conflict prevention (M-6).** Deleting nested refs (e.g. `refs/heads/feature/auth`)
+  automatically and recursively prunes now-empty parent directories up to `refs/heads` on Seafile,
+  evicting them from `client._known_dirs` and preventing directory/file ref collision errors.
+- **Lock inspection and management CLI.** Added `git-remote-seafile lock-status <url>` to inspect active
+  lock holder metadata and expiration, and `git-remote-seafile unlock <url> [--force]` to release
+  or forcibly break locks.
+
 ## [0.4.2] - 2026-10-08
 
 Multi-spec packfile batching, delta compression path hint preservation, Git LFS transfer agent

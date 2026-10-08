@@ -7,6 +7,7 @@ import re
 import shutil
 import sys
 import tempfile
+import time
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
@@ -119,6 +120,24 @@ class RemoteHelper:
         """Combine repo_path with relative subpath."""
         clean_rel = rel_path.strip("/")
         return f"{self.repo_path}/{clean_rel}".rstrip("/")
+
+    def _prune_empty_ref_parents(self, ref_path: str) -> None:
+        """Prune empty parent directories up to refs/heads or refs/tags after ref deletion."""
+        parent = os.path.dirname(ref_path).replace("\\", "/")
+        stop_points = {"refs/heads", "refs/tags", "refs", ""}
+        while parent and parent not in stop_points:
+            full_parent = self._full_path(parent)
+            try:
+                entries = self.client.list_dir(self.repo_id, full_parent)
+                if isinstance(entries, list) and len(entries) == 0:
+                    self.client.delete_entry(self.repo_id, full_parent)
+                    clean_parent = ("/" + full_parent.strip("/")).rstrip("/")
+                    self.client._known_dirs.discard((self.repo_id, clean_parent))
+                    parent = os.path.dirname(parent).replace("\\", "/")
+                else:
+                    break
+            except Exception:
+                break
 
     def _repository_has_objects(self) -> bool:
         """True if the remote already holds at least one packfile.
@@ -242,7 +261,15 @@ class RemoteHelper:
         reported_specs: set[str] = set()
 
         try:
-            with RemoteLock(self.client, self.repo_id, self.repo_path):
+            with RemoteLock(self.client, self.repo_id, self.repo_path) as lock:
+                last_renewal = [time.monotonic()]
+
+                def on_upload_progress(transferred: int, total: int) -> None:
+                    now_mono = time.monotonic()
+                    if now_mono - last_renewal[0] >= 20.0:
+                        if lock.renew():
+                            last_renewal[0] = now_mono
+
                 pending_updates: list[tuple[str, str, str | None]] = []
 
                 for spec in push_specs:
@@ -269,6 +296,7 @@ class RemoteHelper:
                                 # exclude objects on the strength of a ref that
                                 # is gone.
                                 self._refs_cache.pop(dst, None)
+                                self._prune_empty_ref_parents(dst)
                                 sys.stdout.write(f"ok {dst}\n")
                         except Exception as ex:
                             sys.stdout.write(f"error {dst} {ex}\n")
@@ -326,7 +354,12 @@ class RemoteHelper:
                                 sys.stderr.flush()
                                 pack_dir = self._full_path("objects/pack")
                                 self.client.upload_file(
-                                    self.repo_id, pack_dir, f"pack-{pack_sha}.pack", pack_bytes, replace=True
+                                    self.repo_id,
+                                    pack_dir,
+                                    f"pack-{pack_sha}.pack",
+                                    pack_bytes,
+                                    replace=True,
+                                    progress_callback=on_upload_progress,
                                 )
                                 self.client.upload_file(
                                     self.repo_id, pack_dir, f"pack-{pack_sha}.idx", idx_bytes, replace=True

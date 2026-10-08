@@ -610,9 +610,28 @@ A multi-gigabyte repository transfer or model therefore does not need multi-giga
 
 For teams where multiple developers or automated CI/CD runners push simultaneously, `git-remote-seafile` includes an automatic **distributed lease lock**:
 
-- During every `git push`, the helper acquires an advisory lease on `.git-lock.json` at the root of the remote repository on Seafile.
+- **Ticket-Based Protocol**: During every `git push`, the helper writes a unique lock ticket (`.git-lock.d/<nonce>.json`) at the remote repository root on Seafile. Tickets are ordered deterministically using server timestamps and HTTP `Date:` response headers, preventing write-write collision races and client clock drift.
+- **Legacy Compatibility**: A mirrored `.git-lock.json` is maintained for backward compatibility with earlier client versions.
+- **Dead Local PID Fast-Reclaim**: If an active lock belongs to the current machine and the holding process has crashed or exited, the helper detects the dead PID and immediately reclaims the lock without waiting for the timeout.
+- **In-Transfer Lease Renewal**: During active multi-gigabyte packfile uploads, `git-remote-seafile` automatically refreshes the lock lease every 20 seconds of sustained progress without spawning background daemon threads.
 - If another developer is pushing, subsequent pushes wait and retry for up to 15 seconds (configurable via `seafile.locktimeout`).
 - **Lease Safety**: If a client crashes or loses power mid-push, the lock automatically expires after 60 seconds (configurable via `seafile.locklease`), preventing permanent repository deadlocks.
+
+### Inspecting Lock Status (`lock-status`)
+Check whether a remote repository is currently locked:
+```bash
+git-remote-seafile lock-status seafile://code/myproject
+```
+
+### Breaking or Clearing a Lock (`unlock`)
+Release a stale lock held by your machine, or forcibly break an abandoned lock:
+```bash
+# Release cooperative lock held by your machine/account
+git-remote-seafile unlock seafile://code/myproject
+
+# Forcibly break any active lock (emergency recovery)
+git-remote-seafile unlock seafile://code/myproject --force
+```
 
 ---
 
