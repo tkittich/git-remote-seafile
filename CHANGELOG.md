@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.4] - 2026-10-08
+
+Documentation hardening, Mermaid diagram rich display fixes for GitHub, expanded CLI reference guide,
+and engineering roadmap maintenance.
+
+### Documentation & Maintenance
+
+- **GitHub rich display fixes.** Resolved "Unable to render rich display" failures on GitHub by converting
+  flowcharts to modern strict syntax (`flowchart TD`), quoting edge labels containing parentheses
+  and special characters (`|"REST API (/api2)"|`), and replacing unclosed angle brackets in sequence diagrams.
+- **CLI subcommands quick-reference table.** Added a top-level CLI table to `README.md` and expanded
+  terminal output walkthroughs in `USER_GUIDE.md` for `lock-status` and `unlock [--force]`.
+- **Remote storage specification alignment.** Updated `DESIGN.md` directory layout with `.git-lock.json`
+  and `.git-lock.d/<nonce>.json`.
+- **Roadmap grooming.** Streamlined `ROADMAP.md` by clearing completed deliverables (v0.4.1–v0.4.3) and
+  focusing exclusively on the active architectural backlog.
+
 ## [0.4.3] - 2026-10-08
 
 Ticket-based distributed lock protocol, in-transfer lease renewal without daemon threads,
