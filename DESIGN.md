@@ -10,7 +10,7 @@
 
 `git-remote-seafile` introduces native Git remote support for Seafile servers using Git's standard Remote Helper specification (`gitremote-helpers(7)`).
 
-It allows Seafile users and organizations to use existing Seafile libraries for private, encrypted, access-controlled Git repository hosting without:
+It allows Seafile users and organizations to use existing Seafile libraries for private, TLS-secured, access-controlled Git repository hosting without:
 1. Deploying a separate Git server (e.g. GitLab, Gitea), or
 2. Experiencing the severe performance thrashing and data corruption that occurs when placing live `.git/` working trees inside desktop-synced folders.
 
@@ -50,7 +50,7 @@ On Windows systems, desktop syncing of active code introduces additional OS-leve
    Rapid bursts of filesystem operations (e.g. `git checkout` or `git rebase` touching dozens of files in milliseconds) easily overflow the client's 1 MB event buffer (`ERROR_NOTIFY_ENUM_DIR`), forcing costly full-library directory rescans after temporary Git lock files have already vanished.
 
 ### The Solution: API-Driven Git Remote Helper
-Instead of synchronizing the local `.git/` directory, the developer's working tree remains completely outside Seafile's file watcher. Git uses Seafile Server as an authentic remote destination over the standard **Seafile Web API v2.1**.
+Instead of synchronizing the local `.git/` directory, the developer's working tree remains completely outside Seafile's file watcher. Git uses Seafile Server as an authentic remote destination over the standard **Seafile Web API (`/api2`)**.
 
 ---
 
@@ -81,7 +81,7 @@ Within the designated Seafile library (created via the Seafile Web UI, such as a
 
 ---
 
-## 4. Seafile Web API v2.1 Integration
+## 4. Seafile Web API (`/api2`) Integration
 
 `git-remote-seafile` uses exclusively standard, stable endpoints present in all modern Seafile servers (CE and Pro):
 
@@ -143,11 +143,11 @@ sequenceDiagram
 ### 7.1 Distributed Lease Locking
 - In multi-developer teams, concurrent pushes could race during packfile uploads.
 - `git-remote-seafile` implements a cooperative lease mutex stored at `/.git-lock.json` on the remote repository.
-- Locks include owner, machine ID, timestamp, and a 60-second lease expiration to guarantee that aborted or crashed pushes cannot permanently lock out other collaborators.
+- Locks include owner, machine ID, timestamp, and an advisory lease expiration (configurable via `seafile.locklease`, default 60s; wait timeout via `seafile.locktimeout`, default 15s) to coordinate concurrent pushes and prevent permanent repository deadlocks.
 
 ### 7.2 Remote Packfile Compaction (`git-remote-seafile gc`)
 - Over time, numerous pushes create multiple packfiles in `/objects/pack/`.
-- The `gc` subcommand downloads all packs, invokes `git repack -ad -l` to consolidate and delta-compress them into a single unified packfile, uploads the result, and removes obsolete remote packs from Seafile.
+- The `gc` subcommand downloads all packs, invokes `git repack -ad -l` to consolidate and delta-compress them into a single unified packfile, uploads the result, and removes obsolete remote packs from Seafile. Note that while obsolete packs are removed immediately from the repository, raw storage reclamation on the Seafile server backend requires the administrator to run `seaf-gc` after the library retention window has elapsed.
 
 ### 7.3 Git LFS Custom Transfer Agent Protocol
 - Implements the official Git LFS line-based JSON custom transfer protocol.

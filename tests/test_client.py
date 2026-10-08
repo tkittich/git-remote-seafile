@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import json
 import sqlite3
 import tempfile
@@ -50,39 +51,6 @@ class TestClientCredentials(unittest.TestCase):
                 client = SeafileClient()
                 self.assertEqual(client.server_url, "https://db.example.com")
                 self.assertEqual(client.token, "db-tok-456")
-
-    def test_accounts_db_does_not_match_lookalike_tld(self):
-        """A lookup for 'seafile.example.com' must not take a token for 'seafile.example.co'."""
-        with tempfile.TemporaryDirectory() as td:
-            db_path = Path(td) / "accounts.db"
-            con = sqlite3.connect(str(db_path))
-            con.execute("CREATE TABLE Accounts (url TEXT, token TEXT, lastVisited INTEGER)")
-            con.execute(
-                "INSERT INTO Accounts VALUES ('https://seafile.example.co', 'exfiltrated-token', 100)"
-            )
-            con.commit()
-            con.close()
-            with patch("git_remote_seafile.client.Path.home", return_value=Path(td)):
-                client = SeafileClient(server_url="https://seafile.example.com", require_credentials=False)
-                self.assertIsNone(
-                    client.token,
-                    "LIKE '%host%' matched a truncated TLD; handed the wrong host's token",
-                )
-
-    def test_accounts_db_does_not_match_subdomain_or_prefix(self):
-        """A lookup for 'example.com' must not take a token for 'notexample.com'."""
-        with tempfile.TemporaryDirectory() as td:
-            db_path = Path(td) / "accounts.db"
-            con = sqlite3.connect(str(db_path))
-            con.execute("CREATE TABLE Accounts (url TEXT, token TEXT, lastVisited INTEGER)")
-            con.execute(
-                "INSERT INTO Accounts VALUES ('https://notexample.com', 'exfiltrated-token', 100)"
-            )
-            con.commit()
-            con.close()
-            with patch("git_remote_seafile.client.Path.home", return_value=Path(td)):
-                client = SeafileClient(server_url="https://example.com", require_credentials=False)
-                self.assertIsNone(client.token)
 
     def test_load_credentials_missing_raises_auth_error(self):
         with tempfile.TemporaryDirectory() as td:
@@ -145,6 +113,14 @@ class TestClientCredentials(unittest.TestCase):
                 # Requesting an unrelated server must NOT pick other-tok or target-tok
                 with self.assertRaises(SeafileAuthError):
                     SeafileClient(server_url="https://unrelated.example.com")
+
+                # Substring / lookalike hosts must NOT receive the target token (e.g. truncated TLD, appended domain)
+                with self.assertRaises(SeafileAuthError):
+                    SeafileClient(server_url="https://target.example.co")
+                with self.assertRaises(SeafileAuthError):
+                    SeafileClient(server_url="https://sub.target.example.com")
+                with self.assertRaises(SeafileAuthError):
+                    SeafileClient(server_url="https://target.example.com.evil.com")
 
     def test_no_credential_search_when_a_server_is_given_and_not_required(self):
         # Passing a server explicitly and not requiring a token must not go
@@ -329,6 +305,40 @@ class TestClientAPI(unittest.TestCase):
         with self.assertRaises(SeafileAPIError):
             self.client.get_repo_id("nonexistent")
 
+    def test_get_repo_id_duplicate_owned_beats_shared(self):
+        mock_resp = MagicMock(status_code=200)
+        mock_resp.json.return_value = [
+            {"id": "id-shared", "name": "project", "type": "srepo"},
+            {"id": "id-owned", "name": "project", "type": "repo"},
+        ]
+        self.client.session.get = MagicMock(return_value=mock_resp)
+        with patch("sys.stderr", io.StringIO()) as mock_stderr:
+            self.assertEqual(self.client.get_repo_id("project"), "id-owned")
+            self.assertIn("Warning: multiple Seafile libraries match 'project'", mock_stderr.getvalue())
+            self.assertIn("Selecting owned library id-owned over shared", mock_stderr.getvalue())
+
+    def test_get_repo_id_duplicate_true_tie_raises(self):
+        mock_resp = MagicMock(status_code=200)
+        mock_resp.json.return_value = [
+            {"id": "id-s1", "name": "shared-vault", "type": "srepo"},
+            {"id": "id-s2", "name": "shared-vault", "type": "srepo"},
+        ]
+        self.client.session.get = MagicMock(return_value=mock_resp)
+        with self.assertRaises(SeafileAPIError) as ctx:
+            self.client.get_repo_id("shared-vault")
+        self.assertIn("Multiple Seafile libraries match 'shared-vault'", str(ctx.exception))
+        self.assertIn("id-s1", str(ctx.exception))
+        self.assertIn("id-s2", str(ctx.exception))
+
+    def test_get_repo_id_by_uuid_with_duplicates(self):
+        mock_resp = MagicMock(status_code=200)
+        mock_resp.json.return_value = [
+            {"id": "id-s1", "name": "shared-vault", "type": "srepo"},
+            {"id": "id-s2", "name": "shared-vault", "type": "srepo"},
+        ]
+        self.client.session.get = MagicMock(return_value=mock_resp)
+        self.assertEqual(self.client.get_repo_id("id-s2"), "id-s2")
+
     def test_list_dir(self):
         # 404 returns empty list
         self.client.session.get = MagicMock(return_value=MagicMock(status_code=404))
@@ -465,7 +475,12 @@ class TestStreamingTransfers(unittest.TestCase):
         captured = {}
 
         def fake_post(url, files=None, data=None, **kwargs):
-            payload = files["file"][1]
+            if files and "file" in files:
+                payload = files["file"][1]
+            elif hasattr(data, "file_obj"):
+                payload = data.file_obj
+            else:
+                payload = data
             captured["payload"] = payload
             # Read it while the caller's `with open(...)` is still holding it.
             if hasattr(payload, "read"):
@@ -476,6 +491,32 @@ class TestStreamingTransfers(unittest.TestCase):
 
         self.client.session.post = MagicMock(side_effect=fake_post)
         return captured
+
+    def test_streaming_multipart_memory_bounded(self):
+        """StreamingMultipartFile must not buffer large files into RAM."""
+        import tracemalloc
+        from git_remote_seafile.client import StreamingMultipartFile
+        with tempfile.NamedTemporaryFile(delete=False) as tf:
+            tf.write(b"0" * (16 * 1024 * 1024))
+            temp_path = Path(tf.name)
+
+        try:
+            tracemalloc.start()
+            with open(temp_path, "rb") as fh:
+                mp = StreamingMultipartFile(
+                    fields={"parent_dir": "/x", "replace": "1"},
+                    file_field="file",
+                    filename="16mb.bin",
+                    file_obj=fh,
+                    file_size=16 * 1024 * 1024,
+                )
+                _, peak = tracemalloc.get_traced_memory()
+                # Peak memory while preparing the streaming object should be tiny (< 1 MB for a 16 MB file)
+                self.assertLess(peak, 1024 * 1024)
+                self.assertEqual(len(mp), len(mp.header) + 16 * 1024 * 1024 + len(mp.footer))
+        finally:
+            tracemalloc.stop()
+            temp_path.unlink(missing_ok=True)
 
     def test_upload_from_a_path_streams_a_file_object(self):
         captured = self._capture_upload()

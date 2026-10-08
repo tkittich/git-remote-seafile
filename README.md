@@ -6,7 +6,7 @@
 
 A transparent, zero-thrash **Git remote helper** for Seafile servers.
 
-`git-remote-seafile` allows you to use your private Seafile server (Community or Professional Edition) as an authentic, encrypted, access-controlled Git remote backend using native Git commands (`git clone`, `git push`, `git pull`).
+`git-remote-seafile` allows you to use your private Seafile server (Community or Professional Edition) as an authentic, secure (HTTPS/TLS), access-controlled Git remote backend using native Git commands (`git clone`, `git push`, `git pull`).
 
 ---
 
@@ -18,7 +18,7 @@ Storing active Git repositories inside Seafile desktop-synced folders (e.g. `Doc
 - Diverging edits generate destructive `(SFConflict ...)` copies instead of Git merges.
 
 ### The Solution
-Instead of syncing the local `.git/` folder, `git-remote-seafile` communicates directly with the **Seafile Web API v2.1**:
+Instead of syncing the local `.git/` folder, `git-remote-seafile` communicates directly with the **Seafile Web API (`/api2`)**:
 - **Zero Daemon Churn**: The desktop sync client never scans or indexes your working repository.
 - **Automated Pre-Flight Safety**: Built-in guardrails detect and block path collisions (Trap 1) and download reflection loops (Trap 2) before any data is transferred.
 - **Fast & Efficient**: Commits are packed using Git packfiles (`.pack` and `.idx`). Pushing 100 commits uploads only **two files**.
@@ -39,7 +39,7 @@ Instead of syncing the local `.git/` folder, `git-remote-seafile` communicates d
 > - **Unsafe locations**: Any local directory currently mapped to a Seafile library in your desktop client (such as `C:\Users\<username>\Seafile\...` or a synced folder).
 > 
 > **Why?**
-> If your local repository directory is actively watched by the Seafile desktop client, the sync daemon will continuously monitor, lock, and re-index the internal `.git/` files on every commit or branch switch. `git-remote-seafile` communicates directly with your Seafile server over HTTP/HTTPS Web API v2.1—just like GitHub or GitLab. Keeping your working folder unsynced allows Git to operate at native filesystem speed with zero desktop client interference.
+> If your local repository directory is actively watched by the Seafile desktop client, the sync daemon will continuously monitor, lock, and re-index the internal `.git/` files on every commit or branch switch. `git-remote-seafile` communicates directly with your Seafile server over HTTP/HTTPS Seafile Web API (`/api2`)—just like GitHub or GitLab. Keeping your working folder unsynced allows Git to operate at native filesystem speed with zero desktop client interference.
 > 
 > **Need to store remotes in a synced library?**
 > If you store remotes in a synced library like `Documents`, store them under an ignored subfolder such as **`seafile-git/`** (`seafile://Documents/seafile-git/myproject`) or any folder name of your choice (e.g. `git-vault/`), and add that subfolder name to `<library-root>/seafile-ignore.txt`. The name `seafile-git/` is not mandatory—any folder name works as long as it is ignored!
@@ -57,7 +57,7 @@ Instead of syncing the local `.git/` folder, `git-remote-seafile` communicates d
 ```mermaid
 graph TD
     A[Developer Worktree<br/>C:\code\myproject<br/><i>Unsynced Folder</i>] -->|git push / fetch| B[git-remote-seafile<br/>Git Remote Helper]
-    B -->|REST API v2.1| C[Seafile Server<br/>https://seafile.example.com]
+    B -->|REST API (/api2)| C[Seafile Server<br/>https://seafile.example.com]
     C -->|Stores Packfiles & Refs| D[Seafile Library: code<br/>/myproject/]
     
     style A fill:#4a5568,stroke:#2d3748,stroke-width:2px,color:#fff
@@ -81,7 +81,7 @@ Here is how they compare:
 | **Privacy & Data Sovereignty** | SaaS: Code stored on 3rd-party servers; Self-hosted: Requires securing a new server stack. | **100% self-hosted & private.** Retains your existing Seafile permissions, SSL, and data retention policies. |
 | **Storage & Quotas** | GitHub: 1–2 GB repo soft limits; paid Git LFS bandwidth/storage tiers. | **Uses existing Seafile quota.** Store multi-GB datasets and models with built-in Git LFS custom transfer agent at no extra cost. |
 | **Web Code Review & PRs** | **Full web forge:** Pull requests, inline code comments, issue tracking, CI/CD runners (GitHub Actions / GitLab CI). | **VCS storage backend only.** No web code review UI or built-in CI runner (though CI can clone/push via API tokens). |
-| **Client Overhead** | Zero background churn. Normal Git Smart HTTP/SSH transport. | Zero background churn. Client-side packfile generation via REST API v2.1 (<1s pushes). |
+| **Client Overhead** | Zero background churn. Normal Git Smart HTTP/SSH transport. | Zero background churn. Client-side packfile generation via REST API (`/api2`) (<1s pushes). |
 | **Multi-Machine Sync** | Standard `git push` / `git pull`. | Standard `git push` / `git pull` with cooperative distributed lease locking. |
 | **Best For** | Open-source projects, large teams needing code review & CI pipelines. | Personal projects, private research, proprietary code, multi-GB LFS assets, zero-maintenance self-hosted remotes. |
 

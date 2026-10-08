@@ -195,7 +195,7 @@ Both approaches eliminate desktop sync thrashing and lock contention. Below is a
 | Dimension | Move Code Out + Git Forge (GitHub / Gitea) | Move Code Out + `git-remote-seafile` |
 | :--- | :--- | :--- |
 | **New Infrastructure** | **High / Moderate.** Requires creating an external SaaS account (GitHub) or provisioning, securing, and maintaining a standalone server (Gitea/GitLab, database, SSH daemon, reverse proxy, backups). | **Zero.** Reuses your existing Seafile server, user authentication, and storage backend with no new services to manage. |
-| **Data Sovereignty & Privacy** | **Conditional.** SaaS keeps code on third-party servers subject to foreign jurisdiction and AI scrapers. Self-hosted forges require ongoing CVE patching. | **100% Private & Self-Hosted.** Commits and files stay within your Seafile instance. Fully compatible with Seafile encrypted libraries. |
+| **Data Sovereignty & Privacy** | **Conditional.** SaaS keeps code on third-party servers subject to foreign jurisdiction and AI scrapers. Self-hosted forges require ongoing CVE patching. | **100% Private & Self-Hosted.** Commits and files stay within your Seafile instance. Transfers secured via TLS/HTTPS (client-side password-encrypted libraries are not supported over REST API). |
 | **Storage Limits & Economics** | **Restricted / Costly.** GitHub enforces soft 1–2 GB repo limits; Git LFS costs $5/mo per 50 GB. Self-hosted forges consume separate disk pools. | **Unrestricted.** Utilizes your existing Seafile storage quota (often multi-terabyte). Native Git LFS custom transfer agent with zero extra fees. |
 | **Code Review & Collaboration** | **Full Web Forge UI.** Pull requests, inline comments, code search, issue tracking, and automated CI/CD runners (GitHub Actions, GitLab CI). | **Storage & Transport Layer Only.** No built-in web code review UI. Focuses purely on reliable Git transport, distributed locking, and ref sync. |
 | **Transport Protocol** | Git Smart HTTP (`git-upload-pack`, `git-receive-pack`) or SSH protocol. Server negotiates deltas dynamically. | Client-side packfile packaging over Seafile Web API v2.1 (`/api2/repos/.../upload-link/`). Packfiles stored as `.pack` objects. |
@@ -377,12 +377,16 @@ Authenticated successfully with https://seafile.example.com as user@example.com
 | `seafile.autogc` | — | `false` | Compact the remote automatically once the packfile threshold is reached. |
 | `seafile.gcthreshold` | — | `20` | Packfile count at which the `gc` tip appears (or auto-GC triggers). |
 | `seafile.forcefilehost` | `SEAFILE_FORCE_FILE_HOST` | `false` | Force download/upload links onto your server's **host** (a wrong scheme on the same host is always corrected). |
+| `seafile.locktimeout` | — | `15` | Maximum seconds to wait when acquiring the remote lock during push. |
+| `seafile.locklease` | — | `60` | Duration in seconds before an inactive lock lease is considered expired. |
 
 ```bash
 # Examples
 git config seafile.autogc true
 git config seafile.gcthreshold 25
 git config seafile.forcefilehost true
+git config seafile.locktimeout 30
+git config seafile.locklease 120
 ```
 
 **`seafile.forcefilehost`** deserves a note. Seafile returns a short-lived URL for every file transfer, and there are three cases to tell apart:
@@ -542,7 +546,7 @@ Understanding how `git-remote-seafile` handles complex Git workflows and remote 
 
 #### 2. Rollbacks & Force Pushes (`git reset --hard`, `git push --force`)
 - **Fast & Safe**: A force-push (`+refs/heads/main`) updates the remote branch ref to the older commit SHA in ~0.2s without uploading any unnecessary packfiles.
-- **Storage Lifecycle & Pruning**: The rolled-back commits remain in existing packfiles as *unreachable (dangling) objects*. When compaction runs (`git-remote-seafile gc`), Git's reachability analysis **automatically prunes unreachable commits**, permanently freeing up storage space on Seafile.
+- **Storage Lifecycle & Pruning**: The rolled-back commits remain in existing packfiles as *unreachable (dangling) objects*. When compaction runs (`git-remote-seafile gc`), Git's reachability analysis **automatically prunes unreachable commits**, replacing remote packfiles with an optimized packfile. Note that while obsolete packfiles are removed from the repository immediately, raw block storage reclamation on the Seafile server requires the server administrator to run `seaf-gc` after the library's history retention window.
 
 #### 3. Branching & Multi-Branch Management
 - **Branch Independence**: Every branch has its own ref file (`refs/heads/<branch>`). Pushing a new branch only uploads objects unique to that branch (base commits on `main` are not re-uploaded).
@@ -590,17 +594,15 @@ git push origin main
 
 ### 11.3 Memory Behaviour on Large Transfers
 
-LFS objects are **streamed**, not buffered, so peak memory does not grow with the size of the object:
+Transfers are **streamed**, not buffered in RAM:
 
-- **Upload** reads the file from disk in chunks as `requests` sends the multipart body. Because the file is seekable, the request still carries a `Content-Length` rather than falling back to chunked encoding.
-- **Download** streams the response straight to disk in 1 MiB chunks.
+- **Upload** streams the file in chunks with calculated `Content-Length` via `StreamingMultipartFile` (pure-Python streaming generator), avoiding monolithic multipart RAM buffering.
+- **Download** streams responses directly to temporary disk files in chunks (both for LFS objects and Git packfiles during fetch/clone).
 
-A multi-gigabyte model therefore does not need multi-gigabytes of RAM.
+A multi-gigabyte repository transfer or model therefore does not need multi-gigabytes of RAM.
 
 > [!NOTE]
-> **One ceiling remains, and it is not in the LFS path.** `git fetch` / `git clone` downloads each packfile into memory before installing it, so peak memory during a fetch is roughly the size of the *largest single packfile*. Packs are push-deltas and normally small, and a repository accumulates many small packs rather than one large one — running `git-remote-seafile gc` keeps them that way. Streaming packfile downloads is a known, tracked improvement.
->
-> Transfers also do not yet emit Git LFS `progress` events, so a very large upload or download reports no incremental status while it runs.
+> Transfers do not yet emit Git LFS `progress` events, so a very large upload or download reports no incremental status while it runs.
 
 ---
 
@@ -609,8 +611,8 @@ A multi-gigabyte model therefore does not need multi-gigabytes of RAM.
 For teams where multiple developers or automated CI/CD runners push simultaneously, `git-remote-seafile` includes an automatic **distributed lease lock**:
 
 - During every `git push`, the helper acquires an advisory lease on `.git-lock.json` at the root of the remote repository on Seafile.
-- If another developer is pushing, subsequent pushes wait and retry for up to 15 seconds.
-- **Lease Safety**: If a client crashes or loses power mid-push, the lock automatically expires after 60 seconds, preventing permanent repository deadlocks.
+- If another developer is pushing, subsequent pushes wait and retry for up to 15 seconds (configurable via `seafile.locktimeout`).
+- **Lease Safety**: If a client crashes or loses power mid-push, the lock automatically expires after 60 seconds (configurable via `seafile.locklease`), preventing permanent repository deadlocks.
 
 ---
 
@@ -646,7 +648,7 @@ git-remote-seafile test seafile://code/myproject
 | `Seafile library not found: 'XYZ'` | Library not yet created, name typo, or permissions | Create the library via the Seafile Web UI, or verify spelling. The helper will suggest close matches. |
 | `HTTP 401 Unauthorized` | Invalid or expired token | Run `git-remote-seafile check-auth` and verify credentials in `~/.git-seafile.json`. |
 | `HTTP 403 Forbidden` on push | Read-only library permissions | Ensure your Seafile account has Read-Write permission on the target library. |
-| `fatal: remote locked by user@host` | Concurrent push in progress or stale lock | Wait 15 seconds for the other push to finish. If a previous client crashed, the lock automatically expires in 60 seconds. |
+| `fatal: remote locked by user@host` | Concurrent push in progress or stale lock | Wait for the other push to complete, or increase `seafile.locktimeout`. If a previous client crashed, the lock expires after its lease (`seafile.locklease`, default 60s). |
 
 ---
 

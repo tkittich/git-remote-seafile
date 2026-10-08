@@ -319,6 +319,14 @@ class TestCLIDesktopUrl(unittest.TestCase):
                         self.assertEqual(code, 0)
                         self.assertIn("seafile://seafile.example.com/myrepo/subdir", mock_out.getvalue())
 
+                # Matched with plain HTTP server
+                mock_client.server_url = "http://seafile.local:8000"
+                with patch.object(sys, "argv", ["git-remote-seafile", "desktop-url", str(worktree_dir / "subdir")]):
+                    with patch("sys.stdout", new_callable=io.StringIO) as mock_out:
+                        code = main()
+                        self.assertEqual(code, 0)
+                        self.assertIn("seafile://http://seafile.local:8000/myrepo/subdir", mock_out.getvalue())
+
                 # Unmatched
                 outside_path = fake_home / "outside" / "dir"
                 outside_path.mkdir(parents=True)

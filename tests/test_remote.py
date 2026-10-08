@@ -800,6 +800,52 @@ class TestConcurrencyAndLocking(unittest.TestCase):
             hashlib.sha256(secret.encode("utf-8")).hexdigest()[:8],
         )
 
+    @patch("git_remote_seafile.lock.get_git_config_int")
+    def test_lock_reads_git_config_defaults(self, mock_get_cfg):
+        mock_get_cfg.side_effect = lambda key, default: 30 if "timeout" in key else 90
+        mock_client = MagicMock()
+        lock = RemoteLock(mock_client, "repo1", "/path")
+        self.assertEqual(lock.timeout, 30)
+        self.assertEqual(lock.lease, 90)
+
+    def test_lock_handles_malformed_timestamp_without_crashing(self):
+        mock_client = MagicMock()
+        mock_client.token = "token123"
+        # Timestamp is a string instead of float/int, lease is invalid
+        mock_client.get_file_text.return_value = json.dumps({
+            "owner": "alice",
+            "machine": "nodeA",
+            "timestamp": "INVALID_TIMESTAMP",
+            "lease": "NOT_A_NUMBER",
+        })
+
+        lock = RemoteLock(mock_client, "repo1", "/path", timeout=5, lease=60)
+        # Should override safely as expired instead of raising TypeError
+        lock.acquire()
+        self.assertTrue(lock.acquired)
+
+    def test_lock_detects_post_write_collision(self):
+        mock_client = MagicMock()
+        mock_client.token = "token123"
+        # Initial read says no lock, but verification read after upload sees competitor nonce
+        call_count = [0]
+        def fake_get_file_text(repo_id, path):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                return None
+            return json.dumps({
+                "owner": "competitor",
+                "machine": "other-node",
+                "nonce": "competitor-nonce-xyz",
+                "timestamp": time.time(),
+                "lease": 60,
+            })
+
+        mock_client.get_file_text.side_effect = fake_get_file_text
+        lock = RemoteLock(mock_client, "repo1", "/path", timeout=0, lease=60)
+        with self.assertRaises(RepositoryLockedError):
+            lock.acquire()
+
 
 class TestRemoteGC(unittest.TestCase):
     def test_a_growth_is_not_reported_as_a_saving(self):
@@ -1538,6 +1584,47 @@ class TestFetchFailureIsLoud(unittest.TestCase):
                     with patch("sys.stdout", out), patch("sys.stderr", new_callable=io.StringIO):
                         h.cmd_fetch(["refs/heads/main"])
 
+            install.assert_called_once()
+            self.assertEqual(out.getvalue(), "\n")
+
+    def test_truncated_pack_download_fails_with_size_mismatch(self):
+        with tempfile.TemporaryDirectory() as td:
+            local_git = Path(td) / ".git"
+            (local_git / "objects" / "pack").mkdir(parents=True)
+
+            client = MagicMock()
+            client.list_dir.return_value = [{"name": "pack-1.pack", "size": 1024}]
+            client.get_file_bytes.return_value = b"SHORT_BYTES"
+            del client.download_file_to  # ensure fallback to get_file_bytes
+            h = self._helper(client)
+
+            with patch("git_remote_seafile.helper.get_git_dir", return_value=local_git):
+                with patch("sys.stdout", new_callable=io.StringIO), patch("sys.stderr", new_callable=io.StringIO):
+                    with self.assertRaises(SeafileAPIError) as ctx:
+                        h.cmd_fetch(["refs/heads/main"])
+
+            self.assertIn("truncated", str(ctx.exception))
+
+    def test_streaming_pack_download_via_download_file_to(self):
+        with tempfile.TemporaryDirectory() as td:
+            local_git = Path(td) / ".git"
+            (local_git / "objects" / "pack").mkdir(parents=True)
+
+            client = MagicMock()
+            client.list_dir.return_value = [{"name": "pack-1.pack", "size": 10}]
+            def fake_download_file_to(repo_id, path, dest):
+                Path(dest).write_bytes(b"0123456789")
+                return True
+            client.download_file_to.side_effect = fake_download_file_to
+            h = self._helper(client)
+
+            out = io.StringIO()
+            with patch("git_remote_seafile.helper.get_git_dir", return_value=local_git):
+                with patch("git_remote_seafile.helper.install_packfile") as install:
+                    with patch("sys.stdout", out), patch("sys.stderr", new_callable=io.StringIO):
+                        h.cmd_fetch(["refs/heads/main"])
+
+            client.download_file_to.assert_called()
             install.assert_called_once()
             self.assertEqual(out.getvalue(), "\n")
 

@@ -430,31 +430,72 @@ class RemoteHelper:
 
             remote_pack_dir = self._full_path("objects/pack")
             remote_entries = self.client.list_dir(self.repo_id, remote_pack_dir)
-            pack_files = [e["name"] for e in remote_entries if e["name"].endswith(".pack")]
+            entries_by_name = {e["name"]: e for e in remote_entries if isinstance(e, dict) and "name" in e}
+            pack_files = [name for name in entries_by_name if name.endswith(".pack")]
 
             for pack_name in pack_files:
                 if pack_name in local_packs:
                     continue  # already downloaded
                 
                 idx_name = pack_name.removesuffix(".pack") + ".idx"
+                expected_size = entries_by_name[pack_name].get("size")
                 sys.stderr.write(f"Downloading {pack_name} from Seafile...\n")
                 sys.stderr.flush()
-                pack_bytes = self.client.get_file_bytes(self.repo_id, f"{remote_pack_dir}/{pack_name}")
-                idx_bytes = self.client.get_file_bytes(self.repo_id, f"{remote_pack_dir}/{idx_name}")
 
-                if not pack_bytes:
-                    # The listing advertised this pack a moment ago, so failing
-                    # to download it would leave the repository without objects
-                    # its refs point at.  A compaction landing between the
-                    # listing and the download does exactly this; retrying picks
-                    # up the consolidated pack.  Either way, do not carry on as
-                    # though the fetch had succeeded.
-                    raise SeafileAPIError(
-                        f"Packfile {pack_name} is listed at {remote_pack_dir} but could not be "
-                        "downloaded -- the local repository would be missing objects. Retry the "
-                        "fetch, or run 'git-remote-seafile test <url>' to diagnose."
-                    )
-                install_packfile(pack_name, pack_bytes, idx_bytes)
+                # Stream to temporary staging file to avoid full in-memory pack buffering
+                staging_dir = Path(tempfile.mkdtemp(prefix="grs-fetch-", dir=str(git_dir)))
+                try:
+                    staged_pack = staging_dir / pack_name
+                    staged_idx = staging_dir / idx_name
+
+                    downloaded = False
+                    if hasattr(self.client, "download_file_to"):
+                        try:
+                            downloaded = self.client.download_file_to(
+                                self.repo_id, f"{remote_pack_dir}/{pack_name}", staged_pack
+                            ) and staged_pack.is_file()
+                        except Exception:
+                            downloaded = False
+
+                    if not downloaded:
+                        pack_bytes = self.client.get_file_bytes(self.repo_id, f"{remote_pack_dir}/{pack_name}")
+                        if pack_bytes:
+                            staged_pack.write_bytes(pack_bytes)
+                            downloaded = True
+
+                    if not downloaded or not staged_pack.is_file() or staged_pack.stat().st_size == 0:
+                        raise SeafileAPIError(
+                            f"Packfile {pack_name} is listed at {remote_pack_dir} but could not be "
+                            "downloaded -- the local repository would be missing objects. Retry the "
+                            "fetch, or run 'git-remote-seafile test <url>' to diagnose."
+                        )
+
+                    # Integrity check against listing size if available (M-4)
+                    if expected_size is not None and staged_pack.stat().st_size != expected_size:
+                        raise SeafileAPIError(
+                            f"Packfile {pack_name} download was truncated: expected {expected_size} bytes, "
+                            f"got {staged_pack.stat().st_size} bytes."
+                        )
+
+                    # Download idx
+                    idx_downloaded = False
+                    if hasattr(self.client, "download_file_to"):
+                        try:
+                            idx_downloaded = self.client.download_file_to(
+                                self.repo_id, f"{remote_pack_dir}/{idx_name}", staged_idx
+                            ) and staged_idx.is_file()
+                        except Exception:
+                            idx_downloaded = False
+
+                    if not idx_downloaded:
+                        idx_bytes = self.client.get_file_bytes(self.repo_id, f"{remote_pack_dir}/{idx_name}")
+                        if idx_bytes:
+                            staged_idx.write_bytes(idx_bytes)
+                            idx_downloaded = True
+
+                    install_packfile(pack_name, staged_pack, staged_idx if idx_downloaded else None)
+                finally:
+                    shutil.rmtree(staging_dir, ignore_errors=True)
 
             sys.stdout.write("\n")
             sys.stdout.flush()

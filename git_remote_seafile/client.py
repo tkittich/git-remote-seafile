@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+from collections import Counter
 import json
 import os
 from pathlib import Path
+import sys
 from typing import Any
+import uuid
 from urllib.parse import quote, urlparse, urlunparse
 
 import requests
@@ -42,6 +45,104 @@ def _force_file_host_enabled() -> bool:
     if env_val in ("0", "false", "no", "off"):
         return False
     return get_git_config_bool("seafile.forcefilehost", False)
+
+
+class StreamingMultipartFile:
+    """Streams multipart/form-data with Content-Length without buffering file contents in memory.
+
+    Exposes read(size), seek(offset, whence), and __len__ so that `requests` sets
+    Content-Length and streams chunks over the socket.
+    """
+
+    def __init__(
+        self,
+        fields: dict[str, str],
+        file_field: str,
+        filename: str,
+        file_obj: Any,
+        file_size: int,
+        boundary: str | None = None,
+    ):
+        self.boundary = boundary or f"----GRSBoundary{uuid.uuid4().hex}"
+        self.file_obj = file_obj
+        self.file_size = file_size
+
+        prefix = []
+        for name, val in fields.items():
+            prefix.append(
+                f"--{self.boundary}\r\n"
+                f'Content-Disposition: form-data; name="{name}"\r\n\r\n'
+                f"{val}\r\n".encode("utf-8")
+            )
+        prefix.append(
+            f"--{self.boundary}\r\n"
+            f'Content-Disposition: form-data; name="{file_field}"; filename="{filename}"\r\n'
+            f"Content-Type: application/octet-stream\r\n\r\n".encode("utf-8")
+        )
+        self.header = b"".join(prefix)
+        self.footer = f"\r\n--{self.boundary}--\r\n".encode("utf-8")
+        self.total_len = len(self.header) + file_size + len(self.footer)
+        self._pos = 0
+
+    @property
+    def content_type(self) -> str:
+        return f"multipart/form-data; boundary={self.boundary}"
+
+    def __len__(self) -> int:
+        return self.total_len
+
+    def read(self, size: int = -1) -> bytes:
+        if size == -1 or size is None:
+            size = self.total_len - self._pos
+        if size <= 0 or self._pos >= self.total_len:
+            return b""
+
+        chunks: list[bytes] = []
+        needed = size
+
+        # 1. Header prefix
+        if self._pos < len(self.header):
+            avail = len(self.header) - self._pos
+            take = min(needed, avail)
+            chunks.append(self.header[self._pos : self._pos + take])
+            self._pos += take
+            needed -= take
+
+        # 2. File body
+        file_start = len(self.header)
+        file_end = file_start + self.file_size
+        if needed > 0 and file_start <= self._pos < file_end:
+            rel_pos = self._pos - file_start
+            self.file_obj.seek(rel_pos)
+            take = min(needed, file_end - self._pos)
+            chunk = self.file_obj.read(take)
+            chunks.append(chunk)
+            self._pos += len(chunk)
+            needed -= len(chunk)
+
+        # 3. Footer suffix
+        if needed > 0 and self._pos >= file_end:
+            foot_pos = self._pos - file_end
+            avail = len(self.footer) - foot_pos
+            take = min(needed, avail)
+            chunks.append(self.footer[foot_pos : foot_pos + take])
+            self._pos += take
+
+        return b"".join(chunks)
+
+    def seek(self, offset: int, whence: int = 0) -> int:
+        if whence == 0:
+            self._pos = offset
+        elif whence == 1:
+            self._pos += offset
+        elif whence == 2:
+            self._pos = self.total_len + offset
+        else:
+            raise ValueError(f"Invalid whence: {whence}")
+        return self._pos
+
+    def tell(self) -> int:
+        return self._pos
 
 
 class SeafileClient:
@@ -281,15 +382,57 @@ class SeafileClient:
         if resp.status_code != 200:
             raise SeafileAPIError(f"Failed to list repos: HTTP {resp.status_code} {resp.text}")
 
-        for repo in resp.json():
-            rid = repo.get("id", "")
-            rname = repo.get("name", "")
-            self._repos_cache[rid] = rid
-            self._repos_cache[rname] = rid
+        repos = resp.json()
+        if not isinstance(repos, list):
+            raise SeafileAPIError(f"Unexpected response from {url}: {resp.text}")
 
-        if name_or_id in self._repos_cache:
-            return self._repos_cache[name_or_id]
-        raise SeafileAPIError(f"Seafile library not found: '{name_or_id}'")
+        # Check for direct ID match first (UUIDs are globally unique)
+        for repo in repos:
+            rid = repo.get("id", "")
+            if rid:
+                self._repos_cache[rid] = rid
+                if rid == name_or_id:
+                    return rid
+
+        # Collect matches by name
+        matches = [r for r in repos if r.get("name") == name_or_id]
+
+        # Cache unambiguous unique names to accelerate subsequent lookups
+        name_counts = Counter(r.get("name", "") for r in repos if r.get("name"))
+        for r in repos:
+            rname = r.get("name", "")
+            rid = r.get("id", "")
+            if rname and rid and name_counts[rname] == 1:
+                self._repos_cache[rname] = rid
+
+        if not matches:
+            if name_or_id in self._repos_cache:
+                return self._repos_cache[name_or_id]
+            raise SeafileAPIError(f"Seafile library not found: '{name_or_id}'")
+
+        if len(matches) == 1:
+            rid = matches[0].get("id", "")
+            self._repos_cache[name_or_id] = rid
+            return rid
+
+        # Disambiguate duplicate library names: owned libraries take precedence over shared/group libraries
+        owned = [r for r in matches if r.get("type") in ("repo", "mine")]
+        if len(owned) == 1:
+            rid = owned[0].get("id", "")
+            sys.stderr.write(
+                f"Warning: multiple Seafile libraries match '{name_or_id}'. "
+                f"Selecting owned library {rid} over shared. "
+                f"To avoid ambiguity, use the repository UUID: seafile://{rid}/...\n"
+            )
+            self._repos_cache[name_or_id] = rid
+            return rid
+
+        # Ambiguous tie: multiple owned libraries or multiple shared libraries with no owned library
+        matching_ids = [r.get("id", "") for r in matches if r.get("id")]
+        raise SeafileAPIError(
+            f"Multiple Seafile libraries match '{name_or_id}' ({', '.join(matching_ids)}). "
+            f"Please specify the library UUID in the remote URL (seafile://<uuid>/...)."
+        )
 
     def list_dir(self, repo_id: str, path: str = "/") -> list[dict[str, Any]]:
         """List entries in a directory. Returns empty list if directory does not exist."""
@@ -430,13 +573,35 @@ class SeafileClient:
 
         upload_url = self._adjust_url(resp.text.strip().strip('"'))
 
-        # 2. Post file.  `requests` streams a file object; passing it straight
-        # through is what keeps the payload out of memory.
-        files = {"file": (filename, payload)}
-        data = {"parent_dir": clean_parent, "replace": "1" if replace else "0"}
-        up_resp = self._transfer_session(upload_url).post(
-            upload_url, files=files, data=data, timeout=self.timeout
-        )
+        # 2. Post file.
+        # If payload is a file object with .read and .seek, stream it via StreamingMultipartFile
+        # so requests streams chunks directly without buffering the whole file in RAM.
+        if hasattr(payload, "read") and hasattr(payload, "seek"):
+            cur = payload.tell()
+            payload.seek(0, 2)
+            file_size = payload.tell() - cur
+            payload.seek(cur)
+
+            mp = StreamingMultipartFile(
+                fields={"parent_dir": clean_parent, "replace": "1" if replace else "0"},
+                file_field="file",
+                filename=filename,
+                file_obj=payload,
+                file_size=file_size,
+            )
+            headers = {
+                "Content-Type": mp.content_type,
+                "Content-Length": str(len(mp)),
+            }
+            up_resp = self._transfer_session(upload_url).post(
+                upload_url, data=mp, headers=headers, timeout=self.timeout
+            )
+        else:
+            files = {"file": (filename, payload)}
+            data = {"parent_dir": clean_parent, "replace": "1" if replace else "0"}
+            up_resp = self._transfer_session(upload_url).post(
+                upload_url, files=files, data=data, timeout=self.timeout
+            )
         if up_resp.status_code not in (200, 201):
             # Name the endpoint that was actually hit.  A wrong scheme or host
             # here is the difference between a working push and an opaque

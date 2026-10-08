@@ -7,6 +7,59 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-08
+
+Pure-Python streaming multipart transfers, streamed packfile downloads with integrity
+verification, configurable distributed locking, Git revision walker exclusion fix,
+credential scoping hardening, and automated preflight guardrails.
+
+### Fixed
+
+- **Multi-branch push exclusion inversion.** Replaced alternating `--not` revision
+  walker flags with `^<sha>` syntax, ensuring merge base exclusions are correctly
+  applied when pushing multiple branches.
+- **Credential scoping to look-alike domains.** Replaced substring SQL `LIKE`
+  matching in `accounts.db` discovery with exact parsed hostname and netloc
+  comparison, eliminating potential token exfiltration to look-alike hosts.
+- **Safety preflight guardrail bypasses.** Identified local synced libraries by stable
+  `repo_id` rather than local folder name, and treated worktrees placed directly at the
+  library root as Trap 1 collisions.
+- **Restricted push ref namespaces.** Enforced strict validation preventing pushes or
+  deletions outside `refs/heads/` and `refs/tags/` to protect references from
+  garbage-collection purging.
+- **Contradictory protocol output.** Narrowed error handling in `cmd_push` to a
+  per-ref scope and tracked reported specs, preventing duplicate `error <dst>` lines
+  for refs already reported `ok`.
+- **Empty repository push lockout.** Permitted empty repository listings during
+  `list for-push` so pushes to freshly initialized remote repositories succeed without
+  error.
+- **Ref SHA validation.** Enforced 40-character hex regex validation on all remote
+  ref payloads, rejecting corrupt responses or HTML error pages.
+- **Direct session timeouts.** Added explicit timeouts to all raw `session.get()`
+  calls in `cli.py` and `safety.py`.
+- **Deterministic library name disambiguation.** Resolved duplicate library names by
+  prioritizing owned libraries (`type="repo"` / `"mine"`) over shared libraries, and
+  failing with actionable diagnostics naming candidate UUIDs on true ties.
+
+### Performance
+
+- **Pure-Python streaming multipart uploads.** Built an in-memory streaming
+  multipart generator (`StreamingMultipartFile`) calculating exact `Content-Length`
+  without buffer copies. Measured peak memory on 64 MB transfers dropped from
+  142.8 MB to 0.15 MB.
+- **Streaming packfile downloads with integrity verification.** Converted `cmd_fetch`
+  to stream packfiles directly to temporary staging files on disk via `download_file_to`,
+  verifying byte lengths against server metadata before calling `git index-pack`.
+
+### Changed
+
+- **Configurable distributed lock lease & timeout.** Introduced `seafile.locklease`
+  (default: 60s) and `seafile.locktimeout` (default: 15s) Git configuration keys,
+  transitioned internal retry loops to monotonic clocks, added PID to lock payloads,
+  and implemented post-write acquisition verification to catch concurrent races.
+- **Desktop URL explicit scheme generation.** Emitted explicit `seafile://http://...`
+  URLs for local/LAN HTTP servers in `desktop-url` to prevent forced HTTPS redirection.
+
 ## [0.3.3] - 2026-10-08
 
 Distributed locking nonce to prevent same-host lock theft, server URL credential
@@ -311,7 +364,8 @@ Data-loss and silent-failure fixes, and the Python floor raised to 3.9.
   with zero-config desktop-client token discovery, distributed locking, remote
   packfile compaction, and a Git LFS custom transfer agent.
 
-[Unreleased]: https://github.com/tkittich/git-remote-seafile/compare/v0.3.3...HEAD
+[Unreleased]: https://github.com/tkittich/git-remote-seafile/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/tkittich/git-remote-seafile/compare/v0.3.3...v0.4.0
 [0.3.3]: https://github.com/tkittich/git-remote-seafile/compare/v0.3.2...v0.3.3
 [0.3.2]: https://github.com/tkittich/git-remote-seafile/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/tkittich/git-remote-seafile/compare/v0.3.0...v0.3.1

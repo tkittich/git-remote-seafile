@@ -1,0 +1,5 @@
+# Enforce consistent line endings across operating systems
+* text=auto eol=lf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+bin/* text eol=lf

@@ -217,8 +217,12 @@ def main() -> int:
                     continue
                 lib_name = lib["name"]
                 server_url = lib.get("server_url") or client.server_url
-                server_host = server_url.replace("https://", "").replace("http://", "").rstrip("/")
-                print(f"seafile://{server_host}/{lib_name}/{rel.as_posix()}")
+                if server_url.startswith("http://"):
+                    server_host = server_url.replace("http://", "").rstrip("/")
+                    print(f"seafile://http://{server_host}/{lib_name}/{rel.as_posix()}")
+                else:
+                    server_host = server_url.replace("https://", "").rstrip("/")
+                    print(f"seafile://{server_host}/{lib_name}/{rel.as_posix()}")
                 return 0
             print(f"Could not match '{target_path}' to any local Seafile library worktree.")
             return 1

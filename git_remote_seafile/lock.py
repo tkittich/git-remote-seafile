@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import socket
 import sys
 import time
 import uuid
 from typing import Any
 from .client import SeafileClient
+from .git_util import get_git_config_int
 
 
 class RepositoryLockedError(Exception):
@@ -29,13 +31,17 @@ class RemoteLock:
         client: SeafileClient,
         repo_id: str,
         repo_path: str,
-        timeout: int = 15,
-        lease: int = 60,
+        timeout: int | None = None,
+        lease: int | None = None,
     ):
         self.client = client
         self.repo_id = repo_id
         self.repo_path = repo_path.rstrip("/")
         self.lock_file_path = f"{self.repo_path}/.git-lock.json"
+        if timeout is None:
+            timeout = get_git_config_int("seafile.locktimeout", 15)
+        if lease is None:
+            lease = get_git_config_int("seafile.locklease", 60)
         self.timeout = timeout
         self.lease = lease
         self.acquired = False
@@ -49,7 +55,8 @@ class RemoteLock:
         if not raw:
             return None
         try:
-            return json.loads(raw)
+            parsed = json.loads(raw)
+            return parsed if isinstance(parsed, dict) else None
         except Exception:
             return None
 
@@ -68,7 +75,7 @@ class RemoteLock:
         return hashlib.sha256(str(tok).encode("utf-8")).hexdigest()[:8]
 
     def acquire(self) -> None:
-        start_time = time.time()
+        start_time = time.monotonic()
         hostname = socket.gethostname()
         owner = self._owner_id()
         nonce = uuid.uuid4().hex
@@ -79,16 +86,20 @@ class RemoteLock:
             info = self._get_lock_info()
             now = time.time()
 
-            if info is not None:
-                lock_time = info.get("timestamp", 0)
-                lock_lease = info.get("lease", self.lease)
+            if isinstance(info, dict):
+                try:
+                    lock_time = float(info.get("timestamp", 0))
+                    lock_lease = float(info.get("lease", self.lease))
+                except (ValueError, TypeError):
+                    lock_time = 0.0
+                    lock_lease = 0.0
                 expires_at = lock_time + lock_lease
 
                 if now < expires_at:
                     # Lock is actively held
                     lock_owner = info.get("owner", "another user")
                     lock_machine = info.get("machine", "another machine")
-                    if time.time() - start_time >= self.timeout:
+                    if time.monotonic() - start_time >= self.timeout:
                         raise RepositoryLockedError(
                             f"Repository is locked by '{lock_owner}' on '{lock_machine}'. "
                             f"Lock expires in {int(expires_at - now)}s."
@@ -108,6 +119,7 @@ class RemoteLock:
                 "nonce": nonce,
                 "timestamp": now,
                 "lease": self.lease,
+                "pid": os.getpid(),
             }
             try:
                 self.client.upload_file(
@@ -117,10 +129,22 @@ class RemoteLock:
                     json.dumps(lock_payload).encode("utf-8"),
                     replace=True,
                 )
+                # Verify that our write was not overwritten by a concurrent writer
+                verify = self._get_lock_info()
+                if isinstance(verify, dict) and verify.get("nonce") and verify.get("nonce") != nonce:
+                    if time.monotonic() - start_time >= self.timeout:
+                        raise RepositoryLockedError("Lock acquisition collided with another client.")
+                    sys.stderr.write("Lock acquisition collided; retrying...\n")
+                    sys.stderr.flush()
+                    time.sleep(1)
+                    continue
+
                 self.acquired = True
                 return
             except Exception as ex:
-                if time.time() - start_time >= self.timeout:
+                if isinstance(ex, RepositoryLockedError):
+                    raise
+                if time.monotonic() - start_time >= self.timeout:
                     raise RepositoryLockedError(f"Failed to acquire lock: {ex}") from ex
                 time.sleep(2)
 
