@@ -39,9 +39,25 @@ jobs:
         python -m pip install --upgrade pip
         pip install -e .
 
+    # Same suite, same discovery, run across processes instead of one.
+    # `python -m unittest discover tests` is the fallback if this ever misbehaves
+    # on a platform -- it is what the runner reproduces.
+    #
+    # Measured on a 12-core machine: 164 s serial, 117 s at two workers, 68 s at
+    # four, 43 s at twelve.  This job runs 18 times over (3 OS x 6 versions) and
+    # the whole pipeline takes as long as its slowest job, so the per-job saving
+    # is the pipeline saving.
+    #
+    # -j 4 is explicit rather than 0/auto deliberately: os.cpu_count() reports
+    # the *host's* cores inside a container, and handing a 4-vCPU runner 50-odd
+    # workers is slower than handing it one.  Raise it if the runners grow.
+    #
+    # The runner emits the same unittest prose, so the reporting step below
+    # still finds its FAIL:/ERROR: blocks -- checked against both a passing and
+    # a deliberately failing run before switching.
     - name: Run unit tests
       run: |
-        python -m unittest discover tests > unittest-output.txt 2>&1
+        python tools/run_tests_parallel.py -j 4 > unittest-output.txt 2>&1
 
     # Runs even when the step above fails.  Workflow logs need admin rights to
     # download; annotations do not, so the failing test names stay visible.
