@@ -43,7 +43,11 @@ REVIEW.md
 PROPOSALS.md
 archive/
 .workbuddy-ai/
-tools/
+# `tools/` itself is tracked: it holds developer tooling that contributors are
+# meant to run (the parallel test runner, the docs-guard verifier).  The doctor
+# is the exception -- it is a local diagnostic whose ship-or-drop question is
+# still open, and shipping it untested would be worse than not shipping it.
+tools/seafile_doctor.py
 
 # Credentials & environment tokens
 .git-seafile.json

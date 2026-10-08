@@ -32,6 +32,26 @@ Run the test suite using Python's standard `unittest`:
 python -m unittest discover tests
 ```
 
+That is the serial command, and it is the one CI uses. It is also slow: the
+end-to-end module shells out to a real `git` for every case, and accounts for
+roughly two thirds of the ~164 s total.
+
+For the edit/test loop, run the same suite across processes instead:
+```bash
+python tools/run_tests_parallel.py          # one worker per CPU
+python tools/run_tests_parallel.py -j 8     # a specific worker count
+python tools/run_tests_parallel.py -k e2e   # only matching classes
+python tools/run_tests_parallel.py --list   # show the units of work
+```
+
+Measured on a 12-core machine: **164 s serial, 42 s parallel** (204 tests, same
+result). The wall time is bounded by the single slowest test (~26 s), not by
+throughput, so more workers stop helping well before the CPU count. The unit of
+work is the test class — see the module docstring for why per-test scheduling is
+measurably *worse* here.
+
+It has no dependencies and is not part of the shipped package.
+
 ---
 
 ## Guidelines for Pull Requests
