@@ -22,11 +22,12 @@ recursive-include bin *
 # happening on a clean CI checkout.
 recursive-include tests *.py
 
-# Developer tooling that CONTRIBUTING.md tells contributors to run.  Named
-# individually rather than grafted: tools/ also holds seafile_doctor.py, which
-# is gitignored and must not reach a release merely because it happens to sit in
-# someone's working copy.
+# Developer and diagnostic tooling that CONTRIBUTING.md and the README tell
+# people to run.  Named individually rather than grafted so that anything added
+# to tools/ has to be listed on purpose -- and so that a stray local file in
+# someone's working copy cannot reach a release just by sitting there.
 include tools/run_tests_parallel.py
 include tools/verify_docs_guards.py
+include tools/seafile_doctor.py
 
 global-exclude *.py[cod]

@@ -155,6 +155,27 @@ git clone seafile://seafile.example.com/code/myproject
 - [Changelog (CHANGELOG.md)](CHANGELOG.md): What changed in each release.
 - [Contributing Guidelines (CONTRIBUTING.md)](CONTRIBUTING.md): How to contribute, run tests, and adhere to development standards.
 
+### Diagnostics for the Seafile desktop client
+
+`tools/seafile_doctor.py` is a read-only diagnostic for the Seafile **sync
+client**. It is for the case the [Critical Rule](#critical-rule-working-repository-placement)
+above is about: a repository that has been living inside a synced library, where
+you need to see what the client did. It answers questions `git status` cannot,
+because the evidence lives in the client's own databases rather than in the
+working tree.
+
+```bash
+python tools/seafile_doctor.py report    # everything below, in one pass
+python tools/seafile_doctor.py where ~/Documents/code/app   # is this inside a synced library?
+python tools/seafile_doctor.py errors    # the client's sync-error table, decoded
+python tools/seafile_doctor.py conflicts # the *SFConflict* residue, by month
+python tools/seafile_doctor.py churn     # re-commit / upload cycles per day
+python tools/seafile_doctor.py identity  # machine-identity history
+```
+
+It copies the client's databases to a temporary directory before opening them,
+so a running client is never blocked or torn, and it never writes anything back.
+
 ---
 
 ## Acknowledgments & Inspirations

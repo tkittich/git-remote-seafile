@@ -33,6 +33,8 @@ from __future__ import annotations
 
 import fnmatch
 import re
+import shutil
+import subprocess
 import unittest
 from pathlib import Path
 
@@ -367,6 +369,69 @@ class TestSdistManifest(unittest.TestCase):
             self._is_covered("bin/git-remote-seafile"),
             "bin/ is not covered by MANIFEST.in",
         )
+
+
+class TestManifestTargetsAreReal(unittest.TestCase):
+    """MANIFEST.in must not name files that will not be there.
+
+    A release is built from a clean checkout, so a path that is gitignored --
+    or that only exists in one developer's working tree -- is silently absent
+    from the sdist.  ``MANIFEST.in`` naming a missing file is a warning during
+    the build, not an error, so nothing goes red.
+
+    That is exactly how ``tools/seafile_doctor.py`` sat ignored while the tools
+    beside it shipped, and how ``tests/`` reached the sdist by accident.  Both
+    are the same mistake seen from opposite sides: the manifest and the
+    repository disagreeing about what exists.
+    """
+
+    def _included_paths(self) -> list[str]:
+        paths = []
+        for raw in _read("MANIFEST.in").splitlines():
+            stripped = raw.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            parts = stripped.split()
+            if parts[0] == "include":
+                paths.extend(parts[1:])
+            elif parts[0] in ("graft", "recursive-include") and len(parts) > 1:
+                paths.append(parts[1].rstrip("/"))
+        return paths
+
+    def test_every_named_path_exists(self):
+        for rel in self._included_paths():
+            with self.subTest(path=rel):
+                self.assertTrue(
+                    (_ROOT / rel).exists(),
+                    f"MANIFEST.in names {rel}, which does not exist -- the "
+                    "sdist will silently omit it",
+                )
+
+    def test_every_named_file_is_tracked_by_git(self):
+        """A gitignored file is absent from a clean checkout, so it cannot ship.
+
+        Skipped only where the question does not apply: an sdist has no git and
+        no manifest to disagree with.  CI has both.
+        """
+        if shutil.which("git") is None:
+            self.skipTest("git is not available")
+        if not (_ROOT / ".git").exists():
+            self.skipTest("not a git checkout (built from an sdist)")
+
+        listed = subprocess.run(
+            ["git", "ls-files"], cwd=str(_ROOT),
+            capture_output=True, text=True,
+        ).stdout.split()
+        tracked = set(listed)
+        for rel in self._included_paths():
+            with self.subTest(path=rel):
+                if (_ROOT / rel).is_dir():
+                    continue  # a grafted directory; its contents are checked above
+                self.assertIn(
+                    rel, tracked,
+                    f"MANIFEST.in ships {rel} but git does not track it, so a "
+                    "clean checkout will not have it",
+                )
 
 
 class TestDocumentationIndex(unittest.TestCase):

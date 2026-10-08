@@ -43,11 +43,11 @@ REVIEW.md
 PROPOSALS.md
 archive/
 .workbuddy-ai/
-# `tools/` itself is tracked: it holds developer tooling that contributors are
-# meant to run (the parallel test runner, the docs-guard verifier).  The doctor
-# is the exception -- it is a local diagnostic whose ship-or-drop question is
-# still open, and shipping it untested would be worse than not shipping it.
-tools/seafile_doctor.py
+# `tools/` holds developer and diagnostic tooling that ships with the source
+# distribution: the parallel test runner, the docs-guard verifier, and the
+# Seafile sync-client doctor.  Each is named in MANIFEST.in, and each has tests
+# under tests/ -- the doctor's ship-or-drop question (#24) was answered by
+# writing those rather than by leaving it out of the repository.
 
 # Credentials & environment tokens
 .git-seafile.json
