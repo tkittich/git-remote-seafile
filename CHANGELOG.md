@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+_No unreleased changes yet._
+
+## [0.3.1] - 2026-10-08
+
 Fixes from a cross-review of v0.2.1 by three independent reviewers, landing after
 the v0.3.0 release. Each one is covered by a regression test that was watched to
 fail before the fix.
