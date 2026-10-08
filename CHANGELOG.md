@@ -68,9 +68,24 @@ fail before the fix.
 - **An unknown subcommand reports itself.** A typo such as
   `git-remote-seafile chck-auth` was passed to the helper as the *remote URL* and
   surfaced as an auth or library error. It now prints the help text and exits 2.
+- **The declared build floor could not actually build the project.**
+  `requires = ["setuptools>=61"]` alongside `license = "Apache-2.0"` — a PEP 639
+  SPDX expression that setuptools only learned to read in 77. Nothing noticed
+  because an isolated build installs the *newest* setuptools satisfying the floor,
+  so only a distribution building from the sdist sees it: with 76.1.0,
+  `python -m build --no-isolation` stops at `invalid pyproject.toml config:
+  project.license`. The floor is now 77, and a test pins it to the feature in use
+  rather than to a number someone has to remember to bump.
 
 ### Added
 
+- **`seafile_doctor.py` ships in the sdist, and is documented.** It is the
+  recovery tool for the synced-library trap the guardrails call a *fatal failure*:
+  it reads the desktop client's `ccnet/seafile.ini` and `repo.db` to say which
+  local library a working tree sits in, what state its sync is in, and which
+  files a conflict left behind. It was previously kept out of the package and
+  referenced by nothing — shipping it untested would have been worse, so it
+  arrived with the 27 tests that cover all seven subcommands.
 - **`seafile.forcefilehost`** (git config) / **`SEAFILE_FORCE_FILE_HOST`**
   (environment) — opt in to forcing download/upload links onto your configured
   server host, for a reverse proxy that returns an unreachable internal host.
@@ -83,6 +98,28 @@ fail before the fix.
   the request still carries a `Content-Length` rather than falling back to
   chunked encoding.
 - **A `CHANGELOG.md`**, which this project should have had from the start.
+
+### Changed
+
+- **The version is declared once.** `pyproject.toml` no longer repeats it as a
+  literal kept in step with `git_remote_seafile.__version__` by a test; the build
+  reads the package attribute through `[tool.setuptools.dynamic]`. A test whose
+  only job is to reconcile two copies of a fact reports the drift *after* someone
+  has already shipped it, so the copy was removed rather than guarded.
+
+### Testing
+
+- **The suite runs across processes.** `python -m unittest discover tests` is
+  single-threaded and `test_e2e` dominates it — every case shells out to a real
+  `git` and starts a stub HTTP server — so CI and the edit/test loop use
+  `tools/run_tests_parallel.py`, one worker per test class. Measured here: 204 s
+  serial against 57 s at twelve workers. The runner has no dependencies and
+  travels in the sdist.
+- **The workflow actions run on Node 24.** `checkout` and `setup-python` still
+  declared Node 20 and drew a deprecation annotation on every CI job; both, plus
+  the artifact pair in the release workflow, moved to the lowest major whose
+  `action.yml` declares `node24`. GitHub was already forcing them onto Node 24,
+  so this changes the declaration and not the behaviour.
 
 ### Documentation
 
