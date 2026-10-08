@@ -396,5 +396,27 @@ class TestCliSurface(unittest.TestCase):
                 self.assertIn(name, proc.stdout)
 
 
+class TestDoctorOpenRo(unittest.TestCase):
+    def test_open_ro_copies_wal_sidecar(self):
+        with tempfile.TemporaryDirectory() as td:
+            db = pathlib.Path(td) / "repo.db"
+            con = sqlite3.connect(str(db))
+            con.execute("PRAGMA journal_mode=wal")
+            con.execute("CREATE TABLE Test (val TEXT)")
+            con.execute("INSERT INTO Test VALUES ('wal_entry')")
+            con.commit()
+            try:
+                self.assertTrue((pathlib.Path(td) / "repo.db-wal").is_file())
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    con_ro = doc.open_ro(db, pathlib.Path(tmpdir))
+                    self.assertIsNotNone(con_ro)
+                    rows = list(con_ro.execute("SELECT val FROM Test"))
+                    con_ro.close()
+                    self.assertEqual(rows, [("wal_entry",)])
+                    self.assertTrue((pathlib.Path(tmpdir) / "repo.db-wal").is_file())
+            finally:
+                con.close()
+
+
 if __name__ == "__main__":
     unittest.main()

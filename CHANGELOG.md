@@ -7,6 +7,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.3] - 2026-10-08
+
+Distributed locking nonce to prevent same-host lock theft, server URL credential
+scoping, and streamed packfile transfers during garbage collection.
+
+### Fixed
+
+- **Cooperative lock theft on same machine.** `RemoteLock` now writes a unique
+  acquisition nonce (UUID) alongside the machine identifier. When a process whose
+  lease expired subsequently releases the lock, it verifies that both the machine
+  identifier *and* the acquisition nonce match, preventing it from inadvertently
+  deleting a newer lock acquired by another process on the same machine.
+- **Server URL credential scope in `SeafileClient`.** When an explicit `server_url`
+  is configured, credential resolution no longer falls back to unrelated server
+  accounts found in `accounts.db`, `~/.git-seafile.json`, or environment variables.
+- **Truncated quote stripping on URL responses.** Seafile upload and download
+  links with trailing newlines (e.g. `"<url>"\n`) are now stripped of trailing
+  whitespace before removing surrounding quotes, preventing literal quotation
+  marks from corrupting outbound transfer URLs.
+- **SQLite WAL sidecar copying in `seafile_doctor.py`.** `open_ro` now copies
+  `-wal`, `-shm`, and `-journal` sidecar files to temporary storage alongside
+  the main database, preventing missing tables or empty queries when inspecting
+  active desktop client databases.
+
+### Performance
+
+- **Packfiles stream during garbage collection.** Consolidated packfiles in
+  `gc.py` are streamed to the server using file path descriptors, and downloads
+  stream chunk-by-chunk to disk via `download_file_to`, preventing multi-gigabyte
+  packfiles from being buffered entirely in memory.
+- **Multi-branch push exclusion optimization.** `cmd_push` now includes all
+  known remote ref SHAs from the cached ref table in the pack exclusion list,
+  preventing duplicate object packing when pushing multiple merged branches.
+
+### Added
+
+- **Direct module execution entrypoint.** Added `git_remote_seafile/__main__.py`
+  to allow running the tool directly via `python -m git_remote_seafile`.
+- **URL path quoting.** Path query strings (`?p=...`) across API endpoints are
+  safely quoted with `quote(..., safe="/")`.
+
+### Changed
+
+- **Deduplicated `desktop-url` discovery.** `desktop-url` now delegates to
+  `safety.discover_local_synced_libraries`, providing unified candidate path
+  discovery and support for `~/.config/seafile/repo.db`.
+
 ## [0.3.2] - 2026-10-08
 
 CI lints now, and the first lint run found real defects — including a test that
@@ -264,7 +311,10 @@ Data-loss and silent-failure fixes, and the Python floor raised to 3.9.
   with zero-config desktop-client token discovery, distributed locking, remote
   packfile compaction, and a Git LFS custom transfer agent.
 
-[Unreleased]: https://github.com/tkittich/git-remote-seafile/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/tkittich/git-remote-seafile/compare/v0.3.3...HEAD
+[0.3.3]: https://github.com/tkittich/git-remote-seafile/compare/v0.3.2...v0.3.3
+[0.3.2]: https://github.com/tkittich/git-remote-seafile/compare/v0.3.1...v0.3.2
+[0.3.1]: https://github.com/tkittich/git-remote-seafile/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/tkittich/git-remote-seafile/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/tkittich/git-remote-seafile/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/tkittich/git-remote-seafile/compare/v0.1.0...v0.2.0

@@ -6,7 +6,6 @@ import sys
 from pathlib import Path
 from .helper import RemoteHelper
 from .client import SeafileAuthError, SeafileClient
-from .sqlite_read import open_live_sqlite_ro
 
 
 def print_help() -> None:
@@ -208,41 +207,19 @@ def main() -> int:
             return 1
 
         try:
-            # Try to resolve against repo.db libraries
-            candidates = []
-            for ini_path in [Path.home() / "ccnet" / "seafile.ini", Path.home() / ".ccnet" / "seafile.ini"]:
-                if ini_path.is_file():
-                    try:
-                        data_dir = Path(ini_path.read_text(encoding="utf-8").strip())
-                        candidates.append(data_dir / "repo.db")
-                    except Exception:
-                        pass
-            candidates.extend([
-                Path.home() / "ccnet" / "repo.db",
-                Path.home() / ".ccnet" / "repo.db",
-                Path.home() / "Seafile" / "seafile-data" / "repo.db",
-                Path.home() / ".seafile-data" / "repo.db",
-                Path.home() / "Seafile" / ".seafile-data" / "repo.db",
-                Path.home() / "Library" / "Application Support" / "Seafile" / "repo.db",
-            ])
-            for rdb in candidates:
-                props: dict[str, dict[str, str]] = {}
-                with open_live_sqlite_ro(rdb) as con:
-                    if con is None:
-                        continue
-                    try:
-                        for rid, k, v in con.execute("SELECT repo_id, key, value FROM RepoProperty"):
-                            props.setdefault(rid, {})[k] = v
-                    except Exception:
-                        continue
-                for kv in props.values():
-                    wt = kv.get("worktree")
-                    if wt and target_path.is_relative_to(Path(wt).resolve()):
-                        rel = target_path.relative_to(Path(wt).resolve())
-                        lib_name = Path(wt).name
-                        server_host = client.server_url.replace("https://", "").replace("http://", "")
-                        print(f"seafile://{server_host}/{lib_name}/{rel.as_posix()}")
-                        return 0
+            from .safety import discover_local_synced_libraries
+            synced_libs = discover_local_synced_libraries()
+            for lib in synced_libs:
+                wt = lib["worktree"]
+                try:
+                    rel = target_path.relative_to(wt)
+                except ValueError:
+                    continue
+                lib_name = lib["name"]
+                server_url = lib.get("server_url") or client.server_url
+                server_host = server_url.replace("https://", "").replace("http://", "").rstrip("/")
+                print(f"seafile://{server_host}/{lib_name}/{rel.as_posix()}")
+                return 0
             print(f"Could not match '{target_path}' to any local Seafile library worktree.")
             return 1
         except Exception as ex:

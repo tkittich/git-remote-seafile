@@ -84,24 +84,36 @@ def compact_repository(
                 if verbose:
                     sys.stderr.write(f"  Downloading {pack_name}...\n")
                 idx_name = pack_name.removesuffix(".pack") + ".idx"
+                pack_file = local_pack_dir / pack_name
+                idx_file = local_pack_dir / idx_name
 
-                pack_bytes = client.get_file_bytes(repo_id, f"{pack_dir}/{pack_name}")
-                idx_bytes = client.get_file_bytes(repo_id, f"{pack_dir}/{idx_name}")
+                # Stream packfile directly to disk if download_file_to is available,
+                # falling back to get_file_bytes for backwards-compatibility with test mocks.
+                downloaded = False
+                if hasattr(client, "download_file_to"):
+                    downloaded = client.download_file_to(repo_id, f"{pack_dir}/{pack_name}", pack_file) and pack_file.is_file()
+                if not downloaded:
+                    pack_bytes = client.get_file_bytes(repo_id, f"{pack_dir}/{pack_name}")
+                    if not pack_bytes:
+                        continue
+                    pack_file.write_bytes(pack_bytes)
 
-                if not pack_bytes:
-                    continue
-                total_old_bytes += len(pack_bytes)
+                total_old_bytes += pack_file.stat().st_size
 
-                (local_pack_dir / pack_name).write_bytes(pack_bytes)
-                if idx_bytes:
-                    (local_pack_dir / idx_name).write_bytes(idx_bytes)
-                else:
-                    subprocess.run(
-                        ["git", "index-pack", "-o", str(local_pack_dir / idx_name), str(local_pack_dir / pack_name)],
-                        check=True,
-                        capture_output=True,
-                        env=scratch_env,
-                    )
+                idx_downloaded = False
+                if hasattr(client, "download_file_to"):
+                    idx_downloaded = client.download_file_to(repo_id, f"{pack_dir}/{idx_name}", idx_file) and idx_file.is_file()
+                if not idx_downloaded:
+                    idx_bytes = client.get_file_bytes(repo_id, f"{pack_dir}/{idx_name}")
+                    if idx_bytes:
+                        idx_file.write_bytes(idx_bytes)
+                    else:
+                        subprocess.run(
+                            ["git", "index-pack", "-o", str(idx_file), str(pack_file)],
+                            check=True,
+                            capture_output=True,
+                            env=scratch_env,
+                        )
 
             # 4. Mirror remote refs so git repack knows all roots are reachable.
             # This walk must be recursive: a nested ref that is not mirrored
@@ -158,10 +170,10 @@ def compact_repository(
             for np in new_packs:
                 new_pack_names.add(np.name)
                 n_idx = np.with_suffix(".idx")
-                client.upload_file(repo_id, pack_dir, np.name, np.read_bytes(), replace=True)
+                client.upload_file(repo_id, pack_dir, np.name, np, replace=True)
                 if n_idx.is_file():
                     new_pack_names.add(n_idx.name)
-                    client.upload_file(repo_id, pack_dir, n_idx.name, n_idx.read_bytes(), replace=True)
+                    client.upload_file(repo_id, pack_dir, n_idx.name, n_idx, replace=True)
 
             # 7. Delete obsolete old packs from Seafile
             if verbose:

@@ -114,17 +114,28 @@ def seafile_data(ccnet: Path) -> Path:
     raise SystemExit("could not resolve seafile-data (looked in %s)" % ini)
 
 
+_SIDECAR_SUFFIXES = ("-wal", "-shm", "-journal")
+
+
 def open_ro(src: Path, tmpdir: Path):
     """Copy a sqlite db to tmpdir, then open the copy read-only.
 
     The client keeps these files open; copying first means we can never block
-    it or see a torn read.
+    it or see a torn read. Sidecar files (-wal, -shm, -journal) are copied as well
+    so that WAL mode transactions are visible.
     """
     if not src.is_file():
         return None
     dst = tmpdir / src.name
     try:
         shutil.copy2(src, dst)
+        for suffix in _SIDECAR_SUFFIXES:
+            sidecar = src.with_name(src.name + suffix)
+            if sidecar.is_file():
+                try:
+                    shutil.copy2(sidecar, tmpdir / sidecar.name)
+                except OSError:
+                    pass
     except OSError:
         return None
     return sqlite3.connect("file:%s?mode=ro" % dst.as_posix(), uri=True)

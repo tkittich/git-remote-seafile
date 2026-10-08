@@ -7,6 +7,7 @@ import json
 import socket
 import sys
 import time
+import uuid
 from typing import Any
 from .client import SeafileClient
 
@@ -41,6 +42,7 @@ class RemoteLock:
         # (owner, machine) of the lease we wrote, so that release() can tell our
         # own lock apart from one another machine has since taken over.
         self._identity: tuple[str, str] | None = None
+        self._nonce: str | None = None
 
     def _get_lock_info(self) -> dict[str, Any] | None:
         raw = self.client.get_file_text(self.repo_id, self.lock_file_path)
@@ -69,7 +71,9 @@ class RemoteLock:
         start_time = time.time()
         hostname = socket.gethostname()
         owner = self._owner_id()
+        nonce = uuid.uuid4().hex
         self._identity = (owner, hostname)
+        self._nonce = nonce
 
         while True:
             info = self._get_lock_info()
@@ -101,6 +105,7 @@ class RemoteLock:
             lock_payload = {
                 "owner": owner,
                 "machine": hostname,
+                "nonce": nonce,
                 "timestamp": now,
                 "lease": self.lease,
             }
@@ -125,18 +130,28 @@ class RemoteLock:
         self.acquired = False
 
         # Only remove a lock that is still ours.  If our lease expired while we
-        # were working, another machine may have taken it in the meantime, and
-        # deleting then would revoke a lock we no longer hold -- letting two
+        # were working, another machine or process may have taken it in the meantime,
+        # and deleting then would revoke a lock we no longer hold -- letting two
         # writers into the repository at once.  A missing or unreadable lock
         # file tells us nothing, so fall through to the delete in that case.
         info = self._get_lock_info()
-        if info is not None and (info.get("owner"), info.get("machine")) != self._identity:
-            sys.stderr.write(
-                "Not releasing the remote lock: it is now held by "
-                f"'{info.get('owner')}' on '{info.get('machine')}'.\n"
-            )
-            sys.stderr.flush()
-            return
+        if info is not None:
+            remote_nonce = info.get("nonce")
+            if remote_nonce is not None:
+                if remote_nonce != self._nonce:
+                    sys.stderr.write(
+                        "Not releasing the remote lock: it is now held by "
+                        f"'{info.get('owner')}' on '{info.get('machine')}'.\n"
+                    )
+                    sys.stderr.flush()
+                    return
+            elif (info.get("owner"), info.get("machine")) != self._identity:
+                sys.stderr.write(
+                    "Not releasing the remote lock: it is now held by "
+                    f"'{info.get('owner')}' on '{info.get('machine')}'.\n"
+                )
+                sys.stderr.flush()
+                return
 
         try:
             self.client.delete_entry(self.repo_id, self.lock_file_path)

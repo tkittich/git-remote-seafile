@@ -6,7 +6,7 @@ import json
 import os
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse, urlunparse
+from urllib.parse import quote, urlparse, urlunparse
 
 import requests
 from requests.adapters import HTTPAdapter
@@ -92,7 +92,11 @@ class SeafileClient:
         env_server = os.environ.get("SEAFILE_SERVER")
         env_token = os.environ.get("SEAFILE_TOKEN")
         if env_server and (env_token or not require_token):
-            self.server_url = env_server.rstrip("/")
+            if not self.server_url or urlparse(env_server).netloc == urlparse(self.server_url).netloc:
+                self.server_url = env_server.rstrip("/")
+                self.token = env_token
+                return
+        elif env_token and self.server_url:
             self.token = env_token
             return
 
@@ -101,9 +105,15 @@ class SeafileClient:
         if config_path.is_file():
             try:
                 cfg = json.loads(config_path.read_text(encoding="utf-8"))
-                if cfg.get("server") and (cfg.get("token") or not require_token):
-                    self.server_url = cfg["server"].rstrip("/")
-                    self.token = cfg.get("token")
+                cfg_server = cfg.get("server")
+                cfg_token = cfg.get("token")
+                if cfg_server and (cfg_token or not require_token):
+                    if not self.server_url or urlparse(cfg_server).netloc == urlparse(self.server_url).netloc:
+                        self.server_url = cfg_server.rstrip("/")
+                        self.token = cfg_token
+                        return
+                elif cfg_token and self.server_url:
+                    self.token = cfg_token
                     return
             except Exception:
                 pass
@@ -138,16 +148,22 @@ class SeafileClient:
                             "SELECT url, token FROM Accounts WHERE url LIKE ? ORDER BY lastVisited DESC LIMIT 1",
                             (f"%{host}%",),
                         ).fetchone()
-                    if not row:
+                    else:
                         row = con.execute("SELECT url, token FROM Accounts ORDER BY lastVisited DESC LIMIT 1").fetchone()
                 except Exception:
                     continue
             if row and row[0] and (row[1] or not require_token):
-                self.server_url = row[0].rstrip("/")
+                if not self.server_url:
+                    self.server_url = row[0].rstrip("/")
                 self.token = row[1]
                 return
 
         if not self.server_url or (require_token and not self.token):
+            if self.server_url:
+                raise SeafileAuthError(
+                    f"Could not find Seafile credentials for '{self.server_url}'. "
+                    "Set SEAFILE_TOKEN or configure ~/.git-seafile.json"
+                )
             if require_token:
                 raise SeafileAuthError(
                     "Could not find Seafile credentials. Set SEAFILE_SERVER and SEAFILE_TOKEN "
@@ -275,7 +291,7 @@ class SeafileClient:
     def list_dir(self, repo_id: str, path: str = "/") -> list[dict[str, Any]]:
         """List entries in a directory. Returns empty list if directory does not exist."""
         clean_path = ("/" + path.strip("/")).rstrip("/") or "/"
-        url = f"{self.server_url}/api2/repos/{repo_id}/dir/?p={clean_path}"
+        url = f"{self.server_url}/api2/repos/{repo_id}/dir/?p={quote(clean_path, safe='/')}"
         resp = self.session.get(url, timeout=self.timeout)
         if resp.status_code == 404:
             return []
@@ -290,7 +306,7 @@ class SeafileClient:
             return True
         if (repo_id, clean_path) in getattr(self, "_known_dirs", set()):
             return True
-        url = f"{self.server_url}/api2/repos/{repo_id}/dir/?p={clean_path}"
+        url = f"{self.server_url}/api2/repos/{repo_id}/dir/?p={quote(clean_path, safe='/')}"
         resp = self.session.get(url, timeout=self.timeout)
         if resp.status_code == 200:
             if hasattr(self, "_known_dirs"):
@@ -316,7 +332,7 @@ class SeafileClient:
                     known.add((repo_id, current))
                 continue
 
-            url = f"{self.server_url}/api2/repos/{repo_id}/dir/?p={current}"
+            url = f"{self.server_url}/api2/repos/{repo_id}/dir/?p={quote(current, safe='/')}"
             resp = self.session.post(url, data={"operation": "mkdir"}, timeout=self.timeout)
             if resp.status_code in (200, 201):
                 if known is not None:
@@ -354,14 +370,14 @@ class SeafileClient:
     def get_file_bytes(self, repo_id: str, file_path: str) -> bytes | None:
         """Download file content, or None if 404."""
         clean_path = "/" + file_path.strip("/")
-        url = f"{self.server_url}/api2/repos/{repo_id}/file/?p={clean_path}"
+        url = f"{self.server_url}/api2/repos/{repo_id}/file/?p={quote(clean_path, safe='/')}"
         resp = self.session.get(url, timeout=self.timeout)
         if resp.status_code == 404:
             return None
         if resp.status_code != 200:
             raise SeafileAPIError(f"Failed to get download link for {clean_path}: HTTP {resp.status_code}")
 
-        dl_url = resp.text.strip('"')
+        dl_url = resp.text.strip().strip('"')
         dl_url = self._adjust_url(dl_url)
         file_resp = self._transfer_session(dl_url).get(dl_url, timeout=self.timeout)
         if file_resp.status_code == 404:
@@ -404,12 +420,12 @@ class SeafileClient:
         self.mkdir_p(repo_id, clean_parent)
 
         # 1. Get upload link
-        link_url = f"{self.server_url}/api2/repos/{repo_id}/upload-link/?p={clean_parent}"
+        link_url = f"{self.server_url}/api2/repos/{repo_id}/upload-link/?p={quote(clean_parent, safe='/')}"
         resp = self.session.get(link_url, timeout=self.timeout)
         if resp.status_code != 200:
             raise SeafileAPIError(f"Failed to get upload link for {clean_parent}: HTTP {resp.status_code} {resp.text}")
 
-        upload_url = self._adjust_url(resp.text.strip('"'))
+        upload_url = self._adjust_url(resp.text.strip().strip('"'))
 
         # 2. Post file.  `requests` streams a file object; passing it straight
         # through is what keeps the payload out of memory.
@@ -441,14 +457,14 @@ class SeafileClient:
         first chunk is written, which is the bug this exists to avoid.
         """
         clean_path = "/" + file_path.strip("/")
-        url = f"{self.server_url}/api2/repos/{repo_id}/file/?p={clean_path}"
+        url = f"{self.server_url}/api2/repos/{repo_id}/file/?p={quote(clean_path, safe='/')}"
         resp = self.session.get(url, timeout=self.timeout)
         if resp.status_code == 404:
             return False
         if resp.status_code != 200:
             raise SeafileAPIError(f"Failed to get download link for {clean_path}: HTTP {resp.status_code}")
 
-        dl_url = self._adjust_url(resp.text.strip('"'))
+        dl_url = self._adjust_url(resp.text.strip().strip('"'))
         file_resp = self._transfer_session(dl_url).get(
             dl_url, timeout=self.timeout, stream=True
         )
@@ -473,10 +489,10 @@ class SeafileClient:
         clean_path = "/" + path.strip("/")
         # Seafile's /file/ endpoint deletes both files and directories,
         # while /dir/ returns 404 when deleting a file. Try /file/ first.
-        url = f"{self.server_url}/api2/repos/{repo_id}/file/?p={clean_path}"
+        url = f"{self.server_url}/api2/repos/{repo_id}/file/?p={quote(clean_path, safe='/')}"
         resp = self.session.delete(url, timeout=self.timeout)
         if resp.status_code == 200:
             return True
-        dir_url = f"{self.server_url}/api2/repos/{repo_id}/dir/?p={clean_path}"
+        dir_url = f"{self.server_url}/api2/repos/{repo_id}/dir/?p={quote(clean_path, safe='/')}"
         resp_dir = self.session.delete(dir_url, timeout=self.timeout)
         return resp_dir.status_code == 200

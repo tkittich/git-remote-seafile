@@ -209,6 +209,27 @@ class TestRemoteHelper(unittest.TestCase):
         self.assertIn("main", uploaded_files)
         self.assertIn("feature-auth", uploaded_files)
 
+    @patch("git_remote_seafile.helper.rev_parse", return_value="local_sha_feature")
+    @patch("git_remote_seafile.helper.is_ancestor", return_value=True)
+    @patch("git_remote_seafile.helper.get_objects_to_push", return_value=[])
+    def test_cmd_push_excludes_all_known_remote_refs(self, mock_objs, mock_ancestor, mock_rev):
+        h = RemoteHelper.__new__(RemoteHelper)
+        h.client = MagicMock()
+        h.repo_id = "repo1"
+        h.repo_path = "/git-repo"
+        h._refs_cache = {
+            "refs/heads/main": "remote_sha_main",
+            "refs/heads/dev": "remote_sha_dev",
+        }
+
+        with patch("sys.stdout", io.StringIO()), patch("git_remote_seafile.helper.RemoteLock"):
+            h.cmd_push(["refs/heads/feature:refs/heads/feature"])
+
+        mock_objs.assert_called_once()
+        _, exclude = mock_objs.call_args[0]
+        self.assertIn("remote_sha_main", exclude)
+        self.assertIn("remote_sha_dev", exclude)
+
     @patch("git_remote_seafile.helper.rev_parse", return_value="sha123")
     @patch("git_remote_seafile.helper.is_ancestor", return_value=True)
     @patch("git_remote_seafile.helper.get_objects_to_push", return_value=[])
@@ -635,6 +656,31 @@ class TestConcurrencyAndLocking(unittest.TestCase):
         lock.release()
 
         mock_client.delete_entry.assert_called_once_with("repo1", "/path/.git-lock.json")
+
+    def test_release_does_not_delete_same_machine_lock_if_overridden(self):
+        """When lease expires and same machine re-acquires with new nonce, release must not delete it."""
+        mock_client = MagicMock()
+        mock_client.token = "token123"
+        mock_client.get_file_text.return_value = None
+
+        lock1 = RemoteLock(mock_client, "repo1", "/path", timeout=5, lease=1)
+        lock1.acquire()
+        self.assertTrue(lock1.acquired)
+
+        # Process 2 on the same machine/account overrides after lease expiry
+        payload1 = json.loads(mock_client.upload_file.call_args[0][3].decode("utf-8"))
+        overriding_payload = dict(payload1)
+        overriding_payload["nonce"] = "different-new-nonce-uuid"
+        overriding_payload["timestamp"] = time.time() + 10
+        mock_client.get_file_text.return_value = json.dumps(overriding_payload)
+
+        err = io.StringIO()
+        with patch("sys.stderr", err):
+            lock1.release()
+
+        # Must not delete the newly acquired lock
+        mock_client.delete_entry.assert_not_called()
+        self.assertFalse(lock1.acquired)
 
     def test_lock_payload_does_not_leak_the_api_token(self):
         """The payload is stored in the repository, so it must not carry the token.

@@ -90,6 +90,29 @@ class TestClientCredentials(unittest.TestCase):
                     SeafileClient(require_credentials=False)
                 self.assertIn("server", str(ctx.exception).lower())
 
+    def test_load_credentials_scoped_to_server_url(self):
+        with tempfile.TemporaryDirectory() as td:
+            fake_home = Path(td)
+            ccnet_dir = fake_home / "ccnet"
+            ccnet_dir.mkdir()
+            db_path = ccnet_dir / "accounts.db"
+
+            con = sqlite3.connect(str(db_path))
+            con.execute("CREATE TABLE Accounts (url TEXT, token TEXT, lastVisited INTEGER)")
+            con.execute("INSERT INTO Accounts VALUES ('https://other.example.com', 'other-tok', 99999)")
+            con.execute("INSERT INTO Accounts VALUES ('https://target.example.com', 'target-tok', 12345)")
+            con.commit()
+            con.close()
+
+            with patch.dict("os.environ", {}, clear=True), patch("pathlib.Path.home", return_value=fake_home):
+                # Requesting target server must pick target-tok, NOT other-tok despite other having higher lastVisited
+                client = SeafileClient(server_url="https://target.example.com")
+                self.assertEqual(client.token, "target-tok")
+
+                # Requesting an unrelated server must NOT pick other-tok or target-tok
+                with self.assertRaises(SeafileAuthError):
+                    SeafileClient(server_url="https://unrelated.example.com")
+
     def test_no_credential_search_when_a_server_is_given_and_not_required(self):
         # Passing a server explicitly and not requiring a token must not go
         # looking through the environment or the desktop client's databases.
@@ -332,6 +355,27 @@ class TestClientAPI(unittest.TestCase):
         self.client.session.get = MagicMock(return_value=MagicMock(status_code=500))
         with self.assertRaises(SeafileAPIError):
             self.client.get_file_bytes("repo1", "/bad.txt")
+
+    def test_api_quotes_paths(self):
+        mock_resp = MagicMock(status_code=200, json=lambda: [])
+        self.client.session.get = MagicMock(return_value=mock_resp)
+
+        self.client.list_dir("repo1", "/branch with spaces/sub#dir")
+        called_url = self.client.session.get.call_args[0][0]
+        self.assertIn("p=/branch%20with%20spaces/sub%23dir", called_url)
+
+    def test_api_strips_newline_and_quotes_from_urls(self):
+        # A response with trailing newline and quotes: '"https://..."\n'
+        link = '"https://seafile.example.com/seafhttp/files/123/file.txt"\n'
+
+        def route(url, **kwargs):
+            if "/api2/repos/" in url:
+                return MagicMock(status_code=200, text=link)
+            return MagicMock(status_code=200, content=b"content")
+
+        self.client.session.get = MagicMock(side_effect=route)
+        res = self.client.get_file_bytes("repo1", "/file.txt")
+        self.assertEqual(res, b"content")
 
     def test_upload_file(self):
         # Mock dir_exists so mkdir_p doesn't post

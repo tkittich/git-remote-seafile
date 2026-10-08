@@ -266,7 +266,10 @@ class RemoteHelper:
 
                     # Compute and pack missing objects
                     try:
-                        exclude = [remote_sha] if remote_sha else list(self._refs_cache.values())
+                        known_remote_shas = {s for s in self._refs_cache.values() if s}
+                        if remote_sha:
+                            known_remote_shas.add(remote_sha)
+                        exclude = list(known_remote_shas)
                         objects_to_push = get_objects_to_push(local_sha, exclude)
                         if objects_to_push:
                             pack_sha, pack_bytes, idx_bytes = create_packfile(objects_to_push)
