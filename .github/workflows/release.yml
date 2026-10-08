@@ -1,16 +1,22 @@
 name: Release
 
-# Pushing a v* tag is the single entry point.  This workflow used to *also*
-# trigger on `release: types: [published]`, which made every release run twice:
-# the tag-triggered run below creates a Release with `gh release create`, and
-# publishing that Release fired the second trigger.  The duplicate was harmless
-# only by accident -- the release script checks `gh release view` first, and the
-# PyPI step passes `skip-existing`.
+# Pushing a v* tag is the single entry point.
 #
-# It could not be kept as a second entry point either.  On the `release:` path
-# the release already exists by definition, so create_github_release.sh always
-# short-circuited and the wheel and sdist were never attached -- the one job
-# this workflow exists to do.  To recover from a failed run, re-run it from the
+# This workflow used to *also* trigger on `release: types: [published]`, and that
+# fired on top of the tag push.  Not because of anything here: GitHub does not
+# start a run for events caused by the default GITHUB_TOKEN, so the Release this
+# workflow creates with `gh release create` triggers nothing at all.  It fired
+# when a *person* published a release, which is how v0.2.0 and v0.2.1 got theirs
+# -- each of those tags has one push run and one release run, while v0.3.0,
+# released by the bot, has only the push run.
+#
+# That path could not do anything useful anyway.  A published release already
+# exists, so create_github_release.sh short-circuits on `gh release view` and the
+# wheel and sdist are never attached -- the one job this workflow exists to do.
+# All it still did was re-run the PyPI job, which is a no-op with no credentials
+# and a `skip-existing` no-op otherwise.  The trigger was a leftover from when
+# releases were made by hand; now that a tag push creates one, publishing by hand
+# is not part of the flow.  To recover from a failed run, re-run it from the
 # Actions tab.
 on:
   push:
