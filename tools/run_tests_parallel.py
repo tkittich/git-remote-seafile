@@ -2,38 +2,46 @@
 """Run the test suite across processes.
 
 Why this exists: ``python -m unittest discover tests`` is single-threaded, and
-one module dominates the run.  Measured on a 12-core machine (24 threads):
+the end-to-end module dominates the run.  Measured on a 12-core / 24-thread
+machine (AMD 5900X), 223 tests:
 
-    test_e2e                        103.9 s
-    test_release_workflow            18.1 s
-    test_git_util                    17.2 s
-    test_remote                      10.7 s
-    test_client                       7.6 s
-    test_safety                       4.0 s
-    everything else                   3.9 s
-    --------------------------------------
-    total                           155.3 s
+    python -m unittest discover tests       170.2 s    <- the baseline
+    this runner,  -j 1                      218.1 s    <- not a baseline; see below
+    this runner,  -j 2                      116.7 s
+    this runner,  -j 4                       67.8 s
+    this runner,  -j 6                       52.3 s
+    this runner, -j 12                       43.1 s    <- default here (one per CPU)
+    this runner, -j 24                       42.5 s
 
-``test_e2e`` is two thirds of the suite because every case shells out to a real
-``git`` and starts a stub HTTP server.  Distributing the work takes the wall
-time down to roughly the longest single unit of work.
+``test_e2e`` is most of the suite because every case shells out to a real
+``git`` and starts a stub HTTP server: its ten classes are about two thirds of
+the total.  So distributing the work takes the wall time down towards the
+longest single unit of work -- 18.8 s here -- and not towards zero.
 
-**Granularity is the test class.**  Not the module, and not the test.  All
-measured on the 12-core / 24-thread machine above, 204 tests:
+``-j 1`` is *slower* than the plain serial command, and that is the granularity
+argument in miniature: one process per class pays an interpreter start-up and a
+fresh ``import requests`` for each of the 56 targets, about 1.1 s apiece and
+~60 s over the run.  Use ``python -m unittest discover tests`` for a baseline;
+``-j 1`` is not one.
 
-    serial                                154.8 s
-    class granularity, 12 workers          42.4 s    <- the default
-    class granularity, 24 workers          42.5 s
-    test  granularity, 12 workers          66.4 s
+**Granularity is the test class.**  Not the module, and not the test:
 
-* Per module would leave the 104 s ``test_e2e`` on one worker -- about 1.5x,
+    class granularity, -j 12                43.1 s    <- the default
+    test  granularity, -j 12                70.4 s
+
+* Per module would leave the whole of ``test_e2e`` on one worker -- about 1.5x,
   which is not worth the complexity.
 * Per test is *worse*, which is not obvious.  ``E2ETestCase`` does its expensive
   work in ``setUpClass`` (a temp directory, a stub HTTP server, a git
   environment); scheduling per test repeats all of that for every test in the
-  class.  The ~204 interpreter start-ups cost less than the setup it duplicates.
-* Doubling the workers does not help either: the wall time is bounded by the
-  longest single unit of work, which is one E2E test at ~26 s, not by throughput.
+  class.  The 223 extra interpreter start-ups cost less than the setup they
+  duplicate.
+
+**The curve flattens early.**  Twelve workers are 1.6x four, not 3x, and 24
+workers buy 0.6 s over 12.  The heavy targets are themselves multi-process --
+each E2E case runs ``git`` several times and serves HTTP -- so a dozen of them
+at once contend for the same cores.  Six to twelve workers is the useful range
+on this machine.
 
 A class is the smallest thing ``unittest`` can load on its own, and each worker
 is handed the next class the moment it finishes, so one slow class does not
@@ -49,7 +57,7 @@ Usage::
 
     python tools/run_tests_parallel.py              # auto: one worker per CPU
     python tools/run_tests_parallel.py -j 4
-    python tools/run_tests_parallel.py -j 1         # serial, for comparison
+    python tools/run_tests_parallel.py -j 1         # one worker (not a baseline)
     python tools/run_tests_parallel.py --list       # show the units of work
     python tools/run_tests_parallel.py -k safety    # only matching targets
 """

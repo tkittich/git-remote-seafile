@@ -32,11 +32,12 @@ Run the test suite using Python's standard `unittest`:
 python -m unittest discover tests
 ```
 
-That is the serial command, and it is the one CI uses. It is also slow: the
-end-to-end module shells out to a real `git` for every case, and accounts for
-roughly two thirds of the ~164 s total.
+That is the baseline command. It is also slow: the end-to-end module shells out
+to a real `git` for every case, and accounts for roughly two thirds of the
+~170 s total.
 
-For the edit/test loop, run the same suite across processes instead:
+For the edit/test loop — and in CI — run the same suite across processes
+instead:
 ```bash
 python tools/run_tests_parallel.py          # one worker per CPU
 python tools/run_tests_parallel.py -j 8     # a specific worker count
@@ -44,13 +45,27 @@ python tools/run_tests_parallel.py -k e2e   # only matching classes
 python tools/run_tests_parallel.py --list   # show the units of work
 ```
 
-Measured on a 12-core machine: **164 s serial, 42 s parallel** (204 tests, same
-result). The wall time is bounded by the single slowest test (~26 s), not by
-throughput, so more workers stop helping well before the CPU count. The unit of
-work is the test class — see the module docstring for why per-test scheduling is
-measurably *worse* here.
+Measured on a 12-core AMD 5900X, 223 tests, same result either way:
 
-It has no dependencies and is not part of the shipped package.
+| workers | wall time |
+| ------- | --------- |
+| serial (`python -m unittest discover tests`) | 170.2 s |
+| 2 | 116.7 s |
+| 4 | 67.8 s |
+| 6 | 52.3 s |
+| 12 (the default here) | 43.1 s |
+
+The wall time is bounded by the slowest single unit of work (18.8 s), not by
+throughput, and the curve flattens early: twelve workers are 1.6x four, not 3x,
+because the heavy cases are themselves multi-process. The unit of work is the
+test class — see the module docstring for why per-test scheduling is measurably
+*worse* here.
+
+Note that `-j 1` is *slower* than the serial command above, because it pays an
+interpreter start-up per class. Use the serial command for a baseline.
+
+It has no dependencies. It is not in the installed package — it travels in the
+sdist, for someone building from source.
 
 ---
 
