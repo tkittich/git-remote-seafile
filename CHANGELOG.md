@@ -7,17 +7,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-10-08
+
+CI lints now, and the first lint run found real defects — including a test that
+had never run.
+
+### Fixed
+
+- **A test that had never run.** `test_remote.py` defined
+  `test_cmd_push_non_fast_forward_rejected` **twice** in the same class; the
+  second definition silently replaced the first, so the first was dead rather
+  than merely redundant. Discovery yields exactly *one* test id for that name —
+  two definitions, one test — which is why a green suite never noticed. This was
+  the cross-review's item #9, recorded as fixed and not. The two bodies differed
+  only in the fixture SHAs they set, so deleting the shadowed copy is
+  behaviour-neutral, which is precisely what made it invisible.
+- **Six unused imports, two unread loop variables, and a dropped exception
+  cause.** `ruff` turned up `shutil`/`tempfile` in `tests/e2e_harness.py`,
+  `print_help` in `tests/test_cli.py`, `MagicMock` in `tests/test_git_util.py`
+  and `sys` in `tests/test_safety.py`; `rid` in `cli.py` and `name` in
+  `tools/verify_docs_guards.py` were iterated but never read — both fixed by
+  *using* them rather than renaming them to `_`, since a name that is there to
+  be read should be read; and `lock.py` re-raised inside `except ... as ex`
+  without `from ex`, dropping the original cause from the chain.
+
+### Added
+
+- **CI runs `ruff` as its own job.** Pyflakes, syntax errors and bugbear, with
+  the rule selection in `pyproject.toml` under `[tool.ruff.lint]` so a local
+  `ruff check .` and CI cannot disagree about what is being checked, and with
+  `target-version = "py39"` enforcing the declared interpreter floor rather than
+  merely documenting it. The version is pinned, so a new ruff release cannot
+  redden a green branch without anything in this repository having changed.
+
 ### Testing
 
-- **CI lints now, and the first lint run found real defects.** `ruff` runs as
-  its own job — pyflakes, syntax errors and bugbear — with the rule selection in
-  `pyproject.toml` under `[tool.ruff]`, so a local `ruff check .` and CI cannot
-  disagree about what is being checked, and with `target-version = "py39"`
-  enforcing the declared interpreter floor. What it turned up: six unused
-  imports, two loop variables that were never read, an exception re-raised in
-  `lock.py` without its cause, and — the reason it was worth adding — a test
-  method defined **twice** in the same class in `test_remote.py`. The second
-  definition silently replaced the first, so the first had never run.
+- **`TestLintIsWired` keeps the lint job load-bearing.** A deleted lint job looks
+  exactly like a passing one, so four tests pin the wiring: the job exists, it
+  invokes `ruff check`, its version is pinned, and the rules live in
+  `pyproject.toml`.
+
+### Documentation
+
+- `CONTRIBUTING.md` documents the lint step and how to reproduce it locally.
 
 ## [0.3.1] - 2026-10-08
 
