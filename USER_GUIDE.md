@@ -376,7 +376,7 @@ Authenticated successfully with https://seafile.example.com as user@example.com
 | `seafile.skipsafetychecks` | `SEAFILE_SKIP_SAFETY_CHECKS` | `false` | Bypass the pre-flight guardrails (Trap 1, Trap 2, root pollution). |
 | `seafile.autogc` | — | `false` | Compact the remote automatically once the packfile threshold is reached. |
 | `seafile.gcthreshold` | — | `20` | Packfile count at which the `gc` tip appears (or auto-GC triggers). |
-| `seafile.forcefilehost` | `SEAFILE_FORCE_FILE_HOST` | `false` | Force download/upload links onto your server's host. |
+| `seafile.forcefilehost` | `SEAFILE_FORCE_FILE_HOST` | `false` | Force download/upload links onto your server's **host** (a wrong scheme on the same host is always corrected). |
 
 ```bash
 # Examples
@@ -385,12 +385,13 @@ git config seafile.gcthreshold 25
 git config seafile.forcefilehost true
 ```
 
-**`seafile.forcefilehost`** deserves a note. Seafile returns a short-lived URL for every file transfer, and normally that URL points at your server, so nothing needs rewriting. Two situations differ:
+**`seafile.forcefilehost`** deserves a note. Seafile returns a short-lived URL for every file transfer, and there are three cases to tell apart:
 
-- A **reverse proxy** may return a link naming an internal host (`http://internal-docker-host:8082/...`) that your machine cannot reach. Setting this to `true` rewrites the link's host onto your configured server, which fixes it.
-- A **clustered or object-store-backed** deployment genuinely serves files from a different host. Forcing the link onto the API host would make it 404, so the setting defaults to **off** and the server's own answer is trusted.
+- A **relative** link (a bare path rather than a full URL) is always completed against your server, regardless of this setting. That is not a rewrite — it is the only way the link can be used at all.
+- A link naming **the same host and port as your server but over plain `http`**, while your server is `https`, is corrected to `https` automatically. This is a common reverse-proxy artefact and it cannot be left alone: an upload `POST` sent to the `http` URL is answered with a redirect, and a redirected `POST` is re-issued as a `GET`, which the upload endpoint rejects with `HTTP 400`. Downloads survive the same redirect, uploads do not — which is why only pushes break. The correction is one-way: `https` is never downgraded to `http`.
+- A link naming a **different host** is left exactly as the server sent it. A **clustered or object-store-backed** deployment genuinely serves files from a different host, and forcing it onto the API host would make it 404. If instead you have a **reverse proxy** returning an internal host (`http://internal-docker-host:8082/...`) that your machine cannot reach, set this to `true` to rewrite the link's host onto your configured server.
 
-A *relative* link (a bare path rather than a full URL) is always completed against your server regardless of this setting — that is not a rewrite, it is the only way the link can be used at all.
+The host comparison is exact, port included: `http://your-server:8082/...` is a different endpoint rather than a mistyped scheme, and is left alone.
 
 ---
 

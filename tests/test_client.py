@@ -136,6 +136,86 @@ class TestClientAPI(unittest.TestCase):
             "https://seafile.example.com/seafhttp/files/abc123/file.pack?token=xyz",
         )
 
+    def test_adjust_url_upgrades_plain_http_on_the_api_host(self):
+        """A plain-http link to the *same* authority is a proxy artefact.
+
+        Reported by a real deployment: the API answers over https, but the
+        upload link comes back as ``http://<same-host>/seafhttp/upload-api/..``.
+        That is not a second file server -- it is the same host:port with the
+        scheme a reverse proxy guessed wrong -- so the scheme is corrected even
+        though host rewriting stays opt-in.
+        """
+        raw_url = "http://seafile.example.com/seafhttp/upload-api/abc123"
+        self.assertFalse(self.client.force_file_host)
+        self.assertEqual(
+            self.client._adjust_url(raw_url),
+            "https://seafile.example.com/seafhttp/upload-api/abc123",
+        )
+
+    def test_adjust_url_never_downgrades_https_to_http(self):
+        """Upgrading is safe; downgrading is not.  Only ever go one way."""
+        client = SeafileClient(server_url="http://seafile.example.com", token="t")
+        raw_url = "https://seafile.example.com/seafhttp/files/abc123/file.pack"
+        self.assertEqual(client._adjust_url(raw_url), raw_url)
+
+    def test_adjust_url_leaves_a_same_host_different_port_alone(self):
+        """Same hostname, different port is a different endpoint, not a typo.
+
+        A file server on ``:8082`` over plain http is a real deployment shape,
+        so authority comparison is exact -- the port is part of it.
+        """
+        raw_url = "http://seafile.example.com:8082/seafhttp/files/abc123/file.pack"
+        self.assertEqual(self.client._adjust_url(raw_url), raw_url)
+
+    def test_upload_posts_to_the_upgraded_url(self):
+        """The scheme fix has to reach the POST, not just `_adjust_url`.
+
+        This is the whole failure: Seafile answers the upload-link call with a
+        plain-http URL, the POST is answered with a 301, and `requests`
+        re-issues a redirected POST as a *GET* -- which the upload endpoint
+        rejects with HTTP 400.  The push then dies at lock acquisition, before
+        a single object is transferred.
+        """
+        self.client.dir_exists = MagicMock(return_value=True)
+        self.client.session.get = MagicMock(
+            return_value=MagicMock(
+                status_code=200,
+                text='"http://seafile.example.com/seafhttp/upload-api/abc123"',
+            )
+        )
+        session = MagicMock()
+        session.post.return_value = MagicMock(status_code=200)
+        self.client._transfer_session = MagicMock(return_value=session)
+
+        self.client.upload_file("repo1", "/seafile", ".git-lock.json", b"{}")
+
+        self.assertEqual(
+            session.post.call_args[0][0],
+            "https://seafile.example.com/seafhttp/upload-api/abc123",
+        )
+
+    def test_upload_failure_names_the_endpoint_but_not_the_token(self):
+        """A 400 with an empty body should still say where the POST went."""
+        self.client.dir_exists = MagicMock(return_value=True)
+        self.client.session.get = MagicMock(
+            return_value=MagicMock(
+                status_code=200,
+                text='"http://seafile.example.com/seafhttp/upload-api/secret-token"',
+            )
+        )
+        session = MagicMock()
+        session.post.return_value = MagicMock(status_code=400, text="")
+        self.client._transfer_session = MagicMock(return_value=session)
+
+        with self.assertRaises(SeafileAPIError) as ctx:
+            self.client.upload_file("repo1", "/seafile", ".git-lock.json", b"{}")
+
+        message = str(ctx.exception)
+        self.assertIn("https://seafile.example.com", message)
+        # The path carries the upload token; it must not reach a terminal the
+        # user may paste into a bug report.
+        self.assertNotIn("secret-token", message)
+
     def test_force_file_host_is_off_unless_asked_for(self):
         from git_remote_seafile.client import _force_file_host_enabled
 

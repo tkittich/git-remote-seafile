@@ -40,7 +40,20 @@ fail before the fix.
   rewrite fixed a reverse proxy reporting an internal host, but broke
   split/clustered deployments, where the file server genuinely lives elsewhere
   and the rewritten URL 404s. See `seafile.forcefilehost` under Added. Completing
-  a *relative* link against the server still always happens.
+  a *relative* link against the server still always happens, and a link naming the
+  *same host and port* as the server over plain `http` is still corrected — see
+  the next entry.
+- **A plain-`http` upload link no longer breaks every push.** Seafile can answer
+  the upload-link call with `http://<your-server>/seafhttp/upload-api/...` while
+  your server is `https`. A `POST` to that URL is answered with a `301`, and
+  `requests` re-issues a redirected `POST` as a `GET`, which the upload endpoint
+  rejects with `HTTP 400` — so the push died at lock acquisition, before a single
+  object moved, as `Failed to upload .git-lock.json to /seafile: HTTP 400`.
+  Downloads were unaffected, because a redirected `GET` is still a `GET`, which
+  is why only pushes failed. The scheme is now corrected whenever the link names
+  the same host and port as the server, and never downgraded in the other
+  direction. Upload errors also name the endpoint that was hit, minus the
+  token-bearing path.
 - **`desktop-url` no longer requires a token.** It only needs to know which
   server to name, so it failed for users with the desktop client installed but no
   reachable token. It now reports "cannot determine the Seafile server" instead of

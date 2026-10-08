@@ -216,16 +216,27 @@ class SeafileClient:
     def _adjust_url(self, raw_url: str) -> str:
         """Return an absolute, reachable URL for a returned download/upload link.
 
-        Two jobs were conflated here:
+        Three jobs live here, and they are not the same job:
 
         * Completing a *relative* link (``/seafhttp/files/...``) against the
           server.  That is completion, not rewriting, and it is always done --
           `requests` cannot fetch a bare path.
-        * Forcing an *absolute* link's host onto the server.  That fixes a
-          reverse proxy reporting an internal host, but it also breaks
-          split/clustered deployments, where the file server genuinely lives
-          elsewhere and the rewritten URL 404s.  It is now opt-in
-          (``seafile.forcefilehost`` / ``SEAFILE_FORCE_FILE_HOST``).
+        * Correcting the *scheme* when the link names the very same authority as
+          the server.  A reverse proxy that answers the API over https will
+          often report the file endpoint as plain http; that is the same
+          host:port with a scheme the proxy got wrong, not a second server.
+          This must be fixed unconditionally, because a redirected POST is
+          re-issued by `requests` as a *GET*, and the upload endpoint answers
+          that with HTTP 400 -- which killed every push at lock acquisition.
+          Only ever upgraded, never downgraded.
+        * Forcing an *absolute* link's host onto the server.  That fixes a proxy
+          reporting an internal host, but it also breaks split/clustered
+          deployments, where the file server genuinely lives elsewhere and the
+          rewritten URL 404s.  It stays opt-in (``seafile.forcefilehost`` /
+          ``SEAFILE_FORCE_FILE_HOST``).
+
+        The authority comparison is exact, port included: a file server on
+        ``host:8082`` is a different endpoint, not a mistyped scheme.
         """
         srv = urlparse(self.server_url)
         tgt = urlparse(raw_url)
@@ -234,6 +245,12 @@ class SeafileClient:
             return urlunparse(
                 (srv.scheme, srv.netloc, tgt.path, tgt.params, tgt.query, tgt.fragment)
             )
+
+        if tgt.netloc == srv.netloc and tgt.scheme == "http" and srv.scheme == "https":
+            return urlunparse(
+                ("https", tgt.netloc, tgt.path, tgt.params, tgt.query, tgt.fragment)
+            )
+
         return raw_url
 
     def get_repo_id(self, name_or_id: str) -> str:
@@ -403,7 +420,16 @@ class SeafileClient:
             upload_url, files=files, data=data, timeout=self.timeout
         )
         if up_resp.status_code not in (200, 201):
-            raise SeafileAPIError(f"Failed to upload {filename} to {clean_parent}: HTTP {up_resp.status_code} {up_resp.text}")
+            # Name the endpoint that was actually hit.  A wrong scheme or host
+            # here is the difference between a working push and an opaque
+            # "HTTP 400", and the origin is enough to see it -- the path is
+            # deliberately omitted because it carries the upload token.
+            origin = urlparse(upload_url)
+            raise SeafileAPIError(
+                f"Failed to upload {filename} to {clean_parent}: "
+                f"HTTP {up_resp.status_code} "
+                f"(POST {origin.scheme}://{origin.netloc}) {up_resp.text}"
+            )
         return True
 
     def download_file_to(self, repo_id: str, file_path: str, dest: Any) -> bool:
