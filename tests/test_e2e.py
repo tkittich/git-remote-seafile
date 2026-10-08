@@ -462,5 +462,54 @@ class TestConcurrentPushRaceCondition(E2ETestCase):
         self.assertIn(a1_sha, ls.stdout, "A1 must not be overwritten by B1")
 
 
+class TestStubRealismAndRefFault(E2ETestCase):
+    """Verify stub Date headers, directory entry mtime/size, and N-2 per-path fault propagation."""
+
+    def test_server_date_header_and_time_offset_sync(self):
+        from git_remote_seafile.client import SeafileClient
+        import time
+
+        client = SeafileClient(server_url=self.stub.base_url, token="e2e-token")
+        # Perform an API call to trigger response hook
+        client.list_dir(REPO_ID, "/")
+        self.assertTrue(len(client._server_time_offsets) > 0)
+        server_now = client.get_server_time()
+        self.assertAlmostEqual(server_now, time.time(), delta=3.0)
+
+    def test_stub_listing_includes_mtime_and_size(self):
+        # Put a file in the stub
+        self.stub.files.setdefault(REPO_ID, {})["/test_repo/sample.txt"] = b"sample content"
+        listing = self.stub.list_dir(REPO_ID, "/test_repo")
+        self.assertEqual(len(listing), 1)
+        entry = listing[0]
+        self.assertEqual(entry["name"], "sample.txt")
+        self.assertEqual(entry["type"], "file")
+        self.assertIn("mtime", entry)
+        self.assertIsInstance(entry["mtime"], int)
+        self.assertIn("size", entry)
+        self.assertEqual(entry["size"], len(b"sample content"))
+
+    def test_single_ref_read_failure_surfaces_as_error(self):
+        # 1. Initialize repo and push branches main and feature
+        src = init_repo(self.work / "src_ref_fault", self.env)
+        commit_file(src, "base.txt", "base\n", "base commit", self.env)
+        run_git(["remote", "add", "origin", self.url("repo_ref_fault")], src, self.env)
+        run_git(["push", "-u", "origin", "main"], src, self.env)
+
+        run_git(["checkout", "-q", "-b", "feature"], src, self.env)
+        commit_file(src, "feat.txt", "feat\n", "feat commit", self.env)
+        run_git(["push", "-u", "origin", "feature"], src, self.env)
+
+        # 2. Inject fault on 'feature' ref only
+        self.stub.faults["file_500_on"] = "refs/heads/feature"
+
+        # 3. Running ls-remote should fail loudly rather than silently dropping feature
+        proc = run_git(["ls-remote", self.url("repo_ref_fault")], self.work, self.env, check=False)
+        self.assertNotEqual(proc.returncode, 0, "ls-remote should fail when a ref read fails")
+        combined = (proc.stdout + proc.stderr).lower()
+        self.assertTrue("500" in combined or "fatal" in combined or "error" in combined,
+                        f"Expected error in output:\n{proc.stdout}\n{proc.stderr}")
+
+
 if __name__ == "__main__":
     unittest.main()

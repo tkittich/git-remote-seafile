@@ -1,8 +1,8 @@
 # Engineering Roadmap & Backlog
 
-**Baseline:** v0.5.3 (v0.5.3 release)  
-**Scope:** Active architectural backlog and milestones following releases v0.4.0 through v0.5.3.  
-**Test Suite:** 351 tests across 76 targets (all green).
+**Baseline:** v0.5.4 (v0.5.4 release)  
+**Scope:** Active architectural backlog and milestones following releases v0.4.0 through v0.5.4.  
+**Test Suite:** 357 tests across 77 targets (all green).
 
 > [!NOTE]
 > All critical and high-severity findings from `REVIEW.gemini.md`, `REVIEW.qwen.md`, and `REVIEW.sonnet.md` (including ticket-based distributed locking, abandoned ticket cleanup, post-lock ref verification, exception propagation, GC lock fencing, pack index validation, surrogateescape paths, container PID isolation, D/F ref pruning, multi-spec pack batching, Git LFS transfer progress, safety guardrails, parallel ref enumeration, smart pack fetch filtering, and disk-staged streaming) have been completed. Minor or low-priority items remain tracked in the backlog below. See [CHANGELOG.md](CHANGELOG.md) for detailed release notes.
@@ -60,6 +60,15 @@
 * **POSIX Line Discipline on Windows (L-7):** Reconfigured `sys.stdout` for LF newlines and UTF-8 in remote helper CLI mode.
 * **Release Gate Hardening (N-20):** Integrated `ruff check .` and tag-to-version validation into `.github/workflows/release.yml`.
 * **API Documentation Accuracy (N-6):** Clarified Seafile Web API v2 (`/api2/`) endpoints across user documentation.
+
+---
+
+### Phase 4.4: v0.5.4 — Pre-v0.6.0 Hardening, Config Security & Test Harness Realism (Completed Deliverables)
+* **Configuration File Permission Warning (L-10):** Verified file permissions on POSIX for `~/.git-seafile.json` and issued warnings advising `chmod 600` if accessible by group or others.
+* **URL Parsing Traversal Defense & Host Normalization (L-8):** Rejected relative path traversal segments (`.` and `..`), normalized hostnames to lowercase, and stripped default ports and embedded credentials.
+* **CLI Argument Handling & Validation (L-11):** Enforced validation on `--min-packs` arguments with descriptive stderr warnings.
+* **Robust Server Clock Synchronization:** Extracted RFC 2822 dates using robust regex and attached UTC timezone when naive datetimes are produced by multi-header proxy joins, preventing timezone offsets.
+* **Test Harness Realism & Fault Injection (Sonnet §6):** Added realistic integer `mtime` timestamps and file `size` in `SeafileStub.list_dir`, served standard RFC 2822 `Date` HTTP response headers, and added per-path fault injection (`file_404_on` / `file_500_on`).
 
 ---
 

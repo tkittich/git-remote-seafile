@@ -235,8 +235,16 @@ class SeafileClient:
         date_hdr = resp.headers.get("Date") if hasattr(resp, "headers") else None
         if date_hdr:
             try:
+                import re
+                from datetime import timezone
                 from email.utils import parsedate_to_datetime
-                server_ts = parsedate_to_datetime(date_hdr).timestamp()
+                # Extract first standard RFC 2822 GMT date if multiple headers were combined
+                m = re.search(r"[A-Za-z]{3},\s+\d{1,2}\s+[A-Za-z]{3}\s+\d{4}\s+\d{2}:\d{2}:\d{2}\s+GMT", date_hdr)
+                raw_hdr = m.group(0) if m else date_hdr
+                dt = parsedate_to_datetime(raw_hdr)
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                server_ts = dt.timestamp()
                 offset = server_ts - time.time()
                 self._server_time_offsets.append(offset)
                 if len(self._server_time_offsets) > 7:
@@ -274,6 +282,16 @@ class SeafileClient:
         # 2. Config file (~/.git-seafile.json)
         config_path = Path.home() / ".git-seafile.json"
         if config_path.is_file():
+            if os.name != "nt":
+                try:
+                    mode = config_path.stat().st_mode
+                    if mode & 0o077:
+                        sys.stderr.write(
+                            f"Warning: {config_path} is accessible by others (mode {oct(mode & 0o777)}). "
+                            f"Permissions should be set to 0600 (chmod 600 {config_path}) to protect credentials.\n"
+                        )
+                except Exception:
+                    pass
             try:
                 cfg = json.loads(config_path.read_text(encoding="utf-8"))
                 cfg_server = cfg.get("server")

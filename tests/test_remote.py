@@ -1751,6 +1751,26 @@ class TestUrlParsing(unittest.TestCase):
         self.assertEqual(lib, "Team Docs")
         self.assertEqual(path, "/nested repo/sub")
 
+    def test_path_with_dot_dot_traversal_is_rejected(self):
+        with self.assertRaises(ValueError) as ctx:
+            self._parse("seafile://my-lib/../secret")
+        self.assertIn("cannot contain '.' or '..'", str(ctx.exception))
+
+        with self.assertRaises(ValueError) as ctx:
+            self._parse("seafile://https://seafile.example.com/my-lib/./repo")
+        self.assertIn("cannot contain '.' or '..'", str(ctx.exception))
+
+    def test_explicit_url_default_ports_stripped_and_hostname_lowercased(self):
+        server, lib, path = self._parse("seafile://https://Cloud.EXAMPLE.com:443/code/repo")
+        self.assertEqual(server, "https://cloud.example.com")
+        self.assertEqual(lib, "code")
+        self.assertEqual(path, "/repo")
+
+        server2, lib2, path2 = self._parse("seafile://http://internal.LAN:80/docs/repo")
+        self.assertEqual(server2, "http://internal.lan")
+        self.assertEqual(lib2, "docs")
+        self.assertEqual(path2, "/repo")
+
 
 class TestFetchSafety(unittest.TestCase):
     """The guardrails must run on fetch/clone, not only on push (#13).

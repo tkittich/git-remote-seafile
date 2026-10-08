@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.4] - 2026-10-09
+
+POSIX permissions warning on config file, URL parsing traversal defense and netloc normalization, CLI argument validation, robust server Date header parsing, and test harness realism.
+
+### Fixed & Hardened
+
+- **Configuration file permission warning (L-10).** On POSIX platforms, `client.py:_load_credentials` verifies file permissions for `~/.git-seafile.json` and emits a warning to `sys.stderr` if group- or world-accessible (mode & 0o077 != 0), advising `chmod 600 ~/.git-seafile.json` to protect credentials.
+- **URL parsing traversal defense & host normalization (L-8).** In `helper.py:_parse_url`, reject path traversal segments (`.` and `..`), normalize hostnames to lowercase, and strip default HTTP/HTTPS ports (80/443) and credentials to ensure sanitized request targets.
+- **CLI argument handling & validation (L-11).** In `cli.py`, validate `--min-packs` input arguments, emitting warnings to `sys.stderr` when invalid or missing values are provided before falling back to defaults.
+- **Server clock synchronization & Date header parsing.** In `client.py:_record_server_date_header`, extract single RFC 2822 dates using robust regex and attach UTC timezone when naive datetimes are produced by multi-header proxy joins, preventing timezone offsets or clock skew across client environments.
+- **Test harness realism & fault injection (Sonnet §6).** In `tests/e2e_harness.py`, enhanced `SeafileStub` to include realistic integer `mtime` timestamps and file `size` in directory listings, serve standard RFC 2822 `Date` HTTP response headers, and support per-path fault injection (`file_404_on` / `file_500_on`) to verify single-ref error propagation.
+
 ## [0.5.3] - 2026-10-09
 
 Code deduplication, SHA regex unification, test double cleanup, release gate workflow hardening, stdio LF discipline, and payload type safety.
@@ -540,7 +552,8 @@ Data-loss and silent-failure fixes, and the Python floor raised to 3.9.
   with zero-config desktop-client token discovery, distributed locking, remote
   packfile compaction, and a Git LFS custom transfer agent.
 
-[Unreleased]: https://github.com/tkittich/git-remote-seafile/compare/v0.5.3...HEAD
+[Unreleased]: https://github.com/tkittich/git-remote-seafile/compare/v0.5.4...HEAD
+[0.5.4]: https://github.com/tkittich/git-remote-seafile/compare/v0.5.3...v0.5.4
 [0.5.3]: https://github.com/tkittich/git-remote-seafile/compare/v0.5.2...v0.5.3
 [0.5.2]: https://github.com/tkittich/git-remote-seafile/compare/v0.5.1...v0.5.2
 [0.5.1]: https://github.com/tkittich/git-remote-seafile/compare/v0.5.0...v0.5.1

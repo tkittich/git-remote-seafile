@@ -10,7 +10,7 @@ import tempfile
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
-from .client import SeafileClient, SeafileAPIError
+from .client import SeafileClient, SeafileAPIError, _normalize_netloc
 from .lock import RemoteLock
 from .refs import REF_NAMESPACES, iter_refs
 from .safety import check_preflight_safety, SafetyError
@@ -86,18 +86,28 @@ class RemoteHelper:
 
         if stripped.startswith("http://") or stripped.startswith("https://"):
             parsed = urlparse(stripped)
-            server_url = f"{parsed.scheme}://{parsed.netloc}"
+            scheme = parsed.scheme
+            host = (parsed.hostname or "").lower()
+            port = parsed.port
+            if port and not ((scheme == "https" and port == 443) or (scheme == "http" and port == 80)):
+                server_url = f"{scheme}://{host}:{port}"
+            else:
+                server_url = f"{scheme}://{host}"
             path_parts = [unquote(p) for p in parsed.path.strip("/").split("/") if p]
         else:
             parts = [unquote(p) for p in stripped.strip("/").split("/") if p]
             if len(parts) >= 3 and _looks_like_host(parts[0]):
-                server_url = f"https://{parts[0]}"
+                norm_netloc = _normalize_netloc(parts[0])
+                server_url = f"https://{norm_netloc}"
                 path_parts = parts[1:]
             else:
                 path_parts = parts
 
         if not path_parts:
             raise ValueError(f"Invalid Seafile URL format: {url}")
+
+        if any(p in (".", "..") for p in path_parts):
+            raise ValueError(f"Invalid Seafile URL format: path segments cannot contain '.' or '..': {url}")
 
         # A lone hostname-shaped segment is a server with no library named.
         # Saying that here is far clearer than treating "seafile.example.com" as

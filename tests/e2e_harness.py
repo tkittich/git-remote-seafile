@@ -29,6 +29,7 @@ import re
 import subprocess
 import sys
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -149,6 +150,10 @@ class _Handler(BaseHTTPRequestHandler):
             if f.get("file"):
                 return self._send(f["file"], b"injected failure")
             rid, p = self._rid(), _norm(self._query_p())
+            if f.get("file_404_on") and f["file_404_on"] in p:
+                return self._send(404, b"null")
+            if f.get("file_500_on") and f["file_500_on"] in p:
+                return self._send(500, b"injected failure")
             if p not in self.stub.files.get(rid, {}):
                 return self._send(404, b"null")
             link = f"http://127.0.0.1:{self.stub.port}/raw/{rid}?p={p}"
@@ -166,6 +171,10 @@ class _Handler(BaseHTTPRequestHandler):
             self.stub.raw_hits.append(p)
             if f.get("raw"):
                 return self._send(f["raw"], b"injected failure")
+            if f.get("file_404_on") and f["file_404_on"] in p:
+                return self._send(404, b"injected failure")
+            if f.get("file_500_on") and f["file_500_on"] in p:
+                return self._send(500, b"injected failure")
             # Fail only the pack download, so the ref listing still succeeds.
             # This isolates the fetch stage: git has been told which objects to
             # expect, and then the transfer of those objects fails.
@@ -255,6 +264,7 @@ class SeafileStub:
     def list_dir(self, repo_id: str, path: str) -> list[dict]:
         prefix = _norm(path).rstrip("/") + "/"
         out, seen = [], set()
+        now_ts = int(time.time())
         for key in self.files.get(repo_id, {}):
             if not key.startswith(prefix):
                 continue
@@ -263,9 +273,10 @@ class SeafileStub:
                 d = rest.split("/")[0]
                 if d not in seen:
                     seen.add(d)
-                    out.append({"type": "dir", "name": d})
+                    out.append({"type": "dir", "name": d, "mtime": now_ts})
             else:
-                out.append({"type": "file", "name": rest})
+                file_bytes = self.files.get(repo_id, {}).get(key, b"")
+                out.append({"type": "file", "name": rest, "mtime": now_ts, "size": len(file_bytes)})
         return out
 
     def packs(self, repo_path: str) -> list[str]:

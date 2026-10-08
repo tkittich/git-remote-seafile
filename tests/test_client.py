@@ -35,6 +35,40 @@ class TestClientCredentials(unittest.TestCase):
                 self.assertEqual(client.server_url, "https://json.example.com")
                 self.assertEqual(client.token, "json-tok")
 
+    def test_load_credentials_posix_permission_warning(self):
+        with tempfile.TemporaryDirectory() as td:
+            fake_home = Path(td)
+            cfg_file = fake_home / ".git-seafile.json"
+            cfg_file.write_text(json.dumps({"server": "https://json.example.com", "token": "json-tok"}), encoding="utf-8")
+
+            # Mock posix with 0o644 mode (group/other readable)
+            mock_stat = MagicMock()
+            mock_stat.st_mode = 0o100644
+
+            with patch.dict("os.environ", {}, clear=True), \
+                 patch("pathlib.Path.home", return_value=fake_home), \
+                 patch("os.name", "posix"), \
+                 patch.object(Path, "stat", return_value=mock_stat), \
+                 patch("sys.stderr", new_callable=io.StringIO) as mock_err:
+                client = SeafileClient()
+                self.assertEqual(client.token, "json-tok")
+                self.assertIn("Warning:", mock_err.getvalue())
+                self.assertIn("accessible by others", mock_err.getvalue())
+                self.assertIn("chmod 600", mock_err.getvalue())
+
+            # Mock posix with safe 0o600 mode
+            mock_stat_safe = MagicMock()
+            mock_stat_safe.st_mode = 0o100600
+
+            with patch.dict("os.environ", {}, clear=True), \
+                 patch("pathlib.Path.home", return_value=fake_home), \
+                 patch("os.name", "posix"), \
+                 patch.object(Path, "stat", return_value=mock_stat_safe), \
+                 patch("sys.stderr", new_callable=io.StringIO) as mock_err:
+                client = SeafileClient()
+                self.assertEqual(client.token, "json-tok")
+                self.assertEqual(mock_err.getvalue(), "")
+
     def test_load_credentials_from_accounts_db(self):
         with tempfile.TemporaryDirectory() as td:
             fake_home = Path(td)

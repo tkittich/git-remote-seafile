@@ -256,6 +256,14 @@ class TestCLISetHeadAndLFSTransfer(unittest.TestCase):
                     self.assertIn("--min-packs must be a positive integer", mock_err.getvalue())
                     mock_compact.assert_called_with(mock_helper.client, "repo1", "/git-repo", min_packs=2)
 
+            # Missing integer value
+            with patch.object(sys, "argv", ["git-remote-seafile", "gc", "seafile://code/repo", "--min-packs"]):
+                with patch("sys.stderr", new_callable=io.StringIO) as mock_err:
+                    code = main()
+                    self.assertEqual(code, 0)
+                    self.assertIn("--min-packs requires an integer value", mock_err.getvalue())
+                    mock_compact.assert_called_with(mock_helper.client, "repo1", "/git-repo", min_packs=2)
+
     @patch("git_remote_seafile.cli.RemoteHelper")
     @patch("git_remote_seafile.lfs.LFSTransferAgent")
     def test_cli_lfs_transfer(self, mock_agent_cls, mock_helper_cls):
