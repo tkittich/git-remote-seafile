@@ -1,8 +1,8 @@
 # Engineering Roadmap & Backlog
 
-**Baseline:** v0.6.0 (v0.6.0 release)  
-**Scope:** Active architectural backlog and milestones following releases v0.4.0 through v0.6.0.  
-**Test Suite:** 376 tests across 80 targets (all green).
+**Baseline:** v0.6.2 (v0.6.2 release)  
+**Scope:** Active architectural backlog and milestones following releases v0.4.0 through v0.6.2.  
+**Test Suite:** 390 tests across 80 targets (all green).
 
 > [!NOTE]
 > All critical and high-severity findings from `archive/REVIEW.*.md` (including ticket-based distributed locking, abandoned ticket cleanup, post-lock ref verification, exception propagation, GC lock fencing, pack index validation, surrogateescape paths, container PID isolation, D/F ref pruning, multi-spec pack batching, Git LFS transfer progress, safety guardrails, parallel ref enumeration, smart pack fetch filtering, disk-staged streaming, and modular helper decoupling) have been completed. Minor or low-priority items remain tracked in the backlog below. See [CHANGELOG.md](CHANGELOG.md) for detailed release notes.

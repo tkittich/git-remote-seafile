@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.2] - 2026-10-09
+
+URL scheme case-insensitivity at the parser level, ref-name `@` conformance correction, real production wiring of `RemoteConfig`, installer-compat hardening without swallowed errors, and loud failure for unknown helper commands.
+
+### Fixed & Hardened
+
+- **URL Scheme Case-Insensitivity Completion (N-15 carryover).** In `url.py:parse_seafile_url`, match both the `seafile://` prefix and the embedded explicit http(s) scheme case-insensitively per RFC 3986; previously only the argument inspection in `cli.py` was lowercased, so user-typed `SEAFILE://...` or mixed-case URLs were silently mis-parsed (e.g. an uppercase host-looking segment became the server URL). The `desktop-url` subcommand now also classifies mixed-case server URLs as http vs https correctly.
+- **Ref Name Conformance Correction (N-12 refinement).** In `refs.py:is_valid_ref_name`, permit `@` as a path component — including `refs/heads/@`, which real git accepts per measured `git check-ref-format` output — and reject only the bare refname `@` (the HEAD alias) and `@{` sequences.
+- **RemoteConfig Production Wiring Completion (N-6 carryover).** The optional `config=` parameters added in v0.6.1 were never supplied by any production caller; `cmd_push` now loads `RemoteConfig.load()` once per push and passes it to both the push lock (`RemoteLock`) and auto-compaction (`compact_repository`), so these values resolve through one documented dataclass for the first time.
+- **Pack Installer Compat Without Swallowed Errors (N-7 hardening).** In `packs.py:fetch_and_install_pack`, custom installer callbacks are probed with `inspect.signature` instead of a retry-on-`TypeError` fallback; the old pattern could mask a genuine failure occurring after the staged files had already been moved into place.
+- **Loud Failure for Unknown Helper Commands.** The helper command loop now replies `error unsupported` on stdout and writes a diagnostic to stderr for unrecognized top-level commands, instead of an empty line that git would read as a successful no-op.
+
+### Documentation
+
+- USER_GUIDE: documented the scoping behavior of `SEAFILE_TOKEN` when `SEAFILE_SERVER` is unset (the token is adopted for any server the remote URL names); the idle lock-status example now matches actual code output (`Repository at <url> is UNLOCKED.`).
+
 ## [0.6.1] - 2026-10-09
 
 Wire-level Git remote helper `object-format` negotiation, fail-closed remote garbage collection, Git LFS progress delta calculation, Windows CLI stdio discipline, legal `@` ref names, and architectural wiring.
