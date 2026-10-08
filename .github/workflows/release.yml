@@ -1,8 +1,18 @@
 name: Release
 
+# Pushing a v* tag is the single entry point.  This workflow used to *also*
+# trigger on `release: types: [published]`, which made every release run twice:
+# the tag-triggered run below creates a Release with `gh release create`, and
+# publishing that Release fired the second trigger.  The duplicate was harmless
+# only by accident -- the release script checks `gh release view` first, and the
+# PyPI step passes `skip-existing`.
+#
+# It could not be kept as a second entry point either.  On the `release:` path
+# the release already exists by definition, so create_github_release.sh always
+# short-circuited and the wheel and sdist were never attached -- the one job
+# this workflow exists to do.  To recover from a failed run, re-run it from the
+# Actions tab.
 on:
-  release:
-    types: [published]
   push:
     tags:
       - 'v*'

@@ -34,6 +34,7 @@ import unittest
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 NOTES_DIR = REPO_ROOT / ".github" / "release-notes"
 SCRIPT = REPO_ROOT / ".github" / "create_github_release.sh"
+WORKFLOW = REPO_ROOT / ".github" / "workflows" / "release.yml"
 
 # The artifacts both hand-made releases attach.
 ASSETS = (
@@ -118,6 +119,101 @@ def _find_bash() -> str | None:
     return None
 
 
+# -- a narrow reader for a workflow's `on:` block -------------------------
+#
+# Which events start a workflow is the one thing about release.yml that a
+# regression can quietly ruin, and PyYAML is not a dependency -- pulling it in
+# so a test can read one five-line block would make the guard heavier than the
+# thing it guards.  These helpers understand only what that block uses:
+# top-level keys, nested keys, block sequences, comments and quoted scalars.
+# They are exercised against synthetic input below so that a bug in the reader
+# cannot pass for a bug in the workflow.
+
+
+def _strip_comment(line: str) -> str:
+    """Remove a trailing YAML comment, leaving quoted text alone."""
+    kept = []
+    quote = ""
+    for index, char in enumerate(line):
+        if quote:
+            if char == quote:
+                quote = ""
+        elif char in "\"'":
+            quote = char
+        elif char == "#" and (index == 0 or line[index - 1] in " \t"):
+            break
+        kept.append(char)
+    return "".join(kept)
+
+
+def _on_block(text: str) -> list[str]:
+    """The lines of the workflow's top-level ``on:`` block, comments removed.
+
+    Stops at the next line that starts in column zero, which is the next
+    top-level key.
+    """
+    block: list[str] = []
+    inside = False
+    for raw in text.splitlines():
+        line = _strip_comment(raw)
+        if not inside:
+            if line.rstrip() == "on:":
+                inside = True
+            continue
+        if line.strip() and not line[0].isspace():
+            break
+        block.append(line)
+    return block
+
+
+def _keys(lines: list[str]) -> list[str]:
+    """The mapping keys at the shallowest indentation in ``lines``."""
+    indents = [len(ln) - len(ln.lstrip()) for ln in lines if ln.strip()]
+    if not indents:
+        return []
+    base = min(indents)
+    keys = []
+    for line in lines:
+        if not line.strip() or ":" not in line:
+            continue
+        if len(line) - len(line.lstrip()) != base:
+            continue
+        keys.append(line.strip().split(":", 1)[0].strip())
+    return keys
+
+
+def _child_lines(lines: list[str], key: str) -> list[str]:
+    """The lines nested more deeply than the ``key:`` line itself."""
+    out: list[str] = []
+    inside = False
+    base = 0
+    for line in lines:
+        if not line.strip():
+            continue
+        indent = len(line) - len(line.lstrip())
+        if not inside:
+            if ":" in line and line.strip().split(":", 1)[0].strip() == key:
+                inside = True
+                base = indent
+            continue
+        if indent <= base:
+            break
+        out.append(line)
+    return out
+
+
+def _values(lines: list[str]) -> list[str]:
+    """Block-sequence items, e.g. ``- 'v*'`` -> ``v*``."""
+    out = []
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("- "):
+            out.append(stripped[2:].strip().strip("'\""))
+        elif stripped == "-":
+            out.append("")
+    return out
+
+
 class TestReleaseNotesFormat(unittest.TestCase):
     """The notes file becomes the published release body, so it is a contract."""
 
@@ -197,6 +293,134 @@ class TestReleaseNotesFormat(unittest.TestCase):
                     match.group(1), existing,
                     f"{path.name} compares against {match.group(1)}, which is not a tag",
                 )
+
+
+_ON_BLOCK_BEFORE = """\
+name: Release
+
+on:
+  release:
+    types: [published]
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+"""
+
+_ON_BLOCK_AFTER = """\
+name: Release
+
+# A comment that mentions release: and on: and push: tags.
+on:
+  push:
+    tags:
+      - 'v*'   # every version tag
+
+permissions:
+  contents: read
+"""
+
+
+class TestWorkflowTriggerReader(unittest.TestCase):
+    """Check the reader itself, so a bug in it cannot pass for a bug in the file.
+
+    The reader is only as trustworthy as its behaviour on the two shapes that
+    matter -- the one that caused the duplicate release run, and the one that
+    replaced it -- plus the comment and quoting cases that a naive
+    line-by-line scan gets wrong.
+    """
+
+    def test_it_reads_both_triggers_out_of_the_shape_that_was_wrong(self):
+        block = _on_block(_ON_BLOCK_BEFORE)
+        self.assertEqual(_keys(block), ["release", "push"])
+
+    def test_it_reads_only_the_tag_push_out_of_the_shape_that_replaced_it(self):
+        block = _on_block(_ON_BLOCK_AFTER)
+        self.assertEqual(_keys(block), ["push"])
+
+    def test_it_stops_at_the_next_top_level_key(self):
+        for text in (_ON_BLOCK_BEFORE, _ON_BLOCK_AFTER):
+            with self.subTest(text=text.splitlines()[0]):
+                block = _on_block(text)
+                self.assertNotIn("permissions", _keys(block))
+                self.assertFalse(
+                    [ln for ln in block if "contents" in ln],
+                    "the reader ran past the end of the on: block",
+                )
+
+    def test_it_does_not_mistake_a_comment_for_a_trigger(self):
+        # The comment above `on:` names both `release:` and `push: tags`.  A
+        # scan that ignored comments would call this file a double-trigger.
+        block = _on_block(_ON_BLOCK_AFTER)
+        self.assertEqual(_keys(block), ["push"])
+
+    def test_it_does_not_mistake_a_comment_for_a_tag_pattern(self):
+        push = _child_lines(_on_block(_ON_BLOCK_AFTER), "push")
+        self.assertEqual(_values(_child_lines(push, "tags")), ["v*"])
+
+    def test_it_keeps_a_hash_inside_quotes(self):
+        self.assertEqual(_strip_comment("  - 'v#1'"), "  - 'v#1'")
+        self.assertEqual(_strip_comment("  - 'v1'  # a note"), "  - 'v1'  ")
+        self.assertEqual(_strip_comment("# whole line"), "")
+
+    def test_it_reaches_a_nested_sequence(self):
+        push = _child_lines(_on_block(_ON_BLOCK_BEFORE), "push")
+        self.assertEqual(_keys(push), ["tags"])
+        self.assertEqual(_values(_child_lines(push, "tags")), ["v*"])
+
+
+class TestReleaseWorkflowTriggers(unittest.TestCase):
+    """A tag push must be the *only* event that starts a release run.
+
+    The workflow used to trigger on both ``push: tags: ['v*']`` and
+    ``release: types: [published]``, and those two overlap.  The tag-triggered
+    run calls create_github_release.sh, which creates a Release with
+    ``gh release create`` -- and *publishing* that Release fired the second
+    trigger.  So every release built the wheel and sdist, ran the PyPI publish
+    job, and re-ran the release script a second time.  The duplicate PyPI
+    upload was harmless only because of ``skip-existing: true``, and the second
+    release job was a no-op only because the script checks ``gh release view``
+    first; neither accident is a reason to run the pipeline twice.
+
+    The overlap cannot simply be reordered away: on the ``release: published``
+    path the release already exists by definition, so the script's idempotency
+    check always short-circuits and the wheel and sdist are *never* attached.
+    That path could not do the one job the workflow exists for, which is why it
+    was removed rather than kept as a recovery route.  Re-running a failed run
+    from the Actions tab is the recovery route.
+    """
+
+    def setUp(self):
+        self.assertTrue(WORKFLOW.is_file(), f"missing workflow: {WORKFLOW}")
+        self.block = _on_block(WORKFLOW.read_text(encoding="utf-8"))
+        self.assertTrue(
+            self.block, "release.yml has no top-level `on:` block, or it is empty"
+        )
+
+    def test_a_version_tag_push_starts_a_release(self):
+        self.assertIn(
+            "push", _keys(self.block),
+            "release.yml no longer triggers on a push; pushing a v* tag is the "
+            "only thing that creates a release",
+        )
+        push = _child_lines(self.block, "push")
+        self.assertIn("tags", _keys(push), "the push trigger is not restricted to tags")
+        self.assertIn(
+            "v*", _values(_child_lines(push, "tags")),
+            "the push trigger no longer matches version tags",
+        )
+
+    def test_publishing_a_release_does_not_start_a_second_run(self):
+        self.assertNotIn(
+            "release", _keys(self.block),
+            "release.yml triggers on `release:` again.  Its own tag-triggered "
+            "run creates a Release, so that trigger makes every release run "
+            "twice -- and on that path the release already exists, so "
+            "create_github_release.sh short-circuits and the wheel and sdist "
+            "are never attached.",
+        )
 
 
 class TestCreateGithubReleaseScript(unittest.TestCase):
