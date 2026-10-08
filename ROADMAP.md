@@ -1,11 +1,11 @@
 # Engineering Roadmap & Backlog
 
-**Baseline:** v0.5.4 (v0.5.4 release)  
-**Scope:** Active architectural backlog and milestones following releases v0.4.0 through v0.5.4.  
-**Test Suite:** 359 tests across 77 targets (all green).
+**Baseline:** v0.6.0 (v0.6.0 release)  
+**Scope:** Active architectural backlog and milestones following releases v0.4.0 through v0.6.0.  
+**Test Suite:** 376 tests across 80 targets (all green).
 
 > [!NOTE]
-> All critical and high-severity findings from `REVIEW.gemini.md`, `REVIEW.qwen.md`, and `REVIEW.sonnet.md` (including ticket-based distributed locking, abandoned ticket cleanup, post-lock ref verification, exception propagation, GC lock fencing, pack index validation, surrogateescape paths, container PID isolation, D/F ref pruning, multi-spec pack batching, Git LFS transfer progress, safety guardrails, parallel ref enumeration, smart pack fetch filtering, and disk-staged streaming) have been completed. Minor or low-priority items remain tracked in the backlog below. See [CHANGELOG.md](CHANGELOG.md) for detailed release notes.
+> All critical and high-severity findings from `archive/REVIEW.*.md` (including ticket-based distributed locking, abandoned ticket cleanup, post-lock ref verification, exception propagation, GC lock fencing, pack index validation, surrogateescape paths, container PID isolation, D/F ref pruning, multi-spec pack batching, Git LFS transfer progress, safety guardrails, parallel ref enumeration, smart pack fetch filtering, disk-staged streaming, and modular helper decoupling) have been completed. Minor or low-priority items remain tracked in the backlog below. See [CHANGELOG.md](CHANGELOG.md) for detailed release notes.
 
 ---
 
@@ -13,7 +13,7 @@
 
 | ID / Source | Component | Description & Impact | Effort | Risk | Planned Target |
 |---|---|---|:---:|:---:|:---:|
-| **Sonnet §6 / Qwen §6**| `helper.py` | Modular Helper Architecture: Split `helper.py` into `url.py`, `packs.py`, and `config.py` to keep the stdio protocol loop lean and modular. | M | Medium | v0.6.0 |
+| **Lock Cleanup** | `lock.py` | Complete Removal of Deprecated Single-File Lock: Remove legacy `.git-lock.json` mirror writes. | S | Low | v1.0.0 |
 | **Fault Injection** | `tests/` | Comprehensive End-to-End Fault Injection: Clustered Seafile tests and high-latency simulation. | L | Low | v1.0.0 |
 | **Credential Store**| `client.py` | Enterprise Credential Store: Windows Credential Manager and macOS Keychain integration. | M | Medium | v1.0.0 |
 
@@ -72,9 +72,21 @@
 
 ---
 
+### Phase 4.5: v0.6.0 — Architectural Decoupling & Legacy Cleanup (Completed Deliverables)
+* **Modular Helper Architecture (Sonnet §6 / Qwen §6):** Decomposed monolithic helper logic into focused single-responsibility modules:
+  - `url.py`: URL parsing, normalization, and validation (`parse_seafile_url`, `SeafileURL`).
+  - `config.py`: Git configuration reading and typed configuration dataclass (`RemoteConfig`).
+  - `packs.py`: Packfile discovery, streaming downloads, integrity verification, and atomic installation (`fetch_and_install_pack`, `check_remote_has_packs`, `is_valid_pack_name`).
+  - `helper.py`: Lean remote helper protocol implementation.
+* **Legacy Single-File Lock Mirror Deprecation:** Marked v0.1–v0.3 single-file lock mirror (`.git-lock.json`) as deprecated (`.. deprecated:: 0.6.0`), preparing for full removal in v1.0.0. All modern clients coordinate exclusively via the distributed ticket queue in `.git-lock.d/`.
+* **Workspace Cleanliness & Review Archival:** Moved all root `REVIEW*.md` files into the versioned `archive/` directory.
+
+---
+
 ### Phase 5.0: v1.0.0 — Production Stability & Federation (Future)
-* **Modular Helper Architecture:** Split `helper.py` into `url.py`, `packs.py`, and `config.py`.
+* **Legacy Single-File Lock Removal:** Remove deprecated `.git-lock.json` mirror uploads and deletions.
 * **Comprehensive End-to-End Fault Injection:** Clustered Seafile tests and high-latency simulation.
 * **Enterprise Credential Store:** Windows Credential Manager / macOS Keychain integration.
+
 
 

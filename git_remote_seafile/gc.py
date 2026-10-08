@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 import subprocess
 import sys
 import tempfile
@@ -12,9 +11,10 @@ from typing import Any
 from .client import SeafileClient
 from .git_util import clean_git_env
 from .lock import RemoteLock
+from .packs import PACK_NAME_RE, is_valid_pack_name
 from .refs import REF_NAMESPACES, iter_refs
 
-_PACK_NAME_RE = re.compile(r"^pack-[0-9a-zA-Z._-]+\.pack$")
+_PACK_NAME_RE = PACK_NAME_RE
 
 
 def describe_size_delta(saved_kb: int) -> str:
@@ -90,7 +90,7 @@ def compact_repository(
             # 3. Download all packfiles and indices
             total_old_bytes = 0
             for pack_name in old_packs:
-                if not _PACK_NAME_RE.match(pack_name) or ".." in pack_name or "/" in pack_name or "\\" in pack_name:
+                if not is_valid_pack_name(pack_name):
                     sys.stderr.write(f"Warning: ignoring invalid packfile name {pack_name} during compaction.\n")
                     continue
                 maybe_renew()

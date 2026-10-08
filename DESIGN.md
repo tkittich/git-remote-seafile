@@ -63,7 +63,7 @@ Within the designated Seafile library (created via the Seafile Web UI, such as a
 ```text
 /<repo-path>/
 ├── HEAD                        <- Symbolic ref ("ref: refs/heads/main\n")
-├── .git-lock.json              <- Legacy cooperative lease lock mutex (JSON)
+├── .git-lock.json              <- Legacy cooperative lease lock mutex (deprecated v0.6.0)
 ├── .git-lock.d/                <- Distributed ticket directory (v0.4.3)
 │   └── <nonce>.json            <- Deterministic client lock ticket
 ├── refs/
@@ -150,7 +150,7 @@ sequenceDiagram
 - In multi-developer teams, concurrent pushes could race during packfile uploads.
 - `git-remote-seafile` implements a cooperative ticket-based distributed lock protocol stored at `/.git-lock.d/<nonce>.json` on the remote repository.
 - Each client deposits an individual ticket containing owner hash, machine ID, holding PID, nonce, and expiration. Tickets are evaluated deterministically using Seafile server `mtime` and unique nonces (retrying on transient listing errors and failing closed). Because Seafile does not expose atomic server-side mutex primitives, the lock protocol is cooperative and advisory; write safety is reinforced with post-lock ref re-reads, optimistic compare-and-swap (CAS) verification before writing refs, and lease ownership fencing prior to GC deletions.
-- Acquired locks are automatically mirrored to legacy `/.git-lock.json` for full backward compatibility with older client versions.
+- Acquired locks are automatically mirrored to legacy `/.git-lock.json` for backward compatibility with older v0.1–v0.3 client versions (marked deprecated in v0.6.0, scheduled for removal in v1.0.0). Modern clients exclusively coordinate via the distributed ticket queue in `.git-lock.d/`.
 - **Dead Local PID Fast-Reclaim**: When inspecting an unexpired lock held on the same machine (verifying both hostname and local machine hardware/container identifier), liveness checks (`OpenProcess` on Windows, `os.kill` on POSIX) immediately reclaim the lock if the holding process has terminated or crashed.
 - **In-Transfer Progress Renewal**: Multi-gigabyte packfile transfers and remote garbage collection continuously refresh their lock lease every 20 seconds during active socket writes and long operations without background daemon threads.
 - **CLI Management**: Operators can inspect active lock status via `git-remote-seafile lock-status <url>` and release or break locks via `git-remote-seafile unlock <url> [--force]`. Status inspection is strictly read-only and never reaps or mutates tickets.
@@ -194,6 +194,13 @@ To prevent data loss and filesystem thrashing, `git-remote-seafile` enforces pre
 - **Connection Pool Scaling (N-17)**: Expands HTTP adapter connection pool capacity for thread-safe concurrent ref requests.
 - **Structured Error Propagation (N-18)**: Replaces fatal system exits with `SeafileClientNotFoundError`.
 - **Streaming Fetch Logging & Bounded Fallback (N-7)**: Surfaces streaming fetch errors to stderr and caps in-memory fallback to 16MB.
+
+### 7.8 Modular Helper Architecture (v0.6.0)
+- **Separation of Concerns**: Decomposed monolithic helper logic into single-responsibility modules:
+  - **`url.py`**: Seafile URL parsing, scheme extraction, port normalization, and path validation (`parse_seafile_url`, `SeafileURL`).
+  - **`config.py`**: Git configuration resolution with typed structured defaults (`RemoteConfig`).
+  - **`packs.py`**: Remote packfile discovery, streaming downloads, integrity verification, and atomic installation (`fetch_and_install_pack`, `check_remote_has_packs`, `is_valid_pack_name`).
+  - **`helper.py`**: Lean protocol handler focused strictly on Git remote helper commands (`capabilities`, `list`, `push`, `fetch`).
 
 ---
 

@@ -8,12 +8,19 @@ import shutil
 import sys
 import tempfile
 from pathlib import Path
-from urllib.parse import unquote, urlparse
 
-from .client import SeafileClient, SeafileAPIError, _normalize_netloc
+from .client import SeafileClient, SeafileAPIError
+from .config import get_git_config_bool, get_git_config_int
 from .lock import RemoteLock
+from .packs import (
+    PACK_NAME_RE,
+    check_remote_has_packs,
+    fetch_and_install_pack,
+    is_valid_pack_name,
+)
 from .refs import REF_NAMESPACES, iter_refs
 from .safety import check_preflight_safety, SafetyError
+from .url import parse_seafile_url
 from .git_util import (
     HEX_SHA_RE,
     _HEX_SHA_RE,
@@ -25,25 +32,10 @@ from .git_util import (
     GitError,
     rev_parse,
     get_git_dir,
-    get_git_config_bool,
-    get_git_config_int,
 )
 
-_PACK_NAME_RE = re.compile(r"^pack-[0-9a-zA-Z._-]+\.pack$")
+_PACK_NAME_RE = PACK_NAME_RE
 _REF_NAME_INVALID_RE = re.compile(r"[\s\x00-\x1f\x7f~^:?*\[\\@]|\.\.|//|\.lock$")
-
-
-def _looks_like_host(segment: str) -> bool:
-    """Heuristic: does this URL segment name a server rather than a library?
-
-    A port ("host:8443") or a dot ("seafile.example.com") is a strong hint.
-    This is only consulted for the bare form, and only when a library and a
-    path follow, so a library whose name merely contains a dot is never caught
-    by it.
-    """
-    if ":" in segment:
-        return True
-    return "." in segment.split("@")[-1]
 
 
 class RemoteHelper:
@@ -58,71 +50,17 @@ class RemoteHelper:
     def __init__(self, remote_name: str, url: str, client: SeafileClient | None = None):
         self.remote_name = remote_name
         self.raw_url = url
-        self.server_url, self.library_name, self.repo_path = self._parse_url(url)
+        parsed_url = parse_seafile_url(url)
+        self.server_url = parsed_url.server_url
+        self.library_name = parsed_url.library_name
+        self.repo_path = parsed_url.repo_path
         self.client = client if client is not None else SeafileClient(server_url=self.server_url)
         self.repo_id = self.client.get_repo_id(self.library_name)
         self._refs_cache: dict[str, str] = {}  # refname -> sha1
 
     def _parse_url(self, url: str) -> tuple[str | None, str, str]:
-        """Parse a seafile:// URL into (server_url, library_name, repo_path).
-
-        Accepted forms:
-
-          seafile://<library>/<path>                  server from credentials
-          seafile://<library>/<sub>/<path>            ditto, nested path
-          seafile://<host>/<library>/<path>           server from the first segment
-          seafile://https://<host>/<library>/<path>   server stated explicitly
-
-        The third form is the only ambiguous one, so it is kept deliberately
-        narrow: the first segment is read as a host only when a library *and* a
-        path follow it, and it actually looks like a hostname.  A two-segment
-        URL is therefore always <library>/<path> -- previously a library whose
-        name merely contained a dot ("my.library/repo") was read as a host, and
-        the library silently became "repo".  When a name really is ambiguous,
-        the explicit-scheme form above settles it.
-        """
-        stripped = url.removeprefix("seafile://")
-        server_url = None
-
-        if stripped.startswith("http://") or stripped.startswith("https://"):
-            parsed = urlparse(stripped)
-            scheme = parsed.scheme
-            host = (parsed.hostname or "").lower()
-            port = parsed.port
-            if port and not ((scheme == "https" and port == 443) or (scheme == "http" and port == 80)):
-                server_url = f"{scheme}://{host}:{port}"
-            else:
-                server_url = f"{scheme}://{host}"
-            path_parts = [unquote(p) for p in parsed.path.strip("/").split("/") if p]
-        else:
-            parts = [unquote(p) for p in stripped.strip("/").split("/") if p]
-            if len(parts) >= 3 and _looks_like_host(parts[0]):
-                norm_netloc = _normalize_netloc(parts[0])
-                server_url = f"https://{norm_netloc}"
-                path_parts = parts[1:]
-            else:
-                path_parts = parts
-
-        if not path_parts:
-            raise ValueError(f"Invalid Seafile URL format: {url}")
-
-        if any(p in (".", "..") for p in path_parts):
-            raise ValueError(f"Invalid Seafile URL format: path segments cannot contain '.' or '..': {url}")
-
-        # A lone hostname-shaped segment is a server with no library named.
-        # Saying that here is far clearer than treating "seafile.example.com" as
-        # a library and reporting "library not found" much later, after a
-        # round-trip to the server.
-        if server_url is None and len(path_parts) == 1 and _looks_like_host(path_parts[0]):
-            raise ValueError(
-                f"'{url}' names a server but no library. Write "
-                f"seafile://{path_parts[0]}/<library>/<path>, or "
-                f"seafile://https://{path_parts[0]}/<library>/<path> to be explicit."
-            )
-
-        library_name = path_parts[0]
-        repo_path = "/" + "/".join(path_parts[1:]) if len(path_parts) > 1 else "/git-repo"
-        return server_url, library_name, repo_path
+        """Parse a seafile:// URL into (server_url, library_name, repo_path)."""
+        return parse_seafile_url(url).to_tuple()
 
     def _full_path(self, rel_path: str) -> str:
         """Combine repo_path with relative subpath."""
@@ -140,7 +78,8 @@ class RemoteHelper:
                 if isinstance(entries, list) and len(entries) == 0:
                     self.client.delete_entry(self.repo_id, full_parent)
                     clean_parent = ("/" + full_parent.strip("/")).rstrip("/")
-                    self.client._known_dirs.discard((self.repo_id, clean_parent))
+                    if hasattr(self.client, "_known_dirs") and isinstance(self.client._known_dirs, set):
+                        self.client._known_dirs.discard((self.repo_id, clean_parent))
                     parent = os.path.dirname(parent).replace("\\", "/")
                 else:
                     break
@@ -148,18 +87,8 @@ class RemoteHelper:
                 break
 
     def _repository_has_objects(self) -> bool:
-        """True if the remote already holds at least one packfile.
-
-        Used to tell a genuinely empty repository apart from one whose ref
-        listing failed.  Returns False when the question cannot be answered, so
-        that a brand-new repository -- whose objects/pack does not exist yet --
-        is never mistaken for a broken one.
-        """
-        try:
-            entries = self.client.list_dir(self.repo_id, self._full_path("objects/pack"))
-        except Exception:
-            return False
-        return any(e.get("name", "").endswith(".pack") for e in entries)
+        """True if the remote already holds at least one packfile."""
+        return check_remote_has_packs(self.client, self.repo_id, self._full_path("objects/pack"))
 
     def cmd_capabilities(self) -> None:
         """Report supported capabilities to Git."""
@@ -563,89 +492,25 @@ class RemoteHelper:
             pack_files = [name for name in entries_by_name if name.endswith(".pack")]
 
             for pack_name in pack_files:
-                if not _PACK_NAME_RE.match(pack_name) or ".." in pack_name or "/" in pack_name or "\\" in pack_name:
+                if not is_valid_pack_name(pack_name):
                     sys.stderr.write(f"Warning: ignoring invalid remote packfile name: {pack_name}\n")
                     continue
                 if pack_name in local_packs:
                     continue  # already downloaded
-                
+
                 idx_name = pack_name.removesuffix(".pack") + ".idx"
                 expected_size = entries_by_name[pack_name].get("size")
-                sys.stderr.write(f"Downloading {pack_name} from Seafile...\n")
-                sys.stderr.flush()
-
-                # Stream to temporary staging file to avoid full in-memory pack buffering
-                staging_dir = Path(tempfile.mkdtemp(prefix="grs-fetch-", dir=str(git_dir)))
-                try:
-                    staged_pack = staging_dir / pack_name
-                    staged_idx = staging_dir / idx_name
-
-                    downloaded = False
-                    if hasattr(self.client, "download_file_to"):
-                        try:
-                            downloaded = bool(self.client.download_file_to(
-                                self.repo_id, f"{remote_pack_dir}/{pack_name}", staged_pack
-                            )) and staged_pack.is_file()
-                        except Exception as exc:
-                            sys.stderr.write(f"Warning: streaming download of {pack_name} failed: {exc}\n")
-                            downloaded = False
-
-                    if not downloaded:
-                        if expected_size is not None and expected_size > 16 * 1024 * 1024:
-                            raise SeafileAPIError(
-                                f"Packfile {pack_name} streaming download failed and size ({expected_size} bytes) "
-                                "exceeds in-memory buffer limit (16MB)."
-                            )
-                        pack_bytes = self.client.get_file_bytes(self.repo_id, f"{remote_pack_dir}/{pack_name}")
-                        if pack_bytes:
-                            staged_pack.write_bytes(pack_bytes)
-                            downloaded = True
-
-                    if not downloaded or not staged_pack.is_file() or staged_pack.stat().st_size == 0:
-                        raise SeafileAPIError(
-                            f"Packfile {pack_name} is listed at {remote_pack_dir} but could not be "
-                            "downloaded -- the local repository would be missing objects. Retry the "
-                            "fetch, or run 'git-remote-seafile test <url>' to diagnose."
-                        )
-
-                    # Integrity check against listing size if available (M-4)
-                    if expected_size is not None and staged_pack.stat().st_size != expected_size:
-                        raise SeafileAPIError(
-                            f"Packfile {pack_name} download was truncated: expected {expected_size} bytes, "
-                            f"got {staged_pack.stat().st_size} bytes."
-                        )
-
-                    # Download idx
-                    idx_name = pack_name.removesuffix(".pack") + ".idx"
-                    expected_idx_size = entries_by_name.get(idx_name, {}).get("size")
-                    idx_downloaded = False
-                    if hasattr(self.client, "download_file_to"):
-                        try:
-                            idx_downloaded = bool(self.client.download_file_to(
-                                self.repo_id, f"{remote_pack_dir}/{idx_name}", staged_idx
-                            )) and staged_idx.is_file()
-                        except Exception as exc:
-                            sys.stderr.write(f"Warning: streaming download of {idx_name} failed: {exc}\n")
-                            idx_downloaded = False
-
-                    if not idx_downloaded:
-                        idx_bytes = self.client.get_file_bytes(self.repo_id, f"{remote_pack_dir}/{idx_name}")
-                        if idx_bytes:
-                            staged_idx.write_bytes(idx_bytes)
-                            idx_downloaded = True
-
-                    if idx_downloaded and expected_idx_size is not None and staged_idx.stat().st_size != expected_idx_size:
-                        sys.stderr.write(f"Warning: downloaded {idx_name} size mismatch; will regenerate locally.\n")
-                        sys.stderr.flush()
-                        try:
-                            staged_idx.unlink(missing_ok=True)
-                        except Exception:
-                            pass
-                        idx_downloaded = False
-
-                    install_packfile(pack_name, staged_pack, staged_idx if idx_downloaded else None)
-                finally:
-                    shutil.rmtree(staging_dir, ignore_errors=True)
+                expected_idx_size = entries_by_name.get(idx_name, {}).get("size")
+                fetch_and_install_pack(
+                    self.client,
+                    self.repo_id,
+                    remote_pack_dir,
+                    pack_name,
+                    git_dir,
+                    expected_size=expected_size,
+                    expected_idx_size=expected_idx_size,
+                    installer=install_packfile,
+                )
 
             sys.stdout.write("\n")
             sys.stdout.flush()

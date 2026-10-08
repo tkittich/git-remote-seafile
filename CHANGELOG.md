@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-10-09
+
+Architectural decoupling of the remote helper into modular subsystems (`url.py`, `config.py`, `packs.py`), deprecation of legacy v0.1–v0.3 single-file lock mirror, object-format capability negotiation, and review workspace archival.
+
+### Changed & Refactored
+
+- **Modular Helper Architecture (Sonnet §6 / Qwen §6).** Decoupled monolithic `helper.py` into dedicated, single-responsibility modules:
+  - `url.py`: Seafile URL parsing, scheme extraction, port normalization, and path traversal validation (`parse_seafile_url`, `SeafileURL`).
+  - `config.py`: Git configuration resolution with typed structured defaults (`RemoteConfig`).
+  - `packs.py`: Remote packfile discovery, streaming downloads, integrity verification, and atomic installation (`fetch_and_install_pack`, `check_remote_has_packs`, `is_valid_pack_name`).
+  - `helper.py`: Lean remote helper protocol implementation focusing strictly on stdio commands (`capabilities`, `list`, `push`, `fetch`).
+- **Object-Format Negotiation & Capability Advertisement.** Supported `object-format` capability advertisement and negotiation in `helper.py` for sha1 and sha256.
+- **Pack Name Validation Consolidation.** Unified remote packfile naming checks across `helper.py` and `gc.py` using `is_valid_pack_name`.
+- **Deprecated Legacy Single-File Lock Mirror.** Marked the v0.1–v0.3 single-file lock mirror (`.git-lock.json`) in `RemoteLock` as deprecated (`.. deprecated:: 0.6.0`), scheduled for full removal in v1.0.0. All modern clients coordinate exclusively via the distributed ticket queue in `.git-lock.d/`.
+- **Review Document Archival.** Archived all root `REVIEW*.md` files into the versioned `archive/` directory to maintain root workspace cleanliness.
+
 ## [0.5.4] - 2026-10-09
 
 POSIX permissions warning on config file, URL parsing traversal defense and netloc normalization, CLI argument validation, robust server Date header parsing, and test harness realism.
@@ -552,7 +568,8 @@ Data-loss and silent-failure fixes, and the Python floor raised to 3.9.
   with zero-config desktop-client token discovery, distributed locking, remote
   packfile compaction, and a Git LFS custom transfer agent.
 
-[Unreleased]: https://github.com/tkittich/git-remote-seafile/compare/v0.5.4...HEAD
+[Unreleased]: https://github.com/tkittich/git-remote-seafile/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/tkittich/git-remote-seafile/compare/v0.5.4...v0.6.0
 [0.5.4]: https://github.com/tkittich/git-remote-seafile/compare/v0.5.3...v0.5.4
 [0.5.3]: https://github.com/tkittich/git-remote-seafile/compare/v0.5.2...v0.5.3
 [0.5.2]: https://github.com/tkittich/git-remote-seafile/compare/v0.5.1...v0.5.2

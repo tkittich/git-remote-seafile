@@ -65,9 +65,13 @@ class RemoteLock:
     Prevents race conditions if multiple machines attempt to push to the
     same repository concurrently. Includes automatic lease expiration so
     stale locks from crashed processes do not permanently block pushes.
-    Supports ticket-based distributed protocol (.git-lock.d/<nonce>.json)
-    with legacy fallback (.git-lock.json), server-side timestamp ordering,
-    and fast stale-lock reclamation for dead local processes.
+    Uses the authoritative ticket-based distributed protocol (.git-lock.d/<nonce>.json),
+    with server-side timestamp ordering and fast stale-lock reclamation for dead local processes.
+
+    .. deprecated:: 0.6.0
+        The single-file mirror (.git-lock.json) from v0.1–v0.3 is deprecated
+        and scheduled for removal in v1.0.0. All modern clients rely on the
+        ticket queue in .git-lock.d/.
     """
 
     def __init__(
@@ -159,6 +163,8 @@ class RemoteLock:
             entries = []
 
         for entry in entries:
+            if not isinstance(entry, dict):
+                continue
             name = entry.get("name", "")
             if not name.endswith(".json"):
                 continue
@@ -291,6 +297,7 @@ class RemoteLock:
 
                 if winner.get("nonce") == nonce:
                     # We won the ticket! Also mirror to legacy .git-lock.json for backward compatibility
+                    # [DEPRECATED in 0.6.0]: Single-file .git-lock.json mirror is scheduled for removal in v1.0.0
                     try:
                         self.client.upload_file(
                             self.repo_id,
@@ -429,6 +436,7 @@ class RemoteLock:
             except Exception:
                 pass
 
+        # [DEPRECATED in 0.6.0]: Legacy single-file .git-lock.json cleanup
         if not skip_legacy_delete:
             try:
                 self.client.delete_entry(self.repo_id, self.lock_file_path)
