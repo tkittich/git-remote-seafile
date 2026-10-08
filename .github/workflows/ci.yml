@@ -20,7 +20,16 @@ jobs:
         python-version: ["3.9", "3.10", "3.11", "3.12", "3.13", "3.14"]
 
     steps:
-    - uses: actions/checkout@v4
+    # Action majors below are the *lowest* whose action.yml declares
+    # `runs.using: node24`.  They were on checkout@v4 / setup-python@v5, which
+    # still declare node20 and drew a deprecation annotation on every job:
+    # GitHub was already forcing them onto Node 24, so this makes the
+    # declaration match what was actually running.  Both bumps are runtime-only
+    # -- checkout@v5 is "update to node 24" and nothing else, setup-python@v6's
+    # sole breaking change is the same -- which is why they are preferred over
+    # the newer majors that also change credential handling (checkout@v6) or
+    # the module system (both @v7).
+    - uses: actions/checkout@v5
       with:
         # Full history, including tags.  The release-notes guard checks that a
         # notes file's Full Changelog link compares against a tag that really
@@ -30,7 +39,7 @@ jobs:
         fetch-depth: 0
 
     - name: Set up Python ${{ matrix.python-version }}
-      uses: actions/setup-python@v5
+      uses: actions/setup-python@v6
       with:
         python-version: ${{ matrix.python-version }}
 
@@ -43,8 +52,8 @@ jobs:
     # `python -m unittest discover tests` is the fallback if this ever misbehaves
     # on a platform -- it is what the runner reproduces.
     #
-    # Measured on a 12-core machine: 164 s serial, 117 s at two workers, 68 s at
-    # four, 43 s at twelve.  This job runs 18 times over (3 OS x 6 versions) and
+    # Measured on a 12-core machine: 204 s serial, 141 s at two workers, 85 s at
+    # four, 53 s at twelve.  This job runs 18 times over (3 OS x 6 versions) and
     # the whole pipeline takes as long as its slowest job, so the per-job saving
     # is the pipeline saving.
     #

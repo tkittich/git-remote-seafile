@@ -35,10 +35,10 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v5
 
     - name: Set up Python
-      uses: actions/setup-python@v5
+      uses: actions/setup-python@v6
       with:
         python-version: '3.11'
 
@@ -50,8 +50,15 @@ jobs:
     - name: Build sdist and wheel
       run: python -m build
 
+    # Artifact actions are a matched pair and are bumped together.  These are
+    # the lowest majors declaring `runs.using: node24` -- upload@v5 and
+    # download@v5/v6 still say node20 -- and both releases are runtime-only
+    # ("v5/v6 had preliminary Node 24 support ... now this action by default
+    # will run on Node.js 24"), so the artifact API is unchanged and they
+    # interoperate exactly as their v4 predecessors did.  Do not bump one
+    # without checking the other.
     - name: Upload the built distributions
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v6
       with:
         name: dist
         path: dist/
@@ -72,7 +79,7 @@ jobs:
       PYPI_API_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
     steps:
     - name: Fetch the built distributions
-      uses: actions/download-artifact@v4
+      uses: actions/download-artifact@v7
       with:
         name: dist
         path: dist
@@ -116,10 +123,10 @@ jobs:
     permissions:
       contents: write
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v5
 
     - name: Fetch the built distributions
-      uses: actions/download-artifact@v4
+      uses: actions/download-artifact@v7
       with:
         name: dist
         path: dist
