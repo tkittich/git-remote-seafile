@@ -267,6 +267,53 @@ class TestPythonFloor(unittest.TestCase):
         self.assertEqual(lowest, self.floor)
 
 
+class TestBuildBackendFloor(unittest.TestCase):
+    """The declared build floor has to cover the pyproject features in use.
+
+    ``license = "Apache-2.0"`` is a PEP 639 SPDX expression, which setuptools
+    learned to read in 77.  The declared floor said 61 -- the version that
+    wanted the older ``license = {text = "..."}`` table -- and with setuptools
+    76.1.0, inside the declared range, the build does not merely warn:
+
+        ValueError: invalid pyproject.toml config: `project.license`.
+        configuration error: `project.license` must be valid exactly by one
+        definition (2 matches found)
+
+    Nothing caught it because an isolated build installs the *newest* setuptools
+    satisfying the floor, and the newest one works.  Only a build that pins its
+    own -- ``--no-isolation``, or a distribution building from the sdist -- sees
+    it.  Verified by building both ways: 76.1.0 fails, 77.0.1 succeeds and
+    emits ``License-Expression: Apache-2.0`` at metadata version 2.4.
+    """
+
+    # Where `license` as an SPDX string became readable.  Below this it has to
+    # be a table, so the two tests below only hold for the SPDX form.
+    SPDX_LICENSE_FLOOR = 77
+
+    _SPDX_LICENSE = re.compile(r'(?m)^license\s*=\s*"[^"]+"\s*$')
+    _SETUPTOOLS_FLOOR = re.compile(r'"setuptools>=([0-9]+)')
+
+    def test_the_license_is_declared_as_an_spdx_expression(self):
+        self.assertRegex(
+            _read("pyproject.toml"), self._SPDX_LICENSE,
+            "pyproject no longer declares `license` as a PEP 639 SPDX string. "
+            "If that was deliberate, this class goes with it -- but the build "
+            "floor may then be lowered too.",
+        )
+
+    def test_the_build_floor_can_read_that_license(self):
+        match = self._SETUPTOOLS_FLOOR.search(_read("pyproject.toml"))
+        self.assertIsNotNone(match, 'no "setuptools>=N" in build-system requires')
+        floor = int(match.group(1))
+        self.assertGreaterEqual(
+            floor, self.SPDX_LICENSE_FLOOR,
+            f"build-system requires setuptools>={floor}, but a PEP 639 SPDX "
+            f"`license` string needs >={self.SPDX_LICENSE_FLOOR}. With 76.1.0 "
+            "the build stops at 'invalid pyproject.toml config: "
+            "`project.license`'",
+        )
+
+
 class TestSdistManifest(unittest.TestCase):
     """The docs have to be *named* in MANIFEST.in to reach the sdist.
 

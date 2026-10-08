@@ -1,5 +1,9 @@
 [build-system]
-requires = ["setuptools>=61.0"]
+# 77 is where setuptools learned to read `license = "Apache-2.0"` as a PEP 639
+# SPDX expression.  The floor used to say 61, which is the version that wanted
+# the older `license = {text = "..."}` table: building with 76.1.0 fails
+# outright with "invalid pyproject.toml config: `project.license`".
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
