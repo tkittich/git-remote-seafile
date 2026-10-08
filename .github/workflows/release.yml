@@ -51,6 +51,20 @@ jobs:
     - name: Run unit tests
       run: python tools/run_tests_parallel.py -j 4
 
+    - name: Run linter
+      run: |
+        pip install ruff==0.16.10
+        ruff check .
+
+    - name: Verify git tag matches package version
+      run: |
+        TAG="${{ github.ref_name }}"
+        VERSION="v$(python -c 'import git_remote_seafile; print(git_remote_seafile.__version__)')"
+        if [ "$TAG" != "$VERSION" ]; then
+          echo "ERROR: Tag '$TAG' does not match package __version__ '$VERSION'" >&2
+          exit 1
+        fi
+
   # Build once.  Both consumers below take the same artifact, so the wheel that
   # gets attached to the Release is byte-for-byte the one offered to PyPI.
   build:

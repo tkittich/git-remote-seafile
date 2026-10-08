@@ -10,6 +10,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from git_remote_seafile.git_util import (
+    HEX_SHA_RE,
     GitError,
     clean_git_env,
     create_packfile,
@@ -307,6 +308,21 @@ class TestCleanGitEnv(unittest.TestCase):
             env = clean_git_env()
         self.assertEqual(env.get("GIT_AUTHOR_NAME"), "someone")
         self.assertEqual(env.get("SEAFILE_TOKEN"), "tok")
+
+
+class TestHexShaValidation(unittest.TestCase):
+    def test_valid_sha1_and_sha256(self):
+        self.assertTrue(bool(HEX_SHA_RE.fullmatch("a" * 40)))
+        self.assertTrue(bool(HEX_SHA_RE.fullmatch("F" * 40)))
+        self.assertTrue(bool(HEX_SHA_RE.fullmatch("0123456789abcdef" * 4)))
+        self.assertTrue(bool(HEX_SHA_RE.fullmatch("0123456789ABCDEF" * 4)))
+
+    def test_invalid_sha(self):
+        self.assertIsNone(HEX_SHA_RE.fullmatch("a" * 39))
+        self.assertIsNone(HEX_SHA_RE.fullmatch("a" * 41))
+        self.assertIsNone(HEX_SHA_RE.fullmatch("g" * 40))
+        self.assertIsNone(HEX_SHA_RE.fullmatch("a" * 40 + "\n"))
+        self.assertIsNone(HEX_SHA_RE.fullmatch(""))
 
 
 if __name__ == "__main__":

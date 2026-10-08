@@ -198,9 +198,11 @@ class SeafileClient:
         token: str | None = None,
         timeout: int = 30,
         require_credentials: bool = True,
+        username: str | None = None,
     ):
         self.server_url = (server_url or "").rstrip("/")
         self.token = token
+        self.username = username
         self.timeout = timeout
         self._force_file_host: bool | None = None  # resolved lazily; see below
         self._server_time_offset: float | None = None
@@ -276,6 +278,9 @@ class SeafileClient:
                 cfg = json.loads(config_path.read_text(encoding="utf-8"))
                 cfg_server = cfg.get("server")
                 cfg_token = cfg.get("token")
+                cfg_user = cfg.get("username") or cfg.get("user")
+                if cfg_user and not self.username:
+                    self.username = cfg_user
                 if cfg_server and (cfg_token or not require_token):
                     if not self.server_url or _normalize_netloc(cfg_server) == _normalize_netloc(self.server_url):
                         self.server_url = cfg_server.rstrip("/")
@@ -298,20 +303,37 @@ class SeafileClient:
                     if self.server_url:
                         target_netloc = _normalize_netloc(self.server_url)
                         rows = con.execute(
-                            "SELECT url, token FROM Accounts ORDER BY lastVisited DESC"
+                            "SELECT url, token, username FROM Accounts ORDER BY lastVisited DESC"
                         ).fetchall()
-                        for r_url, r_token in rows:
-                            if r_url and _normalize_netloc(r_url) == target_netloc:
-                                row = (r_url, r_token)
+                        for r in rows:
+                            if r[0] and _normalize_netloc(r[0]) == target_netloc:
+                                row = r
                                 break
                     else:
-                        row = con.execute("SELECT url, token FROM Accounts ORDER BY lastVisited DESC LIMIT 1").fetchone()
+                        row = con.execute("SELECT url, token, username FROM Accounts ORDER BY lastVisited DESC LIMIT 1").fetchone()
                 except Exception:
-                    continue
+                    try:
+                        if self.server_url:
+                            target_netloc = _normalize_netloc(self.server_url)
+                            rows = con.execute(
+                                "SELECT url, token FROM Accounts ORDER BY lastVisited DESC"
+                            ).fetchall()
+                            for r in rows:
+                                if r[0] and _normalize_netloc(r[0]) == target_netloc:
+                                    row = (r[0], r[1], None)
+                                    break
+                        else:
+                            r2 = con.execute("SELECT url, token FROM Accounts ORDER BY lastVisited DESC LIMIT 1").fetchone()
+                            if r2:
+                                row = (r2[0], r2[1], None)
+                    except Exception:
+                        continue
             if row and row[0] and (row[1] or not require_token):
                 if not self.server_url:
                     self.server_url = row[0].rstrip("/")
                 self.token = row[1]
+                if len(row) > 2 and row[2] and not self.username:
+                    self.username = row[2]
                 return
 
         if not self.server_url or (require_token and not self.token):
@@ -504,16 +526,6 @@ class SeafileClient:
             raise SeafileAPIError(f"Failed to list dir {clean_path}: HTTP {resp.status_code} {resp.text}")
         return resp.json()
 
-    @property
-    def _known_dirs(self) -> set[tuple[str, str]]:
-        # Lazily initialized so unit test instances created via __new__ without __init__ remain functional
-        if not hasattr(self, "_known_dirs_cache"):
-            self._known_dirs_cache: set[tuple[str, str]] = set()
-        return self._known_dirs_cache
-
-    @_known_dirs.setter
-    def _known_dirs(self, val: set[tuple[str, str]]) -> None:
-        self._known_dirs_cache = val
 
     def dir_exists(self, repo_id: str, dir_path: str) -> bool:
         """Check if directory exists on Seafile."""
@@ -614,9 +626,18 @@ class SeafileClient:
         ``requests`` still sends a Content-Length instead of chunked encoding.
         Passing ``bytes`` stays supported for small payloads (packfiles, refs).
         """
-        if isinstance(content, (str, os.PathLike)):
+        if isinstance(content, os.PathLike):
             with open(content, "rb") as fh:
                 return self._upload(repo_id, parent_dir, filename, fh, replace, progress_callback)
+        if isinstance(content, str):
+            if "\n" not in content and "\r" not in content and "\x00" not in content:
+                try:
+                    if Path(content).is_file():
+                        with open(content, "rb") as fh:
+                            return self._upload(repo_id, parent_dir, filename, fh, replace, progress_callback)
+                except (OSError, ValueError):
+                    pass
+            content = content.encode("utf-8")
         return self._upload(repo_id, parent_dir, filename, content, replace, progress_callback)
 
     def _upload(

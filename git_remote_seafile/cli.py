@@ -316,6 +316,16 @@ def main() -> int:
 
     remote_name = args[0]
     url = args[1] if len(args) > 1 else args[0]
+    if hasattr(sys.stdout, "reconfigure"):
+        try:
+            sys.stdout.reconfigure(newline="\n", encoding="utf-8")
+        except Exception:
+            pass
+    if hasattr(sys.stdin, "reconfigure"):
+        try:
+            sys.stdin.reconfigure(encoding="utf-8")
+        except Exception:
+            pass
     try:
         helper = RemoteHelper(remote_name, url)
         helper.run()

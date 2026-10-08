@@ -1,8 +1,8 @@
 # Engineering Roadmap & Backlog
 
-**Baseline:** v0.5.2 (v0.5.2 release)  
-**Scope:** Active architectural backlog and milestones following releases v0.4.0 through v0.5.2.  
-**Test Suite:** 347 tests across 75 targets (all green).
+**Baseline:** v0.5.3 (v0.5.3 release)  
+**Scope:** Active architectural backlog and milestones following releases v0.4.0 through v0.5.3.  
+**Test Suite:** 351 tests across 76 targets (all green).
 
 > [!NOTE]
 > All critical and high-severity findings from `REVIEW.gemini.md`, `REVIEW.qwen.md`, and `REVIEW.sonnet.md` (including ticket-based distributed locking, abandoned ticket cleanup, post-lock ref verification, exception propagation, GC lock fencing, pack index validation, surrogateescape paths, container PID isolation, D/F ref pruning, multi-spec pack batching, Git LFS transfer progress, safety guardrails, parallel ref enumeration, smart pack fetch filtering, and disk-staged streaming) have been completed. Minor or low-priority items remain tracked in the backlog below. See [CHANGELOG.md](CHANGELOG.md) for detailed release notes.
@@ -48,6 +48,18 @@
 * **HTTP Connection Pool Scaling (N-17):** Scale `HTTPAdapter` pool sizes to `pool_connections=16, pool_maxsize=16` for thread safety under concurrent operations.
 * **Library Exception Propagation (N-18):** Replace `SystemExit` in `seafile_paths.py` with `SeafileClientNotFoundError`.
 * **Streaming Fetch Error Logging & Bounded Fallback (N-7):** Log streaming download exceptions to stderr and cap in-memory fallback at 16MB.
+
+---
+
+### Phase 4.3: v0.5.3 — Code Deduplication, Hardened Workflows & Protocol Hygiene (Completed Deliverables)
+* **Pack Generation Consolidation & Deduplication (N-19):** Unified staged and temporary directory packfile generation in `git_util.py:create_packfile` into `_generate_pack_in_dir`.
+* **SHA Regex Unification (N-19):** Consolidated SHA patterns across modules into a single exported `HEX_SHA_RE` in `git_util.py` supporting both SHA-1 (40-char) and SHA-256 (64-char).
+* **Payload Type Safety & String Protection (N-19, L-4):** Distinguish `os.PathLike` from `str` in `client.py:upload_file`, encoding non-file strings directly to UTF-8 bytes to prevent unwanted filesystem reads.
+* **Test Shim & Mock Cleanup (N-13):** Removed `@property def _known_dirs` hack in `client.py`, removed `hasattr(lock, "maybe_renew")` in `gc.py`, removed `except TypeError:` wrappers in `lfs.py`, and cleaned up `RemoteHelper.__init__`.
+* **Exception Preservation on Preflight (L-13):** Removed redundant preflight safety call in `helper.py:RemoteHelper.__init__` exception handler to avoid masking true connection or authentication errors.
+* **POSIX Line Discipline on Windows (L-7):** Reconfigured `sys.stdout` for LF newlines and UTF-8 in remote helper CLI mode.
+* **Release Gate Hardening (N-20):** Integrated `ruff check .` and tag-to-version validation into `.github/workflows/release.yml`.
+* **API Documentation Accuracy (N-6):** Clarified Seafile Web API v2 (`/api2/`) endpoints across user documentation.
 
 ---
 

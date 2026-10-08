@@ -95,14 +95,9 @@ class LFSTransferAgent:
             def on_upload_progress(transferred: int, total: int) -> None:
                 self._send_progress(oid, transferred, total or local_size)
 
-            try:
-                self.client.upload_file(
-                    self.repo_id, parent_dir, filename, Path(local_path), replace=True, progress_callback=on_upload_progress
-                )
-            except TypeError:
-                self.client.upload_file(
-                    self.repo_id, parent_dir, filename, Path(local_path), replace=True
-                )
+            self.client.upload_file(
+                self.repo_id, parent_dir, filename, Path(local_path), replace=True, progress_callback=on_upload_progress
+            )
             self._send_progress(oid, local_size, local_size)
             self._send_json({"event": "complete", "oid": oid})
         except Exception as ex:
@@ -133,13 +128,9 @@ class LFSTransferAgent:
             def on_download_progress(transferred: int, total: int) -> None:
                 self._send_progress(oid, transferred, total)
 
-            download_ok = False
-            try:
-                download_ok = self.client.download_file_to(
-                    self.repo_id, file_path, temp_dest, progress_callback=on_download_progress
-                )
-            except TypeError:
-                download_ok = self.client.download_file_to(self.repo_id, file_path, temp_dest)
+            download_ok = self.client.download_file_to(
+                self.repo_id, file_path, temp_dest, progress_callback=on_download_progress
+            )
 
             if not download_ok:
                 self._send_json({

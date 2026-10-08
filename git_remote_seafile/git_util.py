@@ -88,7 +88,8 @@ def is_ancestor(ancestor_sha: str, descendant_sha: str) -> bool:
     )
 
 
-_HEX_SHA_RE = re.compile(r"^[0-9a-fA-F]{40}(?:[0-9a-fA-F]{24})?$")
+HEX_SHA_RE = re.compile(r"^[0-9a-fA-F]{40}(?:[0-9a-fA-F]{24})?$")
+_HEX_SHA_RE = HEX_SHA_RE
 
 
 def filter_existing_objects(shas: list[str] | str | None) -> list[str]:
@@ -171,6 +172,37 @@ def get_objects_to_push(local_sha: list[str] | str, exclude_shas: list[str] | st
     return objects
 
 
+def _generate_pack_in_dir(tmp_dir: Path, object_shas: list[str]) -> tuple[str, Path, Path]:
+    """Helper to generate packfile and index in a target directory."""
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    pack_prefix = tmp_dir / "pack"
+
+    input_data = ("\n".join(object_shas) + "\n").encode("utf-8", errors="surrogateescape")
+    out, err, code = run_git(
+        ["pack-objects", str(pack_prefix)],
+        input_bytes=input_data,
+    )
+    if code != 0:
+        err_msg = err.decode("utf-8", errors="replace").strip()
+        raise GitError(f"git pack-objects failed: {err_msg}")
+
+    pack_sha = out.decode("utf-8").strip()
+    pack_file = tmp_dir / f"pack-{pack_sha}.pack"
+    idx_file = tmp_dir / f"pack-{pack_sha}.idx"
+
+    if not pack_file.is_file():
+        raise GitError(f"Expected packfile not created: {pack_file}")
+
+    # If .idx was not automatically generated, create it
+    if not idx_file.is_file():
+        _, err, code = run_git(["index-pack", "-o", str(idx_file), str(pack_file)])
+        if code != 0:
+            err_msg = err.decode("utf-8", errors="replace").strip()
+            raise GitError(f"git index-pack failed: {err_msg}")
+
+    return pack_sha, pack_file, idx_file
+
+
 def create_packfile(
     object_shas: list[str],
     staged_dir: Path | str | None = None,
@@ -193,64 +225,10 @@ def create_packfile(
         tmp_parent = None
 
     if staged_dir is not None:
-        tmp_dir = Path(staged_dir)
-        tmp_dir.mkdir(parents=True, exist_ok=True)
-        pack_prefix = tmp_dir / "pack"
-
-        # 1. Generate packfile
-        input_data = ("\n".join(object_shas) + "\n").encode("utf-8", errors="surrogateescape")
-        out, err, code = run_git(
-            ["pack-objects", str(pack_prefix)],
-            input_bytes=input_data,
-        )
-        if code != 0:
-            err_msg = err.decode("utf-8", errors="replace").strip()
-            raise GitError(f"git pack-objects failed: {err_msg}")
-
-        pack_sha = out.decode("utf-8").strip()
-        pack_file = tmp_dir / f"pack-{pack_sha}.pack"
-        idx_file = tmp_dir / f"pack-{pack_sha}.idx"
-
-        if not pack_file.is_file():
-            raise GitError(f"Expected packfile not created: {pack_file}")
-
-        # If .idx was not automatically generated, create it
-        if not idx_file.is_file():
-            _, err, code = run_git(["index-pack", "-o", str(idx_file), str(pack_file)])
-            if code != 0:
-                err_msg = err.decode("utf-8", errors="replace").strip()
-                raise GitError(f"git index-pack failed: {err_msg}")
-
-        return pack_sha, pack_file, idx_file
+        return _generate_pack_in_dir(Path(staged_dir), object_shas)
 
     with tempfile.TemporaryDirectory(prefix="git-seaf-pack-", dir=str(tmp_parent) if tmp_parent else None) as td:
-        tmp_dir = Path(td)
-        pack_prefix = tmp_dir / "pack"
-
-        # 1. Generate packfile
-        input_data = ("\n".join(object_shas) + "\n").encode("utf-8", errors="surrogateescape")
-        out, err, code = run_git(
-            ["pack-objects", str(pack_prefix)],
-            input_bytes=input_data,
-        )
-        if code != 0:
-            err_msg = err.decode("utf-8", errors="replace").strip()
-            raise GitError(f"git pack-objects failed: {err_msg}")
-
-        pack_sha = out.decode("utf-8").strip()
-        pack_file = tmp_dir / f"pack-{pack_sha}.pack"
-        idx_file = tmp_dir / f"pack-{pack_sha}.idx"
-
-        if not pack_file.is_file():
-            raise GitError(f"Expected packfile not created: {pack_file}")
-
-        # If .idx was not automatically generated, create it
-        if not idx_file.is_file():
-            _, err, code = run_git(["index-pack", "-o", str(idx_file), str(pack_file)])
-            if code != 0:
-                err_msg = err.decode("utf-8", errors="replace").strip()
-                raise GitError(f"git index-pack failed: {err_msg}")
-
+        pack_sha, pack_file, idx_file = _generate_pack_in_dir(Path(td), object_shas)
         pack_bytes = pack_file.read_bytes()
         idx_bytes = idx_file.read_bytes()
         return pack_sha, pack_bytes, idx_bytes

@@ -466,6 +466,21 @@ class TestClientAPI(unittest.TestCase):
         with self.assertRaises(SeafileAPIError):
             self.client.upload_file("repo1", "/seafile", "test.txt", b"content")
 
+    def test_upload_file_with_string_payload_encoded_to_utf8(self):
+        self.client.session.get = MagicMock(return_value=MagicMock(status_code=200, text='"https://seafile.example.com/seafhttp/upload-api/123"'))
+        with patch.object(self.client, "_upload") as mock_upload:
+            mock_upload.return_value = True
+            # Multi-line string payload should be encoded to bytes rather than opened as a path
+            res = self.client.upload_file("repo1", "/seafile", "ref.txt", "ref: refs/heads/main\n")
+            self.assertTrue(res)
+            mock_upload.assert_called_once_with(
+                "repo1", "/seafile", "ref.txt", b"ref: refs/heads/main\n", True, None
+            )
+
+    def test_client_username_stored_and_passed(self):
+        c = SeafileClient(server_url="https://seafile.example.com", token="tok", username="dev@example.com")
+        self.assertEqual(c.username, "dev@example.com")
+
 
 class TestStreamingTransfers(unittest.TestCase):
     """Large payloads must stream, not be materialised in RAM (#4).

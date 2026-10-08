@@ -48,10 +48,7 @@ def compact_repository(
 
     with RemoteLock(client, repo_id, clean_repo) as lock:
         def maybe_renew() -> None:
-            if hasattr(lock, "maybe_renew"):
-                lock.maybe_renew(20.0)
-            elif hasattr(lock, "renew"):
-                lock.renew()
+            lock.maybe_renew(20.0)
 
         def on_upload_progress(transferred: int, total: int) -> None:
             maybe_renew()

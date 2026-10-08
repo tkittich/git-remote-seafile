@@ -1375,7 +1375,7 @@ class TestLFSTransferAgent(unittest.TestCase):
     def test_lfs_download_success(self):
         mock_client = MagicMock()
 
-        def fake_download(repo_id, file_path, dest):
+        def fake_download(repo_id, file_path, dest, progress_callback=None):
             Path(dest).write_bytes(b"BINARY-OBJECT-BYTES")
             return True
 
@@ -1541,9 +1541,7 @@ class TestGitConfig(unittest.TestCase):
 
 class TestSeafileClientOperations(unittest.TestCase):
     def test_mkdir_p_and_delete_entry(self):
-        client = SeafileClient.__new__(SeafileClient)
-        client.server_url = "https://seafile.example.com"
-        client.timeout = 10
+        client = SeafileClient(server_url="https://seafile.example.com", token="fake_token", timeout=10)
         client.session = MagicMock()
 
         # Mock mkdir response
@@ -1564,11 +1562,8 @@ class TestSeafileClientOperations(unittest.TestCase):
         self.assertFalse(client.delete_entry("repo1", "/refs/heads/feature"))
 
     def test_dir_exists_and_duplicate_prevention(self):
-        client = SeafileClient.__new__(SeafileClient)
-        client.server_url = "https://seafile.example.com"
-        client.timeout = 10
+        client = SeafileClient(server_url="https://seafile.example.com", token="fake_token", timeout=10)
         client.session = MagicMock()
-        client._known_dirs = set()
 
         # Root always exists without HTTP call
         self.assertTrue(client.dir_exists("repo1", "/"))
@@ -1600,11 +1595,8 @@ class TestSeafileClientOperations(unittest.TestCase):
         emptiness test always passes: a failed mkdir used to be cached as
         created, after which every upload into it failed for no visible reason.
         """
-        client = SeafileClient.__new__(SeafileClient)
-        client.server_url = "https://seafile.example.com"
-        client.timeout = 10
+        client = SeafileClient(server_url="https://seafile.example.com", token="fake_token", timeout=10)
         client.session = MagicMock()
-        client._known_dirs = set()
 
         # The directory does not exist and the server refuses to create it.
         client.session.get.return_value = MagicMock(status_code=404)
@@ -1617,11 +1609,8 @@ class TestSeafileClientOperations(unittest.TestCase):
 
     def test_mkdir_p_succeeds_when_the_directory_appears_concurrently(self):
         """A rejected mkdir is still fine if the directory turns up anyway."""
-        client = SeafileClient.__new__(SeafileClient)
-        client.server_url = "https://seafile.example.com"
-        client.timeout = 10
+        client = SeafileClient(server_url="https://seafile.example.com", token="fake_token", timeout=10)
         client.session = MagicMock()
-        client._known_dirs = set()
 
         # First existence check says "absent"; the mkdir is rejected; the
         # follow-up check finds it (someone else created it in between).

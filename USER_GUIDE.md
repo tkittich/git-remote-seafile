@@ -16,7 +16,7 @@ This causes severe issues:
 ### How `git-remote-seafile` Solves This
 `git-remote-seafile` bypasses the desktop sync client entirely:
 - Your working repository lives anywhere on your disk (outside synced libraries).
-- It communicates directly with the **Seafile Web API v2.1** over HTTP/HTTPS.
+- It communicates directly with the **Seafile Web API v2** (`/api2/`) over HTTP/HTTPS.
 - Commits are bundled into native Git packfiles (`.pack` and `.idx`) before upload. Each push transfers only **1–2 files** regardless of commit count.
 - The desktop sync daemon never scans, indexes, or touches `.git/`.
 
@@ -60,14 +60,14 @@ C:\code\myproject\                    <-- Seafile Client NEVER touches this!
   └── .git/                          <-- Git operates at native NVMe/SSD speed with zero daemon overhead.
 
       │ git push origin main
-      ▼ (HTTP/HTTPS REST API v2.1)
+      ▼ (HTTP/HTTPS REST API v2)
 [Seafile Server]
 https://seafile.example.com
   └── Library: code
         └── /myproject/               <-- Clean, bare Git packfiles and refs stored on the server!
 ```
 
-With `git-remote-seafile`, your local repository operates completely free of cloud sync daemons. When you run `git push`, the helper bundles your commits into compressed Git packfiles and transfers them directly to your Seafile server over HTTP/HTTPS Web API v2.1—exactly like pushing to GitHub or GitLab.
+With `git-remote-seafile`, your local repository operates completely free of cloud sync daemons. When you run `git push`, the helper bundles your commits into compressed Git packfiles and transfers them directly to your Seafile server over HTTP/HTTPS Web API v2 (`/api2/`)—exactly like pushing to GitHub or GitLab.
 
 ### 2.2 Step-by-Step: Migrating an Existing Synced Project
 
@@ -198,7 +198,7 @@ Both approaches eliminate desktop sync thrashing and lock contention. Below is a
 | **Data Sovereignty & Privacy** | **Conditional.** SaaS keeps code on third-party servers subject to foreign jurisdiction and AI scrapers. Self-hosted forges require ongoing CVE patching. | **100% Private & Self-Hosted.** Commits and files stay within your Seafile instance. Transfers secured via TLS/HTTPS (client-side password-encrypted libraries are not supported over REST API). |
 | **Storage Limits & Economics** | **Restricted / Costly.** GitHub enforces soft 1–2 GB repo limits; Git LFS costs $5/mo per 50 GB. Self-hosted forges consume separate disk pools. | **Unrestricted.** Utilizes your existing Seafile storage quota (often multi-terabyte). Native Git LFS custom transfer agent with zero extra fees. |
 | **Code Review & Collaboration** | **Full Web Forge UI.** Pull requests, inline comments, code search, issue tracking, and automated CI/CD runners (GitHub Actions, GitLab CI). | **Storage & Transport Layer Only.** No built-in web code review UI. Focuses purely on reliable Git transport, distributed locking, and ref sync. |
-| **Transport Protocol** | Git Smart HTTP (`git-upload-pack`, `git-receive-pack`) or SSH protocol. Server negotiates deltas dynamically. | Client-side packfile packaging over Seafile Web API v2.1 (`/api2/repos/.../upload-link/`). Packfiles stored as `.pack` objects. |
+| **Transport Protocol** | Git Smart HTTP (`git-upload-pack`, `git-receive-pack`) or SSH protocol. Server negotiates deltas dynamically. | Client-side packfile packaging over Seafile Web API v2 (`/api2/repos/.../upload-link/`). Packfiles stored as `.pack` objects. |
 | **Concurrency & Safety** | Handled natively by server Git process with atomic ref updates. | Enforced by fast-forward checks and cooperative distributed lease locking (`.git-lock.json` with auto-expiry). |
 | **Client-Side Daemon Churn** | Zero. Working tree is outside sync folders. | Zero. Working tree is outside sync folders. |
 

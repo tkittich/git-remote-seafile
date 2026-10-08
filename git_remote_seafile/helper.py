@@ -15,6 +15,7 @@ from .lock import RemoteLock
 from .refs import REF_NAMESPACES, iter_refs
 from .safety import check_preflight_safety, SafetyError
 from .git_util import (
+    HEX_SHA_RE,
     _HEX_SHA_RE,
     create_packfile,
     filter_existing_objects,
@@ -54,19 +55,12 @@ class RemoteHelper:
     repo_path: str = ""
     repo_id: str = ""
 
-    def __init__(self, remote_name: str, url: str):
+    def __init__(self, remote_name: str, url: str, client: SeafileClient | None = None):
         self.remote_name = remote_name
         self.raw_url = url
         self.server_url, self.library_name, self.repo_path = self._parse_url(url)
-        self.client = SeafileClient(server_url=self.server_url)
-        try:
-            self.repo_id = self.client.get_repo_id(self.library_name)
-        except Exception as ex:
-            try:
-                check_preflight_safety(self.client, self.library_name, self.repo_path, push_mode=False)
-            except SafetyError:
-                raise
-            raise ex
+        self.client = client if client is not None else SeafileClient(server_url=self.server_url)
+        self.repo_id = self.client.get_repo_id(self.library_name)
         self._refs_cache: dict[str, str] = {}  # refname -> sha1
 
     def _parse_url(self, url: str) -> tuple[str | None, str, str]:
@@ -181,7 +175,7 @@ class RemoteHelper:
                     sys.stderr.write(f"Warning: ignoring malformed ref name '{ref_name}'\n")
                     sys.stderr.flush()
                     continue
-                if not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", sha):
+                if not HEX_SHA_RE.fullmatch(sha):
                     sys.stderr.write(f"Warning: ignoring invalid SHA '{sha}' for ref '{ref_name}'\n")
                     sys.stderr.flush()
                     continue
