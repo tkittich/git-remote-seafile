@@ -30,15 +30,37 @@ permissions:
   contents: read
 
 jobs:
+  # Gate release packaging and distribution on passing the unit test suite.
+  test:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      with:
+        fetch-depth: 0
+
+    - name: Set up Python
+      uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+      with:
+        python-version: '3.11'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -e .
+
+    - name: Run unit tests
+      run: python tools/run_tests_parallel.py -j 4
+
   # Build once.  Both consumers below take the same artifact, so the wheel that
   # gets attached to the Release is byte-for-byte the one offered to PyPI.
   build:
+    needs: test
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v5
+    - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
     - name: Set up Python
-      uses: actions/setup-python@v6
+      uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
       with:
         python-version: '3.11'
 
@@ -58,7 +80,7 @@ jobs:
     # interoperate exactly as their v4 predecessors did.  Do not bump one
     # without checking the other.
     - name: Upload the built distributions
-      uses: actions/upload-artifact@v6
+      uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
       with:
         name: dist
         path: dist/
@@ -79,7 +101,7 @@ jobs:
       PYPI_API_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
     steps:
     - name: Fetch the built distributions
-      uses: actions/download-artifact@v7
+      uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
       with:
         name: dist
         path: dist
@@ -93,7 +115,7 @@ jobs:
     # mask real failures -- the same reason CI no longer uses fail-fast.
     - name: Publish to PyPI
       if: env.PYPI_API_TOKEN != '' || vars.PUBLISH_TO_PYPI == 'true'
-      uses: pypa/gh-action-pypi-publish@release/v1
+      uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # release/v1.14
       with:
         password: ${{ secrets.PYPI_API_TOKEN }}
         skip-existing: true
@@ -123,10 +145,10 @@ jobs:
     permissions:
       contents: write
     steps:
-    - uses: actions/checkout@v5
+    - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
     - name: Fetch the built distributions
-      uses: actions/download-artifact@v7
+      uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
       with:
         name: dist
         path: dist

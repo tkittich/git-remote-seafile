@@ -95,6 +95,7 @@ def compact_repository(
                 if not downloaded:
                     pack_bytes = client.get_file_bytes(repo_id, f"{pack_dir}/{pack_name}")
                     if not pack_bytes:
+                        sys.stderr.write(f"Warning: failed to download {pack_name} during compaction; skipping.\n")
                         continue
                     pack_file.write_bytes(pack_bytes)
 

@@ -134,9 +134,19 @@ def main() -> int:
             idx = args.index("--min-packs")
             if idx + 1 < len(args):
                 try:
-                    min_packs = int(args[idx + 1])
+                    val = int(args[idx + 1])
+                    if val < 1:
+                        sys.stderr.write(
+                            f"Warning: --min-packs must be a positive integer, got '{args[idx + 1]}'. Using default ({min_packs}).\n"
+                        )
+                    else:
+                        min_packs = val
                 except ValueError:
-                    pass
+                    sys.stderr.write(
+                        f"Warning: invalid --min-packs value '{args[idx + 1]}'. Using default ({min_packs}).\n"
+                    )
+            else:
+                sys.stderr.write(f"Warning: --min-packs requires an integer value. Using default ({min_packs}).\n")
         try:
             helper = RemoteHelper("gc", url)
             from .gc import compact_repository, describe_size_delta
@@ -177,6 +187,14 @@ def main() -> int:
         try:
             helper = RemoteHelper("set-head", url)
             head_target = branch if branch.startswith("refs/heads/") else f"refs/heads/{branch}"
+            from .refs import iter_refs
+            existing_branches = {
+                ref_name
+                for ref_name, _ in iter_refs(helper.client, helper.repo_id, helper.repo_path, "refs/heads")
+            }
+            if head_target not in existing_branches:
+                sys.stderr.write(f"Error: branch '{head_target}' does not exist on remote {url}\n")
+                return 1
             head_content = f"ref: {head_target}\n".encode("utf-8")
             helper.client.upload_file(
                 helper.repo_id,

@@ -8,7 +8,7 @@ import shutil
 import sys
 import tempfile
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 from .client import SeafileClient, SeafileAPIError
 from .lock import RemoteLock
@@ -19,6 +19,7 @@ from .git_util import (
     get_objects_to_push,
     install_packfile,
     is_ancestor,
+    GitError,
     rev_parse,
     get_git_dir,
     get_git_config_bool,
@@ -81,9 +82,9 @@ class RemoteHelper:
         if stripped.startswith("http://") or stripped.startswith("https://"):
             parsed = urlparse(stripped)
             server_url = f"{parsed.scheme}://{parsed.netloc}"
-            path_parts = [p for p in parsed.path.strip("/").split("/") if p]
+            path_parts = [unquote(p) for p in parsed.path.strip("/").split("/") if p]
         else:
-            parts = [p for p in stripped.strip("/").split("/") if p]
+            parts = [unquote(p) for p in stripped.strip("/").split("/") if p]
             if len(parts) >= 3 and _looks_like_host(parts[0]):
                 server_url = f"https://{parts[0]}"
                 path_parts = parts[1:]
@@ -280,8 +281,13 @@ class RemoteHelper:
                             remote_sha = self.client.get_file_text(self.repo_id, self._full_path(dst))
 
                         if remote_sha and not force:
-                            if not is_ancestor(remote_sha, local_sha):
-                                sys.stdout.write(f"error {dst} non-fast-forward\n")
+                            try:
+                                if not is_ancestor(remote_sha, local_sha):
+                                    sys.stdout.write(f"error {dst} non-fast-forward\n")
+                                    reported_specs.add(dst)
+                                    continue
+                            except GitError:
+                                sys.stdout.write(f"error {dst} fetch first\n")
                                 reported_specs.add(dst)
                                 continue
 

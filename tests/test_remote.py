@@ -16,6 +16,7 @@ from unittest.mock import MagicMock, patch
 from git_remote_seafile.client import SeafileAPIError, SeafileClient
 from git_remote_seafile.gc import compact_repository, describe_size_delta
 from git_remote_seafile.git_util import (
+    GitError,
     get_git_config_bool,
     get_git_config_int,
 )
@@ -574,6 +575,21 @@ class TestRemoteHelper(unittest.TestCase):
 
         self.assertIn("error refs/heads/main non-fast-forward", out.getvalue())
 
+    @patch("git_remote_seafile.helper.rev_parse", return_value="local_sha")
+    @patch("git_remote_seafile.helper.is_ancestor", side_effect=GitError("fatal: Not a valid object name remote_sha"))
+    def test_cmd_push_unknown_remote_tip_reports_fetch_first(self, mock_ancestor, mock_rev):
+        h = RemoteHelper.__new__(RemoteHelper)
+        h.client = MagicMock()
+        h.repo_id = "repo1"
+        h.repo_path = "/git-repo"
+        h._refs_cache = {"refs/heads/main": "remote_sha"}
+
+        out = io.StringIO()
+        with patch("sys.stdout", out), patch("git_remote_seafile.helper.RemoteLock"):
+            h.cmd_push(["refs/heads/main:refs/heads/main"])
+
+        self.assertIn("error refs/heads/main fetch first", out.getvalue())
+
     def test_cmd_push_branch_deletion(self):
         h = RemoteHelper.__new__(RemoteHelper)
         h.client = MagicMock()
@@ -918,6 +934,47 @@ class TestRemoteGC(unittest.TestCase):
             mock_client.delete_entry.assert_any_call("repo1", "/path/.git-lock.json")
 
     @patch("subprocess.run")
+    def test_gc_compaction_warns_on_failed_pack_download(self, mock_subprocess):
+        mock_client = MagicMock()
+        mock_client.list_dir.side_effect = lambda repo_id, path: (
+            [{"name": "pack-1.pack"}, {"name": "pack-2.pack"}, {"name": "pack-3.pack"}] if "objects/pack" in path
+            else [{"type": "file", "name": "main"}] if "refs/heads" in path
+            else []
+        )
+        def fake_get_file_bytes(repo_id, path):
+            if "pack-1.pack" in path:
+                return b""
+            return b"PACK-DATA"
+
+        mock_client.get_file_bytes.side_effect = fake_get_file_bytes
+        del mock_client.download_file_to
+        mock_client.get_file_text.return_value = "sha-main"
+
+        def fake_subprocess(cmd, **kwargs):
+            if "pack-objects" in cmd:
+                return MagicMock(returncode=0, stdout=b"abcdef1234567890abcdef1234567890abcdef12\n")
+            return MagicMock(returncode=0)
+
+        mock_subprocess.side_effect = fake_subprocess
+
+        with patch("pathlib.Path.glob") as mock_glob, patch("sys.stderr", new_callable=io.StringIO) as mock_err:
+            p_pack = MagicMock()
+            p_pack.name = "pack-abcdef1234567890abcdef1234567890abcdef12.pack"
+            p_pack.read_bytes.return_value = b"NEW-PACK"
+            p_pack.stat.return_value.st_size = 8
+
+            p_idx = MagicMock()
+            p_idx.name = "pack-abcdef1234567890abcdef1234567890abcdef12.idx"
+            p_idx.read_bytes.return_value = b"NEW-IDX"
+            p_idx.stat.return_value.st_size = 7
+
+            mock_glob.return_value = [p_pack, p_idx]
+
+            res = compact_repository(mock_client, "repo1", "/path", min_packs=2, verbose=False)
+            self.assertEqual(res["status"], "ok")
+            self.assertIn("Warning: failed to download pack-1.pack during compaction", mock_err.getvalue())
+
+    @patch("subprocess.run")
     def test_gc_preserves_all_branches_and_tags(self, mock_subprocess):
         mock_client = MagicMock()
         mock_client.list_dir.side_effect = lambda repo_id, path: (
@@ -1241,6 +1298,8 @@ class TestCLISubcommands(unittest.TestCase):
         mock_helper_cls.return_value = mock_helper
         mock_helper.repo_id = "repo1"
         mock_helper.repo_path = "/git-repo"
+        mock_helper.client.list_dir.return_value = [{"name": "main", "type": "file"}]
+        mock_helper.client.get_file_text.return_value = "1" * 40
 
         from git_remote_seafile.cli import main
         out = io.StringIO()
@@ -1347,6 +1406,17 @@ class TestUrlParsing(unittest.TestCase):
         self.assertEqual(server, "https://my.library")
         self.assertEqual(lib, "repo")
         self.assertEqual(path, "/git-repo")
+
+    def test_percent_encoded_segments_are_unquoted(self):
+        server, lib, path = self._parse("seafile://My%20Library/my%20repo")
+        self.assertIsNone(server)
+        self.assertEqual(lib, "My Library")
+        self.assertEqual(path, "/my repo")
+
+        server, lib, path = self._parse("seafile://https://seafile.example.com/Team%20Docs/nested%20repo/sub")
+        self.assertEqual(server, "https://seafile.example.com")
+        self.assertEqual(lib, "Team Docs")
+        self.assertEqual(path, "/nested repo/sub")
 
 
 class TestFetchSafety(unittest.TestCase):

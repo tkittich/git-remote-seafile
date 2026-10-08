@@ -196,6 +196,8 @@ class TestCLISetHeadAndLFSTransfer(unittest.TestCase):
         mock_helper_cls.return_value = mock_helper
         mock_helper.repo_id = "repo1"
         mock_helper.repo_path = "/git-repo"
+        mock_helper.client.list_dir.return_value = [{"name": "dev", "type": "file"}]
+        mock_helper.client.get_file_text.return_value = "1" * 40
 
         with patch.object(sys, "argv", ["git-remote-seafile", "set-head", "seafile://code/repo", "dev"]):
             with patch("sys.stdout", new_callable=io.StringIO) as mock_out:
@@ -205,6 +207,54 @@ class TestCLISetHeadAndLFSTransfer(unittest.TestCase):
                     "repo1", "/git-repo", "HEAD", b"ref: refs/heads/dev\n", replace=True
                 )
                 self.assertIn("Updated remote HEAD", mock_out.getvalue())
+
+    @patch("git_remote_seafile.cli.RemoteHelper")
+    def test_cli_set_head_rejects_nonexistent_branch(self, mock_helper_cls):
+        mock_helper = MagicMock()
+        mock_helper_cls.return_value = mock_helper
+        mock_helper.repo_id = "repo1"
+        mock_helper.repo_path = "/git-repo"
+        mock_helper.client.list_dir.return_value = [{"name": "main", "type": "file"}]
+        mock_helper.client.get_file_text.return_value = "1" * 40
+
+        with patch.object(sys, "argv", ["git-remote-seafile", "set-head", "seafile://code/repo", "dev"]):
+            with patch("sys.stderr", new_callable=io.StringIO) as mock_err:
+                code = main()
+                self.assertEqual(code, 1)
+                self.assertIn("does not exist", mock_err.getvalue())
+                mock_helper.client.upload_file.assert_not_called()
+
+    @patch("git_remote_seafile.cli.RemoteHelper")
+    def test_cli_gc_min_packs_validation(self, mock_helper_cls):
+        mock_helper = MagicMock()
+        mock_helper_cls.return_value = mock_helper
+        mock_helper.repo_id = "repo1"
+        mock_helper.repo_path = "/git-repo"
+
+        with patch("git_remote_seafile.gc.compact_repository") as mock_compact:
+            mock_compact.return_value = {"status": "ok", "old_packs": 3, "new_packs": 1, "saved_kb": 10}
+
+            # Valid integer
+            with patch.object(sys, "argv", ["git-remote-seafile", "gc", "seafile://code/repo", "--min-packs", "5"]):
+                code = main()
+                self.assertEqual(code, 0)
+                mock_compact.assert_called_with(mock_helper.client, "repo1", "/git-repo", min_packs=5)
+
+            # Invalid non-integer
+            with patch.object(sys, "argv", ["git-remote-seafile", "gc", "seafile://code/repo", "--min-packs", "invalid"]):
+                with patch("sys.stderr", new_callable=io.StringIO) as mock_err:
+                    code = main()
+                    self.assertEqual(code, 0)
+                    self.assertIn("invalid --min-packs value", mock_err.getvalue())
+                    mock_compact.assert_called_with(mock_helper.client, "repo1", "/git-repo", min_packs=2)
+
+            # Invalid non-positive integer
+            with patch.object(sys, "argv", ["git-remote-seafile", "gc", "seafile://code/repo", "--min-packs", "0"]):
+                with patch("sys.stderr", new_callable=io.StringIO) as mock_err:
+                    code = main()
+                    self.assertEqual(code, 0)
+                    self.assertIn("--min-packs must be a positive integer", mock_err.getvalue())
+                    mock_compact.assert_called_with(mock_helper.client, "repo1", "/git-repo", min_packs=2)
 
     @patch("git_remote_seafile.cli.RemoteHelper")
     @patch("git_remote_seafile.lfs.LFSTransferAgent")

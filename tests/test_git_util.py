@@ -21,6 +21,7 @@ from git_remote_seafile.git_util import (
     get_objects_to_push,
     install_packfile,
     is_ancestor,
+    GitError,
     rev_parse,
     run_git,
 )
@@ -75,6 +76,9 @@ class TestGitUtilWithRealGit(unittest.TestCase):
 
         self.assertTrue(is_ancestor(c1, c2))
         self.assertFalse(is_ancestor(c2, c1))
+        # An unknown object triggers exit >= 128 from git merge-base, raising GitError
+        with self.assertRaises(GitError):
+            is_ancestor("0" * 40, c2)
 
     def test_get_objects_to_push(self):
         c1 = rev_parse("HEAD")

@@ -77,8 +77,14 @@ def rev_parse(ref: str) -> str | None:
 
 def is_ancestor(ancestor_sha: str, descendant_sha: str) -> bool:
     """Check if ancestor_sha is an ancestor of descendant_sha (fast-forward check)."""
-    _, _, code = run_git(["merge-base", "--is-ancestor", ancestor_sha, descendant_sha])
-    return code == 0
+    _, err, code = run_git(["merge-base", "--is-ancestor", ancestor_sha, descendant_sha])
+    if code == 0:
+        return True
+    if code == 1:
+        return False
+    raise GitError(
+        f"git merge-base failed (exit {code}): {err.decode('utf-8', errors='replace').strip()}"
+    )
 
 
 def filter_existing_objects(shas: list[str] | str | None) -> list[str]:

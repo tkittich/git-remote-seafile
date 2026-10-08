@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-10-08
+
+URL percent-decoding, remote branch verification on `set-head`, compaction and CLI diagnostics,
+fast-forward error clarity, CI release test gating, and action SHA pinning.
+
+### Fixed
+
+- **URL percent-decoding.** Added `unquote()` to path segments in `_parse_url`, preventing
+  double-encoding of escaped characters (e.g. `%20` for spaces) on subsequent API requests.
+- **Remote branch verification in `set-head`.** Verifies that the destination branch exists
+  in remote refs before uploading the `HEAD` pointer, preventing dangling references.
+- **Compaction pack download failure logging.** Emits a stderr warning naming any packfile
+  whose download fails during compaction in `gc.py`.
+- **CLI `--min-packs` argument validation.** Emits a stderr warning on non-positive or
+  non-integer `--min-packs` inputs, gracefully falling back to default.
+- **Fast-forward error clarity.** Distinguishes git merge-base exit code 1 (diverged history)
+  from exit code >=128 (unknown remote tip locally), reporting `fetch first` rather than
+  `non-fast-forward`.
+
+### CI & Tooling
+
+- **Release workflow test gate.** Gated `build`, `publish-to-pypi`, and `github-release`
+  jobs in `release.yml` on a dedicated unit test suite run.
+- **Supply chain action pinning.** Pinned all GitHub Actions across `ci.yml` and `release.yml`
+  to immutable commit SHAs with semantic version comments.
+- **Published roadmap.** Published comprehensive project backlog and release milestones
+  in `ROADMAP.md` at repository root.
+
 ## [0.4.0] - 2026-10-08
 
 Pure-Python streaming multipart transfers, streamed packfile downloads with integrity

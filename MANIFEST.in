@@ -11,6 +11,7 @@ include CHANGELOG.md
 include USER_GUIDE.md
 include DESIGN.md
 include CONTRIBUTING.md
+include ROADMAP.md
 include pyproject.toml
 
 # The source-checkout launcher, so an sdist can be run without installing it.
