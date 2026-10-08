@@ -2,7 +2,7 @@
 
 **Baseline:** v0.5.4 (v0.5.4 release)  
 **Scope:** Active architectural backlog and milestones following releases v0.4.0 through v0.5.4.  
-**Test Suite:** 357 tests across 77 targets (all green).
+**Test Suite:** 359 tests across 77 targets (all green).
 
 > [!NOTE]
 > All critical and high-severity findings from `REVIEW.gemini.md`, `REVIEW.qwen.md`, and `REVIEW.sonnet.md` (including ticket-based distributed locking, abandoned ticket cleanup, post-lock ref verification, exception propagation, GC lock fencing, pack index validation, surrogateescape paths, container PID isolation, D/F ref pruning, multi-spec pack batching, Git LFS transfer progress, safety guardrails, parallel ref enumeration, smart pack fetch filtering, and disk-staged streaming) have been completed. Minor or low-priority items remain tracked in the backlog below. See [CHANGELOG.md](CHANGELOG.md) for detailed release notes.

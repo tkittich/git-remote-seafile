@@ -3,3 +3,4 @@
 *.bat text eol=crlf
 *.cmd text eol=crlf
 bin/* text eol=lf
+*.sh text eol=lf

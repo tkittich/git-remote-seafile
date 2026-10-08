@@ -55,6 +55,16 @@ class TestRemoteHelper(unittest.TestCase):
         lines = out.getvalue().splitlines()
         self.assertIn("push", lines)
         self.assertIn("fetch", lines)
+        self.assertIn("object-format", lines)
+
+    def test_object_format_negotiation(self):
+        h = RemoteHelper.__new__(RemoteHelper)
+        for fmt, expected in [("sha1", "ok\n"), ("sha256", "ok\n"), ("unknown", "error unsupported object format: unknown\n")]:
+            with self.subTest(fmt=fmt):
+                out = io.StringIO()
+                with patch("sys.stdin", io.StringIO(f"object-format {fmt}\n")), patch("sys.stdout", out):
+                    h.run()
+                self.assertEqual(out.getvalue(), expected)
 
     def test_cmd_list_refs(self):
         h = RemoteHelper.__new__(RemoteHelper)
@@ -1327,6 +1337,34 @@ class TestLFSTransferAgent(unittest.TestCase):
             self.assertEqual(progress_events[0]["oid"], "1234567890abcdef")
             self.assertEqual(progress_events[0]["bytesSoFar"], len(b"SAMPLE-LFS-CONTENT"))
             mock_client.upload_file.assert_called_once()
+        finally:
+            agent._temp_dir.cleanup()
+            Path(temp_path).unlink(missing_ok=True)
+
+    def test_lfs_upload_skips_when_object_already_exists_with_same_size(self):
+        mock_client = MagicMock()
+        agent = LFSTransferAgent(mock_client, "repo1", "/git-test")
+        try:
+            with tempfile.NamedTemporaryFile(delete=False) as tf:
+                tf.write(b"SAMPLE-LFS-CONTENT")
+                temp_path = tf.name
+
+            local_size = len(b"SAMPLE-LFS-CONTENT")
+            oid = "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
+            _, filename = agent._object_subpath(oid)
+            mock_client.list_dir.return_value = [
+                {"type": "file", "name": filename, "size": local_size}
+            ]
+
+            stdout_buf = io.StringIO()
+            with patch("sys.stdout", stdout_buf):
+                agent.handle_upload({"event": "upload", "oid": oid, "path": temp_path})
+
+            msgs = [json.loads(line) for line in stdout_buf.getvalue().strip().splitlines() if line]
+            resp = msgs[-1]
+            self.assertEqual(resp["event"], "complete")
+            self.assertEqual(resp["oid"], oid)
+            mock_client.upload_file.assert_not_called()
         finally:
             agent._temp_dir.cleanup()
             Path(temp_path).unlink(missing_ok=True)

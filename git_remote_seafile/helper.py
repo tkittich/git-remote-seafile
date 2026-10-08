@@ -165,6 +165,7 @@ class RemoteHelper:
         """Report supported capabilities to Git."""
         sys.stdout.write("fetch\n")
         sys.stdout.write("push\n")
+        sys.stdout.write("object-format\n")
         sys.stdout.write("\n")
         sys.stdout.flush()
 
@@ -669,6 +670,14 @@ class RemoteHelper:
 
             if line == "capabilities":
                 self.cmd_capabilities()
+            elif line.startswith("object-format"):
+                parts = line.split()
+                fmt = parts[1] if len(parts) > 1 else ""
+                if fmt in ("sha1", "sha256"):
+                    sys.stdout.write("ok\n")
+                else:
+                    sys.stdout.write(f"error unsupported object format: {fmt}\n")
+                sys.stdout.flush()
             elif line.startswith("list"):
                 for_push = "for-push" in line
                 self.cmd_list(for_push=for_push)
