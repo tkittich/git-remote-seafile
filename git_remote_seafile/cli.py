@@ -235,7 +235,7 @@ def main() -> int:
                             props.setdefault(rid, {})[k] = v
                     except Exception:
                         continue
-                for rid, kv in props.items():
+                for kv in props.values():
                     wt = kv.get("worktree")
                     if wt and target_path.is_relative_to(Path(wt).resolve()):
                         rel = target_path.relative_to(Path(wt).resolve())

@@ -116,7 +116,7 @@ class RemoteLock:
                 return
             except Exception as ex:
                 if time.time() - start_time >= self.timeout:
-                    raise RepositoryLockedError(f"Failed to acquire lock: {ex}")
+                    raise RepositoryLockedError(f"Failed to acquire lock: {ex}") from ex
                 time.sleep(2)
 
     def release(self) -> None:

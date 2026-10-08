@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from git_remote_seafile.cli import main, print_help
+from git_remote_seafile.cli import main
 from git_remote_seafile.client import SeafileAuthError
 from git_remote_seafile.safety import SafetyError
 

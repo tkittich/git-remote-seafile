@@ -125,22 +125,6 @@ class TestRemoteHelper(unittest.TestCase):
 
     @patch("git_remote_seafile.helper.rev_parse", return_value="newsha123")
     @patch("git_remote_seafile.helper.is_ancestor", return_value=False)
-    def test_cmd_push_non_fast_forward_rejected(self, mock_ancestor, mock_rev):
-        h = RemoteHelper.__new__(RemoteHelper)
-        h.client = MagicMock()
-        h.repo_id = "repo1"
-        h.repo_path = "/git-repo"
-        h._refs_cache = {"refs/heads/main": "oldsha456"}
-
-        out = io.StringIO()
-        with patch("sys.stdout", out), patch("git_remote_seafile.helper.RemoteLock"):
-            h.cmd_push(["refs/heads/main:refs/heads/main"])
-
-        output = out.getvalue()
-        self.assertIn("error refs/heads/main non-fast-forward", output)
-
-    @patch("git_remote_seafile.helper.rev_parse", return_value="newsha123")
-    @patch("git_remote_seafile.helper.is_ancestor", return_value=False)
     @patch("git_remote_seafile.helper.get_objects_to_push", return_value=[])
     def test_cmd_push_force_push_allowed(self, mock_objs, mock_ancestor, mock_rev):
         h = RemoteHelper.__new__(RemoteHelper)

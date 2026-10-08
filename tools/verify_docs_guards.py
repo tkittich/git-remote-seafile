@@ -91,7 +91,7 @@ def main():
     baseline_ok = True
     for name, test_name, _, _ in SCENARIOS:
         if not run_one(test_name).wasSuccessful():
-            print(f"  !! {test_name} already fails on real files")
+            print(f"  !! {name}: {test_name} already fails on real files")
             baseline_ok = False
     print("  all guards pass on real files" if baseline_ok else "  BASELINE BROKEN")
     print()
