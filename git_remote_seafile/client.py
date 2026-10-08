@@ -648,13 +648,6 @@ class SeafileClient:
             with open(content, "rb") as fh:
                 return self._upload(repo_id, parent_dir, filename, fh, replace, progress_callback)
         if isinstance(content, str):
-            if "\n" not in content and "\r" not in content and "\x00" not in content:
-                try:
-                    if Path(content).is_file():
-                        with open(content, "rb") as fh:
-                            return self._upload(repo_id, parent_dir, filename, fh, replace, progress_callback)
-                except (OSError, ValueError):
-                    pass
             content = content.encode("utf-8")
         return self._upload(repo_id, parent_dir, filename, content, replace, progress_callback)
 

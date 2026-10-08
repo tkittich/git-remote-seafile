@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-import re
 import shutil
 import sys
 import tempfile
@@ -18,7 +17,7 @@ from .packs import (
     fetch_and_install_pack,
     is_valid_pack_name,
 )
-from .refs import REF_NAMESPACES, iter_refs
+from .refs import REF_NAMESPACES, iter_refs, is_valid_ref_name
 from .safety import check_preflight_safety, SafetyError
 from .url import parse_seafile_url
 from .git_util import (
@@ -31,11 +30,11 @@ from .git_util import (
     is_ancestor,
     GitError,
     rev_parse,
+    run_git,
     get_git_dir,
 )
 
 _PACK_NAME_RE = PACK_NAME_RE
-_REF_NAME_INVALID_RE = re.compile(r"[\s\x00-\x1f\x7f~^:?*\[\\@]|\.\.|//|\.lock$")
 
 
 class RemoteHelper:
@@ -94,9 +93,43 @@ class RemoteHelper:
         """Report supported capabilities to Git."""
         sys.stdout.write("fetch\n")
         sys.stdout.write("push\n")
+        sys.stdout.write("option\n")
         sys.stdout.write("object-format\n")
         sys.stdout.write("\n")
         sys.stdout.flush()
+
+    def _detect_remote_object_format(self, discovered_refs: list[tuple[str, str]]) -> str:
+        """Detect whether repository uses sha1 or sha256 object format."""
+        for _, sha in discovered_refs:
+            if len(sha) == 64:
+                return "sha256"
+            if len(sha) == 40:
+                return "sha1"
+
+        try:
+            entries = self.client.list_dir(self.repo_id, self._full_path("objects/pack"))
+            if isinstance(entries, list):
+                for e in entries:
+                    name = e.get("name", "") if isinstance(e, dict) else ""
+                    if name.startswith("pack-") and name.endswith(".pack"):
+                        hex_part = name[5:-5]
+                        if len(hex_part) == 64:
+                            return "sha256"
+                        if len(hex_part) == 40:
+                            return "sha1"
+        except Exception:
+            pass
+
+        try:
+            out, _, code = run_git(["rev-parse", "--show-object-format"])
+            if code == 0:
+                local_fmt = out.decode("utf-8").strip()
+                if local_fmt in ("sha1", "sha256"):
+                    return local_fmt
+        except Exception:
+            pass
+
+        return "sha1"
 
     def cmd_list(self, for_push: bool = False) -> None:
         """List references on the remote Seafile repository."""
@@ -108,10 +141,10 @@ class RemoteHelper:
         # whose names contain a slash ("refs/heads/feature/auth") are included.
         # A single-level listing would hide them -- and a hidden ref is not just
         # missing from the advert, it is also treated as garbage by compaction.
-        listed_any = False
+        discovered_refs: list[tuple[str, str]] = []
         for namespace in REF_NAMESPACES:
             for ref_name, sha in iter_refs(self.client, self.repo_id, self.repo_path, namespace):
-                if _REF_NAME_INVALID_RE.search(ref_name):
+                if not is_valid_ref_name(ref_name):
                     sys.stderr.write(f"Warning: ignoring malformed ref name '{ref_name}'\n")
                     sys.stderr.flush()
                     continue
@@ -120,8 +153,17 @@ class RemoteHelper:
                     sys.stderr.flush()
                     continue
                 self._refs_cache[ref_name] = sha
-                sys.stdout.write(f"{sha} {ref_name}\n")
-                listed_any = True
+                discovered_refs.append((ref_name, sha))
+
+        # Emit object-format ref list keyword when refs exist
+        if discovered_refs:
+            obj_format = self._detect_remote_object_format(discovered_refs)
+            sys.stdout.write(f":object-format {obj_format}\n")
+
+        for ref_name, sha in discovered_refs:
+            sys.stdout.write(f"{sha} {ref_name}\n")
+
+        listed_any = bool(discovered_refs)
 
         # An empty ref listing is the correct answer for a brand-new repository.
         # But Seafile reports a missing directory as 404, which is also what a
@@ -333,6 +375,15 @@ class RemoteHelper:
                         pending_updates.clear()
 
                     # Update remote ref files and report ok for each updated target
+                    if pending_updates and not lock.verify_ownership():
+                        err_line = "lost lock ownership before updating refs"
+                        for dst, _, _ in pending_updates:
+                            sys.stdout.write(f"error {dst} {err_line}\n")
+                            reported_specs.add(dst)
+                        sys.stderr.write(f"\nPush error: {err_line}\n")
+                        sys.stderr.flush()
+                        pending_updates.clear()
+
                     for dst, local_sha, expected_remote_sha in pending_updates:
                         try:
                             # CAS check: verify remote ref hasn't changed since fast-forward check (N-1)
@@ -535,13 +586,16 @@ class RemoteHelper:
 
             if line == "capabilities":
                 self.cmd_capabilities()
-            elif line.startswith("object-format"):
-                parts = line.split()
-                fmt = parts[1] if len(parts) > 1 else ""
-                if fmt in ("sha1", "sha256"):
+            elif line.startswith("option"):
+                parts = line.split(None, 2)
+                opt = parts[1] if len(parts) > 1 else ""
+                val = parts[2] if len(parts) > 2 else ""
+                if opt == "object-format" and val == "true":
+                    sys.stdout.write("ok\n")
+                elif opt in ("progress", "verbosity"):
                     sys.stdout.write("ok\n")
                 else:
-                    sys.stdout.write(f"error unsupported object format: {fmt}\n")
+                    sys.stdout.write("unsupported\n")
                 sys.stdout.flush()
             elif line.startswith("list"):
                 for_push = "for-push" in line

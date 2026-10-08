@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-10-09
+
+Wire-level Git remote helper `object-format` negotiation, fail-closed remote garbage collection, Git LFS progress delta calculation, Windows CLI stdio discipline, legal `@` ref names, and architectural wiring.
+
+### Fixed & Hardened
+
+- **Git Remote Helper Object-Format Protocol Negotiation (N-1).** In `helper.py`, advertise `option` and `object-format` capabilities in `cmd_capabilities`, reply `ok` to `option object-format true` in the command loop, and emit `:object-format <algorithm>` during `cmd_list` by detecting hash length on remote refs. Enables native Git push and clone of SHA-256 repositories without pack corruption errors.
+- **Fail-Closed Remote GC Compaction (N-2, N-3).** In `gc.py:compact_repository`, make pack download loop strictly fail-closed: immediately abort compaction if any remote pack fails to download or verify size against directory listings. Step 7 only deletes packs recorded in `downloaded_packs`. Enforced 16MB buffer ceiling on in-memory downloads.
+- **Git LFS Custom Transfer Agent Progress Delta (N-4).** In `lfs.py`, track `last_bytes` per transfer and emit incremental `bytesSinceLast = transferred - last_bytes` in `progress` events, preventing Git LFS throughput and ETA calculation errors.
+- **Windows CLI Stdio Normalization across All Subcommands (N-5).** In `cli.py:main`, reconfigure `sys.stdout` (UTF-8, LF) and `sys.stdin` (UTF-8) unconditionally at the start of `main()`, ensuring `lfs-transfer` and other subcommands operate safely on Windows without `UnicodeEncodeError` or CRLF corruption.
+- **Ref Name Validation Conformance (N-12).** In `refs.py:is_valid_ref_name`, permit legal `@` characters in ref names per `git check-ref-format` (e.g. `feature@v2`) while rejecting single-component `@` and `@{` reflog sequences.
+- **Safety Typo Error Preservation (N-13).** In `safety.py`, gate typo suggestion queries strictly on 404 / not-found errors, preserving genuine API errors (HTTP 500, timeouts, duplicate libraries) rather than misleadingly reporting "Library not found".
+- **Push Lock Ownership Fencing (N-14).** In `helper.py:cmd_push`, verify lock ownership lease (`lock.verify_ownership()`) immediately before writing remote ref files to prevent split-brain pushes if renewal failed during upload.
+- **Case-Insensitive URL Scheme (N-15).** In `cli.py`, inspect `arg.lower().startswith("seafile://")` so uppercase schemes (`SEAFILE://`) are handled correctly.
+- **Upload File String Content Safety (N-16).** In `client.py:upload_file`, treat `str` payloads strictly as text content and encode to UTF-8 without querying local filesystem paths.
+- **Empty Host Validation in Explicit URLs (N-17).** In `url.py:parse_seafile_url`, reject explicit URLs with empty host components (e.g. `seafile://https:///lib/repo`).
+- **LFS Scratch Storage Co-location (N-8).** In `lfs.py`, place temporary scratch directory under `.git/lfs/tmp` when `git_dir` is provided, preventing cross-volume moves on multi-drive setups.
+- **Packfile Install Atomic Move Optimization (N-7).** In `git_util.py:install_packfile` and `packs.py:fetch_and_install_pack`, support `move=True` to move staged packfiles into staging atomically with `shutil.move` / `os.replace`, eliminating redundant disk copies.
+- **Production Architectural Wiring (N-6).** Wired `RemoteConfig` dataclass from `config.py` into `RemoteHelper`, `RemoteLock`, and `compact_repository`.
+- **SQLite Safe Reading Consolidation (N-9).** Reused `_copy_with_sidecars` and `_SIDECAR_SUFFIXES` from `sqlite_read.py` in `tools/seafile_doctor.py`.
+
 ## [0.6.0] - 2026-10-09
 
 Architectural decoupling of the remote helper into modular subsystems (`url.py`, `config.py`, `packs.py`), deprecation of legacy v0.1–v0.3 single-file lock mirror, object-format capability negotiation, and review workspace archival.

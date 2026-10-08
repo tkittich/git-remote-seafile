@@ -522,6 +522,16 @@ class TestCLILockManagement(unittest.TestCase):
                 self.assertEqual(code, 1)
                 self.assertIn("Error: Repository is locked by bob on otherhost", mock_err.getvalue())
 
+    @patch("git_remote_seafile.cli.RemoteHelper")
+    def test_cli_uppercase_scheme_dispatches_to_helper(self, mock_helper_cls):
+        mock_helper = MagicMock()
+        mock_helper_cls.return_value = mock_helper
+        with patch.object(sys, "argv", ["git-remote-seafile", "origin", "SEAFILE://code/myrepo"]):
+            code = main()
+            self.assertEqual(code, 0)
+            mock_helper_cls.assert_called_once_with("origin", "SEAFILE://code/myrepo")
+            mock_helper.run.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()

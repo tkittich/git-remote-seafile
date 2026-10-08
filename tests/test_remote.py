@@ -55,16 +55,43 @@ class TestRemoteHelper(unittest.TestCase):
         lines = out.getvalue().splitlines()
         self.assertIn("push", lines)
         self.assertIn("fetch", lines)
+        self.assertIn("option", lines)
         self.assertIn("object-format", lines)
 
     def test_object_format_negotiation(self):
         h = RemoteHelper.__new__(RemoteHelper)
-        for fmt, expected in [("sha1", "ok\n"), ("sha256", "ok\n"), ("unknown", "error unsupported object format: unknown\n")]:
-            with self.subTest(fmt=fmt):
-                out = io.StringIO()
-                with patch("sys.stdin", io.StringIO(f"object-format {fmt}\n")), patch("sys.stdout", out):
-                    h.run()
-                self.assertEqual(out.getvalue(), expected)
+        # Git sends 'option object-format true'
+        out = io.StringIO()
+        with patch("sys.stdin", io.StringIO("option object-format true\n")), patch("sys.stdout", out):
+            h.run()
+        self.assertEqual(out.getvalue(), "ok\n")
+
+        # Unsupported option replies 'unsupported\n'
+        out = io.StringIO()
+        with patch("sys.stdin", io.StringIO("option unknown-opt value\n")), patch("sys.stdout", out):
+            h.run()
+        self.assertEqual(out.getvalue(), "unsupported\n")
+
+    def test_cmd_list_detects_sha256_format(self):
+        h = RemoteHelper.__new__(RemoteHelper)
+        h.client = MagicMock()
+        h.repo_id = "repo1"
+        h.repo_path = "/git-repo"
+        h._refs_cache = {}
+
+        sha256_hash = "f" * 64
+        h.client.list_dir.side_effect = lambda repo_id, path: (
+            [{"type": "file", "name": "main"}] if "heads" in path else []
+        )
+        h.client.get_file_text.return_value = sha256_hash
+
+        out = io.StringIO()
+        with patch("sys.stdout", out):
+            h.cmd_list()
+
+        output = out.getvalue()
+        self.assertIn(":object-format sha256\n", output)
+        self.assertIn(f"{sha256_hash} refs/heads/main\n", output)
 
     def test_cmd_list_refs(self):
         h = RemoteHelper.__new__(RemoteHelper)
@@ -370,6 +397,31 @@ class TestRemoteHelper(unittest.TestCase):
         _, exclude = mock_objs.call_args[0]
         self.assertIn("remote_sha_main", exclude)
         self.assertIn("remote_sha_dev", exclude)
+
+    @patch("git_remote_seafile.helper.rev_parse", return_value="local_sha_main")
+    @patch("git_remote_seafile.helper.is_ancestor", return_value=True)
+    @patch("git_remote_seafile.helper.get_objects_to_push", return_value=[])
+    def test_cmd_push_aborts_ref_updates_if_lock_ownership_lost(self, mock_objs, mock_ancestor, mock_rev):
+        h = RemoteHelper.__new__(RemoteHelper)
+        h.client = MagicMock()
+        h.repo_id = "repo1"
+        h.repo_path = "/git-repo"
+        h._refs_cache = {}
+
+        mock_lock = MagicMock()
+        mock_lock.__enter__.return_value = mock_lock
+        # Ownership verification fails right before ref writes
+        mock_lock.verify_ownership.return_value = False
+
+        out = io.StringIO()
+        err = io.StringIO()
+        with patch("sys.stdout", out), patch("sys.stderr", err), patch("git_remote_seafile.helper.RemoteLock", return_value=mock_lock):
+            h.cmd_push(["refs/heads/main:refs/heads/main"])
+
+        self.assertIn("error refs/heads/main lost lock ownership before updating refs", out.getvalue())
+        self.assertIn("Push error: lost lock ownership before updating refs", err.getvalue())
+        # Ref was never uploaded to remote
+        h.client.upload_file.assert_not_called()
 
     @patch("git_remote_seafile.helper.rev_parse", return_value="sha123")
     @patch("git_remote_seafile.helper.is_ancestor", return_value=True)
@@ -1198,7 +1250,7 @@ class TestRemoteGC(unittest.TestCase):
             mock_client.delete_entry.assert_any_call("repo1", "/path/.git-lock.json")
 
     @patch("subprocess.run")
-    def test_gc_compaction_warns_on_failed_pack_download(self, mock_subprocess):
+    def test_gc_compaction_aborts_on_failed_pack_download(self, mock_subprocess):
         mock_client = MagicMock()
         mock_client.list_dir.side_effect = lambda repo_id, path: (
             [{"name": "pack-1.pack"}, {"name": "pack-2.pack"}, {"name": "pack-3.pack"}] if "objects/pack" in path
@@ -1221,22 +1273,48 @@ class TestRemoteGC(unittest.TestCase):
 
         mock_subprocess.side_effect = fake_subprocess
 
-        with patch("pathlib.Path.glob") as mock_glob, patch("sys.stderr", new_callable=io.StringIO) as mock_err:
-            p_pack = MagicMock()
-            p_pack.name = "pack-abcdef1234567890abcdef1234567890abcdef12.pack"
-            p_pack.read_bytes.return_value = b"NEW-PACK"
-            p_pack.stat.return_value.st_size = 8
+        res = compact_repository(mock_client, "repo1", "/path", min_packs=2, verbose=False)
+        self.assertEqual(res["status"], "error")
+        self.assertIn("Failed to download pack-1.pack", res["message"])
+        # Ensure no remote pack files were deleted when download failed (N-2 fail-closed)
+        deleted_paths = [call.args[1] for call in mock_client.delete_entry.call_args_list if len(call.args) > 1]
+        self.assertFalse(any(p.endswith(".pack") for p in deleted_paths))
 
-            p_idx = MagicMock()
-            p_idx.name = "pack-abcdef1234567890abcdef1234567890abcdef12.idx"
-            p_idx.read_bytes.return_value = b"NEW-IDX"
-            p_idx.stat.return_value.st_size = 7
+    @patch("subprocess.run")
+    def test_gc_compaction_aborts_on_pack_size_mismatch(self, mock_subprocess):
+        mock_client = MagicMock()
+        mock_client.list_dir.side_effect = lambda repo_id, path: (
+            [{"name": "pack-1.pack", "size": 1000}, {"name": "pack-2.pack", "size": 500}] if "objects/pack" in path
+            else [{"type": "file", "name": "main"}] if "refs/heads" in path
+            else []
+        )
+        # Server returns fewer bytes than reported in list_dir
+        mock_client.get_file_bytes.return_value = b"TRUNCATED"
+        del mock_client.download_file_to
 
-            mock_glob.return_value = [p_pack, p_idx]
+        res = compact_repository(mock_client, "repo1", "/path", min_packs=2, verbose=False)
+        self.assertEqual(res["status"], "error")
+        self.assertIn("does not match expected size", res["message"])
+        deleted_paths = [call.args[1] for call in mock_client.delete_entry.call_args_list if len(call.args) > 1]
+        self.assertFalse(any(p.endswith(".pack") for p in deleted_paths))
 
-            res = compact_repository(mock_client, "repo1", "/path", min_packs=2, verbose=False)
-            self.assertEqual(res["status"], "ok")
-            self.assertIn("Warning: failed to download pack-1.pack during compaction", mock_err.getvalue())
+    @patch("subprocess.run")
+    def test_gc_compaction_aborts_when_pack_exceeds_memory_limit(self, mock_subprocess):
+        mock_client = MagicMock()
+        mock_client.list_dir.side_effect = lambda repo_id, path: (
+            [{"name": "pack-1.pack", "size": 20 * 1024 * 1024}, {"name": "pack-2.pack", "size": 500}] if "objects/pack" in path
+            else [{"type": "file", "name": "main"}] if "refs/heads" in path
+            else []
+        )
+        del mock_client.download_file_to
+
+        res = compact_repository(mock_client, "repo1", "/path", min_packs=2, verbose=False)
+        self.assertEqual(res["status"], "error")
+        self.assertIn("exceeds in-memory buffer limit", res["message"])
+        # get_file_bytes must NOT be called for 20MB file
+        mock_client.get_file_bytes.assert_not_called()
+        deleted_paths = [call.args[1] for call in mock_client.delete_entry.call_args_list if len(call.args) > 1]
+        self.assertFalse(any(p.endswith(".pack") for p in deleted_paths))
 
     @patch("subprocess.run")
     def test_gc_preserves_all_branches_and_tags(self, mock_subprocess):
@@ -1337,6 +1415,38 @@ class TestLFSTransferAgent(unittest.TestCase):
             self.assertEqual(progress_events[0]["oid"], "1234567890abcdef")
             self.assertEqual(progress_events[0]["bytesSoFar"], len(b"SAMPLE-LFS-CONTENT"))
             mock_client.upload_file.assert_called_once()
+        finally:
+            agent._temp_dir.cleanup()
+            Path(temp_path).unlink(missing_ok=True)
+
+    def test_lfs_upload_progress_reports_incremental_deltas(self):
+        mock_client = MagicMock()
+        def fake_upload(repo_id, parent_dir, filename, path, replace=True, progress_callback=None):
+            if progress_callback:
+                progress_callback(100, 300)
+                progress_callback(250, 300)
+                progress_callback(300, 300)
+            return True
+
+        mock_client.upload_file.side_effect = fake_upload
+        agent = LFSTransferAgent(mock_client, "repo1", "/git-test")
+        try:
+            with tempfile.NamedTemporaryFile(delete=False) as tf:
+                tf.write(b"X" * 300)
+                temp_path = tf.name
+
+            stdout_buf = io.StringIO()
+            with patch("sys.stdout", stdout_buf):
+                agent.handle_upload({"event": "upload", "oid": "oid123", "path": temp_path})
+
+            msgs = [json.loads(line) for line in stdout_buf.getvalue().strip().splitlines() if line]
+            progress = [m for m in msgs if m.get("event") == "progress"]
+            # Verify incremental deltas: 100-0=100, 250-100=150, 300-250=50
+            self.assertEqual([(p["bytesSoFar"], p["bytesSinceLast"]) for p in progress], [
+                (100, 100),
+                (250, 150),
+                (300, 50),
+            ])
         finally:
             agent._temp_dir.cleanup()
             Path(temp_path).unlink(missing_ok=True)

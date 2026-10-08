@@ -504,11 +504,21 @@ class TestClientAPI(unittest.TestCase):
         self.client.session.get = MagicMock(return_value=MagicMock(status_code=200, text='"https://seafile.example.com/seafhttp/upload-api/123"'))
         with patch.object(self.client, "_upload") as mock_upload:
             mock_upload.return_value = True
-            # Multi-line string payload should be encoded to bytes rather than opened as a path
             res = self.client.upload_file("repo1", "/seafile", "ref.txt", "ref: refs/heads/main\n")
             self.assertTrue(res)
             mock_upload.assert_called_once_with(
                 "repo1", "/seafile", "ref.txt", b"ref: refs/heads/main\n", True, None
+            )
+
+    def test_upload_file_single_line_string_not_probed_as_path(self):
+        with patch.object(self.client, "_upload") as mock_upload:
+            mock_upload.return_value = True
+            # Even if a file named 'pyproject.toml' exists in CWD, passing it as a string
+            # must upload the string literal bytes rather than reading the file (N-16)
+            res = self.client.upload_file("repo1", "/seafile", "ref.txt", "pyproject.toml")
+            self.assertTrue(res)
+            mock_upload.assert_called_once_with(
+                "repo1", "/seafile", "ref.txt", b"pyproject.toml", True, None
             )
 
     def test_client_username_stored_and_passed(self):

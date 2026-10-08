@@ -77,6 +77,13 @@ class TestUrlParsingModule(unittest.TestCase):
         self.assertEqual(res.library_name, "code")
         self.assertEqual(res.repo_path, "/repo")
 
+    def test_empty_host_explicit_scheme_rejected(self):
+        for url in ("seafile://https:///lib/repo", "seafile://http:///lib/repo"):
+            with self.subTest(url=url):
+                with self.assertRaises(ValueError) as ctx:
+                    parse_seafile_url(url)
+                self.assertIn("invalid host", str(ctx.exception))
+
 
 if __name__ == "__main__":
     unittest.main()

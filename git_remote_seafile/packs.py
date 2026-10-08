@@ -13,6 +13,7 @@ from .client import SeafileClient, SeafileAPIError
 from .git_util import install_packfile
 
 PACK_NAME_RE = re.compile(r"^pack-[0-9a-zA-Z._-]+\.pack$")
+MAX_IN_MEMORY_PACK_BYTES = 16 * 1024 * 1024
 
 
 def is_valid_pack_name(pack_name: str) -> bool:
@@ -70,7 +71,7 @@ def fetch_and_install_pack(
                 downloaded = False
 
         if not downloaded:
-            if expected_size is not None and expected_size > 16 * 1024 * 1024:
+            if expected_size is not None and expected_size > MAX_IN_MEMORY_PACK_BYTES:
                 raise SeafileAPIError(
                     f"Packfile {pack_name} streaming download failed and size ({expected_size} bytes) "
                     "exceeds in-memory buffer limit (16MB)."
@@ -119,6 +120,13 @@ def fetch_and_install_pack(
                 pass
             idx_downloaded = False
 
-        (installer or install_packfile)(pack_name, staged_pack, staged_idx if idx_downloaded else None)
+        try:
+            (installer or install_packfile)(
+                pack_name, staged_pack, staged_idx if idx_downloaded else None, move=True
+            )
+        except TypeError:
+            (installer or install_packfile)(
+                pack_name, staged_pack, staged_idx if idx_downloaded else None
+            )
     finally:
         shutil.rmtree(staging_dir, ignore_errors=True)

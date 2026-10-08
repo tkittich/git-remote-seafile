@@ -31,6 +31,17 @@ def print_help() -> None:
 
 
 def main() -> int:
+    if hasattr(sys.stdout, "reconfigure"):
+        try:
+            sys.stdout.reconfigure(newline="\n", encoding="utf-8")
+        except Exception:
+            pass
+    if hasattr(sys.stdin, "reconfigure"):
+        try:
+            sys.stdin.reconfigure(encoding="utf-8")
+        except Exception:
+            pass
+
     args = sys.argv[1:]
     if not args:
         print_help()
@@ -173,7 +184,13 @@ def main() -> int:
         try:
             helper = RemoteHelper("lfs", url)
             from .lfs import LFSTransferAgent
-            agent = LFSTransferAgent(helper.client, helper.repo_id, helper.repo_path)
+            git_dir = None
+            try:
+                from .git_util import get_git_dir
+                git_dir = get_git_dir()
+            except Exception:
+                pass
+            agent = LFSTransferAgent(helper.client, helper.repo_id, helper.repo_path, git_dir=git_dir)
             agent.run()
             return 0
         except Exception as ex:
@@ -309,23 +326,13 @@ def main() -> int:
     # call at all -- it is a mistyped subcommand.  Without this check a typo like
     # `git-remote-seafile chck-auth` was passed to the helper as the *remote URL*
     # and surfaced as a baffling "library not found" or auth error.
-    if not any(arg.startswith("seafile://") for arg in args):
+    if not any(arg.lower().startswith("seafile://") for arg in args):
         sys.stderr.write(f"git-remote-seafile: unknown command '{args[0]}'\n\n")
         print_help()
         return 2
 
     remote_name = args[0]
     url = args[1] if len(args) > 1 else args[0]
-    if hasattr(sys.stdout, "reconfigure"):
-        try:
-            sys.stdout.reconfigure(newline="\n", encoding="utf-8")
-        except Exception:
-            pass
-    if hasattr(sys.stdin, "reconfigure"):
-        try:
-            sys.stdin.reconfigure(encoding="utf-8")
-        except Exception:
-            pass
     try:
         helper = RemoteHelper(remote_name, url)
         helper.run()

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import unittest
 
-from git_remote_seafile.refs import REF_NAMESPACES, iter_refs
+from git_remote_seafile.refs import REF_NAMESPACES, iter_refs, is_valid_ref_name
 
 
 class FakeClient:
@@ -133,6 +133,31 @@ class TestIterRefs(unittest.TestCase):
             list(iter_refs(FailingClient(tree), "rid", "/git-repo", "refs/heads", max_workers=2))
         with self.assertRaises(RuntimeError):
             list(iter_refs(FailingClient(tree), "rid", "/git-repo", "refs/heads", max_workers=1))
+
+    def test_ref_name_with_legal_at_sign_is_accepted(self):
+        """Legal @ characters (feature@v2, v1.0@release) are accepted per git check-ref-format."""
+        self.assertTrue(is_valid_ref_name("refs/heads/feature@v2"))
+        self.assertTrue(is_valid_ref_name("refs/tags/v1.0@final"))
+        self.assertTrue(is_valid_ref_name("refs/heads/user@domain/task"))
+
+        tree = {
+            "/git-repo/refs/heads": {"feature@v2": "file:sha123"}
+        }
+        got = dict(iter_refs(FakeClient(tree), "rid", "/git-repo", "refs/heads"))
+        self.assertEqual(got, {"refs/heads/feature@v2": "sha123"})
+
+    def test_illegal_ref_names_are_rejected(self):
+        """Standalone @, @{ sequence, and control/invalid chars are rejected."""
+        self.assertFalse(is_valid_ref_name("refs/heads/@"))
+        self.assertFalse(is_valid_ref_name("refs/heads/foo@{bar}"))
+        self.assertFalse(is_valid_ref_name("refs/heads/.hidden"))
+        self.assertFalse(is_valid_ref_name("refs/heads/branch.lock"))
+        self.assertFalse(is_valid_ref_name("refs/heads/branch..dots"))
+        self.assertFalse(is_valid_ref_name("refs/heads/branch?mark"))
+        self.assertFalse(is_valid_ref_name("refs/heads/branch*star"))
+        self.assertFalse(is_valid_ref_name("refs/heads/branch[open"))
+        self.assertFalse(is_valid_ref_name("refs/heads/branch\\back"))
+        self.assertFalse(is_valid_ref_name("refs/heads/trailing."))
 
 
 if __name__ == "__main__":

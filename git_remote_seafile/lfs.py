@@ -16,12 +16,29 @@ from .client import SeafileClient
 class LFSTransferAgent:
     """Implements Git LFS Custom Transfer protocol over Seafile Web API."""
 
-    def __init__(self, client: SeafileClient, repo_id: str, repo_path: str):
+    def __init__(
+        self,
+        client: SeafileClient,
+        repo_id: str,
+        repo_path: str,
+        git_dir: Path | str | None = None,
+    ):
         self.client = client
         self.repo_id = repo_id
         self.repo_path = repo_path.rstrip("/")
         self.lfs_dir = f"{self.repo_path}/lfs"
-        self._temp_dir = tempfile.TemporaryDirectory(prefix="git-seaf-lfs-")
+        tmp_parent: Path | None = None
+        if git_dir is not None:
+            candidate = Path(git_dir) / "lfs" / "tmp"
+            try:
+                candidate.mkdir(parents=True, exist_ok=True)
+                tmp_parent = candidate
+            except Exception:
+                tmp_parent = None
+        self._temp_dir = tempfile.TemporaryDirectory(
+            prefix="git-seaf-lfs-",
+            dir=str(tmp_parent) if tmp_parent else None,
+        )
 
     def _object_subpath(self, oid: str) -> tuple[str, str]:
         """Convert SHA256 OID into (parent_dir, filename)."""
@@ -92,13 +109,23 @@ class LFSTransferAgent:
             # Hand the client the *path*, not the bytes.  An LFS object is
             # routinely far larger than RAM, and reading it in first is exactly
             # what LFS exists to avoid; the client streams it from disk.
+            last_bytes = 0
+
             def on_upload_progress(transferred: int, total: int) -> None:
-                self._send_progress(oid, transferred, total or local_size)
+                nonlocal last_bytes
+                delta = transferred - last_bytes
+                if delta > 0:
+                    self._send_progress(oid, transferred, delta)
+                    last_bytes = transferred
 
             self.client.upload_file(
                 self.repo_id, parent_dir, filename, Path(local_path), replace=True, progress_callback=on_upload_progress
             )
-            self._send_progress(oid, local_size, local_size)
+            final_delta = local_size - last_bytes
+            if final_delta > 0:
+                self._send_progress(oid, local_size, final_delta)
+            elif last_bytes == 0 and local_size == 0:
+                self._send_progress(oid, 0, 0)
             self._send_json({"event": "complete", "oid": oid})
         except Exception as ex:
             self._send_json({
@@ -125,8 +152,14 @@ class LFSTransferAgent:
             temp_dest = Path(self._temp_dir.name) / oid
             # Streamed straight to disk: `get_file_bytes` would hold the whole
             # object in memory before writing it.
+            last_bytes = 0
+
             def on_download_progress(transferred: int, total: int) -> None:
-                self._send_progress(oid, transferred, total)
+                nonlocal last_bytes
+                delta = transferred - last_bytes
+                if delta > 0:
+                    self._send_progress(oid, transferred, delta)
+                    last_bytes = transferred
 
             download_ok = self.client.download_file_to(
                 self.repo_id, file_path, temp_dest, progress_callback=on_download_progress
@@ -141,7 +174,11 @@ class LFSTransferAgent:
                 return
 
             size = temp_dest.stat().st_size if temp_dest.is_file() else 0
-            self._send_progress(oid, size, size)
+            final_delta = size - last_bytes
+            if final_delta > 0:
+                self._send_progress(oid, size, final_delta)
+            elif last_bytes == 0 and size == 0:
+                self._send_progress(oid, 0, 0)
             self._send_json({
                 "event": "complete",
                 "oid": oid,

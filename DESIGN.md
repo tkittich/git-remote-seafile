@@ -112,13 +112,17 @@ sequenceDiagram
 
     Note over Git,Helper: Capability Handshake
     Git->>Helper: capabilities
-    Helper->>Git: fetch<br/>push
+    Helper->>Git: fetch<br/>push<br/>option<br/>object-format
+
+    Note over Git,Helper: Option Negotiation
+    Git->>Helper: option object-format true
+    Helper->>Git: ok
 
     Note over Git,Helper: Ref Discovery
     Git->>Helper: list
     Helper->>API: GET /refs/heads/ and /refs/tags/
     API-->>Helper: JSON directory listing and ref SHAs
-    Helper->>Git: [sha1] refs/heads/main<br/>@refs/heads/main HEAD
+    Helper->>Git: :object-format [sha1|sha256]<br/>[sha] refs/heads/main<br/>@refs/heads/main HEAD
 
     Note over Git,Helper: Push Transaction
     Git->>Helper: push refs/heads/main:refs/heads/main
@@ -201,6 +205,16 @@ To prevent data loss and filesystem thrashing, `git-remote-seafile` enforces pre
   - **`config.py`**: Git configuration resolution with typed structured defaults (`RemoteConfig`).
   - **`packs.py`**: Remote packfile discovery, streaming downloads, integrity verification, and atomic installation (`fetch_and_install_pack`, `check_remote_has_packs`, `is_valid_pack_name`).
   - **`helper.py`**: Lean protocol handler focused strictly on Git remote helper commands (`capabilities`, `list`, `push`, `fetch`).
+
+### 7.9 Protocol Compliance & Fail-Closed Hardening (v0.6.1)
+- **Wire Object-Format Negotiation (N-1)**: Advertises `option` and `object-format` capabilities to Git core, replies `ok` to `option object-format true`, and emits `:object-format <alg>` during `list` by inspecting remote ref hash lengths, enabling native Git push and clone of SHA-256 repositories.
+- **Fail-Closed Remote GC Compaction (N-2, N-3)**: Remote compaction aborts immediately if any remote pack fails to download or verify size against directory listings; Step 7 deletes only successfully compacted packs, preventing remote data loss.
+- **Git LFS Incremental Delta Reporting (N-4)**: Sends incremental `bytesSinceLast` in LFS progress events instead of total file size, ensuring accurate throughput rates and ETAs in Git LFS.
+- **Cross-Subcommand Stdio Discipline (N-5)**: Normalizes UTF-8 encoding and LF line discipline at the CLI entry point for all subcommands.
+- **Ref Name Character Conformance (N-12)**: Permits legal `@` characters in ref names per `git check-ref-format` while strictly forbidding standalone `@` components and `@{` reflog sequences.
+- **Push Lock Ownership Fencing (N-14)**: Enforces `lock.verify_ownership()` immediately before writing remote ref files in `cmd_push`.
+- **Atomic Move Optimization (N-7)**: Supports `move=True` during packfile installation, renaming staged packs directly into local staging rather than copying across directories.
+- **LFS Scratch Co-location (N-8)**: Places LFS transfer scratch storage under `.git/lfs/tmp` when available, eliminating cross-volume copies.
 
 ---
 

@@ -82,6 +82,27 @@ class TestPushFetchRoundTrip(E2ETestCase):
         self.assertTrue((dst / "b.txt").is_file())
         self.assertIn("c2", run_git(["log", "--oneline"], dst, self.env).stdout)
 
+    def test_push_then_clone_sha256(self):
+        """End-to-end push and clone of SHA-256 repository (N-1)."""
+        src = self.work / "src_sha256"
+        run_git(["init", "--object-format=sha256", "-b", "main", str(src)], self.work, self.env)
+        commit_file(src, "README.txt", "hello sha256\n", "initial sha256 commit", self.env)
+        run_git(["remote", "add", "origin", self.url("repo_sha256")], src, self.env)
+
+        run_git(["push", "-u", "origin", "main"], src, self.env)
+
+        dst = self.work / "clone_sha256"
+        run_git(["clone", self.url("repo_sha256"), str(dst)], self.work, self.env)
+
+        self.assertEqual(
+            (dst / "README.txt").read_text(encoding="utf-8").replace("\r\n", "\n"),
+            "hello sha256\n"
+        )
+        self.assertIn("initial sha256 commit", run_git(["log", "--oneline"], dst, self.env).stdout)
+        # Verify local object format of cloned repository is sha256
+        res = run_git(["rev-parse", "--show-object-format"], dst, self.env)
+        self.assertEqual(res.stdout.strip(), "sha256")
+
 
 class TestFaultInjection(E2ETestCase):
     """Failure paths a healthy live server will never show on demand."""

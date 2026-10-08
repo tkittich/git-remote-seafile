@@ -29,7 +29,19 @@ from .client import SeafileClient
 #: stable (heads before tags), which makes the advertised listing deterministic.
 REF_NAMESPACES = ("refs/heads", "refs/tags")
 
-_INVALID_REF_PATTERN = re.compile(r"[\s\x00-\x1f\x7f~^:?*\[\\@]|\.\.|//|\.lock$")
+_INVALID_REF_CHARS = re.compile(r"[\s\x00-\x1f\x7f~^:?*\[\\]|\.\.|//|\.lock$|@\{")
+
+
+def is_valid_ref_name(ref_name: str) -> bool:
+    """Return True if ref_name is a valid Git ref name per git-check-ref-format."""
+    if not ref_name or _INVALID_REF_CHARS.search(ref_name):
+        return False
+    parts = ref_name.split("/")
+    if any(p == "@" or p.startswith(".") or p.endswith(".lock") for p in parts):
+        return False
+    if ref_name.endswith("."):
+        return False
+    return True
 
 
 def iter_refs(
@@ -69,7 +81,7 @@ def iter_refs(
                 stack.append((f"{dir_path}/{name}", f"{prefix}{name}/"))
             elif kind == "file":
                 ref_name = f"{ns}/{prefix}{name}"
-                if _INVALID_REF_PATTERN.search(ref_name):
+                if not is_valid_ref_name(ref_name):
                     sys.stderr.write(f"Warning: ignoring malformed ref name '{ref_name}'\n")
                     sys.stderr.flush()
                     continue

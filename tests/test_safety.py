@@ -282,6 +282,16 @@ class TestSafetyGuardrails(unittest.TestCase):
         self.assertIn("Did you mean: Documents?", str(ctx.exception))
         self.assertIn("Available libraries: Documents, Pictures", str(ctx.exception))
 
+    def test_check_library_existence_ambiguous_libraries_raises_safety_error(self):
+        client = MagicMock()
+        client.server_url = "https://seafile.example.com"
+        client.get_repo_id.side_effect = Exception("Multiple libraries named 'code' found")
+
+        with self.assertRaises(SafetyError) as ctx:
+            check_preflight_safety(client, "code", "/myproject", push_mode=False, synced_libs=[])
+
+        self.assertIn("Ambiguous library 'code'", str(ctx.exception))
+
     def test_cmd_push_blocked_when_safety_error(self):
         h = RemoteHelper.__new__(RemoteHelper)
         h.client = MagicMock()

@@ -234,11 +234,18 @@ def create_packfile(
         return pack_sha, pack_bytes, idx_bytes
 
 
-def install_packfile(pack_name: str, pack_bytes: bytes | Path | str, idx_bytes: bytes | Path | str | None = None) -> None:
+def install_packfile(
+    pack_name: str,
+    pack_bytes: bytes | Path | str,
+    idx_bytes: bytes | Path | str | None = None,
+    move: bool = False,
+) -> None:
     """Install a packfile into the local repository's .git/objects/pack/.
 
     Accepts pack content either in-memory as bytes, or as a Path/str pointing
     to a staged file on disk, avoiding in-memory buffering for large packs.
+    When ``move=True`` and disk paths are supplied, staged files are moved rather
+    than copied, eliminating redundant disk I/O.
 
     The pack and its index are staged in a scratch directory and only moved to
     their final names once both are complete, so ``os.replace`` publishes them
@@ -267,13 +274,19 @@ def install_packfile(pack_name: str, pack_bytes: bytes | Path | str, idx_bytes: 
         staged_idx = staging_dir / f"{base_name}.idx"
 
         if isinstance(pack_bytes, (str, Path, os.PathLike)):
-            shutil.copyfile(pack_bytes, staged_pack)
+            if move:
+                shutil.move(str(pack_bytes), str(staged_pack))
+            else:
+                shutil.copyfile(pack_bytes, staged_pack)
         else:
             staged_pack.write_bytes(pack_bytes)
 
         if idx_bytes:
             if isinstance(idx_bytes, (str, Path, os.PathLike)):
-                shutil.copyfile(idx_bytes, staged_idx)
+                if move:
+                    shutil.move(str(idx_bytes), str(staged_idx))
+                else:
+                    shutil.copyfile(idx_bytes, staged_idx)
             else:
                 staged_idx.write_bytes(idx_bytes)
             # Verify the index matches the packfile (N-5)

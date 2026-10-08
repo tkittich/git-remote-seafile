@@ -178,26 +178,32 @@ def check_preflight_safety(
     if client:
         try:
             target_repo_id = client.get_repo_id(library_name)
-        except Exception:
-            # Try to list accessible libraries to give a helpful suggestion
-            try:
-                resp = client.session.get(
-                    f"{client.server_url}/api2/repos/",
-                    timeout=getattr(client, "timeout", 30),
-                )
-                if resp.status_code == 200:
-                    available_libs = [r.get("name") for r in resp.json() if r.get("name")]
-                    suggestions = difflib.get_close_matches(library_name, available_libs, n=3, cutoff=0.5)
-                    sugg_str = ""
-                    if suggestions:
-                        sugg_str = f"\nDid you mean: {', '.join(suggestions)}?"
-                    avail_str = f"\nAvailable libraries: {', '.join(sorted(available_libs))}" if available_libs else ""
-                    raise SafetyError(
-                        f"Library '{library_name}' not found on {client.server_url}.{sugg_str}{avail_str}"
+        except Exception as ex:
+            err_msg = str(ex).lower()
+            if "not found" in err_msg or "404" in err_msg:
+                # Try to list accessible libraries to give a helpful suggestion
+                try:
+                    resp = client.session.get(
+                        f"{client.server_url}/api2/repos/",
+                        timeout=getattr(client, "timeout", 30),
                     )
-            except SafetyError:
-                raise
-            except Exception:
+                    if resp.status_code == 200:
+                        available_libs = [r.get("name") for r in resp.json() if r.get("name")]
+                        suggestions = difflib.get_close_matches(library_name, available_libs, n=3, cutoff=0.5)
+                        sugg_str = ""
+                        if suggestions:
+                            sugg_str = f"\nDid you mean: {', '.join(suggestions)}?"
+                        avail_str = f"\nAvailable libraries: {', '.join(sorted(available_libs))}" if available_libs else ""
+                        raise SafetyError(
+                            f"Library '{library_name}' not found on {client.server_url}.{sugg_str}{avail_str}"
+                        )
+                except SafetyError:
+                    raise
+                except Exception:
+                    pass
+            elif "multiple libraries" in err_msg:
+                raise SafetyError(f"Ambiguous library '{library_name}': {ex}") from ex
+            else:
                 pass
 
     # 3. Discover local synced libraries

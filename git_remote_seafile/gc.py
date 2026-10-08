@@ -9,9 +9,10 @@ from pathlib import Path
 from typing import Any
 
 from .client import SeafileClient
+from .config import RemoteConfig
 from .git_util import clean_git_env
 from .lock import RemoteLock
-from .packs import PACK_NAME_RE, is_valid_pack_name
+from .packs import PACK_NAME_RE, is_valid_pack_name, MAX_IN_MEMORY_PACK_BYTES
 from .refs import REF_NAMESPACES, iter_refs
 
 _PACK_NAME_RE = PACK_NAME_RE
@@ -41,12 +42,13 @@ def compact_repository(
     repo_path: str,
     min_packs: int = 2,
     verbose: bool = True,
+    config: RemoteConfig | None = None,
 ) -> dict[str, Any]:
     """Consolidate multiple small packfiles on Seafile into a single optimized packfile."""
     clean_repo = repo_path.rstrip("/")
     pack_dir = f"{clean_repo}/objects/pack"
 
-    with RemoteLock(client, repo_id, clean_repo) as lock:
+    with RemoteLock(client, repo_id, clean_repo, config=config) as lock:
         def maybe_renew() -> None:
             lock.maybe_renew(20.0)
 
@@ -87,18 +89,28 @@ def compact_repository(
             local_pack_dir = bare_repo / "objects" / "pack"
             local_pack_dir.mkdir(parents=True, exist_ok=True)
 
+            pack_sizes = {
+                e.get("name"): e.get("size")
+                for e in entries
+                if isinstance(e, dict) and e.get("name")
+            }
+
             # 3. Download all packfiles and indices
+            downloaded_packs: list[str] = []
             total_old_bytes = 0
             for pack_name in old_packs:
                 if not is_valid_pack_name(pack_name):
-                    sys.stderr.write(f"Warning: ignoring invalid packfile name {pack_name} during compaction.\n")
-                    continue
+                    return {
+                        "status": "error",
+                        "message": f"Invalid packfile name '{pack_name}' on remote; aborting compaction to prevent data loss.",
+                    }
                 maybe_renew()
                 if verbose:
                     sys.stderr.write(f"  Downloading {pack_name}...\n")
                 idx_name = pack_name.removesuffix(".pack") + ".idx"
                 pack_file = local_pack_dir / pack_name
                 idx_file = local_pack_dir / idx_name
+                expected_size = pack_sizes.get(pack_name)
 
                 # Stream packfile directly to disk, falling back to get_file_bytes if needed.
                 downloaded = False
@@ -109,12 +121,26 @@ def compact_repository(
                         sys.stderr.write(f"Warning: streaming download of {pack_name} failed: {exc}\n")
                         downloaded = False
                 if not downloaded:
+                    if expected_size is not None and expected_size > MAX_IN_MEMORY_PACK_BYTES:
+                        return {
+                            "status": "error",
+                            "message": f"Packfile {pack_name} ({expected_size} bytes) exceeds in-memory buffer limit ({MAX_IN_MEMORY_PACK_BYTES} bytes) and streaming failed.",
+                        }
                     pack_bytes = client.get_file_bytes(repo_id, f"{pack_dir}/{pack_name}")
                     if not pack_bytes:
-                        sys.stderr.write(f"Warning: failed to download {pack_name} during compaction; skipping.\n")
-                        continue
+                        return {
+                            "status": "error",
+                            "message": f"Failed to download {pack_name} during compaction; aborting compaction to prevent data loss.",
+                        }
                     pack_file.write_bytes(pack_bytes)
 
+                if expected_size is not None and pack_file.stat().st_size != expected_size:
+                    return {
+                        "status": "error",
+                        "message": f"Packfile {pack_name} downloaded size ({pack_file.stat().st_size}) does not match expected size ({expected_size}); aborting compaction.",
+                    }
+
+                downloaded_packs.append(pack_name)
                 total_old_bytes += pack_file.stat().st_size
 
                 idx_downloaded = False
@@ -241,7 +267,7 @@ def compact_repository(
                 )
 
             deleted_count = 0
-            for old_p in old_packs:
+            for old_p in downloaded_packs:
                 maybe_renew()
                 if old_p not in new_pack_names:
                     old_idx = old_p.removesuffix(".pack") + ".idx"

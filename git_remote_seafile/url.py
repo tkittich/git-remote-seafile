@@ -63,7 +63,7 @@ def parse_seafile_url(url: str) -> SeafileURL:
         parsed = urlparse(stripped)
         scheme = parsed.scheme
         host = (parsed.hostname or "").lower()
-        if host in (".", ".."):
+        if not host or host in (".", ".."):
             raise ValueError(f"Invalid Seafile URL format: invalid host '{host}': {url}")
         port = parsed.port
         if port and not ((scheme == "https" and port == 443) or (scheme == "http" and port == 80)):

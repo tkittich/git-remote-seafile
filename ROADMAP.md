@@ -83,6 +83,20 @@
 
 ---
 
+### Phase 4.6: v0.6.1 — Protocol Compliance, Fail-Closed Remote GC & Architectural Wiring (Completed Deliverables)
+* **Git Remote Helper Object-Format Negotiation (N-1):** Advertised `option` + `object-format` capabilities, replied `ok` to `option object-format true`, and emitted `:object-format <alg>` during `cmd_list`, enabling native Git clones and pushes of SHA-256 repositories.
+* **Fail-Closed Remote GC Compaction (N-2, N-3):** Aborted compaction immediately if any pack download or size check fails; Step 7 deletes only successfully compacted packs, preventing remote data loss.
+* **Git LFS Progress Delta Reporting (N-4):** Emitted incremental `bytesSinceLast` in transfer progress events instead of total file size, restoring correct throughput metrics and ETA estimates in Git LFS.
+* **Windows Stdio Normalization across All Subcommands (N-5):** Standardized UTF-8 and LF line endings at CLI entry point for all subcommands.
+* **Ref Name Character Set Conformance (N-12):** Permitted legal `@` characters in ref names per `git check-ref-format` while strictly forbidding `@` components and `@{` reflog syntax.
+* **Safety Typo Error Preservation (N-13):** Preserved distinct HTTP and duplicate library errors without misleading "Library not found" masking.
+* **Push Lock Fencing (N-14):** Enforced `verify_ownership()` before writing remote ref files in `cmd_push`.
+* **Case-Insensitive URL Scheme & URL Parsing Hardening (N-15, N-17):** Handled case-insensitive `seafile://` schemes and rejected empty hosts in explicit URLs.
+* **Upload File String Safety (N-16):** Strictly encoded `str` content to UTF-8 without querying local filesystem paths.
+* **Architectural Wiring & Performance Optimization (N-6, N-7, N-8, N-9):** Wired `RemoteConfig` dataclass into production runtime, avoided redundant fetch packfile copying with atomic rename (`move=True`), co-located LFS temporary scratch storage within repository git directory, and unified SQLite safe reading logic with `sqlite_read.py`.
+
+---
+
 ### Phase 5.0: v1.0.0 — Production Stability & Federation (Future)
 * **Legacy Single-File Lock Removal:** Remove deprecated `.git-lock.json` mirror uploads and deletions.
 * **Comprehensive End-to-End Fault Injection:** Clustered Seafile tests and high-latency simulation.

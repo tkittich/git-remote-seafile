@@ -11,7 +11,7 @@ import time
 import uuid
 from typing import Any
 from .client import SeafileClient
-from .git_util import get_git_config_int
+from .config import RemoteConfig, get_git_config_int
 
 
 class RepositoryLockedError(Exception):
@@ -81,12 +81,18 @@ class RemoteLock:
         repo_path: str,
         timeout: int | None = None,
         lease: int | None = None,
+        config: RemoteConfig | None = None,
     ):
         self.client = client
         self.repo_id = repo_id
         self.repo_path = repo_path.rstrip("/")
         self.lock_dir = f"{self.repo_path}/.git-lock.d"
         self.lock_file_path = f"{self.repo_path}/.git-lock.json"
+        if config is not None:
+            if timeout is None:
+                timeout = config.lock_timeout
+            if lease is None:
+                lease = config.lock_lease
         if timeout is None:
             timeout = get_git_config_int("seafile.locktimeout", 15)
         if lease is None:

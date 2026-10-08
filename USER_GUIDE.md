@@ -199,7 +199,7 @@ Both approaches eliminate desktop sync thrashing and lock contention. Below is a
 | **Storage Limits & Economics** | **Restricted / Costly.** GitHub enforces soft 1–2 GB repo limits; Git LFS costs $5/mo per 50 GB. Self-hosted forges consume separate disk pools. | **Unrestricted.** Utilizes your existing Seafile storage quota (often multi-terabyte). Native Git LFS custom transfer agent with zero extra fees. |
 | **Code Review & Collaboration** | **Full Web Forge UI.** Pull requests, inline comments, code search, issue tracking, and automated CI/CD runners (GitHub Actions, GitLab CI). | **Storage & Transport Layer Only.** No built-in web code review UI. Focuses purely on reliable Git transport, distributed locking, and ref sync. |
 | **Transport Protocol** | Git Smart HTTP (`git-upload-pack`, `git-receive-pack`) or SSH protocol. Server negotiates deltas dynamically. | Client-side packfile packaging over Seafile Web API v2 (`/api2/repos/.../upload-link/`). Packfiles stored as `.pack` objects. |
-| **Concurrency & Safety** | Handled natively by server Git process with atomic ref updates. | Enforced by fast-forward checks and cooperative distributed lease locking (`.git-lock.json` with auto-expiry). |
+| **Concurrency & Safety** | Handled natively by server Git process with atomic ref updates. | Enforced by fast-forward checks and cooperative distributed lease locking (`.git-lock.d/` ticket queue with auto-expiry). |
 | **Client-Side Daemon Churn** | Zero. Working tree is outside sync folders. | Zero. Working tree is outside sync folders. |
 
 ### 3.2 Decision Guide: Which Should You Use?
@@ -557,7 +557,7 @@ Understanding how `git-remote-seafile` handles complex Git workflows and remote 
 | Mode | Trigger | Push Latency | Concurrency Behavior | Best Use Case |
 | :--- | :--- | :--- | :--- | :--- |
 | **Notification Mode (Default)** | Remote reaches 20 packfiles | **<1s (zero delay)** | Terminal tip displayed; push never pauses | Daily development, interactive CLI usage |
-| **Opt-in Auto-GC (`autogc true`)** | Remote reaches 20 packfiles | **3–7s on 20th push** | Repositories locked via `.git-lock.json` during repack | Fully automated maintenance, solo developers |
+| **Opt-in Auto-GC (`autogc true`)** | Remote reaches 20 packfiles | **3–7s on 20th push** | Repositories locked via `.git-lock.d/` ticket queue during repack | Fully automated maintenance, solo developers |
 
 > [!TIP]
 > **Recommendation**: Leave `seafile.autogc` disabled (the default) so your everyday workflow stays blazing fast (<1s). Run compaction manually (`git-remote-seafile gc seafile://...`) or as part of a scheduled CI job when convenient.
@@ -625,13 +625,13 @@ git-remote-seafile lock-status seafile://code/myproject
 ```
 Example outputs:
 ```text
-LOCKED
-  Owner: user_a1b2c3d4
-  Machine: workstation-1
-  PID: 12345
-  Nonce: e6b1f24d78a945b0
-  Protocol: ticket
-  Expires in: 42s
+Repository at seafile://code/myproject is LOCKED:
+  Owner    : user_a1b2c3d4
+  Machine  : workstation-1
+  PID      : 12345
+  Nonce    : e6b1f24d78a945b0
+  Protocol : ticket
+  Expires  : in 42s
 ```
 or when idle:
 ```text

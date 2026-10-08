@@ -29,7 +29,6 @@ import datetime as dt
 import io
 import os
 import re
-import shutil
 import sqlite3
 import sys
 import tempfile
@@ -107,7 +106,7 @@ def err_text(code: int) -> str:
 
 
 
-_SIDECAR_SUFFIXES = ("-wal", "-shm", "-journal")
+from git_remote_seafile.sqlite_read import _copy_with_sidecars
 
 
 def open_ro(src: Path, tmpdir: Path):
@@ -119,16 +118,8 @@ def open_ro(src: Path, tmpdir: Path):
     """
     if not src.is_file():
         return None
-    dst = tmpdir / src.name
     try:
-        shutil.copy2(src, dst)
-        for suffix in _SIDECAR_SUFFIXES:
-            sidecar = src.with_name(src.name + suffix)
-            if sidecar.is_file():
-                try:
-                    shutil.copy2(sidecar, tmpdir / sidecar.name)
-                except OSError:
-                    pass
+        dst = _copy_with_sidecars(src, tmpdir)
     except OSError:
         return None
     return sqlite3.connect("file:%s?mode=ro" % dst.as_posix(), uri=True)
