@@ -193,13 +193,17 @@ def check_preflight_safety(
         )
 
     # 2. Check Library Existence / Typo
+    target_repo_id = None
     if client:
         try:
-            client.get_repo_id(library_name)
+            target_repo_id = client.get_repo_id(library_name)
         except Exception:
             # Try to list accessible libraries to give a helpful suggestion
             try:
-                resp = client.session.get(f"{client.server_url}/api2/repos/")
+                resp = client.session.get(
+                    f"{client.server_url}/api2/repos/",
+                    timeout=getattr(client, "timeout", 30),
+                )
                 if resp.status_code == 200:
                     available_libs = [r.get("name") for r in resp.json() if r.get("name")]
                     suggestions = difflib.get_close_matches(library_name, available_libs, n=3, cutoff=0.5)
@@ -237,12 +241,20 @@ def check_preflight_safety(
         except OSError:
             local_worktree = None
 
-    # Find if the target library is actively synced locally
+    # Find if the target library is actively synced locally.
+    # Prefer matching by unique repo_id since the local worktree folder name may
+    # differ from the server library name.
     target_synced_lib = None
-    for lib in synced_libs:
-        if lib["name"].lower() == library_name.lower():
-            target_synced_lib = lib
-            break
+    if target_repo_id:
+        for lib in synced_libs:
+            if lib.get("repo_id") == target_repo_id:
+                target_synced_lib = lib
+                break
+    if not target_synced_lib:
+        for lib in synced_libs:
+            if lib.get("name", "").lower() == library_name.lower():
+                target_synced_lib = lib
+                break
 
     # 4. Check Trap 1: Working Tree & Remote Path Collision
     if local_worktree and target_synced_lib:
@@ -251,7 +263,13 @@ def check_preflight_safety(
         if rel_local is not None:
             rel_posix = rel_local.as_posix().lower()
             clean_repo = clean_repo_path.lower()
-            if clean_repo == rel_posix or clean_repo.startswith(rel_posix + "/") or rel_posix.startswith(clean_repo + "/"):
+            is_collision = (
+                rel_posix in ("", ".")
+                or clean_repo == rel_posix
+                or clean_repo.startswith(rel_posix + "/")
+                or rel_posix.startswith(clean_repo + "/")
+            )
+            if is_collision:
                 raise SafetyError(
                     f"DANGEROUS PATH COLLISION DETECTED (Trap 1)!\n"
                     f"  Local working tree: {local_worktree}\n"

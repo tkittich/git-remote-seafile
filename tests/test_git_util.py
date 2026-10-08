@@ -94,6 +94,34 @@ class TestGitUtilWithRealGit(unittest.TestCase):
         new_objs_single = get_objects_to_push(c2, exclude_shas=c1)
         self.assertEqual(new_objs, new_objs_single)
 
+    def test_get_objects_to_push_multiple_exclusions(self):
+        # Base commit
+        c1 = rev_parse("HEAD")
+
+        # Branch B
+        subprocess.run(["git", "checkout", "-b", "branch-b"], check=True)
+        (self.repo_dir / "b.txt").write_text("branch b content", encoding="utf-8")
+        subprocess.run(["git", "add", "b.txt"], check=True)
+        subprocess.run(["git", "commit", "-m", "Commit on B"], check=True)
+        b_sha = rev_parse("HEAD")
+
+        # Branch C branching off c1
+        subprocess.run(["git", "checkout", c1, "-b", "branch-c"], check=True)
+        (self.repo_dir / "c.txt").write_text("branch c content", encoding="utf-8")
+        subprocess.run(["git", "add", "c.txt"], check=True)
+        subprocess.run(["git", "commit", "-m", "Commit on C"], check=True)
+        c_sha = rev_parse("HEAD")
+
+        # Merge B and C
+        subprocess.run(["git", "merge", "--no-ff", "-m", "Merge B and C", b_sha], check=True)
+        merge_sha = rev_parse("HEAD")
+
+        # With both b_sha and c_sha excluded, only the merge commit objects should be returned.
+        # With git's --not toggle bug, repeating --not would have toggled c_sha back on.
+        objs_both_excluded = get_objects_to_push(merge_sha, exclude_shas=[b_sha, c_sha])
+        objs_b_only_excluded = get_objects_to_push(merge_sha, exclude_shas=[b_sha])
+        self.assertLess(len(objs_both_excluded), len(objs_b_only_excluded))
+
     def test_get_objects_to_push_ignores_exclusions_it_does_not_have(self):
         """An exclusion absent locally must be ignored, not fatal.
 

@@ -51,6 +51,39 @@ class TestClientCredentials(unittest.TestCase):
                 self.assertEqual(client.server_url, "https://db.example.com")
                 self.assertEqual(client.token, "db-tok-456")
 
+    def test_accounts_db_does_not_match_lookalike_tld(self):
+        """A lookup for 'seafile.example.com' must not take a token for 'seafile.example.co'."""
+        with tempfile.TemporaryDirectory() as td:
+            db_path = Path(td) / "accounts.db"
+            con = sqlite3.connect(str(db_path))
+            con.execute("CREATE TABLE Accounts (url TEXT, token TEXT, lastVisited INTEGER)")
+            con.execute(
+                "INSERT INTO Accounts VALUES ('https://seafile.example.co', 'exfiltrated-token', 100)"
+            )
+            con.commit()
+            con.close()
+            with patch("git_remote_seafile.client.Path.home", return_value=Path(td)):
+                client = SeafileClient(server_url="https://seafile.example.com", require_credentials=False)
+                self.assertIsNone(
+                    client.token,
+                    "LIKE '%host%' matched a truncated TLD; handed the wrong host's token",
+                )
+
+    def test_accounts_db_does_not_match_subdomain_or_prefix(self):
+        """A lookup for 'example.com' must not take a token for 'notexample.com'."""
+        with tempfile.TemporaryDirectory() as td:
+            db_path = Path(td) / "accounts.db"
+            con = sqlite3.connect(str(db_path))
+            con.execute("CREATE TABLE Accounts (url TEXT, token TEXT, lastVisited INTEGER)")
+            con.execute(
+                "INSERT INTO Accounts VALUES ('https://notexample.com', 'exfiltrated-token', 100)"
+            )
+            con.commit()
+            con.close()
+            with patch("git_remote_seafile.client.Path.home", return_value=Path(td)):
+                client = SeafileClient(server_url="https://example.com", require_credentials=False)
+                self.assertIsNone(client.token)
+
     def test_load_credentials_missing_raises_auth_error(self):
         with tempfile.TemporaryDirectory() as td:
             fake_home = Path(td)

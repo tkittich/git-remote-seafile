@@ -69,10 +69,13 @@ class TestRemoteHelper(unittest.TestCase):
             if "tags" in path
             else []
         )
+        sha_main = "a" * 40
+        sha_feat = "b" * 40
+        sha_tag = "c" * 40
         h.client.get_file_text.side_effect = lambda repo_id, path: (
-            "aaa111" if "heads/main" in path
-            else "bbb222" if "heads/feature" in path
-            else "ccc333" if "tags/v1.0" in path
+            sha_main if "heads/main" in path
+            else sha_feat if "heads/feature" in path
+            else sha_tag if "tags/v1.0" in path
             else "ref: refs/heads/main" if path.endswith("HEAD")
             else None
         )
@@ -82,10 +85,104 @@ class TestRemoteHelper(unittest.TestCase):
             h.cmd_list()
 
         output = out.getvalue()
-        self.assertIn("aaa111 refs/heads/main", output)
-        self.assertIn("bbb222 refs/heads/feature", output)
-        self.assertIn("ccc333 refs/tags/v1.0", output)
+        self.assertIn(f"{sha_main} refs/heads/main", output)
+        self.assertIn(f"{sha_feat} refs/heads/feature", output)
+        self.assertIn(f"{sha_tag} refs/tags/v1.0", output)
         self.assertIn("@refs/heads/main HEAD", output)
+
+    def test_cmd_list_skips_invalid_sha(self):
+        h = RemoteHelper.__new__(RemoteHelper)
+        h.client = MagicMock()
+        h.repo_id = "repo1"
+        h.repo_path = "/git-repo"
+        h.library_name = "lib"
+        h._refs_cache = {}
+        h._repository_has_objects = MagicMock(return_value=False)
+
+        h.client.list_dir.side_effect = lambda repo_id, path: (
+            [{"type": "file", "name": "main"}, {"type": "file", "name": "corrupt"}]
+            if "heads" in path
+            else []
+        )
+        valid_sha = "1" * 40
+        h.client.get_file_text.side_effect = lambda repo_id, path: (
+            valid_sha if "heads/main" in path
+            else "<html>error</html>" if "heads/corrupt" in path
+            else None
+        )
+
+        out = io.StringIO()
+        err = io.StringIO()
+        with patch("sys.stdout", out), patch("sys.stderr", err):
+            h.cmd_list()
+
+        self.assertIn(f"{valid_sha} refs/heads/main", out.getvalue())
+        self.assertNotIn("corrupt", out.getvalue())
+        self.assertIn("Warning: ignoring invalid SHA", err.getvalue())
+
+    def test_cmd_list_for_push_allows_empty_refs_with_packs(self):
+        h = RemoteHelper.__new__(RemoteHelper)
+        h.client = MagicMock()
+        h.repo_id = "repo1"
+        h.repo_path = "/git-repo"
+        h.library_name = "lib"
+        h._refs_cache = {}
+        h._repository_has_objects = MagicMock(return_value=True)
+        h.client.list_dir.return_value = []
+        h.client.get_file_text.return_value = None
+
+        # Without for_push, raises SeafileAPIError
+        with self.assertRaises(SeafileAPIError):
+            h.cmd_list(for_push=False)
+
+        # With for_push=True, succeeds and reports empty list
+        out = io.StringIO()
+        with patch("sys.stdout", out):
+            h.cmd_list(for_push=True)
+        self.assertEqual(out.getvalue(), "\n")
+
+    def test_cmd_push_rejects_disallowed_namespaces(self):
+        h = RemoteHelper.__new__(RemoteHelper)
+        h.client = MagicMock()
+        h.repo_id = "repo1"
+        h.repo_path = "/git-repo"
+        h._refs_cache = {}
+
+        out = io.StringIO()
+        with patch("sys.stdout", out), patch("git_remote_seafile.helper.RemoteLock"):
+            h.cmd_push(["HEAD:refs/notes/commits", ":refs/stash"])
+
+        output = out.getvalue()
+        self.assertIn("error refs/notes/commits refusing to push outside refs/heads and refs/tags", output)
+        self.assertIn("error refs/stash refusing to push outside refs/heads and refs/tags", output)
+
+    def test_cmd_push_does_not_duplicate_error_for_successful_ref(self):
+        h = RemoteHelper.__new__(RemoteHelper)
+        h.client = MagicMock()
+        h.repo_id = "repo1"
+        h.repo_path = "/git-repo"
+        h._refs_cache = {}
+        h._full_path = lambda p: f"/git-repo/{p.lstrip('/')}"
+        h.client.get_file_text.return_value = None
+
+        # Ref 1 succeeds, Ref 2 fails
+        call_count = [0]
+        def mock_rev_parse(ref):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                return "1" * 40
+            raise RuntimeError("Failure on ref 2")
+
+        out = io.StringIO()
+        with patch("sys.stdout", out), patch("git_remote_seafile.helper.RemoteLock"), \
+             patch("git_remote_seafile.helper.rev_parse", side_effect=mock_rev_parse), \
+             patch("git_remote_seafile.helper.get_objects_to_push", return_value=[]):
+            h.cmd_push(["HEAD:refs/heads/ok-branch", "HEAD:refs/heads/fail-branch"])
+
+        output = out.getvalue()
+        self.assertIn("ok refs/heads/ok-branch\n", output)
+        self.assertIn("error refs/heads/fail-branch", output)
+        self.assertNotIn("error refs/heads/ok-branch", output)
 
     def test_cmd_push_delete_branch(self):
         h = RemoteHelper.__new__(RemoteHelper)

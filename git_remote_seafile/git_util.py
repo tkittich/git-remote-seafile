@@ -123,7 +123,7 @@ def get_objects_to_push(local_sha: str, exclude_shas: list[str] | str | None = N
     """
     args = ["rev-list", "--objects", local_sha]
     for ex in filter_existing_objects(exclude_shas):
-        args.extend(["--not", ex])
+        args.append(f"^{ex}")
 
     out, err, code = run_git(args)
     if code != 0:
@@ -187,8 +187,11 @@ def create_packfile(object_shas: list[str]) -> tuple[str, bytes, bytes]:
         return pack_sha, pack_bytes, idx_bytes
 
 
-def install_packfile(pack_name: str, pack_bytes: bytes, idx_bytes: bytes | None = None) -> None:
+def install_packfile(pack_name: str, pack_bytes: bytes | Path | str, idx_bytes: bytes | Path | str | None = None) -> None:
     """Install a packfile into the local repository's .git/objects/pack/.
+
+    Accepts pack content either in-memory as bytes, or as a Path/str pointing
+    to a staged file on disk, avoiding in-memory buffering for large packs.
 
     The pack and its index are staged in a scratch directory and only moved to
     their final names once both are complete, so ``os.replace`` publishes them
@@ -216,10 +219,16 @@ def install_packfile(pack_name: str, pack_bytes: bytes, idx_bytes: bytes | None 
         staged_pack = staging_dir / f"{base_name}.pack"
         staged_idx = staging_dir / f"{base_name}.idx"
 
-        staged_pack.write_bytes(pack_bytes)
+        if isinstance(pack_bytes, (str, Path, os.PathLike)):
+            shutil.copyfile(pack_bytes, staged_pack)
+        else:
+            staged_pack.write_bytes(pack_bytes)
 
         if idx_bytes:
-            staged_idx.write_bytes(idx_bytes)
+            if isinstance(idx_bytes, (str, Path, os.PathLike)):
+                shutil.copyfile(idx_bytes, staged_idx)
+            else:
+                staged_idx.write_bytes(idx_bytes)
         else:
             # Generate index locally
             _, err, code = run_git(["index-pack", "-o", str(staged_idx), str(staged_pack)])

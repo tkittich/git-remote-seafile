@@ -143,11 +143,14 @@ class SeafileClient:
                     continue
                 try:
                     if self.server_url:
-                        host = urlparse(self.server_url).netloc
-                        row = con.execute(
-                            "SELECT url, token FROM Accounts WHERE url LIKE ? ORDER BY lastVisited DESC LIMIT 1",
-                            (f"%{host}%",),
-                        ).fetchone()
+                        target_netloc = urlparse(self.server_url).netloc.lower()
+                        rows = con.execute(
+                            "SELECT url, token FROM Accounts ORDER BY lastVisited DESC"
+                        ).fetchall()
+                        for r_url, r_token in rows:
+                            if r_url and urlparse(r_url).netloc.lower() == target_netloc:
+                                row = (r_url, r_token)
+                                break
                     else:
                         row = con.execute("SELECT url, token FROM Accounts ORDER BY lastVisited DESC LIMIT 1").fetchone()
                 except Exception:

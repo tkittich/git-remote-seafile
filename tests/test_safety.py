@@ -132,6 +132,44 @@ class TestSafetyGuardrails(unittest.TestCase):
                 )
             self.assertIn("DANGEROUS PATH COLLISION DETECTED (Trap 1)", str(ctx.exception))
 
+            # Working tree is directly at the library root -> Trap 1 must block any subfolder
+            with self.assertRaises(SafetyError) as ctx:
+                check_preflight_safety(
+                    client,
+                    "Documents",
+                    "/code/myproject",
+                    local_worktree=doc_dir,
+                    push_mode=True,
+                    synced_libs=synced_libs,
+                )
+            self.assertIn("DANGEROUS PATH COLLISION DETECTED (Trap 1)", str(ctx.exception))
+
+    def test_trap_1_matched_by_repo_id_when_folder_renamed(self):
+        client = MagicMock()
+        client.get_repo_id.return_value = "repo-id-123"
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Synced folder is named "CustomFolder" locally, but maps to repo-id-123 ("Documents" on server)
+            custom_dir = Path(tmpdir) / "CustomFolder"
+            custom_dir.mkdir()
+            proj_dir = custom_dir / "myproject"
+            proj_dir.mkdir()
+
+            synced_libs = [
+                {"repo_id": "repo-id-123", "name": "CustomFolder", "worktree": custom_dir, "server_url": "https://seafile.example.com"}
+            ]
+
+            with self.assertRaises(SafetyError) as ctx:
+                check_preflight_safety(
+                    client,
+                    "Documents",
+                    "/myproject",
+                    local_worktree=proj_dir,
+                    push_mode=True,
+                    synced_libs=synced_libs,
+                )
+            self.assertIn("DANGEROUS PATH COLLISION DETECTED (Trap 1)", str(ctx.exception))
+
     def test_trap_2_unignored_in_synced_library_blocked(self):
         client = MagicMock()
         client.get_repo_id.return_value = "repo1"

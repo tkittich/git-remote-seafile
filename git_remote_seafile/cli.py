@@ -47,7 +47,7 @@ def main() -> int:
         try:
             client = SeafileClient()
             info_url = f"{client.server_url}/api2/account/info/"
-            resp = client.session.get(info_url)
+            resp = client.session.get(info_url, timeout=client.timeout)
             if resp.status_code == 200:
                 email = resp.json().get("email")
                 print(f"Authenticated successfully with {client.server_url} as {email}")

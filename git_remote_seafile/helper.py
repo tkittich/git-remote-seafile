@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 import os
+import re
+import shutil
 import sys
+import tempfile
+from pathlib import Path
 from urllib.parse import urlparse
 
 from .client import SeafileClient, SeafileAPIError
@@ -141,6 +145,10 @@ class RemoteHelper:
         listed_any = False
         for namespace in REF_NAMESPACES:
             for ref_name, sha in iter_refs(self.client, self.repo_id, self.repo_path, namespace):
+                if not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", sha):
+                    sys.stderr.write(f"Warning: ignoring invalid SHA '{sha}' for ref '{ref_name}'\n")
+                    sys.stderr.flush()
+                    continue
                 self._refs_cache[ref_name] = sha
                 sys.stdout.write(f"{sha} {ref_name}\n")
                 listed_any = True
@@ -151,7 +159,9 @@ class RemoteHelper:
         # indistinguishable.  So cross-check the object store: a repository that
         # already holds packfiles is not empty, and advertising it as empty makes
         # clone/fetch/ls-remote quietly do nothing while exiting 0.
-        if not listed_any and self._repository_has_objects():
+        # Skip this check when listing for push: pushing into an empty repository
+        # or one where all refs were deleted must be allowed.
+        if not listed_any and not for_push and self._repository_has_objects():
             raise SeafileAPIError(
                 f"{self.library_name}:{self.repo_path} contains packfiles but no refs could be "
                 "listed. Refusing to report an empty repository -- this is usually a transient "
@@ -221,6 +231,8 @@ class RemoteHelper:
         # Set while the push lock is held, acted on after it is released.
         auto_gc_min_packs = 0
         auto_gc_pack_count = 0
+        allowed_ref_prefixes = tuple(f"{ns}/" for ns in REF_NAMESPACES)
+        reported_specs: set[str] = set()
 
         try:
             with RemoteLock(self.client, self.repo_id, self.repo_path):
@@ -228,6 +240,11 @@ class RemoteHelper:
                     force = spec.startswith("+")
                     clean_spec = spec.lstrip("+")
                     src, dst = clean_spec.split(":", 1)
+
+                    if not dst.startswith(allowed_ref_prefixes):
+                        sys.stdout.write(f"error {dst} refusing to push outside refs/heads and refs/tags\n")
+                        reported_specs.add(dst)
+                        continue
 
                     # Case 1: Branch deletion (push :refs/heads/branch)
                     if not src:
@@ -246,26 +263,29 @@ class RemoteHelper:
                                 sys.stdout.write(f"ok {dst}\n")
                         except Exception as ex:
                             sys.stdout.write(f"error {dst} {ex}\n")
+                        reported_specs.add(dst)
                         continue
 
                     # Case 2: Normal / Fast-forward push
-                    local_sha = rev_parse(src)
-                    if not local_sha:
-                        sys.stdout.write(f"error {dst} local ref does not exist\n")
-                        continue
-
-                    remote_sha = self._refs_cache.get(dst)
-                    if not remote_sha:
-                        # Refresh ref from remote in case it exists
-                        remote_sha = self.client.get_file_text(self.repo_id, self._full_path(dst))
-
-                    if remote_sha and not force:
-                        if not is_ancestor(remote_sha, local_sha):
-                            sys.stdout.write(f"error {dst} non-fast-forward\n")
+                    try:
+                        local_sha = rev_parse(src)
+                        if not local_sha:
+                            sys.stdout.write(f"error {dst} local ref does not exist\n")
+                            reported_specs.add(dst)
                             continue
 
-                    # Compute and pack missing objects
-                    try:
+                        remote_sha = self._refs_cache.get(dst)
+                        if not remote_sha:
+                            # Refresh ref from remote in case it exists
+                            remote_sha = self.client.get_file_text(self.repo_id, self._full_path(dst))
+
+                        if remote_sha and not force:
+                            if not is_ancestor(remote_sha, local_sha):
+                                sys.stdout.write(f"error {dst} non-fast-forward\n")
+                                reported_specs.add(dst)
+                                continue
+
+                        # Compute and pack missing objects
                         known_remote_shas = {s for s in self._refs_cache.values() if s}
                         if remote_sha:
                             known_remote_shas.add(remote_sha)
@@ -297,23 +317,27 @@ class RemoteHelper:
                         )
 
                         # If HEAD does not exist, set default branch
-                        head_path = self._full_path("HEAD")
-                        if not self.client.get_file_text(self.repo_id, head_path):
-                            self.client.upload_file(
-                                self.repo_id,
-                                self.repo_path,
-                                "HEAD",
-                                f"ref: {dst}\n".encode("utf-8"),
-                                replace=True,
-                            )
+                        # Only point HEAD to a branch in refs/heads/, never to a tag
+                        if dst.startswith("refs/heads/"):
+                            head_path = self._full_path("HEAD")
+                            if not self.client.get_file_text(self.repo_id, head_path):
+                                self.client.upload_file(
+                                    self.repo_id,
+                                    self.repo_path,
+                                    "HEAD",
+                                    f"ref: {dst}\n".encode("utf-8"),
+                                    replace=True,
+                                )
 
                         self._refs_cache[dst] = local_sha
                         sys.stdout.write(f"ok {dst}\n")
+                        reported_specs.add(dst)
                     except Exception as ex:
                         err_line = str(ex).replace("\r", " ").replace("\n", " ").strip()
                         sys.stdout.write(f"error {dst} {err_line}\n")
                         sys.stderr.write(f"\nPush error for {dst}: {ex}\n")
                         sys.stderr.flush()
+                        reported_specs.add(dst)
 
                 # Decide whether compaction is due -- but only *decide* here.
                 # Running it inside this block self-deadlocks: compact_repository
@@ -343,7 +367,8 @@ class RemoteHelper:
             err_line = str(lock_err).replace("\r", " ").replace("\n", " ").strip()
             for spec in push_specs:
                 dst = spec.lstrip("+").split(":", 1)[1] if ":" in spec else spec
-                sys.stdout.write(f"error {dst} {err_line}\n")
+                if dst not in reported_specs:
+                    sys.stdout.write(f"error {dst} {err_line}\n")
             sys.stderr.write(f"\nPush failed: {lock_err}\n")
             sys.stderr.flush()
 
