@@ -964,6 +964,25 @@ class TestConcurrencyAndLocking(unittest.TestCase):
             with self.assertRaises(RepositoryLockedError):
                 lock.acquire()
 
+    def test_dead_pid_fast_reclaim_ignores_different_machine_id(self):
+        """When machine hostname matches but machine_id differs (e.g. container fleet), lock is not stolen."""
+        mock_client = MagicMock()
+        mock_client.token = "token123"
+        dead_pid = 999999
+        with patch("git_remote_seafile.lock._is_pid_alive", return_value=False):
+            mock_client.get_file_text.return_value = json.dumps({
+                "owner": "crashed-container-user",
+                "machine": socket.gethostname(),
+                "machine_id": "other-container-node-uuid",
+                "nonce": "crashed-nonce",
+                "timestamp": time.time(),
+                "lease": 60,
+                "pid": dead_pid,
+            })
+            lock = RemoteLock(mock_client, "repo1", "/path", timeout=0, lease=60)
+            with self.assertRaises(RepositoryLockedError):
+                lock.acquire()
+
     def test_ticket_based_ordering_earliest_wins(self):
         """When multiple tickets exist, the earliest ticket wins."""
         mock_client = MagicMock()
@@ -1001,6 +1020,25 @@ class TestConcurrencyAndLocking(unittest.TestCase):
         res = lock.renew()
         self.assertTrue(res)
         self.assertEqual(mock_client.upload_file.call_count, upload_count_before + 2)
+
+    def test_remote_lock_maybe_renew(self):
+        """maybe_renew only triggers renew when interval has passed."""
+        mock_client = MagicMock()
+        mock_client.token = "token123"
+        mock_client.get_file_text.return_value = None
+
+        lock = RemoteLock(mock_client, "repo1", "/path", timeout=5, lease=60)
+        lock.acquire()
+        upload_count = mock_client.upload_file.call_count
+
+        # Call immediately: within interval, returns False without uploading
+        self.assertFalse(lock.maybe_renew(interval=20.0))
+        self.assertEqual(mock_client.upload_file.call_count, upload_count)
+
+        # Simulate time passage
+        lock._last_renewed = time.monotonic() - 25.0
+        self.assertTrue(lock.maybe_renew(interval=20.0))
+        self.assertEqual(mock_client.upload_file.call_count, upload_count + 2)
 
     def test_lock_status_and_unlock(self):
         """get_status and unlock methods inspect and clear locks."""

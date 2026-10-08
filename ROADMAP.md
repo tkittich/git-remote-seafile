@@ -1,11 +1,11 @@
 # Engineering Roadmap & Backlog
 
-**Baseline:** v0.4.4  
-**Scope:** Active architectural backlog and future milestones following releases v0.4.0 through v0.4.3.  
-**Test Suite:** 324 tests across 72 targets (all green).
+**Baseline:** v0.4.6  
+**Scope:** Active architectural backlog and future milestones following releases v0.4.0 through v0.4.5.  
+**Test Suite:** 331 tests across 72 targets (all green).
 
 > [!NOTE]
-> All earlier findings from `REVIEW.qwen.md` and `REVIEW.sonnet.md` (including ticket-based distributed locking H-5, D/F ref pruning M-6, multi-spec pack batching, Git LFS transfer hardening, and safety guardrails) have been completed and shipped in v0.4.0–v0.4.3. See [CHANGELOG.md](CHANGELOG.md) for full historical release notes.
+> All earlier findings from `REVIEW.gemini.md`, `REVIEW.qwen.md`, and `REVIEW.sonnet.md` (including ticket-based distributed locking, abandoned ticket cleanup, pre-upload renewal, container PID isolation, D/F ref pruning, multi-spec pack batching, Git LFS transfer progress, and safety guardrails) have been completed and shipped in v0.4.0–v0.4.5. See [CHANGELOG.md](CHANGELOG.md) for full historical release notes.
 
 ---
 

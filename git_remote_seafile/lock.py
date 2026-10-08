@@ -18,6 +18,9 @@ class RepositoryLockedError(Exception):
     pass
 
 
+_LOCAL_MACHINE_ID: str = hex(uuid.getnode())
+
+
 def _is_pid_alive(pid: int) -> bool:
     """Check if a process with the given PID is currently running."""
     if pid <= 0:
@@ -117,14 +120,21 @@ class RemoteLock:
     def _is_lock_active(self, info: dict[str, Any], now: float) -> bool:
         """Check if lock payload is active. Returns False if expired or dead local PID."""
         lock_machine = info.get("machine", "")
+        lock_machine_id = info.get("machine_id")
         lock_pid = info.get("pid")
         try:
             lock_pid_int = int(lock_pid) if lock_pid is not None else 0
         except (ValueError, TypeError):
             lock_pid_int = 0
 
-        # Sonnet H-5: Dead local PID fast-reclaim
-        if lock_machine == socket.gethostname() and lock_pid_int > 0:
+        # Sonnet H-5 / L-2: Dead local PID fast-reclaim
+        # Verify both hostname and machine_id (when available) to prevent false reclaim
+        # in container environments or fleets sharing default hostnames.
+        same_machine = (lock_machine == socket.gethostname())
+        if same_machine and lock_machine_id is not None:
+            same_machine = (str(lock_machine_id) == _LOCAL_MACHINE_ID)
+
+        if same_machine and lock_pid_int > 0:
             if not _is_pid_alive(lock_pid_int):
                 sys.stderr.write(
                     f"Reclaiming stale lock from dead local process (PID {lock_pid_int}).\n"
@@ -235,6 +245,7 @@ class RemoteLock:
                 lock_payload = {
                     "owner": owner,
                     "machine": hostname,
+                    "machine_id": _LOCAL_MACHINE_ID,
                     "nonce": nonce,
                     "timestamp": now,
                     "lease": self.lease,
@@ -333,6 +344,7 @@ class RemoteLock:
         payload = {
             "owner": self._identity[0] if self._identity else self._owner_id(),
             "machine": self._identity[1] if self._identity else socket.gethostname(),
+            "machine_id": _LOCAL_MACHINE_ID,
             "nonce": self._nonce,
             "timestamp": now,
             "lease": self.lease,
@@ -360,6 +372,15 @@ class RemoteLock:
             sys.stderr.write(f"Warning: Failed to renew lock lease: {ex}\n")
             sys.stderr.flush()
             return False
+
+    def maybe_renew(self, interval: float = 20.0) -> bool:
+        """Renew the held lock lease if at least `interval` seconds have elapsed."""
+        if not self.acquired or not self._nonce:
+            return False
+        now_mono = time.monotonic()
+        if now_mono - getattr(self, "_last_renewed", 0.0) >= interval:
+            return self.renew()
+        return False
 
     def release(self) -> None:
         if not self.acquired:
@@ -416,6 +437,7 @@ class RemoteLock:
                 "protocol": "ticket",
                 "owner": winner.get("owner", "unknown"),
                 "machine": winner.get("machine", "unknown"),
+                "machine_id": winner.get("machine_id"),
                 "pid": winner.get("pid"),
                 "nonce": winner.get("nonce"),
                 "expires_in": max(0, int(exp - now)),
@@ -436,6 +458,7 @@ class RemoteLock:
                 "protocol": "legacy",
                 "owner": info.get("owner", "unknown"),
                 "machine": info.get("machine", "unknown"),
+                "machine_id": info.get("machine_id"),
                 "pid": info.get("pid"),
                 "nonce": info.get("nonce"),
                 "expires_in": max(0, int(exp - now)),

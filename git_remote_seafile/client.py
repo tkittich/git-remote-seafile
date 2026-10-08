@@ -431,8 +431,15 @@ class SeafileClient:
             self._repos_cache[name_or_id] = rid
             return rid
 
-        # Disambiguate duplicate library names: owned libraries take precedence over shared/group libraries
-        owned = [r for r in matches if r.get("type") in ("repo", "mine")]
+        # Disambiguate duplicate library names: owned libraries take precedence over shared/group libraries.
+        # In Seafile Web API v2.1, owned libraries report type "repo" (or "mine"), while shared
+        # and group libraries report "srepo" or "grepo". When available, owner matching username
+        # also identifies owned libraries.
+        owned = [
+            r for r in matches
+            if r.get("type") in ("repo", "mine")
+            or (getattr(self, "username", None) and r.get("owner") == getattr(self, "username", None))
+        ]
         if len(owned) == 1:
             rid = owned[0].get("id", "")
             sys.stderr.write(
@@ -463,6 +470,7 @@ class SeafileClient:
 
     @property
     def _known_dirs(self) -> set[tuple[str, str]]:
+        # Lazily initialized so unit test instances created via __new__ without __init__ remain functional
         if not hasattr(self, "_known_dirs_cache"):
             self._known_dirs_cache: set[tuple[str, str]] = set()
         return self._known_dirs_cache

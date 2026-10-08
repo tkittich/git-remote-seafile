@@ -5,7 +5,6 @@ from __future__ import annotations
 import subprocess
 import sys
 import tempfile
-import time
 from pathlib import Path
 from typing import Any
 
@@ -45,17 +44,11 @@ def compact_repository(
     pack_dir = f"{clean_repo}/objects/pack"
 
     with RemoteLock(client, repo_id, clean_repo) as lock:
-        last_renew = [time.monotonic()]
-
         def maybe_renew() -> None:
-            now = time.monotonic()
-            if now - last_renew[0] >= 20.0:
-                try:
-                    if hasattr(lock, "renew"):
-                        lock.renew()
-                    last_renew[0] = now
-                except Exception:
-                    pass
+            if hasattr(lock, "maybe_renew"):
+                lock.maybe_renew(20.0)
+            elif hasattr(lock, "renew"):
+                lock.renew()
 
         def on_upload_progress(transferred: int, total: int) -> None:
             maybe_renew()

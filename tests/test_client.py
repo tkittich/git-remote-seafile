@@ -318,6 +318,19 @@ class TestClientAPI(unittest.TestCase):
             self.assertIn("Warning: multiple Seafile libraries match 'project'", mock_stderr.getvalue())
             self.assertIn("Selecting owned library id-owned over shared", mock_stderr.getvalue())
 
+    def test_get_repo_id_duplicate_owned_by_username_beats_shared(self):
+        mock_resp = MagicMock(status_code=200)
+        mock_resp.json.return_value = [
+            {"id": "id-shared", "name": "project", "owner": "colleague@example.com", "type": "srepo"},
+            {"id": "id-owned", "name": "project", "owner": "me@example.com"},
+        ]
+        self.client.session.get = MagicMock(return_value=mock_resp)
+        self.client.username = "me@example.com"
+        with patch("sys.stderr", io.StringIO()) as mock_stderr:
+            self.assertEqual(self.client.get_repo_id("project"), "id-owned")
+            self.assertIn("Warning: multiple Seafile libraries match 'project'", mock_stderr.getvalue())
+            self.assertIn("Selecting owned library id-owned over shared", mock_stderr.getvalue())
+
     def test_get_repo_id_duplicate_true_tie_raises(self):
         mock_resp = MagicMock(status_code=200)
         mock_resp.json.return_value = [

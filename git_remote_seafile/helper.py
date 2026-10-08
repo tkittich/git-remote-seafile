@@ -7,7 +7,6 @@ import re
 import shutil
 import sys
 import tempfile
-import time
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
@@ -262,13 +261,8 @@ class RemoteHelper:
 
         try:
             with RemoteLock(self.client, self.repo_id, self.repo_path) as lock:
-                last_renewal = [time.monotonic()]
-
                 def on_upload_progress(transferred: int, total: int) -> None:
-                    now_mono = time.monotonic()
-                    if now_mono - last_renewal[0] >= 20.0:
-                        if lock.renew():
-                            last_renewal[0] = now_mono
+                    lock.maybe_renew(20.0)
 
                 pending_updates: list[tuple[str, str, str | None]] = []
 
@@ -345,9 +339,11 @@ class RemoteHelper:
                     target_shas = [u[1] for u in pending_updates]
 
                     try:
+                        lock.maybe_renew(20.0)
                         objects_to_push = get_objects_to_push(target_shas, exclude)
                         if objects_to_push:
                             pack_sha, pack_data, idx_data = create_packfile(objects_to_push)
+                            lock.maybe_renew(20.0)
                             if isinstance(pack_data, (bytes, bytearray)):
                                 pack_size = len(pack_data)
                                 has_pack = bool(pack_size)

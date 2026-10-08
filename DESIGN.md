@@ -148,10 +148,10 @@ sequenceDiagram
 ### 7.1 Distributed Ticket-Based Lease Locking
 - In multi-developer teams, concurrent pushes could race during packfile uploads.
 - `git-remote-seafile` implements a cooperative ticket-based distributed lock protocol stored at `/.git-lock.d/<nonce>.json` on the remote repository.
-- Each client deposits an individual ticket containing owner hash, machine ID, holding PID, nonce, and expiration. Tickets are evaluated deterministically using Seafile server `mtime` and calibrated HTTP `Date:` response headers, resolving write-write overwrite races and client clock drift.
+- Each client deposits an individual ticket containing owner hash, machine ID, holding PID, nonce, and expiration. Tickets are evaluated deterministically using Seafile server `mtime` and calibrated HTTP `Date:` response headers, mitigating write-write overwrite races and client clock drift. When server `mtime` values tie within the same second, ordering falls back to calibrated client timestamps and unique nonces.
 - Acquired locks are automatically mirrored to legacy `/.git-lock.json` for full backward compatibility with older client versions.
-- **Dead Local PID Fast-Reclaim**: When inspecting an unexpired lock held on the same machine (`machine == socket.gethostname()`), liveness checks (`OpenProcess` on Windows, `os.kill` on POSIX) immediately reclaim the lock if the holding process has terminated or crashed.
-- **In-Transfer Progress Renewal**: Multi-gigabyte packfile transfers continuously refresh their lock lease every 20 seconds during active socket writes without background daemon threads.
+- **Dead Local PID Fast-Reclaim**: When inspecting an unexpired lock held on the same machine (verifying both hostname and local machine hardware/container identifier), liveness checks (`OpenProcess` on Windows, `os.kill` on POSIX) immediately reclaim the lock if the holding process has terminated or crashed.
+- **In-Transfer Progress Renewal**: Multi-gigabyte packfile transfers and remote garbage collection continuously refresh their lock lease every 20 seconds during active socket writes and long operations without background daemon threads.
 - **CLI Management**: Operators can inspect active lock status via `git-remote-seafile lock-status <url>` and release or break locks via `git-remote-seafile unlock <url> [--force]`.
 
 ### 7.2 Remote Packfile Compaction (`git-remote-seafile gc`)
