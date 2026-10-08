@@ -46,7 +46,7 @@ _SOURCE = _ROOT / "git_remote_seafile"
 # The shipped documentation.  PROPOSALS.md is excluded on purpose: it is
 # gitignored, so a claim in it never reaches a user and correcting one there
 # would not ship either.
-_DOC_NAMES = ("README.md", "USER_GUIDE.md", "DESIGN.md", "CHANGELOG.md", "CONTRIBUTING.md")
+_DOC_NAMES = ("README.md", "USER_GUIDE.md", "DESIGN.md", "CHANGELOG.md", "CONTRIBUTING.md", "ROADMAP.md")
 
 # Config keys are written in backticks throughout the docs.  Requiring the
 # backticks is what keeps `https://seafile.example.com` and `.git-seafile.json`

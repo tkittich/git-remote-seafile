@@ -42,10 +42,12 @@ Recent community efforts (such as the `vacaboja/seafile` fork and [PR #2988](htt
 On Windows systems, desktop syncing of active code introduces additional OS-level failure modes:
 1. **1-Second `mtime` Truncation ("Racy Sync")**:
    Seafile's index format (`common/index/index.c`, adapted from Git's internal directory cache) tracks modification timestamps in integer seconds (`ce_mtime.sec`). Standard Windows CRT file stats truncate `st_mtime` to whole seconds. If an automated script, compiler, or Git command modifies a file multiple times within the **same second** without altering the byte length:
-   $$\text{Disk } mtime == \text{Index } mtime \quad \text{AND} \quad \text{Disk } size == \text{Index } size$$
+   ```text
+   Disk mtime == Index mtime  AND  Disk size == Index size
+   ```
    Seafile concludes the file is unchanged, silently skipping the update until a later touch or full library rescan.
 2. **Mandatory File Locking (`ERROR_SHARING_VIOLATION` / Error 32)**:
-   Unlike Linux advisory locks, Windows enforces mandatory sharing locks. When Seafile detects `FILE_NOTIFY_CHANGE_LAST_WRITE` via `ReadDirectoryChangesW` (`wt-monitor-win32.c`), it immediately opens the file for block hashing. Rapid atomic saves (`write temp` $\to$ `rename`) or Git index updates collide with Seafile's open read handle, resulting in `Permission denied` errors in editors and compilers.
+   Unlike Linux advisory locks, Windows enforces mandatory sharing locks. When Seafile detects `FILE_NOTIFY_CHANGE_LAST_WRITE` via `ReadDirectoryChangesW` (`wt-monitor-win32.c`), it immediately opens the file for block hashing. Rapid atomic saves (`write temp` -> `rename`) or Git index updates collide with Seafile's open read handle, resulting in `Permission denied` errors in editors and compilers.
 3. **`ReadDirectoryChangesW` Event Overflows**:
    Rapid bursts of filesystem operations (e.g. `git checkout` or `git rebase` touching dozens of files in milliseconds) easily overflow the client's 1 MB event buffer (`ERROR_NOTIFY_ENUM_DIR`), forcing costly full-library directory rescans after temporary Git lock files have already vanished.
 
@@ -92,7 +94,7 @@ Within the designated Seafile library (created via the Seafile Web UI, such as a
    - `GET /api2/repos/{repo-id}/upload-link/?p=/{repo-path}/objects/pack/`
    - `POST {upload-link}` with `multipart/form-data` and `replace=1`.
 5. **Download Link**: `GET /api2/repos/{repo-id}/file/?p=/{repo-path}/{file}` returns a short-lived URL, which is then fetched directly.
-6. **Branch Deletion**: `DELETE /api2/repos/{repo-id}/file/?p=/{repo-path}/refs/heads/{branch}`, falling back to `/dir/`. Seafile's `/file/` endpoint deletes both files and directories, while `/dir/` returns 404 for a file — and a ref can be either, since `refs/heads/feature/auth` is stored as a directory containing a file `auth`.
+6. **Branch Deletion**: `DELETE /api2/repos/{repo-id}/file/?p=/{repo-path}/refs/heads/{branch}`, falling back to `/dir/`. Seafile's `/file/` endpoint deletes both files and directories, while `/dir/` returns 404 for a file — and a ref can be either, since `refs/heads/feature/auth` is stored as a directory containing a file `auth`. In v0.4.3, deleting a nested ref automatically prunes newly-empty parent directories up to `refs/heads` on Seafile and evicts them from the client directory cache, preventing future directory/file (D/F) ref conflicts.
 
 ---
 
@@ -107,22 +109,22 @@ sequenceDiagram
 
     Note over Git,Helper: Capability Handshake
     Git->>Helper: capabilities
-    Helper->>Git: fetch\npush\n\n
+    Helper->>Git: fetch<br/>push
 
     Note over Git,Helper: Ref Discovery
     Git->>Helper: list
-    Helper->>API: GET /refs/heads/ & /refs/tags/
-    API-->>Helper: JSON directory listing & ref SHAs
-    Helper->>Git: <sha1> refs/heads/main\n@refs/heads/main HEAD\n\n
+    Helper->>API: GET /refs/heads/ and /refs/tags/
+    API-->>Helper: JSON directory listing and ref SHAs
+    Helper->>Git: [sha1] refs/heads/main<br/>@refs/heads/main HEAD
 
     Note over Git,Helper: Push Transaction
     Git->>Helper: push refs/heads/main:refs/heads/main
     Helper->>Git: (internal) run git pack-objects
     Helper->>API: GET upload-link
     API-->>Helper: temporary upload URL
-    Helper->>API: POST pack-{sha}.pack & pack-{sha}.idx
+    Helper->>API: POST pack-[sha].pack and pack-[sha].idx
     Helper->>API: POST /refs/heads/main (new commit SHA)
-    Helper->>Git: ok refs/heads/main\n\n
+    Helper->>Git: ok refs/heads/main
 ```
 
 ---
@@ -140,10 +142,14 @@ sequenceDiagram
 
 ## 7. Advanced Storage & Concurrency Features
 
-### 7.1 Distributed Lease Locking
+### 7.1 Distributed Ticket-Based Lease Locking
 - In multi-developer teams, concurrent pushes could race during packfile uploads.
-- `git-remote-seafile` implements a cooperative lease mutex stored at `/.git-lock.json` on the remote repository.
-- Locks include owner, machine ID, timestamp, and an advisory lease expiration (configurable via `seafile.locklease`, default 60s; wait timeout via `seafile.locktimeout`, default 15s) to coordinate concurrent pushes and prevent permanent repository deadlocks.
+- `git-remote-seafile` implements a cooperative ticket-based distributed lock protocol stored at `/.git-lock.d/<nonce>.json` on the remote repository.
+- Each client deposits an individual ticket containing owner hash, machine ID, holding PID, nonce, and expiration. Tickets are evaluated deterministically using Seafile server `mtime` and calibrated HTTP `Date:` response headers, resolving write-write overwrite races and client clock drift.
+- Acquired locks are automatically mirrored to legacy `/.git-lock.json` for full backward compatibility with older client versions.
+- **Dead Local PID Fast-Reclaim**: When inspecting an unexpired lock held on the same machine (`machine == socket.gethostname()`), liveness checks (`OpenProcess` on Windows, `os.kill` on POSIX) immediately reclaim the lock if the holding process has terminated or crashed.
+- **In-Transfer Progress Renewal**: Multi-gigabyte packfile transfers continuously refresh their lock lease every 20 seconds during active socket writes without background daemon threads.
+- **CLI Management**: Operators can inspect active lock status via `git-remote-seafile lock-status <url>` and release or break locks via `git-remote-seafile unlock <url> [--force]`.
 
 ### 7.2 Remote Packfile Compaction (`git-remote-seafile gc`)
 - Over time, numerous pushes create multiple packfiles in `/objects/pack/`.

@@ -22,9 +22,9 @@ Instead of syncing the local `.git/` folder, `git-remote-seafile` communicates d
 - **Zero Daemon Churn**: The desktop sync client never scans or indexes your working repository.
 - **Automated Pre-Flight Safety**: Built-in guardrails detect and block path collisions (Trap 1) and download reflection loops (Trap 2) before any data is transferred.
 - **Fast & Efficient**: Commits are packed using Git packfiles (`.pack` and `.idx`). Pushing 100 commits uploads only **two files**.
-- **Rollback & Branch Safe**: Clean ref management handles branches, force-pushes, and automatic unreachable commit pruning.
-- **No Extra Servers**: Uses your existing Seafile server without needing GitLab, Gitea, or third-party Git hosts.
 - **Fast-forward Protection**: Rejects non-fast-forward pushes unless force-pushed, preventing accidental clobbering.
+- **Ticket-Based Distributed Locking**: Prevents push collisions with server-timestamped lock tickets (`.git-lock.d/<nonce>.json`), dead PID fast-reclaim, and in-transfer lease renewal.
+- **Lock Management CLI**: Built-in `lock-status` and `unlock [--force]` subcommands for operator inspection and emergency recovery.
 
 ---
 
@@ -55,14 +55,15 @@ Instead of syncing the local `.git/` folder, `git-remote-seafile` communicates d
 ## Architecture Overview
 
 ```mermaid
-graph TD
-    A[Developer Worktree<br/>C:\code\myproject<br/><i>Unsynced Folder</i>] -->|git push / fetch| B[git-remote-seafile<br/>Git Remote Helper]
-    B -->|REST API (/api2)| C[Seafile Server<br/>https://seafile.example.com]
-    C -->|Stores Packfiles & Refs| D[Seafile Library: code<br/>/myproject/]
-    
+flowchart TD
+    A["Developer Worktree<br/>C:/code/myproject<br/>(Unsynced Folder)"] -->|"git push / fetch"| B["git-remote-seafile<br/>Git Remote Helper"]
+    B -->|"REST API (/api2)"| C["Seafile Server<br/>https://seafile.example.com"]
+    C -->|"Stores Packfiles and Refs"| D["Seafile Library: code<br/>/myproject/"]
+
     style A fill:#4a5568,stroke:#2d3748,stroke-width:2px,color:#fff
     style B fill:#2b6cb0,stroke:#2d3748,stroke-width:2px,color:#fff
     style C fill:#2f855a,stroke:#2d3748,stroke-width:2px,color:#fff
+    style D fill:#2d3748,stroke:#1a202c,stroke-width:2px,color:#fff
 ```
 
 ---

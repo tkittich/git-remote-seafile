@@ -1,8 +1,8 @@
 # Remaining Issues & Engineering Roadmap
 
-**Baseline:** v0.4.1  
-**Scope:** Reconciled backlog from `REVIEW.qwen.md` and `REVIEW.sonnet.md` after High/Medium resolutions in v0.4.0 and patch enhancements in v0.4.1.  
-**Test Suite:** 298 tests across 70 targets (all green).
+**Baseline:** v0.4.3  
+**Scope:** Reconciled backlog from `REVIEW.qwen.md` and `REVIEW.sonnet.md` after High/Medium resolutions in v0.4.0, patch enhancements in v0.4.1, optimization in v0.4.2, and distributed locking/pruning in v0.4.3.  
+**Test Suite:** 324 tests across 72 targets (all green).
 
 ---
 
@@ -68,7 +68,6 @@
 ### Phase 4.0: v0.5.0 — Scalability & Architecture (Planned)
 * **Parallel Ref Enumeration (M-9):** Use a worker pool (`ThreadPoolExecutor`) in `iter_refs` to fetch ref links and SHAs concurrently.
 * **Smart Pack Fetch Filtering (M-9):** Skip downloading packs if all requested commit objects already exist locally.
-* **Remote D/F Ref Cleanup (M-6):** Prune emptied parent directories under `refs/` on Seafile after branch deletion.
 * **Modular Architecture:** Split `helper.py` into `url.py`, `packs.py`, and `config.py`.
 
 ---
