@@ -33,8 +33,8 @@ python -m unittest discover tests
 ```
 
 That is the baseline command. It is also slow: the end-to-end module shells out
-to a real `git` for every case, and accounts for roughly two thirds of the
-~170 s total.
+to a real `git` for every case, and accounts for 117.8 s of the 204 s total —
+close to three fifths.
 
 For the edit/test loop — and in CI — run the same suite across processes
 instead:
@@ -67,6 +67,34 @@ interpreter start-up per class. Use the serial command for a baseline.
 
 It has no dependencies. It is not in the installed package — it travels in the
 sdist, for someone building from source.
+
+---
+
+## Linting
+
+CI runs [ruff](https://docs.astral.sh/ruff/) as its own job, alongside the test
+matrix:
+
+```bash
+pip install ruff==0.16.10     # the version CI pins
+ruff check .
+```
+
+The rules live in `pyproject.toml` under `[tool.ruff]`, not in the workflow, so
+a local run and CI cannot disagree about what is being checked. The selection is
+deliberately narrow — pyflakes (`F`), syntax errors (`E9`) and bugbear (`B`) —
+which is the set that catches *mistakes*: an unused import, an undefined name, a
+loop variable that is never read, an exception re-raised without its cause.
+Style rules are left off; the codebase already has a house style, and a linter
+that argues about line length is one people learn to filter out.
+
+The pin is deliberate. An unpinned linter turns a green branch red overnight
+when a new rule ships, with a failure that says nothing about what changed here.
+Bumping it is a one-line diff.
+
+`target-version` is `py39`, matching `requires-python`, and it is enforced
+rather than decorative: a `match` statement anywhere in this repository fails
+the lint job with "Cannot use `match` statement on Python 3.9".
 
 ---
 

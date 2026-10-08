@@ -51,3 +51,21 @@ include = ["git_remote_seafile*"]
 # as long as __version__ stays a plain string literal.  test_version_consistency
 # keeps both halves of that true.
 version = {attr = "git_remote_seafile.__version__"}
+
+[tool.ruff]
+# Read by the `lint` job in .github/workflows/ci.yml.
+#
+# Correctness rules only.  Pyflakes (F) catches unused imports and undefined
+# names, E9 catches syntax errors, and bugbear (B) catches the traps that
+# survive review -- a loop variable that is never read, an exception re-raised
+# without its cause.  The wider E/W style sets are deliberately left off: the
+# codebase already has a consistent house style, and a linter that argues about
+# line length is one people learn to filter out.
+#
+# This is the floor, not the interpreter: ruff uses it to decide which syntax
+# is legal, so it has to track requires-python.
+target-version = "py39"
+
+[tool.ruff.lint]
+select = ["F", "E9", "B"]
+

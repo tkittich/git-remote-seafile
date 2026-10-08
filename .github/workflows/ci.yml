@@ -73,3 +73,32 @@ jobs:
     - name: Report test results
       if: always()
       run: python .github/ci_report_failures.py unittest-output.txt
+
+  # One job rather than eighteen: the linter does not care which platform or
+  # which interpreter, and it runs *alongside* the matrix rather than after it,
+  # so it adds no wall clock to the pipeline.
+  #
+  # The ruff version is pinned on purpose.  An unpinned linter turns a green
+  # branch red overnight when a new rule ships, and the failure says nothing
+  # about what actually changed.  Bumping the pin is a reviewable one-line diff.
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v5
+
+    - name: Set up Python
+      uses: actions/setup-python@v6
+      with:
+        python-version: '3.11'
+
+    - name: Install ruff
+      run: python -m pip install ruff==0.16.10
+
+    # Rules and target-version live in pyproject.toml under [tool.ruff], so this
+    # job and a local `ruff check .` cannot disagree about what is checked.
+    #
+    # `--output-format github` emits findings as annotations, for the same
+    # reason ci_report_failures.py exists: workflow logs need admin rights to
+    # download, annotations do not.
+    - name: Lint
+      run: ruff check --output-format github .

@@ -7,7 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-_No unreleased changes yet._
+### Testing
+
+- **CI lints now, and the first lint run found real defects.** `ruff` runs as
+  its own job — pyflakes, syntax errors and bugbear — with the rule selection in
+  `pyproject.toml` under `[tool.ruff]`, so a local `ruff check .` and CI cannot
+  disagree about what is being checked, and with `target-version = "py39"`
+  enforcing the declared interpreter floor. What it turned up: six unused
+  imports, two loop variables that were never read, an exception re-raised in
+  `lock.py` without its cause, and — the reason it was worth adding — a test
+  method defined **twice** in the same class in `test_remote.py`. The second
+  definition silently replaced the first, so the first had never run.
 
 ## [0.3.1] - 2026-10-08
 

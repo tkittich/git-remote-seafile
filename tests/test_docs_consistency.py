@@ -434,6 +434,50 @@ class TestManifestTargetsAreReal(unittest.TestCase):
                 )
 
 
+class TestLintIsWired(unittest.TestCase):
+    """A lint job only helps if it exists, runs the configured rules, and is pinned.
+
+    Three ways it can quietly stop protecting anything, each worth a check:
+
+    * the job is deleted, and the unused imports and shadowed test methods come
+      back with nothing left to notice them;
+    * the rules move into the workflow, so a local ``ruff check .`` and CI stop
+      agreeing about what is being checked;
+    * the version is unpinned, so a ruff release reddens a green branch with a
+      failure that says nothing about what changed in this repository.
+    """
+
+    _CI = ".github/workflows/ci.yml"
+
+    def test_ci_has_a_lint_job(self):
+        self.assertRegex(
+            _read(self._CI), r"(?m)^  lint:",
+            "ci.yml has no top-level `lint` job",
+        )
+
+    def test_the_job_actually_runs_ruff(self):
+        self.assertIn(
+            "ruff check", _read(self._CI),
+            "the lint job does not invoke ruff",
+        )
+
+    def test_the_ruff_version_is_pinned(self):
+        self.assertIsNotNone(
+            re.search(r"pip install ruff==\S+", _read(self._CI)),
+            "ruff is installed unpinned, so a new ruff release can fail CI "
+            "without anything in this repository having changed",
+        )
+
+    def test_the_rules_live_in_pyproject_so_local_and_ci_agree(self):
+        pyproject = _read("pyproject.toml")
+        self.assertIn("[tool.ruff", pyproject, "no [tool.ruff] section")
+        self.assertRegex(
+            pyproject, r"(?m)^select\s*=\s*\[",
+            "[tool.ruff.lint] declares no `select`, so CI would run ruff's "
+            "defaults rather than the intended rule set",
+        )
+
+
 class TestDocumentationIndex(unittest.TestCase):
     def test_linked_documents_exist(self):
         """A rename that misses the index leaves a dead link, not an error."""
