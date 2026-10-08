@@ -10,9 +10,9 @@ Reads the captured unittest output, prints it verbatim (so the log is still
 complete), then:
 
   * emits one ``::error::`` annotation per ``FAIL:``/``ERROR:`` line;
-  * emits a second annotation with the last line of that failure's traceback,
-    which is normally the assertion or exception message -- the thing that
-    actually explains the failure;
+  * emits a second annotation carrying the assertion or exception line, which
+    is the thing that actually explains the failure.  It is not simply the last
+    line of the traceback -- see ``_detail_of`` for why that was wrong;
   * exits 0 only if unittest reported a top-level ``OK`` line.
 
 That last check is deliberate: a crash or import error produces no ``FAIL:``
@@ -27,14 +27,47 @@ import sys
 
 FAIL_LINE = re.compile(r"^(?:FAIL|ERROR): ")
 SEPARATOR = re.compile(r"^(?:=+|-+)$")
+# An exception header, at column 0: "AssertionError: 1 != 2", "KeyError: 'x'",
+# "urllib3.exceptions.MaxRetryError: ...".  Traceback body lines are indented,
+# so requiring column 0 rules out the source echo, the caret underline, and the
+# continuation of a multi-line assertion message.
+DETAIL_LINE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.]*: ")
 _MAX_ANNOTATION = 400
+
+
+def _detail_of(raw_lines: list[str]) -> str:
+    """The one line that explains the failure.
+
+    unittest writes the exception header at column 0 and indents everything
+    else -- except that a multi-line assertion *message* is indented while its
+    diff is not::
+
+        AssertionError: 'actual' != 'expected'
+        - actual
+        + expected
+         : deliberate probe failure
+
+    Taking the last non-empty line therefore returned the message's tail, the
+    least informative line in the block, for every test that passed a message --
+    which is precisely when the assertion itself is most useful.  Prefer the
+    last exception header; fall back to the last non-empty line for a block that
+    has none.
+    """
+    for line in reversed(raw_lines):
+        if line[:1] and not line[0].isspace() and DETAIL_LINE.match(line):
+            return line.strip()
+    for line in reversed(raw_lines):
+        if line.strip():
+            return line.strip()
+    return ""
 
 
 def _iter_failures(lines: list[str]):
     """Yield ``(header, detail)`` for each failure block in unittest output.
 
     A block runs from its ``FAIL:``/``ERROR:`` header to the next block or the
-    ``====`` separator, and its last non-empty line is the exception message.
+    ``====`` separator, and its detail is the line that explains it -- see
+    ``_detail_of``.
     """
     i = 0
     while i < len(lines):
@@ -55,9 +88,9 @@ def _iter_failures(lines: list[str]):
             if lines[i].startswith("====") or FAIL_LINE.match(lines[i]) or SEPARATOR.match(stripped):
                 break
             if stripped:
-                detail_lines.append(stripped)
+                detail_lines.append(lines[i])
             i += 1
-        yield header, (detail_lines[-1] if detail_lines else "")
+        yield header, _detail_of(detail_lines)
 
 
 def _emit(line: str) -> None:
