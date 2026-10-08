@@ -39,7 +39,11 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from git_remote_seafile.seafile_paths import ccnet_dir, seafile_data
+from git_remote_seafile.seafile_paths import (
+    SeafileClientNotFoundError,
+    ccnet_dir,
+    seafile_data,
+)
 
 # --------------------------------------------------------------------------
 # Sync error ids.  Authoritative source: haiwen/seafile include/seafile-error.h
@@ -467,7 +471,11 @@ def main(argv=None):
         p.print_help()
         return 2
 
-    ccnet = ccnet_dir()
+    try:
+        ccnet = ccnet_dir()
+    except (SeafileClientNotFoundError, FileNotFoundError) as exc:
+        sys.stderr.write(f"Error: {exc}\n")
+        return 1
     with tempfile.TemporaryDirectory(prefix="seafile-doctor-") as td:
         tmpdir = Path(td)
         fn = {

@@ -28,6 +28,9 @@ from .git_util import (
     get_git_config_int,
 )
 
+_PACK_NAME_RE = re.compile(r"^pack-[0-9a-zA-Z._-]+\.pack$")
+_REF_NAME_INVALID_RE = re.compile(r"[\s\x00-\x1f\x7f~^:?*\[\\@]|\.\.|//|\.lock$")
+
 
 def _looks_like_host(segment: str) -> bool:
     """Heuristic: does this URL segment name a server rather than a library?
@@ -163,6 +166,8 @@ class RemoteHelper:
 
     def cmd_list(self, for_push: bool = False) -> None:
         """List references on the remote Seafile repository."""
+        if not hasattr(self, "_refs_cache"):
+            self._refs_cache = {}
         self._refs_cache.clear()
 
         # 1. Discover branches and tags.  iter_refs walks recursively, so refs
@@ -172,6 +177,10 @@ class RemoteHelper:
         listed_any = False
         for namespace in REF_NAMESPACES:
             for ref_name, sha in iter_refs(self.client, self.repo_id, self.repo_path, namespace):
+                if _REF_NAME_INVALID_RE.search(ref_name):
+                    sys.stderr.write(f"Warning: ignoring malformed ref name '{ref_name}'\n")
+                    sys.stderr.flush()
+                    continue
                 if not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", sha):
                     sys.stderr.write(f"Warning: ignoring invalid SHA '{sha}' for ref '{ref_name}'\n")
                     sys.stderr.flush()
@@ -549,6 +558,9 @@ class RemoteHelper:
             pack_files = [name for name in entries_by_name if name.endswith(".pack")]
 
             for pack_name in pack_files:
+                if not _PACK_NAME_RE.match(pack_name) or ".." in pack_name or "/" in pack_name or "\\" in pack_name:
+                    sys.stderr.write(f"Warning: ignoring invalid remote packfile name: {pack_name}\n")
+                    continue
                 if pack_name in local_packs:
                     continue  # already downloaded
                 
@@ -564,14 +576,21 @@ class RemoteHelper:
                     staged_idx = staging_dir / idx_name
 
                     downloaded = False
-                    try:
-                        downloaded = bool(self.client.download_file_to(
-                            self.repo_id, f"{remote_pack_dir}/{pack_name}", staged_pack
-                        )) and staged_pack.is_file()
-                    except Exception:
-                        downloaded = False
+                    if hasattr(self.client, "download_file_to"):
+                        try:
+                            downloaded = bool(self.client.download_file_to(
+                                self.repo_id, f"{remote_pack_dir}/{pack_name}", staged_pack
+                            )) and staged_pack.is_file()
+                        except Exception as exc:
+                            sys.stderr.write(f"Warning: streaming download of {pack_name} failed: {exc}\n")
+                            downloaded = False
 
                     if not downloaded:
+                        if expected_size is not None and expected_size > 16 * 1024 * 1024:
+                            raise SeafileAPIError(
+                                f"Packfile {pack_name} streaming download failed and size ({expected_size} bytes) "
+                                "exceeds in-memory buffer limit (16MB)."
+                            )
                         pack_bytes = self.client.get_file_bytes(self.repo_id, f"{remote_pack_dir}/{pack_name}")
                         if pack_bytes:
                             staged_pack.write_bytes(pack_bytes)
@@ -595,12 +614,14 @@ class RemoteHelper:
                     idx_name = pack_name.removesuffix(".pack") + ".idx"
                     expected_idx_size = entries_by_name.get(idx_name, {}).get("size")
                     idx_downloaded = False
-                    try:
-                        idx_downloaded = bool(self.client.download_file_to(
-                            self.repo_id, f"{remote_pack_dir}/{idx_name}", staged_idx
-                        )) and staged_idx.is_file()
-                    except Exception:
-                        idx_downloaded = False
+                    if hasattr(self.client, "download_file_to"):
+                        try:
+                            idx_downloaded = bool(self.client.download_file_to(
+                                self.repo_id, f"{remote_pack_dir}/{idx_name}", staged_idx
+                            )) and staged_idx.is_file()
+                        except Exception as exc:
+                            sys.stderr.write(f"Warning: streaming download of {idx_name} failed: {exc}\n")
+                            idx_downloaded = False
 
                     if not idx_downloaded:
                         idx_bytes = self.client.get_file_bytes(self.repo_id, f"{remote_pack_dir}/{idx_name}")

@@ -8,6 +8,7 @@ import unittest
 from unittest.mock import patch
 
 from git_remote_seafile.seafile_paths import (
+    SeafileClientNotFoundError,
     ccnet_dir,
     get_candidate_db_paths,
     get_seafile_data_dirs,
@@ -32,11 +33,11 @@ class TestSeafilePaths(unittest.TestCase):
             with patch("pathlib.Path.home", return_value=fake_home):
                 self.assertEqual(ccnet_dir(), ccnet)
 
-    def test_ccnet_dir_not_found_raises_system_exit(self):
+    def test_ccnet_dir_not_found_raises_exception(self):
         with tempfile.TemporaryDirectory() as td:
             fake_home = pathlib.Path(td)
             with patch("pathlib.Path.home", return_value=fake_home):
-                with self.assertRaises(SystemExit):
+                with self.assertRaises(SeafileClientNotFoundError):
                     ccnet_dir()
 
     def test_seafile_data_resolved(self):
@@ -50,11 +51,11 @@ class TestSeafilePaths(unittest.TestCase):
             resolved = seafile_data(ccnet)
             self.assertEqual(resolved, data_dir)
 
-    def test_seafile_data_missing_raises_system_exit(self):
+    def test_seafile_data_missing_raises_exception(self):
         with tempfile.TemporaryDirectory() as td:
             ccnet = pathlib.Path(td) / "ccnet"
             ccnet.mkdir()
-            with self.assertRaises(SystemExit):
+            with self.assertRaises(SeafileClientNotFoundError):
                 seafile_data(ccnet)
 
     def test_get_seafile_data_dirs_includes_ini_and_defaults(self):

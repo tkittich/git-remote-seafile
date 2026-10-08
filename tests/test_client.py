@@ -131,6 +131,11 @@ class TestClientCredentials(unittest.TestCase):
             self.assertEqual(client.server_url, "https://explicit.example.com")
             self.assertIsNone(client.token)
 
+    def test_load_credentials_netloc_normalization(self):
+        with patch.dict("os.environ", {"SEAFILE_SERVER": "https://SEAFILE.EXAMPLE.COM:443", "SEAFILE_TOKEN": "norm-tok"}, clear=True):
+            client = SeafileClient(server_url="https://seafile.example.com")
+            self.assertEqual(client.token, "norm-tok")
+
 
 class TestClientAPI(unittest.TestCase):
     """Test Seafile REST API methods with mocked requests."""
@@ -633,6 +638,38 @@ class TestStreamingTransfers(unittest.TestCase):
         # After rewind, progress must report 10 again, not 20
         self.assertEqual(calls[-1], (10, 10))
 
+    def test_streaming_multipart_sanitizes_header_parameters(self):
+        from git_remote_seafile.client import StreamingMultipartFile
+        stream = io.BytesIO(b"data")
+        mp = StreamingMultipartFile(
+            fields={"bad\r\nname": "value", "quoted": 'a"b'},
+            file_field='file"field',
+            filename='exploit"test\r\n.bin',
+            file_obj=stream,
+            file_size=4,
+        )
+        hdr = mp.header.decode("utf-8")
+        self.assertNotIn("\r\nname", hdr)
+        self.assertIn('name="badname"', hdr)
+        self.assertIn('name="quoted"', hdr)
+        self.assertIn('name="file\\"field"', hdr)
+        self.assertIn('filename="exploit\\"test.bin"', hdr)
+
+    def test_streaming_multipart_respects_nonzero_file_tell_offset(self):
+        from git_remote_seafile.client import StreamingMultipartFile
+        stream = io.BytesIO(b"0123456789ABCDEF")
+        stream.seek(5)  # Offset at '5'
+        mp = StreamingMultipartFile(
+            fields={},
+            file_field="file",
+            filename="data.bin",
+            file_obj=stream,
+            file_size=5,
+        )
+        content = mp.read()
+        self.assertIn(b"56789", content)
+        self.assertNotIn(b"01234", content)
+
     def test_download_file_to_triggers_progress_callback(self):
         calls = []
         def on_progress(transferred, total):
@@ -667,6 +704,17 @@ class TestStreamingTransfers(unittest.TestCase):
         resp.headers = {"Date": formatdate(time.time() + 100, usegmt=True)}
         self.client._record_server_date_header(resp)
         self.assertAlmostEqual(self.client.get_server_time(), time.time() + 100, delta=2)
+
+    def test_server_time_median_filtering(self):
+        from email.utils import formatdate
+        self.client._server_time_offsets = []
+        now = time.time()
+        for delta in [10.0, 100.0, 10.0, 11.0, 10.0]:
+            resp = MagicMock()
+            resp.headers = {"Date": formatdate(now + delta, usegmt=True)}
+            self.client._record_server_date_header(resp)
+        # Median of [10, 10, 10, 11, 100] is 10
+        self.assertAlmostEqual(self.client.get_server_time(), now + 10, delta=2)
 
     def test_download_file_to_streams_to_disk(self):
         payload = MagicMock(status_code=200)

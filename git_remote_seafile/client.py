@@ -50,6 +50,12 @@ def _force_file_host_enabled() -> bool:
     return get_git_config_bool("seafile.forcefilehost", False)
 
 
+def _sanitize_header_param(val: str) -> str:
+    """Sanitize parameter values in Content-Disposition headers to prevent header injection."""
+    cleaned = str(val).replace("\r", "").replace("\n", "")
+    return cleaned.replace("\\", "\\\\").replace('"', '\\"')
+
+
 class StreamingMultipartFile:
     """Streams multipart/form-data with Content-Length without buffering file contents in memory.
 
@@ -72,17 +78,24 @@ class StreamingMultipartFile:
         self.file_size = file_size
         self.progress_callback = progress_callback
         self._uploaded_file_bytes = 0
+        try:
+            self._file_start_pos = self.file_obj.tell() if hasattr(self.file_obj, "tell") else 0
+        except Exception:
+            self._file_start_pos = 0
 
         prefix = []
         for name, val in fields.items():
+            safe_name = _sanitize_header_param(name)
             prefix.append(
                 f"--{self.boundary}\r\n"
-                f'Content-Disposition: form-data; name="{name}"\r\n\r\n'
+                f'Content-Disposition: form-data; name="{safe_name}"\r\n\r\n'
                 f"{val}\r\n".encode("utf-8")
             )
+        safe_field = _sanitize_header_param(file_field)
+        safe_filename = _sanitize_header_param(filename)
         prefix.append(
             f"--{self.boundary}\r\n"
-            f'Content-Disposition: form-data; name="{file_field}"; filename="{filename}"\r\n'
+            f'Content-Disposition: form-data; name="{safe_field}"; filename="{safe_filename}"\r\n'
             f"Content-Type: application/octet-stream\r\n\r\n".encode("utf-8")
         )
         self.header = b"".join(prefix)
@@ -119,7 +132,8 @@ class StreamingMultipartFile:
         file_end = file_start + self.file_size
         if needed > 0 and file_start <= self._pos < file_end:
             rel_pos = self._pos - file_start
-            self.file_obj.seek(rel_pos)
+            if hasattr(self.file_obj, "seek"):
+                self.file_obj.seek(self._file_start_pos + rel_pos)
             take = min(needed, file_end - self._pos)
             chunk = self.file_obj.read(take)
             chunks.append(chunk)
@@ -158,6 +172,23 @@ class StreamingMultipartFile:
         return self._pos
 
 
+def _normalize_netloc(url_or_netloc: str) -> str:
+    """Normalize a server URL or netloc for consistent credential matching.
+
+    Converts hostname to lowercase and strips default ports (443 for HTTPS, 80 for HTTP).
+    """
+    if not url_or_netloc:
+        return ""
+    if "://" not in url_or_netloc:
+        url_or_netloc = f"http://{url_or_netloc}"
+    parsed = urlparse(url_or_netloc)
+    host = (parsed.hostname or "").lower()
+    port = parsed.port
+    if port and not ((parsed.scheme == "https" and port == 443) or (parsed.scheme == "http" and port == 80)):
+        return f"{host}:{port}"
+    return host
+
+
 class SeafileClient:
     """Lightweight HTTP client for Seafile Web API v2.1."""
 
@@ -173,6 +204,7 @@ class SeafileClient:
         self.timeout = timeout
         self._force_file_host: bool | None = None  # resolved lazily; see below
         self._server_time_offset: float | None = None
+        self._server_time_offsets: list[float] = []
         self.session = requests.Session()
         # File transfers go through a session as well, so they get connection
         # reuse, the `verify`/proxy settings and the retry adapter.  This second
@@ -183,7 +215,6 @@ class SeafileClient:
         self._mount_retries(self.session)
         self._mount_retries(self._file_session)
         self.session.hooks["response"].append(self._record_server_date_header)
-        self._file_session.hooks["response"].append(self._record_server_date_header)
         self._repos_cache: dict[str, str] = {}  # name_or_id -> id
         self._known_dirs: set[tuple[str, str]] = set()  # (repo_id, clean_path)
 
@@ -204,7 +235,12 @@ class SeafileClient:
             try:
                 from email.utils import parsedate_to_datetime
                 server_ts = parsedate_to_datetime(date_hdr).timestamp()
-                self._server_time_offset = server_ts - time.time()
+                offset = server_ts - time.time()
+                self._server_time_offsets.append(offset)
+                if len(self._server_time_offsets) > 7:
+                    self._server_time_offsets.pop(0)
+                sorted_offsets = sorted(self._server_time_offsets)
+                self._server_time_offset = sorted_offsets[len(sorted_offsets) // 2]
             except Exception:
                 pass
 
@@ -225,7 +261,7 @@ class SeafileClient:
         env_server = os.environ.get("SEAFILE_SERVER")
         env_token = os.environ.get("SEAFILE_TOKEN")
         if env_server and (env_token or not require_token):
-            if not self.server_url or urlparse(env_server).netloc == urlparse(self.server_url).netloc:
+            if not self.server_url or _normalize_netloc(env_server) == _normalize_netloc(self.server_url):
                 self.server_url = env_server.rstrip("/")
                 self.token = env_token
                 return
@@ -241,11 +277,11 @@ class SeafileClient:
                 cfg_server = cfg.get("server")
                 cfg_token = cfg.get("token")
                 if cfg_server and (cfg_token or not require_token):
-                    if not self.server_url or urlparse(cfg_server).netloc == urlparse(self.server_url).netloc:
+                    if not self.server_url or _normalize_netloc(cfg_server) == _normalize_netloc(self.server_url):
                         self.server_url = cfg_server.rstrip("/")
                         self.token = cfg_token
                         return
-                elif cfg_token and self.server_url:
+                elif cfg_token and self.server_url and not cfg_server:
                     self.token = cfg_token
                     return
             except Exception:
@@ -260,12 +296,12 @@ class SeafileClient:
                     continue
                 try:
                     if self.server_url:
-                        target_netloc = urlparse(self.server_url).netloc.lower()
+                        target_netloc = _normalize_netloc(self.server_url)
                         rows = con.execute(
                             "SELECT url, token FROM Accounts ORDER BY lastVisited DESC"
                         ).fetchall()
                         for r_url, r_token in rows:
-                            if r_url and urlparse(r_url).netloc.lower() == target_netloc:
+                            if r_url and _normalize_netloc(r_url) == target_netloc:
                                 row = (r_url, r_token)
                                 break
                     else:
@@ -316,7 +352,7 @@ class SeafileClient:
             status_forcelist=(429, 500, 502, 503, 504),
             raise_on_status=False,
         )
-        adapter = HTTPAdapter(max_retries=retry)
+        adapter = HTTPAdapter(max_retries=retry, pool_connections=16, pool_maxsize=16)
         session.mount("http://", adapter)
         session.mount("https://", adapter)
 
@@ -326,7 +362,7 @@ class SeafileClient:
         Both sessions share pooling, TLS/proxy settings and the retry adapter;
         they differ only in whether the Seafile account token rides along.
         """
-        if urlparse(url).netloc == urlparse(self.server_url).netloc:
+        if _normalize_netloc(url) == _normalize_netloc(self.server_url):
             return self.session
         return self._file_session
 

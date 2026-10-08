@@ -19,6 +19,8 @@ Every consumer that enumerates remote refs must go through :func:`iter_refs`.
 from __future__ import annotations
 
 import concurrent.futures
+import re
+import sys
 from typing import Iterator
 
 from .client import SeafileClient
@@ -26,6 +28,8 @@ from .client import SeafileClient
 #: Ref namespaces the helper tracks.  Kept as a tuple so iteration order is
 #: stable (heads before tags), which makes the advertised listing deterministic.
 REF_NAMESPACES = ("refs/heads", "refs/tags")
+
+_INVALID_REF_PATTERN = re.compile(r"[\s\x00-\x1f\x7f~^:?*\[\\@]|\.\.|//|\.lock$")
 
 
 def iter_refs(
@@ -64,7 +68,12 @@ def iter_refs(
             if kind == "dir":
                 stack.append((f"{dir_path}/{name}", f"{prefix}{name}/"))
             elif kind == "file":
-                ref_entries.append((f"{ns}/{prefix}{name}", f"{dir_path}/{name}"))
+                ref_name = f"{ns}/{prefix}{name}"
+                if _INVALID_REF_PATTERN.search(ref_name):
+                    sys.stderr.write(f"Warning: ignoring malformed ref name '{ref_name}'\n")
+                    sys.stderr.flush()
+                    continue
+                ref_entries.append((ref_name, f"{dir_path}/{name}"))
 
     if not ref_entries:
         return

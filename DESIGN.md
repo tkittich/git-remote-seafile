@@ -185,6 +185,16 @@ To prevent data loss and filesystem thrashing, `git-remote-seafile` enforces pre
 - **Pack Index Verification & Local Regeneration (N-5)**: Downloaded `.idx` files are validated with `git verify-pack -v`; corrupted or truncated indexes are discarded and reconstructed locally via `git index-pack`.
 - **Surrogateescape Path Handling (N-8)**: Safely handles non-UTF-8 repository filenames without crashing.
 
+### 7.7 Robustness & Disambiguation (v0.5.2)
+- **Header Injection & Streaming Offset Hardening (N-11)**: Sanitizes multipart form header parameters and preserves stream seek offsets in `StreamingMultipartFile`.
+- **Clock Calibration Smoothing & API Isolation (N-12)**: Isolates server time estimation strictly to API responses and applies median filtering across samples to eliminate clock jitter.
+- **Safety Library Matching Disambiguation (N-14)**: Distinguishes between local libraries sharing folder names across distinct repo IDs by restricting folder-name matching strictly to unknown target IDs.
+- **Pack & Ref Name Sanitization (N-15)**: Strict regex validation for packfile names and control character / malformed syntax filtering for remote refs.
+- **Credential Netloc Normalization (N-16)**: Standardizes hostnames and default ports across configuration and token lookups.
+- **Connection Pool Scaling (N-17)**: Expands HTTP adapter connection pool capacity for thread-safe concurrent ref requests.
+- **Structured Error Propagation (N-18)**: Replaces fatal system exits with `SeafileClientNotFoundError`.
+- **Streaming Fetch Logging & Bounded Fallback (N-7)**: Surfaces streaming fetch errors to stderr and caps in-memory fallback to 16MB.
+
 ---
 
 ## 8. Upstream Integration Path for Haiwen / Seafile

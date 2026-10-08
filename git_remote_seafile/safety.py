@@ -231,7 +231,8 @@ def check_preflight_safety(
             if lib.get("repo_id") == target_repo_id:
                 target_synced_lib = lib
                 break
-    if not target_synced_lib:
+    else:
+        # Only fall back to name matching when target_repo_id is unknown
         for lib in synced_libs:
             if lib.get("name", "").lower() == library_name.lower():
                 target_synced_lib = lib

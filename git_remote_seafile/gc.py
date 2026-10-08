@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import subprocess
 import sys
 import tempfile
@@ -12,6 +13,8 @@ from .client import SeafileClient
 from .git_util import clean_git_env
 from .lock import RemoteLock
 from .refs import REF_NAMESPACES, iter_refs
+
+_PACK_NAME_RE = re.compile(r"^pack-[0-9a-zA-Z._-]+\.pack$")
 
 
 def describe_size_delta(saved_kb: int) -> str:
@@ -90,6 +93,9 @@ def compact_repository(
             # 3. Download all packfiles and indices
             total_old_bytes = 0
             for pack_name in old_packs:
+                if not _PACK_NAME_RE.match(pack_name) or ".." in pack_name or "/" in pack_name or "\\" in pack_name:
+                    sys.stderr.write(f"Warning: ignoring invalid packfile name {pack_name} during compaction.\n")
+                    continue
                 maybe_renew()
                 if verbose:
                     sys.stderr.write(f"  Downloading {pack_name}...\n")
@@ -99,10 +105,12 @@ def compact_repository(
 
                 # Stream packfile directly to disk, falling back to get_file_bytes if needed.
                 downloaded = False
-                try:
-                    downloaded = bool(client.download_file_to(repo_id, f"{pack_dir}/{pack_name}", pack_file)) and pack_file.is_file()
-                except Exception:
-                    downloaded = False
+                if hasattr(client, "download_file_to"):
+                    try:
+                        downloaded = bool(client.download_file_to(repo_id, f"{pack_dir}/{pack_name}", pack_file)) and pack_file.is_file()
+                    except Exception as exc:
+                        sys.stderr.write(f"Warning: streaming download of {pack_name} failed: {exc}\n")
+                        downloaded = False
                 if not downloaded:
                     pack_bytes = client.get_file_bytes(repo_id, f"{pack_dir}/{pack_name}")
                     if not pack_bytes:
@@ -113,10 +121,12 @@ def compact_repository(
                 total_old_bytes += pack_file.stat().st_size
 
                 idx_downloaded = False
-                try:
-                    idx_downloaded = bool(client.download_file_to(repo_id, f"{pack_dir}/{idx_name}", idx_file)) and idx_file.is_file()
-                except Exception:
-                    idx_downloaded = False
+                if hasattr(client, "download_file_to"):
+                    try:
+                        idx_downloaded = bool(client.download_file_to(repo_id, f"{pack_dir}/{idx_name}", idx_file)) and idx_file.is_file()
+                    except Exception as exc:
+                        sys.stderr.write(f"Warning: streaming download of {idx_name} failed: {exc}\n")
+                        idx_downloaded = False
                 if not idx_downloaded:
                     idx_bytes = client.get_file_bytes(repo_id, f"{pack_dir}/{idx_name}")
                     if idx_bytes:

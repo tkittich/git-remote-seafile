@@ -1779,10 +1779,11 @@ class TestFetchSafety(unittest.TestCase):
     """
 
     @staticmethod
-    def _helper(library_name="Documents", repo_path="/code/myproject"):
+    def _helper(library_name="Documents", repo_path="/code/myproject", repo_id="r1"):
         h = RemoteHelper.__new__(RemoteHelper)
         h.client = MagicMock()
-        h.repo_id = "repo1"
+        h.client.get_repo_id.return_value = repo_id
+        h.repo_id = repo_id
         h.repo_path = repo_path
         h.library_name = library_name
         h._refs_cache = {}
@@ -2000,6 +2001,47 @@ class TestFetchFailureIsLoud(unittest.TestCase):
 
             install.assert_called_once()
             self.assertEqual(out.getvalue(), "\n")
+
+    def test_invalid_pack_name_ignored_in_fetch(self):
+        with tempfile.TemporaryDirectory() as td:
+            local_git = Path(td) / ".git"
+            (local_git / "objects" / "pack").mkdir(parents=True)
+
+            client = MagicMock()
+            client.list_dir.return_value = [
+                {"name": "../evil.pack"},
+                {"name": "malformed.pack"},
+            ]
+            h = self._helper(client)
+
+            with patch("git_remote_seafile.helper.get_git_dir", return_value=local_git):
+                with patch("sys.stdout", new_callable=io.StringIO) as out, patch("sys.stderr", new_callable=io.StringIO) as err:
+                    h.cmd_fetch(["refs/heads/main"])
+
+            self.assertEqual(out.getvalue(), "\n")
+            self.assertIn("ignoring invalid remote packfile name", err.getvalue())
+            client.get_file_bytes.assert_not_called()
+
+    def test_malformed_ref_name_ignored_in_cmd_list(self):
+        client = MagicMock()
+        client.list_dir.side_effect = lambda repo_id, path: [
+            {"name": "main", "type": "file"},
+            {"name": "bad..ref", "type": "file"},
+            {"name": "bad space", "type": "file"},
+        ] if "refs/heads" in path else []
+        client.get_file_text.return_value = "0123456789012345678901234567890123456789"
+        h = self._helper(client)
+
+        out = io.StringIO()
+        err = io.StringIO()
+        with patch("sys.stdout", out), patch("sys.stderr", err):
+            h.cmd_list()
+
+        output = out.getvalue()
+        self.assertIn("refs/heads/main", output)
+        self.assertNotIn("bad..ref", output)
+        self.assertNotIn("bad space", output)
+        self.assertIn("ignoring malformed ref name", err.getvalue())
 
     def test_truncated_pack_download_fails_with_size_mismatch(self):
         with tempfile.TemporaryDirectory() as td:

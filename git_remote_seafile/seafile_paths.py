@@ -5,12 +5,17 @@ from __future__ import annotations
 from pathlib import Path
 
 
+class SeafileClientNotFoundError(FileNotFoundError):
+    """Raised when Seafile client configuration or data directories are not found."""
+    pass
+
+
 def ccnet_dir() -> Path:
     """The client's config dir. ~/ccnet on Windows, ~/.ccnet elsewhere."""
     for cand in (Path.home() / "ccnet", Path.home() / ".ccnet"):
         if cand.is_dir():
             return cand
-    raise SystemExit("no ccnet directory found - is the Seafile client installed?")
+    raise SeafileClientNotFoundError("no ccnet directory found - is the Seafile client installed?")
 
 
 def seafile_data(ccnet: Path) -> Path:
@@ -22,7 +27,7 @@ def seafile_data(ccnet: Path) -> Path:
             p = Path(raw)
             if p.is_dir():
                 return p
-    raise SystemExit("could not resolve seafile-data (looked in %s)" % ini)
+    raise SeafileClientNotFoundError(f"could not resolve seafile-data (looked in {ini})")
 
 
 def get_seafile_data_dirs() -> list[Path]:

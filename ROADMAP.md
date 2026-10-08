@@ -1,8 +1,8 @@
 # Engineering Roadmap & Backlog
 
-**Baseline:** v0.5.1 (v0.5.1 release)  
-**Scope:** Active architectural backlog and milestones following releases v0.4.0 through v0.5.1.  
-**Test Suite:** 340 tests across 75 targets (all green).
+**Baseline:** v0.5.2 (v0.5.2 release)  
+**Scope:** Active architectural backlog and milestones following releases v0.4.0 through v0.5.2.  
+**Test Suite:** 347 tests across 75 targets (all green).
 
 > [!NOTE]
 > All critical and high-severity findings from `REVIEW.gemini.md`, `REVIEW.qwen.md`, and `REVIEW.sonnet.md` (including ticket-based distributed locking, abandoned ticket cleanup, post-lock ref verification, exception propagation, GC lock fencing, pack index validation, surrogateescape paths, container PID isolation, D/F ref pruning, multi-spec pack batching, Git LFS transfer progress, safety guardrails, parallel ref enumeration, smart pack fetch filtering, and disk-staged streaming) have been completed. Minor or low-priority items remain tracked in the backlog below. See [CHANGELOG.md](CHANGELOG.md) for detailed release notes.
@@ -36,6 +36,18 @@
 * **Pack Index (.idx) Verification & Auto-Regeneration (N-5):** Verify downloaded `.idx` files with `git verify-pack`; automatically regenerate missing or corrupted `.idx` files locally via `git index-pack`.
 * **Non-UTF-8 Path Support (N-8):** Use `surrogateescape` error handling in `git_util.get_objects_to_push` to handle repository paths with non-UTF-8 byte sequences without decoding failures.
 * **Ticket Cleanup Guarantee & Read-Only Status (N-9, N-10):** Ensure `RemoteLock.release()` cleans up the client's own ticket even if legacy lock state changed; pass `reap=False` during `get_status()` to keep `lock-status` purely non-mutating.
+
+---
+
+### Phase 4.2: v0.5.2 — Header Sanitization, Netloc Normalization, Safety Disambiguation & Connection Pool Scaling (Completed Deliverables)
+* **Multipart Header Parameter Sanitization & Non-Zero Seek Offset (N-11):** Escape quotes and backslashes and strip CR/LF in `StreamingMultipartFile` header generation; record initial `tell()` to properly handle non-zero stream offsets.
+* **Server Time Calibration Smoothing & Session Isolation (N-12):** Apply median filtering over moving window of HTTP `Date` samples to prevent jitter; isolate server time estimation strictly to API session.
+* **Safety Library Matching Disambiguation (N-14):** Restrict folder-name fallback in `safety.py` strictly to cases where the server repository ID could not be resolved, preventing false collision rejections.
+* **Pack & Ref Name Sanitization (N-15):** Validate packfile names against `^pack-[0-9a-zA-Z._-]+\.pack$` and sanitize ref names in `refs.py` and `helper.py`.
+* **Credential Netloc Normalization (N-16):** Normalize network locations (lowercase hostname, strip default ports 80/443) across env variables, config, and SQLite tokens.
+* **HTTP Connection Pool Scaling (N-17):** Scale `HTTPAdapter` pool sizes to `pool_connections=16, pool_maxsize=16` for thread safety under concurrent operations.
+* **Library Exception Propagation (N-18):** Replace `SystemExit` in `seafile_paths.py` with `SeafileClientNotFoundError`.
+* **Streaming Fetch Error Logging & Bounded Fallback (N-7):** Log streaming download exceptions to stderr and cap in-memory fallback at 16MB.
 
 ---
 

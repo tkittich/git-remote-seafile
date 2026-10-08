@@ -104,7 +104,7 @@ class TestSafetyGuardrails(unittest.TestCase):
             proj_dir.mkdir(parents=True)
 
             synced_libs = [
-                {"repo_id": "r1", "name": "Documents", "worktree": doc_dir, "server_url": "https://seafile.example.com"}
+                {"repo_id": "repo1", "name": "Documents", "worktree": doc_dir, "server_url": "https://seafile.example.com"}
             ]
 
             # Remote path is exact same as local worktree -> Trap 1!
@@ -181,7 +181,7 @@ class TestSafetyGuardrails(unittest.TestCase):
 
             # Local worktree is outside or inside, but remote points to unignored "seafile-git/myproject"
             synced_libs = [
-                {"repo_id": "r1", "name": "Documents", "worktree": doc_dir, "server_url": "https://seafile.example.com"}
+                {"repo_id": "repo1", "name": "Documents", "worktree": doc_dir, "server_url": "https://seafile.example.com"}
             ]
 
             # "seafile-git" is NOT in seafile-ignore.txt -> Trap 2 blocks!
@@ -228,6 +228,34 @@ class TestSafetyGuardrails(unittest.TestCase):
         )
         # Should not raise any SafetyError
         self.assertIsInstance(warnings, list)
+
+    def test_safety_does_not_fallback_to_name_when_target_repo_id_resolved(self):
+        # N-14: Server library is 'Documents' with repo_id 'server-id'.
+        # Local synced library is also named 'Documents' but has repo_id 'local-id' (different library).
+        # Should NOT falsely flag collision because repo_id was resolved and does not match.
+        client = MagicMock()
+        client.get_repo_id.return_value = "server-id"
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            doc_dir = Path(tmpdir) / "Documents"
+            doc_dir.mkdir()
+            proj_dir = doc_dir / "code" / "myproject"
+            proj_dir.mkdir(parents=True)
+
+            synced_libs = [
+                {"repo_id": "local-id", "name": "Documents", "worktree": doc_dir, "server_url": "https://seafile.example.com"}
+            ]
+
+            # With local_worktree outside synced library, check should return [] without SafetyError
+            warnings = check_preflight_safety(
+                client,
+                "Documents",
+                "/code/myproject",
+                local_worktree=Path(tmpdir) / "outside_worktree",
+                push_mode=True,
+                synced_libs=synced_libs,
+            )
+            self.assertEqual(warnings, [])
 
     def test_skip_safety_checks_override(self):
         client = MagicMock()
@@ -295,7 +323,7 @@ class TestWorkingTreeFallback(unittest.TestCase):
             proj_dir.mkdir(parents=True)
 
             synced_libs = [
-                {"repo_id": "r1", "name": "Documents", "worktree": doc_dir,
+                {"repo_id": "repo1", "name": "Documents", "worktree": doc_dir,
                  "server_url": "https://seafile.example.com"}
             ]
 
