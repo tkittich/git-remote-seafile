@@ -1,0 +1,32 @@
+# What goes into the source distribution.
+#
+# README.md and LICENSE arrive on their own, because pyproject.toml names them in
+# `readme` and `license`.  Nothing else does.  A built sdist turned out to
+# contain the package, the tests, and no user guide, no CHANGELOG, no DESIGN and
+# no launcher -- a source distribution that omits its own documentation.
+
+include LICENSE
+include README.md
+include CHANGELOG.md
+include USER_GUIDE.md
+include DESIGN.md
+include CONTRIBUTING.md
+include pyproject.toml
+
+# The source-checkout launcher, so an sdist can be run without installing it.
+recursive-include bin *
+
+# The suite, so a downstream packager can build from the sdist and still run the
+# tests.  It used to arrive by accident, via a stale egg-info SOURCES.txt in a
+# developer's working tree -- precisely the kind of accident that stops
+# happening on a clean CI checkout.
+recursive-include tests *.py
+
+# Developer tooling that CONTRIBUTING.md tells contributors to run.  Named
+# individually rather than grafted: tools/ also holds seafile_doctor.py, which
+# is gitignored and must not reach a release merely because it happens to sit in
+# someone's working copy.
+include tools/run_tests_parallel.py
+include tools/verify_docs_guards.py
+
+global-exclude *.py[cod]

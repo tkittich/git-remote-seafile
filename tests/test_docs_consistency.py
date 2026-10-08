@@ -31,6 +31,7 @@ an AST pass rather than silently passing.
 
 from __future__ import annotations
 
+import fnmatch
 import re
 import unittest
 from pathlib import Path
@@ -264,6 +265,61 @@ class TestPythonFloor(unittest.TestCase):
         versions = [v.strip().strip("\"'") for v in match.group(1).split(",")]
         lowest = min(versions, key=lambda v: tuple(int(p) for p in v.split(".")))
         self.assertEqual(lowest, self.floor)
+
+
+class TestSdistManifest(unittest.TestCase):
+    """The docs have to be *named* in MANIFEST.in to reach the sdist.
+
+    ``README.md`` and ``LICENSE`` come along on their own -- pyproject.toml
+    names them in ``readme`` and ``license`` -- but nothing else does.  A built
+    sdist contained the package, the tests (only because a stale egg-info
+    SOURCES.txt happened to list them) and no user guide, no CHANGELOG, no
+    DESIGN and no launcher.  A source distribution that omits its own
+    documentation is not a source distribution.
+
+    This reads the manifest rather than building an sdist on purpose: a build
+    needs setuptools, CI installs the package with ``pip install -e .`` and
+    nothing else, and a test that skips where it matters is worth less than one
+    that always runs.  It checks coverage by the manifest's patterns, not that
+    a particular tarball was correct -- the tarball was checked by hand.
+    """
+
+    def _manifest_lines(self) -> list[list[str]]:
+        manifest = _ROOT / "MANIFEST.in"
+        self.assertTrue(manifest.is_file(), "MANIFEST.in is missing")
+        lines = []
+        for raw in manifest.read_text(encoding="utf-8").splitlines():
+            stripped = raw.strip()
+            if stripped and not stripped.startswith("#"):
+                lines.append(stripped.split())
+        return lines
+
+    def _is_covered(self, path: str) -> bool:
+        """Approximate MANIFEST.in semantics for include/graft/recursive-include."""
+        for parts in self._manifest_lines():
+            directive = parts[0]
+            if directive == "include":
+                if any(fnmatch.fnmatch(path, pattern) for pattern in parts[1:]):
+                    return True
+            elif directive in ("graft", "recursive-include") and len(parts) >= 2:
+                if path.startswith(parts[1].rstrip("/") + "/"):
+                    return True
+        return False
+
+    def test_every_shipped_document_is_in_the_manifest(self):
+        for name in _DOC_NAMES:
+            with self.subTest(document=name):
+                self.assertTrue(
+                    self._is_covered(name),
+                    f"{name} is not covered by MANIFEST.in, so it will not be "
+                    "in the source distribution",
+                )
+
+    def test_the_source_checkout_launcher_is_in_the_manifest(self):
+        self.assertTrue(
+            self._is_covered("bin/git-remote-seafile"),
+            "bin/ is not covered by MANIFEST.in",
+        )
 
 
 class TestDocumentationIndex(unittest.TestCase):
