@@ -359,6 +359,10 @@ export SEAFILE_SERVER="https://seafile.example.com"
 export SEAFILE_TOKEN="d82f8a19234857bf9e349204958671bc9842"
 ```
 
+> **Scoping note**: `SEAFILE_TOKEN` without a matching `SEAFILE_SERVER` is adopted for
+> *any* server the remote URL names. If you work against more than one Seafile instance,
+> set both variables together so each token is only sent to its own server.
+
 ### Verifying Authentication
 Run the built-in diagnostic check:
 ```bash
@@ -635,7 +639,7 @@ Repository at seafile://code/myproject is LOCKED:
 ```
 or when idle:
 ```text
-UNLOCKED (Repository is available)
+Repository at seafile://code/myproject is UNLOCKED.
 ```
 
 ### Breaking or Clearing a Lock (`unlock`)

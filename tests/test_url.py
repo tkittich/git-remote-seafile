@@ -52,6 +52,15 @@ class TestUrlParsingModule(unittest.TestCase):
         self.assertEqual(res.library_name, "repo")
         self.assertEqual(res.repo_path, "/git-repo")
 
+    def test_scheme_prefix_is_case_insensitive(self):
+        """RFC 3986 schemes are caseless, so SEAFILE://... must parse identically."""
+        up = parse_seafile_url("SEAFILE://code/myrepo")
+        lo = parse_seafile_url("seafile://code/myrepo")
+        self.assertEqual((up.server_url, up.library_name, up.repo_path), (lo.server_url, lo.library_name, lo.repo_path))
+        mixed_up = parse_seafile_url("SeaFile://HTTPS://Host:8443/code/myrepo")
+        mixed_lo = parse_seafile_url("seafile://https://host:8443/code/myrepo")
+        self.assertEqual(mixed_up.server_url, mixed_lo.server_url)
+
     def test_percent_encoded_segments(self):
         res = parse_seafile_url("seafile://My%20Library/my%20repo")
         self.assertIsNone(res.server_url)

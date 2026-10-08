@@ -307,12 +307,18 @@ def main() -> int:
                     continue
                 lib_name = lib["name"]
                 server_url = lib.get("server_url") or client.server_url
-                if server_url.startswith("http://"):
-                    server_host = server_url.replace("http://", "").rstrip("/")
+                # Scheme comparison is case-insensitive per RFC 3986: a mixed-case
+                # SEAFILE_SERVER (e.g. "HTTP://host") must classify as http, not https.
+                head = server_url[:8].lower()
+                if head.startswith("http://"):
+                    server_host = server_url[7:].rstrip("/")
                     print(f"seafile://http://{server_host}/{lib_name}/{rel.as_posix()}")
-                else:
-                    server_host = server_url.replace("https://", "").rstrip("/")
+                elif head.startswith("https://"):
+                    server_host = server_url[8:].rstrip("/")
                     print(f"seafile://{server_host}/{lib_name}/{rel.as_posix()}")
+                else:
+                    # No scheme at all (bare host[:port]): keep the legacy bare form.
+                    print(f"seafile://{server_url.rstrip('/')}/{lib_name}/{rel.as_posix()}")
                 return 0
             print(f"Could not match '{target_path}' to any local Seafile library worktree.")
             return 1

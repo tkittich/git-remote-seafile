@@ -56,10 +56,16 @@ def parse_seafile_url(url: str) -> SeafileURL:
     URL is therefore always <library>/<path>. When a name really is ambiguous,
     the explicit-scheme form settles it.
     """
-    stripped = url.removeprefix("seafile://")
+    # Schemes are case-insensitive per RFC 3986 and git passes user-typed URLs
+    # through verbatim, so SEAFILE://... must match the prefix too; a
+    # case-sensitive compare would let it fall into the bare-path branch below
+    # and be silently mis-parsed (e.g. "SEAFILE:" looking host-like).
+    stripped = url[10:] if url[:10].lower() == "seafile://" else url
     server_url = None
 
-    if stripped.startswith("http://") or stripped.startswith("https://"):
+    # Scheme comparison is case-insensitive per RFC 3986; urlparse normalizes the
+    # scheme to lowercase while leaving host/path casing untouched.
+    if stripped.lower().startswith(("http://", "https://")):
         parsed = urlparse(stripped)
         scheme = parsed.scheme
         host = (parsed.hostname or "").lower()

@@ -147,8 +147,13 @@ class TestIterRefs(unittest.TestCase):
         self.assertEqual(got, {"refs/heads/feature@v2": "sha123"})
 
     def test_illegal_ref_names_are_rejected(self):
-        """Standalone @, @{ sequence, and control/invalid chars are rejected."""
-        self.assertFalse(is_valid_ref_name("refs/heads/@"))
+        """Bare @ (the HEAD alias) and @{ sequences / invalid chars are rejected.
+
+        An "@" *inside* a component is legal per git-check-ref-format -- even the odd "refs/heads/@"
+        passes there, so it must not be rejected here either.
+        """
+        self.assertFalse(is_valid_ref_name("@"))
+        self.assertTrue(is_valid_ref_name("refs/heads/@"))
         self.assertFalse(is_valid_ref_name("refs/heads/foo@{bar}"))
         self.assertFalse(is_valid_ref_name("refs/heads/.hidden"))
         self.assertFalse(is_valid_ref_name("refs/heads/branch.lock"))

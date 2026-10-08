@@ -34,10 +34,13 @@ _INVALID_REF_CHARS = re.compile(r"[\s\x00-\x1f\x7f~^:?*\[\\]|\.\.|//|\.lock$|@\{
 
 def is_valid_ref_name(ref_name: str) -> bool:
     """Return True if ref_name is a valid Git ref name per git-check-ref-format."""
-    if not ref_name or _INVALID_REF_CHARS.search(ref_name):
+    # Only the bare refname "@" (an alias for HEAD) and the "@{" sequence are
+    # forbidden; an @ inside a component -- even "refs/heads/@" itself -- is
+    # legal per git-check-ref-format, so it must not be rejected here.
+    if not ref_name or ref_name == "@" or _INVALID_REF_CHARS.search(ref_name):
         return False
     parts = ref_name.split("/")
-    if any(p == "@" or p.startswith(".") or p.endswith(".lock") for p in parts):
+    if any(p.startswith(".") or p.endswith(".lock") for p in parts):
         return False
     if ref_name.endswith("."):
         return False

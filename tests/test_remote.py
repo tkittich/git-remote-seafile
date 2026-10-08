@@ -15,6 +15,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from git_remote_seafile.client import SeafileAPIError, SeafileClient
+from git_remote_seafile.config import RemoteConfig
 from git_remote_seafile.gc import compact_repository, describe_size_delta
 from git_remote_seafile.git_util import (
     GitError,
@@ -71,6 +72,14 @@ class TestRemoteHelper(unittest.TestCase):
         with patch("sys.stdin", io.StringIO("option unknown-opt value\n")), patch("sys.stdout", out):
             h.run()
         self.assertEqual(out.getvalue(), "unsupported\n")
+
+    def test_unknown_command_replies_error(self):
+        """An unrecognized top-level command must fail loudly, not reply with an empty no-op line."""
+        h = RemoteHelper.__new__(RemoteHelper)
+        out = io.StringIO()
+        with patch("sys.stdin", io.StringIO("frobnicate\n")), patch("sys.stdout", out):
+            h.run()
+        self.assertEqual(out.getvalue(), "error unsupported\n")
 
     def test_cmd_list_detects_sha256_format(self):
         h = RemoteHelper.__new__(RemoteHelper)
@@ -426,9 +435,7 @@ class TestRemoteHelper(unittest.TestCase):
     @patch("git_remote_seafile.helper.rev_parse", return_value="sha123")
     @patch("git_remote_seafile.helper.is_ancestor", return_value=True)
     @patch("git_remote_seafile.helper.get_objects_to_push", return_value=[])
-    @patch("git_remote_seafile.helper.get_git_config_int", return_value=20)
-    @patch("git_remote_seafile.helper.get_git_config_bool", return_value=False)
-    def test_auto_gc_notification_when_disabled(self, mock_autogc, mock_thresh, mock_objs, mock_ancestor, mock_rev):
+    def test_auto_gc_notification_when_disabled(self, mock_objs, mock_ancestor, mock_rev):
         h = RemoteHelper.__new__(RemoteHelper)
         h.client = MagicMock()
         h.repo_id = "repo1"
@@ -436,11 +443,14 @@ class TestRemoteHelper(unittest.TestCase):
         h.raw_url = "seafile://repo/path"
         h._refs_cache = {}
 
-        # 22 remote packfiles -> threshold is 20
+        # 22 remote packfiles -> threshold is 20, auto-gc disabled
         h.client.list_dir.return_value = [{"name": f"pack-{i}.pack"} for i in range(22)]
+        cfg = RemoteConfig(lock_timeout=15, lock_lease=60, auto_gc=False, gc_threshold=20)
 
         err = io.StringIO()
-        with patch("sys.stderr", err), patch("git_remote_seafile.helper.RemoteLock"):
+        with patch("sys.stderr", err), \
+             patch("git_remote_seafile.helper.RemoteLock"), \
+             patch("git_remote_seafile.helper.RemoteConfig.load", return_value=cfg):
             h.cmd_push(["refs/heads/main:refs/heads/main"])
 
         self.assertIn("Notice: Remote repository has 22 packfiles", err.getvalue())
@@ -449,10 +459,8 @@ class TestRemoteHelper(unittest.TestCase):
     @patch("git_remote_seafile.helper.rev_parse", return_value="sha123")
     @patch("git_remote_seafile.helper.is_ancestor", return_value=True)
     @patch("git_remote_seafile.helper.get_objects_to_push", return_value=[])
-    @patch("git_remote_seafile.helper.get_git_config_int", return_value=20)
-    @patch("git_remote_seafile.helper.get_git_config_bool", return_value=True)
     @patch("git_remote_seafile.gc.compact_repository")
-    def test_auto_gc_triggered_when_enabled(self, mock_compact, mock_autogc, mock_thresh, mock_objs, mock_ancestor, mock_rev):
+    def test_auto_gc_triggered_when_enabled(self, mock_compact, mock_objs, mock_ancestor, mock_rev):
         h = RemoteHelper.__new__(RemoteHelper)
         h.client = MagicMock()
         h.repo_id = "repo1"
@@ -460,13 +468,15 @@ class TestRemoteHelper(unittest.TestCase):
         h.raw_url = "seafile://repo/path"
         h._refs_cache = {}
 
-        # 22 remote packfiles -> threshold is 20
+        # 22 remote packfiles -> threshold is 20, auto-gc enabled
         h.client.list_dir.return_value = [{"name": f"pack-{i}.pack"} for i in range(22)]
+        cfg = RemoteConfig(lock_timeout=15, lock_lease=60, auto_gc=True, gc_threshold=20)
 
-        with patch("git_remote_seafile.helper.RemoteLock"):
+        with patch("git_remote_seafile.helper.RemoteLock"), \
+             patch("git_remote_seafile.helper.RemoteConfig.load", return_value=cfg):
             h.cmd_push(["refs/heads/main:refs/heads/main"])
 
-        mock_compact.assert_called_once_with(h.client, "repo1", "/git-repo", min_packs=20, verbose=True)
+        mock_compact.assert_called_once_with(h.client, "repo1", "/git-repo", config=cfg, min_packs=20, verbose=True)
 
     @patch("git_remote_seafile.helper.install_packfile")
     @patch("git_remote_seafile.helper.get_git_dir")

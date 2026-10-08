@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import inspect
 import re
 import shutil
 import sys
@@ -120,13 +121,17 @@ def fetch_and_install_pack(
                 pass
             idx_downloaded = False
 
+        target = installer or install_packfile
+        # Custom installer callbacks may predate the ``move`` parameter; probe
+        # the signature instead of retrying on TypeError -- a bare except would
+        # mask a genuine failure occurring *after* the staged files were moved.
         try:
-            (installer or install_packfile)(
-                pack_name, staged_pack, staged_idx if idx_downloaded else None, move=True
-            )
-        except TypeError:
-            (installer or install_packfile)(
-                pack_name, staged_pack, staged_idx if idx_downloaded else None
-            )
+            accepts_move = "move" in inspect.signature(target).parameters
+        except (TypeError, ValueError):
+            accepts_move = False
+        if accepts_move:
+            target(pack_name, staged_pack, staged_idx if idx_downloaded else None, move=True)
+        else:
+            target(pack_name, staged_pack, staged_idx if idx_downloaded else None)
     finally:
         shutil.rmtree(staging_dir, ignore_errors=True)

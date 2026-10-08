@@ -9,7 +9,7 @@ import tempfile
 from pathlib import Path
 
 from .client import SeafileClient, SeafileAPIError
-from .config import get_git_config_bool, get_git_config_int
+from .config import RemoteConfig
 from .lock import RemoteLock
 from .packs import (
     PACK_NAME_RE,
@@ -246,8 +246,12 @@ class RemoteHelper:
         allowed_ref_prefixes = tuple(f"{ns}/" for ns in REF_NAMESPACES)
         reported_specs: set[str] = set()
 
+        # Load session config once and reuse it for the push lock below and the
+        # post-lock auto-GC so these values resolve through one documented
+        # dataclass (Qwen N-6).
         try:
-            with RemoteLock(self.client, self.repo_id, self.repo_path) as lock:
+            session_config = RemoteConfig.load()
+            with RemoteLock(self.client, self.repo_id, self.repo_path, config=session_config) as lock:
                 def on_upload_progress(transferred: int, total: int) -> None:
                     lock.maybe_renew(20.0)
 
@@ -434,8 +438,8 @@ class RemoteHelper:
                 try:
                     pack_entries = self.client.list_dir(self.repo_id, self._full_path("objects/pack"))
                     remote_packs = [e["name"] for e in pack_entries if e["name"].endswith(".pack")]
-                    threshold = get_git_config_int("seafile.gcthreshold", 20)
-                    auto_gc = get_git_config_bool("seafile.autogc", False)
+                    threshold = session_config.gc_threshold
+                    auto_gc = session_config.auto_gc
 
                     if len(remote_packs) >= threshold:
                         if auto_gc:
@@ -477,6 +481,7 @@ class RemoteHelper:
                     self.client,
                     self.repo_id,
                     self.repo_path,
+                    config=session_config,
                     min_packs=auto_gc_min_packs,
                     verbose=True,
                 )
@@ -514,6 +519,8 @@ class RemoteHelper:
             # Smart Pack Fetch Filtering (M-9):
             # If all requested commit objects already exist in the local repository,
             # skip downloading redundant remote packfiles.
+            # Note: This is a tip-presence heuristic sound for full clones; in shallow
+            # or partial clones, tips may exist while trees/blobs are missing.
             requested_shas: list[str] = []
             for spec in fetch_specs:
                 parts = spec.split()
@@ -620,6 +627,8 @@ class RemoteHelper:
                         fetch_specs.append(next_line.removeprefix("fetch ").strip())
                 self.cmd_fetch(fetch_specs)
             else:
-                # Unsupported command
-                sys.stdout.write("\n")
-                sys.stdout.flush()
+                # Git sends no unknown commands today, but an empty line would be read as a
+                # successful no-op; fail loudly instead (Qwen H2).
+                sys.stdout.write("error unsupported\n")
+                sys.stderr.write(f"git-remote-seafile: unsupported helper command '{line}'\n")
+                sys.stderr.flush()

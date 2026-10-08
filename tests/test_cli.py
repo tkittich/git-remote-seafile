@@ -385,6 +385,22 @@ class TestCLIDesktopUrl(unittest.TestCase):
                         self.assertEqual(code, 0)
                         self.assertIn("seafile://http://seafile.local:8000/myrepo/subdir", mock_out.getvalue())
 
+                # Matched with mixed-case scheme (RFC 3986: schemes are caseless)
+                mock_client.server_url = "HTTP://Seafile.Local:8000"
+                with patch.object(sys, "argv", ["git-remote-seafile", "desktop-url", str(worktree_dir / "subdir")]):
+                    with patch("sys.stdout", new_callable=io.StringIO) as mock_out:
+                        code = main()
+                        self.assertEqual(code, 0)
+                        self.assertIn("seafile://http://Seafile.Local:8000/myrepo/subdir", mock_out.getvalue())
+
+                # Matched with bare host (no scheme at all): legacy bare form preserved
+                mock_client.server_url = "barehost.local"
+                with patch.object(sys, "argv", ["git-remote-seafile", "desktop-url", str(worktree_dir / "subdir")]):
+                    with patch("sys.stdout", new_callable=io.StringIO) as mock_out:
+                        code = main()
+                        self.assertEqual(code, 0)
+                        self.assertIn("seafile://barehost.local/myrepo/subdir", mock_out.getvalue())
+
                 # Unmatched
                 outside_path = fake_home / "outside" / "dir"
                 outside_path.mkdir(parents=True)
