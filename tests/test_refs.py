@@ -118,8 +118,8 @@ class TestIterRefs(unittest.TestCase):
         self.assertEqual(len(got), 8)
         self.assertGreater(len(seen_threads), 1)
 
-    def test_parallel_ref_enumeration_handles_fetch_exception(self):
-        """Exceptions during individual ref fetches are skipped gracefully."""
+    def test_parallel_ref_enumeration_propagates_fetch_exception(self):
+        """Exceptions during individual ref fetches propagate rather than being swallowed."""
         class FailingClient(FakeClient):
             def get_file_text(self, repo_id, path):
                 if "broken" in path:
@@ -129,8 +129,10 @@ class TestIterRefs(unittest.TestCase):
         tree = {
             "/git-repo/refs/heads": {"good": "file:aaa", "broken": "file:bbb"}
         }
-        got = dict(iter_refs(FailingClient(tree), "rid", "/git-repo", "refs/heads", max_workers=2))
-        self.assertEqual(got, {"refs/heads/good": "aaa"})
+        with self.assertRaises(RuntimeError):
+            list(iter_refs(FailingClient(tree), "rid", "/git-repo", "refs/heads", max_workers=2))
+        with self.assertRaises(RuntimeError):
+            list(iter_refs(FailingClient(tree), "rid", "/git-repo", "refs/heads", max_workers=1))
 
 
 if __name__ == "__main__":

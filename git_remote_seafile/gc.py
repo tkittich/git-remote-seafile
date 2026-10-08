@@ -121,13 +121,28 @@ def compact_repository(
                     idx_bytes = client.get_file_bytes(repo_id, f"{pack_dir}/{idx_name}")
                     if idx_bytes:
                         idx_file.write_bytes(idx_bytes)
-                    else:
-                        subprocess.run(
-                            ["git", "index-pack", "-o", str(idx_file), str(pack_file)],
-                            check=True,
-                            capture_output=True,
-                            env=scratch_env,
-                        )
+                        idx_downloaded = True
+
+                verified = False
+                if idx_downloaded and idx_file.is_file():
+                    res = subprocess.run(
+                        ["git", "verify-pack", "-v", str(idx_file)],
+                        capture_output=True,
+                        env=scratch_env,
+                    )
+                    verified = (res.returncode == 0)
+
+                if not verified:
+                    try:
+                        idx_file.unlink(missing_ok=True)
+                    except Exception:
+                        pass
+                    subprocess.run(
+                        ["git", "index-pack", "-o", str(idx_file), str(pack_file)],
+                        check=True,
+                        capture_output=True,
+                        env=scratch_env,
+                    )
 
             # 4. Mirror remote refs so git repack knows all roots are reachable.
             # This walk must be recursive: a nested ref that is not mirrored
@@ -137,9 +152,13 @@ def compact_repository(
             mirrored_refs = 0
             for namespace in REF_NAMESPACES:
                 for ref_name, sha in iter_refs(client, repo_id, clean_repo, namespace):
+                    if not sha or not sha.strip():
+                        raise RuntimeError(
+                            f"refusing to compact {clean_repo}: empty SHA for ref '{ref_name}'."
+                        )
                     ref_file = bare_repo / ref_name
                     ref_file.parent.mkdir(parents=True, exist_ok=True)
-                    ref_file.write_text(f"{sha}\n", encoding="utf-8")
+                    ref_file.write_text(f"{sha.strip()}\n", encoding="utf-8")
                     mirrored_refs += 1
 
             # Compaction is only safe when we know what is reachable.  With no
@@ -198,6 +217,22 @@ def compact_repository(
             # 7. Delete obsolete old packs from Seafile
             if verbose:
                 sys.stderr.write("  Cleaning up obsolete remote packfiles...\n")
+
+            # Fencing check (N-4): verify lock ownership before deleting any remote packs
+            lock_valid = False
+            if hasattr(lock, "verify_ownership"):
+                lock_valid = lock.verify_ownership()
+            elif hasattr(lock, "renew"):
+                lock_valid = lock.renew()
+            else:
+                lock_valid = True
+
+            if not lock_valid:
+                raise RuntimeError(
+                    "refusing to delete obsolete packfiles: lock lease lapsed or was lost. "
+                    "Compacted packfiles were uploaded, but old packs were left untouched to prevent data corruption."
+                )
+
             deleted_count = 0
             for old_p in old_packs:
                 maybe_renew()

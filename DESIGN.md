@@ -136,8 +136,9 @@ sequenceDiagram
 
 ## 6. Fast-Forward Safety & Conflict Guarantees
 
-- **Fast-forward check**: Before writing a ref update, `git-remote-seafile` checks if the current remote SHA is an ancestor of the local commit (`git merge-base --is-ancestor`).
-- If another developer pushed to that branch in the interim, the helper outputs `error <dst> non-fast-forward`.
+- **Post-lock ref verification**: While holding the active remote lock, `cmd_push` re-reads all destination refs from Seafile, bypassing the pre-lock `cmd_list` cache.
+- **Fast-forward check**: The helper checks if the freshly re-read remote SHA is an ancestor of the local commit (`git merge-base --is-ancestor`) and uses fresh tips for pack object exclusion.
+- **Optimistic compare-and-swap (CAS)**: Immediately before uploading ref files, the helper re-reads each ref one final time to verify it has not shifted since the fast-forward check. If another developer pushed to that branch in the interim, the helper outputs `error <dst> fetch first` or `error <dst> non-fast-forward`.
 - Git aborts the push, prompting the user to `git pull` and merge using standard Git tools.
 - **Zero file duplication**: No `(SFConflict ...)` files can ever be generated.
 
@@ -148,15 +149,15 @@ sequenceDiagram
 ### 7.1 Distributed Ticket-Based Lease Locking
 - In multi-developer teams, concurrent pushes could race during packfile uploads.
 - `git-remote-seafile` implements a cooperative ticket-based distributed lock protocol stored at `/.git-lock.d/<nonce>.json` on the remote repository.
-- Each client deposits an individual ticket containing owner hash, machine ID, holding PID, nonce, and expiration. Tickets are evaluated deterministically using Seafile server `mtime` and calibrated HTTP `Date:` response headers, mitigating write-write overwrite races and client clock drift. When server `mtime` values tie within the same second, ordering falls back to calibrated client timestamps and unique nonces.
+- Each client deposits an individual ticket containing owner hash, machine ID, holding PID, nonce, and expiration. Tickets are evaluated deterministically using Seafile server `mtime` and unique nonces (retrying on transient listing errors and failing closed). Because Seafile does not expose atomic server-side mutex primitives, the lock protocol is cooperative and advisory; write safety is reinforced with post-lock ref re-reads, optimistic compare-and-swap (CAS) verification before writing refs, and lease ownership fencing prior to GC deletions.
 - Acquired locks are automatically mirrored to legacy `/.git-lock.json` for full backward compatibility with older client versions.
 - **Dead Local PID Fast-Reclaim**: When inspecting an unexpired lock held on the same machine (verifying both hostname and local machine hardware/container identifier), liveness checks (`OpenProcess` on Windows, `os.kill` on POSIX) immediately reclaim the lock if the holding process has terminated or crashed.
 - **In-Transfer Progress Renewal**: Multi-gigabyte packfile transfers and remote garbage collection continuously refresh their lock lease every 20 seconds during active socket writes and long operations without background daemon threads.
-- **CLI Management**: Operators can inspect active lock status via `git-remote-seafile lock-status <url>` and release or break locks via `git-remote-seafile unlock <url> [--force]`.
+- **CLI Management**: Operators can inspect active lock status via `git-remote-seafile lock-status <url>` and release or break locks via `git-remote-seafile unlock <url> [--force]`. Status inspection is strictly read-only and never reaps or mutates tickets.
 
 ### 7.2 Remote Packfile Compaction (`git-remote-seafile gc`)
 - Over time, numerous pushes create multiple packfiles in `/objects/pack/`.
-- The `gc` subcommand downloads all packs, invokes `git repack -ad -l` to consolidate and delta-compress them into a single unified packfile, uploads the result, and removes obsolete remote packs from Seafile. Note that while obsolete packs are removed immediately from the repository, raw storage reclamation on the Seafile server backend requires the administrator to run `seaf-gc` after the library retention window has elapsed.
+- The `gc` subcommand downloads all packs, invokes `git repack -ad -l` to consolidate and delta-compress them into a single unified packfile, uploads the result, and removes obsolete remote packs from Seafile. Obsolete pack deletion strictly re-validates lock ownership via fencing before removing any remote packs. Note that while obsolete packs are removed immediately from the repository, raw storage reclamation on the Seafile server backend requires the administrator to run `seaf-gc` after the library retention window has elapsed.
 
 ### 7.3 Git LFS Custom Transfer Agent Protocol
 - Implements the official Git LFS line-based JSON custom transfer protocol.
@@ -175,7 +176,14 @@ To prevent data loss and filesystem thrashing, `git-remote-seafile` enforces pre
 ### 7.5 High-Throughput Transfer & Scalability (v0.5.0)
 - **Parallel Ref Enumeration (M-9)**: Concurrently resolves remote branch and tag hashes using `concurrent.futures.ThreadPoolExecutor(max_workers=8)` in `refs.py`, eliminating sequential latency overhead on repositories with large ref counts while strictly preserving deterministic alphabetical sort order for Git wire protocol stability.
 - **Smart Pack Fetch Filtering (M-9)**: During `fetch`, the helper inspects requested commit objects against local Git object availability (`filter_existing_objects`). When all requested commits already exist locally, redundant remote packfile downloads are bypassed and protocol termination (`\n`) is emitted immediately.
-- **Zero-Copy Disk-Staged Pack Streaming (H-1)**: During `push`, packfiles and index files generated by `git pack-objects` are staged on disk in temporary directories residing directly within `.git`, and streamed to Seafile via `StreamingMultipartFile` without buffering gigabyte payloads in RAM. Temporary staging directories are cleaned up immediately via `try...finally`.
+- **Disk-Staged Pack Streaming (H-1)**: During `push`, packfiles and index files generated by `git pack-objects` are staged on disk in temporary directories residing directly within `.git`, and streamed to Seafile via `StreamingMultipartFile` without buffering gigabyte payloads in RAM. Temporary staging directories are cleaned up immediately via `try...finally`.
+
+### 7.6 Integrity & Concurrency Hardening (v0.5.1)
+- **Post-Lock Ref Re-Reading & Optimistic CAS (N-1)**: Eliminates lost-update races by re-fetching destination ref tips after lock acquisition and verifying they haven't shifted immediately prior to writing ref files.
+- **Fail-Closed Ref Discovery & GC Guard (N-2)**: Ref reading exceptions propagate instead of silently dropping branches; GC validates mirrored ref integrity before running repack.
+- **Ownership Fencing (N-4)**: GC verifies active lock ownership and validity immediately before deleting obsolete remote packfiles.
+- **Pack Index Verification & Local Regeneration (N-5)**: Downloaded `.idx` files are validated with `git verify-pack -v`; corrupted or truncated indexes are discarded and reconstructed locally via `git index-pack`.
+- **Surrogateescape Path Handling (N-8)**: Safely handles non-UTF-8 repository filenames without crashing.
 
 ---
 

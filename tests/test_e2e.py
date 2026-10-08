@@ -14,6 +14,7 @@ import unittest
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
 from e2e_harness import (  # noqa: E402
+    REPO_ID,
     SeafileStub,
     commit_file,
     init_repo,
@@ -411,6 +412,54 @@ class TestHarnessDoesNotNeedAmbientGitIdentity(E2ETestCase):
             "commit from the clone",
             run_git(["log", "--oneline"], clone, clean_env).stdout,
         )
+
+
+class TestConcurrentPushRaceCondition(E2ETestCase):
+    """N-1: A push that lands while another client waits for the lock must not be lost."""
+
+    def test_interleaved_push_during_lock_acquisition_rejected(self):
+        # 1. Machine A initializes repo and pushes c0
+        a = init_repo(self.work / "race_a", self.env)
+        commit_file(a, "file.txt", "c0\n", "c0", self.env)
+        run_git(["remote", "add", "origin", self.url("repo_race")], a, self.env)
+        run_git(["push", "-u", "origin", "main"], a, self.env)
+
+        # 2. Machine A creates a1 and pushes it to side branch 'a_tip' so objects exist on remote
+        commit_file(a, "file.txt", "a1\n", "a1", self.env)
+        a1_sha = run_git(["rev-parse", "HEAD"], a, self.env).stdout.strip()
+        run_git(["push", "origin", "main:refs/heads/a_tip"], a, self.env)
+
+        # 3. Machine B clones at c0 and creates b1
+        b = self.work / "race_b"
+        run_git(["clone", self.url("repo_race"), str(b)], self.work, self.env)
+        commit_file(b, "b.txt", "b1\n", "b1", self.env)
+
+        # 4. Install GET hook: the moment B requests an upload link for .git-lock.d,
+        # move remote refs/heads/main to a1 (simulating A landing a push right then).
+        hook_fired = []
+
+        def on_lock_attempt():
+            self.stub.files.setdefault(REPO_ID, {})["/repo_race/refs/heads/main"] = f"{a1_sha}\n".encode("utf-8")
+            hook_fired.append(True)
+
+        self.stub.get_hooks.append((
+            lambda p: "upload-link" in p and ".git-lock.d" in p,
+            on_lock_attempt,
+        ))
+
+        # 5. Machine B pushes to main. Must be rejected as non-fast-forward / fetch first!
+        proc = run_git(["push", "origin", "main"], b, self.env, check=False)
+        self.assertTrue(len(hook_fired) > 0, "Hook should have fired during push lock acquisition")
+        self.assertNotEqual(proc.returncode, 0, "Push B should have been rejected as non-fast-forward")
+        combined_err = (proc.stdout + proc.stderr).lower()
+        self.assertTrue(
+            "non-fast-forward" in combined_err or "fetch first" in combined_err,
+            f"Expected non-fast-forward error, got:\n{proc.stdout}\n{proc.stderr}",
+        )
+
+        # 6. Verify remote refs/heads/main still points to a1 (A was NOT overwritten!)
+        ls = run_git(["ls-remote", self.url("repo_race"), "refs/heads/main"], self.work, self.env)
+        self.assertIn(a1_sha, ls.stdout, "A1 must not be overwritten by B1")
 
 
 if __name__ == "__main__":

@@ -166,7 +166,7 @@ def get_objects_to_push(local_sha: list[str] | str, exclude_shas: list[str] | st
     if code != 0:
         raise GitError(f"Failed to list objects to push: {err.decode('utf-8', errors='replace')}")
 
-    lines = out.decode("utf-8").splitlines()
+    lines = out.decode("utf-8", errors="surrogateescape").splitlines()
     objects = [line.strip() for line in lines if line.strip()]
     return objects
 
@@ -198,7 +198,7 @@ def create_packfile(
         pack_prefix = tmp_dir / "pack"
 
         # 1. Generate packfile
-        input_data = ("\n".join(object_shas) + "\n").encode("utf-8")
+        input_data = ("\n".join(object_shas) + "\n").encode("utf-8", errors="surrogateescape")
         out, err, code = run_git(
             ["pack-objects", str(pack_prefix)],
             input_bytes=input_data,
@@ -228,7 +228,7 @@ def create_packfile(
         pack_prefix = tmp_dir / "pack"
 
         # 1. Generate packfile
-        input_data = ("\n".join(object_shas) + "\n").encode("utf-8")
+        input_data = ("\n".join(object_shas) + "\n").encode("utf-8", errors="surrogateescape")
         out, err, code = run_git(
             ["pack-objects", str(pack_prefix)],
             input_bytes=input_data,
@@ -298,6 +298,16 @@ def install_packfile(pack_name: str, pack_bytes: bytes | Path | str, idx_bytes: 
                 shutil.copyfile(idx_bytes, staged_idx)
             else:
                 staged_idx.write_bytes(idx_bytes)
+            # Verify the index matches the packfile (N-5)
+            _, err, code = run_git(["verify-pack", "-v", str(staged_idx)])
+            if code != 0:
+                try:
+                    staged_idx.unlink(missing_ok=True)
+                except Exception:
+                    pass
+                _, err, code = run_git(["index-pack", "-o", str(staged_idx), str(staged_pack)])
+                if code != 0:
+                    raise GitError(f"git index-pack failed on installed pack: {err.decode('utf-8', errors='replace')}")
         else:
             # Generate index locally
             _, err, code = run_git(["index-pack", "-o", str(staged_idx), str(staged_pack)])

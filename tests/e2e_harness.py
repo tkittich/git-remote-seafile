@@ -31,6 +31,7 @@ import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from typing import Any
 from urllib.parse import urlparse, parse_qs
 
 REPO_ID = "testlib-id"
@@ -117,6 +118,9 @@ class _Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         self._drain()
         path = urlparse(self.path).path
+        for pred, fn in list(getattr(self.stub, "get_hooks", [])):
+            if pred(self.path):
+                fn()
         f = self.stub.faults
 
         if path == "/api2/repos/":
@@ -210,6 +214,7 @@ class SeafileStub:
         self.files: dict[str, dict[str, bytes]] = {}
         self.faults: dict[str, int] = {}
         self.raw_hits: list[str] = []
+        self.get_hooks: list[tuple[Any, Any]] = []
         self.port = 0
         self._httpd = None
         self._thread = None
@@ -240,6 +245,7 @@ class SeafileStub:
         self.files.clear()
         self.faults.clear()
         self.raw_hits.clear()
+        self.get_hooks.clear()
 
     # -- store helpers ----------------------------------------------------
     def has_under(self, repo_id: str, path: str) -> bool:

@@ -811,7 +811,13 @@ class TestConcurrencyAndLocking(unittest.TestCase):
         with patch("sys.stderr", err):
             lock.release()
 
-        mock_client.delete_entry.assert_not_called()
+        # Must not delete the legacy lock taken over by another machine,
+        # but must clean up its own ticket file (N-9)
+        self.assertNotIn(
+            unittest.mock.call("repo1", "/path/.git-lock.json"),
+            mock_client.delete_entry.call_args_list,
+        )
+        mock_client.delete_entry.assert_called_with("repo1", f"/path/.git-lock.d/{lock._nonce}.json")
         self.assertFalse(lock.acquired)
         self.assertIn("otherhost", err.getvalue())
 
@@ -849,9 +855,25 @@ class TestConcurrencyAndLocking(unittest.TestCase):
         with patch("sys.stderr", err):
             lock1.release()
 
-        # Must not delete the newly acquired lock
-        mock_client.delete_entry.assert_not_called()
+        # Must not delete the newly acquired legacy lock, but cleans up own ticket (N-9)
+        self.assertNotIn(
+            unittest.mock.call("repo1", "/path/.git-lock.json"),
+            mock_client.delete_entry.call_args_list,
+        )
+        mock_client.delete_entry.assert_called_with("repo1", f"/path/.git-lock.d/{lock1._nonce}.json")
         self.assertFalse(lock1.acquired)
+
+    def test_lock_acquire_retries_and_fails_closed_on_list_dir_error(self):
+        """Lock acquisition fails closed on listing errors rather than assuming no contenders (N-3)."""
+        mock_client = MagicMock()
+        mock_client.token = "token123"
+        mock_client.get_file_text.return_value = None
+        mock_client.list_dir.side_effect = RuntimeError("HTTP 500 internal server error")
+
+        lock = RemoteLock(mock_client, "repo1", "/path", timeout=0.1, lease=10)
+        with self.assertRaises(RepositoryLockedError):
+            lock.acquire()
+        self.assertFalse(lock.acquired)
 
     def test_lock_payload_does_not_leak_the_api_token(self):
         """The payload is stored in the repository, so it must not carry the token.
@@ -1238,6 +1260,38 @@ class TestRemoteGC(unittest.TestCase):
             # Check that repack was called
             repack_called = any("repack" in cmd for cmd, _ in [(c.args[0], c) for c in mock_subprocess.call_args_list if c.args])
             self.assertTrue(repack_called)
+
+    @patch("git_remote_seafile.gc.subprocess.run")
+    def test_gc_aborts_and_preserves_packs_if_lock_lost_before_cleanup(self, mock_subprocess):
+        """GC must verify lock ownership before deleting old remote packs and abort if lost (N-4)."""
+        mock_client = MagicMock()
+        mock_client.list_dir.side_effect = lambda repo_id, path: (
+            [{"name": "pack-1.pack"}, {"name": "pack-2.pack"}] if "objects/pack" in path
+            else [{"type": "file", "name": "main"}] if "refs/heads" in path
+            else []
+        )
+        mock_client.get_file_bytes.return_value = b"PACK-DATA"
+        mock_client.get_file_text.return_value = "sha000111"
+        mock_subprocess.return_value = MagicMock(returncode=0)
+
+        with patch("pathlib.Path.glob") as mock_glob, patch("git_remote_seafile.gc.RemoteLock") as mock_lock_cls:
+            p_pack = MagicMock()
+            p_pack.name = "pack-sha123.pack"
+            p_pack.stat.return_value.st_size = 10
+            mock_glob.return_value = [p_pack]
+
+            mock_lock = MagicMock()
+            mock_lock.__enter__.return_value = mock_lock
+            # Verify ownership fails right before step 7
+            mock_lock.verify_ownership.return_value = False
+            mock_lock_cls.return_value = mock_lock
+
+            with self.assertRaises(RuntimeError) as ctx:
+                compact_repository(mock_client, "repo1", "/path", min_packs=2, verbose=False)
+
+            self.assertIn("refusing to delete obsolete packfiles", str(ctx.exception))
+            # Remote packs must NOT be deleted!
+            mock_client.delete_entry.assert_not_called()
 
 
 class TestLFSTransferAgent(unittest.TestCase):

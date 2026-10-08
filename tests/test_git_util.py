@@ -194,6 +194,14 @@ class TestGitUtilWithRealGit(unittest.TestCase):
                 install_packfile(f"pack-auto-{pack_sha}.pack", pack_bytes, idx_bytes=None)
                 auto_idx = bare_dir / "objects" / "pack" / f"pack-auto-{pack_sha}.idx"
                 self.assertTrue(auto_idx.is_file())
+
+                # Test install with corrupted idx: must verify, discard bad idx, and regenerate locally (N-5)
+                corrupt_idx_bytes = b"<html>502 Bad Gateway</html>"
+                install_packfile(f"pack-corrupt-{pack_sha}.pack", pack_bytes, idx_bytes=corrupt_idx_bytes)
+                corrupt_fixed_idx = bare_dir / "objects" / "pack" / f"pack-corrupt-{pack_sha}.idx"
+                self.assertTrue(corrupt_fixed_idx.is_file())
+                _, _, code = run_git(["verify-pack", "-v", str(corrupt_fixed_idx)])
+                self.assertEqual(code, 0)
             finally:
                 os.chdir(orig_cwd2)
 

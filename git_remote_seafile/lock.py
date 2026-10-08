@@ -152,13 +152,9 @@ class RemoteLock:
         expires_at = lock_time + lock_lease
         return now < expires_at
 
-    def _scan_tickets(self, now: float) -> list[dict[str, Any]]:
+    def _scan_tickets(self, now: float, reap: bool = True) -> list[dict[str, Any]]:
         active_tickets: list[dict[str, Any]] = []
-        try:
-            entries = self.client.list_dir(self.repo_id, self.lock_dir)
-        except Exception:
-            entries = []
-
+        entries = self.client.list_dir(self.repo_id, self.lock_dir)
         if not isinstance(entries, list):
             entries = []
 
@@ -180,7 +176,7 @@ class RemoteLock:
             t_nonce = t_info.get("nonce") or name[:-5]
             t_info["nonce"] = t_nonce
 
-            if t_nonce != self._nonce:
+            if reap and t_nonce != self._nonce:
                 if not self._is_lock_active(t_info, now):
                     # Stale or dead local PID; clean up ticket file
                     try:
@@ -189,9 +185,12 @@ class RemoteLock:
                         pass
                     continue
 
-            mtime = float(entry.get("mtime") or t_info.get("timestamp") or 0.0)
-            t_time = float(t_info.get("timestamp", mtime))
-            t_info["_order_key"] = (mtime, t_time, t_nonce)
+            mtime = float(entry.get("mtime") or 0.0)
+            if mtime > 0:
+                t_info["_order_key"] = (int(mtime), 0.0, t_nonce)
+            else:
+                t_time = float(t_info.get("timestamp", 0.0))
+                t_info["_order_key"] = (0, t_time, t_nonce)
             t_info["_path"] = ticket_path
             active_tickets.append(t_info)
 
@@ -269,10 +268,21 @@ class RemoteLock:
                     continue
 
                 # 3. Check candidate tickets in .git-lock.d
-                tickets = self._scan_tickets(now)
+                try:
+                    tickets = self._scan_tickets(now)
+                except Exception as ex:
+                    if isinstance(ex, RepositoryLockedError):
+                        raise
+                    if time.monotonic() - start_time >= self.timeout:
+                        raise RepositoryLockedError(f"Failed to scan lock tickets: {ex}") from ex
+                    sys.stderr.write(f"Transient error scanning lock tickets ({ex}); retrying...\n")
+                    sys.stderr.flush()
+                    time.sleep(2)
+                    continue
+
                 if not any(t.get("nonce") == nonce for t in tickets):
                     my_ticket = dict(lock_payload)
-                    my_ticket["_order_key"] = (now, now, nonce)
+                    my_ticket["_order_key"] = (int(now), 0.0, nonce)
                     my_ticket["_path"] = f"{self.lock_dir}/{nonce}.json"
                     tickets.append(my_ticket)
 
@@ -382,12 +392,19 @@ class RemoteLock:
             return self.renew()
         return False
 
+    def verify_ownership(self) -> bool:
+        """Verify that this process still actively holds the lock on the remote (N-4)."""
+        if not self.acquired or not self._nonce:
+            return False
+        return self.renew()
+
     def release(self) -> None:
         if not self.acquired:
             return
         self.acquired = False
 
         info = self._get_lock_info()
+        skip_legacy_delete = False
         if info is not None:
             remote_nonce = info.get("nonce")
             if remote_nonce is not None:
@@ -397,14 +414,14 @@ class RemoteLock:
                         f"'{info.get('owner')}' on '{info.get('machine')}'.\n"
                     )
                     sys.stderr.flush()
-                    return
+                    skip_legacy_delete = True
             elif (info.get("owner"), info.get("machine")) != self._identity:
                 sys.stderr.write(
                     "Not releasing the remote lock: it is now held by "
                     f"'{info.get('owner')}' on '{info.get('machine')}'.\n"
                 )
                 sys.stderr.flush()
-                return
+                skip_legacy_delete = True
 
         if self._nonce:
             try:
@@ -412,16 +429,20 @@ class RemoteLock:
             except Exception:
                 pass
 
-        try:
-            self.client.delete_entry(self.repo_id, self.lock_file_path)
-        except Exception:
-            pass
+        if not skip_legacy_delete:
+            try:
+                self.client.delete_entry(self.repo_id, self.lock_file_path)
+            except Exception:
+                pass
 
     def get_status(self) -> dict[str, Any]:
         """Inspect current repository lock status."""
         now = self._get_server_time()
-        # 1. Check tickets
-        tickets = self._scan_tickets(now)
+        # 1. Check tickets (read-only query; do not reap stale tickets during status inspection)
+        try:
+            tickets = self._scan_tickets(now, reap=False)
+        except Exception:
+            tickets = []
         if tickets:
             tickets.sort(key=lambda t: t.get("_order_key", (0, 0, "")))
             winner = tickets[0]

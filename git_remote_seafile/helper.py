@@ -307,10 +307,12 @@ class RemoteHelper:
                             reported_specs.add(dst)
                             continue
 
-                        remote_sha = self._refs_cache.get(dst)
-                        if not remote_sha:
-                            # Refresh ref from remote in case it exists
-                            remote_sha = self.client.get_file_text(self.repo_id, self._full_path(dst))
+                        # Always re-read ref under lock to catch concurrent pushes (N-1)
+                        remote_sha = self.client.get_file_text(self.repo_id, self._full_path(dst))
+                        if remote_sha:
+                            self._refs_cache[dst] = remote_sha
+                        else:
+                            self._refs_cache.pop(dst, None)
 
                         if remote_sha and not force:
                             try:
@@ -388,8 +390,15 @@ class RemoteHelper:
                         pending_updates.clear()
 
                     # Update remote ref files and report ok for each updated target
-                    for dst, local_sha, _ in pending_updates:
+                    for dst, local_sha, expected_remote_sha in pending_updates:
                         try:
+                            # CAS check: verify remote ref hasn't changed since fast-forward check (N-1)
+                            current_remote = self.client.get_file_text(self.repo_id, self._full_path(dst))
+                            if current_remote != expected_remote_sha and not force:
+                                sys.stdout.write(f"error {dst} fetch first\n")
+                                reported_specs.add(dst)
+                                continue
+
                             dst_parent = self._full_path(os.path.dirname(dst))
                             dst_filename = os.path.basename(dst)
                             self.client.upload_file(
@@ -583,6 +592,8 @@ class RemoteHelper:
                         )
 
                     # Download idx
+                    idx_name = pack_name.removesuffix(".pack") + ".idx"
+                    expected_idx_size = entries_by_name.get(idx_name, {}).get("size")
                     idx_downloaded = False
                     try:
                         idx_downloaded = bool(self.client.download_file_to(
@@ -596,6 +607,15 @@ class RemoteHelper:
                         if idx_bytes:
                             staged_idx.write_bytes(idx_bytes)
                             idx_downloaded = True
+
+                    if idx_downloaded and expected_idx_size is not None and staged_idx.stat().st_size != expected_idx_size:
+                        sys.stderr.write(f"Warning: downloaded {idx_name} size mismatch; will regenerate locally.\n")
+                        sys.stderr.flush()
+                        try:
+                            staged_idx.unlink(missing_ok=True)
+                        except Exception:
+                            pass
+                        idx_downloaded = False
 
                     install_packfile(pack_name, staged_pack, staged_idx if idx_downloaded else None)
                 finally:

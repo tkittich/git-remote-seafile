@@ -74,11 +74,8 @@ def iter_refs(
 
     def _fetch_ref(item: tuple[str, str]) -> tuple[str, str | None]:
         ref_name, ref_path = item
-        try:
-            sha = client.get_file_text(repo_id, ref_path)
-            return ref_name, sha.strip() if sha else None
-        except Exception:
-            return ref_name, None
+        sha = client.get_file_text(repo_id, ref_path)
+        return ref_name, sha.strip() if sha else None
 
     if len(ref_entries) == 1 or max_workers <= 1:
         for item in ref_entries:
