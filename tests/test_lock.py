@@ -7,12 +7,28 @@ import io
 import json
 import os
 import socket
-import threading
 import time
 import unittest
 from unittest.mock import MagicMock, patch
 
 from git_remote_seafile.lock import RemoteLock, RepositoryLockedError
+
+LEGACY_LOCK = "/path/.git-lock.json"
+
+
+def _ticket(nonce: str, owner: str = "alice", machine: str = "nodeA", **overrides) -> str:
+    payload = {
+        "owner": owner,
+        "machine": machine,
+        "nonce": nonce,
+        "timestamp": time.time(),
+        "order_ts": time.time(),
+        "lease": 60,
+        "pid": 1234,
+    }
+    payload.update(overrides)
+    return json.dumps(payload)
+
 
 class _SharedLockStore:
     """Stateful stand-in for the Seafile file API shared by several lock clients.
@@ -64,6 +80,9 @@ class _SharedLockStore:
                 payload["order_ts"] = payload.get("order_ts", time.time()) - seconds
                 self.files[key] = json.dumps(payload).encode("utf-8")
 
+    def put_ticket(self, path: str, payload: dict) -> None:
+        self.files[self._norm(path)] = json.dumps(payload).encode("utf-8")
+
     def client(self, token: str) -> MagicMock:
         c = MagicMock()
         c.token = token
@@ -83,191 +102,102 @@ class TestConcurrencyAndLocking(unittest.TestCase):
         lock = RemoteLock(mock_client, "repo1", "/path", timeout=5, lease=60)
         with lock:
             self.assertTrue(lock.acquired)
-            self.assertEqual(mock_client.upload_file.call_count, 2)
+            # Exactly one artifact is written: the ticket. The v0.1-v0.6
+            # legacy .git-lock.json mirror is gone.
+            self.assertEqual(mock_client.upload_file.call_count, 1)
         self.assertFalse(lock.acquired)
-        mock_client.delete_entry.assert_any_call("repo1", "/path/.git-lock.json")
+        mock_client.delete_entry.assert_called_once_with(
+            "repo1", f"/path/.git-lock.d/{lock._nonce}.json"
+        )
 
-    def test_active_lock_timeout(self):
-        mock_client = MagicMock()
-        mock_client.token = "token123"
-        active_lock = json.dumps({
-            "owner": "alice",
-            "machine": "nodeA",
-            "timestamp": time.time(),
-            "lease": 60,
-        })
-        mock_client.get_file_text.return_value = active_lock
+    def test_orphaned_legacy_mirror_is_cleaned_up_on_acquire(self):
+        """acquire() deletes a relic .git-lock.json so repositories self-clean."""
+        store = _SharedLockStore()
+        store.files[LEGACY_LOCK] = json.dumps({
+            "owner": "long-gone", "machine": "ancient",
+            "timestamp": time.time(), "lease": 60,
+        }).encode("utf-8")
 
-        lock = RemoteLock(mock_client, "repo1", "/path", timeout=0, lease=60)
+        lock = RemoteLock(store.client("token123"), "repo1", "/path", timeout=5, lease=60)
+        lock.acquire()
+
+        self.assertTrue(lock.acquired)
+        self.assertNotIn(LEGACY_LOCK, store.files)
+
+    def test_active_foreign_ticket_blocks(self):
+        store = _SharedLockStore()
+        store.put_ticket("/path/.git-lock.d/alice-nonce.json", json.loads(_ticket("alice-nonce")))
+
+        lock = RemoteLock(store.client("token123"), "repo1", "/path", timeout=0, lease=60)
         with self.assertRaises(RepositoryLockedError) as ctx:
             lock.acquire()
         self.assertIn("locked by 'alice'", str(ctx.exception))
 
-    def test_expired_lease_override(self):
-        mock_client = MagicMock()
-        mock_client.token = "token123"
-        # Lock created 120s ago with a 60s lease -> expired!
-        expired_lock = json.dumps({
-            "owner": "bob",
-            "machine": "crashed-laptop",
-            "timestamp": time.time() - 120,
-            "lease": 60,
-        })
-        mock_client.get_file_text.return_value = expired_lock
-
-        lock = RemoteLock(mock_client, "repo1", "/path", timeout=5, lease=60)
-        err = io.StringIO()
-        with patch("sys.stderr", err):
-            lock.acquire()
-
-        self.assertTrue(lock.acquired)
-        self.assertIn("Overriding expired lock", err.getvalue())
-
-    def test_corrupt_lock_payload_handled_gracefully(self):
-        mock_client = MagicMock()
-        mock_client.token = "token123"
-        # Corrupt JSON left by sudden network cut
-        mock_client.get_file_text.return_value = "MALFORMED_NON_JSON{{{"
-
-        lock = RemoteLock(mock_client, "repo1", "/path", timeout=5, lease=60)
-        lock.acquire()
-        self.assertTrue(lock.acquired)
-
-    def test_concurrent_threads_serialization(self):
-        """Simulate two threads contending for a cooperative remote lock."""
-        shared_remote_storage = {"lock": None}
-        mock_client = MagicMock()
-
-        def fake_get_file_text(repo_id, path):
-            return shared_remote_storage["lock"]
-
-        def fake_upload(repo_id, parent, filename, content, replace=True):
-            if shared_remote_storage["lock"] is not None:
-                # Collision simulation if already locked by another client
-                info = json.loads(shared_remote_storage["lock"])
-                new_info = json.loads(content)
-                if time.time() < info["timestamp"] + info["lease"]:
-                    if info.get("nonce") != new_info.get("nonce"):
-                        raise Exception("Concurrent write rejected")
-            shared_remote_storage["lock"] = content.decode("utf-8")
-
-        def fake_delete(repo_id, path):
-            shared_remote_storage["lock"] = None
-
-        mock_client.get_file_text.side_effect = fake_get_file_text
-        mock_client.upload_file.side_effect = fake_upload
-        mock_client.delete_entry.side_effect = fake_delete
-
-        results = []
-
-        def worker(worker_id):
-            client = MagicMock()
-            client.token = f"user-{worker_id}"
-            client.get_file_text.side_effect = fake_get_file_text
-            client.upload_file.side_effect = fake_upload
-            client.delete_entry.side_effect = fake_delete
-            lock = RemoteLock(client, "repo1", "/path", timeout=5, lease=10)
-            try:
-                with lock:
-                    results.append(f"{worker_id}_start")
-                    time.sleep(0.05)
-                    results.append(f"{worker_id}_end")
-            except Exception as e:
-                results.append(f"{worker_id}_error: {e}")
-
-        _real_sleep = time.sleep
-        with patch("time.sleep", side_effect=lambda s: _real_sleep(0.02)):
-            t1 = threading.Thread(target=worker, args=(1,))
-            t2 = threading.Thread(target=worker, args=(2,))
-            t1.start()
-            _real_sleep(0.01)  # Ensure t1 starts first
-            t2.start()
-            t1.join()
-            t2.join()
-
-        # Both workers should complete without error, strictly serialized
-        self.assertEqual(len([r for r in results if "error" in r]), 0)
-        self.assertEqual(len(results), 4)
-        # Verify serialization: start -> end -> start -> end
-        first_worker = results[0].split("_")[0]
-        self.assertEqual(results[1], f"{first_worker}_end")
-
-    def test_release_does_not_delete_a_lock_another_machine_took_over(self):
-        """A lease can expire mid-operation, and someone else then holds it.
-
-        Releasing unconditionally would delete *their* lock, letting two writers
-        into the repository at once.
-        """
-        mock_client = MagicMock()
-        mock_client.token = "token123"
-        mock_client.get_file_text.return_value = None
-
-        lock = RemoteLock(mock_client, "repo1", "/path", timeout=5, lease=60)
-        lock.acquire()
-        self.assertTrue(lock.acquired)
-
-        # Our lease expired while we worked; another machine took the lock.
-        mock_client.get_file_text.return_value = json.dumps({
-            "owner": "someone-else",
-            "machine": "otherhost",
-            "timestamp": time.time(),
-            "lease": 60,
-        })
-        err = io.StringIO()
-        with patch("sys.stderr", err):
-            lock.release()
-
-        # Must not delete the legacy lock taken over by another machine,
-        # but must clean up its own ticket file (N-9)
-        self.assertNotIn(
-            unittest.mock.call("repo1", "/path/.git-lock.json"),
-            mock_client.delete_entry.call_args_list,
+    def test_expired_ticket_is_reaped_on_acquire(self):
+        """A ticket past its lease is lawfully reaped and cannot block anyone."""
+        store = _SharedLockStore()
+        store.put_ticket(
+            "/path/.git-lock.d/bob-nonce.json",
+            json.loads(_ticket("bob-nonce", owner="bob", machine="crashed-laptop")),
         )
-        mock_client.delete_entry.assert_called_with("repo1", f"/path/.git-lock.d/{lock._nonce}.json")
-        self.assertFalse(lock.acquired)
-        self.assertIn("otherhost", err.getvalue())
+        store.expire_all(120)
+
+        lock = RemoteLock(store.client("token123"), "repo1", "/path", timeout=5, lease=60)
+        lock.acquire()
+
+        self.assertTrue(lock.acquired)
+        self.assertNotIn("/path/.git-lock.d/bob-nonce.json", store.files)
+
+    def test_corrupt_ticket_payload_is_skipped(self):
+        """Corrupt JSON left by a cut mid-upload neither blocks nor crashes.
+
+        A bystander must not reap a ticket it cannot parse -- only the holder
+        (whose nonce names the file) or its expiry may remove one -- so the
+        garbage file is ignored and left alone.
+        """
+        store = _SharedLockStore()
+        store.files["/path/.git-lock.d/garbage.json"] = b"MALFORMED_NON_JSON{{{"
+
+        lock = RemoteLock(store.client("token123"), "repo1", "/path", timeout=5, lease=60)
+        lock.acquire()
+
+        self.assertTrue(lock.acquired)
+        self.assertIn("/path/.git-lock.d/garbage.json", store.files)
+
+    def test_release_only_deletes_its_own_ticket(self):
+        """A lease can lapse mid-operation and someone else then holds the lock.
+
+        Releasing must delete only our (already reaped) ticket path and leave
+        the new holder's ticket untouched.
+        """
+        store = _SharedLockStore()
+        a = RemoteLock(store.client("token-A"), "repo1", "/path", timeout=5, lease=60)
+        a.acquire()
+        self.assertTrue(a.acquired)
+        store.expire_all(120)
+
+        b = RemoteLock(store.client("token-B"), "repo1", "/path", timeout=5, lease=60)
+        with patch("sys.stderr", io.StringIO()):
+            b.acquire()
+        self.assertTrue(b.acquired)
+
+        with patch("sys.stderr", io.StringIO()):
+            a.release()
+
+        self.assertFalse(a.acquired)
+        self.assertTrue(b.acquired, "B's lock must survive A's release")
+        self.assertIn(f"/path/.git-lock.d/{b._nonce}.json", store.files)
 
     def test_release_removes_its_own_lock(self):
-        mock_client = MagicMock()
-        mock_client.token = "token123"
-        mock_client.get_file_text.return_value = None
-
-        lock = RemoteLock(mock_client, "repo1", "/path", timeout=5, lease=60)
+        store = _SharedLockStore()
+        lock = RemoteLock(store.client("token123"), "repo1", "/path", timeout=5, lease=60)
         lock.acquire()
-        # The payload on the remote is our own.
-        mock_client.get_file_text.return_value = mock_client.upload_file.call_args[0][3].decode("utf-8")
+        self.assertTrue(lock.acquired)
+
         lock.release()
 
-        mock_client.delete_entry.assert_any_call("repo1", "/path/.git-lock.json")
-
-    def test_release_does_not_delete_same_machine_lock_if_overridden(self):
-        """When lease expires and same machine re-acquires with new nonce, release must not delete it."""
-        mock_client = MagicMock()
-        mock_client.token = "token123"
-        mock_client.get_file_text.return_value = None
-
-        lock1 = RemoteLock(mock_client, "repo1", "/path", timeout=5, lease=1)
-        lock1.acquire()
-        self.assertTrue(lock1.acquired)
-
-        # Process 2 on the same machine/account overrides after lease expiry
-        payload1 = json.loads(mock_client.upload_file.call_args[0][3].decode("utf-8"))
-        overriding_payload = dict(payload1)
-        overriding_payload["nonce"] = "different-new-nonce-uuid"
-        overriding_payload["timestamp"] = time.time() + 10
-        mock_client.get_file_text.return_value = json.dumps(overriding_payload)
-
-        err = io.StringIO()
-        with patch("sys.stderr", err):
-            lock1.release()
-
-        # Must not delete the newly acquired legacy lock, but cleans up own ticket (N-9)
-        self.assertNotIn(
-            unittest.mock.call("repo1", "/path/.git-lock.json"),
-            mock_client.delete_entry.call_args_list,
-        )
-        mock_client.delete_entry.assert_called_with("repo1", f"/path/.git-lock.d/{lock1._nonce}.json")
-        self.assertFalse(lock1.acquired)
+        self.assertFalse(lock.acquired)
+        self.assertNotIn(f"/path/.git-lock.d/{lock._nonce}.json", store.files)
 
     def test_lock_acquire_retries_and_fails_closed_on_list_dir_error(self):
         """Lock acquisition fails closed on listing errors rather than assuming no contenders (N-3)."""
@@ -310,129 +240,82 @@ class TestConcurrencyAndLocking(unittest.TestCase):
         self.assertEqual(lock.timeout, 30)
         self.assertEqual(lock.lease, 90)
 
-    def test_lock_handles_malformed_timestamp_without_crashing(self):
-        mock_client = MagicMock()
-        mock_client.token = "token123"
-        # Timestamp is a string instead of float/int, lease is invalid
-        mock_client.get_file_text.return_value = json.dumps({
+    def test_ticket_with_malformed_timestamp_is_reaped(self):
+        """A ticket whose timestamp is garbage is treated as expired, not fatal."""
+        store = _SharedLockStore()
+        store.put_ticket("/path/.git-lock.d/alice-nonce.json", {
             "owner": "alice",
             "machine": "nodeA",
+            "nonce": "alice-nonce",
             "timestamp": "INVALID_TIMESTAMP",
             "lease": "NOT_A_NUMBER",
         })
 
-        lock = RemoteLock(mock_client, "repo1", "/path", timeout=5, lease=60)
-        # Should override safely as expired instead of raising TypeError
+        lock = RemoteLock(store.client("token123"), "repo1", "/path", timeout=5, lease=60)
         lock.acquire()
+
         self.assertTrue(lock.acquired)
-
-    def test_lock_detects_post_write_collision(self):
-        mock_client = MagicMock()
-        mock_client.token = "token123"
-        # Initial read says no lock, but verification read after upload sees competitor nonce
-        call_count = [0]
-        def fake_get_file_text(repo_id, path):
-            call_count[0] += 1
-            if call_count[0] == 1:
-                return None
-            return json.dumps({
-                "owner": "competitor",
-                "machine": "other-node",
-                "nonce": "competitor-nonce-xyz",
-                "timestamp": time.time(),
-                "lease": 60,
-            })
-
-        mock_client.get_file_text.side_effect = fake_get_file_text
-        lock = RemoteLock(mock_client, "repo1", "/path", timeout=0, lease=60)
-        with self.assertRaises(RepositoryLockedError):
-            lock.acquire()
+        self.assertNotIn("/path/.git-lock.d/alice-nonce.json", store.files)
 
     def test_dead_pid_fast_reclaim_on_local_machine(self):
         """A lock held by the same machine with a dead PID should be fast-reclaimed."""
-        mock_client = MagicMock()
-        mock_client.token = "token123"
-        dead_pid = 999999
+        store = _SharedLockStore()
+        store.put_ticket("/path/.git-lock.d/crashed-nonce.json", json.loads(_ticket(
+            "crashed-nonce",
+            owner="crashed-local-user",
+            machine=socket.gethostname(),
+            pid=999999,
+        )))
+
+        lock = RemoteLock(store.client("token123"), "repo1", "/path", timeout=0, lease=60)
+        err = io.StringIO()
         with patch("git_remote_seafile.lock._is_pid_alive", return_value=False):
-            stale_lock = json.dumps({
-                "owner": "crashed-local-user",
-                "machine": socket.gethostname(),
-                "nonce": "crashed-nonce",
-                "timestamp": time.time(),
-                "lease": 60,
-                "pid": dead_pid,
-            })
-            call_count = [0]
-            def fake_read(repo_id, path):
-                call_count[0] += 1
-                if call_count[0] == 1:
-                    return stale_lock
-                return None
-            mock_client.get_file_text.side_effect = fake_read
-            lock = RemoteLock(mock_client, "repo1", "/path", timeout=0, lease=60)
-            err = io.StringIO()
             with patch("sys.stderr", err):
                 lock.acquire()
-            self.assertTrue(lock.acquired)
-            self.assertIn("Reclaiming stale lock from dead local process", err.getvalue())
+
+        self.assertTrue(lock.acquired)
+        self.assertIn("Reclaiming stale lock from dead local process", err.getvalue())
 
     def test_alive_pid_on_local_machine_blocks(self):
         """A lock held by the same machine with an alive PID must not be stolen."""
-        mock_client = MagicMock()
-        mock_client.token = "token123"
-        alive_pid = os.getpid()
+        store = _SharedLockStore()
+        store.put_ticket("/path/.git-lock.d/alive-nonce.json", json.loads(_ticket(
+            "alive-nonce",
+            owner="running-local-user",
+            machine=socket.gethostname(),
+            pid=os.getpid(),
+        )))
+
+        lock = RemoteLock(store.client("token123"), "repo1", "/path", timeout=0, lease=60)
         with patch("git_remote_seafile.lock._is_pid_alive", return_value=True):
-            mock_client.get_file_text.return_value = json.dumps({
-                "owner": "running-local-user",
-                "machine": socket.gethostname(),
-                "nonce": "alive-nonce",
-                "timestamp": time.time(),
-                "lease": 60,
-                "pid": alive_pid,
-            })
-            lock = RemoteLock(mock_client, "repo1", "/path", timeout=0, lease=60)
             with self.assertRaises(RepositoryLockedError):
                 lock.acquire()
 
     def test_dead_pid_fast_reclaim_ignores_different_machine_id(self):
         """When machine hostname matches but machine_id differs (e.g. container fleet), lock is not stolen."""
-        mock_client = MagicMock()
-        mock_client.token = "token123"
-        dead_pid = 999999
+        store = _SharedLockStore()
+        store.put_ticket("/path/.git-lock.d/crashed-nonce.json", json.loads(_ticket(
+            "crashed-nonce",
+            owner="crashed-container-user",
+            machine=socket.gethostname(),
+            machine_id="other-container-node-uuid",
+            pid=999999,
+        )))
+
+        lock = RemoteLock(store.client("token123"), "repo1", "/path", timeout=0, lease=60)
         with patch("git_remote_seafile.lock._is_pid_alive", return_value=False):
-            mock_client.get_file_text.return_value = json.dumps({
-                "owner": "crashed-container-user",
-                "machine": socket.gethostname(),
-                "machine_id": "other-container-node-uuid",
-                "nonce": "crashed-nonce",
-                "timestamp": time.time(),
-                "lease": 60,
-                "pid": dead_pid,
-            })
-            lock = RemoteLock(mock_client, "repo1", "/path", timeout=0, lease=60)
             with self.assertRaises(RepositoryLockedError):
                 lock.acquire()
 
     def test_ticket_based_ordering_earliest_wins(self):
         """When multiple tickets exist, the earliest ticket wins."""
-        mock_client = MagicMock()
-        mock_client.token = "token123"
+        store = _SharedLockStore()
         now = time.time()
+        store.put_ticket("/path/.git-lock.d/ticketA.json", json.loads(_ticket(
+            "ticketA", timestamp=now - 10, order_ts=now - 10,
+        )))
 
-        ticket_a = json.dumps({
-            "owner": "alice",
-            "machine": "nodeA",
-            "nonce": "ticketA",
-            "timestamp": now - 10,
-            "lease": 60,
-            "pid": 1234,
-        })
-        mock_client.get_file_text.side_effect = lambda repo_id, path: ticket_a if "ticketA" in path else None
-        mock_client.list_dir.return_value = [
-            {"name": "ticketA.json", "mtime": int(now - 10)},
-        ]
-
-        lock = RemoteLock(mock_client, "repo1", "/path", timeout=0, lease=60)
+        lock = RemoteLock(store.client("token123"), "repo1", "/path", timeout=0, lease=60)
         with self.assertRaises(RepositoryLockedError) as ctx:
             lock.acquire()
         self.assertIn("locked by 'alice'", str(ctx.exception))
@@ -447,16 +330,16 @@ class TestConcurrencyAndLocking(unittest.TestCase):
         """
         store = _SharedLockStore()
         now = int(time.time())
-        store.files["/path/.git-lock.d/holder-nonce.json"] = json.dumps({
+        store.put_ticket("/path/.git-lock.d/holder-nonce.json", {
             "owner": "holder", "machine": "nodeA", "nonce": "holder-nonce",
             "timestamp": float(now - 300), "order_ts": float(now - 300),
             "lease": 600, "pid": 111,
-        }).encode("utf-8")
-        store.files["/path/.git-lock.d/waiter-nonce.json"] = json.dumps({
+        })
+        store.put_ticket("/path/.git-lock.d/waiter-nonce.json", {
             "owner": "waiter", "machine": "nodeB", "nonce": "waiter-nonce",
             "timestamp": float(now - 30), "order_ts": float(now - 30),
             "lease": 600, "pid": 222,
-        }).encode("utf-8")
+        })
         # The holder renewed just now; the waiter's ticket is older on disk.
         store.mtime_override["/path/.git-lock.d/holder-nonce.json"] = now
         store.mtime_override["/path/.git-lock.d/waiter-nonce.json"] = now - 200
@@ -471,8 +354,8 @@ class TestConcurrencyAndLocking(unittest.TestCase):
 
         renew() used to re-upload the ticket blindly: after A's lease lapsed
         and B reaped it and took over, A's verify_ownership() resurrected the
-        ticket (and overwrote B's legacy mirror) and returned True -- so gc
-        would have gone on to delete remote packfiles inside B's push.
+        ticket and returned True -- so gc would have gone on to delete remote
+        packfiles inside B's push.
         """
         store = _SharedLockStore()
         a = RemoteLock(store.client("token-A"), "repo1", "/path", timeout=5, lease=60)
@@ -498,11 +381,15 @@ class TestConcurrencyAndLocking(unittest.TestCase):
         with patch("sys.stderr", io.StringIO()):
             a_ok = a.verify_ownership()
         self.assertFalse(a_ok)
-        # A's failed renewal must not have touched B's legacy mirror.
-        self.assertEqual(json.loads(store.files["/path/.git-lock.json"])["nonce"], b._nonce)
+        # A's failed renewal must not have created any lock artifact: exactly
+        # B's ticket remains.
+        self.assertEqual(
+            [k for k in store.files if ".git-lock.d" in k],
+            [f"/path/.git-lock.d/{b._nonce}.json"],
+        )
 
     def test_lock_lease_renew(self):
-        """Lease renewal updates timestamps on both ticket and legacy lock."""
+        """Lease renewal rewrites the ticket with a fresh timestamp."""
         mock_client = MagicMock()
         mock_client.token = "token123"
         mock_client.get_file_text.return_value = None
@@ -516,7 +403,7 @@ class TestConcurrencyAndLocking(unittest.TestCase):
 
         res = lock.renew()
         self.assertTrue(res)
-        self.assertEqual(mock_client.upload_file.call_count, upload_count_before + 2)
+        self.assertEqual(mock_client.upload_file.call_count, upload_count_before + 1)
 
     def test_renew_fails_when_the_ticket_is_gone(self):
         """A missing ticket means the lease lapsed and was reaped; renew must fail."""
@@ -549,47 +436,43 @@ class TestConcurrencyAndLocking(unittest.TestCase):
         # Simulate time passage
         lock._last_renewed = time.monotonic() - 25.0
         self.assertTrue(lock.maybe_renew(interval=20.0))
-        self.assertEqual(mock_client.upload_file.call_count, upload_count + 2)
+        self.assertEqual(mock_client.upload_file.call_count, upload_count + 1)
 
     def test_lock_status_and_unlock(self):
-        """get_status and unlock methods inspect and clear locks."""
-        mock_client = MagicMock()
-        mock_client.token = "token123"
-        mock_client.get_file_text.return_value = None
+        """get_status and unlock inspect and clear ticket state."""
+        store = _SharedLockStore()
+        lock = RemoteLock(store.client("token123"), "repo1", "/path", timeout=5, lease=60)
 
-        lock = RemoteLock(mock_client, "repo1", "/path", timeout=5, lease=60)
         status_unlocked = lock.get_status()
         self.assertFalse(status_unlocked["locked"])
 
         lock.acquire()
-        mock_client.get_file_text.return_value = mock_client.upload_file.call_args[0][3].decode("utf-8")
         status_locked = lock.get_status()
         self.assertTrue(status_locked["locked"])
+        self.assertEqual(status_locked["protocol"], "ticket")
         self.assertEqual(status_locked["owner"], lock._owner_id())
 
         self.assertTrue(lock.unlock())
+        self.assertFalse(lock.get_status()["locked"])
+        self.assertEqual(
+            [k for k in store.files if ".git-lock.d" in k],
+            [],
+        )
 
     def test_abandoned_ticket_cleaned_up_on_acquire_timeout(self):
         """When acquire() times out, its candidate ticket must be deleted immediately."""
-        mock_client = MagicMock()
-        mock_client.token = "token123"
-        # Competitor holds lock
-        mock_client.get_file_text.return_value = json.dumps({
-            "owner": "competitor",
-            "machine": "other-machine",
-            "nonce": "competitor-nonce",
-            "timestamp": time.time(),
-            "lease": 60,
-        })
-        lock = RemoteLock(mock_client, "repo1", "/path", timeout=0, lease=60)
+        store = _SharedLockStore()
+        store.put_ticket("/path/.git-lock.d/competitor-nonce.json", json.loads(_ticket("competitor-nonce")))
+
+        lock = RemoteLock(store.client("token123"), "repo1", "/path", timeout=0, lease=60)
         with self.assertRaises(RepositoryLockedError):
             lock.acquire()
 
         self.assertFalse(lock.acquired)
         self.assertTrue(bool(lock._nonce))
-        # Verify the client attempted to delete its own ticket in .git-lock.d/
-        expected_ticket_path = f"/path/.git-lock.d/{lock._nonce}.json"
-        mock_client.delete_entry.assert_any_call("repo1", expected_ticket_path)
+        # The abandoned candidate ticket must be gone; the winner's remains.
+        self.assertNotIn(f"/path/.git-lock.d/{lock._nonce}.json", store.files)
+        self.assertIn("/path/.git-lock.d/competitor-nonce.json", store.files)
 
     def test_windows_is_pid_alive_handles_access_denied(self):
         """On Windows, OpenProcess failing with ERROR_ACCESS_DENIED (5) must treat PID as alive."""
@@ -603,3 +486,6 @@ class TestConcurrencyAndLocking(unittest.TestCase):
             with patch.dict("sys.modules", {"ctypes": mock_ctypes, "ctypes.wintypes": MagicMock()}):
                 self.assertTrue(_is_pid_alive(1234))
 
+
+if __name__ == "__main__":
+    unittest.main()

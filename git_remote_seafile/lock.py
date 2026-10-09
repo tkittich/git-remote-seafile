@@ -73,17 +73,16 @@ class RemoteLock:
     Prevents race conditions if multiple machines attempt to push to the
     same repository concurrently. Includes automatic lease expiration so
     stale locks from crashed processes do not permanently block pushes.
-    Uses the authoritative ticket-based distributed protocol (.git-lock.d/<nonce>.json),
-    with server-side timestamp ordering and fast stale-lock reclamation for dead local processes.
+    Uses the ticket-based distributed protocol (.git-lock.d/<nonce>.json)
+    with server-side timestamp ordering and fast stale-lock reclamation for
+    dead local processes.
 
-    .. deprecated:: 0.6.0
-        The single-file mirror (.git-lock.json) from v0.1–v0.3 is deprecated
-        and scheduled for removal in v1.0.0. All modern clients rely on the
-        ticket queue in .git-lock.d/. Residual quirk until then: renew() writes
-        the ticket before the mirror, so a failure between the two leaves the
-        ticket renewed but the mirror aging out -- mirror-only clients may
-        proceed while the ticket holder is still live. Accepted for a
-        deprecated compatibility path.
+    The v0.1–v0.3 single-file mirror (.git-lock.json) was removed in v0.7.0:
+    this protocol coordinates exclusively through the ticket queue, and
+    acquire() deletes an orphaned mirror when it finds one so existing
+    repositories self-clean. Do not mix this version with a v0.1–v0.3
+    helper on the same repository — those clients predate the ticket
+    protocol and cannot see its locks at all.
     """
 
     def __init__(
@@ -99,7 +98,6 @@ class RemoteLock:
         self.repo_id = repo_id
         self.repo_path = repo_path.rstrip("/")
         self.lock_dir = f"{self.repo_path}/.git-lock.d"
-        self.lock_file_path = f"{self.repo_path}/.git-lock.json"
         if config is not None:
             if timeout is None:
                 timeout = config.lock_timeout
@@ -131,16 +129,6 @@ class RemoteLock:
         if isinstance(self.client, SeafileClient):
             return self.client.get_server_time()
         return time.time()
-
-    def _get_lock_info(self) -> dict[str, Any] | None:
-        raw = self.client.get_file_text(self.repo_id, self.lock_file_path)
-        if not raw:
-            return None
-        try:
-            parsed = json.loads(raw)
-            return parsed if isinstance(parsed, dict) else None
-        except Exception:
-            return None
 
     def _is_lock_active(self, info: dict[str, Any], now: float) -> bool:
         """Check if lock payload is active. Returns False if expired or dead local PID."""
@@ -223,9 +211,9 @@ class RemoteLock:
         # while the holder is still active.  A scan that mixes ticket formats
         # falls back to mtime for all of them -- mtime is the one field every
         # format shares, and comparing an order_ts against an mtime across
-        # formats is not a FIFO comparison at all.  (Older clients that write
-        # tickets also mirror .git-lock.json, which gates cross-format
-        # contention regardless of how this sort comes out.)
+        # formats is not a FIFO comparison at all.  (Differently-formatted
+        # ticket clients contend through the scan itself; the old single-file
+        # mirror that used to gate this is gone as of v0.7.0.)
         all_modern = bool(active_tickets) and all(_f(t.get("order_ts")) > 0 for t in active_tickets)
         for t in active_tickets:
             if all_modern:
@@ -246,43 +234,23 @@ class RemoteLock:
         self._nonce = nonce
         self._order_ts = self._get_server_time()
 
+        # One-time cleanup: an orphaned .git-lock.json is a relic of the
+        # v0.1–v0.3 single-file protocol (removed in v0.7.0).  This protocol
+        # never reads it, so rather than leave the clutter in every repository
+        # forever, delete it when found.  Best-effort: a failure here must not
+        # block the push -- the acquire loop below fails loudly on its own.
+        legacy_path = f"{self.repo_path}/.git-lock.json"
+        try:
+            if self.client.get_file_text(self.repo_id, legacy_path):
+                self.client.delete_entry(self.repo_id, legacy_path)
+        except Exception:
+            pass
+
         try:
             while True:
                 now = self._get_server_time()
 
-                # 1. Check legacy lock file (.git-lock.json)
-                legacy_info = self._get_lock_info()
-                if isinstance(legacy_info, dict):
-                    leg_nonce = legacy_info.get("nonce")
-                    if leg_nonce != nonce:
-                        if self._is_lock_active(legacy_info, now):
-                            lock_owner = legacy_info.get("owner", "another user")
-                            lock_machine = legacy_info.get("machine", "another machine")
-                            try:
-                                leg_time = float(legacy_info.get("timestamp", 0))
-                                leg_lease = float(legacy_info.get("lease", self.lease))
-                            except (ValueError, TypeError):
-                                leg_time = 0.0
-                                leg_lease = 0.0
-                            exp = leg_time + leg_lease
-                            if time.monotonic() - start_time >= self.timeout:
-                                raise RepositoryLockedError(
-                                    f"Repository is locked by '{lock_owner}' on '{lock_machine}'. "
-                                    f"Lock expires in {max(0, int(exp - now))}s."
-                                )
-                            sys.stderr.write(f"Repository locked by {lock_machine}; waiting for lock...\n")
-                            sys.stderr.flush()
-                            time.sleep(2)
-                            continue
-                        else:
-                            sys.stderr.write("Overriding expired lock from previous session.\n")
-                            sys.stderr.flush()
-                            try:
-                                self.client.delete_entry(self.repo_id, self.lock_file_path)
-                            except Exception:
-                                pass
-
-                # 2. Upload ticket
+                # 1. Upload ticket
                 lock_payload = {
                     "owner": owner,
                     "machine": hostname,
@@ -340,36 +308,9 @@ class RemoteLock:
                 winner = tickets[0]
 
                 if winner.get("nonce") == nonce:
-                    # We won the ticket! Also mirror to legacy .git-lock.json for backward compatibility
-                    # [DEPRECATED in 0.6.0]: Single-file .git-lock.json mirror is scheduled for removal in v1.0.0
-                    try:
-                        self.client.upload_file(
-                            self.repo_id,
-                            self.repo_path,
-                            ".git-lock.json",
-                            payload_bytes,
-                            replace=True,
-                        )
-                        # Verify our legacy write wasn't overwritten by concurrent writer
-                        verify = self._get_lock_info()
-                        if isinstance(verify, dict) and verify.get("nonce") and verify.get("nonce") != nonce:
-                            if time.monotonic() - start_time >= self.timeout:
-                                raise RepositoryLockedError("Lock acquisition collided with another client.")
-                            sys.stderr.write("Lock acquisition collided; retrying...\n")
-                            sys.stderr.flush()
-                            time.sleep(1)
-                            continue
-
-                        self.acquired = True
-                        self._last_renewed = time.monotonic()
-                        return
-                    except Exception as ex:
-                        if isinstance(ex, RepositoryLockedError):
-                            raise
-                        if time.monotonic() - start_time >= self.timeout:
-                            raise RepositoryLockedError(f"Failed to acquire lock: {ex}") from ex
-                        time.sleep(2)
-                        continue
+                    self.acquired = True
+                    self._last_renewed = time.monotonic()
+                    return
                 else:
                     # Another ticket won
                     winner_owner = winner.get("owner", "another user")
@@ -461,13 +402,6 @@ class RemoteLock:
                 payload_bytes,
                 replace=True,
             )
-            self.client.upload_file(
-                self.repo_id,
-                self.repo_path,
-                ".git-lock.json",
-                payload_bytes,
-                replace=True,
-            )
             self._last_renewed = time.monotonic()
             return True
         except Exception as ex:
@@ -497,47 +431,25 @@ class RemoteLock:
         return self.renew()
 
     def release(self) -> None:
+        """Release the lock by deleting this client's own ticket.
+
+        Only the ticket named by our nonce is ever deleted, so if the lease
+        lapsed and another client reaped it, this is a no-op and their lock
+        state is untouched.
+        """
         if not self.acquired:
             return
         self.acquired = False
-
-        info = self._get_lock_info()
-        skip_legacy_delete = False
-        if info is not None:
-            remote_nonce = info.get("nonce")
-            if remote_nonce is not None:
-                if remote_nonce != self._nonce:
-                    sys.stderr.write(
-                        "Not releasing the remote lock: it is now held by "
-                        f"'{info.get('owner')}' on '{info.get('machine')}'.\n"
-                    )
-                    sys.stderr.flush()
-                    skip_legacy_delete = True
-            elif (info.get("owner"), info.get("machine")) != self._identity:
-                sys.stderr.write(
-                    "Not releasing the remote lock: it is now held by "
-                    f"'{info.get('owner')}' on '{info.get('machine')}'.\n"
-                )
-                sys.stderr.flush()
-                skip_legacy_delete = True
-
         if self._nonce:
             try:
                 self.client.delete_entry(self.repo_id, f"{self.lock_dir}/{self._nonce}.json")
             except Exception:
                 pass
 
-        # [DEPRECATED in 0.6.0]: Legacy single-file .git-lock.json cleanup
-        if not skip_legacy_delete:
-            try:
-                self.client.delete_entry(self.repo_id, self.lock_file_path)
-            except Exception:
-                pass
-
     def get_status(self) -> dict[str, Any]:
         """Inspect current repository lock status."""
         now = self._get_server_time()
-        # 1. Check tickets (read-only query; do not reap stale tickets during status inspection)
+        # Read-only query; do not reap stale tickets during status inspection.
         try:
             tickets = self._scan_tickets(now, reap=False)
         except Exception:
@@ -563,38 +475,12 @@ class RemoteLock:
                 "expires_in": max(0, int(exp - now)),
                 "expires_at": exp,
             }
-        # 2. Check legacy lock
-        info = self._get_lock_info()
-        if isinstance(info, dict) and self._is_lock_active(info, now):
-            try:
-                i_time = float(info.get("timestamp", 0))
-                i_lease = float(info.get("lease", self.lease))
-            except (ValueError, TypeError):
-                i_time = 0.0
-                i_lease = 0.0
-            exp = i_time + i_lease
-            return {
-                "locked": True,
-                "protocol": "legacy",
-                "owner": info.get("owner", "unknown"),
-                "machine": info.get("machine", "unknown"),
-                "machine_id": info.get("machine_id"),
-                "pid": info.get("pid"),
-                "nonce": info.get("nonce"),
-                "expires_in": max(0, int(exp - now)),
-                "expires_at": exp,
-            }
         return {"locked": False}
 
     def unlock(self, force: bool = False) -> bool:
         """Break or release the lock on the repository."""
         status = self.get_status()
         if not status.get("locked"):
-            # Clean up any residual lock files
-            try:
-                self.client.delete_entry(self.repo_id, self.lock_file_path)
-            except Exception:
-                pass
             return True
 
         if not force:
@@ -613,12 +499,6 @@ class RemoteLock:
                 for entry in entries:
                     if entry.get("name", "").endswith(".json"):
                         self.client.delete_entry(self.repo_id, f"{self.lock_dir}/{entry['name']}")
-        except Exception:
-            pass
-
-        # Clear legacy lock
-        try:
-            self.client.delete_entry(self.repo_id, self.lock_file_path)
         except Exception:
             pass
 

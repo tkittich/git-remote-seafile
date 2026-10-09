@@ -13,7 +13,6 @@
 
 | ID / Source | Component | Description & Impact | Effort | Risk | Planned Target |
 |---|---|---|:---:|:---:|:---:|
-| **Lock Cleanup** | `lock.py` | Complete Removal of Deprecated Single-File Lock: Remove legacy `.git-lock.json` mirror writes. | S | Low | v1.0.0 |
 | **Fault Injection** | `tests/` | Comprehensive End-to-End Fault Injection: Clustered Seafile tests and high-latency simulation. | L | Low | v1.0.0 |
 | **Credential Store**| `client.py` | Enterprise Credential Store: Windows Credential Manager and macOS Keychain integration. | M | Medium | v1.0.0 |
 
@@ -103,7 +102,6 @@
 ---
 
 ### Phase 5.0: v1.0.0 — Production Stability & Federation (Future)
-* **Legacy Single-File Lock Removal:** Remove deprecated `.git-lock.json` mirror uploads and deletions.
 * **Comprehensive End-to-End Fault Injection:** Clustered Seafile tests and high-latency simulation.
 * **Enterprise Credential Store:** Windows Credential Manager / macOS Keychain integration.
 

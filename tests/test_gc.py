@@ -60,8 +60,11 @@ class TestRemoteGC(unittest.TestCase):
         mock_client.upload_file.side_effect = fake_upload
 
         def fake_get_text(repo_id, path):
-            if ".git-lock" in path and lock_payloads:
-                return lock_payloads[-1]
+            if ".git-lock" in path:
+                # Serve the stored ticket payload once one exists; before that
+                # (including acquire's orphan-mirror cleanup probe) there is
+                # nothing on the remote.
+                return lock_payloads[-1] if lock_payloads else None
             return "sha-main"
 
         mock_client.get_file_text.side_effect = fake_get_text
@@ -94,9 +97,10 @@ class TestRemoteGC(unittest.TestCase):
             # lock across multi-gigabyte transfers.
             for call in mock_client.download_file_to.call_args_list:
                 self.assertIsNotNone(call.kwargs.get("progress_callback"))
-            # Verify obsolete packs were deleted plus the lock release (4 obsolete files + ticket + legacy lock = 6)
-            self.assertEqual(mock_client.delete_entry.call_count, 6)
-            mock_client.delete_entry.assert_any_call("repo1", "/path/.git-lock.json")
+            # Verify obsolete packs were deleted plus the lock release
+            # (4 obsolete files + the holder's ticket = 5; the legacy
+            # .git-lock.json mirror is gone as of v0.7.0)
+            self.assertEqual(mock_client.delete_entry.call_count, 5)
 
     @patch("subprocess.run")
     def test_gc_compaction_aborts_on_failed_pack_download(self, mock_subprocess):

@@ -63,7 +63,6 @@ Within the designated Seafile library (created via the Seafile Web UI, such as a
 ```text
 /<repo-path>/
 ├── HEAD                        <- Symbolic ref ("ref: refs/heads/main\n")
-├── .git-lock.json              <- Legacy cooperative lease lock mutex (deprecated v0.6.0)
 ├── .git-lock.d/                <- Distributed ticket directory (v0.4.3)
 │   └── <nonce>.json            <- Deterministic client lock ticket
 ├── refs/
@@ -154,7 +153,7 @@ sequenceDiagram
 - In multi-developer teams, concurrent pushes could race during packfile uploads.
 - `git-remote-seafile` implements a cooperative ticket-based distributed lock protocol stored at `/.git-lock.d/<nonce>.json` on the remote repository.
 - Each client deposits an individual ticket containing owner hash, machine ID, holding PID, nonce, and expiration. Tickets are evaluated deterministically using Seafile server `mtime` and unique nonces (retrying on transient listing errors and failing closed). Because Seafile does not expose atomic server-side mutex primitives, the lock protocol is cooperative and advisory; write safety is reinforced with post-lock ref re-reads, optimistic compare-and-swap (CAS) verification before writing refs, and lease ownership fencing prior to GC deletions.
-- Acquired locks are automatically mirrored to legacy `/.git-lock.json` for backward compatibility with older v0.1–v0.3 client versions (marked deprecated in v0.6.0, scheduled for removal in v1.0.0). Modern clients exclusively coordinate via the distributed ticket queue in `.git-lock.d/`.
+- The v0.1–v0.3 single-file lock (`.git-lock.json`) was removed in v0.7.0: this protocol coordinates exclusively via the distributed ticket queue in `.git-lock.d/`, and `acquire()` deletes an orphaned mirror when it finds one so existing repositories self-clean. Do not mix v0.7.0+ with a v0.1–v0.3 helper on the same repository — those clients predate the ticket protocol and cannot see its locks.
 - **Dead Local PID Fast-Reclaim**: When inspecting an unexpired lock held on the same machine (verifying both hostname and local machine hardware/container identifier), liveness checks (`OpenProcess` on Windows, `os.kill` on POSIX) immediately reclaim the lock if the holding process has terminated or crashed.
 - **In-Transfer Progress Renewal**: Multi-gigabyte packfile uploads and downloads — including the pack downloads inside remote garbage collection — continuously refresh their lock lease every 20 seconds during active socket writes, without background daemon threads. Purely local compute phases (pack generation, `git repack`) renew before and after the phase rather than during it.
 - **Sound Ownership Fencing**: Lease renewal reads the holder's ticket back before rewriting it. The nonce names the ticket file and only its creator writes it, so a ticket that is gone or carries a foreign nonce means the lease lapsed and was reaped — most plausibly by a new holder. Renewal fails closed in that case instead of resurrecting the ticket, which is what makes the pre-deletion fence in GC and the pre-ref-write fence in push able to actually detect a takeover.
