@@ -1,11 +1,11 @@
 # Engineering Roadmap & Backlog
 
-**Baseline:** v0.7.0 (v0.7.0 release — major cleanup)  
-**Scope:** Active architectural backlog and milestones following releases v0.4.0 through v0.7.0.  
-**Test Suite:** 400+ tests, all green (`tools/run_tests_parallel.py`). **Python:** 3.10+ (3.9 EOL).
+**Baseline:** v0.7.1 (v0.7.1 release — review closure)  
+**Scope:** Active architectural backlog and milestones following releases v0.4.0 through v0.7.1.  
+**Test Suite:** 450+ tests, all green (`tools/run_tests_parallel.py`). **Python:** 3.10+ (3.9 EOL).
 
 > [!NOTE]
-> All critical and high-severity findings from `archive/REVIEW.*.md` (including ticket-based distributed locking, abandoned ticket cleanup, post-lock ref verification, exception propagation, GC lock fencing, pack index validation, surrogateescape paths, container PID isolation, D/F ref pruning, multi-spec pack batching, Git LFS transfer progress, safety guardrails, parallel ref enumeration, smart pack fetch filtering, disk-staged streaming, and modular helper decoupling) have been completed. All findings from the October 2026 review cycle (REVIEW.glm/gemini/qwen/VERIFY/BACKLOG, now archived) were verified fixed or explicitly dispositioned. Minor or low-priority items remain tracked in the backlog below. See [CHANGELOG.md](CHANGELOG.md) for detailed release notes.
+> All critical and high-severity findings from `archive/REVIEW.*.md` (including ticket-based distributed locking, abandoned ticket cleanup, post-lock ref verification, exception propagation, GC lock fencing, pack index validation, surrogateescape paths, container PID isolation, D/F ref pruning, multi-spec pack batching, Git LFS transfer progress, safety guardrails, parallel ref enumeration, smart pack fetch filtering, disk-staged streaming, and modular helper decoupling) have been completed. All findings from the October 2026 review cycle (REVIEW.glm/gemini/qwen/VERIFY/BACKLOG, now archived) were verified fixed or explicitly dispositioned, as was the cycle that followed it at v0.7.0 (REVIEW.deepseek/gemini/qwen), closed in v0.7.1. Minor or low-priority items remain tracked in the backlog below. See [CHANGELOG.md](CHANGELOG.md) for detailed release notes.
 
 ---
 
@@ -108,6 +108,19 @@
 * **API Surface Cleanup:** `normalize_netloc` is public in `url.py` (dependency now points client → url); `SeafileURL.to_tuple()` and `RemoteHelper._parse_url()` shims removed; `HEX_SHA_RE` is the single canonical SHA-pattern name; unused `run_git(cwd=)` kwarg dropped.
 * **Python 3.9 Dropped:** `requires-python >= 3.10`, CI matrix and classifiers updated (3.9 went EOL in October 2025).
 * **Small Cleanups:** `cli test` renders the ref listing for humans; the Windows launcher fails with a clear message when python is absent; README install instructions match reality (GitHub-based; PyPI publication pending); the contrib Qt patch described as a proposal.
+
+---
+
+### Phase 4.9: v0.7.1 — Review Closure: CLI Crashes, SHA-256 Compaction & URL Fidelity (Completed Deliverables)
+* **Fail-Loud CLI Error Paths (D1, D2):** `test` and `unlock` named their exception in an `except` clause whose import ran *inside* the `try` but after the first statement that could raise, so any earlier failure died with `UnboundLocalError` instead of the intended message — in the two commands a user reaches for when the remote is already broken. Both names are hoisted to module scope.
+* **SHA-256 Remote Compaction (D18):** `gc` initialises its scratch repository with the remote's object format *and* runs `verify-pack`/`index-pack` with `-C <bare-repo>`; both halves are required, because those commands run with `GIT_DIR` scrubbed. Compaction previously failed on every SHA-256 remote, and `seafile.autogc` retried forever while packs grew unbounded.
+* **URL Port & Scheme Fidelity (D4, D5):** An explicit port on the bare host form is honoured (`:80` → `http`, `:443` → `https`, any other port kept over `https`); a non-numeric port reports an invalid Seafile URL instead of escaping as a raw `ValueError`.
+* **Ticket-Settlement Window (D21):** `acquire()` re-scans the queue after one `seafile.locksettle` interval (default 1s) before declaring a win, closing the partial-view double-grant. The added latency is documented rather than rounded away.
+* **Windows Pack Re-Install (D25):** `install_packfile` makes both publish targets writable before `os.replace` — git writes pack/idx files `0444`, and a read-only destination fails on Windows where POSIX needs only directory write permission.
+* **Fail-Loud Diagnostics (D3, D6, D7, D16):** Library-typo suggestions are built where the miss is detected; unguarded `list_dir` iterations raise a describable error; a transient renewal failure no longer reports as lost ownership; a malformed `~/.git-seafile.json` and an unreadable `seafile-ignore.txt` warn instead of failing silently.
+* **Dead Branches Removed (D19, D20, D24):** Unreachable `get_repo_id` cache re-validation and `_detect_remote_object_format` fallback dropped; `install_packfile` passes `--git-dir`; `refs.__all__` exports `is_valid_ref_name`.
+* **Docs & Guards (D8–D13, D15, D17):** DESIGN §7.1, USER_GUIDE §12/§14 and PROPOSALS corrected against the code; the no-path URL form documented; the missing `v0.6.2` release notes restored with a tag↔notes guard; per-subcommand `--help`; a magic deletion count in the gc tests replaced by a named assertion.
+* **Coverage:** `gc.py` 76% → 100% via 21 in-process tests for the recovery and fail-closed paths (the e2e harness runs the helper in a subprocess, which the parent coverage run never records). Suite 383 → 454 tests.
 
 ---
 
