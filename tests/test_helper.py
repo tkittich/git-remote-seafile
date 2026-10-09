@@ -465,7 +465,7 @@ class TestRemoteHelper(unittest.TestCase):
 
         # 22 remote packfiles -> threshold is 20, auto-gc disabled
         h.client.list_dir.return_value = [{"name": f"pack-{i}.pack"} for i in range(22)]
-        cfg = RemoteConfig(lock_timeout=15, lock_lease=60, auto_gc=False, gc_threshold=20)
+        cfg = RemoteConfig(lock_timeout=15, lock_lease=60, lock_settle=0, auto_gc=False, gc_threshold=20)
 
         err = io.StringIO()
         with patch("sys.stderr", err), \
@@ -490,7 +490,7 @@ class TestRemoteHelper(unittest.TestCase):
 
         # 22 remote packfiles -> threshold is 20, auto-gc enabled
         h.client.list_dir.return_value = [{"name": f"pack-{i}.pack"} for i in range(22)]
-        cfg = RemoteConfig(lock_timeout=15, lock_lease=60, auto_gc=True, gc_threshold=20)
+        cfg = RemoteConfig(lock_timeout=15, lock_lease=60, lock_settle=0, auto_gc=True, gc_threshold=20)
 
         with patch("git_remote_seafile.helper.RemoteLock"), \
              patch("git_remote_seafile.helper.RemoteConfig.load", return_value=cfg):

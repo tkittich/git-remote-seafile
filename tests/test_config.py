@@ -22,6 +22,7 @@ class TestConfigModule(unittest.TestCase):
             cfg = RemoteConfig.load()
             self.assertEqual(cfg.lock_timeout, 15)
             self.assertEqual(cfg.lock_lease, 60)
+            self.assertEqual(cfg.lock_settle, 1)
             self.assertFalse(cfg.auto_gc)
             self.assertEqual(cfg.gc_threshold, 20)
 
@@ -30,6 +31,7 @@ class TestConfigModule(unittest.TestCase):
             mapping = {
                 "seafile.locktimeout": "30",
                 "seafile.locklease": "120",
+                "seafile.locksettle": "0",
                 "seafile.autogc": "true",
                 "seafile.gcthreshold": "50",
             }
@@ -39,8 +41,27 @@ class TestConfigModule(unittest.TestCase):
             cfg = RemoteConfig.load()
             self.assertEqual(cfg.lock_timeout, 30)
             self.assertEqual(cfg.lock_lease, 120)
+            self.assertEqual(cfg.lock_settle, 0)
             self.assertTrue(cfg.auto_gc)
             self.assertEqual(cfg.gc_threshold, 50)
+
+    def test_a_zero_settlement_window_is_honoured(self):
+        """0 switches the re-scan off, which is a legitimate choice.
+
+        The settlement window is a race guard, not the lock itself: with one
+        writer, or on a server whose listings are strongly consistent, the
+        extra second per acquisition buys nothing.  Only a *negative* window
+        -- one that would elapse before it started -- is refused.
+        """
+        def mock_get(key: str, default: str | None = None) -> str | None:
+            return {"seafile.locksettle": "0"}.get(key, default)
+
+        with patch("git_remote_seafile.git_util.get_git_config", side_effect=mock_get):
+            with patch("sys.stderr", new_callable=io.StringIO) as mock_err:
+                cfg = RemoteConfig.load()
+
+        self.assertEqual(cfg.lock_settle, 0)
+        self.assertEqual(mock_err.getvalue(), "")
 
     def test_implausible_config_falls_back_to_documented_defaults(self):
         """A zero lease would expire every lock immediately; refuse to honor it.
@@ -52,6 +73,7 @@ class TestConfigModule(unittest.TestCase):
             mapping = {
                 "seafile.locktimeout": "-5",
                 "seafile.locklease": "0",
+                "seafile.locksettle": "-2",
                 "seafile.gcthreshold": "0",
             }
             return mapping.get(key, default)
@@ -62,8 +84,10 @@ class TestConfigModule(unittest.TestCase):
 
         self.assertEqual(cfg.lock_timeout, 15)
         self.assertEqual(cfg.lock_lease, 60)
+        self.assertEqual(cfg.lock_settle, 1)
         self.assertEqual(cfg.gc_threshold, 20)
         self.assertIn("seafile.locklease=0 -> 60", mock_err.getvalue())
+        self.assertIn("seafile.locksettle=-2 -> 1", mock_err.getvalue())
         self.assertIn("seafile.gcthreshold=0 -> 20", mock_err.getvalue())
 
     def test_get_git_config_helpers(self):

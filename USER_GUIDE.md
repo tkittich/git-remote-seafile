@@ -388,6 +388,7 @@ Authenticated successfully with https://seafile.example.com as user@example.com
 | `seafile.forcefilehost` | `SEAFILE_FORCE_FILE_HOST` | `false` | Force download/upload links onto your server's **host** (a wrong scheme on the same host is always corrected). |
 | `seafile.locktimeout` | — | `15` | Maximum seconds to wait when acquiring the remote lock during push. |
 | `seafile.locklease` | — | `60` | Duration in seconds before an inactive lock lease is considered expired. |
+| `seafile.locksettle` | — | `1` | Seconds to wait before re-reading the lock queue to confirm a win. `0` disables the confirming re-scan. |
 
 ```bash
 # Examples
@@ -396,9 +397,10 @@ git config seafile.gcthreshold 25
 git config seafile.forcefilehost true
 git config seafile.locktimeout 30
 git config seafile.locklease 120
+git config seafile.locksettle 0
 ```
 
-> Values that would defeat the mechanism outright are refused with a stderr warning and the documented default is used instead: a negative `seafile.locktimeout`, a zero or negative `seafile.locklease` (which would expire every lock immediately), and a `seafile.gcthreshold` below 1 (which would compact on every push).
+> Values that would defeat the mechanism outright are refused with a stderr warning and the documented default is used instead: a negative `seafile.locktimeout`, a zero or negative `seafile.locklease` (which would expire every lock immediately), a negative `seafile.locksettle`, and a `seafile.gcthreshold` below 1 (which would compact on every push). `seafile.locksettle 0` is *not* refused: it switches off a race guard rather than the lock, so it is a trade you are allowed to make — see §12.
 
 **`seafile.forcefilehost`** deserves a note. Seafile returns a short-lived URL for every file transfer, and there are three cases to tell apart:
 
@@ -626,6 +628,7 @@ A multi-gigabyte repository transfer or model therefore does not need multi-giga
 For teams where multiple developers or automated CI/CD runners push simultaneously, `git-remote-seafile` includes an automatic **distributed lease lock**:
 
 - **Ticket-Based Protocol**: During every `git push`, the helper writes a unique lock ticket (`.git-lock.d/<nonce>.json`) at the remote repository root on Seafile. Tickets are ordered deterministically using server timestamps and HTTP `Date:` response headers, preventing write-write collision races and client clock drift.
+- **Settlement Window**: A win is confirmed by reading the queue a *second* time, one second later (`seafile.locksettle`). A single read is not enough to claim the lock: a peer that started before you but is still uploading is invisible to it, so you would both read the queue, both find yourselves first, and both push. The wait gives any in-flight peer time to land, after which both clients compare the same set of tickets and the same one wins. This is the one cost the lock adds to a push; set `seafile.locksettle 0` to skip it if you know only one client ever pushes (or your server's listings are strongly consistent and you accept the residual race).
 - **Legacy Note**: The v0.1–v0.3 single-file `.git-lock.json` mirror was removed in v0.7.0. The ticket queue in `.git-lock.d/` is the only lock protocol; a stale mirror found on the remote is deleted automatically on the next push. Do not mix this version with a v0.1–v0.3 helper on the same repository.
 - **Dead Local PID Fast-Reclaim**: If an active lock belongs to the current machine (verified via hostname and machine hardware/container network identifier) and the holding process has crashed or exited, the helper detects the dead PID and immediately reclaims the lock without waiting for the timeout. (The machine identifier derives from the hardware MAC: in VMs or containers that randomize it per boot, a rebooted holder is no longer recognized as local, so reclaim falls back to normal lease expiry — safe, just slower.)
 - **In-Transfer Lease Renewal**: During active multi-gigabyte packfile uploads, packfile downloads, and remote compaction, `git-remote-seafile` automatically refreshes the lock lease every 20 seconds of sustained transfer progress without spawning background daemon threads. Purely local compute phases (pack generation and `git repack`) renew before and after rather than during; before any destructive step (ref writes, obsolete pack deletion) the client re-validates that its lock ticket is still its own, and a lease that lapsed and was taken over in the meantime is detected and refused.

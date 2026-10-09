@@ -25,6 +25,7 @@ class RemoteConfig:
 
     lock_timeout: int
     lock_lease: int
+    lock_settle: int
     auto_gc: bool
     gc_threshold: int
 
@@ -38,10 +39,16 @@ class RemoteConfig:
         and a sub-1 gc threshold compacts on every push.  Those fall back to
         the documented defaults with a warning instead of being honored --
         the config is a way to tune the protocol, not to switch it off.
+
+        `seafile.locksettle` is the one setting where 0 is meaningful: it
+        switches off the settlement re-scan (see RemoteLock.acquire), which is
+        a race guard rather than the lock itself.  Only a negative value -- a
+        settlement window that would elapse before it started -- is refused.
         """
         values = {
             "lock_timeout": get_git_config_int("seafile.locktimeout", 15),
             "lock_lease": get_git_config_int("seafile.locklease", 60),
+            "lock_settle": get_git_config_int("seafile.locksettle", 1),
             "auto_gc": get_git_config_bool("seafile.autogc", False),
             "gc_threshold": get_git_config_int("seafile.gcthreshold", 20),
         }
@@ -53,6 +60,9 @@ class RemoteConfig:
         if values["lock_lease"] <= 0:
             fallbacks.append(f"seafile.locklease={values['lock_lease']} -> 60")
             values["lock_lease"] = 60
+        if values["lock_settle"] < 0:
+            fallbacks.append(f"seafile.locksettle={values['lock_settle']} -> 1")
+            values["lock_settle"] = 1
         if values["gc_threshold"] < 1:
             fallbacks.append(f"seafile.gcthreshold={values['gc_threshold']} -> 20")
             values["gc_threshold"] = 20

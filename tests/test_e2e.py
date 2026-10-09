@@ -522,6 +522,35 @@ class TestConcurrentPushRaceCondition(E2ETestCase):
         self.assertIn(a1_sha, ls.stdout, "A1 must not be overwritten by B1")
 
 
+class TestDefaultSettlementWindow(E2ETestCase):
+    """The shipped settlement window must not block an ordinary push.
+
+    Every other repo here sets `seafile.locksettle 0` so the suite does not pay
+    a second per push (see e2e_harness.init_repo).  That leaves the *default*
+    -- one second plus a second read of the queue -- untested end to end, and a
+    lock-acquisition change that only works with the window switched off would
+    otherwise reach users.
+    """
+
+    def test_a_push_succeeds_with_the_default_window(self):
+        src = init_repo(self.work / "src_settle", self.env)
+        run_git(["config", "seafile.locksettle", "1"], src, self.env)
+        commit_file(src, "a.txt", "hello\n", "initial commit", self.env)
+        run_git(["remote", "add", "origin", self.url("repo_settle")], src, self.env)
+
+        run_git(["push", "-u", "origin", "main"], src, self.env)
+
+        ls = run_git(["ls-remote", self.url("repo_settle"), "refs/heads/main"], self.work, self.env)
+        self.assertIn("refs/heads/main", ls.stdout)
+
+        # The lock must also have been released, not left behind by the
+        # confirming read.
+        self.assertEqual(
+            [p for p in self.stub.list_dir(REPO_ID, "/repo_settle/.git-lock.d")],
+            [],
+        )
+
+
 class TestStubRealismAndRefFault(E2ETestCase):
     """Verify stub Date headers, directory entry mtime/size, and N-2 per-path fault propagation."""
 

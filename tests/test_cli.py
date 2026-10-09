@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import ANY, MagicMock, patch
 
-from git_remote_seafile.cli import main
+from git_remote_seafile.cli import _COMMANDS, main, print_command_help
 from git_remote_seafile.client import SeafileAuthError
 from git_remote_seafile.lock import RepositoryLockedError
 from git_remote_seafile.safety import SafetyError
@@ -36,6 +36,102 @@ class TestCLIBasics(unittest.TestCase):
                     code = main()
                     self.assertEqual(code, 0)
                     self.assertIn("git-remote-seafile v", mock_out.getvalue())
+
+
+class TestCLICommandHelp(unittest.TestCase):
+    """D17: `--help` worked only with no subcommand, and the options existed
+    nowhere but the strings that happened to print on a usage error."""
+
+    def _run(self, argv: list[str]) -> tuple[int, str]:
+        with patch.object(sys, "argv", ["git-remote-seafile", *argv]):
+            with patch("sys.stdout", new_callable=io.StringIO) as mock_out:
+                code = main()
+        return code, mock_out.getvalue()
+
+    def test_every_subcommand_has_its_own_help(self):
+        for name, usage, _, _ in _COMMANDS:
+            with self.subTest(command=name):
+                code, output = self._run([name, "--help"])
+                self.assertEqual(code, 0)
+                self.assertTrue(
+                    output.startswith(f"Usage: {usage}\n"),
+                    f"{name} --help printed {output!r}",
+                )
+
+    def test_the_listing_and_the_command_help_agree(self):
+        """Both render from _COMMANDS, so the usage line cannot drift."""
+        for name, usage, _, _ in _COMMANDS:
+            with self.subTest(command=name):
+                with patch("sys.stdout", new_callable=io.StringIO) as mock_out:
+                    print_command_help(name)
+                self.assertTrue(mock_out.getvalue().startswith(f"Usage: {usage}\n"))
+
+    def test_the_help_flags_are_documented(self):
+        _, listing = self._run([])
+        self.assertIn("--min-packs", listing)
+        self.assertIn("--force", listing)
+
+        _, gc_help = self._run(["gc", "--help"])
+        self.assertIn("--min-packs N", gc_help)
+
+        _, unlock_help = self._run(["unlock", "--help"])
+        self.assertIn("--force", unlock_help)
+
+    def test_subcommand_help_never_reaches_the_network(self):
+        with patch("git_remote_seafile.cli.RemoteHelper") as mock_helper_cls:
+            code, _ = self._run(["gc", "--help"])
+        self.assertEqual(code, 0)
+        mock_helper_cls.assert_not_called()
+
+
+class TestCLIFlagPlacement(unittest.TestCase):
+    """D14: an option written before the URL was read as the URL.
+
+    `unlock --force seafile://host/lib` reported "library not found:
+    '--force'", and `gc --min-packs 3 seafile://host/lib` reported
+    "library not found: '--min-packs'".
+    """
+
+    @patch("git_remote_seafile.cli.RemoteHelper")
+    @patch("git_remote_seafile.gc.compact_repository")
+    def test_gc_reads_the_url_past_a_leading_flag(self, mock_compact, mock_helper_cls):
+        mock_compact.return_value = {"status": "skipped", "message": "Only 0 packfile(s) present."}
+        with patch.object(sys, "argv", ["git-remote-seafile", "gc", "--min-packs", "3", "seafile://code/repo"]):
+            with patch("sys.stdout", new_callable=io.StringIO):
+                code = main()
+        self.assertEqual(code, 0)
+        mock_helper_cls.assert_called_once_with("gc", "seafile://code/repo")
+        self.assertEqual(mock_compact.call_args.kwargs["min_packs"], 3)
+
+    @patch("git_remote_seafile.cli.RemoteHelper")
+    @patch("git_remote_seafile.gc.compact_repository")
+    def test_gc_accepts_the_equals_form(self, mock_compact, mock_helper_cls):
+        mock_compact.return_value = {"status": "skipped", "message": "Only 0 packfile(s) present."}
+        with patch.object(sys, "argv", ["git-remote-seafile", "gc", "--min-packs=4", "seafile://code/repo"]):
+            with patch("sys.stdout", new_callable=io.StringIO):
+                code = main()
+        self.assertEqual(code, 0)
+        mock_helper_cls.assert_called_once_with("gc", "seafile://code/repo")
+        self.assertEqual(mock_compact.call_args.kwargs["min_packs"], 4)
+
+    @patch("git_remote_seafile.cli.RemoteLock")
+    @patch("git_remote_seafile.cli.RemoteHelper")
+    def test_unlock_reads_the_url_past_force(self, mock_helper_cls, mock_lock_cls):
+        with patch.object(sys, "argv", ["git-remote-seafile", "unlock", "--force", "seafile://code/myrepo"]):
+            with patch("sys.stdout", new_callable=io.StringIO):
+                code = main()
+        self.assertEqual(code, 0)
+        mock_helper_cls.assert_called_once_with("unlock", "seafile://code/myrepo")
+        mock_lock_cls.return_value.unlock.assert_called_once_with(force=True)
+
+    @patch("git_remote_seafile.cli.RemoteHelper")
+    def test_unlock_with_only_flags_prints_usage(self, mock_helper_cls):
+        with patch.object(sys, "argv", ["git-remote-seafile", "unlock", "--force"]):
+            with patch("sys.stdout", new_callable=io.StringIO) as mock_out:
+                code = main()
+        self.assertEqual(code, 1)
+        self.assertIn("Usage:", mock_out.getvalue())
+        mock_helper_cls.assert_not_called()
 
 
 class TestCLICheckAuth(unittest.TestCase):

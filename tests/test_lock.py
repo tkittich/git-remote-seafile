@@ -11,6 +11,7 @@ import time
 import unittest
 from unittest.mock import MagicMock, patch
 
+from git_remote_seafile.config import RemoteConfig
 from git_remote_seafile.lock import (
     LEASE_HELD,
     LEASE_LOST,
@@ -20,6 +21,10 @@ from git_remote_seafile.lock import (
 )
 
 LEGACY_LOCK = "/path/.git-lock.json"
+
+# Every RemoteLock below passes `settle=0`: the settlement window is exercised
+# on its own in TestLockSettlementWindow, and everywhere else it would only add
+# a real second of sleeping to each acquisition.
 
 
 def _ticket(nonce: str, owner: str = "alice", machine: str = "nodeA", **overrides) -> str:
@@ -105,7 +110,7 @@ class TestConcurrencyAndLocking(unittest.TestCase):
         mock_client.token = "token123"
         mock_client.get_file_text.return_value = None
 
-        lock = RemoteLock(mock_client, "repo1", "/path", timeout=5, lease=60)
+        lock = RemoteLock(mock_client, "repo1", "/path", timeout=5, lease=60, settle=0)
         with lock:
             self.assertTrue(lock.acquired)
             # Exactly one artifact is written: the ticket. The v0.1-v0.6
@@ -124,7 +129,7 @@ class TestConcurrencyAndLocking(unittest.TestCase):
             "timestamp": time.time(), "lease": 60,
         }).encode("utf-8")
 
-        lock = RemoteLock(store.client("token123"), "repo1", "/path", timeout=5, lease=60)
+        lock = RemoteLock(store.client("token123"), "repo1", "/path", timeout=5, lease=60, settle=0)
         lock.acquire()
 
         self.assertTrue(lock.acquired)
@@ -134,7 +139,7 @@ class TestConcurrencyAndLocking(unittest.TestCase):
         store = _SharedLockStore()
         store.put_ticket("/path/.git-lock.d/alice-nonce.json", json.loads(_ticket("alice-nonce")))
 
-        lock = RemoteLock(store.client("token123"), "repo1", "/path", timeout=0, lease=60)
+        lock = RemoteLock(store.client("token123"), "repo1", "/path", timeout=0, lease=60, settle=0)
         with self.assertRaises(RepositoryLockedError) as ctx:
             lock.acquire()
         self.assertIn("locked by 'alice'", str(ctx.exception))
@@ -148,7 +153,7 @@ class TestConcurrencyAndLocking(unittest.TestCase):
         )
         store.expire_all(120)
 
-        lock = RemoteLock(store.client("token123"), "repo1", "/path", timeout=5, lease=60)
+        lock = RemoteLock(store.client("token123"), "repo1", "/path", timeout=5, lease=60, settle=0)
         lock.acquire()
 
         self.assertTrue(lock.acquired)
@@ -164,7 +169,7 @@ class TestConcurrencyAndLocking(unittest.TestCase):
         store = _SharedLockStore()
         store.files["/path/.git-lock.d/garbage.json"] = b"MALFORMED_NON_JSON{{{"
 
-        lock = RemoteLock(store.client("token123"), "repo1", "/path", timeout=5, lease=60)
+        lock = RemoteLock(store.client("token123"), "repo1", "/path", timeout=5, lease=60, settle=0)
         lock.acquire()
 
         self.assertTrue(lock.acquired)
@@ -177,12 +182,12 @@ class TestConcurrencyAndLocking(unittest.TestCase):
         the new holder's ticket untouched.
         """
         store = _SharedLockStore()
-        a = RemoteLock(store.client("token-A"), "repo1", "/path", timeout=5, lease=60)
+        a = RemoteLock(store.client("token-A"), "repo1", "/path", timeout=5, lease=60, settle=0)
         a.acquire()
         self.assertTrue(a.acquired)
         store.expire_all(120)
 
-        b = RemoteLock(store.client("token-B"), "repo1", "/path", timeout=5, lease=60)
+        b = RemoteLock(store.client("token-B"), "repo1", "/path", timeout=5, lease=60, settle=0)
         with patch("sys.stderr", io.StringIO()):
             b.acquire()
         self.assertTrue(b.acquired)
@@ -196,7 +201,7 @@ class TestConcurrencyAndLocking(unittest.TestCase):
 
     def test_release_removes_its_own_lock(self):
         store = _SharedLockStore()
-        lock = RemoteLock(store.client("token123"), "repo1", "/path", timeout=5, lease=60)
+        lock = RemoteLock(store.client("token123"), "repo1", "/path", timeout=5, lease=60, settle=0)
         lock.acquire()
         self.assertTrue(lock.acquired)
 
@@ -212,7 +217,7 @@ class TestConcurrencyAndLocking(unittest.TestCase):
         mock_client.get_file_text.return_value = None
         mock_client.list_dir.side_effect = RuntimeError("HTTP 500 internal server error")
 
-        lock = RemoteLock(mock_client, "repo1", "/path", timeout=0.1, lease=10)
+        lock = RemoteLock(mock_client, "repo1", "/path", timeout=0.1, lease=10, settle=0)
         with self.assertRaises(RepositoryLockedError):
             lock.acquire()
         self.assertFalse(lock.acquired)
@@ -228,7 +233,7 @@ class TestConcurrencyAndLocking(unittest.TestCase):
         mock_client.token = secret
         mock_client.get_file_text.return_value = None
 
-        lock = RemoteLock(mock_client, "repo1", "/path", timeout=5, lease=60)
+        lock = RemoteLock(mock_client, "repo1", "/path", timeout=5, lease=60, settle=0)
         lock.acquire()
 
         payload = mock_client.upload_file.call_args[0][3].decode("utf-8")
@@ -240,11 +245,30 @@ class TestConcurrencyAndLocking(unittest.TestCase):
 
     @patch("git_remote_seafile.lock.get_git_config_int")
     def test_lock_reads_git_config_defaults(self, mock_get_cfg):
-        mock_get_cfg.side_effect = lambda key, default: 30 if "timeout" in key else 90
+        mock_get_cfg.side_effect = lambda key, default: {
+            "seafile.locktimeout": 30,
+            "seafile.locklease": 90,
+            "seafile.locksettle": 4,
+        }.get(key, default)
         mock_client = MagicMock()
         lock = RemoteLock(mock_client, "repo1", "/path")
         self.assertEqual(lock.timeout, 30)
         self.assertEqual(lock.lease, 90)
+        self.assertEqual(lock.settle, 4)
+
+    def test_the_settlement_window_comes_from_the_session_config(self):
+        """RemoteConfig is the one place these three values are resolved."""
+        cfg = RemoteConfig(lock_timeout=7, lock_lease=8, lock_settle=9,
+                           auto_gc=False, gc_threshold=20)
+        lock = RemoteLock(MagicMock(), "repo1", "/path", config=cfg)
+        self.assertEqual(lock.timeout, 7)
+        self.assertEqual(lock.lease, 8)
+        self.assertEqual(lock.settle, 9)
+
+    def test_a_negative_settlement_window_is_clamped(self):
+        """A window that would elapse before it started is not a window."""
+        lock = RemoteLock(MagicMock(), "repo1", "/path", settle=-3)
+        self.assertEqual(lock.settle, 0.0)
 
     def test_ticket_with_malformed_timestamp_is_reaped(self):
         """A ticket whose timestamp is garbage is treated as expired, not fatal."""
@@ -257,7 +281,7 @@ class TestConcurrencyAndLocking(unittest.TestCase):
             "lease": "NOT_A_NUMBER",
         })
 
-        lock = RemoteLock(store.client("token123"), "repo1", "/path", timeout=5, lease=60)
+        lock = RemoteLock(store.client("token123"), "repo1", "/path", timeout=5, lease=60, settle=0)
         lock.acquire()
 
         self.assertTrue(lock.acquired)
@@ -273,7 +297,7 @@ class TestConcurrencyAndLocking(unittest.TestCase):
             pid=999999,
         )))
 
-        lock = RemoteLock(store.client("token123"), "repo1", "/path", timeout=0, lease=60)
+        lock = RemoteLock(store.client("token123"), "repo1", "/path", timeout=0, lease=60, settle=0)
         err = io.StringIO()
         with patch("git_remote_seafile.lock._is_pid_alive", return_value=False):
             with patch("sys.stderr", err):
@@ -292,7 +316,7 @@ class TestConcurrencyAndLocking(unittest.TestCase):
             pid=os.getpid(),
         )))
 
-        lock = RemoteLock(store.client("token123"), "repo1", "/path", timeout=0, lease=60)
+        lock = RemoteLock(store.client("token123"), "repo1", "/path", timeout=0, lease=60, settle=0)
         with patch("git_remote_seafile.lock._is_pid_alive", return_value=True):
             with self.assertRaises(RepositoryLockedError):
                 lock.acquire()
@@ -308,7 +332,7 @@ class TestConcurrencyAndLocking(unittest.TestCase):
             pid=999999,
         )))
 
-        lock = RemoteLock(store.client("token123"), "repo1", "/path", timeout=0, lease=60)
+        lock = RemoteLock(store.client("token123"), "repo1", "/path", timeout=0, lease=60, settle=0)
         with patch("git_remote_seafile.lock._is_pid_alive", return_value=False):
             with self.assertRaises(RepositoryLockedError):
                 lock.acquire()
@@ -321,7 +345,7 @@ class TestConcurrencyAndLocking(unittest.TestCase):
             "ticketA", timestamp=now - 10, order_ts=now - 10,
         )))
 
-        lock = RemoteLock(store.client("token123"), "repo1", "/path", timeout=0, lease=60)
+        lock = RemoteLock(store.client("token123"), "repo1", "/path", timeout=0, lease=60, settle=0)
         with self.assertRaises(RepositoryLockedError) as ctx:
             lock.acquire()
         self.assertIn("locked by 'alice'", str(ctx.exception))
@@ -350,7 +374,7 @@ class TestConcurrencyAndLocking(unittest.TestCase):
         store.mtime_override["/path/.git-lock.d/holder-nonce.json"] = now
         store.mtime_override["/path/.git-lock.d/waiter-nonce.json"] = now - 200
 
-        lock = RemoteLock(store.client("token-x"), "repo1", "/path", timeout=0, lease=600)
+        lock = RemoteLock(store.client("token-x"), "repo1", "/path", timeout=0, lease=600, settle=0)
         tickets = lock._scan_tickets(float(now), reap=False)
         tickets.sort(key=lambda t: t.get("_order_key", (0, 0, "")))
         self.assertEqual(tickets[0]["nonce"], "holder-nonce")
@@ -364,7 +388,7 @@ class TestConcurrencyAndLocking(unittest.TestCase):
         packfiles inside B's push.
         """
         store = _SharedLockStore()
-        a = RemoteLock(store.client("token-A"), "repo1", "/path", timeout=5, lease=60)
+        a = RemoteLock(store.client("token-A"), "repo1", "/path", timeout=5, lease=60, settle=0)
         a.acquire()
         self.assertTrue(a.acquired)
 
@@ -372,7 +396,7 @@ class TestConcurrencyAndLocking(unittest.TestCase):
         store.expire_all(120)
 
         # B arrives, reaps A's expired ticket, and acquires.
-        b = RemoteLock(store.client("token-B"), "repo1", "/path", timeout=5, lease=60)
+        b = RemoteLock(store.client("token-B"), "repo1", "/path", timeout=5, lease=60, settle=0)
         err = io.StringIO()
         with patch("sys.stderr", err):
             b.acquire()
@@ -400,7 +424,7 @@ class TestConcurrencyAndLocking(unittest.TestCase):
         mock_client.token = "token123"
         mock_client.get_file_text.return_value = None
 
-        lock = RemoteLock(mock_client, "repo1", "/path", timeout=5, lease=60)
+        lock = RemoteLock(mock_client, "repo1", "/path", timeout=5, lease=60, settle=0)
         lock.acquire()
         # renew() reads the ticket back before rewriting it (the takeover
         # fence), so the client must serve what acquire() uploaded.
@@ -421,7 +445,7 @@ class TestConcurrencyAndLocking(unittest.TestCase):
         mock_client = MagicMock()
         mock_client.token = "token123"
         mock_client.get_file_text.return_value = None
-        lock = RemoteLock(mock_client, "repo1", "/path", timeout=5, lease=60)
+        lock = RemoteLock(mock_client, "repo1", "/path", timeout=5, lease=60, settle=0)
         lock.acquire()
 
         # A read failure is UNKNOWN, not LOST.
@@ -448,7 +472,7 @@ class TestConcurrencyAndLocking(unittest.TestCase):
         mock_client.token = "token123"
         mock_client.get_file_text.return_value = None
 
-        lock = RemoteLock(mock_client, "repo1", "/path", timeout=5, lease=60)
+        lock = RemoteLock(mock_client, "repo1", "/path", timeout=5, lease=60, settle=0)
         lock.acquire()
         err = io.StringIO()
         with patch("sys.stderr", err):
@@ -461,7 +485,7 @@ class TestConcurrencyAndLocking(unittest.TestCase):
         mock_client.token = "token123"
         mock_client.get_file_text.return_value = None
 
-        lock = RemoteLock(mock_client, "repo1", "/path", timeout=5, lease=60)
+        lock = RemoteLock(mock_client, "repo1", "/path", timeout=5, lease=60, settle=0)
         lock.acquire()
         mock_client.get_file_text.return_value = mock_client.upload_file.call_args[0][3].decode("utf-8")
         upload_count = mock_client.upload_file.call_count
@@ -478,7 +502,7 @@ class TestConcurrencyAndLocking(unittest.TestCase):
     def test_lock_status_and_unlock(self):
         """get_status and unlock inspect and clear ticket state."""
         store = _SharedLockStore()
-        lock = RemoteLock(store.client("token123"), "repo1", "/path", timeout=5, lease=60)
+        lock = RemoteLock(store.client("token123"), "repo1", "/path", timeout=5, lease=60, settle=0)
 
         status_unlocked = lock.get_status()
         self.assertFalse(status_unlocked["locked"])
@@ -501,7 +525,7 @@ class TestConcurrencyAndLocking(unittest.TestCase):
         store = _SharedLockStore()
         store.put_ticket("/path/.git-lock.d/competitor-nonce.json", json.loads(_ticket("competitor-nonce")))
 
-        lock = RemoteLock(store.client("token123"), "repo1", "/path", timeout=0, lease=60)
+        lock = RemoteLock(store.client("token123"), "repo1", "/path", timeout=0, lease=60, settle=0)
         with self.assertRaises(RepositoryLockedError):
             lock.acquire()
 
@@ -522,6 +546,106 @@ class TestConcurrencyAndLocking(unittest.TestCase):
             mock_ctypes.windll.kernel32 = mock_kernel32
             with patch.dict("sys.modules", {"ctypes": mock_ctypes, "ctypes.wintypes": MagicMock()}):
                 self.assertTrue(_is_pid_alive(1234))
+
+
+class _LateCommitStore(_SharedLockStore):
+    """A store where one ticket becomes visible only after N listings.
+
+    Models the D21 race directly: two clients acquire concurrently, and the
+    listing each reads before the other's upload has committed shows only that
+    client's own ticket.
+    """
+
+    def __init__(self, hidden_name: str | None = None, visible_after: int = 0):
+        super().__init__()
+        self.hidden_name = hidden_name
+        self.visible_after = visible_after
+        self.listings = 0
+
+    def list_dir(self, repo_id, path):
+        self.listings += 1
+        entries = super().list_dir(repo_id, path)
+        if self.hidden_name and self.listings <= self.visible_after:
+            entries = [e for e in entries if e["name"] != self.hidden_name]
+        return entries
+
+
+class TestLockSettlementWindow(unittest.TestCase):
+    """D21: the first read of the queue is not enough to claim ownership.
+
+    Two clients can both win if each reads the queue before the other's upload
+    has committed: A sees only itself and claims the lock; B commits with an
+    *earlier* order_ts, reads the queue, sees both, and claims it too.  The
+    window gives any in-flight peer time to land, then reads again, so both
+    clients compare the same set and the same one wins.
+    """
+
+    def _store_with_earlier_peer(self) -> _LateCommitStore:
+        store = _LateCommitStore("bob-nonce.json", visible_after=1)
+        store.put_ticket(
+            "/path/.git-lock.d/bob-nonce.json",
+            json.loads(_ticket("bob-nonce", owner="bob", order_ts=time.time() - 5)),
+        )
+        return store
+
+    def test_a_win_on_the_first_read_is_not_yet_a_win(self):
+        store = self._store_with_earlier_peer()
+
+        lock = RemoteLock(store.client("token123"), "repo1", "/path",
+                          timeout=0, lease=60, settle=0.05)
+        with self.assertRaises(RepositoryLockedError) as ctx:
+            lock.acquire()
+
+        self.assertFalse(lock.acquired)
+        self.assertIn("locked by 'bob'", str(ctx.exception))
+        # Our losing candidate is cleaned up; the winner's ticket survives.
+        self.assertEqual(
+            sorted(store.files), ["/path/.git-lock.d/bob-nonce.json"]
+        )
+
+    def test_without_the_window_the_first_read_decides(self):
+        """The guard is what prevents the double win -- disable it and it returns.
+
+        Bob's ticket carries the *earlier* order_ts and is still in flight when
+        we read, so with the window off we claim the lock; Bob commits, reads
+        the queue, sees both tickets, and wins the same comparison.  Two
+        holders, one repository.  This pins why `seafile.locksettle 0` is a
+        trade rather than a free speed-up: it is the difference between this
+        test and the one above.
+        """
+        store = self._store_with_earlier_peer()
+
+        lock = RemoteLock(store.client("token123"), "repo1", "/path",
+                          timeout=0, lease=60, settle=0)
+        lock.acquire()
+
+        self.assertTrue(lock.acquired)
+
+    def test_a_peer_that_started_later_does_not_take_the_lock(self):
+        """The window must not hand the lock to whoever happens to be listed."""
+        store = _LateCommitStore()
+        store.put_ticket(
+            "/path/.git-lock.d/bob-nonce.json",
+            json.loads(_ticket("bob-nonce", owner="bob", order_ts=time.time() + 5)),
+        )
+
+        lock = RemoteLock(store.client("token123"), "repo1", "/path",
+                          timeout=0, lease=60, settle=0.05)
+        lock.acquire()
+
+        self.assertTrue(lock.acquired)
+        # Two reads, not a loop: the queue is read once to decide and once to
+        # confirm.  That is the whole cost of the guard.
+        self.assertEqual(store.listings, 2)
+
+    def test_the_window_can_be_switched_off_with_a_single_read(self):
+        store = _LateCommitStore()
+        lock = RemoteLock(store.client("token123"), "repo1", "/path",
+                          timeout=0, lease=60, settle=0)
+        lock.acquire()
+
+        self.assertTrue(lock.acquired)
+        self.assertEqual(store.listings, 1)
 
 
 if __name__ == "__main__":

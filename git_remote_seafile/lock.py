@@ -98,6 +98,11 @@ class RemoteLock:
     with server-side timestamp ordering and fast stale-lock reclamation for
     dead local processes.
 
+    A win is confirmed by a second read of the queue one settlement window
+    later (`seafile.locksettle`, default 1s), so a peer that is still
+    uploading during the first read cannot win a lock this client also
+    claims. Set it to 0 to skip that re-scan.
+
     The v0.1–v0.3 single-file mirror (.git-lock.json) was removed in v0.7.0:
     this protocol coordinates exclusively through the ticket queue, and
     acquire() deletes an orphaned mirror when it finds one so existing
@@ -114,6 +119,7 @@ class RemoteLock:
         timeout: int | None = None,
         lease: int | None = None,
         config: RemoteConfig | None = None,
+        settle: float | None = None,
     ):
         self.client = client
         self.repo_id = repo_id
@@ -124,12 +130,21 @@ class RemoteLock:
                 timeout = config.lock_timeout
             if lease is None:
                 lease = config.lock_lease
+            if settle is None:
+                settle = config.lock_settle
         if timeout is None:
             timeout = get_git_config_int("seafile.locktimeout", 15)
         if lease is None:
             lease = get_git_config_int("seafile.locklease", 60)
+        if settle is None:
+            # Literal, not a named constant: the doc-consistency guard reads
+            # this call to check the documented default (see
+            # tests/test_docs_consistency.py).
+            settle = get_git_config_int("seafile.locksettle", 1)
         self.timeout = timeout
         self.lease = lease
+        #: Settlement window in seconds; 0 disables the confirming re-scan.
+        self.settle = max(0.0, float(settle))
         self.acquired = False
         self._identity: tuple[str, str] | None = None
         self._nonce: str | None = None
@@ -249,6 +264,37 @@ class RemoteLock:
 
         return active_tickets
 
+    def _candidates(
+        self,
+        tickets: list[dict[str, Any]],
+        lock_payload: dict[str, Any],
+        nonce: str,
+        now: float,
+    ) -> list[dict[str, Any]]:
+        """The queue with our own ticket merged in, ordered earliest-first.
+
+        Our ticket is merged rather than trusted to the scan: the upload has
+        already succeeded, so we *know* it exists, and a scan that does not
+        show it (a listing that has not caught up, a mock that returns
+        nothing) must not be read as "we are not in the queue" -- that would
+        send the caller round the retry loop for a ticket that is already
+        there.
+        """
+        if not any(t.get("nonce") == nonce for t in tickets):
+            my_ticket = dict(lock_payload)
+            my_ticket["_mtime"] = 0.0
+            # Match the scheme _scan_tickets chose for the tickets it saw, so
+            # the appended candidate compares against them.
+            others_modern = bool(tickets) and all(_f(t.get("order_ts")) > 0 for t in tickets)
+            if others_modern:
+                my_ticket["_order_key"] = (self._order_ts, 0.0, nonce)
+            else:
+                my_ticket["_order_key"] = (int(now), 0.0, nonce)
+            my_ticket["_path"] = f"{self.lock_dir}/{nonce}.json"
+            tickets.append(my_ticket)
+        tickets.sort(key=lambda t: t.get("_order_key", (0, 0, "")))
+        return tickets
+
     def acquire(self) -> None:
         start_time = time.monotonic()
         hostname = socket.gethostname()
@@ -315,21 +361,33 @@ class RemoteLock:
                     time.sleep(2)
                     continue
 
-                if not any(t.get("nonce") == nonce for t in tickets):
-                    my_ticket = dict(lock_payload)
-                    my_ticket["_mtime"] = 0.0
-                    # Match the scheme _scan_tickets chose for the tickets it
-                    # saw, so the appended candidate compares against them.
-                    others_modern = bool(tickets) and all(_f(t.get("order_ts")) > 0 for t in tickets)
-                    if others_modern:
-                        my_ticket["_order_key"] = (self._order_ts, 0.0, nonce)
-                    else:
-                        my_ticket["_order_key"] = (int(now), 0.0, nonce)
-                    my_ticket["_path"] = f"{self.lock_dir}/{nonce}.json"
-                    tickets.append(my_ticket)
+                winner = self._candidates(tickets, lock_payload, nonce, now)[0]
 
-                tickets.sort(key=lambda t: t.get("_order_key", (0, 0, "")))
-                winner = tickets[0]
+                if winner.get("nonce") == nonce and self.settle > 0:
+                    # D21 settlement window.  A single scan cannot be trusted:
+                    # a peer that starts before us can still be uploading when
+                    # we read the queue, so we can see only ourselves and win,
+                    # while the peer commits a moment later with an *earlier*
+                    # order_ts, reads the queue (now showing both), wins too,
+                    # and we both push.  order_ts is captured before the upload
+                    # precisely so that the queue order is stable once both
+                    # tickets are visible -- so wait one round-trip's worth of
+                    # time for any in-flight peer to land, then read it again
+                    # and let the same comparison decide for both of us.
+                    time.sleep(self.settle)
+                    try:
+                        settled = self._scan_tickets(self._get_server_time())
+                    except Exception as ex:
+                        if time.monotonic() - start_time >= self.timeout:
+                            raise RepositoryLockedError(
+                                f"Failed to confirm lock ownership: {ex}"
+                            ) from ex
+                        sys.stderr.write(
+                            f"Transient error confirming lock ownership ({ex}); retrying...\n"
+                        )
+                        sys.stderr.flush()
+                        continue
+                    winner = self._candidates(settled, lock_payload, nonce, now)[0]
 
                 if winner.get("nonce") == nonce:
                     self.acquired = True

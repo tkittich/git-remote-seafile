@@ -16,6 +16,45 @@ from .safety import (
 )
 
 
+# (name, usage, summary, options) for every subcommand, in listing order.
+# Both the top-level listing and `git-remote-seafile <cmd> --help` render from
+# this one table: a flag added to a usage line cannot then go missing from the
+# per-command help, or vice versa (D17).  The flags used to be documented
+# nowhere -- `--min-packs` and `--force` appeared only in the strings that
+# happened to print when the command was called wrongly.
+_COMMANDS: tuple[tuple[str, str, str, tuple[tuple[str, str], ...]], ...] = (
+    ("test", "git-remote-seafile test <seafile://url>",
+     "Test connection and discover refs", ()),
+    ("check-safety", "git-remote-seafile check-safety <seafile://url>",
+     "Run pre-flight safety checks (Trap 1 & 2)", ()),
+    ("check-auth", "git-remote-seafile check-auth",
+     "Verify active Seafile login", ()),
+    ("gc", "git-remote-seafile gc <seafile://url> [--min-packs N]",
+     "Compact multiple remote packfiles",
+     (("--min-packs N",
+       "Only compact when the remote holds at least N packfiles (default: 2)"),)),
+    ("lfs-transfer", "git-remote-seafile lfs-transfer <seafile://url>",
+     "Git LFS Custom Transfer Agent", ()),
+    ("set-head", "git-remote-seafile set-head <seafile://url> <branch>",
+     "Set default branch (HEAD) on remote", ()),
+    ("lock-status", "git-remote-seafile lock-status <seafile://url>",
+     "Inspect repository lock state", ()),
+    ("unlock", "git-remote-seafile unlock <seafile://url> [--force]",
+     "Clear repository lock",
+     (("--force", "Clear the lock even when another machine holds it"),)),
+    ("desktop-url", "git-remote-seafile desktop-url <path>",
+     "Generate seafile:// URL from local path", ()),
+    ("version", "git-remote-seafile version", "Display version", ()),
+)
+
+_COMMAND_TABLE: dict[str, tuple[str, str, tuple[tuple[str, str], ...]]] = {
+    name: (usage, summary, options) for name, usage, summary, options in _COMMANDS
+}
+
+# Two spaces of gutter between the longest usage line and its summary.
+_USAGE_WIDTH = max(len(usage) for _, usage, _, _ in _COMMANDS) + 2
+
+
 def print_help() -> None:
     print("git-remote-seafile - Git remote helper for Seafile")
     print()
@@ -26,16 +65,88 @@ def print_help() -> None:
     print("  git fetch origin")
     print()
     print("Commands:")
-    print("  git-remote-seafile test <seafile://url>           Test connection and discover refs")
-    print("  git-remote-seafile check-safety <seafile://url>  Run pre-flight safety checks (Trap 1 & 2)")
-    print("  git-remote-seafile check-auth                    Verify active Seafile login")
-    print("  git-remote-seafile gc <seafile://url>            Compact multiple remote packfiles")
-    print("  git-remote-seafile lfs-transfer <seafile://url>  Git LFS Custom Transfer Agent")
-    print("  git-remote-seafile set-head <seafile://url> <branch> Set default branch (HEAD) on remote")
-    print("  git-remote-seafile lock-status <seafile://url>   Inspect repository lock state")
-    print("  git-remote-seafile unlock <seafile://url> [--force] Clear repository lock")
-    print("  git-remote-seafile desktop-url <path>            Generate seafile:// URL from local path")
-    print("  git-remote-seafile version                       Display version")
+    for _, usage, summary, _ in _COMMANDS:
+        print(f"  {usage:<{_USAGE_WIDTH}}{summary}")
+    print()
+    print("Run 'git-remote-seafile <command> --help' for command-specific options.")
+
+
+def print_command_help(command: str) -> None:
+    """Help for a single subcommand.
+
+    `git-remote-seafile gc --help` used to fall through to the command itself
+    and fail with "Compaction failed: ...", because only a bare `--help` with
+    no subcommand was recognised.
+    """
+    usage, summary, options = _COMMAND_TABLE[command]
+    print(f"Usage: {usage}")
+    print()
+    print(summary)
+    if options:
+        width = max(len(flag) for flag, _ in options) + 2
+        print()
+        print("Options:")
+        for flag, description in options:
+            print(f"  {flag:<{width}}{description}")
+
+
+def _positional_args(args: list[str], *, value_options: tuple[str, ...] = ()) -> list[str]:
+    """Arguments that are not options, nor the values those options consume.
+
+    Pass the arguments *after* the subcommand name: `args[0]` is the
+    subcommand, so feeding the whole list in returns the subcommand as the
+    first operand.
+
+    `unlock --force seafile://host/lib` read "--force" as the URL (D14): the
+    flag was looked for anywhere in argv, but the URL was taken blindly from
+    `args[1]`.  The same shape broke `gc --min-packs 3 <url>`.
+    """
+    positional: list[str] = []
+    skip_value = False
+    for arg in args:
+        if skip_value:
+            skip_value = False
+            continue
+        if arg in value_options:
+            skip_value = True
+            continue
+        if arg.startswith("-") and arg != "-":
+            continue
+        positional.append(arg)
+    return positional
+
+
+def _parse_min_packs(args: list[str], default: int = 2) -> int:
+    """Read `--min-packs N` / `--min-packs=N`, warning and falling back on junk."""
+    raw: str | None = None
+    for index, arg in enumerate(args):
+        if arg == "--min-packs":
+            if index + 1 >= len(args):
+                sys.stderr.write(
+                    f"Warning: --min-packs requires an integer value. Using default ({default}).\n"
+                )
+                return default
+            raw = args[index + 1]
+            break
+        if arg.startswith("--min-packs="):
+            raw = arg.split("=", 1)[1]
+            break
+
+    if raw is None:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        sys.stderr.write(
+            f"Warning: invalid --min-packs value '{raw}'. Using default ({default}).\n"
+        )
+        return default
+    if value < 1:
+        sys.stderr.write(
+            f"Warning: --min-packs must be a positive integer, got '{raw}'. Using default ({default}).\n"
+        )
+        return default
+    return value
 
 
 def main() -> int:
@@ -57,6 +168,10 @@ def main() -> int:
 
     if args[0] in ("-h", "--help", "help"):
         print_help()
+        return 0
+
+    if args[0] in _COMMAND_TABLE and any(arg in ("-h", "--help") for arg in args[1:]):
+        print_command_help(args[0])
         return 0
 
     if args[0] in ("-v", "--version", "version"):
@@ -158,28 +273,13 @@ def main() -> int:
             return 1
 
     if args[0] == "gc":
-        if len(args) < 2:
+        # args[1:]: args[0] is the subcommand itself, not a positional operand.
+        positional = _positional_args(args[1:], value_options=("--min-packs",))
+        if not positional:
             print("Usage: git-remote-seafile gc <seafile://url> [--min-packs N]")
             return 1
-        url = args[1]
-        min_packs = 2
-        if "--min-packs" in args:
-            idx = args.index("--min-packs")
-            if idx + 1 < len(args):
-                try:
-                    val = int(args[idx + 1])
-                    if val < 1:
-                        sys.stderr.write(
-                            f"Warning: --min-packs must be a positive integer, got '{args[idx + 1]}'. Using default ({min_packs}).\n"
-                        )
-                    else:
-                        min_packs = val
-                except ValueError:
-                    sys.stderr.write(
-                        f"Warning: invalid --min-packs value '{args[idx + 1]}'. Using default ({min_packs}).\n"
-                    )
-            else:
-                sys.stderr.write(f"Warning: --min-packs requires an integer value. Using default ({min_packs}).\n")
+        url = positional[0]
+        min_packs = _parse_min_packs(args)
         try:
             from .config import RemoteConfig
             helper = RemoteHelper("gc", url)
@@ -291,10 +391,11 @@ def main() -> int:
             return 1
 
     if args[0] == "unlock":
-        if len(args) < 2:
+        positional = _positional_args(args[1:])
+        if not positional:
             print("Usage: git-remote-seafile unlock <seafile://url> [--force]")
             return 1
-        url = args[1]
+        url = positional[0]
         force = "--force" in args
         try:
             helper = RemoteHelper("unlock", url)

@@ -398,6 +398,12 @@ def init_repo(path: Path, env: dict) -> Path:
     run_git(["config", "user.email", "e2e@example.com"], path, env)
     run_git(["config", "user.name", "E2E Tester"], path, env)
     run_git(["config", "core.autocrlf", "false"], path, env)
+    # The stub is one in-process server with no concurrent writers, so the
+    # settlement re-scan (RemoteLock.acquire) has nothing to settle: it would
+    # only add a second to each of the ~25 pushes here.  It is exercised for
+    # real in tests/test_lock.py, and once end-to-end in
+    # TestGcSha256Repositories.test_the_default_settlement_window_does_not_block.
+    run_git(["config", "seafile.locksettle", "0"], path, env)
     return path
 
 
