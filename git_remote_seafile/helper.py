@@ -10,7 +10,7 @@ from pathlib import Path
 
 from .client import SeafileClient, SeafileAPIError
 from .config import RemoteConfig
-from .lock import RemoteLock
+from .lock import RemoteLock, describe_ownership_failure
 from .packs import (
     check_remote_has_packs,
     fetch_and_install_pack,
@@ -358,7 +358,11 @@ class RemoteHelper:
 
                     # Update remote ref files and report ok for each updated target
                     if pending_updates and not lock.verify_ownership():
-                        err_line = "lost lock ownership before updating refs"
+                        state = lock.ownership_state() if hasattr(lock, "ownership_state") else ""
+                        err_line = (
+                            "could not confirm lock ownership before updating refs "
+                            f"({describe_ownership_failure(state)})"
+                        )
                         for dst, _, _ in pending_updates:
                             sys.stdout.write(f"error {dst} {err_line}\n")
                             reported_specs.add(dst)

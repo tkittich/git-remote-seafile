@@ -548,7 +548,15 @@ class SeafileClient:
             return []
         if resp.status_code != 200:
             raise SeafileAPIError(f"Failed to list dir {clean_path}: HTTP {resp.status_code} {resp.text}")
-        return resp.json()
+        data = resp.json()
+        # Normalise here, once, so no caller has to guard: a non-array response
+        # is a protocol error worth naming rather than an AttributeError three
+        # frames later, and a non-object element cannot be a directory entry.
+        if not isinstance(data, list):
+            raise SeafileAPIError(
+                f"Failed to list dir {clean_path}: expected a JSON array, got {type(data).__name__}"
+            )
+        return [e for e in data if isinstance(e, dict)]
 
 
     def dir_exists(self, repo_id: str, dir_path: str) -> bool:

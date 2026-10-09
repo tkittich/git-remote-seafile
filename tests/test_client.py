@@ -436,6 +436,31 @@ class TestClientAPI(unittest.TestCase):
         with self.assertRaises(SeafileAPIError):
             self.client.list_dir("repo1", "/some/dir")
 
+    def test_list_dir_normalises_the_response(self):
+        """list_dir guarantees a list of dicts, so callers need no guard (D6).
+
+        A non-array body used to reach callers as-is and surface as an
+        AttributeError several frames away; a non-object element cannot be an
+        entry and is dropped.
+        """
+        self.client.session.get = MagicMock(
+            return_value=MagicMock(status_code=200, json=lambda: {"error": "not an array"})
+        )
+        with self.assertRaises(SeafileAPIError) as ctx:
+            self.client.list_dir("repo1", "/refs/heads")
+        self.assertIn("expected a JSON array", str(ctx.exception))
+
+        self.client.session.get = MagicMock(
+            return_value=MagicMock(
+                status_code=200,
+                json=lambda: [{"type": "file", "name": "a"}, "junk", 42, {"type": "file", "name": "b"}],
+            )
+        )
+        self.assertEqual(
+            self.client.list_dir("repo1", "/refs/heads"),
+            [{"type": "file", "name": "a"}, {"type": "file", "name": "b"}],
+        )
+
     def test_get_file_bytes_and_text(self):
         """The payload transfer must go through the session, not bare requests.
 

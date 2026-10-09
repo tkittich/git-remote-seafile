@@ -11,7 +11,13 @@ import time
 import unittest
 from unittest.mock import MagicMock, patch
 
-from git_remote_seafile.lock import RemoteLock, RepositoryLockedError
+from git_remote_seafile.lock import (
+    LEASE_HELD,
+    LEASE_LOST,
+    LEASE_UNKNOWN,
+    RemoteLock,
+    RepositoryLockedError,
+)
 
 LEGACY_LOCK = "/path/.git-lock.json"
 
@@ -404,6 +410,37 @@ class TestConcurrencyAndLocking(unittest.TestCase):
         res = lock.renew()
         self.assertTrue(res)
         self.assertEqual(mock_client.upload_file.call_count, upload_count_before + 1)
+
+    def test_renew_state_distinguishes_lost_from_unknown(self):
+        """A takeover and an unreadable ticket are different states (D7).
+
+        renew() collapses both to False, but the fence that reports to the user
+        must be able to tell them apart: "another client took over" versus
+        "we could not read our own ticket".
+        """
+        mock_client = MagicMock()
+        mock_client.token = "token123"
+        mock_client.get_file_text.return_value = None
+        lock = RemoteLock(mock_client, "repo1", "/path", timeout=5, lease=60)
+        lock.acquire()
+
+        # A read failure is UNKNOWN, not LOST.
+        mock_client.get_file_text.side_effect = RuntimeError("connection reset")
+        with patch("sys.stderr", io.StringIO()):
+            self.assertFalse(lock.verify_ownership())
+        self.assertEqual(lock.ownership_state(), LEASE_UNKNOWN)
+
+        # A foreign nonce is a genuine takeover.
+        mock_client.get_file_text.side_effect = None
+        mock_client.get_file_text.return_value = json.dumps({"nonce": "someone-else"})
+        with patch("sys.stderr", io.StringIO()):
+            self.assertFalse(lock.verify_ownership())
+        self.assertEqual(lock.ownership_state(), LEASE_LOST)
+
+        # A ticket that is ours again means we still hold the lease.
+        mock_client.get_file_text.return_value = json.dumps({"nonce": lock._nonce})
+        self.assertTrue(lock.verify_ownership())
+        self.assertEqual(lock.ownership_state(), LEASE_HELD)
 
     def test_renew_fails_when_the_ticket_is_gone(self):
         """A missing ticket means the lease lapsed and was reaped; renew must fail."""

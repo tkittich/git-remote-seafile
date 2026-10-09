@@ -11,7 +11,7 @@ from typing import Any
 from .client import SeafileAPIError, SeafileClient
 from .config import RemoteConfig
 from .git_util import clean_git_env
-from .lock import RemoteLock
+from .lock import RemoteLock, describe_ownership_failure
 from .packs import fetch_pack_artifact, is_valid_pack_name
 from .refs import REF_NAMESPACES, iter_refs
 
@@ -283,8 +283,9 @@ def compact_repository(
                 lock_valid = True
 
             if not lock_valid:
+                state = lock.ownership_state() if hasattr(lock, "ownership_state") else ""
                 raise RuntimeError(
-                    "refusing to delete obsolete packfiles: lock lease lapsed or was lost. "
+                    f"refusing to delete obsolete packfiles: {describe_ownership_failure(state)}. "
                     "Compacted packfiles were uploaded, but old packs were left untouched to prevent data corruption."
                 )
 

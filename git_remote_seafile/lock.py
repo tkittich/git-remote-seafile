@@ -18,6 +18,27 @@ class RepositoryLockedError(Exception):
     pass
 
 
+#: Outcome of re-verifying the lease.  Both non-HELD values fence destructive
+#: steps, but they are different events and the user must be told which one
+#: happened: LEASE_LOST means another client provably holds the lock (our
+#: ticket is gone or carries a foreign nonce), while LEASE_UNKNOWN means we
+#: could not read or rewrite our own ticket, so ownership is merely unproven.
+#: Reporting a network blip as "lost lock ownership" sends the user hunting for
+#: a competing push that never happened.
+LEASE_HELD = "held"
+LEASE_LOST = "lost"
+LEASE_UNKNOWN = "unknown"
+
+
+def describe_ownership_failure(state: str) -> str:
+    """Phrase a failed ownership re-check in terms of what actually happened."""
+    if state == LEASE_LOST:
+        return "another client took over the lock"
+    if state == LEASE_UNKNOWN:
+        return "the lock ticket could not be read or rewritten, so ownership is unproven"
+    return "lock ownership could not be verified"
+
+
 def _f(val: Any) -> float:
     """Coerce a JSON value to float, treating garbage as 0.0 (never raise)."""
     try:
@@ -113,6 +134,9 @@ class RemoteLock:
         self._identity: tuple[str, str] | None = None
         self._nonce: str | None = None
         self._last_renewed: float = 0.0
+        #: Why the last renew()/verify_ownership() held or failed; see
+        #: ownership_state() and describe_ownership_failure().
+        self._last_ownership_state: str = LEASE_UNKNOWN
         # FIFO key captured once at acquire time and preserved by renew():
         # renewal rewrites the ticket file, which bumps its mtime, so the queue
         # must not be ordered on mtime for tickets that carry this field.
@@ -338,27 +362,33 @@ class RemoteLock:
                 except Exception:
                     pass
 
-    def renew(self) -> bool:
-        """Renew the lease on an actively held lock.
+    def renew_state(self) -> str:
+        """Re-verify and refresh the lease, returning why it held or failed.
 
-        The ticket is read back before it is rewritten.  The nonce names the
-        ticket file and only this process ever writes it, so a ticket that is
-        gone, unreadable, or carries a foreign nonce means this lease lapsed
-        and was reaped -- most plausibly by another client that now holds the
-        lock.  Re-uploading anyway would resurrect the ticket and claim
-        ownership we no longer have; the fencing checks in cmd_push and gc
-        delegate to this method precisely to detect that, so it must fail
-        closed here.
+        Returns LEASE_HELD, LEASE_LOST or LEASE_UNKNOWN.  The ticket is read
+        back before it is rewritten.  The nonce names the ticket file and only
+        this process ever writes it, so a ticket that is gone or carries a
+        foreign nonce means this lease lapsed and was reaped -- most plausibly by
+        another client that now holds the lock.  Re-uploading anyway would
+        resurrect the ticket and claim ownership we no longer have, so this
+        fails closed.  A read or write *failure* is reported as UNKNOWN, not
+        LOST: we cannot prove either way, and the two send the user to different
+        places.
         """
         if not self.acquired or not self._nonce:
-            return False
+            state = LEASE_LOST
+        else:
+            state = self._refresh_lease()
+        self._last_ownership_state = state
+        return state
 
+    def _refresh_lease(self) -> str:
         try:
             current = self.client.get_file_text(self.repo_id, f"{self.lock_dir}/{self._nonce}.json")
         except Exception as ex:
-            sys.stderr.write(f"Warning: Failed to renew lock lease: {ex}\n")
+            sys.stderr.write(f"Warning: could not re-read lock ticket ({ex}); ownership unproven.\n")
             sys.stderr.flush()
-            return False
+            return LEASE_UNKNOWN
 
         if not current:
             sys.stderr.write(
@@ -366,7 +396,7 @@ class RemoteLock:
                 "Not renewing.\n"
             )
             sys.stderr.flush()
-            return False
+            return LEASE_LOST
 
         try:
             current_nonce = json.loads(current).get("nonce")
@@ -375,12 +405,12 @@ class RemoteLock:
                 "Warning: Lock ticket is unreadable; refusing to renew rather than guess at ownership.\n"
             )
             sys.stderr.flush()
-            return False
+            return LEASE_UNKNOWN
 
         if current_nonce != self._nonce:
             sys.stderr.write("Warning: Lock ticket was taken over; not renewing.\n")
             sys.stderr.flush()
-            return False
+            return LEASE_LOST
 
         now = self._get_server_time()
         payload = {
@@ -403,11 +433,23 @@ class RemoteLock:
                 replace=True,
             )
             self._last_renewed = time.monotonic()
-            return True
+            return LEASE_HELD
         except Exception as ex:
             sys.stderr.write(f"Warning: Failed to renew lock lease: {ex}\n")
             sys.stderr.flush()
-            return False
+            return LEASE_UNKNOWN
+
+    def renew(self) -> bool:
+        """True iff the lease is still held.  See renew_state() for the reason."""
+        return self.renew_state() == LEASE_HELD
+
+    def ownership_state(self) -> str:
+        """The outcome of the most recent renew()/verify_ownership().
+
+        One of LEASE_HELD / LEASE_LOST / LEASE_UNKNOWN; LEASE_UNKNOWN before any
+        check has run.
+        """
+        return getattr(self, "_last_ownership_state", LEASE_UNKNOWN)
 
     def maybe_renew(self, interval: float = 20.0) -> bool:
         """Renew the held lock lease if at least `interval` seconds have elapsed."""
@@ -424,10 +466,10 @@ class RemoteLock:
         Renewal reads the ticket back before rewriting it, so a lease that
         lapsed and was reaped by a new holder returns False here instead of
         being resurrected.  Callers must fence destructive steps (gc pack
-        deletion, push ref writes) on this result.
+        deletion, push ref writes) on this result; when it is False they should
+        read ownership_state() to tell a takeover from an unreadable ticket and
+        report the right one.
         """
-        if not self.acquired or not self._nonce:
-            return False
         return self.renew()
 
     def release(self) -> None:

@@ -14,7 +14,7 @@ from git_remote_seafile.config import RemoteConfig
 from git_remote_seafile.safety import SafetyError, check_preflight_safety
 from git_remote_seafile.git_util import GitError
 from git_remote_seafile.helper import RemoteHelper
-from git_remote_seafile.lock import RepositoryLockedError
+from git_remote_seafile.lock import LEASE_LOST, LEASE_UNKNOWN, RepositoryLockedError
 
 class TestRemoteHelper(unittest.TestCase):
     def test_capabilities(self):
@@ -404,17 +404,52 @@ class TestRemoteHelper(unittest.TestCase):
 
         mock_lock = MagicMock()
         mock_lock.__enter__.return_value = mock_lock
-        # Ownership verification fails right before ref writes
+        # Ownership verification fails right before ref writes, because another
+        # client took over the lease.
         mock_lock.verify_ownership.return_value = False
+        mock_lock.ownership_state.return_value = LEASE_LOST
 
         out = io.StringIO()
         err = io.StringIO()
         with patch("sys.stdout", out), patch("sys.stderr", err), patch("git_remote_seafile.helper.RemoteLock", return_value=mock_lock):
             h.cmd_push(["refs/heads/main:refs/heads/main"])
 
-        self.assertIn("error refs/heads/main lost lock ownership before updating refs", out.getvalue())
-        self.assertIn("Push error: lost lock ownership before updating refs", err.getvalue())
+        expected = "could not confirm lock ownership before updating refs (another client took over the lock)"
+        self.assertIn(f"error refs/heads/main {expected}", out.getvalue())
+        self.assertIn(f"Push error: {expected}", err.getvalue())
         # Ref was never uploaded to remote
+        h.client.upload_file.assert_not_called()
+
+    @patch("git_remote_seafile.helper.rev_parse", return_value="sha123")
+    @patch("git_remote_seafile.helper.is_ancestor", return_value=True)
+    @patch("git_remote_seafile.helper.get_objects_to_push", return_value=[])
+    def test_cmd_push_reports_unproven_ownership_distinctly(self, mock_objs, mock_ancestor, mock_rev):
+        """A transient read/write failure must not be reported as a takeover.
+
+        Both outcomes fence the ref write, but telling the user "another client
+        took over the lock" when the real cause was an unreadable ticket sends
+        them hunting for a competing push that never happened (D7).
+        """
+        h = RemoteHelper.__new__(RemoteHelper)
+        h.client = MagicMock()
+        h.repo_id = "repo1"
+        h.repo_path = "/git-repo"
+        h._refs_cache = {}
+
+        mock_lock = MagicMock()
+        mock_lock.__enter__.return_value = mock_lock
+        mock_lock.verify_ownership.return_value = False
+        mock_lock.ownership_state.return_value = LEASE_UNKNOWN
+
+        out = io.StringIO()
+        err = io.StringIO()
+        with patch("sys.stdout", out), patch("sys.stderr", err), patch("git_remote_seafile.helper.RemoteLock", return_value=mock_lock):
+            h.cmd_push(["refs/heads/main:refs/heads/main"])
+
+        output = out.getvalue()
+        self.assertIn("could not confirm lock ownership before updating refs", output)
+        self.assertIn("ownership is unproven", output)
+        self.assertNotIn("another client took over", output)
         h.client.upload_file.assert_not_called()
 
     @patch("git_remote_seafile.helper.rev_parse", return_value="sha123")
