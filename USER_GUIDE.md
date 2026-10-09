@@ -421,11 +421,13 @@ Remotes use the `seafile://` URL scheme:
 | :--- | :--- | :--- |
 | **Full URL** | `seafile://seafile.example.com/code/myproject` | Explicit server, library, and path |
 | **HTTPS scheme** | `seafile://https://seafile.example.com/code/myproject` | Fully qualified URL |
+| **Port** | `seafile://seafile.example.com:8080/code/myproject` | Server on a non-default port |
 | **Short URL** | `seafile://code/myproject` | Uses server from default configured account |
 | **No path** | `seafile://code` | Library with no path defaults to the `git-repo` subfolder — the same as `seafile://code/git-repo` |
 
 - **Library**: Name of the Seafile library (e.g. `code` or `Documents`) or the library UUID. **The library must exist on your Seafile server before pushing.** (Create it via the Seafile Web UI if you haven't already).
 - **Path**: Path inside the library where bare repository objects will reside. Omitting it is allowed and means `git-repo`, so `seafile://code` and `seafile://code/` are the same remote as `seafile://code/git-repo`; only a URL whose path reduces to nothing at all (the library root itself) is refused.
+- **Scheme and port**: When the host carries a port, the scheme follows it — `:80` means `http`, `:443` means `https`, and **any other port keeps its number and uses `https`**. So `seafile://seafile.example.com:8080/code/repo` talks to `https://seafile.example.com:8080`, and a plain-HTTP server on a non-standard port needs the explicit form: `seafile://http://seafile.example.com:8080/code/repo`. A port that is not a number is refused with `Invalid Seafile URL format`, naming the host it could not parse.
 
 ---
 

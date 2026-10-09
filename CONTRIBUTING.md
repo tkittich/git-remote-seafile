@@ -98,6 +98,67 @@ this repository fails the lint job.
 
 ---
 
+## Releasing
+
+**A release is a pushed tag.** There is no separate publish step: pushing a tag
+matching `v*` runs `.github/workflows/release.yml`, which runs the suite and
+ruff, checks that the tag agrees with the package version, builds the wheel and
+sdist, and creates the GitHub Release with those artifacts attached. The job
+builds the release body from `.github/release-notes/<tag>.md` when that file
+exists and falls back to GitHub's generated commit list when it does not — which
+is why the notes file is part of a release rather than an optional extra.
+
+### Before tagging
+
+1. **Bump the version in one place only.** `pyproject.toml` reads the version
+   dynamically (`dynamic = ["version"]` with `version = {attr =
+   "git_remote_seafile.__version__"}`), so `git_remote_seafile/__init__.py` is
+   the only file that names it. `tests/test_version_consistency.py` fails if a
+   version literal turns up anywhere else.
+
+2. **Add the changelog entry.** A `## [x.y.z] - YYYY-MM-DD` section in
+   `CHANGELOG.md`, plus its link in the reference block at the foot of the file:
+   `[x.y.z]: https://github.com/tkittich/git-remote-seafile/compare/v<previous>...v<x.y.z>`.
+   A missing link leaves that heading rendering as literal brackets. Move the
+   `[Unreleased]` link forward to the new tag at the same time.
+
+3. **Write the release notes.** `.github/release-notes/v<x.y.z>.md` *is* the
+   published release body, so it is a contract rather than a draft:
+
+   - the first line is `# v<x.y.z> - <summary>`, which becomes the release title;
+   - the body starts at `## What's Changed in v<x.y.z>`;
+   - the file ends with `---` followed by the
+     `**Full Changelog**: …/compare/v<previous>...v<x.y.z>` link.
+
+   `TestReleaseNotesFormat` checks that shape, and `TestEveryTagHasReleaseNotes`
+   fails the suite when a merged tag has no notes file — the gap that let
+   `v0.6.2` ship with a bare commit list. Only the compare link's *base* tag has
+   to exist, so the notes file can be committed before the tag is cut.
+
+4. **Run the suite and the linter locally** (see above). The release job runs
+   both again; a red tag is a public red.
+
+### Tagging
+
+```bash
+git tag -a v<x.y.z> -m "v<x.y.z>"
+git push origin v<x.y.z>
+```
+
+The tag is the whole release. The workflow compares it against the package
+version (`v$(__version__) == $GITHUB_REF_NAME`) and stops before building
+anything if they disagree, so a tag that does not match `__init__.py` fails
+loudly instead of publishing a mislabelled artifact.
+
+### Distribution
+
+Releases ship **wheel and sdist assets on GitHub Releases only**. PyPI
+publication is deliberately deferred to the official Seafile repository once
+this code is merged upstream, so the workflow carries no PyPI job to maintain or
+misfire.
+
+---
+
 ## Guidelines for Pull Requests
 
 1. **Keep dependencies minimal**:

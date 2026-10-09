@@ -5,7 +5,30 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.7.1] - 2026-10-10
+
+Review-closure patch: every finding from the October 2026 review cycle is closed, including two `UnboundLocalError` crashes in the commands a user reaches for when something is already wrong, and remote `gc` being broken outright on SHA-256 repositories.
+
+### Fixed
+
+- **`git-remote-seafile test` and `unlock` no longer crash on failure.** Both named `SafetyError` / `RepositoryLockedError` in an `except` clause whose `from … import` ran *inside* the `try` but after the first statement that can raise, so any earlier failure — a bad URL, missing credentials, the network — died with `UnboundLocalError` instead of the intended message. The names are now imported at module scope. These are precisely the two commands a user runs when the remote is already misbehaving, which is what made the crash worth a patch release.
+- **Remote `gc` works on SHA-256 repositories.** The scratch repository was initialised SHA-1, so `index-pack` rejected the 64-hex packs and `repack` exited 128: `gc` was unusable on a SHA-256 remote, and with `seafile.autogc` on it retried forever while the pack directory grew without bound. The fix needs **both** halves — initialise the scratch repo with the remote's object format, *and* run `verify-pack`/`index-pack` with `-C <bare-repo>` so they inherit it (they run with `GIT_DIR` scrubbed). Either alone still fails.
+- **Re-installing a pack no longer dies on Windows.** git writes pack and index files read-only (`0444`), and `os.replace` onto a read-only *destination* fails with `WinError 5` on Windows (POSIX only needs directory write permission). Both targets are now made writable before publishing.
+- **`seafile://host:80/…` keeps its port and its scheme.** The port was dropped and the scheme forced to HTTPS, so `seafile://host:80/lib/repo` became `https://host` — redirecting to `:443` and disagreeing with the explicit `seafile://http://host:80/…` form. A port now decides the scheme: `:80` is `http`, `:443` is `https`, and any other port keeps its number over `https`.
+- **A non-numeric port fails cleanly.** `seafile://my:lib/a/b` escaped as a raw `ValueError: Port could not be cast to integer value as 'lib'` — and, through the `test`/`unlock` bug above, as a traceback. It is now `Invalid Seafile URL format: invalid port 'lib' in host 'my:lib'`, naming the host it could not parse.
+- **`unlock --force <url>` reads the URL, not the flag.** A leading flag was taken as the URL, producing a confusing "library not found: '--force'". Flags are now skipped before the URL is read, as in every other subcommand.
+- **Library-typo suggestions can actually fire.** `RemoteHelper.__init__` resolved the repo id first and raised, so `check_preflight_safety`'s fuzzy-match block was unreachable and its unit test passed vacuously. The suggestion is now built where the miss is detected (`SeafileClient.get_repo_id`, from the listing it already fetched), which also removes a duplicate repo listing request.
+- **A malformed `~/.git-seafile.json` and an unreadable `seafile-ignore.txt` now warn** on stderr instead of failing silently — the two `except Exception: pass` sites that could genuinely confuse.
+- **Odd server responses are diagnosed rather than crashed on.** Three `list_dir` iterations lacked the `isinstance(entry, dict)` guard their two sibling call sites already had, turning a non-array response into `AttributeError`/`KeyError`; they now raise a describable error.
+- **"Lost lock ownership" no longer means two different things.** `verify_ownership()` conflated "the lease lapsed and another client took over" with "the renewal upload failed transiently"; a transient failure no longer aborts the push with the takeover message.
+
+### Changed
+
+- **`acquire()` settles the ticket queue before claiming the lock.** A partial directory view could let two clients both read themselves as the winner. A short settlement window — new `seafile.locksettle`, default `1` — re-scans before committing. The cost is real: roughly 0.85 s per push per unit, so the README's and USER_GUIDE's "<1 s push" claims were corrected rather than left to mislead.
+- **Dead branches removed.** `get_repo_id`'s cache re-validation could never run (an early return guaranteed the cache lookup was `None`), and `_detect_remote_object_format`'s pack-inspection fallback was unreachable (the loop over validated 40/64-hex SHAs always returned on its first element).
+- **`refs.__all__` now exports `is_valid_ref_name`**, which `helper.py` imports — cosmetic, but it tripped static analysis.
+- **`install_packfile` passes `--git-dir`** to its `verify-pack`/`index-pack` calls, matching `filter_existing_objects`.
+- **`tools/seafile_doctor.py` uses the public `open_live_sqlite_ro`** context manager instead of the private `_copy_with_sidecars`; it previously closed its connection by hand at two of three exit paths.
 
 ### Removed
 
@@ -13,7 +36,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Documentation
 
-- README and DESIGN now state the distribution decision explicitly: GitHub Release assets here, PyPI via the official Seafile repository upstream.
+- **`USER_GUIDE` §7 documents the URL scheme/port rule** behind the `seafile://host:80/…` fix, and the no-path form (`seafile://code` → the library root's `git-repo` subfolder) is documented for the first time.
+- **`USER_GUIDE` §12 and §14 corrected.** The `unlock` example output now matches the real string (`Unlocked repository at seafile://…`), and the troubleshooting table no longer quotes a `fatal: remote locked by …` message that appears nowhere in the code.
+- **`DESIGN` §7.1** now says ticket ordering prefers `order_ts` and falls back to `mtime`, matching §7.10 and the implementation.
+- **`PROPOSALS.md`** no longer describes the `.git-lock.json` lock removed in v0.7.0, and spells the ignore file `seafile-ignore.txt`.
+- README and DESIGN state the distribution decision explicitly: GitHub Release assets here, PyPI via the official Seafile repository upstream.
+- **`CONTRIBUTING.md` gains a "Releasing" section** describing the tag-push process, which previously existed only in the workflow and its guards.
+
+### Tests & Tooling
+
+- **`v0.6.2` release notes restored.** The tag existed with no curated notes — the single gap in the v0.3.0-and-up series, invisible from both ends. A new guard fails the suite when a merged tag has no notes file, so it cannot reopen silently.
+- **`gc.py` is fully covered** (76% → 100%) by 21 in-process tests for the recovery and fail-closed paths: truncated- and corrupt-index regeneration, the oversized-index abort, both lock-fence fallbacks, the verbose summary, and every refusal (no refs readable, failed repack, repack produced nothing, untrusted pack name, empty ref SHA). The e2e harness had been hiding them — it runs the helper through `subprocess.run`, which the parent coverage run never records.
+- `install_packfile`'s staged-path branches, the `python -m` entry point, and `lock.acquire()`'s retry and failure branches are now tested; the gc test names the deleted packs instead of asserting a bare count.
+- The Seafile ignore-file name is guarded in the docs-consistency suite, which must now name exactly one file and spell it canonically.
+- Suite: 383 → 454 tests, all green; docs guards 7 → 9.
 
 ## [0.7.0] - 2026-10-09
 
@@ -668,7 +704,13 @@ Data-loss and silent-failure fixes, and the Python floor raised to 3.9.
   with zero-config desktop-client token discovery, distributed locking, remote
   packfile compaction, and a Git LFS custom transfer agent.
 
-[Unreleased]: https://github.com/tkittich/git-remote-seafile/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/tkittich/git-remote-seafile/compare/v0.7.1...HEAD
+[0.7.1]: https://github.com/tkittich/git-remote-seafile/compare/v0.7.0...v0.7.1
+[0.7.0]: https://github.com/tkittich/git-remote-seafile/compare/v0.6.4...v0.7.0
+[0.6.4]: https://github.com/tkittich/git-remote-seafile/compare/v0.6.3...v0.6.4
+[0.6.3]: https://github.com/tkittich/git-remote-seafile/compare/v0.6.2...v0.6.3
+[0.6.2]: https://github.com/tkittich/git-remote-seafile/compare/v0.6.1...v0.6.2
+[0.6.1]: https://github.com/tkittich/git-remote-seafile/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/tkittich/git-remote-seafile/compare/v0.5.4...v0.6.0
 [0.5.4]: https://github.com/tkittich/git-remote-seafile/compare/v0.5.3...v0.5.4
 [0.5.3]: https://github.com/tkittich/git-remote-seafile/compare/v0.5.2...v0.5.3
