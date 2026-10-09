@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.3] - 2026-10-09
+
+Sound lease-renewal fencing for the distributed lock, lease renewal during gc pack downloads, non-zero `gc` exit on failed compaction, acquisition-time ticket ordering, and deletion-failure reporting.
+
+### Fixed & Hardened
+
+- **Lease Renewal Verifies Ownership Before Rewriting (fencing soundness).** In `lock.py:renew`, read the holder's ticket back before overwriting it: a ticket that is gone, unreadable, or carries a foreign nonce fails the renewal instead of resurrecting it. Previously `renew()` blindly re-uploaded the ticket and the legacy `.git-lock.json` mirror, so after a lease lapse and takeover by another client, `verify_ownership()` returned `true` for a lock the caller no longer held — letting gc delete remote packfiles (and push write refs) inside another client's push. The takeover is now detected and refused, making the pre-deletion fence in gc and the pre-ref-write fence in push sound. Covered by a new stateful-store takeover test.
+- **Lease Renewal During GC Pack Downloads.** In `gc.py:compact_repository`, both `download_file_to` calls now receive a progress callback wired to `lock.maybe_renew`, so the lease is refreshed during multi-gigabyte pack downloads — previously the longest locked phase ran with no renewal at all.
+- **`git-remote-seafile gc` Exits Non-Zero on Failed Compaction.** In `cli.py`, a `status: "error"` result (download failure, size mismatch, invalid pack name) now exits 1; `"ok"` and `"skipped"` still exit 0. Scripts and CI can finally tell an aborted compaction from a skipped one.
+- **Ticket Ordering Uses the Recorded Acquisition Time.** Tickets now carry `order_ts` (captured once at acquire, preserved by renewal) and ordering prefers it when all tickets in a scan carry it. Previously the order key was the directory `mtime`, which renewal bumps — every lease refresh moved the healthy holder to the back of the queue, letting a later waiter win the scan. Scans mixing ticket formats fall back to mtime for all of them, preserving behavior against older clients (whose legacy mirror gates contention regardless).
+- **GC Reports Deletions It Could Not Perform.** `compact_repository` collects `delete_entry` failures instead of ignoring them, warns on stderr, and returns `deleted_packs` / `deletion_failures` in the result dict.
+- **`gc` Subcommand Resolves Config Through `RemoteConfig`.** The manual `gc` CLI path now passes `config=RemoteConfig.load()` to `compact_repository`, matching the push path (v0.6.2 wired only auto-compaction).
+- **Env Credential Mismatch No Longer Silent.** When `SEAFILE_SERVER`/`SEAFILE_TOKEN` name a different server than the remote URL, the `SeafileAuthError` now says so instead of reading as "no credentials exist".
+
+### Changed & Refactored
+
+- **Public Directory-Cache Eviction.** `SeafileClient.evict_known_dir()` replaces the helper's reach into the private `_known_dirs` set after pruning empty ref-parent directories.
+- **Server Time via Public API.** `RemoteLock._get_server_time` uses `SeafileClient.get_server_time()` instead of reading the private `_server_time_offset` attribute.
+- **Dead Code Removal.** Dropped the unused `PACK_NAME_RE` imports and `_PACK_NAME_RE` aliases from `helper.py` and `gc.py` (both modules validate via `is_valid_pack_name`).
+- **Documentation Accuracy.** USER_GUIDE/DESIGN now describe lease renewal as covering uploads *and* downloads, note the un-renewed local compute phases and the fence that covers them, scope the Trap-1 clone guard to the directory the clone is run from, and show the real 8-hex hash in the `lock-status` owner example.
+
 ## [0.6.2] - 2026-10-09
 
 URL scheme case-insensitivity at the parser level, ref-name `@` conformance correction, real production wiring of `RemoteConfig`, installer-compat hardening without swallowed errors, and loud failure for unknown helper commands.
