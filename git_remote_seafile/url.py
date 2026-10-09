@@ -35,10 +35,6 @@ class SeafileURL:
     repo_path: str
     raw_url: str
 
-    def to_tuple(self) -> tuple[str | None, str, str]:
-        """Return (server_url, library_name, repo_path) for backwards compatibility."""
-        return self.server_url, self.library_name, self.repo_path
-
 
 def parse_seafile_url(url: str) -> SeafileURL:
     """Parse a seafile:// URL into a structured SeafileURL dataclass.

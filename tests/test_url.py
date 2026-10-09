@@ -15,7 +15,6 @@ class TestUrlParsingModule(unittest.TestCase):
         self.assertIsNone(res.server_url)
         self.assertEqual(res.library_name, "my.library")
         self.assertEqual(res.repo_path, "/repo")
-        self.assertEqual(res.to_tuple(), (None, "my.library", "/repo"))
 
     def test_host_with_library_and_path(self):
         res = parse_seafile_url("seafile://seafile.example.com/code/myproject")
@@ -33,6 +32,8 @@ class TestUrlParsingModule(unittest.TestCase):
         with self.assertRaises(ValueError) as ctx:
             parse_seafile_url("seafile://seafile.example.com")
         self.assertIn("no library", str(ctx.exception))
+        # The error must say how to write it instead.
+        self.assertIn("seafile://https://seafile.example.com/", str(ctx.exception))
 
     def test_default_repo_path(self):
         res = parse_seafile_url("seafile://Documents/")
@@ -67,6 +68,11 @@ class TestUrlParsingModule(unittest.TestCase):
         self.assertEqual(res.library_name, "My Library")
         self.assertEqual(res.repo_path, "/my repo")
 
+        res2 = parse_seafile_url("seafile://https://seafile.example.com/Team%20Docs/nested%20repo/sub")
+        self.assertEqual(res2.server_url, "https://seafile.example.com")
+        self.assertEqual(res2.library_name, "Team Docs")
+        self.assertEqual(res2.repo_path, "/nested repo/sub")
+
     def test_path_traversal_rejected(self):
         urls = (
             "seafile://my-lib/../secret",
@@ -85,6 +91,22 @@ class TestUrlParsingModule(unittest.TestCase):
         self.assertEqual(res.server_url, "https://cloud.example.com")
         self.assertEqual(res.library_name, "code")
         self.assertEqual(res.repo_path, "/repo")
+
+        # Non-default ports are kept; a trailing slash does not reach the path.
+        res2 = parse_seafile_url("seafile://example.com:8443/code/team/repo")
+        self.assertEqual(res2.server_url, "https://example.com:8443")
+        self.assertEqual(res2.library_name, "code")
+        self.assertEqual(res2.repo_path, "/team/repo")
+
+        res3 = parse_seafile_url("seafile://http://internal.LAN:80/docs/repo")
+        self.assertEqual(res3.server_url, "http://internal.lan")
+        self.assertEqual(res3.library_name, "docs")
+        self.assertEqual(res3.repo_path, "/repo")
+
+        res4 = parse_seafile_url("seafile://https://cloud.internal.org/library-name/sub/project/")
+        self.assertEqual(res4.server_url, "https://cloud.internal.org")
+        self.assertEqual(res4.library_name, "library-name")
+        self.assertEqual(res4.repo_path, "/sub/project")
 
     def test_empty_host_explicit_scheme_rejected(self):
         for url in ("seafile://https:///lib/repo", "seafile://http:///lib/repo"):

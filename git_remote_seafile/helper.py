@@ -54,10 +54,6 @@ class RemoteHelper:
         self.repo_id = self.client.get_repo_id(self.library_name)
         self._refs_cache: dict[str, str] = {}  # refname -> sha1
 
-    def _parse_url(self, url: str) -> tuple[str | None, str, str]:
-        """Parse a seafile:// URL into (server_url, library_name, repo_path)."""
-        return parse_seafile_url(url).to_tuple()
-
     def _full_path(self, rel_path: str) -> str:
         """Combine repo_path with relative subpath."""
         clean_rel = rel_path.strip("/")

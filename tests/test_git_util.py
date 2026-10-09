@@ -327,3 +327,20 @@ class TestHexShaValidation(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestGitConfig(unittest.TestCase):
+    def test_config_readers(self):
+        with patch("git_remote_seafile.git_util.get_git_config", return_value="true"):
+            self.assertTrue(get_git_config_bool("seafile.autogc"))
+
+        with patch("git_remote_seafile.git_util.get_git_config", return_value="false"):
+            self.assertFalse(get_git_config_bool("seafile.autogc"))
+
+        with patch("git_remote_seafile.git_util.get_git_config", return_value=None):
+            self.assertFalse(get_git_config_bool("seafile.autogc", default=False))
+            self.assertEqual(get_git_config_int("seafile.gcthreshold", default=25), 25)
+
+        with patch("git_remote_seafile.git_util.get_git_config", return_value="35"):
+            self.assertEqual(get_git_config_int("seafile.gcthreshold", default=20), 35)
+
