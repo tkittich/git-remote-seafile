@@ -356,8 +356,18 @@ class SeafileClient:
 
         if not self.server_url or (require_token and not self.token):
             if self.server_url:
+                # A token exported for a *different* server is deliberately not
+                # sent here -- but silence about it reads as "no credentials
+                # exist", so say why the environment was skipped.
+                env_skipped = ""
+                if env_server and env_token and _normalize_netloc(env_server) != _normalize_netloc(self.server_url):
+                    env_skipped = (
+                        f" (SEAFILE_SERVER names {_normalize_netloc(env_server)}, so "
+                        "SEAFILE_SERVER/SEAFILE_TOKEN were not used for this server; "
+                        "they are only sent to the server they name)"
+                    )
                 raise SeafileAuthError(
-                    f"Could not find Seafile credentials for '{self.server_url}'. "
+                    f"Could not find Seafile credentials for '{self.server_url}'{env_skipped}. "
                     "Set SEAFILE_TOKEN or configure ~/.git-seafile.json"
                 )
             if require_token:
@@ -558,6 +568,11 @@ class SeafileClient:
             self._known_dirs.add((repo_id, clean_path))
             return True
         return False
+
+    def evict_known_dir(self, repo_id: str, dir_path: str) -> None:
+        """Forget a cached directory (the caller deleted it on the server)."""
+        clean_path = ("/" + dir_path.strip("/")).rstrip("/")
+        self._known_dirs.discard((repo_id, clean_path))
 
     def mkdir_p(self, repo_id: str, dir_path: str) -> bool:
         """Recursively ensure a directory path exists without duplicate creation."""

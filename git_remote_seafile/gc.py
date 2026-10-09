@@ -12,10 +12,8 @@ from .client import SeafileClient
 from .config import RemoteConfig
 from .git_util import clean_git_env
 from .lock import RemoteLock
-from .packs import PACK_NAME_RE, is_valid_pack_name, MAX_IN_MEMORY_PACK_BYTES
+from .packs import is_valid_pack_name, MAX_IN_MEMORY_PACK_BYTES
 from .refs import REF_NAMESPACES, iter_refs
-
-_PACK_NAME_RE = PACK_NAME_RE
 
 
 def describe_size_delta(saved_kb: int) -> str:
@@ -53,6 +51,12 @@ def compact_repository(
             lock.maybe_renew(20.0)
 
         def on_upload_progress(transferred: int, total: int) -> None:
+            maybe_renew()
+
+        def on_download_progress(transferred: int, total: int) -> None:
+            # A multi-gigabyte pack download is the longest phase gc holds the
+            # lock across; without this callback the lease can lapse mid-
+            # download and another client may lawfully take over.
             maybe_renew()
 
         # 1. Discover all remote packfiles
@@ -116,7 +120,10 @@ def compact_repository(
                 downloaded = False
                 if hasattr(client, "download_file_to"):
                     try:
-                        downloaded = bool(client.download_file_to(repo_id, f"{pack_dir}/{pack_name}", pack_file)) and pack_file.is_file()
+                        downloaded = bool(client.download_file_to(
+                            repo_id, f"{pack_dir}/{pack_name}", pack_file,
+                            progress_callback=on_download_progress,
+                        )) and pack_file.is_file()
                     except Exception as exc:
                         sys.stderr.write(f"Warning: streaming download of {pack_name} failed: {exc}\n")
                         downloaded = False
@@ -146,7 +153,10 @@ def compact_repository(
                 idx_downloaded = False
                 if hasattr(client, "download_file_to"):
                     try:
-                        idx_downloaded = bool(client.download_file_to(repo_id, f"{pack_dir}/{idx_name}", idx_file)) and idx_file.is_file()
+                        idx_downloaded = bool(client.download_file_to(
+                            repo_id, f"{pack_dir}/{idx_name}", idx_file,
+                            progress_callback=on_download_progress,
+                        )) and idx_file.is_file()
                     except Exception as exc:
                         sys.stderr.write(f"Warning: streaming download of {idx_name} failed: {exc}\n")
                         idx_downloaded = False
@@ -267,13 +277,20 @@ def compact_repository(
                 )
 
             deleted_count = 0
+            failed_deletions: list[str] = []
             for old_p in downloaded_packs:
                 maybe_renew()
                 if old_p not in new_pack_names:
                     old_idx = old_p.removesuffix(".pack") + ".idx"
-                    client.delete_entry(repo_id, f"{pack_dir}/{old_p}")
-                    client.delete_entry(repo_id, f"{pack_dir}/{old_idx}")
-                    deleted_count += 1
+                    if client.delete_entry(repo_id, f"{pack_dir}/{old_p}"):
+                        deleted_count += 1
+                    else:
+                        failed_deletions.append(old_p)
+                    if not client.delete_entry(repo_id, f"{pack_dir}/{old_idx}"):
+                        # An orphaned .idx is invisible to fetch (which keys on
+                        # .pack names) but is clutter; name it so a later gc or
+                        # a manual cleanup can remove it.
+                        failed_deletions.append(old_idx)
 
             new_total_bytes = sum(np.stat().st_size for np in new_packs)
             # Signed on purpose: compaction can grow a repository, and the
@@ -286,10 +303,19 @@ def compact_repository(
                     f"Compaction complete: consolidated {len(old_packs)} packfiles into {len(new_packs)} "
                     f"({describe_size_delta(saved_kb)}).\n"
                 )
+                if failed_deletions:
+                    sys.stderr.write(
+                        "Warning: could not delete obsolete remote files: "
+                        + ", ".join(failed_deletions)
+                        + ". They are unreferenced and can be removed by a later gc or by hand.\n"
+                    )
+                sys.stderr.flush()
 
             return {
                 "status": "ok",
                 "old_packs": len(old_packs),
                 "new_packs": len(new_packs),
                 "saved_kb": saved_kb,
+                "deleted_packs": deleted_count,
+                "deletion_failures": failed_deletions,
             }

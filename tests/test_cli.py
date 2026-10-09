@@ -6,7 +6,7 @@ import io
 import sys
 import unittest
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import ANY, MagicMock, patch
 
 from git_remote_seafile.cli import main
 from git_remote_seafile.client import SeafileAuthError
@@ -188,6 +188,26 @@ class TestCLITestsAndGC(unittest.TestCase):
                 self.assertEqual(code, 0)
                 self.assertIn("Only 1 packfile present.", mock_out.getvalue())
 
+    @patch("git_remote_seafile.cli.RemoteHelper")
+    @patch("git_remote_seafile.gc.compact_repository")
+    def test_cli_gc_error_status_exits_nonzero(self, mock_gc, mock_helper_cls):
+        """An aborted compaction is a failure; scripts gate on the exit code."""
+        mock_helper = MagicMock()
+        mock_helper_cls.return_value = mock_helper
+        mock_helper.client = MagicMock()
+        mock_helper.repo_id = "repo1"
+        mock_helper.repo_path = "repo"
+
+        mock_gc.return_value = {
+            "status": "error",
+            "message": "Packfile pack-1.pack is listed at /repo/objects/pack but could not be downloaded",
+        }
+        with patch.object(sys, "argv", ["git-remote-seafile", "gc", "seafile://code/repo"]):
+            with patch("sys.stdout", new_callable=io.StringIO) as mock_out:
+                code = main()
+        self.assertEqual(code, 1)
+        self.assertIn("could not be downloaded", mock_out.getvalue())
+
 
 class TestCLISetHeadAndLFSTransfer(unittest.TestCase):
     @patch("git_remote_seafile.cli.RemoteHelper")
@@ -238,7 +258,9 @@ class TestCLISetHeadAndLFSTransfer(unittest.TestCase):
             with patch.object(sys, "argv", ["git-remote-seafile", "gc", "seafile://code/repo", "--min-packs", "5"]):
                 code = main()
                 self.assertEqual(code, 0)
-                mock_compact.assert_called_with(mock_helper.client, "repo1", "/git-repo", min_packs=5)
+                mock_compact.assert_called_with(
+                    mock_helper.client, "repo1", "/git-repo", min_packs=5, config=ANY
+                )
 
             # Invalid non-integer
             with patch.object(sys, "argv", ["git-remote-seafile", "gc", "seafile://code/repo", "--min-packs", "invalid"]):
@@ -246,7 +268,9 @@ class TestCLISetHeadAndLFSTransfer(unittest.TestCase):
                     code = main()
                     self.assertEqual(code, 0)
                     self.assertIn("invalid --min-packs value", mock_err.getvalue())
-                    mock_compact.assert_called_with(mock_helper.client, "repo1", "/git-repo", min_packs=2)
+                    mock_compact.assert_called_with(
+                        mock_helper.client, "repo1", "/git-repo", min_packs=2, config=ANY
+                    )
 
             # Invalid non-positive integer
             with patch.object(sys, "argv", ["git-remote-seafile", "gc", "seafile://code/repo", "--min-packs", "0"]):
@@ -254,7 +278,9 @@ class TestCLISetHeadAndLFSTransfer(unittest.TestCase):
                     code = main()
                     self.assertEqual(code, 0)
                     self.assertIn("--min-packs must be a positive integer", mock_err.getvalue())
-                    mock_compact.assert_called_with(mock_helper.client, "repo1", "/git-repo", min_packs=2)
+                    mock_compact.assert_called_with(
+                        mock_helper.client, "repo1", "/git-repo", min_packs=2, config=ANY
+                    )
 
             # Missing integer value
             with patch.object(sys, "argv", ["git-remote-seafile", "gc", "seafile://code/repo", "--min-packs"]):
@@ -262,7 +288,9 @@ class TestCLISetHeadAndLFSTransfer(unittest.TestCase):
                     code = main()
                     self.assertEqual(code, 0)
                     self.assertIn("--min-packs requires an integer value", mock_err.getvalue())
-                    mock_compact.assert_called_with(mock_helper.client, "repo1", "/git-repo", min_packs=2)
+                    mock_compact.assert_called_with(
+                        mock_helper.client, "repo1", "/git-repo", min_packs=2, config=ANY
+                    )
 
     @patch("git_remote_seafile.cli.RemoteHelper")
     @patch("git_remote_seafile.lfs.LFSTransferAgent")

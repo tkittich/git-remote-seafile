@@ -161,16 +161,28 @@ def main() -> int:
             else:
                 sys.stderr.write(f"Warning: --min-packs requires an integer value. Using default ({min_packs}).\n")
         try:
+            from .config import RemoteConfig
             helper = RemoteHelper("gc", url)
             from .gc import compact_repository, describe_size_delta
-            res = compact_repository(helper.client, helper.repo_id, helper.repo_path, min_packs=min_packs)
+            res = compact_repository(
+                helper.client,
+                helper.repo_id,
+                helper.repo_path,
+                min_packs=min_packs,
+                config=RemoteConfig.load(),
+            )
             if res.get("status") == "ok":
                 print(
                     f"Compacted {res['old_packs']} packfiles into {res['new_packs']} "
                     f"({describe_size_delta(res['saved_kb'])})."
                 )
-            else:
-                print(res.get("message", "Compaction skipped."))
+                return 0
+            if res.get("status") == "error":
+                # An aborted compaction is a real failure (download error,
+                # size mismatch, invalid pack name); scripts must see it.
+                print(res.get("message", "Compaction failed."))
+                return 1
+            print(res.get("message", "Compaction skipped."))
             return 0
         except Exception as ex:
             print(f"Compaction failed: {ex}")

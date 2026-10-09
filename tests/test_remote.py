@@ -572,7 +572,6 @@ class TestRemoteHelper(unittest.TestCase):
         h.repo_id = "repo1"
         h.repo_path = "/git-repo"
         h._refs_cache = {"refs/heads/feature/auth": "sha123"}
-        h.client._known_dirs = {("repo1", "/git-repo/refs/heads/feature")}
         h.client.delete_entry.return_value = True
 
         def fake_list(repo_id, path):
@@ -587,7 +586,9 @@ class TestRemoteHelper(unittest.TestCase):
 
         self.assertIn("ok refs/heads/feature/auth", out.getvalue())
         h.client.delete_entry.assert_any_call("repo1", "/git-repo/refs/heads/feature")
-        self.assertNotIn(("repo1", "/git-repo/refs/heads/feature"), h.client._known_dirs)
+        # The directory cache must forget the deleted path (public API), or a
+        # future D/F ref conflict can never be recreated.
+        h.client.evict_known_dir.assert_called_once_with("repo1", "/git-repo/refs/heads/feature")
 
     @patch("git_remote_seafile.helper.rev_parse", return_value="sha123")
     @patch("git_remote_seafile.helper.get_objects_to_push", return_value=["obj1"])
@@ -738,6 +739,66 @@ class TestRemoteHelper(unittest.TestCase):
         with patch("sys.stdout", out), patch("git_remote_seafile.helper.RemoteLock"):
             h.cmd_push([":refs/heads/feature"])
         self.assertIn("error refs/heads/feature Delete failed", out.getvalue())
+
+
+class _SharedLockStore:
+    """Stateful stand-in for the Seafile file API shared by several lock clients.
+
+    The MagicMock-based lock tests configure per-path return values up front,
+    which cannot express a *sequence* of events (acquire, lapse, takeover).
+    This stores real bytes keyed by path so multiple RemoteLock instances see
+    one consistent remote.
+    """
+
+    def __init__(self):
+        self.files: dict[str, bytes] = {}
+        self.mtime_override: dict[str, int] = {}
+
+    @staticmethod
+    def _norm(path: str) -> str:
+        return "/" + path.strip("/")
+
+    def upload(self, repo_id, parent, filename, content, replace=True, progress_callback=None):
+        self.files[self._norm(f"{parent}/{filename}")] = bytes(content)
+        return True
+
+    def get_text(self, repo_id, path):
+        data = self.files.get(self._norm(path))
+        return data.decode("utf-8") if data is not None else None
+
+    def delete(self, repo_id, path):
+        return self.files.pop(self._norm(path), None) is not None
+
+    def list_dir(self, repo_id, path):
+        prefix = self._norm(path).rstrip("/") + "/"
+        out = []
+        for key in sorted(self.files):
+            if key.startswith(prefix):
+                name = key[len(prefix):]
+                out.append({
+                    "type": "file",
+                    "name": name,
+                    "mtime": self.mtime_override.get(key, int(time.time())),
+                })
+        return out
+
+    def expire_all(self, seconds: float) -> None:
+        """Age every lock artifact past its lease, as if time simply passed."""
+        for key in list(self.files):
+            if ".git-lock" in key:
+                payload = json.loads(self.files[key])
+                payload["timestamp"] = payload.get("timestamp", time.time()) - seconds
+                payload["order_ts"] = payload.get("order_ts", time.time()) - seconds
+                self.files[key] = json.dumps(payload).encode("utf-8")
+
+    def client(self, token: str) -> MagicMock:
+        c = MagicMock()
+        c.token = token
+        c.upload_file.side_effect = self.upload
+        c.get_file_text.side_effect = self.get_text
+        c.delete_entry.side_effect = self.delete
+        c.list_dir.side_effect = self.list_dir
+        return c
 
 
 class TestConcurrencyAndLocking(unittest.TestCase):
@@ -1103,6 +1164,70 @@ class TestConcurrencyAndLocking(unittest.TestCase):
             lock.acquire()
         self.assertIn("locked by 'alice'", str(ctx.exception))
 
+    def test_ticket_based_ordering_is_not_mtime_based_for_modern_tickets(self):
+        """All-order_ts tickets order by acquisition time even when mtimes lie.
+
+        renew() rewrites the ticket file, so the holder's mtime is always the
+        newest; ordering on mtime would let a later waiter win the scan while
+        the holder is still active.  The holder here renewed last (newest
+        mtime) but acquired first (earliest order_ts) and must win.
+        """
+        store = _SharedLockStore()
+        now = int(time.time())
+        store.files["/path/.git-lock.d/holder-nonce.json"] = json.dumps({
+            "owner": "holder", "machine": "nodeA", "nonce": "holder-nonce",
+            "timestamp": float(now - 300), "order_ts": float(now - 300),
+            "lease": 600, "pid": 111,
+        }).encode("utf-8")
+        store.files["/path/.git-lock.d/waiter-nonce.json"] = json.dumps({
+            "owner": "waiter", "machine": "nodeB", "nonce": "waiter-nonce",
+            "timestamp": float(now - 30), "order_ts": float(now - 30),
+            "lease": 600, "pid": 222,
+        }).encode("utf-8")
+        # The holder renewed just now; the waiter's ticket is older on disk.
+        store.mtime_override["/path/.git-lock.d/holder-nonce.json"] = now
+        store.mtime_override["/path/.git-lock.d/waiter-nonce.json"] = now - 200
+
+        lock = RemoteLock(store.client("token-x"), "repo1", "/path", timeout=0, lease=600)
+        tickets = lock._scan_tickets(float(now), reap=False)
+        tickets.sort(key=lambda t: t.get("_order_key", (0, 0, "")))
+        self.assertEqual(tickets[0]["nonce"], "holder-nonce")
+
+    def test_verify_ownership_fails_after_lease_lapse_and_takeover(self):
+        """The N-4 fence must reject a holder whose ticket was reaped by a new owner.
+
+        renew() used to re-upload the ticket blindly: after A's lease lapsed
+        and B reaped it and took over, A's verify_ownership() resurrected the
+        ticket (and overwrote B's legacy mirror) and returned True -- so gc
+        would have gone on to delete remote packfiles inside B's push.
+        """
+        store = _SharedLockStore()
+        a = RemoteLock(store.client("token-A"), "repo1", "/path", timeout=5, lease=60)
+        a.acquire()
+        self.assertTrue(a.acquired)
+
+        # A stops renewing; every lock artifact ages past its lease.
+        store.expire_all(120)
+
+        # B arrives, reaps A's expired ticket, and acquires.
+        b = RemoteLock(store.client("token-B"), "repo1", "/path", timeout=5, lease=60)
+        err = io.StringIO()
+        with patch("sys.stderr", err):
+            b.acquire()
+        self.assertTrue(b.acquired)
+        self.assertNotIn(
+            f"/path/.git-lock.d/{a._nonce}.json",
+            store.files,
+            "B must have reaped A's expired ticket",
+        )
+
+        # A resumes and runs the fence before any destructive step.
+        with patch("sys.stderr", io.StringIO()):
+            a_ok = a.verify_ownership()
+        self.assertFalse(a_ok)
+        # A's failed renewal must not have touched B's legacy mirror.
+        self.assertEqual(json.loads(store.files["/path/.git-lock.json"])["nonce"], b._nonce)
+
     def test_lock_lease_renew(self):
         """Lease renewal updates timestamps on both ticket and legacy lock."""
         mock_client = MagicMock()
@@ -1111,11 +1236,27 @@ class TestConcurrencyAndLocking(unittest.TestCase):
 
         lock = RemoteLock(mock_client, "repo1", "/path", timeout=5, lease=60)
         lock.acquire()
+        # renew() reads the ticket back before rewriting it (the takeover
+        # fence), so the client must serve what acquire() uploaded.
+        mock_client.get_file_text.return_value = mock_client.upload_file.call_args[0][3].decode("utf-8")
         upload_count_before = mock_client.upload_file.call_count
 
         res = lock.renew()
         self.assertTrue(res)
         self.assertEqual(mock_client.upload_file.call_count, upload_count_before + 2)
+
+    def test_renew_fails_when_the_ticket_is_gone(self):
+        """A missing ticket means the lease lapsed and was reaped; renew must fail."""
+        mock_client = MagicMock()
+        mock_client.token = "token123"
+        mock_client.get_file_text.return_value = None
+
+        lock = RemoteLock(mock_client, "repo1", "/path", timeout=5, lease=60)
+        lock.acquire()
+        err = io.StringIO()
+        with patch("sys.stderr", err):
+            self.assertFalse(lock.renew())
+        self.assertIn("Lock ticket is gone", err.getvalue())
 
     def test_remote_lock_maybe_renew(self):
         """maybe_renew only triggers renew when interval has passed."""
@@ -1125,6 +1266,7 @@ class TestConcurrencyAndLocking(unittest.TestCase):
 
         lock = RemoteLock(mock_client, "repo1", "/path", timeout=5, lease=60)
         lock.acquire()
+        mock_client.get_file_text.return_value = mock_client.upload_file.call_args[0][3].decode("utf-8")
         upload_count = mock_client.upload_file.call_count
 
         # Call immediately: within interval, returns False without uploading
@@ -1229,7 +1371,24 @@ class TestRemoteGC(unittest.TestCase):
             else []
         )
         mock_client.get_file_bytes.return_value = b"PACK-DATA"
-        mock_client.get_file_text.return_value = "sha-main"
+        # renew()'s takeover fence reads the ticket back before rewriting it,
+        # so the client must serve the lock payloads it stored; every other
+        # read is a ref file ("sha-main").
+        lock_payloads: list[str] = []
+
+        def fake_upload(repo_id, parent, filename, content, replace=True, progress_callback=None):
+            if ".git-lock" in filename or ".git-lock.d" in parent:
+                lock_payloads.append(content.decode("utf-8"))
+            return True
+
+        mock_client.upload_file.side_effect = fake_upload
+
+        def fake_get_text(repo_id, path):
+            if ".git-lock" in path and lock_payloads:
+                return lock_payloads[-1]
+            return "sha-main"
+
+        mock_client.get_file_text.side_effect = fake_get_text
 
         # Mock git pack-objects writing a packfile
         def fake_subprocess(cmd, **kwargs):
@@ -1255,6 +1414,10 @@ class TestRemoteGC(unittest.TestCase):
             res = compact_repository(mock_client, "repo1", "/path", min_packs=2, verbose=False)
             self.assertEqual(res["status"], "ok")
             self.assertEqual(res["old_packs"], 2)
+            # Every pack download renews the lease as it goes: gc holds the
+            # lock across multi-gigabyte transfers.
+            for call in mock_client.download_file_to.call_args_list:
+                self.assertIsNotNone(call.kwargs.get("progress_callback"))
             # Verify obsolete packs were deleted plus the lock release (4 obsolete files + ticket + legacy lock = 6)
             self.assertEqual(mock_client.delete_entry.call_count, 6)
             mock_client.delete_entry.assert_any_call("repo1", "/path/.git-lock.json")
@@ -1336,7 +1499,23 @@ class TestRemoteGC(unittest.TestCase):
             else []
         )
         mock_client.get_file_bytes.return_value = b"PACK-DATA"
-        mock_client.get_file_text.return_value = "sha000111"
+        # Same lock-payload plumbing as test_gc_compaction_flow: the takeover
+        # fence in renew() reads the ticket back before rewriting it.
+        lock_payloads: list[str] = []
+
+        def fake_upload(repo_id, parent, filename, content, replace=True, progress_callback=None):
+            if ".git-lock" in filename or ".git-lock.d" in parent:
+                lock_payloads.append(content.decode("utf-8"))
+            return True
+
+        mock_client.upload_file.side_effect = fake_upload
+
+        def fake_get_text(repo_id, path):
+            if ".git-lock" in path and lock_payloads:
+                return lock_payloads[-1]
+            return "sha000111"
+
+        mock_client.get_file_text.side_effect = fake_get_text
 
         def fake_subprocess(cmd, **kwargs):
             if "pack-objects" in cmd:

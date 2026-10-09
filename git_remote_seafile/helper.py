@@ -12,7 +12,6 @@ from .client import SeafileClient, SeafileAPIError
 from .config import RemoteConfig
 from .lock import RemoteLock
 from .packs import (
-    PACK_NAME_RE,
     check_remote_has_packs,
     fetch_and_install_pack,
     is_valid_pack_name,
@@ -33,8 +32,6 @@ from .git_util import (
     run_git,
     get_git_dir,
 )
-
-_PACK_NAME_RE = PACK_NAME_RE
 
 
 class RemoteHelper:
@@ -76,9 +73,9 @@ class RemoteHelper:
                 entries = self.client.list_dir(self.repo_id, full_parent)
                 if isinstance(entries, list) and len(entries) == 0:
                     self.client.delete_entry(self.repo_id, full_parent)
-                    clean_parent = ("/" + full_parent.strip("/")).rstrip("/")
-                    if hasattr(self.client, "_known_dirs") and isinstance(self.client._known_dirs, set):
-                        self.client._known_dirs.discard((self.repo_id, clean_parent))
+                    # The directory cache must forget this path or it will
+                    # never be recreated (a future D/F ref conflict).
+                    self.client.evict_known_dir(self.repo_id, full_parent)
                     parent = os.path.dirname(parent).replace("\\", "/")
                 else:
                     break

@@ -18,6 +18,14 @@ class RepositoryLockedError(Exception):
     pass
 
 
+def _f(val: Any) -> float:
+    """Coerce a JSON value to float, treating garbage as 0.0 (never raise)."""
+    try:
+        return float(val)
+    except (TypeError, ValueError):
+        return 0.0
+
+
 _LOCAL_MACHINE_ID: str = hex(uuid.getnode())
 
 
@@ -103,6 +111,10 @@ class RemoteLock:
         self._identity: tuple[str, str] | None = None
         self._nonce: str | None = None
         self._last_renewed: float = 0.0
+        # FIFO key captured once at acquire time and preserved by renew():
+        # renewal rewrites the ticket file, which bumps its mtime, so the queue
+        # must not be ordered on mtime for tickets that carry this field.
+        self._order_ts: float = 0.0
 
     def _owner_id(self) -> str:
         """A stable, non-secret identifier for the credentials in use."""
@@ -112,9 +124,8 @@ class RemoteLock:
         return hashlib.sha256(str(tok).encode("utf-8")).hexdigest()[:8]
 
     def _get_server_time(self) -> float:
-        val = getattr(self.client, "_server_time_offset", None)
-        if isinstance(val, (int, float)):
-            return time.time() + float(val)
+        if isinstance(self.client, SeafileClient):
+            return self.client.get_server_time()
         return time.time()
 
     def _get_lock_info(self) -> dict[str, Any] | None:
@@ -197,14 +208,28 @@ class RemoteLock:
                         pass
                     continue
 
-            mtime = float(entry.get("mtime") or 0.0)
-            if mtime > 0:
-                t_info["_order_key"] = (int(mtime), 0.0, t_nonce)
-            else:
-                t_time = float(t_info.get("timestamp", 0.0))
-                t_info["_order_key"] = (0, t_time, t_nonce)
+            t_info["_mtime"] = _f(entry.get("mtime"))
             t_info["_path"] = ticket_path
             active_tickets.append(t_info)
+
+        # FIFO ordering.  When every ticket records its acquisition time
+        # (``order_ts``), order by that: renew() rewrites the ticket file, so
+        # an mtime-ordered queue would move a healthy holder to the back of
+        # the queue on every refresh, letting the next waiter win the scan
+        # while the holder is still active.  A scan that mixes ticket formats
+        # falls back to mtime for all of them -- mtime is the one field every
+        # format shares, and comparing an order_ts against an mtime across
+        # formats is not a FIFO comparison at all.  (Older clients that write
+        # tickets also mirror .git-lock.json, which gates cross-format
+        # contention regardless of how this sort comes out.)
+        all_modern = bool(active_tickets) and all(_f(t.get("order_ts")) > 0 for t in active_tickets)
+        for t in active_tickets:
+            if all_modern:
+                t["_order_key"] = (_f(t.get("order_ts")), _f(t.get("_mtime")), t["nonce"])
+            elif t.get("_mtime"):
+                t["_order_key"] = (_f(t.get("_mtime")), 0.0, t["nonce"])
+            else:
+                t["_order_key"] = (_f(t.get("timestamp")), 0.0, t["nonce"])
 
         return active_tickets
 
@@ -215,6 +240,7 @@ class RemoteLock:
         nonce = uuid.uuid4().hex
         self._identity = (owner, hostname)
         self._nonce = nonce
+        self._order_ts = self._get_server_time()
 
         try:
             while True:
@@ -259,6 +285,7 @@ class RemoteLock:
                     "machine_id": _LOCAL_MACHINE_ID,
                     "nonce": nonce,
                     "timestamp": now,
+                    "order_ts": self._order_ts,
                     "lease": self.lease,
                     "pid": os.getpid(),
                 }
@@ -294,7 +321,14 @@ class RemoteLock:
 
                 if not any(t.get("nonce") == nonce for t in tickets):
                     my_ticket = dict(lock_payload)
-                    my_ticket["_order_key"] = (int(now), 0.0, nonce)
+                    my_ticket["_mtime"] = 0.0
+                    # Match the scheme _scan_tickets chose for the tickets it
+                    # saw, so the appended candidate compares against them.
+                    others_modern = bool(tickets) and all(_f(t.get("order_ts")) > 0 for t in tickets)
+                    if others_modern:
+                        my_ticket["_order_key"] = (self._order_ts, 0.0, nonce)
+                    else:
+                        my_ticket["_order_key"] = (int(now), 0.0, nonce)
                     my_ticket["_path"] = f"{self.lock_dir}/{nonce}.json"
                     tickets.append(my_ticket)
 
@@ -360,9 +394,49 @@ class RemoteLock:
                     pass
 
     def renew(self) -> bool:
-        """Renew the lease on an actively held lock."""
+        """Renew the lease on an actively held lock.
+
+        The ticket is read back before it is rewritten.  The nonce names the
+        ticket file and only this process ever writes it, so a ticket that is
+        gone, unreadable, or carries a foreign nonce means this lease lapsed
+        and was reaped -- most plausibly by another client that now holds the
+        lock.  Re-uploading anyway would resurrect the ticket and claim
+        ownership we no longer have; the fencing checks in cmd_push and gc
+        delegate to this method precisely to detect that, so it must fail
+        closed here.
+        """
         if not self.acquired or not self._nonce:
             return False
+
+        try:
+            current = self.client.get_file_text(self.repo_id, f"{self.lock_dir}/{self._nonce}.json")
+        except Exception as ex:
+            sys.stderr.write(f"Warning: Failed to renew lock lease: {ex}\n")
+            sys.stderr.flush()
+            return False
+
+        if not current:
+            sys.stderr.write(
+                "Warning: Lock ticket is gone; this lease lapsed and another client may hold the lock. "
+                "Not renewing.\n"
+            )
+            sys.stderr.flush()
+            return False
+
+        try:
+            current_nonce = json.loads(current).get("nonce")
+        except Exception:
+            sys.stderr.write(
+                "Warning: Lock ticket is unreadable; refusing to renew rather than guess at ownership.\n"
+            )
+            sys.stderr.flush()
+            return False
+
+        if current_nonce != self._nonce:
+            sys.stderr.write("Warning: Lock ticket was taken over; not renewing.\n")
+            sys.stderr.flush()
+            return False
+
         now = self._get_server_time()
         payload = {
             "owner": self._identity[0] if self._identity else self._owner_id(),
@@ -370,6 +444,7 @@ class RemoteLock:
             "machine_id": _LOCAL_MACHINE_ID,
             "nonce": self._nonce,
             "timestamp": now,
+            "order_ts": self._order_ts,
             "lease": self.lease,
             "pid": os.getpid(),
         }
@@ -406,7 +481,13 @@ class RemoteLock:
         return False
 
     def verify_ownership(self) -> bool:
-        """Verify that this process still actively holds the lock on the remote (N-4)."""
+        """Verify that this process still actively holds the lock on the remote (N-4).
+
+        Renewal reads the ticket back before rewriting it, so a lease that
+        lapsed and was reaped by a new holder returns False here instead of
+        being resurrected.  Callers must fence destructive steps (gc pack
+        deletion, push ref writes) on this result.
+        """
         if not self.acquired or not self._nonce:
             return False
         return self.renew()

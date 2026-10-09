@@ -88,7 +88,13 @@ class LFSTransferAgent:
         parent_dir, filename = self._object_subpath(oid)
         local_size = os.path.getsize(local_path)
 
-        # Check if remote object already exists with the identical byte size to skip duplicate upload
+        # Check if remote object already exists with the identical byte size to skip duplicate upload.
+        # Name + size is the whole check, deliberately: the remote path is
+        # derived from the content hash (OID), so a file already stored under
+        # that name at that size is the same object for practical purposes.
+        # Verifying content would cost a full download -- exactly what this
+        # skip exists to avoid.  A corrupted same-size leftover is accepted
+        # collateral; delete it server-side to force a re-upload.
         already_exists = False
         try:
             entries = self.client.list_dir(self.repo_id, parent_dir)

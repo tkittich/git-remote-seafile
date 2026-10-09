@@ -108,6 +108,12 @@ def iter_refs(
                 yield ref_name, sha
     else:
         workers = min(max_workers, len(ref_entries))
+        # The pool shares one requests.Session.  urllib3's connection pool is
+        # thread-safe and the only session mutation during these reads is the
+        # Date-header hook appending to a list (atomic under the GIL), but
+        # requests itself does not guarantee Session thread safety -- keep the
+        # concurrent work strictly read-only; do not widen it to calls that
+        # mutate session state (cookies, auth, headers).
         with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
             for ref_name, sha in executor.map(_fetch_ref, ref_entries):
                 if sha:
