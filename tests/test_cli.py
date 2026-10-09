@@ -227,6 +227,7 @@ class TestCLISetHeadAndLFSTransfer(unittest.TestCase):
                     "repo1", "/git-repo", "HEAD", b"ref: refs/heads/dev\n", replace=True
                 )
                 self.assertIn("Updated remote HEAD", mock_out.getvalue())
+                self.assertIn("(was " + "1" * 40 + ")", mock_out.getvalue())
 
     @patch("git_remote_seafile.cli.RemoteHelper")
     def test_cli_set_head_rejects_nonexistent_branch(self, mock_helper_cls):

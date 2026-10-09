@@ -118,10 +118,21 @@ def read_seafile_ignore_rules(worktree: Path) -> list[str]:
 
 def is_path_ignored(rel_path: str, rules: list[str]) -> bool:
     """Check if rel_path (e.g. 'code/myproject' or 'seafile-git/myproject') matches ignore rules.
-    
+
     Seafile ignore rules are anchored at the library root.
     A rule 'code/' matches 'code', 'code/', and 'code/anything'.
     A rule 'code' matches 'code', 'code/', and 'code/anything'.
+
+    Two deliberate leniencies, and they cut in the permissive direction: both
+    make this return True more often than the desktop client's own matcher
+    would, so a Trap-2 block can be suppressed for a rule the client would
+    not honor (e.g. a rule written 'Code/' while the synced folder is 'code/'
+    on a case-sensitive POSIX client), and fnmatch wildcards match across
+    path separators ('*.tmp' matches 'a/b/tmp'), broader than the client's
+    anchored globs.  Matching the client exactly would require porting its
+    (platform-dependent, version-dependent) matcher; the guard's job is to
+    catch the common mistake, and the user can always bypass entirely with
+    SEAFILE_SKIP_SAFETY_CHECKS.
     """
     clean_path = rel_path.strip("/").lower()
     path_parts = [p for p in clean_path.split("/") if p]
@@ -222,9 +233,21 @@ def check_preflight_safety(
         # Checking it is the whole point: `git clone seafile://Documents/code/x`
         # run from inside the synced Documents/ library is exactly the Trap 1
         # collision the README warns about, and until now clone was unguarded.
-        # The process's own cwd is the best available stand-in.
+        # Git exports GIT_DIR pointing at the *destination* repository it just
+        # created (<destination>/.git, absolute), so its parent is the
+        # directory being written -- the path that actually needs checking.
+        # That closes the clone-from-outside-the-synced-library gap the cwd
+        # fallback could never see. GIT_WORK_TREE wins when set.
+        git_work_tree = os.environ.get("GIT_WORK_TREE")
+        git_dir = os.environ.get("GIT_DIR")
         try:
-            local_worktree = Path.cwd()
+            if git_work_tree:
+                local_worktree = Path(git_work_tree).resolve()
+            elif git_dir:
+                candidate = Path(git_dir).resolve()
+                local_worktree = candidate.parent if candidate.name == ".git" else candidate
+            else:
+                local_worktree = Path.cwd()
         except OSError:
             local_worktree = None
 

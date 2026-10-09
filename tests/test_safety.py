@@ -357,6 +357,126 @@ class TestWorkingTreeFallback(unittest.TestCase):
 
             self.assertIn("DANGEROUS PATH COLLISION DETECTED (Trap 1)", str(ctx.exception))
 
+    def test_git_dir_fallback_blocks_clone_from_outside_the_synced_library(self):
+        """The cwd fallback cannot see a clone destination outside cwd; GIT_DIR can.
+
+        Measured against real git: during ``git clone`` the helper inherits
+        GIT_DIR pointing at ``<destination>/.git`` (absolute) while cwd stays
+        wherever the user was.  The fallback must therefore resolve the
+        destination from GIT_DIR and Trap 1 must fire on it -- this is the
+        clone-from-outside-the-synced-library case that previously went
+        undetected (REVIEW.glm.md P3 #4 spike).
+        """
+        client = MagicMock()
+        client.get_repo_id.return_value = "repo1"
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            doc_dir = Path(tmpdir) / "Documents"
+            dest_git = doc_dir / "code" / "myproject" / ".git"
+            dest_git.mkdir(parents=True)
+
+            synced_libs = [
+                {"repo_id": "repo1", "name": "Documents", "worktree": doc_dir,
+                 "server_url": "https://seafile.example.com"}
+            ]
+
+            original_cwd = os.getcwd()
+            os.chdir(Path(tmpdir))  # caller stands well outside the synced library
+            try:
+                with patch(
+                    "git_remote_seafile.safety.get_local_work_tree", return_value=None
+                ), patch.dict(os.environ, {"GIT_DIR": str(dest_git)}, clear=False):
+                    with self.assertRaises(SafetyError) as ctx:
+                        check_preflight_safety(
+                            client,
+                            "Documents",
+                            "/code/myproject",
+                            local_worktree=None,
+                            push_mode=False,
+                            synced_libs=synced_libs,
+                        )
+            finally:
+                os.chdir(original_cwd)
+
+            self.assertIn("DANGEROUS PATH COLLISION DETECTED (Trap 1)", str(ctx.exception))
+
+    def test_git_dir_outside_any_synced_library_does_not_block(self):
+        """A destination GIT_DIR that is not inside a synced library must pass."""
+        client = MagicMock()
+        client.get_repo_id.return_value = "repo1"
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            doc_dir = Path(tmpdir) / "Documents"
+            doc_dir.mkdir()
+            elsewhere_git = Path(tmpdir) / "elsewhere" / "myproject" / ".git"
+            elsewhere_git.mkdir(parents=True)
+
+            synced_libs = [
+                {"repo_id": "repo1", "name": "Documents", "worktree": doc_dir,
+                 "server_url": "https://seafile.example.com"}
+            ]
+
+            original_cwd = os.getcwd()
+            os.chdir(Path(tmpdir))
+            try:
+                with patch(
+                    "git_remote_seafile.safety.get_local_work_tree", return_value=None
+                ), patch.dict(os.environ, {"GIT_DIR": str(elsewhere_git)}, clear=False):
+                    warnings = check_preflight_safety(
+                        client,
+                        "Documents",
+                        "/code/myproject",
+                        local_worktree=None,
+                        push_mode=False,
+                        synced_libs=synced_libs,
+                    )
+            finally:
+                os.chdir(original_cwd)
+
+            self.assertEqual(warnings, [])
+
+    def test_git_work_tree_wins_over_git_dir(self):
+        """GIT_WORK_TREE is the more specific hint and must be preferred."""
+        client = MagicMock()
+        client.get_repo_id.return_value = "repo1"
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            doc_dir = Path(tmpdir) / "Documents"
+            doc_dir.mkdir()
+            inside = doc_dir / "code" / "myproject"
+            inside.mkdir(parents=True)
+            outside_git = Path(tmpdir) / "elsewhere" / ".git"
+            outside_git.mkdir(parents=True)
+
+            synced_libs = [
+                {"repo_id": "repo1", "name": "Documents", "worktree": doc_dir,
+                 "server_url": "https://seafile.example.com"}
+            ]
+
+            original_cwd = os.getcwd()
+            os.chdir(Path(tmpdir))
+            try:
+                with patch(
+                    "git_remote_seafile.safety.get_local_work_tree", return_value=None
+                ), patch.dict(
+                    os.environ,
+                    {"GIT_DIR": str(outside_git), "GIT_WORK_TREE": str(inside)},
+                    clear=False,
+                ):
+                    with self.assertRaises(SafetyError) as ctx:
+                        check_preflight_safety(
+                            client,
+                            "Documents",
+                            "/code/myproject",
+                            local_worktree=None,
+                            push_mode=False,
+                            synced_libs=synced_libs,
+                        )
+            finally:
+                os.chdir(original_cwd)
+
+            self.assertIn("DANGEROUS PATH COLLISION DETECTED (Trap 1)", str(ctx.exception))
+
     def test_an_explicit_work_tree_still_wins_over_cwd(self):
         # The fallback must not override a work tree that was determined
         # properly.  Here cwd *is* inside the synced library and would collide,

@@ -89,6 +89,15 @@ def iter_refs(
                     sys.stderr.flush()
                     continue
                 ref_entries.append((ref_name, f"{dir_path}/{name}"))
+            else:
+                # Seafile returns only dir/file today; an unknown type (or a
+                # missing field from an unexpected server response) must not
+                # vanish silently -- a skipped entry here is an unadvertised
+                # ref, which is how silent ref loss starts.
+                sys.stderr.write(
+                    f"Warning: ignoring entry '{name}' of unknown type '{kind}' under {dir_path}\n"
+                )
+                sys.stderr.flush()
 
     if not ref_entries:
         return

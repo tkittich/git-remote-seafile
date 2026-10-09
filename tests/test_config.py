@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import unittest
 from unittest.mock import patch
 
@@ -40,6 +41,30 @@ class TestConfigModule(unittest.TestCase):
             self.assertEqual(cfg.lock_lease, 120)
             self.assertTrue(cfg.auto_gc)
             self.assertEqual(cfg.gc_threshold, 50)
+
+    def test_implausible_config_falls_back_to_documented_defaults(self):
+        """A zero lease would expire every lock immediately; refuse to honor it.
+
+        Values that defeat the mechanism outright fall back to the documented
+        defaults with a warning instead of being used as-is.
+        """
+        def mock_get(key: str, default: str | None = None) -> str | None:
+            mapping = {
+                "seafile.locktimeout": "-5",
+                "seafile.locklease": "0",
+                "seafile.gcthreshold": "0",
+            }
+            return mapping.get(key, default)
+
+        with patch("git_remote_seafile.git_util.get_git_config", side_effect=mock_get):
+            with patch("sys.stderr", new_callable=io.StringIO) as mock_err:
+                cfg = RemoteConfig.load()
+
+        self.assertEqual(cfg.lock_timeout, 15)
+        self.assertEqual(cfg.lock_lease, 60)
+        self.assertEqual(cfg.gc_threshold, 20)
+        self.assertIn("seafile.locklease=0 -> 60", mock_err.getvalue())
+        self.assertIn("seafile.gcthreshold=0 -> 20", mock_err.getvalue())
 
     def test_get_git_config_helpers(self):
         with patch("git_remote_seafile.git_util.run_git", return_value=(b"hello\n", b"", 0)):

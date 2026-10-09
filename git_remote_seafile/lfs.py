@@ -215,6 +215,10 @@ class LFSTransferAgent:
             try:
                 msg = json.loads(line)
             except Exception:
+                # A silent skip here would look exactly like a hung transfer if
+                # the protocol ever desyncs; name the line so it is diagnosable.
+                sys.stderr.write(f"git-remote-seafile lfs: ignoring malformed JSON line: {line[:200]}\n")
+                sys.stderr.flush()
                 continue
 
             event = msg.get("event")

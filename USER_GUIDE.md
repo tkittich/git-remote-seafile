@@ -161,9 +161,12 @@ A `git clone` writes a whole repository into the target directory, so the same c
 Trap 1 therefore blocks clone and fetch as well. Trap 2 stays push-only **by design**: it guards against *uploading* into a synced folder, and a fetch uploads nothing.
 
 > [!NOTE]
-> During `git clone` the helper runs in the *parent* of the directory being created, which is not yet a Git repository, so Git cannot name a working tree for it. The helper falls back to its own working directory — which is exactly the directory that needs checking.
->
-> **Scope of this guard**: the fallback checks the directory you are *in*. Running the clone from outside the synced library — `git clone seafile://Documents/code/myproject D:\Seafile\Documents\code\myproject` — points the collision check at an unrelated directory, so the write into the synced folder is **not** detected. Keep the check's blind spot in mind: never clone *into* a synced library, even when the helper does not stop you.
+> During `git clone` the helper runs in the *parent* of the directory being created, which is not yet a Git repository, so Git cannot name a working tree for it. Git therefore exports `GIT_DIR` pointing at the destination repository it just created, and the guard checks **that directory** — so cloning into a synced library is blocked even when you run the clone from somewhere else entirely:
+> ```bash
+> cd C:\somewhere\else
+> git clone seafile://Documents/code/myproject D:\Seafile\Documents\code\myproject   # blocked
+> ```
+> The guard relies on `GIT_DIR`, which Git sets for every helper it spawns; only exotic invocations that suppress it can slip past, and the advice stands regardless: never keep working repositories inside synced libraries.
 
 #### 🛡️ Library Root Pollution Protection
 - Pushing directly to the library root (`seafile://Documents/`) is hard-blocked to prevent cluttering the top level with bare objects and refs.
@@ -619,7 +622,7 @@ For teams where multiple developers or automated CI/CD runners push simultaneous
 
 - **Ticket-Based Protocol**: During every `git push`, the helper writes a unique lock ticket (`.git-lock.d/<nonce>.json`) at the remote repository root on Seafile. Tickets are ordered deterministically using server timestamps and HTTP `Date:` response headers, preventing write-write collision races and client clock drift.
 - **Legacy Compatibility**: A mirrored `.git-lock.json` is maintained for backward compatibility with earlier client versions.
-- **Dead Local PID Fast-Reclaim**: If an active lock belongs to the current machine (verified via hostname and machine hardware/container network identifier) and the holding process has crashed or exited, the helper detects the dead PID and immediately reclaims the lock without waiting for the timeout.
+- **Dead Local PID Fast-Reclaim**: If an active lock belongs to the current machine (verified via hostname and machine hardware/container network identifier) and the holding process has crashed or exited, the helper detects the dead PID and immediately reclaims the lock without waiting for the timeout. (The machine identifier derives from the hardware MAC: in VMs or containers that randomize it per boot, a rebooted holder is no longer recognized as local, so reclaim falls back to normal lease expiry — safe, just slower.)
 - **In-Transfer Lease Renewal**: During active multi-gigabyte packfile uploads, packfile downloads, and remote compaction, `git-remote-seafile` automatically refreshes the lock lease every 20 seconds of sustained transfer progress without spawning background daemon threads. Purely local compute phases (pack generation and `git repack`) renew before and after rather than during; before any destructive step (ref writes, obsolete pack deletion) the client re-validates that its lock ticket is still its own, and a lease that lapsed and was taken over in the meantime is detected and refused.
 - If another developer is pushing, subsequent pushes wait and retry for up to 15 seconds (configurable via `seafile.locktimeout`).
 - **Lease Safety**: If a client crashes or loses power mid-push, the lock automatically expires after 60 seconds (configurable via `seafile.locklease`), preventing permanent repository deadlocks.

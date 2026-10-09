@@ -229,6 +229,7 @@ def main() -> int:
             # set-head is an explicit administrative maintenance command. It bypasses
             # RemoteLock to allow recovering remotes where an interrupted operation left a
             # broken HEAD or stale lock, while strictly validating that the target branch exists.
+            old_head = helper.client.get_file_text(helper.repo_id, helper.repo_path + "/HEAD")
             head_content = f"ref: {head_target}\n".encode("utf-8")
             helper.client.upload_file(
                 helper.repo_id,
@@ -237,7 +238,7 @@ def main() -> int:
                 head_content,
                 replace=True,
             )
-            print(f"Updated remote HEAD on {url} to {head_target}")
+            print(f"Updated remote HEAD on {url} to {head_target} (was {old_head or 'unset'})")
             return 0
         except Exception as ex:
             print(f"Failed to set HEAD: {ex}")

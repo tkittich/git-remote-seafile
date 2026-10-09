@@ -508,8 +508,14 @@ class SeafileClient:
                 self._repos_cache[rname] = rid
 
         if not matches:
-            if name_or_id in self._repos_cache:
-                return self._repos_cache[name_or_id]
+            cached = self._repos_cache.get(name_or_id)
+            if cached and cached in {r.get("id") for r in repos}:
+                return cached
+            # A cached id that the fresh listing no longer contains means the
+            # library was deleted or unshared since the last lookup; report
+            # that instead of handing out a dead id (whose 404s downstream
+            # are much harder to diagnose).
+            self._repos_cache.pop(name_or_id, None)
             raise SeafileAPIError(f"Seafile library not found: '{name_or_id}'")
 
         if len(matches) == 1:
@@ -760,6 +766,12 @@ class SeafileClient:
         where the whole point is that they may not fit in RAM.  Without
         ``stream=True`` `requests` reads the entire body into memory before the
         first chunk is written, which is the bug this exists to avoid.
+
+        A mid-stream failure leaves a partial file at *dest*: the method does
+        not unlink it, because *dest* may be a caller-managed path.  Callers
+        must therefore treat *dest* as untrusted after an exception -- every
+        current caller stages into a temp/scratch location and verifies the
+        byte count before use.
         """
         clean_path = "/" + file_path.strip("/")
         url = f"{self.server_url}/api2/repos/{repo_id}/file/?p={quote(clean_path, safe='/')}"

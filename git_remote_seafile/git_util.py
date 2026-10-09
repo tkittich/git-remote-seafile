@@ -14,14 +14,13 @@ class GitError(Exception):
     pass
 
 
-def run_git(args: list[str], input_bytes: bytes | None = None, cwd: Path | None = None) -> tuple[bytes, bytes, int]:
+def run_git(args: list[str], input_bytes: bytes | None = None) -> tuple[bytes, bytes, int]:
     """Execute a git command and return (stdout, stderr, returncode)."""
     proc = subprocess.Popen(
         ["git"] + args,
         stdin=subprocess.PIPE if input_bytes is not None else None,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        cwd=cwd,
     )
     out, err = proc.communicate(input=input_bytes)
     return out, err, proc.returncode

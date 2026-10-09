@@ -55,6 +55,13 @@ def open_live_sqlite_ro(db_path: Path) -> Iterator[sqlite3.Connection | None]:
     ``None`` means "could not read this candidate" (absent, unreadable, or not
     a database), which lets callers keep walking their candidate list.  Errors
     raised by the caller's own body propagate normally.
+
+    Residual risk: the copy of the main file and its WAL are taken without
+    coordinating with a live writer, so a torn snapshot can surface as a
+    ``sqlite3.DatabaseError`` at *query* time rather than at connect time.
+    Every current caller (credential lookup, safety discovery, the doctor)
+    wraps its queries in a broad try/except and moves on to the next
+    candidate -- keep that pattern for any future caller.
     """
     path = Path(db_path)
     if not path.is_file():

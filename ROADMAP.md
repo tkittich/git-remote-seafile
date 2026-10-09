@@ -1,11 +1,11 @@
 # Engineering Roadmap & Backlog
 
-**Baseline:** v0.6.3 (v0.6.3 release)  
+**Baseline:** v0.6.3 (v0.6.3 release) + review-closure polish batch (see CHANGELOG [Unreleased])  
 **Scope:** Active architectural backlog and milestones following releases v0.4.0 through v0.6.3.  
-**Test Suite:** 394 tests across 80 targets (all green).
+**Test Suite:** 398 tests across 80 targets (all green).
 
 > [!NOTE]
-> All critical and high-severity findings from `archive/REVIEW.*.md` (including ticket-based distributed locking, abandoned ticket cleanup, post-lock ref verification, exception propagation, GC lock fencing, pack index validation, surrogateescape paths, container PID isolation, D/F ref pruning, multi-spec pack batching, Git LFS transfer progress, safety guardrails, parallel ref enumeration, smart pack fetch filtering, disk-staged streaming, and modular helper decoupling) have been completed. Minor or low-priority items remain tracked in the backlog below. See [CHANGELOG.md](CHANGELOG.md) for detailed release notes.
+> All critical and high-severity findings from `archive/REVIEW.*.md` (including ticket-based distributed locking, abandoned ticket cleanup, post-lock ref verification, exception propagation, GC lock fencing, pack index validation, surrogateescape paths, container PID isolation, D/F ref pruning, multi-spec pack batching, Git LFS transfer progress, safety guardrails, parallel ref enumeration, smart pack fetch filtering, disk-staged streaming, and modular helper decoupling) have been completed. All findings from the October 2026 review cycle (REVIEW.glm/gemini/qwen/VERIFY/BACKLOG, now archived) were verified fixed or explicitly dispositioned. Minor or low-priority items remain tracked in the backlog below. See [CHANGELOG.md](CHANGELOG.md) for detailed release notes.
 
 ---
 

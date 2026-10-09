@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Review-closure polish: the Trap-1 clone guard now sees the actual clone destination, and the remaining verified LOW findings from the October 2026 review cycle are fixed or dispositioned.
+
+### Fixed & Hardened
+
+- **Trap-1 Clone Guard Resolves the Real Destination via `GIT_DIR`.** In `safety.py:check_preflight_safety`, when Git cannot name a work tree (clone), the fallback now resolves `GIT_DIR`/`GIT_WORK_TREE` before falling back to the process cwd. Measured against real git: during `git clone` the helper inherits `GIT_DIR` pointing at `<destination>/.git`, so `git clone seafile://Documents/code/x D:\Seafile\Documents\code\x` run from *outside* the synced library is now blocked — the case the cwd fallback could never see. GIT_WORK_TREE wins when set.
+- **Implausible `seafile.*` Config Falls Back to Documented Defaults.** `RemoteConfig.load` refuses to honor a negative `seafile.locktimeout`, a zero/negative `seafile.locklease` (which would expire every lock immediately), or a sub-1 `seafile.gcthreshold`, warning on stderr and using the documented defaults instead.
+- **Stale Library Cache No Longer Masks Deletion.** `SeafileClient.get_repo_id` verifies a cached id against the fresh `/api2/repos/` listing; a library deleted or unshared since the last lookup now raises a clean "library not found" instead of returning a dead id whose 404s surface downstream.
+- **Unknown Directory-Entry Types Warn.** `refs.py:iter_refs` names entries whose Seafile type is neither `dir` nor `file` instead of dropping them silently — a silently skipped entry is how silent ref loss starts.
+- **Git LFS Malformed JSON Lines Warn.** The LFS transfer loop writes the offending line to stderr instead of skipping silently, so a protocol desync is diagnosable rather than looking like a hang.
+- **`set-head` Reports the Previous HEAD.** The success message now includes the value it replaced (or `unset`), an aid when recovering a remote that points at the wrong default branch.
+- **Documentation & Contract Notes.** `download_file_to` documents that *dest* holds a partial file after a mid-stream exception; `is_path_ignored` documents its two deliberate leniencies (platform-wide case-insensitivity, wildcards crossing separators); `open_live_sqlite_ro` documents the torn-snapshot residual and the caller pattern that contains it; the lock deprecation note records the ticket/mirror divergence on partial renewal failure; USER_GUIDE notes the MAC-derived machine identifier's container caveat.
+
+### Tests & Tooling
+
+- **E2E Stub DELETE Fidelity.** `SeafileStub` now dispatches `/file/` (exact files only) vs `/dir/` (directories only, 404 for files) like the real server, so a future swap of `delete_entry`'s endpoint order cannot pass silently; `SeafileStub.packs()` takes the repo id instead of hardcoding it.
+- New tests: GIT_DIR/GIT_WORK_TREE guard (blocked, unblocked, precedence) and config fallback behavior — suite at 398.
+
 ## [0.6.3] - 2026-10-09
 
 Sound lease-renewal fencing for the distributed lock, lease renewal during gc pack downloads, non-zero `gc` exit on failed compaction, acquisition-time ticket ordering, and deletion-failure reporting.

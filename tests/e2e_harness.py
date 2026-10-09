@@ -210,8 +210,19 @@ class _Handler(BaseHTTPRequestHandler):
     def do_DELETE(self):
         self._drain()
         rid, p = self._rid(), _norm(self._query_p())
-        if p in self.stub.files.get(rid, {}):
-            del self.stub.files[rid][p]
+        is_dir_endpoint = urlparse(self.path).path.endswith("/dir/")
+        files = self.stub.files.get(rid, {})
+        if is_dir_endpoint:
+            # Real Seafile 404s a *file* deletion via /dir/; keep that
+            # distinction so a swap of delete_entry's endpoint order would
+            # not silently pass.
+            if any(k.startswith(p + "/") for k in files):
+                for k in [k for k in files if k.startswith(p + "/")]:
+                    del files[k]
+                return self._send(200, b'{"success":true}')
+            return self._send(404, b"{}")
+        if p in files:
+            del files[p]
             return self._send(200, b'{"success":true}')
         return self._send(404, b"{}")
 
@@ -279,9 +290,9 @@ class SeafileStub:
                 out.append({"type": "file", "name": rest, "mtime": now_ts, "size": len(file_bytes)})
         return out
 
-    def packs(self, repo_path: str) -> list[str]:
+    def packs(self, repo_path: str, repo_id: str = REPO_ID) -> list[str]:
         d = _norm(repo_path + "/objects/pack")
-        return sorted(n.rsplit("/", 1)[-1] for n in self.files.get(REPO_ID, {}) if n.startswith(d + "/"))
+        return sorted(n.rsplit("/", 1)[-1] for n in self.files.get(repo_id, {}) if n.startswith(d + "/"))
 
 
 def _sh_quote(s: str) -> str:

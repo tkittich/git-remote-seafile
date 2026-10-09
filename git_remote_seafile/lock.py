@@ -79,7 +79,11 @@ class RemoteLock:
     .. deprecated:: 0.6.0
         The single-file mirror (.git-lock.json) from v0.1–v0.3 is deprecated
         and scheduled for removal in v1.0.0. All modern clients rely on the
-        ticket queue in .git-lock.d/.
+        ticket queue in .git-lock.d/. Residual quirk until then: renew() writes
+        the ticket before the mirror, so a failure between the two leaves the
+        ticket renewed but the mirror aging out -- mirror-only clients may
+        proceed while the ticket holder is still live. Accepted for a
+        deprecated compatibility path.
     """
 
     def __init__(
