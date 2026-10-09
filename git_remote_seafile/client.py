@@ -19,6 +19,7 @@ from urllib3.util.retry import Retry
 
 from .git_util import get_git_config_bool
 from .seafile_paths import get_candidate_db_paths
+from .url import normalize_netloc
 from .sqlite_read import open_live_sqlite_ro
 
 
@@ -172,23 +173,6 @@ class StreamingMultipartFile:
         return self._pos
 
 
-def _normalize_netloc(url_or_netloc: str) -> str:
-    """Normalize a server URL or netloc for consistent credential matching.
-
-    Converts hostname to lowercase and strips default ports (443 for HTTPS, 80 for HTTP).
-    """
-    if not url_or_netloc:
-        return ""
-    if "://" not in url_or_netloc:
-        url_or_netloc = f"http://{url_or_netloc}"
-    parsed = urlparse(url_or_netloc)
-    host = (parsed.hostname or "").lower()
-    port = parsed.port
-    if port and not ((parsed.scheme == "https" and port == 443) or (parsed.scheme == "http" and port == 80)):
-        return f"{host}:{port}"
-    return host
-
-
 class SeafileClient:
     """Lightweight HTTP client for Seafile Web API v2.1."""
 
@@ -271,7 +255,7 @@ class SeafileClient:
         env_server = os.environ.get("SEAFILE_SERVER")
         env_token = os.environ.get("SEAFILE_TOKEN")
         if env_server and (env_token or not require_token):
-            if not self.server_url or _normalize_netloc(env_server) == _normalize_netloc(self.server_url):
+            if not self.server_url or normalize_netloc(env_server) == normalize_netloc(self.server_url):
                 self.server_url = env_server.rstrip("/")
                 self.token = env_token
                 return
@@ -300,7 +284,7 @@ class SeafileClient:
                 if cfg_user and not self.username:
                     self.username = cfg_user
                 if cfg_server and (cfg_token or not require_token):
-                    if not self.server_url or _normalize_netloc(cfg_server) == _normalize_netloc(self.server_url):
+                    if not self.server_url or normalize_netloc(cfg_server) == normalize_netloc(self.server_url):
                         self.server_url = cfg_server.rstrip("/")
                         self.token = cfg_token
                         return
@@ -319,12 +303,12 @@ class SeafileClient:
                     continue
                 try:
                     if self.server_url:
-                        target_netloc = _normalize_netloc(self.server_url)
+                        target_netloc = normalize_netloc(self.server_url)
                         rows = con.execute(
                             "SELECT url, token, username FROM Accounts ORDER BY lastVisited DESC"
                         ).fetchall()
                         for r in rows:
-                            if r[0] and _normalize_netloc(r[0]) == target_netloc:
+                            if r[0] and normalize_netloc(r[0]) == target_netloc:
                                 row = r
                                 break
                     else:
@@ -332,12 +316,12 @@ class SeafileClient:
                 except Exception:
                     try:
                         if self.server_url:
-                            target_netloc = _normalize_netloc(self.server_url)
+                            target_netloc = normalize_netloc(self.server_url)
                             rows = con.execute(
                                 "SELECT url, token FROM Accounts ORDER BY lastVisited DESC"
                             ).fetchall()
                             for r in rows:
-                                if r[0] and _normalize_netloc(r[0]) == target_netloc:
+                                if r[0] and normalize_netloc(r[0]) == target_netloc:
                                     row = (r[0], r[1], None)
                                     break
                         else:
@@ -360,9 +344,9 @@ class SeafileClient:
                 # sent here -- but silence about it reads as "no credentials
                 # exist", so say why the environment was skipped.
                 env_skipped = ""
-                if env_server and env_token and _normalize_netloc(env_server) != _normalize_netloc(self.server_url):
+                if env_server and env_token and normalize_netloc(env_server) != normalize_netloc(self.server_url):
                     env_skipped = (
-                        f" (SEAFILE_SERVER names {_normalize_netloc(env_server)}, so "
+                        f" (SEAFILE_SERVER names {normalize_netloc(env_server)}, so "
                         "SEAFILE_SERVER/SEAFILE_TOKEN were not used for this server; "
                         "they are only sent to the server they name)"
                     )
@@ -412,7 +396,7 @@ class SeafileClient:
         Both sessions share pooling, TLS/proxy settings and the retry adapter;
         they differ only in whether the Seafile account token rides along.
         """
-        if _normalize_netloc(url) == _normalize_netloc(self.server_url):
+        if normalize_netloc(url) == normalize_netloc(self.server_url):
             return self.session
         return self._file_session
 

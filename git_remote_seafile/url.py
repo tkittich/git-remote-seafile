@@ -5,7 +5,24 @@ from __future__ import annotations
 from dataclasses import dataclass
 from urllib.parse import unquote, urlparse
 
-from .client import _normalize_netloc
+
+def normalize_netloc(url_or_netloc: str) -> str:
+    """Normalize a server URL or bare netloc for consistent comparisons.
+
+    Lowercases the hostname and strips default ports (443 for HTTPS, 80 for
+    HTTP), so credential lookups and URL rewriting compare authorities rather
+    than spellings: `HTTPS://Host:443` and `https://host` are the same place.
+    """
+    if not url_or_netloc:
+        return ""
+    if "://" not in url_or_netloc:
+        url_or_netloc = f"http://{url_or_netloc}"
+    parsed = urlparse(url_or_netloc)
+    host = (parsed.hostname or "").lower()
+    port = parsed.port
+    if port and not ((parsed.scheme == "https" and port == 443) or (parsed.scheme == "http" and port == 80)):
+        return f"{host}:{port}"
+    return host
 
 
 def _looks_like_host(segment: str) -> bool:
@@ -78,7 +95,7 @@ def parse_seafile_url(url: str) -> SeafileURL:
         if any(p in (".", "..") for p in parts):
             raise ValueError(f"Invalid Seafile URL format: path segments cannot contain '.' or '..': {url}")
         if len(parts) >= 3 and _looks_like_host(parts[0]):
-            norm_netloc = _normalize_netloc(parts[0])
+            norm_netloc = normalize_netloc(parts[0])
             server_url = f"https://{norm_netloc}"
             path_parts = parts[1:]
         else:
