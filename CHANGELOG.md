@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+
+- **`publish-to-pypi` workflow job.** PyPI publication is deferred to the official Seafile repository once this code is merged upstream; this repository's releases ship wheel and sdist assets on GitHub Releases only. The job had never run (no credentials configured), so no behavior changes — the workflow just no longer carries a perpetually-skipped step.
+
+### Documentation
+
+- README and DESIGN now state the distribution decision explicitly: GitHub Release assets here, PyPI via the official Seafile repository upstream.
+
 ## [0.7.0] - 2026-10-09
 
 Major cleanup: the legacy single-file lock is removed, the test monolith is split per module, the pack-download path is deduplicated, and Python 3.9 (EOL) is dropped.

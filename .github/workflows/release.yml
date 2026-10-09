@@ -13,19 +13,20 @@ name: Release
 # That path could not do anything useful anyway.  A published release already
 # exists, so create_github_release.sh short-circuits on `gh release view` and the
 # wheel and sdist are never attached -- the one job this workflow exists to do.
-# All it still did was re-run the PyPI job, which is a no-op with no credentials
-# and a `skip-existing` no-op otherwise.  The trigger was a leftover from when
-# releases were made by hand; now that a tag push creates one, publishing by hand
-# is not part of the flow.  To recover from a failed run, re-run it from the
-# Actions tab.
+# The trigger was a leftover from when releases were made by hand; now that a tag
+# push creates one, publishing by hand is not part of the flow.  To recover from
+# a failed run, re-run it from the Actions tab.
+#
+# Distribution decision (v0.7.0): this repository ships wheels and sdists as
+# GitHub Release assets only.  PyPI publication is deferred to the official
+# Seafile repository once this code is merged upstream, so there is no PyPI
+# publish job here to maintain or misfire.
 on:
   push:
     tags:
       - 'v*'
 
-# Least privilege by default; the publish job below needs to mint an OIDC token
-# to authenticate to PyPI (trusted publishing), and the release job needs to
-# write a Release.  Both widen it for themselves only.
+# Least privilege by default; the github-release job widens it for itself only.
 permissions:
   contents: read
 
@@ -65,8 +66,7 @@ jobs:
           exit 1
         fi
 
-  # Build once.  Both consumers below take the same artifact, so the wheel that
-  # gets attached to the Release is byte-for-byte the one offered to PyPI.
+  # Build once.  The GitHub Release below attaches exactly this artifact.
   build:
     needs: test
     runs-on: ubuntu-latest
@@ -99,59 +99,11 @@ jobs:
         name: dist
         path: dist/
 
-  publish-to-pypi:
-    needs: build
-    runs-on: ubuntu-latest
-    # Required for PyPI trusted publishing (OIDC). Without it the publish step
-    # fails with "OpenID Connect token retrieval failed ... ACTIONS_ID_TOKEN_
-    # REQUEST_TOKEN was unset" whenever no PYPI_API_TOKEN secret is present.
-    permissions:
-      id-token: write
-    env:
-      # Surfaced at job level because `secrets` is not an available context in a
-      # step-level `if` (GitHub's contexts reference lists only github, needs,
-      # strategy, matrix, job, runner, env, vars, steps and inputs there),
-      # whereas `env` is.  Masked in logs like any secret.
-      PYPI_API_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
-    steps:
-    - name: Fetch the built distributions
-      uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
-      with:
-        name: dist
-        path: dist
-
-    # Two ways to authenticate: the PYPI_API_TOKEN secret, or trusted
-    # publishing via OIDC (which needs `id-token: write` above AND a Trusted
-    # Publisher configured for this repo on PyPI).
-    #
-    # When neither is configured the step is skipped rather than failed.  A
-    # publish that cannot possibly succeed should not paint the release red and
-    # mask real failures -- the same reason CI no longer uses fail-fast.
-    - name: Publish to PyPI
-      if: env.PYPI_API_TOKEN != '' || vars.PUBLISH_TO_PYPI == 'true'
-      uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # release/v1.14
-      with:
-        password: ${{ secrets.PYPI_API_TOKEN }}
-        skip-existing: true
-
-    - name: Explain the skipped PyPI publish
-      if: env.PYPI_API_TOKEN == '' && vars.PUBLISH_TO_PYPI != 'true'
-      run: |
-        echo "::notice::Skipped the PyPI publish - no credentials are configured."
-        echo "The sdist and wheel were still built and are attached to the GitHub"
-        echo "Release. To also publish to PyPI, either:"
-        echo "  * set the PYPI_API_TOKEN repository secret, or"
-        echo "  * configure a Trusted Publisher for this repo on PyPI and set the"
-        echo "    PUBLISH_TO_PYPI repository variable to 'true'."
-
   # Pushing a tag used to leave nothing behind but a bare tag: a GitHub Release
   # is a separate object from the tag, so it had to be created by hand every
   # time -- which is how v0.3.0 ended up tagged with no release at all.
   #
-  # Separate job so that only this one gets `contents: write`; the publish job
-  # runs a third-party action and keeps the narrower permission set.  It depends
-  # on `build` and not on `publish-to-pypi`, so a PyPI problem cannot block the
-  # release.
+  # A separate job so that only this one gets `contents: write`.
   github-release:
     needs: build
     runs-on: ubuntu-latest

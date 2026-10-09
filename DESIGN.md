@@ -231,7 +231,7 @@ To prevent data loss and filesystem thrashing, `git-remote-seafile` enforces pre
 
 To incorporate this capability into the official Seafile ecosystem:
 1. **Repository Home**: Hosted at `tkittich/git-remote-seafile`; can be adopted upstream as `haiwen/git-remote-seafile` or bundled within official client distributions.
-2. **Packaging**: Distributed via PyPI (`pip install git-remote-seafile`) and bundled into Seafile Windows/macOS client installers.
+2. **Packaging**: This repository ships wheel and sdist assets on each GitHub Release; PyPI publication is deferred to the official Seafile repository once the code is merged upstream, alongside (or instead of) bundling into Seafile Windows/macOS client installers.
 3. **Desktop Applet Integration**: A proposed Qt patch is included in `contrib/seafile-client-context-menu.patch`, adding a *"Copy Git Remote URL"* action to the Seafile desktop applet's right-click context menu. It targets the client's `repo-tree-view` and will need rebasing onto a current seafile-client checkout.
 
 ---

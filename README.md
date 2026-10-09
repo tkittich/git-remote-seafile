@@ -117,7 +117,7 @@ Before building `git-remote-seafile`, numerous alternative workarounds were inve
 ```bash
 pip install git+https://github.com/tkittich/git-remote-seafile.git
 ```
-*(Or clone and install in editable mode: `pip install -e .`. PyPI publication is planned but not configured yet — releases currently attach wheels to [GitHub Releases](https://github.com/tkittich/git-remote-seafile/releases).)*
+*(Or clone and install in editable mode: `pip install -e .`. This repository ships wheels and sdists as [GitHub Release](https://github.com/tkittich/git-remote-seafile/releases) assets; PyPI publication is deferred to the official Seafile repository once this code is merged upstream.)*
 
 ### 2. Verify Authentication
 `git-remote-seafile` automatically discovers active logins from your local Seafile desktop client:
