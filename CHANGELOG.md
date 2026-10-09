@@ -7,9 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-10-09
+
+Major cleanup: the legacy single-file lock is removed, the test monolith is split per module, the pack-download path is deduplicated, and Python 3.9 (EOL) is dropped.
+
 ### Removed
 
-- **Legacy Single-File Lock (`.git-lock.json`).** The v0.1–v0.3 mirror — its writes in `acquire()`/`renew()`, its reads in `acquire()`/`release()`/`get_status()`, and its deletions in `release()`/`unlock()` — is gone; the ticket queue in `.git-lock.d/` is the only lock protocol. `acquire()` deletes an orphaned mirror found on the remote so existing repositories self-clean. **Upgrade note:** do not mix v0.7.0+ with a v0.1–v0.3 helper on the same repository — those clients predate the ticket protocol and cannot see its locks. Also removed with it: `SeafileURL.to_tuple()` and `RemoteHelper._parse_url()` (compatibility shims whose only callers were tests).
+- **Legacy Single-File Lock (`.git-lock.json`).** The v0.1–v0.3 mirror — its writes in `acquire()`/`renew()`, its reads in `acquire()`/`release()`/`get_status()`, and its deletions in `release()`/`unlock()` — is gone; the ticket queue in `.git-lock.d/` is the only lock protocol. `acquire()` deletes an orphaned mirror found on the remote so existing repositories self-clean. **Upgrade note:** do not mix v0.7.0+ with a v0.1–v0.3 helper on the same repository — those clients predate the ticket protocol and cannot see its locks. Also removed with it: `SeafileURL.to_tuple()` and `RemoteHelper._parse_url()` (compatibility shims whose only callers were tests), the unused `run_git(cwd=)` kwarg, and **support for Python 3.9** (EOL October 2025 — `requires-python` is now `>=3.10`, the CI matrix and classifiers drop 3.9).
+
+### Changed & Refactored
+
+- **Test Suite Reorganized.** The `test_remote.py` monolith split into `test_lock.py`, `test_gc.py`, `test_lfs.py`, and `test_helper.py`; client-ops, config-reader, and url-parsing tests merged into their existing per-module files; duplicate set-head and url coverage dropped in favor of the per-module originals.
+- **Shared Pack-Download Path.** New `packs.fetch_pack_artifact` owns the stream → capped-fallback → size-verify pattern that `fetch_and_install_pack` and `gc.compact_repository` each duplicated; gc's index downloads gain the size check fetch already had. Failure messages are unchanged.
+- **`normalize_netloc` Public in `url.py`.** The netloc normalizer moves from `client.py` (imported privately by `url.py`) to the URL module as public API; the dependency now points client → url.
+- **Small Cleanups.** `git-remote-seafile test` renders the ref listing for humans instead of leaking the wire protocol; `HEX_SHA_RE` is the single canonical name; the Windows launcher exits 127 with a clear message when python is missing; README install instructions match reality (GitHub-based — PyPI publication pending); the contrib Qt patch is described as a proposal needing a rebase.
 
 ## [0.6.4] - 2026-10-09
 

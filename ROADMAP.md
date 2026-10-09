@@ -1,8 +1,8 @@
 # Engineering Roadmap & Backlog
 
-**Baseline:** v0.6.4 (v0.6.4 release)  
-**Scope:** Active architectural backlog and milestones following releases v0.4.0 through v0.6.4.  
-**Test Suite:** 398 tests across 80 targets (all green).
+**Baseline:** v0.7.0 (v0.7.0 release — major cleanup)  
+**Scope:** Active architectural backlog and milestones following releases v0.4.0 through v0.7.0.  
+**Test Suite:** 383 tests across 78 targets (all green). **Python:** 3.10+ (3.9 EOL).
 
 > [!NOTE]
 > All critical and high-severity findings from `archive/REVIEW.*.md` (including ticket-based distributed locking, abandoned ticket cleanup, post-lock ref verification, exception propagation, GC lock fencing, pack index validation, surrogateescape paths, container PID isolation, D/F ref pruning, multi-spec pack batching, Git LFS transfer progress, safety guardrails, parallel ref enumeration, smart pack fetch filtering, disk-staged streaming, and modular helper decoupling) have been completed. All findings from the October 2026 review cycle (REVIEW.glm/gemini/qwen/VERIFY/BACKLOG, now archived) were verified fixed or explicitly dispositioned. Minor or low-priority items remain tracked in the backlog below. See [CHANGELOG.md](CHANGELOG.md) for detailed release notes.
@@ -98,6 +98,16 @@
 * **v0.6.2:** Case-insensitive `seafile://` and embedded-scheme parsing; `@`-in-component ref-name conformance; `RemoteConfig` genuinely wired into production (`cmd_push` → lock + compaction); installer `move=` compat via `inspect.signature`; loud `error unsupported` reply for unknown helper commands.
 * **v0.6.3 — Lock-Protocol Soundness:** `renew()` reads the ticket back before rewriting (a lapsed-and-taken-over lock is detected and refused, making the gc pre-deletion fence and the push pre-ref-write fence sound — reproduced with a stateful takeover test before the fix); lease renewal during gc pack downloads; non-zero `gc` exit on failed compaction; `order_ts`-based ticket ordering immune to renewal-induced mtime churn; gc deletion-failure reporting; env-credential mismatch named in the auth error.
 * **v0.6.4 — Review Closure:** Trap-1 clone guard resolves the clone destination from `GIT_DIR`/`GIT_WORK_TREE` (measured against real git), blocking clone-into-synced-library from outside it; implausible `seafile.*` config falls back to documented defaults with a warning; stale library-id cache guard; unknown entry-type and malformed-JSON warnings; `set-head` reports the replaced HEAD; e2e stub DELETE endpoint fidelity. All findings from the October 2026 review cycle (glm/gemini/qwen/VERIFY/BACKLOG) verified fixed or dispositioned and the reviews archived.
+
+---
+
+### Phase 4.8: v0.7.0 — Major Cleanup (Completed Deliverables)
+* **Test Suite Reorganization:** The 2,500-line `test_remote.py` monolith split into per-module files (`test_lock.py`, `test_gc.py`, `test_lfs.py`, `test_helper.py`), with client/config/url tests merged into their existing homes and duplicated coverage dropped.
+* **Legacy Single-File Lock Removal:** The deprecated `.git-lock.json` mirror — writes, reads, and deletions across `acquire`/`renew`/`release`/`get_status`/`unlock` — is gone; `.git-lock.d/` tickets are the only lock protocol, and `acquire()` deletes an orphaned mirror so repositories self-clean. **Breaking:** do not mix v0.7.0+ with a v0.1–v0.3 helper on one repository.
+* **Shared Pack-Download Path:** `packs.fetch_pack_artifact` owns the stream → capped-fallback → size-verify pattern previously duplicated across fetch and gc; gc's index downloads gain the size check fetch already had.
+* **API Surface Cleanup:** `normalize_netloc` is public in `url.py` (dependency now points client → url); `SeafileURL.to_tuple()` and `RemoteHelper._parse_url()` shims removed; `HEX_SHA_RE` is the single canonical SHA-pattern name; unused `run_git(cwd=)` kwarg dropped.
+* **Python 3.9 Dropped:** `requires-python >= 3.10`, CI matrix and classifiers updated (3.9 went EOL in October 2025).
+* **Small Cleanups:** `cli test` renders the ref listing for humans; the Windows launcher fails with a clear message when python is absent; README install instructions match reality (GitHub-based; PyPI publication pending); the contrib Qt patch described as a proposal.
 
 ---
 
