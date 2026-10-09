@@ -92,9 +92,9 @@ The pin is deliberate. An unpinned linter turns a green branch red overnight
 when a new rule ships, with a failure that says nothing about what changed here.
 Bumping it is a one-line diff.
 
-`target-version` is `py39`, matching `requires-python`, and it is enforced
-rather than decorative: a `match` statement anywhere in this repository fails
-the lint job with "Cannot use `match` statement on Python 3.9".
+`target-version` is `py310`, matching `requires-python`, and it is enforced
+rather than decorative: an `except*` clause (Python 3.11 syntax) anywhere in
+this repository fails the lint job.
 
 ---
 

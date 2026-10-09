@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import sys
 
-# The advertised minimum. The code uses str.removeprefix/str.removesuffix and
-# pathlib.Path.is_relative_to, which were all added in Python 3.9.
-# ``from __future__ import annotations`` defers annotation evaluation but cannot
-# backfill these runtime APIs, so 3.8 is genuinely unsupported -- just not at
-# import time. See check_python_version() below.
-MINIMUM_PYTHON: tuple[int, int] = (3, 9)
+# The advertised minimum. Python 3.9 reached end of life in October 2025;
+# supporting it would mean testing a variant of the release matrix that nobody
+# should run. The check below fails at import time so a source checkout (which
+# never consults requires-python) refuses loudly instead of raising a cryptic
+# AttributeError mid-operation.
+MINIMUM_PYTHON: tuple[int, int] = (3, 10)
 
 
 def check_python_version(version_info: tuple[int, int] | None = None) -> None:
@@ -30,9 +30,8 @@ def check_python_version(version_info: tuple[int, int] | None = None) -> None:
         minimum = ".".join(str(part) for part in MINIMUM_PYTHON)
         raise RuntimeError(
             f"git-remote-seafile requires Python {minimum} or newer "
-            f"(running {human}). Python 3.8 and older are not supported: the "
-            "code relies on str.removeprefix/str.removesuffix and "
-            "pathlib.Path.is_relative_to, which do not exist before 3.9."
+            f"(running {human}). Python 3.9 and older are not supported: "
+            "3.9 reached end of life in October 2025."
         )
 
 

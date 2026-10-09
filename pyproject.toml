@@ -16,14 +16,13 @@ dynamic = ["version"]
 description = "Transparent Git remote helper for Seafile servers"
 readme = "README.md"
 license = "Apache-2.0"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 keywords = ["seafile", "git", "remote-helper", "version-control", "cloud-storage"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
@@ -64,7 +63,7 @@ version = {attr = "git_remote_seafile.__version__"}
 #
 # This is the floor, not the interpreter: ruff uses it to decide which syntax
 # is legal, so it has to track requires-python.
-target-version = "py39"
+target-version = "py310"
 
 [tool.ruff.lint]
 select = ["F", "E9", "B"]

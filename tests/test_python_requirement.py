@@ -1,9 +1,9 @@
 """test_python_requirement.py - The advertised Python floor must be enforced.
 
-The project documents "Python 3.9+" and uses runtime APIs that do not exist on
-3.8 (``str.removeprefix``/``str.removesuffix``, ``pathlib.Path.is_relative_to``).
-``from __future__ import annotations`` defers annotation evaluation but cannot
-backfill those, so 3.8 genuinely fails -- just not at import time.
+The project documents "Python 3.10+" and refuses older interpreters loudly:
+3.9 reached end of life in October 2025, and ``requires-python`` is only
+consulted by installers -- a source checkout running the helper directly needs
+an explicit import-time guard.
 
 A source checkout (``git clone`` + run the helper directly) never consults
 ``requires-python``, so without an explicit guard the user gets a cryptic
@@ -21,24 +21,24 @@ from git_remote_seafile import MINIMUM_PYTHON, check_python_version
 
 
 class TestPythonVersionGuard(unittest.TestCase):
-    def test_minimum_is_3_9(self):
-        self.assertEqual(MINIMUM_PYTHON, (3, 9))
+    def test_minimum_is_3_10(self):
+        self.assertEqual(MINIMUM_PYTHON, (3, 10))
 
-    def test_rejects_python_38(self):
+    def test_rejects_python_39(self):
         with self.assertRaises(RuntimeError) as ctx:
-            check_python_version((3, 8))
+            check_python_version((3, 9))
         message = str(ctx.exception)
+        self.assertIn("3.10", message)
         self.assertIn("3.9", message)
-        self.assertIn("3.8", message)
 
     def test_rejects_everything_older(self):
-        for version in [(2, 7), (3, 0), (3, 6), (3, 7), (3, 8)]:
+        for version in [(2, 7), (3, 0), (3, 6), (3, 7), (3, 8), (3, 9)]:
             with self.subTest(version=version):
                 with self.assertRaises(RuntimeError):
                     check_python_version(version)
 
     def test_accepts_supported_versions(self):
-        for version in [(3, 9), (3, 10), (3, 12), (3, 13), (4, 0)]:
+        for version in [(3, 10), (3, 11), (3, 12), (3, 13), (4, 0)]:
             with self.subTest(version=version):
                 check_python_version(version)  # must not raise
 

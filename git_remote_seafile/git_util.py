@@ -88,7 +88,6 @@ def is_ancestor(ancestor_sha: str, descendant_sha: str) -> bool:
 
 
 HEX_SHA_RE = re.compile(r"^[0-9a-fA-F]{40}(?:[0-9a-fA-F]{24})?$")
-_HEX_SHA_RE = HEX_SHA_RE
 
 
 def filter_existing_objects(shas: list[str] | str | None) -> list[str]:
@@ -101,7 +100,7 @@ def filter_existing_objects(shas: list[str] | str | None) -> list[str]:
         return []
     if isinstance(shas, str):
         shas = [shas]
-    candidates = [s for s in dict.fromkeys(shas) if s and _HEX_SHA_RE.match(s)]
+    candidates = [s for s in dict.fromkeys(shas) if s and HEX_SHA_RE.match(s)]
     if not candidates:
         return []
 

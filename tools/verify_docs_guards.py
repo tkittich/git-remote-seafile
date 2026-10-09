@@ -45,12 +45,12 @@ def everywhere(needle, replacement):
 scenario(
     "README badge still advertises 3.8",
     "TestPythonFloor.test_readme_badge_matches",
-    {"README.md": [("python-3.9+-blue.svg", "python-3.8+-blue.svg")]},
+    {"README.md": [("python-3.10+-blue.svg", "python-3.9+-blue.svg")]},
 )
 scenario(
     "CI matrix drops the floor version",
     "TestPythonFloor.test_ci_tests_the_floor",
-    {".github/workflows/ci.yml": [('["3.9", "3.10"', '["3.10", "3.11"')]},
+    {".github/workflows/ci.yml": [('["3.10", "3.11"', '["3.11", "3.12"')]},
 )
 scenario(
     "a config key the code reads is undocumented",

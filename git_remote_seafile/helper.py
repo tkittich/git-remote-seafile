@@ -21,7 +21,6 @@ from .safety import check_preflight_safety, SafetyError
 from .url import parse_seafile_url
 from .git_util import (
     HEX_SHA_RE,
-    _HEX_SHA_RE,
     create_packfile,
     filter_existing_objects,
     get_objects_to_push,
@@ -517,7 +516,7 @@ class RemoteHelper:
             requested_shas: list[str] = []
             for spec in fetch_specs:
                 parts = spec.split()
-                if parts and _HEX_SHA_RE.match(parts[0]):
+                if parts and HEX_SHA_RE.match(parts[0]):
                     requested_shas.append(parts[0])
                 else:
                     requested_shas = []

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import sys
 from pathlib import Path
 from .helper import RemoteHelper
@@ -122,7 +123,21 @@ def main() -> int:
             print(f"Library     : {helper.library_name} (ID: {helper.repo_id})")
             print(f"Remote Path : {helper.repo_path}")
             print("Fetching remote ref list...")
-            helper.cmd_list()
+            # cmd_list writes the wire protocol (and enforces the empty-repo
+            # guard); capture it and render the listing for humans instead.
+            import contextlib
+
+            protocol = io.StringIO()
+            with contextlib.redirect_stdout(protocol):
+                helper.cmd_list()
+            for line in protocol.getvalue().splitlines():
+                if not line.strip() or line.startswith(":"):
+                    continue
+                if line.startswith("@"):
+                    print(f"  HEAD -> {line[1:].split(' ', 1)[0]}")
+                else:
+                    sha, _, name = line.partition(" ")
+                    print(f"  {name} {sha}")
             print("Connection successful!")
 
             from .safety import check_preflight_safety, SafetyError
