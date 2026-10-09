@@ -157,6 +157,16 @@ class TestGitUtilWithRealGit(unittest.TestCase):
         self.assertEqual(filter_existing_objects([]), [])
         self.assertEqual(filter_existing_objects(None), [])
 
+    def test_filter_existing_objects_ignores_input_that_is_not_a_sha(self):
+        """A malformed SHA must not become an exclusion.
+
+        The result feeds ``git rev-list ... ^<sha>``, so returning a bad value
+        here would *exclude* the wrong objects from a push -- the direction that
+        loses data rather than merely wasting bandwidth.  Garbage in has to mean
+        "exclude nothing", and it should not reach a subprocess at all.
+        """
+        self.assertEqual(filter_existing_objects(["not-a-sha", "", "zzzz"]), [])
+
     def test_create_and_install_packfile(self):
         c1 = rev_parse("HEAD")
         objs = get_objects_to_push(c1)
@@ -313,6 +323,99 @@ class TestInstallPackfileAtomicity(unittest.TestCase):
             pack_dir = Path(td) / "objects" / "pack"
             all_files = sorted(p.name for p in pack_dir.iterdir()) if pack_dir.is_dir() else []
             self.assertEqual(all_files, [], f"stray files left in the pack directory: {all_files}")
+
+
+class TestInstallPackfileStagedInputs(unittest.TestCase):
+    """install_packfile also accepts paths, and must not silently copy them.
+
+    The streaming fetch path stages a multi-gigabyte pack on disk precisely to
+    avoid buffering it in memory.  Re-copying it at install time would undo the
+    reason the staging exists, so ``move=True`` has to *consume* the staged
+    files rather than leave duplicates behind -- a branch the in-memory tests
+    never reach, because they pass ``bytes``.
+    """
+
+    def _bare_repo(self, td: str) -> Path:
+        bare_dir = Path(td)
+        subprocess.run(["git", "init", "--bare", str(bare_dir)], check=True, capture_output=True)
+        return bare_dir
+
+    def _stage(self, stage_td: str, objs: list[str]) -> tuple[str, Path, Path]:
+        """Write a pack/idx pair into *stage_td*; return (name, pack, idx).
+
+        Built from ``create_packfile``'s in-memory output rather than its
+        ``staged_dir=`` argument on purpose.  That argument makes git stage the
+        pack inside the *repository's* ``objects/pack`` and then rename it to
+        the requested directory, which fails with "Improper link" (EXDEV)
+        whenever that directory is on another drive -- the constraint
+        ``git_util.py:217-219`` documents, and which the production caller
+        avoids by staging inside the git dir (``helper.py:320``).  The subject
+        here is ``install_packfile``'s handling of *paths*, so the files are
+        written wherever the test wants them.
+        """
+        pack_sha, pack_bytes, idx_bytes = create_packfile(objs)
+        pack_name = f"pack-{pack_sha}.pack"
+        staged_pack = Path(stage_td) / pack_name
+        staged_idx = Path(stage_td) / f"pack-{pack_sha}.idx"
+        staged_pack.write_bytes(pack_bytes)
+        staged_idx.write_bytes(idx_bytes)
+        return pack_name, staged_pack, staged_idx
+
+    def test_install_from_staged_paths_moves_them(self):
+        objs = get_objects_to_push(rev_parse("HEAD"))
+
+        with tempfile.TemporaryDirectory() as td, tempfile.TemporaryDirectory() as stage_td:
+            bare_dir = self._bare_repo(td)
+            pack_name, staged_pack, staged_idx = self._stage(stage_td, objs)
+
+            with patch("git_remote_seafile.git_util.get_git_dir", return_value=bare_dir):
+                install_packfile(pack_name, staged_pack, staged_idx, move=True)
+
+            pack_dir = bare_dir / "objects" / "pack"
+            self.assertTrue((pack_dir / pack_name).is_file())
+            self.assertTrue((pack_dir / staged_idx.name).is_file())
+            self.assertFalse(staged_pack.exists(), "move=True left the staged pack behind")
+            self.assertFalse(staged_idx.exists(), "move=True left the staged index behind")
+
+    def test_install_from_staged_paths_copies_them_when_not_moving(self):
+        """move=False must leave the caller's staged files alone.
+
+        The fetch path may want to retry an install, so the default has to be
+        non-destructive: the staged copy belongs to the caller, not to us.
+        """
+        objs = get_objects_to_push(rev_parse("HEAD"))
+
+        with tempfile.TemporaryDirectory() as td, tempfile.TemporaryDirectory() as stage_td:
+            bare_dir = self._bare_repo(td)
+            pack_name, staged_pack, staged_idx = self._stage(stage_td, objs)
+
+            with patch("git_remote_seafile.git_util.get_git_dir", return_value=bare_dir):
+                install_packfile(pack_name, staged_pack, staged_idx)
+
+            pack_dir = bare_dir / "objects" / "pack"
+            self.assertTrue((pack_dir / pack_name).is_file())
+            self.assertTrue(staged_pack.exists(), "the default must not consume the staged pack")
+            self.assertTrue(staged_idx.exists(), "the default must not consume the staged index")
+
+    def test_a_pack_whose_index_cannot_be_rebuilt_is_rejected(self):
+        """Discarding a bad index is best-effort; rebuilding it is not.
+
+        When the supplied index fails verification it is thrown away and git is
+        asked to regenerate one.  If that fails too there is nothing safe to
+        publish, so the install must raise rather than leave an unindexed pack
+        at the final path.  The discard is allowed to fail as well -- Windows
+        can hold the file open -- and must not mask the real error.
+        """
+        with tempfile.TemporaryDirectory() as td:
+            bare_dir = self._bare_repo(td)
+
+            with patch("git_remote_seafile.git_util.get_git_dir", return_value=bare_dir), patch(
+                "pathlib.Path.unlink", side_effect=OSError("in use")
+            ):
+                with self.assertRaises(GitError) as ctx:
+                    install_packfile("pack-badcafe.pack", b"not a pack", b"not an index")
+
+            self.assertIn("index-pack failed", str(ctx.exception))
 
 
 class TestCleanGitEnv(unittest.TestCase):

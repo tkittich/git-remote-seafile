@@ -724,5 +724,46 @@ class TestCLILockManagement(unittest.TestCase):
             mock_helper.run.assert_called_once()
 
 
+class TestModuleEntryPoint(unittest.TestCase):
+    """``python -m git_remote_seafile`` is a documented way to run the tool.
+
+    The CHANGELOG advertises it ("to allow running the tool directly via
+    ``python -m git_remote_seafile``"), so the wiring has to keep working: the
+    module must reach ``cli.main`` and hand its return value to ``sys.exit``,
+    because that exit status is what the shell -- and git -- actually sees.
+
+    Run through ``runpy`` rather than a subprocess on purpose: a child process's
+    coverage is invisible to the parent run, so a subprocess test would leave
+    ``__main__.py`` at 0% while claiming to cover it.
+    """
+
+    def test_running_the_module_dispatches_to_the_cli(self):
+        import runpy
+
+        with patch("sys.argv", ["git-remote-seafile", "--version"]), patch(
+            "git_remote_seafile.cli.main", return_value=0
+        ) as mock_main, patch("sys.exit") as mock_exit:
+            runpy.run_module("git_remote_seafile.__main__", run_name="__main__")
+
+        mock_main.assert_called_once()
+        mock_exit.assert_called_once_with(0)
+
+    def test_a_failing_command_still_sets_a_nonzero_exit_status(self):
+        """A non-zero return from main must reach sys.exit unchanged.
+
+        If the entry point swallowed the status, every failure -- a locked
+        repository, an unreachable server, a bad URL -- would look like success
+        to any script driving the tool.
+        """
+        import runpy
+
+        with patch("sys.argv", ["git-remote-seafile", "test", "seafile://code/repo"]), patch(
+            "git_remote_seafile.cli.main", return_value=3
+        ), patch("sys.exit") as mock_exit:
+            runpy.run_module("git_remote_seafile.__main__", run_name="__main__")
+
+        mock_exit.assert_called_once_with(3)
+
+
 if __name__ == "__main__":
     unittest.main()
