@@ -1034,7 +1034,7 @@ class TestFetchFailureIsLoud(unittest.TestCase):
 
             client = MagicMock()
             client.list_dir.return_value = [{"name": "pack-1.pack", "size": 10}]
-            def fake_download_file_to(repo_id, path, dest):
+            def fake_download_file_to(repo_id, path, dest, progress_callback=None):
                 Path(dest).write_bytes(b"0123456789")
                 return True
             client.download_file_to.side_effect = fake_download_file_to

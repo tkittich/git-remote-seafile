@@ -8,11 +8,11 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from .client import SeafileClient
+from .client import SeafileAPIError, SeafileClient
 from .config import RemoteConfig
 from .git_util import clean_git_env
 from .lock import RemoteLock
-from .packs import is_valid_pack_name, MAX_IN_MEMORY_PACK_BYTES
+from .packs import fetch_pack_artifact, is_valid_pack_name
 from .refs import REF_NAMESPACES, iter_refs
 
 
@@ -117,57 +117,48 @@ def compact_repository(
                 expected_size = pack_sizes.get(pack_name)
 
                 # Stream packfile directly to disk, falling back to get_file_bytes if needed.
-                downloaded = False
-                if hasattr(client, "download_file_to"):
-                    try:
-                        downloaded = bool(client.download_file_to(
-                            repo_id, f"{pack_dir}/{pack_name}", pack_file,
-                            progress_callback=on_download_progress,
-                        )) and pack_file.is_file()
-                    except Exception as exc:
-                        sys.stderr.write(f"Warning: streaming download of {pack_name} failed: {exc}\n")
-                        downloaded = False
-                if not downloaded:
-                    if expected_size is not None and expected_size > MAX_IN_MEMORY_PACK_BYTES:
-                        return {
-                            "status": "error",
-                            "message": f"Packfile {pack_name} ({expected_size} bytes) exceeds in-memory buffer limit ({MAX_IN_MEMORY_PACK_BYTES} bytes) and streaming failed.",
-                        }
-                    pack_bytes = client.get_file_bytes(repo_id, f"{pack_dir}/{pack_name}")
-                    if not pack_bytes:
-                        return {
-                            "status": "error",
-                            "message": f"Failed to download {pack_name} during compaction; aborting compaction to prevent data loss.",
-                        }
-                    pack_file.write_bytes(pack_bytes)
-
-                if expected_size is not None and pack_file.stat().st_size != expected_size:
+                try:
+                    reason = fetch_pack_artifact(
+                        client, repo_id, f"{pack_dir}/{pack_name}", pack_file,
+                        expected_size=expected_size, progress_callback=on_download_progress,
+                    )
+                except SeafileAPIError as exc:
+                    # The in-memory-fallback ceiling: convert to the same
+                    # fail-closed error dict as every other download failure.
+                    return {"status": "error", "message": str(exc)}
+                if reason == "truncated":
                     return {
                         "status": "error",
                         "message": f"Packfile {pack_name} downloaded size ({pack_file.stat().st_size}) does not match expected size ({expected_size}); aborting compaction.",
+                    }
+                if reason is not None:
+                    return {
+                        "status": "error",
+                        "message": f"Failed to download {pack_name} during compaction; aborting compaction to prevent data loss.",
                     }
 
                 downloaded_packs.append(pack_name)
                 total_old_bytes += pack_file.stat().st_size
 
-                idx_downloaded = False
-                if hasattr(client, "download_file_to"):
+                # A missing or truncated index is regenerable locally; only a
+                # size mismatch is worth telling the user about.
+                try:
+                    idx_reason = fetch_pack_artifact(
+                        client, repo_id, f"{pack_dir}/{idx_name}", idx_file,
+                        expected_size=pack_sizes.get(idx_name), progress_callback=on_download_progress,
+                    )
+                except SeafileAPIError as exc:
+                    return {"status": "error", "message": str(exc)}
+                if idx_reason == "truncated":
+                    sys.stderr.write(f"Warning: downloaded {idx_name} size mismatch; will regenerate locally.\n")
+                    sys.stderr.flush()
                     try:
-                        idx_downloaded = bool(client.download_file_to(
-                            repo_id, f"{pack_dir}/{idx_name}", idx_file,
-                            progress_callback=on_download_progress,
-                        )) and idx_file.is_file()
-                    except Exception as exc:
-                        sys.stderr.write(f"Warning: streaming download of {idx_name} failed: {exc}\n")
-                        idx_downloaded = False
-                if not idx_downloaded:
-                    idx_bytes = client.get_file_bytes(repo_id, f"{pack_dir}/{idx_name}")
-                    if idx_bytes:
-                        idx_file.write_bytes(idx_bytes)
-                        idx_downloaded = True
+                        idx_file.unlink(missing_ok=True)
+                    except Exception:
+                        pass
 
                 verified = False
-                if idx_downloaded and idx_file.is_file():
+                if idx_file.is_file():
                     res = subprocess.run(
                         ["git", "verify-pack", "-v", str(idx_file)],
                         capture_output=True,
