@@ -401,6 +401,21 @@ class RemoteLock:
                         w_time = float(winner.get("timestamp", 0))
                         w_lease = float(winner.get("lease", self.lease))
                     except (ValueError, TypeError):
+                        # Cannot fire while acquire() only scans with reap=True,
+                        # and that is worth stating rather than leaving a reader
+                        # to wonder: _is_lock_active parses these same two
+                        # fields with the same call, and its single `except`
+                        # zeroes *both* on any failure -- so a ticket with a
+                        # malformed field is already reaped and never becomes a
+                        # winner.  Verified: a ticket with a future timestamp
+                        # and a garbage lease is reaped, not treated as active.
+                        #
+                        # Kept because the premise is real one call away:
+                        # _scan_tickets(reap=False) -- the lock_status path --
+                        # appends tickets *without* the active check, so a
+                        # malformed one does come back that way.  This is the
+                        # only thing between such a ticket and a ValueError
+                        # escaping acquire() if the scan is ever reused here.
                         w_time = 0.0
                         w_lease = 0.0
                     winner_exp = w_time + w_lease

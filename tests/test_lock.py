@@ -287,6 +287,59 @@ class TestConcurrencyAndLocking(unittest.TestCase):
         self.assertTrue(lock.acquired)
         self.assertNotIn("/path/.git-lock.d/alice-nonce.json", store.files)
 
+    def test_a_future_timestamp_with_a_garbage_lease_is_still_reaped(self):
+        """The invariant that keeps acquire()'s own malformed-winner guard dead.
+
+        `_is_lock_active` parses `timestamp` and `lease` inside one `try`, so a
+        failure on *either* zeroes **both**.  A ticket claiming to expire in an
+        hour but carrying a non-numeric lease would otherwise look active, and
+        would then be the winner `acquire()` parses for its own expiry message
+        -- the `except (ValueError, TypeError)` that cannot fire today.  It is
+        reaped instead.  This test is what pins that, so the guard's deadness is
+        a recorded property rather than an assumption.
+        """
+        store = _SharedLockStore()
+        store.put_ticket("/path/.git-lock.d/alice-nonce.json", {
+            "owner": "alice",
+            "machine": "nodeA",
+            "nonce": "alice-nonce",
+            "timestamp": time.time() + 3600,  # would be active ...
+            "lease": "NOT_A_NUMBER",          # ... if the except did not zero both
+        })
+
+        lock = RemoteLock(store.client("token123"), "repo1", "/path", timeout=5, lease=60, settle=0)
+        lock.acquire()
+
+        self.assertTrue(lock.acquired, "a malformed lease must not make a ticket active")
+        self.assertNotIn("/path/.git-lock.d/alice-nonce.json", store.files)
+
+    def test_the_read_only_scan_does_surface_a_malformed_ticket(self):
+        """Why `acquire()` keeps a guard it cannot reach.
+
+        With `reap=False` -- the lock_status path -- tickets are appended
+        without the active check, so a malformed one *does* come back.  That is
+        the guard's premise, and it is real; `acquire()` scanning only with
+        `reap=True` is the sole reason the guard is dead.  Without this test the
+        comment in `acquire()` would be an unfalsifiable claim.
+        """
+        store = _SharedLockStore()
+        store.put_ticket("/path/.git-lock.d/alice-nonce.json", {
+            "owner": "alice",
+            "machine": "nodeA",
+            "nonce": "alice-nonce",
+            "timestamp": "INVALID_TIMESTAMP",
+            "lease": "NOT_A_NUMBER",
+        })
+
+        lock = RemoteLock(store.client("token123"), "repo1", "/path", timeout=5, lease=60, settle=0)
+        tickets = lock._scan_tickets(time.time(), reap=False)
+
+        self.assertEqual([t["nonce"] for t in tickets], ["alice-nonce"])
+        # ... and the fields the guard exists to parse really are unparseable,
+        # so an unguarded float() here would raise out of acquire().
+        with self.assertRaises(ValueError):
+            float(tickets[0]["timestamp"])
+
     def test_dead_pid_fast_reclaim_on_local_machine(self):
         """A lock held by the same machine with a dead PID should be fast-reclaimed."""
         store = _SharedLockStore()
@@ -646,6 +699,175 @@ class TestLockSettlementWindow(unittest.TestCase):
 
         self.assertTrue(lock.acquired)
         self.assertEqual(store.listings, 1)
+
+
+class _FlakyScanStore(_SharedLockStore):
+    """A store whose directory listing fails on selected calls.
+
+    Which call fails is what distinguishes the two retry loops in `acquire()`:
+    a failure on the *first* read is a transient scan error (reported as
+    "Failed to scan lock tickets"), while a failure on the *confirming* read
+    inside the settlement window is a different branch with its own message.
+    """
+
+    def __init__(self, fail_on: set[int]):
+        super().__init__()
+        self.fail_on = fail_on
+        self.listings = 0
+
+    def list_dir(self, repo_id, path):
+        self.listings += 1
+        if self.listings in self.fail_on:
+            raise RuntimeError("HTTP 500 internal server error")
+        return super().list_dir(repo_id, path)
+
+
+class TestLockAcquireFailurePaths(unittest.TestCase):
+    """The branches `acquire()` takes when the network is misbehaving.
+
+    Each of these ends in a different message, and the message is the point:
+    "Failed to acquire lock" (the upload never landed), "Failed to scan lock
+    tickets" (we cannot see the queue), "Failed to confirm lock ownership" (the
+    settlement re-read failed).  A wrong branch taken tells the user to debug a
+    concurrency problem they do not have.
+    """
+
+    def test_a_transient_upload_failure_is_retried_and_then_wins(self):
+        """A blip while depositing the ticket must not fail the push.
+
+        The upload is the first thing `acquire()` does, so before this retry a
+        single dropped connection was fatal to the whole push.
+        """
+        store = _SharedLockStore()
+        attempts: list[str] = []
+        real_upload = store.upload
+
+        def flaky_upload(repo_id, parent, filename, content, replace=True,
+                         progress_callback=None):
+            attempts.append(filename)
+            if len(attempts) == 1:
+                raise OSError("connection reset by peer")
+            return real_upload(repo_id, parent, filename, content, replace=replace)
+
+        client = store.client("token123")
+        client.upload_file.side_effect = flaky_upload
+
+        lock = RemoteLock(client, "repo1", "/path", timeout=30, lease=60, settle=0)
+        with patch("git_remote_seafile.lock.time.sleep"):
+            lock.acquire()
+
+        self.assertTrue(lock.acquired)
+        self.assertEqual(len(attempts), 2, "the failed upload must have been retried")
+        self.assertIn(f"/path/.git-lock.d/{lock._nonce}.json", store.files)
+
+    def test_an_upload_failure_that_outlasts_the_timeout_fails_closed(self):
+        client = MagicMock()
+        client.token = "token123"
+        client.get_file_text.return_value = None
+        client.upload_file.side_effect = OSError("connection reset by peer")
+
+        lock = RemoteLock(client, "repo1", "/path", timeout=0, lease=60, settle=0)
+        with self.assertRaises(RepositoryLockedError) as ctx:
+            lock.acquire()
+
+        self.assertFalse(lock.acquired)
+        # The transport error must survive into the message -- "failed to
+        # acquire" alone leaves the user with nothing to act on.
+        self.assertIn("Failed to acquire lock", str(ctx.exception))
+        self.assertIn("connection reset", str(ctx.exception))
+
+    def test_a_lock_error_from_the_upload_is_not_rewrapped(self):
+        """Wrapping it would replace a precise reason with a vague one.
+
+        A `RepositoryLockedError` carries the holder and the expiry; folding it
+        into "Failed to acquire lock: ..." reads as a transport fault and sends
+        the user looking in the wrong place.
+        """
+        client = MagicMock()
+        client.token = "token123"
+        client.get_file_text.return_value = None
+        client.upload_file.side_effect = RepositoryLockedError("held by 'bob' on 'nodeB'")
+
+        lock = RemoteLock(client, "repo1", "/path", timeout=0, lease=60, settle=0)
+        with self.assertRaises(RepositoryLockedError) as ctx:
+            lock.acquire()
+
+        self.assertEqual(str(ctx.exception), "held by 'bob' on 'nodeB'")
+
+    def test_a_transient_failure_scanning_the_queue_is_retried(self):
+        """The queue read fails once, then succeeds; the lock is still taken."""
+        store = _FlakyScanStore(fail_on={1})
+
+        lock = RemoteLock(store.client("token123"), "repo1", "/path",
+                          timeout=30, lease=60, settle=0)
+        with patch("git_remote_seafile.lock.time.sleep"), patch("sys.stderr", io.StringIO()):
+            lock.acquire()
+
+        self.assertTrue(lock.acquired)
+        self.assertGreaterEqual(store.listings, 2)
+
+    def test_a_scan_failure_that_outlasts_the_timeout_names_the_scan(self):
+        client = MagicMock()
+        client.token = "token123"
+        client.get_file_text.return_value = None
+        client.list_dir.side_effect = RuntimeError("HTTP 500 internal server error")
+
+        lock = RemoteLock(client, "repo1", "/path", timeout=0, lease=60, settle=0)
+        with self.assertRaises(RepositoryLockedError) as ctx:
+            lock.acquire()
+
+        self.assertIn("Failed to scan lock tickets", str(ctx.exception))
+
+    def test_a_lock_error_from_the_scan_is_not_rewrapped(self):
+        """Same contract as the upload path: a lock error keeps its identity.
+
+        Without the re-raise it would be reported as "Failed to scan lock
+        tickets: Repository is locked by ...", which reads as a listing fault
+        and buries the holder's name in the middle of the sentence.
+        """
+        client = MagicMock()
+        client.token = "token123"
+        client.get_file_text.return_value = None
+        client.list_dir.side_effect = RepositoryLockedError("held by 'bob' on 'nodeB'")
+
+        lock = RemoteLock(client, "repo1", "/path", timeout=0, lease=60, settle=0)
+        with self.assertRaises(RepositoryLockedError) as ctx:
+            lock.acquire()
+
+        self.assertEqual(str(ctx.exception), "held by 'bob' on 'nodeB'")
+
+    def test_a_transient_failure_during_the_settlement_rescan_is_retried(self):
+        """The D21 confirming read is its own retry loop, not the scan's.
+
+        Failing only the *confirming* read leaves the first read untouched, so
+        this cannot be satisfied by the scan's retry path.
+        """
+        store = _FlakyScanStore(fail_on={2})
+
+        lock = RemoteLock(store.client("token123"), "repo1", "/path",
+                          timeout=30, lease=60, settle=0.05)
+        with patch("git_remote_seafile.lock.time.sleep"), patch("sys.stderr", io.StringIO()):
+            lock.acquire()
+
+        self.assertTrue(lock.acquired)
+        # 1: decide, 2: confirm (fails), 3: decide again, 4: confirm.
+        self.assertGreaterEqual(store.listings, 4)
+
+    def test_a_rescan_failure_that_outlasts_the_timeout_says_so(self):
+        """Must not be reported as the queue being unreadable.
+
+        The first read succeeded here -- we had already concluded we were the
+        winner -- so "Failed to scan lock tickets" would misdescribe it.
+        """
+        store = _FlakyScanStore(fail_on=set(range(2, 100, 2)))  # every confirming read
+
+        lock = RemoteLock(store.client("token123"), "repo1", "/path",
+                          timeout=0, lease=60, settle=0.05)
+        with patch("git_remote_seafile.lock.time.sleep"):
+            with self.assertRaises(RepositoryLockedError) as ctx:
+                lock.acquire()
+
+        self.assertIn("Failed to confirm lock ownership", str(ctx.exception))
 
 
 if __name__ == "__main__":
