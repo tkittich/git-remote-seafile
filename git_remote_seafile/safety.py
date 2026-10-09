@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import fnmatch
 import os
+import sys
 from pathlib import Path
 
 from .git_util import get_git_config_bool, run_git
@@ -111,7 +112,14 @@ def read_seafile_ignore_rules(worktree: Path) -> list[str]:
             if stripped and not stripped.startswith("#"):
                 rules.append(stripped)
         return rules
-    except Exception:
+    except Exception as ex:
+        # Returning [] here is what makes Trap 2 tell the user to add a rule
+        # that may already be in the file, so say why the file was not read.
+        sys.stderr.write(
+            f"Warning: could not read {ignore_file} ({ex}); treating it as empty. "
+            f"Rules it contains will not be honoured for this run.\n"
+        )
+        sys.stderr.flush()
         return []
 
 

@@ -64,6 +64,26 @@ class TestSafetyGuardrails(unittest.TestCase):
             empty_path = tmppath / "sub"
             self.assertEqual(read_seafile_ignore_rules(empty_path), [])
 
+    def test_an_unreadable_ignore_file_says_so(self):
+        """Returning [] silently makes Trap 2 blame the wrong thing.
+
+        Trap 2 tells the user to add a rule to seafile-ignore.txt.  If the file
+        could not be *read*, that advice points at a file whose rule may already
+        be in it, so the warning is what separates "you forgot a rule" from "I
+        could not look".
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmppath = Path(tmpdir)
+            (tmppath / "seafile-ignore.txt").write_text("code/\n", encoding="utf-8")
+            with patch.object(Path, "read_text", side_effect=OSError("sharing violation")), \
+                 patch("sys.stderr", new_callable=io.StringIO) as mock_err:
+                rules = read_seafile_ignore_rules(tmppath)
+
+        self.assertEqual(rules, [])
+        self.assertIn("could not read", mock_err.getvalue())
+        self.assertIn("seafile-ignore.txt", mock_err.getvalue())
+        self.assertIn("sharing violation", mock_err.getvalue())
+
     def test_is_path_ignored(self):
         rules = ["code/", "seafile-git/", "/build/", "docs/*", "*.log"]
 

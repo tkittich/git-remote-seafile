@@ -169,7 +169,8 @@ Trap 1 therefore blocks clone and fetch as well. Trap 2 stays push-only **by des
 > The guard relies on `GIT_DIR`, which Git sets for every helper it spawns; only exotic invocations that suppress it can slip past, and the advice stands regardless: never keep working repositories inside synced libraries.
 
 #### 🛡️ Library Root Pollution Protection
-- Pushing directly to the library root (`seafile://Documents/`) is hard-blocked to prevent cluttering the top level with bare objects and refs.
+- A remote destination that resolves to the library root itself is refused with `Cannot use the library root '/' as a Git remote destination.` — bare objects and refs at the top level would clutter the library.
+- Note what *is* allowed: a URL with no path is not the root. `seafile://Documents` and `seafile://Documents/` both default to the `git-repo` subfolder (see §7), which is a normal destination. The refusal only fires when the path reduces to nothing, e.g. `seafile://Documents/%2F`.
 
 #### 🛡️ Library Typo Detection & Suggestions
 - If you misspell a library name in the remote URL (e.g. `seafile://docment/myproject`), the helper queries available libraries on the server and provides fuzzy-matched suggestions (`Did you mean: Documents?`).
@@ -421,9 +422,10 @@ Remotes use the `seafile://` URL scheme:
 | **Full URL** | `seafile://seafile.example.com/code/myproject` | Explicit server, library, and path |
 | **HTTPS scheme** | `seafile://https://seafile.example.com/code/myproject` | Fully qualified URL |
 | **Short URL** | `seafile://code/myproject` | Uses server from default configured account |
+| **No path** | `seafile://code` | Library with no path defaults to the `git-repo` subfolder — the same as `seafile://code/git-repo` |
 
 - **Library**: Name of the Seafile library (e.g. `code` or `Documents`) or the library UUID. **The library must exist on your Seafile server before pushing.** (Create it via the Seafile Web UI if you haven't already).
-- **Path**: Path inside the library where bare repository objects will reside.
+- **Path**: Path inside the library where bare repository objects will reside. Omitting it is allowed and means `git-repo`, so `seafile://code` and `seafile://code/` are the same remote as `seafile://code/git-repo`; only a URL whose path reduces to nothing at all (the library root itself) is refused.
 
 ---
 
@@ -538,7 +540,7 @@ By default, whenever you push, `git-remote-seafile` checks the number of remote 
   Tip: Run 'git-remote-seafile gc seafile://...' to optimize remote storage,
        or run 'git config seafile.autogc true' to enable automatic compaction.
   ```
-- Your normal pushes remain instant (<1s) without unexpected network delays.
+- Your normal pushes are unchanged by this check: it reads a directory listing and prints a tip, and adds no network round-trip to the transfer. (The one fixed cost on every push is the lock's settlement window — see §12.)
 
 ### 10.3 Opt-In Automatic Compaction (`seafile.autogc`)
 If you want `git-remote-seafile` to automatically run compaction during `git push` whenever the threshold is reached:
@@ -558,10 +560,10 @@ Understanding how `git-remote-seafile` handles complex Git workflows and remote 
 #### 1. Batch Commits (Pushing 1 vs. 100 Commits)
 - **$O(1)$ Network Overhead**: Whether you push 1 commit or 100 commits at once, Git discovers all reachable new objects and bundles them into **a single `.pack` and `.idx` pair**.
 - **Bandwidth Efficiency**: Git applies delta compression across commits locally before upload, minimizing upload size.
-- **Latency**: Pushes complete in <1s regardless of commit batch size.
+- **Latency**: the upload is a fixed 1–2 files regardless of commit batch size, so push time does not grow with the number of commits. A push does carry one fixed cost: the distributed lock's settlement window (§12, `seafile.locksettle`, default 1s), which is paid before the transfer starts.
 
 #### 2. Rollbacks & Force Pushes (`git reset --hard`, `git push --force`)
-- **Fast & Safe**: A force-push (`+refs/heads/main`) updates the remote branch ref to the older commit SHA in ~0.2s without uploading any unnecessary packfiles.
+- **Fast & Safe**: A force-push (`+refs/heads/main`) updates the remote branch ref to the older commit SHA without uploading any unnecessary packfiles.
 - **Storage Lifecycle & Pruning**: The rolled-back commits remain in existing packfiles as *unreachable (dangling) objects*. When compaction runs (`git-remote-seafile gc`), Git's reachability analysis **automatically prunes unreachable commits**, replacing remote packfiles with an optimized packfile. Note that while obsolete packfiles are removed from the repository immediately, raw block storage reclamation on the Seafile server requires the server administrator to run `seaf-gc` after the library's history retention window.
 
 #### 3. Branching & Multi-Branch Management
@@ -572,11 +574,11 @@ Understanding how `git-remote-seafile` handles complex Git workflows and remote 
 
 | Mode | Trigger | Push Latency | Concurrency Behavior | Best Use Case |
 | :--- | :--- | :--- | :--- | :--- |
-| **Notification Mode (Default)** | Remote reaches 20 packfiles | **<1s (zero delay)** | Terminal tip displayed; push never pauses | Daily development, interactive CLI usage |
+| **Notification Mode (Default)** | Remote reaches 20 packfiles | **No added delay** | Terminal tip displayed; push never pauses | Daily development, interactive CLI usage |
 | **Opt-in Auto-GC (`autogc true`)** | Remote reaches 20 packfiles | **3–7s on 20th push** | Repositories locked via `.git-lock.d/` ticket queue during repack | Fully automated maintenance, solo developers |
 
 > [!TIP]
-> **Recommendation**: Leave `seafile.autogc` disabled (the default) so your everyday workflow stays blazing fast (<1s). Run compaction manually (`git-remote-seafile gc seafile://...`) or as part of a scheduled CI job when convenient.
+> **Recommendation**: Leave `seafile.autogc` disabled (the default) so your everyday push stays interactive — no compaction pause on top of the lock's settlement window. Run compaction manually (`git-remote-seafile gc seafile://...`) or as part of a scheduled CI job when convenient.
 
 ---
 
@@ -661,12 +663,14 @@ Release a stale lock held by your machine, or forcibly break an abandoned lock:
 ```bash
 # Release cooperative lock held by your machine/account
 git-remote-seafile unlock seafile://code/myproject
-# Output: Unlocked repository seafile://code/myproject
+# Output: Unlocked repository at seafile://code/myproject.
 
 # Forcibly break any active lock (emergency recovery)
 git-remote-seafile unlock seafile://code/myproject --force
-# Output: Forcibly unlocked repository seafile://code/myproject
+# Output: Forcibly unlocked repository at seafile://code/myproject.
 ```
+
+Both forms accept the flag before or after the URL, and `--help` prints the syntax.
 
 ---
 
@@ -702,7 +706,7 @@ git-remote-seafile test seafile://code/myproject
 | `Seafile library not found: 'XYZ'` | Library not yet created, name typo, or permissions | Create the library via the Seafile Web UI, or verify spelling. The helper will suggest close matches. |
 | `HTTP 401 Unauthorized` | Invalid or expired token | Run `git-remote-seafile check-auth` and verify credentials in `~/.git-seafile.json`. |
 | `HTTP 403 Forbidden` on push | Read-only library permissions | Ensure your Seafile account has Read-Write permission on the target library. |
-| `fatal: remote locked by user@host` | Concurrent push in progress or stale lock | Wait for the other push to complete, or increase `seafile.locktimeout`. If a previous client crashed, the lock expires after its lease (`seafile.locklease`, default 60s). |
+| `Push failed: Repository is locked by '<owner>' on '<machine>'` | Another client is mid-push and holds the lock | Wait for that push to finish, or raise `seafile.locktimeout`. If the other client crashed, the lease expires on its own (`seafile.locklease`, default 60s). `git-remote-seafile lock-status <url>` names the holder; `unlock <url> --force` breaks a stale lock. |
 
 ---
 

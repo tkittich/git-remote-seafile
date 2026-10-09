@@ -292,8 +292,15 @@ class SeafileClient:
                 elif cfg_token and self.server_url and not cfg_server:
                     self.token = cfg_token
                     return
-            except Exception:
-                pass
+            except Exception as ex:
+                # Not fatal -- accounts.db may still authenticate -- but silence
+                # here means a user who mistyped a token in this file gets a
+                # bare 401 with no hint that their config was rejected.
+                sys.stderr.write(
+                    f"Warning: {config_path} could not be used ({ex}); "
+                    f"continuing with other credential sources.\n"
+                )
+                sys.stderr.flush()
 
         # 3. Read directly from local Seafile client accounts.db (Windows, Linux, macOS, seaf-cli)
         candidates = get_candidate_db_paths("accounts.db")

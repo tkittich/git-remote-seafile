@@ -35,6 +35,64 @@ class TestClientCredentials(unittest.TestCase):
                 self.assertEqual(client.server_url, "https://json.example.com")
                 self.assertEqual(client.token, "json-tok")
 
+    def test_a_malformed_config_file_says_so(self):
+        """A rejected config file used to be silent.
+
+        The search then continues to accounts.db, so the user sees a bare 401
+        with no hint that the file they just edited was thrown away.
+
+        Here nothing else can supply a server, so the constructor still has to
+        fail -- but the warning must be on stderr first, naming the file and
+        the parse error, or the user has no way to tell that their edit was
+        discarded rather than ignored.
+        """
+        with tempfile.TemporaryDirectory() as td:
+            fake_home = Path(td)
+            cfg_file = fake_home / ".git-seafile.json"
+            cfg_file.write_text("{ this is not json", encoding="utf-8")
+
+            with patch.dict("os.environ", {}, clear=True), \
+                 patch("pathlib.Path.home", return_value=fake_home), \
+                 patch("git_remote_seafile.client.get_candidate_db_paths", return_value=[]), \
+                 patch("sys.stderr", new_callable=io.StringIO) as mock_err:
+                with self.assertRaises(SeafileAuthError):
+                    SeafileClient(require_credentials=False)
+
+        warning = mock_err.getvalue()
+        self.assertIn("could not be used", warning)
+        self.assertIn(".git-seafile.json", warning)
+        # The parse error itself, not just "something went wrong" -- a user
+        # staring at a one-line JSON file needs the column number.
+        self.assertIn("line 1", warning)
+
+    def test_a_malformed_config_file_still_yields_to_accounts_db(self):
+        """The warning must not abort the search that follows it.
+
+        This is the case the warning was added for: the desktop client has a
+        working accounts.db, the user mistypes ~/.git-seafile.json, and the
+        old code silently fell through to accounts.db -- so the push worked
+        and the user never learned their edit had been discarded.
+        """
+        with tempfile.TemporaryDirectory() as td:
+            fake_home = Path(td)
+            (fake_home / ".git-seafile.json").write_text("{ this is not json", encoding="utf-8")
+            ccnet_dir = fake_home / "ccnet"
+            ccnet_dir.mkdir()
+            con = sqlite3.connect(str(ccnet_dir / "accounts.db"))
+            con.execute("CREATE TABLE Accounts (url TEXT, token TEXT, lastVisited INTEGER)")
+            con.execute("INSERT INTO Accounts VALUES ('https://db.example.com', 'db-tok', 1)")
+            con.commit()
+            con.close()
+
+            with patch.dict("os.environ", {}, clear=True), \
+                 patch("pathlib.Path.home", return_value=fake_home), \
+                 patch("sys.stderr", new_callable=io.StringIO) as mock_err:
+                client = SeafileClient()
+
+        self.assertEqual(client.server_url, "https://db.example.com")
+        self.assertEqual(client.token, "db-tok")
+        self.assertIn("could not be used", mock_err.getvalue())
+
     def test_load_credentials_posix_permission_warning(self):
         with tempfile.TemporaryDirectory() as td:
             fake_home = Path(td)

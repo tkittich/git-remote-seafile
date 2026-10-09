@@ -84,7 +84,7 @@ Here is how they compare:
 | **Privacy & Data Sovereignty** | SaaS: Code stored on 3rd-party servers; Self-hosted: Requires securing a new server stack. | **100% self-hosted & private.** Retains your existing Seafile permissions, SSL, and data retention policies. |
 | **Storage & Quotas** | GitHub: 1–2 GB repo soft limits; paid Git LFS bandwidth/storage tiers. | **Uses existing Seafile quota.** Store multi-GB datasets and models with built-in Git LFS custom transfer agent at no extra cost. |
 | **Web Code Review & PRs** | **Full web forge:** Pull requests, inline code comments, issue tracking, CI/CD runners (GitHub Actions / GitLab CI). | **VCS storage backend only.** No web code review UI or built-in CI runner (though CI can clone/push via API tokens). |
-| **Client Overhead** | Zero background churn. Normal Git Smart HTTP/SSH transport. | Zero background churn. Client-side packfile generation via REST API (`/api2`) (<1s pushes). |
+| **Client Overhead** | Zero background churn. Normal Git Smart HTTP/SSH transport. | Zero background churn. Client-side packfile generation via REST API (`/api2`); push cost is independent of commit count. |
 | **Multi-Machine Sync** | Standard `git push` / `git pull`. | Standard `git push` / `git pull` with cooperative distributed lease locking. |
 | **Best For** | Open-source projects, large teams needing code review & CI pipelines. | Personal projects, private research, proprietary code, multi-GB LFS assets, zero-maintenance self-hosted remotes. |
 

@@ -49,6 +49,13 @@ COMPARE_LINK = re.compile(
     r"(v\d+\.\d+\.\d+)\.\.\.(v\d+\.\d+\.\d+)$"
 )
 
+# The first tag whose GitHub Release is created by the automated workflow.
+# v0.1.0/v0.2.x predate it and have no notes file; everything from here on
+# is expected to have one.
+FIRST_AUTOMATED_RELEASE = "v0.3.0"
+
+_TAG_RE = re.compile(r"^v(\d+)\.(\d+)\.(\d+)$")
+
 _INVOKE_MARKER = "<<<INVOKE>>>"
 _BODY_MARKER = "<<<BODY>>>"
 _BODY_END_MARKER = "<<<ENDBODY>>>"
@@ -91,6 +98,18 @@ def _notes_files() -> list[pathlib.Path]:
 
 def _tag_of(path: pathlib.Path) -> str:
     return NOTES_FILENAME.match(path.name).group(1)
+
+
+def _version_key(tag: str) -> tuple[int, int, int] | None:
+    """Order tags numerically, or ``None`` if it is not a release tag.
+
+    String comparison would sort v0.10.0 before v0.9.0, which is a bug that
+    only shows up once the project reaches a tenth minor release.
+    """
+    match = _TAG_RE.match(tag)
+    if match is None:
+        return None
+    return (int(match.group(1)), int(match.group(2)), int(match.group(3)))
 
 
 def _find_bash() -> str | None:
@@ -294,6 +313,74 @@ class TestReleaseNotesFormat(unittest.TestCase):
                     match.group(1), existing,
                     f"{path.name} compares against {match.group(1)}, which is not a tag",
                 )
+
+
+def _released_tags() -> list[str] | None:
+    """Tags reachable from HEAD, or ``None`` when this clone cannot say.
+
+    ``--merged HEAD`` matters: a plain ``git tag -l`` also lists tags from
+    other branches and from commits that do not exist yet on the branch under
+    test, so checking the working tree against it would fail on an older
+    branch for a tag it has never seen.  Only tags that are ancestors of the
+    commit being tested were released from this line of history, and their
+    notes files must be present in its tree.
+    """
+    if shutil.which("git") is None:
+        return None
+    proc = subprocess.run(
+        ["git", "tag", "--merged", "HEAD", "-l"],
+        cwd=str(REPO_ROOT), capture_output=True, text=True,
+    )
+    if proc.returncode != 0:
+        return None
+    tags = proc.stdout.split()
+    # actions/checkout clones shallow and fetches no tags by default, whatever
+    # its major version.  CI passes `fetch-depth: 0` to keep this meaningful.
+    return tags or None
+
+
+class TestEveryTagHasReleaseNotes(unittest.TestCase):
+    """A tag with no notes file still gets a Release -- but an empty one.
+
+    ``create_github_release.sh`` falls back to ``gh release create
+    --generate-notes`` when ``<tag>.md`` is missing, so nothing *fails* and
+    nothing warns: the release simply appears with a bare commit list.  That
+    is how v0.6.2 shipped while every tag around it carries curated notes --
+    the tag was cut, its entry was written into CHANGELOG.md, and no file was
+    ever added here.  The gap is invisible from both ends, which is what makes
+    it worth a guard rather than a checklist.
+    """
+
+    def setUp(self):
+        self.tags = _released_tags()
+        if self.tags is None:
+            self.skipTest("no tags reachable from HEAD (shallow checkout?)")
+
+    def test_the_floor_is_a_real_released_tag(self):
+        # If the floor is ever retyped or the history is rewritten, fail here
+        # rather than silently exempting a whole range from the check below.
+        self.assertIn(
+            FIRST_AUTOMATED_RELEASE, self.tags,
+            f"{FIRST_AUTOMATED_RELEASE} is not reachable from HEAD, so the "
+            f"release-notes floor no longer means anything",
+        )
+
+    def test_every_release_since_the_floor_has_a_notes_file(self):
+        floor = _version_key(FIRST_AUTOMATED_RELEASE)
+        covered = {_tag_of(p) for p in _notes_files()}
+
+        missing = [
+            tag for tag in self.tags
+            if (key := _version_key(tag)) is not None and key >= floor
+            and tag not in covered
+        ]
+
+        self.assertEqual(
+            missing, [],
+            "these tags have no .github/release-notes/<tag>.md, so their "
+            "GitHub Release falls back to generated notes instead of a "
+            "curated body: " + ", ".join(missing),
+        )
 
 
 _ON_BLOCK_BEFORE = """\

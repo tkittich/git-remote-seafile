@@ -2,7 +2,7 @@
 
 **Baseline:** v0.7.0 (v0.7.0 release — major cleanup)  
 **Scope:** Active architectural backlog and milestones following releases v0.4.0 through v0.7.0.  
-**Test Suite:** 383 tests across 78 targets (all green). **Python:** 3.10+ (3.9 EOL).
+**Test Suite:** 400+ tests, all green (`tools/run_tests_parallel.py`). **Python:** 3.10+ (3.9 EOL).
 
 > [!NOTE]
 > All critical and high-severity findings from `archive/REVIEW.*.md` (including ticket-based distributed locking, abandoned ticket cleanup, post-lock ref verification, exception propagation, GC lock fencing, pack index validation, surrogateescape paths, container PID isolation, D/F ref pruning, multi-spec pack batching, Git LFS transfer progress, safety guardrails, parallel ref enumeration, smart pack fetch filtering, disk-staged streaming, and modular helper decoupling) have been completed. All findings from the October 2026 review cycle (REVIEW.glm/gemini/qwen/VERIFY/BACKLOG, now archived) were verified fixed or explicitly dispositioned. Minor or low-priority items remain tracked in the backlog below. See [CHANGELOG.md](CHANGELOG.md) for detailed release notes.
