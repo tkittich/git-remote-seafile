@@ -16,8 +16,10 @@ Everything here reads only:
   <seafile-data>/sync_error.db
   <ccnet>/logs/seafile.log   -> sync state machine (re-commit / upload cycles)
 
-Databases are copied to a temp dir before being opened, so a running client
-holding a lock can never be disturbed.  Nothing is ever written back.
+Databases are read through ``git_remote_seafile.sqlite_read.open_live_sqlite_ro``,
+which copies them (and their WAL sidecars) to a private temp dir before opening
+the copy read-only -- so a running client holding a lock can never be disturbed,
+and nothing is ever written back.  One implementation of that rule, not two.
 
 Why this exists: `git status` cannot tell you that the sync client recorded a
 conflict, and the client's error table is the only place that fact lives.
@@ -29,9 +31,7 @@ import datetime as dt
 import io
 import os
 import re
-import sqlite3
 import sys
-import tempfile
 from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -43,6 +43,7 @@ from git_remote_seafile.seafile_paths import (
     ccnet_dir,
     seafile_data,
 )
+from git_remote_seafile.sqlite_read import open_live_sqlite_ro
 
 # --------------------------------------------------------------------------
 # Sync error ids.  Authoritative source: haiwen/seafile include/seafile-error.h
@@ -101,64 +102,38 @@ def err_text(code: int) -> str:
 
 
 # --------------------------------------------------------------------------
-# Locating the client is re-exported from git_remote_seafile.seafile_paths
-# --------------------------------------------------------------------------
-
-
-
-from git_remote_seafile.sqlite_read import _copy_with_sidecars
-
-
-def open_ro(src: Path, tmpdir: Path):
-    """Copy a sqlite db to tmpdir, then open the copy read-only.
-
-    The client keeps these files open; copying first means we can never block
-    it or see a torn read. Sidecar files (-wal, -shm, -journal) are copied as well
-    so that WAL mode transactions are visible.
-    """
-    if not src.is_file():
-        return None
-    try:
-        dst = _copy_with_sidecars(src, tmpdir)
-    except OSError:
-        return None
-    return sqlite3.connect("file:%s?mode=ro" % dst.as_posix(), uri=True)
-
-
-# --------------------------------------------------------------------------
 # Commands
 # --------------------------------------------------------------------------
-def load_libs(ccnet: Path, tmpdir: Path):
+def load_libs(ccnet: Path):
     data = seafile_data(ccnet)
-    con = open_ro(data / "repo.db", tmpdir)
-    if con is None:
-        return data, []
-    props: dict[str, dict[str, str]] = {}
-    for repo_id, key, value in con.execute("select repo_id, key, value from RepoProperty"):
-        props.setdefault(repo_id, {})[key] = value
     libs = []
-    for repo_id, kv in props.items():
-        wt = kv.get("worktree")
-        if not wt:
-            continue
-        libs.append(
-            {
-                "repo_id": repo_id,
-                "worktree": Path(wt),
-                # NB: the RepoProperty key "sync-worktree-name" is a boolean
-                # flag ("true"), not a name - the library name is not stored
-                # client-side.  Use the worktree folder name.
-                "name": Path(wt).name,
-                "server": kv.get("server-url", ""),
-                "user": kv.get("username", ""),
-            }
-        )
-    con.close()
+    with open_live_sqlite_ro(data / "repo.db") as con:
+        if con is None:
+            return data, []
+        props: dict[str, dict[str, str]] = {}
+        for repo_id, key, value in con.execute("select repo_id, key, value from RepoProperty"):
+            props.setdefault(repo_id, {})[key] = value
+        for repo_id, kv in props.items():
+            wt = kv.get("worktree")
+            if not wt:
+                continue
+            libs.append(
+                {
+                    "repo_id": repo_id,
+                    "worktree": Path(wt),
+                    # NB: the RepoProperty key "sync-worktree-name" is a boolean
+                    # flag ("true"), not a name - the library name is not stored
+                    # client-side.  Use the worktree folder name.
+                    "name": Path(wt).name,
+                    "server": kv.get("server-url", ""),
+                    "user": kv.get("username", ""),
+                }
+            )
     return data, libs
 
 
-def cmd_libs(args, ccnet, tmpdir):
-    data, libs = load_libs(ccnet, tmpdir)
+def cmd_libs(args, ccnet):
+    data, libs = load_libs(ccnet)
     print("seafile-data : %s" % data)
     print("logs         : %s" % (ccnet / "logs"))
     print()
@@ -174,9 +149,9 @@ def cmd_libs(args, ccnet, tmpdir):
     return 0
 
 
-def cmd_where(args, ccnet, tmpdir):
+def cmd_where(args, ccnet):
     target = Path(args.path).resolve()
-    _, libs = load_libs(ccnet, tmpdir)
+    _, libs = load_libs(ccnet)
     for lib in libs:
         try:
             rel = target.relative_to(lib["worktree"].resolve())
@@ -195,45 +170,43 @@ def cmd_where(args, ccnet, tmpdir):
     return 0
 
 
-def cmd_errors(args, ccnet, tmpdir):
+def cmd_errors(args, ccnet):
     data = seafile_data(ccnet)
-    con = open_ro(data / "repo.db", tmpdir)
-    if con is None:
-        print("repo.db not readable")
-        return 1
-    cutoff = None
-    if args.days:
-        cutoff = dt.datetime.now().timestamp() - args.days * 86400
-    rows = list(
-        con.execute(
-            "select repo_name, path, err_id, timestamp from FileSyncError order by timestamp"
+    with open_live_sqlite_ro(data / "repo.db") as con:
+        if con is None:
+            print("repo.db not readable")
+            return 1
+        cutoff = None
+        if args.days:
+            cutoff = dt.datetime.now().timestamp() - args.days * 86400
+        rows = list(
+            con.execute(
+                "select repo_name, path, err_id, timestamp from FileSyncError order by timestamp"
+            )
         )
-    )
-    if cutoff:
-        rows = [r for r in rows if (r[3] or 0) >= cutoff]
-    total = list(con.execute("select count(*) from FileSyncError"))[0][0]
-    print("%d sync errors in the client's table (%d shown)" % (total, len(rows)))
-    if not rows:
-        con.close()
-        return 0
-    by_code: dict[int, list] = {}
-    for r in rows:
-        by_code.setdefault(r[2], []).append(r)
-    print()
-    for code, group in sorted(by_code.items(), key=lambda kv: -len(kv[1])):
-        print("%s  (%d files)  err_id=%d" % (err_name(code), len(group), code))
-        print("    %s" % err_text(code))
-        days: dict[str, int] = {}
-        for _, _, _, ts in group:
-            key = dt.datetime.fromtimestamp(ts).strftime("%Y-%m-%d") if ts else "?"
-            days[key] = days.get(key, 0) + 1
-        print("    when: %s" % ", ".join("%s x%d" % (d, n) for d, n in sorted(days.items())))
-        for _, path, _, ts in group[: args.limit]:
-            print("      %s  %s" % (path or "<library level>", _ts(ts)))
-        if len(group) > args.limit:
-            print("      ... %d more" % (len(group) - args.limit))
+        if cutoff:
+            rows = [r for r in rows if (r[3] or 0) >= cutoff]
+        total = list(con.execute("select count(*) from FileSyncError"))[0][0]
+        print("%d sync errors in the client's table (%d shown)" % (total, len(rows)))
+        if not rows:
+            return 0
+        by_code: dict[int, list] = {}
+        for r in rows:
+            by_code.setdefault(r[2], []).append(r)
         print()
-    con.close()
+        for code, group in sorted(by_code.items(), key=lambda kv: -len(kv[1])):
+            print("%s  (%d files)  err_id=%d" % (err_name(code), len(group), code))
+            print("    %s" % err_text(code))
+            days: dict[str, int] = {}
+            for _, _, _, ts in group:
+                key = dt.datetime.fromtimestamp(ts).strftime("%Y-%m-%d") if ts else "?"
+                days[key] = days.get(key, 0) + 1
+            print("    when: %s" % ", ".join("%s x%d" % (d, n) for d, n in sorted(days.items())))
+            for _, path, _, ts in group[: args.limit]:
+                print("      %s  %s" % (path or "<library level>", _ts(ts)))
+            if len(group) > args.limit:
+                print("      ... %d more" % (len(group) - args.limit))
+            print()
     return 0
 
 
@@ -249,8 +222,8 @@ def _ts(ts) -> str:
 CONFLICT_RE = re.compile(r"^(?P<base>.*) \(SFConflict (?P<who>.*?) (?P<stamp>\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2})\)(?P<ext>\.[^.]*)?$")
 
 
-def cmd_conflicts(args, ccnet, tmpdir):
-    _, libs = load_libs(ccnet, tmpdir)
+def cmd_conflicts(args, ccnet):
+    _, libs = load_libs(ccnet)
     total = 0
     for lib in libs:
         wt = lib["worktree"]
@@ -291,7 +264,7 @@ def cmd_conflicts(args, ccnet, tmpdir):
 CYCLE_RE = re.compile(r"^\[(\d\d/\d\d/\d\d) (\d\d:\d\d:\d\d)\] (.*)$")
 
 
-def cmd_churn(args, ccnet, tmpdir):
+def cmd_churn(args, ccnet):
     """Count full re-commit/upload cycles per day, per library.
 
     A cycle is 'Removing blocks for repo X' -> 'Adding remaining files'.
@@ -341,7 +314,7 @@ def cmd_churn(args, ccnet, tmpdir):
     return 0
 
 
-def cmd_identity(args, ccnet, tmpdir):
+def cmd_identity(args, ccnet):
     """Machine identity + client version history.
 
     `seafile-data/id` is not a cache - it is the identity this machine
@@ -418,7 +391,7 @@ def cmd_identity(args, ccnet, tmpdir):
     return 0
 
 
-def cmd_report(args, ccnet, tmpdir):
+def cmd_report(args, ccnet):
     rc = 0
     for name, fn in (("LIBRARIES", cmd_libs), ("MACHINE IDENTITY", cmd_identity),
                      ("SYNC ERRORS", cmd_errors),
@@ -426,7 +399,7 @@ def cmd_report(args, ccnet, tmpdir):
         print("=" * 70)
         print(name)
         print("=" * 70)
-        rc |= fn(args, ccnet, tmpdir) or 0
+        rc |= fn(args, ccnet) or 0
         print()
     return rc
 
@@ -467,21 +440,19 @@ def main(argv=None):
     except (SeafileClientNotFoundError, FileNotFoundError) as exc:
         sys.stderr.write(f"Error: {exc}\n")
         return 1
-    with tempfile.TemporaryDirectory(prefix="seafile-doctor-") as td:
-        tmpdir = Path(td)
-        fn = {
-            "libs": cmd_libs,
-            "identity": cmd_identity,
-            "where": cmd_where,
-            "errors": cmd_errors,
-            "conflicts": cmd_conflicts,
-            "churn": cmd_churn,
-            "report": cmd_report,
-        }[args.cmd]
-        for attr, default in (("limit", 10), ("days", 10)):
-            if not hasattr(args, attr):
-                setattr(args, attr, default)
-        return fn(args, ccnet, tmpdir)
+    fn = {
+        "libs": cmd_libs,
+        "identity": cmd_identity,
+        "where": cmd_where,
+        "errors": cmd_errors,
+        "conflicts": cmd_conflicts,
+        "churn": cmd_churn,
+        "report": cmd_report,
+    }[args.cmd]
+    for attr, default in (("limit", 10), ("days", 10)):
+        if not hasattr(args, attr):
+            setattr(args, attr, default)
+    return fn(args, ccnet)
 
 
 if __name__ == "__main__":

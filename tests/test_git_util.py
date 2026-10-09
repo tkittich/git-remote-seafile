@@ -206,6 +206,43 @@ class TestGitUtilWithRealGit(unittest.TestCase):
             finally:
                 os.chdir(orig_cwd2)
 
+    def test_installing_a_pack_over_an_existing_name_succeeds(self):
+        """A re-install must not die on git's own read-only pack files.
+
+        git writes pack and index files read-only (0444) to protect them, and
+        on Windows ``os.replace`` onto a read-only destination fails with
+        ``PermissionError: [WinError 5]``.  Re-installing a name that was
+        already there -- a retry, or a forced re-fetch -- therefore raised a
+        permission error naming neither git nor the cause.  Latent today
+        (``cmd_fetch`` checks for the name before downloading) and fatal for
+        the first caller that retries.
+
+        The read-only bit is set explicitly so the test reproduces git's state
+        on every platform rather than only where the failure happens.
+        """
+        head = rev_parse("HEAD")
+        pack_sha, pack_bytes, idx_bytes = create_packfile(get_objects_to_push(head))
+
+        with tempfile.TemporaryDirectory() as td:
+            bare_dir = Path(td)
+            subprocess.run(["git", "init", "--bare", str(bare_dir)], check=True, capture_output=True)
+            orig_cwd = os.getcwd()
+            try:
+                os.chdir(str(bare_dir))
+                pack_name = f"pack-{pack_sha}.pack"
+                pack_dir = bare_dir / "objects" / "pack"
+                install_packfile(pack_name, pack_bytes, idx_bytes)
+                (pack_dir / pack_name).chmod(0o444)
+                (pack_dir / f"pack-{pack_sha}.idx").chmod(0o444)
+
+                install_packfile(pack_name, pack_bytes, idx_bytes)
+
+                self.assertTrue((pack_dir / pack_name).is_file())
+                _, _, code = run_git(["verify-pack", "-v", str(pack_dir / f"pack-{pack_sha}.idx")])
+                self.assertEqual(code, 0)
+            finally:
+                os.chdir(orig_cwd)
+
     def test_git_config_helpers(self):
         # Set config
         subprocess.run(["git", "config", "test.key", "some_value"], check=True)

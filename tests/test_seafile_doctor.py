@@ -93,7 +93,7 @@ class DoctorFixture(unittest.TestCase):
     def _run(self, fn, **overrides) -> str:
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
-            rc = fn(_args(**overrides), self.ccnet, self.tmp)
+            rc = fn(_args(**overrides), self.ccnet)
         self.rc = rc
         return buf.getvalue()
 
@@ -396,26 +396,57 @@ class TestCliSurface(unittest.TestCase):
                 self.assertIn(name, proc.stdout)
 
 
-class TestDoctorOpenRo(unittest.TestCase):
-    def test_open_ro_copies_wal_sidecar(self):
+class TestDoctorReadsLiveDatabases(unittest.TestCase):
+    """D22: one implementation of "read a live client db", and it closes up.
+
+    The doctor had its own copy of the copy-then-open-read-only logic, built on
+    the private ``_copy_with_sidecars``: two implementations of one rule, and a
+    connection closed by hand at two of its three exit paths.  It now goes
+    through the public context manager the rest of the package uses.
+    """
+
+    def _wal_db(self, td):
+        db = pathlib.Path(td) / "repo.db"
+        writer = sqlite3.connect(str(db))
+        writer.execute("PRAGMA journal_mode=wal")
+        writer.execute("CREATE TABLE Test (val TEXT)")
+        writer.execute("INSERT INTO Test VALUES ('wal_entry')")
+        writer.commit()
+        self.assertTrue((pathlib.Path(td) / "repo.db-wal").is_file())
+        return db, writer
+
+    def test_the_public_reader_sees_rows_still_in_the_wal(self):
         with tempfile.TemporaryDirectory() as td:
-            db = pathlib.Path(td) / "repo.db"
-            con = sqlite3.connect(str(db))
-            con.execute("PRAGMA journal_mode=wal")
-            con.execute("CREATE TABLE Test (val TEXT)")
-            con.execute("INSERT INTO Test VALUES ('wal_entry')")
-            con.commit()
+            db, writer = self._wal_db(td)
             try:
-                self.assertTrue((pathlib.Path(td) / "repo.db-wal").is_file())
-                with tempfile.TemporaryDirectory() as tmpdir:
-                    con_ro = doc.open_ro(db, pathlib.Path(tmpdir))
-                    self.assertIsNotNone(con_ro)
-                    rows = list(con_ro.execute("SELECT val FROM Test"))
-                    con_ro.close()
-                    self.assertEqual(rows, [("wal_entry",)])
-                    self.assertTrue((pathlib.Path(tmpdir) / "repo.db-wal").is_file())
+                with doc.open_live_sqlite_ro(db) as con:
+                    self.assertIsNotNone(con)
+                    self.assertEqual(list(con.execute("SELECT val FROM Test")), [("wal_entry",)])
             finally:
-                con.close()
+                writer.close()
+
+    def test_the_connection_is_closed_when_the_block_ends(self):
+        with tempfile.TemporaryDirectory() as td:
+            db, writer = self._wal_db(td)
+            try:
+                with doc.open_live_sqlite_ro(db) as con:
+                    self.assertIsNotNone(con)
+                with self.assertRaises(sqlite3.ProgrammingError):
+                    con.execute("SELECT 1")
+            finally:
+                writer.close()
+
+    def test_an_absent_database_yields_none(self):
+        with tempfile.TemporaryDirectory() as td:
+            with doc.open_live_sqlite_ro(pathlib.Path(td) / "missing.db") as con:
+                self.assertIsNone(con)
+
+    def test_the_doctor_does_not_reach_for_the_private_helper(self):
+        source = (
+            pathlib.Path(__file__).resolve().parent.parent / "tools" / "seafile_doctor.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn("open_live_sqlite_ro", source)
+        self.assertNotIn("_copy_with_sidecars", source)
 
 
 if __name__ == "__main__":

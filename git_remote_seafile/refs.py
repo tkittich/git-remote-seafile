@@ -129,4 +129,4 @@ def iter_refs(
                     yield ref_name, sha
 
 
-__all__ = ["REF_NAMESPACES", "iter_refs"]
+__all__ = ["REF_NAMESPACES", "is_valid_ref_name", "iter_refs"]

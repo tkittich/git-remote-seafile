@@ -257,6 +257,14 @@ def install_packfile(
     pack_dir = git_dir / "objects" / "pack"
     pack_dir.mkdir(parents=True, exist_ok=True)
 
+    # Name the repository explicitly, as filter_existing_objects does.  git
+    # only exports GIT_DIR when the helper is launched *by* git, and both of
+    # these commands need a repository as their context to know the object
+    # format: index-pack would otherwise write a SHA-1 index for a SHA-256
+    # pack, which is exactly the failure gc hit (D18/D24).  These are arguments
+    # to git, not a command line -- run_git() supplies the leading "git".
+    git_dir_args = ["--git-dir", str(git_dir)]
+
     base_name = pack_name.removesuffix(".pack").removesuffix(".idx")
     target_pack = pack_dir / f"{base_name}.pack"
     target_idx = pack_dir / f"{base_name}.idx"
@@ -288,22 +296,35 @@ def install_packfile(
             else:
                 staged_idx.write_bytes(idx_bytes)
             # Verify the index matches the packfile (N-5)
-            _, err, code = run_git(["verify-pack", "-v", str(staged_idx)])
+            _, err, code = run_git([*git_dir_args, "verify-pack", "-v", str(staged_idx)])
             if code != 0:
                 try:
                     staged_idx.unlink(missing_ok=True)
                 except Exception:
                     pass
-                _, err, code = run_git(["index-pack", "-o", str(staged_idx), str(staged_pack)])
+                _, err, code = run_git([*git_dir_args, "index-pack", "-o", str(staged_idx), str(staged_pack)])
                 if code != 0:
                     raise GitError(f"git index-pack failed on installed pack: {err.decode('utf-8', errors='replace')}")
         else:
             # Generate index locally
-            _, err, code = run_git(["index-pack", "-o", str(staged_idx), str(staged_pack)])
+            _, err, code = run_git([*git_dir_args, "index-pack", "-o", str(staged_idx), str(staged_pack)])
             if code != 0:
                 raise GitError(f"git index-pack failed on installed pack: {err.decode('utf-8', errors='replace')}")
 
         # Both artefacts are complete; publish them.
+        #
+        # git writes pack and index files read-only (0444) to protect them.  On
+        # Windows `os.replace` onto a read-only destination fails with
+        # "PermissionError: [WinError 5] Access is denied", so re-installing a
+        # name that is already there -- a retry, or a forced re-fetch -- died
+        # with a permission error naming neither git nor the cause.  POSIX
+        # rename only needs write permission on the directory, so this is
+        # Windows-only; clearing the bit is harmless everywhere else.
+        for target in (target_idx, target_pack):
+            try:
+                target.chmod(0o644)
+            except OSError:
+                pass  # absent, or on a filesystem that cannot express this
         os.replace(staged_idx, target_idx)
         os.replace(staged_pack, target_pack)
     finally:

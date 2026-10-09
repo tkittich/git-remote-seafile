@@ -51,10 +51,12 @@ class TestRemoteGC(unittest.TestCase):
         # so the client must serve the lock payloads it stored; every other
         # read is a ref file ("sha-main").
         lock_payloads: list[str] = []
+        ticket_paths: list[str] = []
 
         def fake_upload(repo_id, parent, filename, content, replace=True, progress_callback=None):
             if ".git-lock" in filename or ".git-lock.d" in parent:
                 lock_payloads.append(content.decode("utf-8"))
+                ticket_paths.append(f"{parent.rstrip('/')}/{filename}")
             return True
 
         mock_client.upload_file.side_effect = fake_upload
@@ -97,10 +99,26 @@ class TestRemoteGC(unittest.TestCase):
             # lock across multi-gigabyte transfers.
             for call in mock_client.download_file_to.call_args_list:
                 self.assertIsNotNone(call.kwargs.get("progress_callback"))
-            # Verify obsolete packs were deleted plus the lock release
-            # (4 obsolete files + the holder's ticket = 5; the legacy
-            # .git-lock.json mirror is gone as of v0.7.0)
-            self.assertEqual(mock_client.delete_entry.call_count, 5)
+            # Name what was deleted rather than counting it: a bare
+            # "call_count == 5" passes just as happily if gc removed the wrong
+            # five things.
+            deleted = [call.args[1] for call in mock_client.delete_entry.call_args_list]
+            self.assertEqual(
+                sorted(p for p in deleted if ".git-lock.d" not in p),
+                [
+                    "/path/objects/pack/pack-1.idx",
+                    "/path/objects/pack/pack-1.pack",
+                    "/path/objects/pack/pack-2.idx",
+                    "/path/objects/pack/pack-2.pack",
+                ],
+                "exactly the two obsolete packs and their indexes, and nothing else",
+            )
+            # ...plus the holder's own ticket, which the lock releases last.
+            self.assertTrue(ticket_paths, "the holder's ticket was never uploaded")
+            self.assertEqual(
+                sorted(set(p for p in deleted if ".git-lock.d" in p)),
+                sorted(set(ticket_paths)),
+            )
 
     @patch("subprocess.run")
     def test_gc_compaction_aborts_on_failed_pack_download(self, mock_subprocess):
