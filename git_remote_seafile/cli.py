@@ -7,6 +7,13 @@ import sys
 from pathlib import Path
 from .helper import RemoteHelper
 from .client import SeafileAuthError, SeafileClient
+from .lock import RemoteLock, RepositoryLockedError
+from .safety import (
+    SafetyError,
+    check_preflight_safety,
+    discover_local_synced_libraries,
+    get_local_work_tree,
+)
 
 
 def print_help() -> None:
@@ -79,7 +86,6 @@ def main() -> int:
             return 1
         url = args[1]
         try:
-            from .safety import check_preflight_safety, SafetyError, discover_local_synced_libraries, get_local_work_tree
             helper = RemoteHelper("check-safety", url)
             wt = get_local_work_tree()
             synced = discover_local_synced_libraries()
@@ -140,7 +146,6 @@ def main() -> int:
                     print(f"  {name} {sha}")
             print("Connection successful!")
 
-            from .safety import check_preflight_safety, SafetyError
             warnings = check_preflight_safety(helper.client, helper.library_name, helper.repo_path, push_mode=False)
             for w in warnings:
                 print(f"[Warning] {w}")
@@ -266,7 +271,6 @@ def main() -> int:
         url = args[1]
         try:
             helper = RemoteHelper("lock-status", url)
-            from .lock import RemoteLock
             lock = RemoteLock(helper.client, helper.repo_id, helper.repo_path)
             status = lock.get_status()
             if not status.get("locked"):
@@ -294,7 +298,6 @@ def main() -> int:
         force = "--force" in args
         try:
             helper = RemoteHelper("unlock", url)
-            from .lock import RemoteLock, RepositoryLockedError
             lock = RemoteLock(helper.client, helper.repo_id, helper.repo_path)
             lock.unlock(force=force)
             if force:
@@ -325,7 +328,6 @@ def main() -> int:
             return 1
 
         try:
-            from .safety import discover_local_synced_libraries
             synced_libs = discover_local_synced_libraries()
             for lib in synced_libs:
                 wt = lib["worktree"]

@@ -345,6 +345,35 @@ class TestClientAPI(unittest.TestCase):
         with self.assertRaises(SeafileAPIError):
             self.client.get_repo_id("nonexistent")
 
+    def test_get_repo_id_miss_suggests_close_names(self):
+        mock_resp = MagicMock(status_code=200)
+        mock_resp.json.return_value = [
+            {"id": "id-1", "name": "Documents"},
+            {"id": "id-2", "name": "Pictures"},
+        ]
+        self.client.session.get = MagicMock(return_value=mock_resp)
+
+        with self.assertRaises(SeafileAPIError) as ctx:
+            self.client.get_repo_id("docment")
+
+        msg = str(ctx.exception)
+        self.assertIn("Seafile library not found: 'docment'", msg)
+        self.assertIn("Did you mean: Documents", msg)
+        self.assertIn("Available libraries: Documents, Pictures", msg)
+
+    def test_get_repo_id_miss_without_close_match_still_lists_available(self):
+        mock_resp = MagicMock(status_code=200)
+        mock_resp.json.return_value = [{"id": "id-1", "name": "Documents"}]
+        self.client.session.get = MagicMock(return_value=mock_resp)
+
+        with self.assertRaises(SeafileAPIError) as ctx:
+            self.client.get_repo_id("zzzzzzzz")
+
+        msg = str(ctx.exception)
+        self.assertIn("Seafile library not found: 'zzzzzzzz'", msg)
+        self.assertNotIn("Did you mean", msg)
+        self.assertIn("Available libraries: Documents", msg)
+
     def test_get_repo_id_duplicate_owned_beats_shared(self):
         mock_resp = MagicMock(status_code=200)
         mock_resp.json.return_value = [

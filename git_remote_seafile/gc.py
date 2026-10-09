@@ -86,9 +86,25 @@ def compact_repository(
             # with a scrubbed environment: when a helper is launched by git,
             # GIT_DIR points at the caller's repository and overrides -C.
             scratch_env = clean_git_env()
-            subprocess.run(
-                ["git", "init", "--bare", str(bare_repo)], check=True, capture_output=True, env=scratch_env
-            )
+
+            # The scratch repository's object format must match the remote's.
+            # A SHA-256 remote's packs carry 64-hex object names, and a default
+            # (SHA-1) scratch repo cannot read them: index-pack rejects the pack
+            # ("pack is corrupted (SHA1 mismatch)") and repack then dies with
+            # "bad object refs/heads/main" on the mirrored 64-hex refs.  The
+            # pack *names* are the only format signal available before any pack
+            # is read -- a SHA-256 pack is named pack-<64 hex>.pack.
+            obj_format = "sha1"
+            for p_name in old_packs:
+                hex_part = p_name.removeprefix("pack-").removesuffix(".pack")
+                if len(hex_part) == 64:
+                    obj_format = "sha256"
+                    break
+            init_cmd = ["git", "init", "--bare"]
+            if obj_format == "sha256":
+                init_cmd.append("--object-format=sha256")
+            init_cmd.append(str(bare_repo))
+            subprocess.run(init_cmd, check=True, capture_output=True, env=scratch_env)
 
             local_pack_dir = bare_repo / "objects" / "pack"
             local_pack_dir.mkdir(parents=True, exist_ok=True)
@@ -157,10 +173,15 @@ def compact_repository(
                     except Exception:
                         pass
 
+                # verify-pack/index-pack run *inside* the scratch repo (-C) so
+                # they inherit its object format; the scrubbed env removes
+                # GIT_DIR, and without a repo context they default to SHA-1 and
+                # reject a SHA-256 pack.  -C is safe with the absolute paths used
+                # here.
                 verified = False
                 if idx_file.is_file():
                     res = subprocess.run(
-                        ["git", "verify-pack", "-v", str(idx_file)],
+                        ["git", "-C", str(bare_repo), "verify-pack", "-v", str(idx_file)],
                         capture_output=True,
                         env=scratch_env,
                     )
@@ -172,7 +193,7 @@ def compact_repository(
                     except Exception:
                         pass
                     subprocess.run(
-                        ["git", "index-pack", "-o", str(idx_file), str(pack_file)],
+                        ["git", "-C", str(bare_repo), "index-pack", "-o", str(idx_file), str(pack_file)],
                         check=True,
                         capture_output=True,
                         env=scratch_env,

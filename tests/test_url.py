@@ -108,6 +108,32 @@ class TestUrlParsingModule(unittest.TestCase):
         self.assertEqual(res4.library_name, "library-name")
         self.assertEqual(res4.repo_path, "/sub/project")
 
+    def test_bare_host_port_is_honoured(self):
+        """A port on the bare form is an explicit instruction, not a hint.
+
+        Regression: ``seafile://host:80/lib/repo`` used to come back as
+        ``https://host`` -- the port was stripped (as a comparison-oriented
+        normaliser does) and HTTPS forced onto it, silently redirecting the
+        request from :80 to :443.
+        """
+        res = parse_seafile_url("seafile://host:80/lib/repo")
+        self.assertEqual(res.server_url, "http://host")
+        self.assertEqual(res.library_name, "lib")
+        self.assertEqual(res.repo_path, "/repo")
+
+        self.assertEqual(parse_seafile_url("seafile://Host:443/lib/repo").server_url, "https://host")
+        self.assertEqual(parse_seafile_url("seafile://host:9000/lib/repo").server_url, "https://host:9000")
+        # A portless bare host keeps the documented HTTPS default.
+        self.assertEqual(parse_seafile_url("seafile://seafile.example.com/lib/repo").server_url,
+                         "https://seafile.example.com")
+
+    def test_bare_host_non_numeric_port_rejected(self):
+        """A malformed port must be a clear URL error, not a raw ValueError."""
+        with self.assertRaises(ValueError) as ctx:
+            parse_seafile_url("seafile://my:lib/a/b")
+        self.assertIn("Invalid Seafile URL format", str(ctx.exception))
+        self.assertIn("invalid port 'lib'", str(ctx.exception))
+
     def test_empty_host_explicit_scheme_rejected(self):
         for url in ("seafile://https:///lib/repo", "seafile://http:///lib/repo"):
             with self.subTest(url=url):

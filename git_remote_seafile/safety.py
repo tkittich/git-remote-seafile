@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import difflib
 import fnmatch
 import os
 from pathlib import Path
@@ -184,7 +183,10 @@ def check_preflight_safety(
             f"or 'seafile://{library_name}/seafile-git/myproject')."
         )
 
-    # 2. Check Library Existence / Typo
+    # 2. Confirm the library resolves.  RemoteHelper.__init__ already resolved
+    # it, so this is normally a cache hit.  The typo suggestion now lives in
+    # SeafileClient.get_repo_id (built from the listing it already fetched), so
+    # a miss is simply re-raised as a SafetyError rather than re-fetched here.
     target_repo_id = None
     if client:
         try:
@@ -192,30 +194,9 @@ def check_preflight_safety(
         except Exception as ex:
             err_msg = str(ex).lower()
             if "not found" in err_msg or "404" in err_msg:
-                # Try to list accessible libraries to give a helpful suggestion
-                try:
-                    resp = client.session.get(
-                        f"{client.server_url}/api2/repos/",
-                        timeout=getattr(client, "timeout", 30),
-                    )
-                    if resp.status_code == 200:
-                        available_libs = [r.get("name") for r in resp.json() if r.get("name")]
-                        suggestions = difflib.get_close_matches(library_name, available_libs, n=3, cutoff=0.5)
-                        sugg_str = ""
-                        if suggestions:
-                            sugg_str = f"\nDid you mean: {', '.join(suggestions)}?"
-                        avail_str = f"\nAvailable libraries: {', '.join(sorted(available_libs))}" if available_libs else ""
-                        raise SafetyError(
-                            f"Library '{library_name}' not found on {client.server_url}.{sugg_str}{avail_str}"
-                        )
-                except SafetyError:
-                    raise
-                except Exception:
-                    pass
-            elif "multiple libraries" in err_msg:
+                raise SafetyError(str(ex)) from ex
+            if "multiple libraries" in err_msg:
                 raise SafetyError(f"Ambiguous library '{library_name}': {ex}") from ex
-            else:
-                pass
 
     # 3. Discover local synced libraries
     if synced_libs is None:

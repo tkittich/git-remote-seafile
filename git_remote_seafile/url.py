@@ -43,6 +43,34 @@ def _looks_like_host(segment: str) -> bool:
     return "." in host_part
 
 
+def _server_url_from_bare_host(segment: str) -> str:
+    """Build a server URL from a bare ``host[:port]`` segment.
+
+    The bare form carries no scheme, so one must be chosen.  A port, when given,
+    is an explicit instruction and is honoured -- including the scheme it
+    implies, so ``host:80`` stays plain HTTP rather than being forced onto HTTPS
+    with its port silently dropped (which redirected the request to :443).  Only
+    a portless host falls back to the documented HTTPS default.
+    """
+    host = segment.split("@")[-1]
+    if ":" not in host:
+        return f"https://{host.lower()}"
+
+    hostname, _, port_s = host.rpartition(":")
+    if not hostname:
+        raise ValueError(f"Invalid Seafile URL format: missing host in '{segment}'")
+    if not port_s.isdigit() or not (0 < int(port_s) < 65536):
+        raise ValueError(
+            f"Invalid Seafile URL format: invalid port '{port_s}' in host '{segment}'"
+        )
+    port = int(port_s)
+    # :80 is HTTP, everything else is assumed HTTPS (the tool's default).
+    scheme = "http" if port == 80 else "https"
+    if port == (80 if scheme == "http" else 443):
+        return f"{scheme}://{hostname.lower()}"
+    return f"{scheme}://{hostname.lower()}:{port}"
+
+
 @dataclass(frozen=True)
 class SeafileURL:
     """Parsed representation of a seafile:// URL."""
@@ -95,8 +123,7 @@ def parse_seafile_url(url: str) -> SeafileURL:
         if any(p in (".", "..") for p in parts):
             raise ValueError(f"Invalid Seafile URL format: path segments cannot contain '.' or '..': {url}")
         if len(parts) >= 3 and _looks_like_host(parts[0]):
-            norm_netloc = normalize_netloc(parts[0])
-            server_url = f"https://{norm_netloc}"
+            server_url = _server_url_from_bare_host(parts[0])
             path_parts = parts[1:]
         else:
             path_parts = parts

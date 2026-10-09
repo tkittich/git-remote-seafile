@@ -17,6 +17,7 @@ from git_remote_seafile.safety import (
     read_seafile_ignore_rules,
     _safe_relative_to,
 )
+from git_remote_seafile.client import SeafileAPIError, SeafileClient
 from git_remote_seafile.helper import RemoteHelper
 
 
@@ -266,21 +267,26 @@ class TestSafetyGuardrails(unittest.TestCase):
             res = check_preflight_safety(client, "Documents", "/", push_mode=True, synced_libs=[])
             self.assertEqual(res, [])
 
-    def test_library_typo_suggestion(self):
-        client = MagicMock()
-        client.server_url = "https://seafile.example.com"
-        client.get_repo_id.side_effect = Exception("Not found")
+    def test_library_typo_suggestion_is_reachable(self):
+        """The suggestion must survive the path a user actually takes.
 
-        mock_resp = MagicMock()
-        mock_resp.status_code = 200
-        mock_resp.json.return_value = [{"name": "Documents"}, {"name": "Pictures"}]
-        client.session.get.return_value = mock_resp
+        It is generated in ``SeafileClient.get_repo_id``, which
+        ``RemoteHelper.__init__`` calls *before* ``check_preflight_safety`` ever
+        runs.  The previous test called ``check_preflight_safety`` with a stub
+        client, certifying a path the user could never reach; this drives a real
+        ``RemoteHelper`` over a real (session-mocked) client instead.
+        """
+        client = SeafileClient(server_url="https://seafile.example.com", token="tok")
+        mock_resp = MagicMock(status_code=200)
+        mock_resp.json.return_value = [{"id": "id-1", "name": "Documents"}]
+        client.session.get = MagicMock(return_value=mock_resp)
 
-        with self.assertRaises(SafetyError) as ctx:
-            check_preflight_safety(client, "docment", "/myproject", push_mode=False, synced_libs=[])
+        with self.assertRaises(SeafileAPIError) as ctx:
+            RemoteHelper("test", "seafile://docment/myproject", client=client)
 
-        self.assertIn("Did you mean: Documents?", str(ctx.exception))
-        self.assertIn("Available libraries: Documents, Pictures", str(ctx.exception))
+        msg = str(ctx.exception)
+        self.assertIn("Seafile library not found: 'docment'", msg)
+        self.assertIn("Did you mean: Documents?", msg)
 
     def test_check_library_existence_ambiguous_libraries_raises_safety_error(self):
         client = MagicMock()

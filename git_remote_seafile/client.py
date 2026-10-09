@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import Counter
+import difflib
 import io
 import json
 import os
@@ -492,15 +493,20 @@ class SeafileClient:
                 self._repos_cache[rname] = rid
 
         if not matches:
-            cached = self._repos_cache.get(name_or_id)
-            if cached and cached in {r.get("id") for r in repos}:
-                return cached
-            # A cached id that the fresh listing no longer contains means the
-            # library was deleted or unshared since the last lookup; report
-            # that instead of handing out a dead id (whose 404s downstream
-            # are much harder to diagnose).
+            # Reaching here means name_or_id is not cached (a hit at the top of
+            # this method returns immediately), so there is no stale entry to
+            # revalidate; the pop is defensive only.  The typo suggestion lives
+            # here, at the one place the miss is detected, because every caller
+            # -- RemoteHelper.__init__ included -- sees this message.  Building
+            # it from the listing we already fetched avoids a second request.
             self._repos_cache.pop(name_or_id, None)
-            raise SeafileAPIError(f"Seafile library not found: '{name_or_id}'")
+            names = [r.get("name") for r in repos if r.get("name")]
+            suggestions = difflib.get_close_matches(name_or_id, names, n=3, cutoff=0.5)
+            hint = f" Did you mean: {', '.join(suggestions)}?" if suggestions else ""
+            available = f" Available libraries: {', '.join(sorted(names))}." if names else ""
+            raise SeafileAPIError(
+                f"Seafile library not found: '{name_or_id}'.{hint}{available}"
+            )
 
         if len(matches) == 1:
             rid = matches[0].get("id", "")

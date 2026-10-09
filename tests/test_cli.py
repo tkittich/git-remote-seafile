@@ -10,6 +10,7 @@ from unittest.mock import ANY, MagicMock, patch
 
 from git_remote_seafile.cli import main
 from git_remote_seafile.client import SeafileAuthError
+from git_remote_seafile.lock import RepositoryLockedError
 from git_remote_seafile.safety import SafetyError
 
 
@@ -86,9 +87,9 @@ class TestCLICheckSafety(unittest.TestCase):
                 self.assertIn("Usage:", mock_out.getvalue())
 
     @patch("git_remote_seafile.cli.RemoteHelper")
-    @patch("git_remote_seafile.safety.check_preflight_safety")
-    @patch("git_remote_seafile.safety.discover_local_synced_libraries")
-    @patch("git_remote_seafile.safety.get_local_work_tree")
+    @patch("git_remote_seafile.cli.check_preflight_safety")
+    @patch("git_remote_seafile.cli.discover_local_synced_libraries")
+    @patch("git_remote_seafile.cli.get_local_work_tree")
     def test_check_safety_passed(self, mock_wt, mock_synced, mock_check, mock_helper_cls):
         mock_helper = MagicMock()
         mock_helper_cls.return_value = mock_helper
@@ -106,7 +107,7 @@ class TestCLICheckSafety(unittest.TestCase):
                 self.assertIn("[PASSED]", mock_out.getvalue())
 
     @patch("git_remote_seafile.cli.RemoteHelper")
-    @patch("git_remote_seafile.safety.check_preflight_safety")
+    @patch("git_remote_seafile.cli.check_preflight_safety")
     def test_check_safety_blocked(self, mock_check, mock_helper_cls):
         mock_helper = MagicMock()
         mock_helper_cls.return_value = mock_helper
@@ -121,7 +122,7 @@ class TestCLICheckSafety(unittest.TestCase):
 
 class TestCLITestsAndGC(unittest.TestCase):
     @patch("git_remote_seafile.cli.RemoteHelper")
-    @patch("git_remote_seafile.safety.check_preflight_safety")
+    @patch("git_remote_seafile.cli.check_preflight_safety")
     def test_cli_test_command(self, mock_check, mock_helper_cls):
         mock_helper = MagicMock()
         mock_helper_cls.return_value = mock_helper
@@ -137,6 +138,55 @@ class TestCLITestsAndGC(unittest.TestCase):
                 self.assertEqual(code, 0)
                 self.assertIn("Connection successful!", mock_out.getvalue())
                 self.assertIn("Minor tip", mock_out.getvalue())
+
+    @patch("git_remote_seafile.cli.RemoteHelper")
+    def test_test_command_surfaces_helper_failure_cleanly(self, mock_helper_cls):
+        """A raising RemoteHelper must yield the intended message, not a traceback.
+
+        Regression for the UnboundLocalError: the ``except SafetyError`` clause
+        named a symbol imported *inside* the try but *after* RemoteHelper was
+        constructed, so any failure before that import crashed the handler
+        itself and the user saw a raw traceback instead of "Test failed: ...".
+        """
+        mock_helper_cls.side_effect = RuntimeError("network down")
+
+        with patch.object(sys, "argv", ["git-remote-seafile", "test", "seafile://code/repo"]):
+            with patch("sys.stdout", new_callable=io.StringIO) as mock_out:
+                code = main()
+                self.assertEqual(code, 1)
+                self.assertIn("Test failed: network down", mock_out.getvalue())
+
+    @patch("git_remote_seafile.cli.RemoteHelper")
+    def test_test_command_reports_safety_error_cleanly(self, mock_helper_cls):
+        mock_helper_cls.side_effect = SafetyError("library root pollution")
+
+        with patch.object(sys, "argv", ["git-remote-seafile", "test", "seafile://code/repo"]):
+            with patch("sys.stdout", new_callable=io.StringIO) as mock_out:
+                code = main()
+                self.assertEqual(code, 1)
+                self.assertIn("[Safety Warning] library root pollution", mock_out.getvalue())
+
+    @patch("git_remote_seafile.cli.RemoteHelper")
+    def test_unlock_command_surfaces_helper_failure_cleanly(self, mock_helper_cls):
+        mock_helper_cls.side_effect = RuntimeError("no credentials")
+
+        with patch.object(sys, "argv", ["git-remote-seafile", "unlock", "seafile://code/repo"]):
+            with patch("sys.stderr", new_callable=io.StringIO) as mock_err:
+                code = main()
+                self.assertEqual(code, 1)
+                self.assertIn("Failed to unlock repository: no credentials", mock_err.getvalue())
+
+    @patch("git_remote_seafile.cli.RemoteLock")
+    @patch("git_remote_seafile.cli.RemoteHelper")
+    def test_unlock_reports_locked_error_cleanly(self, mock_helper_cls, mock_lock_cls):
+        mock_helper_cls.return_value = MagicMock()
+        mock_lock_cls.return_value.unlock.side_effect = RepositoryLockedError("held by someone else")
+
+        with patch.object(sys, "argv", ["git-remote-seafile", "unlock", "seafile://code/repo"]):
+            with patch("sys.stderr", new_callable=io.StringIO) as mock_err:
+                code = main()
+                self.assertEqual(code, 1)
+                self.assertIn("Error: held by someone else", mock_err.getvalue())
 
     @patch("git_remote_seafile.cli.RemoteHelper")
     @patch("git_remote_seafile.gc.compact_repository")
@@ -482,7 +532,7 @@ class TestCLILockManagement(unittest.TestCase):
                 self.assertEqual(code, 1)
                 self.assertIn("Usage:", mock_out.getvalue())
 
-    @patch("git_remote_seafile.lock.RemoteLock")
+    @patch("git_remote_seafile.cli.RemoteLock")
     @patch("git_remote_seafile.cli.RemoteHelper")
     def test_lock_status_unlocked(self, mock_helper_cls, mock_lock_cls):
         mock_lock = MagicMock()
@@ -495,7 +545,7 @@ class TestCLILockManagement(unittest.TestCase):
                 self.assertEqual(code, 0)
                 self.assertIn("UNLOCKED", mock_out.getvalue())
 
-    @patch("git_remote_seafile.lock.RemoteLock")
+    @patch("git_remote_seafile.cli.RemoteLock")
     @patch("git_remote_seafile.cli.RemoteHelper")
     def test_lock_status_locked(self, mock_helper_cls, mock_lock_cls):
         mock_lock = MagicMock()
@@ -527,7 +577,7 @@ class TestCLILockManagement(unittest.TestCase):
                 self.assertEqual(code, 1)
                 self.assertIn("Usage:", mock_out.getvalue())
 
-    @patch("git_remote_seafile.lock.RemoteLock")
+    @patch("git_remote_seafile.cli.RemoteLock")
     @patch("git_remote_seafile.cli.RemoteHelper")
     def test_unlock_success(self, mock_helper_cls, mock_lock_cls):
         mock_lock = MagicMock()
@@ -540,7 +590,7 @@ class TestCLILockManagement(unittest.TestCase):
                 self.assertIn("Unlocked repository", mock_out.getvalue())
                 mock_lock.unlock.assert_called_once_with(force=False)
 
-    @patch("git_remote_seafile.lock.RemoteLock")
+    @patch("git_remote_seafile.cli.RemoteLock")
     @patch("git_remote_seafile.cli.RemoteHelper")
     def test_unlock_force(self, mock_helper_cls, mock_lock_cls):
         mock_lock = MagicMock()
@@ -553,7 +603,7 @@ class TestCLILockManagement(unittest.TestCase):
                 self.assertIn("Forcibly unlocked repository", mock_out.getvalue())
                 mock_lock.unlock.assert_called_once_with(force=True)
 
-    @patch("git_remote_seafile.lock.RemoteLock")
+    @patch("git_remote_seafile.cli.RemoteLock")
     @patch("git_remote_seafile.cli.RemoteHelper")
     def test_unlock_held_by_other_fails_without_force(self, mock_helper_cls, mock_lock_cls):
         from git_remote_seafile.lock import RepositoryLockedError

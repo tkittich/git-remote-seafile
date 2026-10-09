@@ -272,6 +272,45 @@ class TestGcRefusesUnsafeCompaction(E2ETestCase):
         self.assertNotEqual(res.returncode, 0, f"gc reported success:\n{res.stdout}\n{res.stderr}")
 
 
+class TestGcSha256Repositories(E2ETestCase):
+    """gc must compact SHA-256 remotes, not only SHA-1 ones.
+
+    The scratch bare repository used by compaction defaulted to SHA-1, so a
+    SHA-256 remote's 64-hex packs were unreadable to it -- index-pack rejected
+    them with "pack is corrupted (SHA1 mismatch)" and gc failed outright.  The
+    verify-pack/index-pack calls also need the scratch repo as their *context*
+    (-C) to pick up its object format, since they run with GIT_DIR scrubbed.
+    """
+
+    def test_gc_compacts_a_sha256_remote(self):
+        src = self.work / "src_gc_sha256"
+        run_git(["init", "--object-format=sha256", "-b", "main", str(src)], self.work, self.env)
+        commit_file(src, "a.txt", "one\n", "c1", self.env)
+        run_git(["remote", "add", "origin", self.url("gc_sha256")], src, self.env)
+        run_git(["push", "-q", "-u", "origin", "main"], src, self.env)
+        commit_file(src, "b.txt", "two\n", "c2", self.env)
+        run_git(["push", "-q", "origin", "main"], src, self.env)
+
+        before = sorted(p for p in self.stub.packs("/gc_sha256") if p.endswith(".pack"))
+        self.assertGreaterEqual(len(before), 2, f"need >=2 packs to compact, got {before}")
+
+        res = run_helper(["gc", self.url("gc_sha256")], self.work, self.env, check=False)
+        self.assertEqual(res.returncode, 0, f"gc failed on a SHA-256 remote:\n{res.stdout}\n{res.stderr}")
+        self.assertIn("Compacted", res.stdout + res.stderr)
+
+        after = sorted(p for p in self.stub.packs("/gc_sha256") if p.endswith(".pack"))
+        self.assertLess(len(after), len(before), f"gc did not reduce the pack count: {before} -> {after}")
+
+        # The compacted remote must still clone back, as SHA-256, with history intact.
+        dst = self.work / "clone_gc_sha256"
+        run_git(["clone", self.url("gc_sha256"), str(dst)], self.work, self.env)
+        self.assertEqual(
+            run_git(["rev-parse", "--show-object-format"], dst, self.env).stdout.strip(),
+            "sha256",
+        )
+        self.assertIn("c2", run_git(["log", "--oneline"], dst, self.env).stdout)
+
+
 class TestRefsListingFailureIsNotSilent(E2ETestCase):
     """A failed refs listing must not be reported as an empty repository.
 
