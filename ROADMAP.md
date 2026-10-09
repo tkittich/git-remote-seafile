@@ -1,7 +1,7 @@
 # Engineering Roadmap & Backlog
 
-**Baseline:** v0.6.3 (v0.6.3 release) + review-closure polish batch (see CHANGELOG [Unreleased])  
-**Scope:** Active architectural backlog and milestones following releases v0.4.0 through v0.6.3.  
+**Baseline:** v0.6.4 (v0.6.4 release)  
+**Scope:** Active architectural backlog and milestones following releases v0.4.0 through v0.6.4.  
 **Test Suite:** 398 tests across 80 targets (all green).
 
 > [!NOTE]
@@ -94,6 +94,11 @@
 * **Case-Insensitive URL Scheme & URL Parsing Hardening (N-15, N-17):** Handled case-insensitive `seafile://` schemes and rejected empty hosts in explicit URLs.
 * **Upload File String Safety (N-16):** Strictly encoded `str` content to UTF-8 without querying local filesystem paths.
 * **Architectural Wiring & Performance Optimization (N-6, N-7, N-8, N-9):** Wired `RemoteConfig` dataclass into production runtime, avoided redundant fetch packfile copying with atomic rename (`move=True`), co-located LFS temporary scratch storage within repository git directory, and unified SQLite safe reading logic with `sqlite_read.py`.
+
+### Phase 4.7: v0.6.2 → v0.6.4 — Protocol Completion, Lock-Protocol Soundness & Review Closure (Completed Deliverables)
+* **v0.6.2:** Case-insensitive `seafile://` and embedded-scheme parsing; `@`-in-component ref-name conformance; `RemoteConfig` genuinely wired into production (`cmd_push` → lock + compaction); installer `move=` compat via `inspect.signature`; loud `error unsupported` reply for unknown helper commands.
+* **v0.6.3 — Lock-Protocol Soundness:** `renew()` reads the ticket back before rewriting (a lapsed-and-taken-over lock is detected and refused, making the gc pre-deletion fence and the push pre-ref-write fence sound — reproduced with a stateful takeover test before the fix); lease renewal during gc pack downloads; non-zero `gc` exit on failed compaction; `order_ts`-based ticket ordering immune to renewal-induced mtime churn; gc deletion-failure reporting; env-credential mismatch named in the auth error.
+* **v0.6.4 — Review Closure:** Trap-1 clone guard resolves the clone destination from `GIT_DIR`/`GIT_WORK_TREE` (measured against real git), blocking clone-into-synced-library from outside it; implausible `seafile.*` config falls back to documented defaults with a warning; stale library-id cache guard; unknown entry-type and malformed-JSON warnings; `set-head` reports the replaced HEAD; e2e stub DELETE endpoint fidelity. All findings from the October 2026 review cycle (glm/gemini/qwen/VERIFY/BACKLOG) verified fixed or dispositioned and the reviews archived.
 
 ---
 

@@ -398,6 +398,8 @@ git config seafile.locktimeout 30
 git config seafile.locklease 120
 ```
 
+> Values that would defeat the mechanism outright are refused with a stderr warning and the documented default is used instead: a negative `seafile.locktimeout`, a zero or negative `seafile.locklease` (which would expire every lock immediately), and a `seafile.gcthreshold` below 1 (which would compact on every push).
+
 **`seafile.forcefilehost`** deserves a note. Seafile returns a short-lived URL for every file transfer, and there are three cases to tell apart:
 
 - A **relative** link (a bare path rather than a full URL) is always completed against your server, regardless of this setting. That is not a rewrite — it is the only way the link can be used at all.
@@ -461,7 +463,9 @@ git push origin :old-branch   # Deletes remote branch
 If you want to designate or change the default branch checked out on clone (e.g. from `master` to `main`, or to `dev`):
 ```bash
 git-remote-seafile set-head seafile://code/myproject main
+# Updated remote HEAD on seafile://code/myproject to refs/heads/main (was refs/heads/master)
 ```
+The command verifies the branch exists on the remote first, and the output names the HEAD value it replaced — an aid when recovering a remote that points at the wrong default branch.
 
 ### 8.5 Dual-Remote Setup (GitHub + Seafile)
 You can maintain your primary open-source or team remote on GitHub while maintaining a private mirror on Seafile:
@@ -520,8 +524,9 @@ git-remote-seafile gc seafile://code/myproject
 ```
 
 - **Options**: `--min-packs N` (default: 2) — only repack if at least $N$ packfiles exist.
-- Automatically locks the remote repository during compaction to prevent push conflicts.
-- Deletes obsolete superseded packfiles from Seafile once the consolidated packfile is confirmed uploaded.
+- Automatically locks the remote repository during compaction to prevent push conflicts; the lock lease is refreshed during pack downloads, and before any obsolete pack is deleted the tool re-validates that it still owns the lock.
+- **Exit codes**: `0` on success and on a benign skip (fewer than `--min-packs` packfiles), `1` on a failed compaction (download error, size mismatch, invalid pack name) — safe to gate a scheduled CI job on.
+- Deletes obsolete superseded packfiles from Seafile once the consolidated packfile is confirmed uploaded; deletions that fail are named on stderr and in the result summary, and simply remain for a later `gc` run.
 
 ### 10.2 Automatic Detection & Notification (Default)
 By default, whenever you push, `git-remote-seafile` checks the number of remote packfiles:
