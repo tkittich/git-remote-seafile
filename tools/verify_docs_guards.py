@@ -77,6 +77,20 @@ scenario(
     "TestDocumentationIndex.test_linked_documents_exist",
     {"README.md": [("](CONTRIBUTING.md)", "](GONE.md)")]},
 )
+scenario(
+    "a doc dots the Seafile ignore file name",
+    "TestIgnoreFileName.test_every_shipped_document_uses_the_code_s_name",
+    everywhere("seafile-ignore.txt", ".seafile-ignore.txt"),
+)
+scenario(
+    "the code itself adopts the dotted name",
+    "TestIgnoreFileName.test_every_shipped_document_uses_the_code_s_name",
+    {},
+    # Replaces every occurrence in the source, not one: the code-side check
+    # asserts the *set* of names it finds, so a single-occurrence edit would
+    # leave the set unchanged and prove nothing.
+    source_override=[("seafile-ignore.txt", ".seafile-ignore.txt")],
+)
 
 
 def run_one(test_name):
@@ -97,9 +111,10 @@ def main():
     print()
 
     caught = 0
-    for name, test_name, overrides, _ in SCENARIOS:
+    for name, test_name, overrides, source_override in SCENARIOS:
         hits = set()
         wanted = {(doc, old) for doc, subs in overrides.items() for old, _ in subs}
+        wanted |= {("<source>", old) for old, _ in (source_override or [])}
 
         def drifted_read(doc_name, _o=overrides, _hits=hits):
             text = _REAL_READ(doc_name)
@@ -109,11 +124,25 @@ def main():
                     text = text.replace(old, new)
             return text
 
+        def drifted_source(_o=source_override, _hits=hits):
+            text = _REAL_SOURCE()
+            for old, new in (_o or []):
+                if old in text:
+                    _hits.add(("<source>", old))
+                    text = text.replace(old, new)
+            return text
+
         dc._read = drifted_read
+        if source_override:
+            # A scenario that drifts the *source* must override the extractor,
+            # or the injection silently does nothing and the scenario "passes"
+            # for the wrong reason.
+            dc._source_text = drifted_source
         try:
             result = run_one(test_name)
         finally:
             dc._read = _REAL_READ
+            dc._source_text = _REAL_SOURCE
 
         missed_targets = wanted - hits
         if missed_targets:

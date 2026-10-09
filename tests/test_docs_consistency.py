@@ -65,6 +65,24 @@ _CODE_ENV_READ = re.compile(
 
 _DOC_ENV = re.compile(r"\b(SEAFILE_[A-Z0-9_]+)\b")
 
+# The Seafile sync-exclusion file.  The name belongs to the Seafile *desktop
+# client* (its manual: create `seafile-ignore.txt` in the library root), so a
+# variant spelling is not a style choice -- it names a file the client will
+# never read.
+#
+# One pattern serves both sides.  Matching *every* occurrence, quoted or not,
+# is deliberate: the name also reaches users through the helper's error
+# messages (`... add 'seafile-git/' to <path>/seafile-ignore.txt`), and a
+# dotted spelling there would misdirect them just as effectively as one in the
+# guide.  `[\w.-]` stops at `/`, `<`, `>` and backticks, so
+# `<library-root>/seafile-ignore.txt` yields the bare name.
+_IGNORE_NAME = re.compile(r"[\w.-]*seafile-ignore\.txt")
+
+# Checked only when present: PROPOSALS.md is gitignored, so it is absent from a
+# CI checkout.  It is included because it is the one file that actually carried
+# the misspelling -- being unshipped is why nothing noticed.
+_OPTIONAL_DRAFTS = ("PROPOSALS.md",)
+
 _CODE_SUBCOMMAND_EQ = re.compile(r'args\[0\]\s*==\s*"([^"]+)"')
 _CODE_SUBCOMMAND_IN = re.compile(r"args\[0\]\s+in\s+\(([^)]+)\)")
 # The separator must be spaces or tabs, not `\s`: several docs end a line with
@@ -93,6 +111,14 @@ _DOC_CONFIG_TABLE_ROW = re.compile(
 
 def _read(name: str) -> str:
     return (_ROOT / name).read_text(encoding="utf-8")
+
+
+def _read_if_present(name: str) -> str | None:
+    """Text of *name*, or ``None`` when the file is not in this checkout."""
+    path = _ROOT / name
+    if not path.is_file():
+        return None
+    return path.read_text(encoding="utf-8")
 
 
 def _all_docs() -> dict[str, str]:
@@ -221,6 +247,75 @@ class TestSubcommands(unittest.TestCase):
             if not re.search(rf"\b{re.escape(name)}\b", mentioned)
         )
         self.assertEqual(undocumented, [], "shipped subcommand that no doc mentions")
+
+
+class TestIgnoreFileName(unittest.TestCase):
+    """The ignore file is `seafile-ignore.txt` -- there is no leading dot.
+
+    Unlike `seafile.*` config keys, this name is not this project's to choose:
+    it is the Seafile *desktop client's*, documented as a file created in the
+    library root.  The helper reads that same file to decide whether Trap 2 may
+    let a push through, so a variant spelling is not cosmetic -- it names a file
+    the client never reads, and the guard would then be reasoning about a file
+    that does not exist.
+
+    `.seafile-ignore.txt` was the misspelling, and it is not hypothetical: the
+    audit in `archive/REVIEW.md` found one on this machine --
+    `Documents/code/fiction/.seafile-ignore.txt` -- carrying a header claiming
+    to be "Seafile sync exclusions for this library".  It was a complete no-op,
+    for two independent reasons: the leading dot, and a location in a subfolder
+    rather than the library root.  It also appeared in the unshipped
+    `PROPOSALS.md`.  Every shipped document had the name right, which is why
+    nothing caught either one.
+    """
+
+    def _canonical(self) -> str:
+        """The one name the code uses, so the docs are checked against code."""
+        names = sorted(set(_IGNORE_NAME.findall(_source_text())))
+        self.assertEqual(
+            names,
+            ["seafile-ignore.txt"],
+            "the source no longer names exactly one ignore file, or names a "
+            "different one; the docs are checked against this list",
+        )
+        return names[0]
+
+    def _variants(self, text: str, canonical: str) -> set[str]:
+        return {found for found in _IGNORE_NAME.findall(text) if found != canonical}
+
+    def test_every_shipped_document_uses_the_code_s_name(self):
+        canonical = self._canonical()
+        wrong: dict[str, list[str]] = {}
+        for name, text in _all_docs().items():
+            variants = self._variants(text, canonical)
+            if variants:
+                wrong[name] = sorted(variants)
+        self.assertEqual(
+            wrong,
+            {},
+            "a shipped document spells the Seafile ignore file differently "
+            f"from the code ({canonical!r}); the desktop client only reads one "
+            "name, and it is not dotted",
+        )
+
+    def test_the_unshipped_draft_uses_it_too(self):
+        """PROPOSALS.md is the file that got this wrong, so it is checked."""
+        canonical = self._canonical()
+        checked = []
+        for name in _OPTIONAL_DRAFTS:
+            text = _read_if_present(name)
+            if text is None:
+                continue  # gitignored, so absent from a CI checkout
+            checked.append(name)
+            with self.subTest(draft=name):
+                self.assertEqual(
+                    sorted(self._variants(text, canonical)),
+                    [],
+                    f"{name} spells the ignore file differently from the code "
+                    f"({canonical!r})",
+                )
+        if not checked:
+            self.skipTest("no optional drafts in this checkout")
 
 
 class TestPythonFloor(unittest.TestCase):
