@@ -28,7 +28,6 @@ from .git_util import (
     is_ancestor,
     GitError,
     rev_parse,
-    run_git,
     get_git_dir,
 )
 
@@ -91,36 +90,21 @@ class RemoteHelper:
         sys.stdout.flush()
 
     def _detect_remote_object_format(self, discovered_refs: list[tuple[str, str]]) -> str:
-        """Detect whether repository uses sha1 or sha256 object format."""
+        """Return "sha1" or "sha256" from a non-empty ref listing.
+
+        Every SHA that reaches here was already validated against HEX_SHA_RE, so
+        it is exactly 40 or 64 hex characters and the first ref always decides.
+        The pack-name and local-format fallbacks that used to follow were
+        therefore unreachable from the only call site (cmd_list, guarded by
+        ``if discovered_refs``) and have been removed rather than left to read as
+        a live safety net.  ``cmd_list`` emits no ``:object-format`` at all for an
+        empty remote, so this is never called with an empty list.
+        """
         for _, sha in discovered_refs:
             if len(sha) == 64:
                 return "sha256"
             if len(sha) == 40:
                 return "sha1"
-
-        try:
-            entries = self.client.list_dir(self.repo_id, self._full_path("objects/pack"))
-            if isinstance(entries, list):
-                for e in entries:
-                    name = e.get("name", "") if isinstance(e, dict) else ""
-                    if name.startswith("pack-") and name.endswith(".pack"):
-                        hex_part = name[5:-5]
-                        if len(hex_part) == 64:
-                            return "sha256"
-                        if len(hex_part) == 40:
-                            return "sha1"
-        except Exception:
-            pass
-
-        try:
-            out, _, code = run_git(["rev-parse", "--show-object-format"])
-            if code == 0:
-                local_fmt = out.decode("utf-8").strip()
-                if local_fmt in ("sha1", "sha256"):
-                    return local_fmt
-        except Exception:
-            pass
-
         return "sha1"
 
     def cmd_list(self, for_push: bool = False) -> None:
@@ -147,7 +131,9 @@ class RemoteHelper:
                 self._refs_cache[ref_name] = sha
                 discovered_refs.append((ref_name, sha))
 
-        # Emit object-format ref list keyword when refs exist
+        # Emit the object-format ref list keyword when refs exist.  An empty
+        # remote emits nothing: it has no format yet to advertise, and git's
+        # push to an empty remote is exercised by the e2e suite.
         if discovered_refs:
             obj_format = self._detect_remote_object_format(discovered_refs)
             sys.stdout.write(f":object-format {obj_format}\n")

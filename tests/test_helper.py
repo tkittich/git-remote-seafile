@@ -71,6 +71,22 @@ class TestRemoteHelper(unittest.TestCase):
         self.assertIn(":object-format sha256\n", output)
         self.assertIn(f"{sha256_hash} refs/heads/main\n", output)
 
+    def test_detect_object_format_uses_refs_only(self):
+        """Format comes from the ref SHAs, with no remote/local fallback.
+
+        The pack-name and ``rev-parse --show-object-format`` fallbacks were
+        unreachable from the only call site (refs are always 40 or 64 hex), so
+        they were removed rather than left to read as a live safety net.
+        """
+        h = RemoteHelper.__new__(RemoteHelper)
+        h.client = MagicMock()
+        h.repo_id = "repo1"
+        h.repo_path = "/git-repo"
+
+        self.assertEqual(h._detect_remote_object_format([("refs/heads/main", "a" * 40)]), "sha1")
+        self.assertEqual(h._detect_remote_object_format([("refs/heads/main", "b" * 64)]), "sha256")
+        h.client.list_dir.assert_not_called()
+
     def test_cmd_list_refs(self):
         h = RemoteHelper.__new__(RemoteHelper)
         h.client = MagicMock()
