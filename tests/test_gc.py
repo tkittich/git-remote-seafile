@@ -620,6 +620,95 @@ class TestGcRecoveryAndFencing(unittest.TestCase):
         self.assertFalse([p for p in self._deleted_paths(client) if p.endswith(".pack")])
 
     @patch("subprocess.run")
+    def test_gc_refuses_a_ref_outside_heads_and_tags(self, mock_subprocess):
+        """A ref the mirror cannot carry means objects it cannot prove reachable.
+
+        The remote is a plain file store, so a hand-created ``refs/notes/commits``
+        (or any other off-namespace ref) can exist.  The mirror walks only
+        refs/heads and refs/tags, so that ref's objects look unreachable in the
+        scratch repo and step 7 would delete them permanently while the ref
+        file survived, broken.  gc must refuse before downloading anything.
+        """
+        client = self._client([{"name": "pack-1.pack"}, {"name": "pack-2.pack"}])
+        client.list_dir.side_effect = lambda repo_id, path: (
+            [{"name": "pack-1.pack"}, {"name": "pack-2.pack"}]
+            if "objects/pack" in path
+            else [{"type": "file", "name": "commits"}]
+            if path.endswith("/refs/notes")
+            else [{"type": "dir", "name": "notes"}]
+            if path.endswith("/refs")
+            else []
+        )
+        mock_subprocess.return_value = MagicMock(returncode=0)
+
+        res = compact_repository(client, "repo1", "/path", min_packs=2, verbose=False)
+
+        self.assertEqual(res["status"], "error")
+        self.assertIn("refs/notes/commits", res["message"])
+        self.assertIn("outside refs/heads and refs/tags", res["message"])
+        # the refusal happens before a single pack is downloaded
+        client.get_file_bytes.assert_not_called()
+        self.assertFalse(
+            [p for p in self._deleted_paths(client) if p.endswith(".pack")]
+        )
+
+    @patch("subprocess.run")
+    def test_gc_refuses_a_ref_name_git_could_not_honour(self, mock_subprocess):
+        """An invalid ref name under a mirrored namespace is the same hazard.
+
+        ``iter_refs`` warns and skips names git-check-ref-format rejects, so
+        the mirror cannot carry them either -- and their objects would be
+        deleted exactly like an off-namespace ref's.
+        """
+        client = self._client([{"name": "pack-1.pack"}, {"name": "pack-2.pack"}])
+        client.list_dir.side_effect = lambda repo_id, path: (
+            [{"name": "pack-1.pack"}, {"name": "pack-2.pack"}]
+            if "objects/pack" in path
+            else [{"type": "dir", "name": "heads"}]
+            if path.endswith("/refs")
+            else [{"type": "file", "name": ".hidden.lock"}]
+            if path.endswith("/refs/heads")
+            else []
+        )
+        mock_subprocess.return_value = MagicMock(returncode=0)
+
+        res = compact_repository(client, "repo1", "/path", min_packs=2, verbose=False)
+
+        self.assertEqual(res["status"], "error")
+        self.assertIn("refs/heads/.hidden.lock", res["message"])
+        client.get_file_bytes.assert_not_called()
+
+    @patch("subprocess.run")
+    def test_gc_accepts_a_remote_with_only_mirrored_refs(self, mock_subprocess):
+        """The new guard must not refuse the repositories gc exists for.
+
+        Heads and tags -- including nested names -- are exactly what the
+        mirror carries, so they must never trip the off-namespace refusal.
+        The subprocess stub makes repack a no-op, so the downloaded packs are
+        re-uploaded as "consolidated" and the run reports ok: the point is
+        that the guard passed, not the compaction arithmetic.
+        """
+        client = self._client([{"name": "pack-1.pack"}, {"name": "pack-2.pack"}])
+        client.list_dir.side_effect = lambda repo_id, path: (
+            [{"name": "pack-1.pack"}, {"name": "pack-2.pack"}]
+            if "objects/pack" in path
+            else [{"type": "dir", "name": "heads"}]
+            if path.endswith("/refs")
+            else []
+        )
+        mock_subprocess.return_value = MagicMock(returncode=0)
+        with patch(
+            "git_remote_seafile.gc.iter_refs",
+            side_effect=lambda client, repo_id, base, ns: iter(
+                [("refs/heads/feature/auth", "sha-a"), ("refs/heads/main", "sha-b")]
+            ),
+        ):
+            res = compact_repository(client, "repo1", "/path", min_packs=2, verbose=False)
+
+        self.assertEqual(res["status"], "ok")
+        self.assertEqual(res["old_packs"], 2)
+
+    @patch("subprocess.run")
     def test_gc_refuses_a_ref_with_an_empty_sha(self, mock_subprocess):
         """gc's own boundary check: an empty SHA must never be mirrored.
 

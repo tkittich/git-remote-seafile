@@ -13,7 +13,47 @@ from .config import RemoteConfig
 from .git_util import clean_git_env
 from .lock import RemoteLock, describe_ownership_failure
 from .packs import fetch_pack_artifact, is_valid_pack_name
-from .refs import REF_NAMESPACES, iter_refs
+from .refs import REF_NAMESPACES, is_valid_ref_name, iter_refs
+
+#: Ref prefixes the mirror in :func:`compact_repository` carries into the
+#: scratch repository -- the only namespaces whose objects ``repack -a -d`` is
+#: told are reachable.
+_MIRRORED_PREFIXES = tuple(f"{ns}/" for ns in REF_NAMESPACES)
+
+
+def refs_outside_namespaces(client: SeafileClient, repo_id: str, repo_path: str) -> list[str]:
+    """Ref files under ``<repo_path>/refs`` the mirror would not carry.
+
+    The remote is a plain file store, so refs outside ``refs/heads`` and
+    ``refs/tags`` can exist -- hand-created, or written by another tool.  The
+    mirror walks only the two known namespaces, so such a ref's objects look
+    unreachable in the scratch repository and step 7 would delete them
+    permanently while the ref file itself survived, broken.  Returns one
+    human-readable entry per problem (off-namespace refs, and files whose
+    names git could not treat as refs); empty means "safe to mirror".
+    """
+    root = f"{repo_path.rstrip('/')}/refs"
+    problems: list[str] = []
+    stack: list[tuple[str, str]] = [(root, "")]
+    while stack:
+        dir_path, prefix = stack.pop()
+        for entry in client.list_dir(repo_id, dir_path):
+            if not isinstance(entry, dict):
+                continue
+            name = entry.get("name") or ""
+            if not name:
+                continue
+            full = f"refs/{prefix}{name}"
+            if entry.get("type") == "dir":
+                stack.append((f"{dir_path}/{name}", f"{prefix}{name}/"))
+            elif entry.get("type") == "file":
+                if not full.startswith(_MIRRORED_PREFIXES):
+                    problems.append(f"{full} (outside refs/heads and refs/tags)")
+                elif not is_valid_ref_name(full):
+                    problems.append(f"{full} (not a valid git ref name)")
+            else:
+                problems.append(f"{full} (entry of unknown type '{entry.get('type')}')")
+    return problems
 
 
 def describe_size_delta(saved_kb: int) -> str:
@@ -72,6 +112,24 @@ def compact_repository(
                 "status": "skipped",
                 "count": len(old_packs),
                 "message": f"Only {len(old_packs)} packfile(s) present.",
+            }
+
+        # Refuse before anything is downloaded: the mirror below carries only
+        # refs/heads and refs/tags, so a ref outside those namespaces -- or
+        # one whose name git could not honour -- would make its objects look
+        # unreachable and step 7 would delete them for good.  The remote is a
+        # plain file store; nothing stops such refs from existing.
+        stray = refs_outside_namespaces(client, repo_id, clean_repo)
+        if stray:
+            return {
+                "status": "error",
+                "message": (
+                    f"Refusing to compact {clean_repo}: refs outside the mirrored "
+                    "namespaces exist, and repacking would delete their objects:\n  "
+                    + "\n  ".join(sorted(stray))
+                    + "\nMove them into refs/heads or refs/tags, or delete them "
+                    "from the remote first."
+                ),
             }
 
         if verbose:
