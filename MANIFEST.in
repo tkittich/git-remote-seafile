@@ -33,4 +33,8 @@ include tools/verify_docs_guards.py
 include tools/seafile_doctor.py
 include tools/seafile_snapshot.py
 
+# CHANGELOG.md and ROADMAP.md link the desktop-client patch; an sdist that
+# ships the links should ship what they point at.
+include contrib/seafile-client-context-menu.patch
+
 global-exclude *.py[cod]

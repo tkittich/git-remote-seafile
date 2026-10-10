@@ -52,10 +52,12 @@ jobs:
     # `python -m unittest discover tests` is the fallback if this ever misbehaves
     # on a platform -- it is what the runner reproduces.
     #
-    # Measured on a 12-core machine: 204 s serial, 141 s at two workers, 85 s at
-    # four, 53 s at twelve.  This job runs 18 times over (3 OS x 6 versions) and
-    # the whole pipeline takes as long as its slowest job, so the per-job saving
-    # is the pipeline saving.
+    # Measured on a 12-core machine at 268 tests: 204 s serial, 141 s at two
+    # workers, 85 s at four, 53 s at twelve.  v0.8.0 added the snapshot module,
+    # so the absolute numbers are larger now -- the shape of the curve is the
+    # point.  This job runs 15 times over (3 OS x 5 versions) and the whole
+    # pipeline takes as long as its slowest job, so the per-job saving is the
+    # pipeline saving.
     #
     # -j 4 is explicit rather than 0/auto deliberately: os.cpu_count() reports
     # the *host's* cores inside a container, and handing a 4-vCPU runner 50-odd
@@ -74,7 +76,7 @@ jobs:
       if: always()
       run: python .github/ci_report_failures.py unittest-output.txt
 
-  # One job rather than eighteen: the linter does not care which platform or
+  # One job rather than fifteen: the linter does not care which platform or
   # which interpreter, and it runs *alongside* the matrix rather than after it,
   # so it adds no wall clock to the pipeline.
   #

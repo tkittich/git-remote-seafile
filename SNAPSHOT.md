@@ -1,11 +1,12 @@
 # SNAPSHOT.md — full-tree backup to Seafile, `.gitignore`d files included
 
-> **Status: local tool, not a shipped feature.** The implementation is
-> `tools/seafile_snapshot.py`; the tests are `tests/test_snapshot_tool.py`
-> (58 cases). It is deliberately absent from `USER_GUIDE.md`, `DESIGN.md` and
-> `CHANGELOG.md` until a decision is made about whether it ships as a feature or
-> stays a personal utility. Everything below was measured on this machine unless
-> a claim is explicitly marked otherwise.
+> **Status: shipped in v0.8.0.** The implementation is `tools/seafile_snapshot.py`;
+> the tests are `tests/test_snapshot_tool.py` (75 cases across twenty classes), and
+> the tool is documented in `USER_GUIDE.md` §15, `DESIGN.md` §7.13 and
+> `CHANGELOG.md`'s 0.8.0 entry. Sections written *before* the ship are kept as
+> design history — where one has been overtaken by the shipped tool, a note says
+> so. Everything below was measured on this machine unless a claim is explicitly
+> marked otherwise.
 >
 > This file is kept current **as part of the work** — see
 > [Maintenance](#15-maintenance). Defects found in review are in
@@ -357,7 +358,7 @@ statement, and only one of the three is a to-do list.
 | Kind | Caveats | What it means |
 | :--- | :--- | :--- |
 | **Fixed already** — the tool handles it, and a test holds it | 2, 5, and the byte-exactness and multi-machine work in [section 6](#6-several-machines-one-vault) and [section 7](#7-restore) | Described here only so the *failure* is on record. |
-| **Fixable in the tool, not yet done** — the mechanism exists, and where marked it has been measured | 1 (nested repos), 6 (compaction), 9 (synced library) | Real work, but no new ideas needed. A fourth fixable item — the `--exclude` pathspec — was fixed in [section 16](#16-own-review-issues-found). |
+| **Fixable in the tool, not yet done** — the mechanism exists, and where marked it has been measured | 1 (nested repos), 6 (compaction) | Real work, but no new ideas needed. Two of the original four were fixed since this table was written: the `--exclude` pathspec in [section 16](#16-own-review-issues-found), and the synced-library guard (caveat 9) in v0.8.0 — see the note under caveat 9. |
 | **Inherent** — a property of Git, the filesystem or Windows, not of this design | 3, 4, 7, 8, 10, 11, 12, 13 | restic and Borg have most of these too. |
 | **Deliberate policy** — a choice, not a limitation | 14, 15 | Two of these are worth *keeping*: "a snapshot is not a transaction" and "there is no retention policy" are the honest limits of a Git-backed backup. |
 
@@ -426,9 +427,14 @@ found in the same pass.
    credentials, and Git history is forever. Push it only to a library only you
    can read.
 9. **The vault must live outside the source, and outside any synced library.**
-   The source/vault relationship is enforced by two path guards. The
-   synced-library rule is **not** enforced — see the note below, which corrects
-   an earlier version of this document.
+   The source/vault relationship is enforced by two path guards, and the
+   synced-library rule is enforced too, as of v0.8.0: the tool imports the
+   helper's `discover_local_synced_libraries()` (best-effort — a machine
+   without the client simply sees no synced libraries) and refuses the run
+   when the source **or the vault** sits inside one. The note below is kept
+   as design history: it is what prompted the fix, and its probe of what the
+   helper can and cannot see is still the reason the vault needs its own
+   guard.
 
 ### The synced-library rule, and what the helper does and does not cover
 
@@ -438,8 +444,11 @@ An earlier version of this file said the synced-library rule was undetectable.
 The helper ships `discover_local_synced_libraries()`, which reads the Seafile
 desktop client's database and returns every synced library on the machine.
 Measured here: **4 libraries**, including `Documents -> D:\theera\Documents` —
-which is the folder this very project lives in. So the condition is detectable;
-the snapshot tool simply does not call it yet.
+which is the folder this very project lives in. So the condition is detectable —
+**and since v0.8.0 the tool calls it**: `check_paths_are_unsynced()` runs at
+startup, before anything is written, for the source *and* the vault. What
+follows is the pre-fix analysis, kept because the helper-visibility probe is
+still the reason the vault needs its own guard.
 
 What the tool *does* get, for free, is the helper's own pre-flight checks.
 Probed rather than assumed — a stub remote helper was installed and the
@@ -537,7 +546,7 @@ is inherited, and what is left on the table:
 | `gc` / `seafile.autogc` | **Not used** | The tool never compacts. The helper warns on every push, and nothing acts on the warning. This is the clearest operational gap — see caveat 6. |
 | `lfs-transfer` | **Deliberately bypassed** | The vault pins `-filter`, because a vault with no LFS remote would otherwise store pointers instead of files. |
 | `set-head` | **Not used** | The remote's default branch is left unset, so a plain `git clone` of the vault warns. `--restore` sidesteps it. |
-| Synced-library discovery | **Not used** | Would close the vault-inside-a-synced-library gap above. |
+| Synced-library discovery | **Used** (best-effort import, v0.8.0) | Closes the vault-inside-a-synced-library gap: the run is refused at startup. |
 
 **Seafile-side capabilities** that bear on the gaps this tool leaves open:
 
@@ -562,11 +571,13 @@ Grouped by how much is actually known about each.
 - A push the remote refuses outright (rollback).
 - Vault inside the source, source inside the vault.
 - A concurrent local run (the lock).
-- Nested repositories, a source `filter=`, an older vault needing upgrade.
+- The source or the vault sitting inside a synced library (refused at startup).
+- A source `filter=`, an older vault needing upgrade.
 
 **Known, documented, not handled:**
 
-- The vault sitting inside a synced library (detectable, not yet detected).
+- Nested repositories' *contents* (detected, and named loudly in the run's
+  output — the measured capture is still future work).
 - Packfile growth on the remote with no compaction.
 - No retention or expiry.
 - Empty directories, file modes, symlinks, timestamps, case collisions.
@@ -601,11 +612,12 @@ it is not hypothetical.
 *object stores*, which is what stops an ordinary `git push --all` from carrying
 the snapshot along. It does **not**, by itself, keep the ignored files off the
 code remote's *server*: point the vault's `--remote` at the same library the code
-lives in and the snapshot is published there on purpose. The tool does not check
-for that yet — it is issue 3 in
-[section 16](#16-own-review-issues-found). So the accurate claim is that a
+lives in and the snapshot is published there on purpose. Since v0.8.0 the tool
+*does* check — `--remote` colliding with one of the source's own remotes is
+refused, and `--allow-shared-remote` overrides it deliberately (issue 3 in
+[section 16](#16-own-review-issues-found)). So the accurate claim is that a
 separate repository turns publishing the ignored files from an accident into a
-deliberate act; the check that would make it an *error* is still to be written.
+deliberate act, and the tool enforces the deliberate part.
 
 **A branch also entangles the source's object database.** You would have to
 avoid the source's index (a temporary index via `GIT_INDEX_FILE`, as
@@ -757,21 +769,23 @@ not cross that line, because the tool still works standalone.
 
 ### Recommended next steps, in order
 
-The first two of the previous list are **done** — see
+The first two of the original list are **done** — see
 [section 16](#16-own-review-issues-found): the vault can no longer be pushed to a
-code remote, and `--exclude` matches at any depth. What remains:
+code remote, and `--exclude` matches at any depth. The third was done in v0.8.0:
+the vault inside a synced library is no longer merely warned about, it is
+**refused** (best-effort import of the helper's discovery, silent when the
+helper is absent). What remains:
 
-1. **Warn when the vault is inside a synced library** — a confirmed gap with a
-   confirmed detection path. Best-effort import of the helper's discovery,
-   silent when the helper is absent.
-2. **Capture nested repositories** instead of only warning about them — the
+1. **Capture nested repositories** instead of only warning about them — the
    plumbing is measured and written up at the end of [section 8](#8-caveats).
-3. **Surface `gc`** — either run `git-remote-seafile gc` after a snapshot when
+2. **Surface `gc`** — either run `git-remote-seafile gc` after a snapshot when
    the helper reports enough packfiles, or document a schedule. Today the
    warning is printed and ignored.
-4. **Decide the shared-vs-per-machine vault question** before documenting this
-   as a feature; it changes what "restore on a new machine" means.
-5. **Do not** add dedup, encryption, or retention. Point at restic — and note
+3. **The shared-vs-per-machine vault question was decided for v0.8.0**: the
+   shared chain ships, with divergence handling and the `--branch` escape
+   hatch. Per-machine vaults remain the fallback for genuinely divergent
+   workflows.
+4. **Do not** add dedup, encryption, or retention. Point at restic — and note
    that on a Seafile instance with WebDAV disabled there may be no restic route
    at all; see
    [section 17](#17-should-the-helper-grow-hooks-or-support-restic-and-borg).
@@ -860,7 +874,7 @@ before designing around them:**
 | Git feature | Status |
 | :--- | :--- |
 | `git notes` (per-snapshot metadata) | **Blocked, deliberately.** The helper writes only `refs/heads/` and `refs/tags/` (`REF_NAMESPACES` in `refs.py`), so notes under `refs/notes/` could not be pushed to a `seafile://` remote. That allowlist is shared with the ref advert *and* with compaction's reachability mirroring, so widening it is not a one-line change — see [section 17](#17-should-the-helper-grow-hooks-or-support-restic-and-borg). |
-| Custom ref namespaces (`refs/snapshots/<host>`) | **Blocked** by the same allowlist, for the same reason. A per-machine chain uses `refs/heads/snapshot-<host>`, which works today. |
+| Custom ref namespaces (`refs/snapshots/<host>`) | **Blocked** by the same allowlist, for the same reason. A per-machine chain is one `--branch snapshot-<host>` run away — an ordinary branch name, no custom namespace needed. |
 | Tags (`refs/tags/*`) | **Allowed, unused.** The natural way to mark a milestone snapshot. |
 | `git fsck` | **Used**, under `--restore --verify`. The byte-level check runs on every restore; `fsck` is the optional second pass. |
 | Shallow / partial clone | **Unused.** `--restore` fetches the whole history; `--depth` or `--filter=blob:none` would speed up restoring a large vault. |

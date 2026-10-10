@@ -776,14 +776,14 @@ Defaults are resolved most-specific-first:
 | 3 | The source repository | `seafile://code/app` → `seafile://code/app-vault` |
 | 4 | The current directory | source = `.`, vault = `<source>-vault` |
 
-`--no-push` overrides any remembered or derived remote, keeping the snapshot local. `--dry-run` previews without writing anything — including the remembered settings.
+`--no-push` overrides the remembered or derived remote *for that run* — it pushes nothing (neither the vault nor the code repo) and leaves the vault's memory alone, so a one-off local run does not unhook a scheduled job. `--dry-run` previews the run — the vault is initialised if missing and the snapshot is built into its index, so the diff is real — without moving the branch, pushing, or touching the remembered settings.
 
 | Flag | Effect |
 | :--- | :--- |
 | `SOURCE` (positional) or `--source <dir>` | The tree to snapshot. Default: the current directory. |
 | `--vault <dir>` | Where the vault repository lives. Default: `<source>-vault` beside the source. |
 | `--remote <url>` | The Seafile destination. Default: remembered, else derived from the source's own `seafile://` remote. |
-| `--no-push` | Snapshot locally; ignore any remembered or derived remote. |
+| `--no-push` | This run pushes nothing and changes no remembered setting. |
 | `--exclude <glob>` | Repeatable. Skip matching paths, e.g. `--exclude node_modules`. |
 | `--default-excludes` | Add the recommended junk exclusions (§15.2.1). |
 | `--code-remote <name>` | Also `git push <name>` in the source repo first; the name is validated up front. |
@@ -829,14 +829,24 @@ and writes this into its own `info/attributes`:
 
 ```bash
 # Rebuild a tree into a target directory, verifying byte-exactness
-python tools/seafile_snapshot.py ~/code/myproject --vault <vault> \
-    --restore ~/restored --remote seafile://backups/myproject
+python tools/seafile_snapshot.py --restore \
+    --remote seafile://backups/myproject \
+    --into ~/restored
+
+# Any revision works -- e.g. roll back three snapshots
+python tools/seafile_snapshot.py --restore \
+    --remote seafile://backups/myproject --into ~/restored --ref snapshot~3
 
 # Additionally run `git fsck` over the vault
-python tools/seafile_snapshot.py ~/code/myproject --vault <vault> --verify
+python tools/seafile_snapshot.py --restore \
+    --remote seafile://backups/myproject --into ~/restored --verify
 ```
 
-`--restore` clones `--no-checkout`, re-applies the settings above, then checks out — and verifies the result on **every** run with
+`--restore` takes `--remote` (the vault to restore from) and `--into` (a new,
+empty directory); `--source` and `--vault` do not apply — the tree comes from
+the remote, and the guard refuses flags that would be ignored. `--restore`
+clones `--no-checkout`, re-applies the settings above, then checks out — and
+verifies the result on **every** run with
 
 ```bash
 git hash-object --no-filters -- <path>
@@ -864,7 +874,7 @@ which hashes the bytes as they lie on disk. That is the only one of Git's three 
 
 A vault is a Git repository, so it can be pushed to from more than one machine — but each machine needs to branch from the **remote tip**, not from its own local branch. Getting this wrong is subtle: the second machine's push is rejected `(fetch first)` **and its local branch still moves**, so the first run looks like it worked while every later run fails. The tool fetches the remote tip and bases on it, retries once by re-parenting if it loses a race, and rolls its local branch back to what the remote holds if a push fails.
 
-Per-machine chains are kept separate (`refs/heads/snapshot-<host>`), and `SNAPSHOT.md` §6 documents how to read which machine took which snapshot.
+By default all machines append to **one** shared chain on `refs/heads/snapshot`; the hostname in each snapshot's commit message is how `git log` says which machine saw which tree (`SNAPSHOT.md` §6 documents the reading). If you would rather keep per-machine chains, pass an explicit `--branch snapshot-<hostname>` — supported, but never the default, and the divergence handling above is what makes the shared chain safe.
 
 ### 15.7 What it costs
 

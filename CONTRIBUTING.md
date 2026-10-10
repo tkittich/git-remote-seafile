@@ -18,7 +18,7 @@ Thank you for your interest in improving `git-remote-seafile`! We welcome bug re
    source .venv/bin/activate  # On Windows: .venv\Scripts\activate
    ```
 
-3. **Install in editable mode with development dependencies**:
+3. **Install in editable mode** (there are no development dependencies — the runner deliberately needs nothing beyond the package):
    ```bash
    pip install -e .
    ```
@@ -45,15 +45,21 @@ python tools/run_tests_parallel.py -k e2e   # only matching classes
 python tools/run_tests_parallel.py --list   # show the units of work
 ```
 
-Measured on a 12-core AMD 5900X, 268 tests, same result either way:
+Measured on a 12-core AMD 5900X — 268 tests when this table was first taken,
+539 after v0.8.0 added the snapshot module — same result either way:
 
 | workers | wall time |
 | ------- | --------- |
-| serial (`python -m unittest discover tests`) | 204.4 s |
+| serial (`python -m unittest discover tests`) | 204.4 s (268 tests) |
 | 2 | 141.2 s |
 | 4 | 84.6 s |
 | 6 | 66.1 s |
 | 12 (the default here) | 52.7 s |
+
+The 268-test rows are the original measurement, kept because the *shape* of the
+curve is the point; with the snapshot module the absolute numbers are larger
+(the module alone was 587 s serial before its fixture split), and the
+class-granularity argument only got stronger.
 
 The wall time is bounded by the slowest single unit of work (37.0 s), not by
 throughput, and the curve flattens early: twelve workers are 1.6x four, not 3x,
