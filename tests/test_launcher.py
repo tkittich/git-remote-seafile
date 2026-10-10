@@ -36,6 +36,12 @@ import subprocess
 import tempfile
 import unittest
 
+try:
+    # top-level import under `unittest discover tests` and the parallel runner
+    from _helpers import find_bash as _find_bash  # noqa: E402
+except ImportError:  # package-style: python -m unittest tests.test_launcher
+    from tests._helpers import find_bash as _find_bash  # noqa: E402
+
 _ROOT = pathlib.Path(__file__).resolve().parent.parent
 LAUNCHER = _ROOT / "bin" / "git-remote-seafile"
 
@@ -47,28 +53,6 @@ LAUNCHER = _ROOT / "bin" / "git-remote-seafile"
 _DIRNAME_SHIM = '#!/bin/sh\nexec "$GRS_REAL_DIRNAME" "$@"\n'
 
 
-def _find_bash() -> str | None:
-    """Locate a POSIX bash, preferring the one that ships with git.
-
-    ``shutil.which("bash")`` can resolve to ``System32\\bash.exe`` on Windows,
-    which is the WSL launcher rather than a shell, so look next to git first and
-    reject the WSL one.
-    """
-    override = os.environ.get("GRS_BASH")
-    if override:
-        return override if pathlib.Path(override).is_file() else None
-
-    git = shutil.which("git")
-    if git:
-        git_dir = pathlib.Path(git).resolve().parent
-        for candidate in (git_dir / "bash.exe", git_dir.parent / "bin" / "bash.exe"):
-            if candidate.is_file():
-                return str(candidate)
-
-    found = shutil.which("bash")
-    if found and "system32" not in found.lower():
-        return found
-    return None
 
 
 def _leaked_interpreters(path: str, stub_dir: pathlib.Path) -> list[str]:
