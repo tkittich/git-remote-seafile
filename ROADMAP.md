@@ -2,7 +2,7 @@
 
 **Baseline:** v0.8.0 (whole-tree snapshot tool — the vault, byte-exactness, and multi-machine capture)  
 **Scope:** Active architectural backlog and milestones following releases v0.4.0 through v0.8.0.  
-**Test Suite:** 580+ tests, all green (`tools/run_tests_parallel.py`). **Python:** 3.10+ (3.9 EOL).
+**Test Suite:** 530+ tests, all green (`tools/run_tests_parallel.py`). **Python:** 3.10+ (3.9 EOL).
 
 > [!NOTE]
 > All critical and high-severity findings from `archive/REVIEW.*.md` (including ticket-based distributed locking, abandoned ticket cleanup, post-lock ref verification, exception propagation, GC lock fencing, pack index validation, surrogateescape paths, container PID isolation, D/F ref pruning, multi-spec pack batching, Git LFS transfer progress, safety guardrails, parallel ref enumeration, smart pack fetch filtering, disk-staged streaming, and modular helper decoupling) have been completed. All findings from the October 2026 review cycle (REVIEW.glm/gemini/qwen/VERIFY/BACKLOG, now archived) were verified fixed or explicitly dispositioned, as was the cycle that followed it at v0.7.0 (REVIEW.deepseek/gemini/qwen), closed in v0.7.1. Minor or low-priority items remain tracked in the backlog below. See [CHANGELOG.md](CHANGELOG.md) for detailed release notes.
@@ -142,7 +142,8 @@
 * **Documentation:** `SNAPSHOT.md` (17 sections) is the design document; `USER_GUIDE.md` §15 is the user-facing walkthrough; README lists the tool; DESIGN §7.13 records the architecture. `SNAPSHOT.md` joins the docs-consistency guard's document set.
 * **Sensible Defaults & Vault Memory:** Every option has a default, so a bare `seafile_snapshot.py` is a complete run. Defaults resolve most-specific-first — the explicit flag, then the vault's own remembered config (`snapshot.*`), then the source repository (a single `seafile://` remote names the vault's destination), then the current directory. The recommended exclusions became `--default-excludes` and are **never applied silently**: the tool captures everything and names the reproducible bulk it noticed, because a backup that quietly omits a file is worse than a large one.
 * **Mistake Prevention:** A vault records and enforces its one source tree; neither source nor vault may live in a Seafile-synced folder (checked at startup, the vault's only line of defence since the helper cannot see it); `--code-remote` must name a real remote; `--no-push` with `--remote` is refused; and flags that would be silently ignored (`--ref` without `--restore` above all) are errors.
-* **Coverage:** Suite 463 → 587 tests across 92 targets; `tests/test_snapshot_tool.py` is 124 cases across five classes.
+* **Suite Shape (perf fix):** The runner schedules one unit of work per *class*, so a test-bearing class that was subclassed had its cases run **twice**. Measured on `test_snapshot_tool.py`: 5 targets / 124 cases / 525 s → 19 targets / 75 cases / 151 s, and the full suite ~600 s → 247 s. The cast is now a test-free `_SnapshotFixture`, and `tests/test_suite_shape.py` guards the whole suite against a test-bearing base class returning.
+* **Coverage:** Suite 463 → 539 tests across 109 targets; `tests/test_snapshot_tool.py` is 75 cases across nineteen classes.
 
 ---
 

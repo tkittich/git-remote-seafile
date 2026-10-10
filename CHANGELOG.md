@@ -42,8 +42,10 @@ The snapshot tool ships. `tools/seafile_snapshot.py` captures a working tree —
 
 ### Tests & Tooling
 
-- **`tests/test_snapshot_tool.py`** — 124 cases across five classes, covering the byte-exactness traps, the exclude matcher, the restore verification, the multi-machine race, identity resolution, stale-lock reclamation, the shared-remote refusal, the new defaults and vault memory, and the argument validation.
-- Suite: 463 → 587 tests across 92 targets, all green; docs guards 9/9.
+- **`tests/test_snapshot_tool.py`** — 75 cases across nineteen classes, covering the byte-exactness traps, the exclude matcher, the restore verification, the multi-machine race, identity resolution, stale-lock reclamation, the shared-remote refusal, the new defaults and vault memory, and the argument validation.
+- **Test suite ran each snapshot case twice, until a fixture split: 587 s → 247 s.** The parallel runner schedules one unit of work per *class*, and `unittest` inherits test methods — so when a test-bearing class was used as a base, its cases ran once under the base's own name and once under the subclass's. In `test_snapshot_tool.py` that was 49 of 124 cases duplicated (the module alone took 525 s instead of 151 s). The fixture now carries no tests, the module is split into nineteen single-responsibility classes, and `tests/test_suite_shape.py` guards the whole suite against ever reintroducing a test-bearing base class.
+- Suite: 463 → 539 tests across 109 targets, all green; docs guards 9/9.
+- **`tests/test_suite_shape.py`** — a suite-shape guard: no class that defines a test may be subclassed.
 
 ## [0.7.2] - 2026-10-10
 

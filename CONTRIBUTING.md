@@ -62,6 +62,12 @@ runs land between 52.7 s and 56.5 s, so treat the column as indicative rather
 than exact. The unit of work is the test class — see the module docstring for
 why per-test scheduling is measurably *worse* here.
 
+Because the unit of work is the class, a **class that defines `test_*` methods
+must not be subclassed**: `unittest` inherits tests, so every case would run
+twice — once under the base's own name and once under the subclass's. Put shared
+`setUp` and helpers in a base with no test methods (as `_SnapshotFixture` does in
+`test_snapshot_tool.py`); `tests/test_suite_shape.py` fails the suite otherwise.
+
 Note that `-j 1` is *slower* than the serial command above, because it pays an
 interpreter start-up per class. Use the serial command for a baseline.
 

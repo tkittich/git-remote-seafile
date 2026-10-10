@@ -52,8 +52,16 @@ def _git(cwd: pathlib.Path, *args: str) -> subprocess.CompletedProcess[str]:
     )
 
 
-class SnapshotFixture(unittest.TestCase):
-    """A source repository with ignored files, plus an empty vault path."""
+class _SnapshotFixture(unittest.TestCase):
+    """A source repository with ignored files, plus an empty vault path.
+
+    Fixture only -- no test methods, on purpose.  Both the end-to-end class
+    (:class:`SourceSafetyTests`) and the defaults class
+    (:class:`DefaultsTests`) need this machinery, but neither may inherit the
+    other's *tests*: the parallel runner schedules work by class, so a
+    test-bearing base class would have every one of its cases run twice, once
+    under the base's own name and once under the subclass's.
+    """
 
     def setUp(self):
         self.tmp = pathlib.Path(tempfile.mkdtemp(prefix="grs-snapshot-"))
@@ -120,7 +128,8 @@ class SnapshotFixture(unittest.TestCase):
             (self.code / ".gitignore").read_bytes(),
         )
 
-    # -- the safety property --------------------------------------------
+class SourceSafetyTests(_SnapshotFixture):
+    """Taking a snapshot: the source is untouched, and ignored files are in."""
 
     def test_snapshot_does_not_modify_the_source_repository(self):
         before = self.source_fingerprint()
@@ -168,7 +177,8 @@ class SnapshotFixture(unittest.TestCase):
         self.snapshot()
         self.assertIn("fresh.log", self.tree())
 
-    # -- behaviour --------------------------------------------------------
+class BasicSnapshotTests(_SnapshotFixture):
+    """Excludes, no-op runs, and how additions and deletions propagate."""
 
     def test_excludes_are_honoured(self):
         rc, _, _ = self.snapshot(
@@ -202,7 +212,8 @@ class SnapshotFixture(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertIn("nothing to commit", out)
 
-    # -- guards -----------------------------------------------------------
+class SnapshotGuardTests(_SnapshotFixture):
+    """Layout refusals and the vault-local lock, before anything is committed."""
 
     def test_vault_inside_the_source_is_refused(self):
         rc, _, err = self.run_tool(
@@ -250,7 +261,8 @@ class SnapshotFixture(unittest.TestCase):
         # and the warning is telling the truth: the content is not there
         self.assertNotIn("nested/inner.txt", self.tree())
 
-    # -- byte-exactness and restore ----------------------------------------
+class ByteExactnessTests(_SnapshotFixture):
+    """The round trip: bytes on disk come back unchanged, filters or not."""
 
     def test_vault_is_configured_to_be_byte_exact(self):
         self.snapshot()
@@ -400,7 +412,8 @@ class SnapshotFixture(unittest.TestCase):
         # and it must not have touched what was already there
         self.assertEqual((self.restored / "keep.txt").read_bytes(), b"mine\n")
 
-    # -- several machines, one shared vault --------------------------------
+class MultiMachineTests(_SnapshotFixture):
+    """One shared vault, several machines: linear chain, or a loud refusal."""
 
     def _second_machine(self) -> tuple[pathlib.Path, pathlib.Path]:
         """A second source tree and its own (never cloned) vault."""
@@ -544,7 +557,8 @@ class SnapshotFixture(unittest.TestCase):
         rival = _git(self.remote, "rev-parse", f"{BRANCH}^").stdout.strip()
         self.assertEqual(_git(self.remote, "rev-parse", f"{rival}^").stdout.strip(), r)
 
-    # -- committer identity ------------------------------------------------
+class CommitterIdentityTests(_SnapshotFixture):
+    """Who commits in the vault: the source's identity, never an inherited lie."""
 
     def test_identity_is_inherited_from_the_source_repo(self):
         empty = self.tmp / "no-global-config"
@@ -620,7 +634,8 @@ class SnapshotFixture(unittest.TestCase):
         self.assertTrue(subject.startswith("snapshot "), subject)
         self.assertIn(socket.gethostname(), subject)
 
-    # -- excludes match at any depth ---------------------------------------
+class ExcludeDepthTests(_SnapshotFixture):
+    """The exclude matcher is not root-anchored -- monorepos depend on it."""
 
     def test_a_bare_exclude_name_matches_at_any_depth(self):
         # A `git rm` pathspec is anchored at the tree root, so this used to drop
@@ -659,7 +674,8 @@ class SnapshotFixture(unittest.TestCase):
         self.assertEqual(rc, 0, err)
         self.assertIn("excluded: 1 path(s)", out)
 
-    # -- the vault must not be pushed to a code remote ---------------------
+class CodeRemoteRefusalTests(_SnapshotFixture):
+    """A whole-tree backup must never land where the source repository pushes."""
 
     def test_pushing_the_vault_to_a_code_remote_is_refused(self):
         # A separate *local* repository keeps the snapshot out of the code
@@ -695,7 +711,8 @@ class SnapshotFixture(unittest.TestCase):
         self.assertEqual(rc, 0, err)
         self.assertIn("the remote already has this snapshot", out)
 
-    # -- dry run -----------------------------------------------------------
+class DryRunTests(_SnapshotFixture):
+    """--dry-run promises no push, and that promise covers the code repo too."""
 
     def test_dry_run_does_not_push_the_code_remote(self):
         # Pointed at a repository that does not exist, so a real push would
@@ -706,7 +723,8 @@ class SnapshotFixture(unittest.TestCase):
         self.assertIn("would push the source repo", out)
         self.assertNotIn("pushing source repo", out)
 
-    # -- secrets -----------------------------------------------------------
+class CredentialWarningTests(_SnapshotFixture):
+    """A backup should capture .env -- but the user has to be told it did."""
 
     def test_captured_credentials_are_reported(self):
         rc, out, _ = self.snapshot("--dry-run")
@@ -719,7 +737,8 @@ class SnapshotFixture(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertNotIn("look like credentials", out)
 
-    # -- stale locks -------------------------------------------------------
+class StaleLockTests(_SnapshotFixture):
+    """A lock left by a dead run is reclaimed; a live or foreign one is not."""
 
     def test_a_stale_lock_from_a_dead_process_is_reclaimed(self):
         self.snapshot()
@@ -746,7 +765,8 @@ class SnapshotFixture(unittest.TestCase):
         self.assertEqual(rc, 1)
         self.assertIn("another snapshot is running", err)
 
-    # -- restore verification ----------------------------------------------
+class RestoreVerificationTests(_SnapshotFixture):
+    """--restore proves the bytes, by the only check that cannot be fooled."""
 
     def test_restore_verifies_byte_exactness(self):
         self.snapshot("--remote", str(self.remote))
@@ -841,8 +861,8 @@ class RemoteNormalisationTests(unittest.TestCase):
         )
 
 
-class DefaultsAndMemoryTests(SnapshotFixture):
-    """Sensible defaults, and the vault as the place they are remembered."""
+class DefaultsTests(_SnapshotFixture):
+    """Every option resolves on its own, most-specific-first."""
 
     def test_source_defaults_to_the_working_directory(self):
         previous = os.getcwd()
@@ -894,6 +914,10 @@ class DefaultsAndMemoryTests(SnapshotFixture):
         _git(self.code, "remote", "add", "origin", "https://github.com/x/y.git")
         self.assertIsNone(snap.derive_vault_remote(self.code))
 
+
+class VaultMemoryTests(_SnapshotFixture):
+    """The vault is where the second run's defaults come from."""
+
     def test_settings_are_remembered_and_a_bare_re_run_repeats_them(self):
         self.snapshot("--remote", self.remote, "--exclude", "dist")
         # A second run with no remote and no excludes at all: both come back
@@ -916,6 +940,10 @@ class DefaultsAndMemoryTests(SnapshotFixture):
         self.snapshot("--dry-run", "--remote", self.remote)
         self.assertEqual(snap._read_config_key(self.vault / ".git", "snapshot.remote"), "")
 
+
+class VaultSourceGuardTests(_SnapshotFixture):
+    """A vault remembers its source; pointing it elsewhere is refused."""
+
     def test_a_vault_refuses_a_different_source(self):
         self.snapshot()  # records this source in the vault
         other = self.tmp / "elsewhere"
@@ -923,6 +951,10 @@ class DefaultsAndMemoryTests(SnapshotFixture):
         rc, _, err = self.run_tool("--source", other, "--vault", self.vault)
         self.assertEqual(rc, 1)
         self.assertIn("belongs to a different source", err)
+
+
+class BareRunTests(_SnapshotFixture):
+    """The opt-in junk list, and a cron-safe bare run."""
 
     def test_default_excludes_can_be_opted_into(self):
         rc, out, err = self.run_tool(
