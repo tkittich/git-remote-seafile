@@ -42,6 +42,31 @@ class TestRemoteHelper(unittest.TestCase):
             h.run()
         self.assertEqual(out.getvalue(), "unsupported\n")
 
+    def test_dry_run_option_is_accepted(self):
+        """The reply that makes `git push --dry-run` possible at all.
+
+        Git sends ``option dry-run true`` and *dies* on "unsupported" --
+        "helper seafile does not support dry-run", exit 128 -- before it writes
+        a single push command, so a helper that refuses this option cannot be
+        dry-run at all.
+        """
+        h = RemoteHelper.__new__(RemoteHelper)
+        out = io.StringIO()
+        with patch("sys.stdin", io.StringIO("option dry-run true\n")), patch("sys.stdout", out):
+            h.run()
+        self.assertEqual(out.getvalue(), "ok\n")
+        self.assertTrue(h.dry_run)
+
+    def test_dry_run_option_false_clears_the_flag(self):
+        """The value is honoured rather than assumed, so the flag cannot latch."""
+        h = RemoteHelper.__new__(RemoteHelper)
+        h.dry_run = True
+        out = io.StringIO()
+        with patch("sys.stdin", io.StringIO("option dry-run false\n")), patch("sys.stdout", out):
+            h.run()
+        self.assertEqual(out.getvalue(), "ok\n")
+        self.assertFalse(h.dry_run)
+
     def test_unknown_command_replies_error(self):
         """An unrecognized top-level command must fail loudly, not reply with an empty no-op line."""
         h = RemoteHelper.__new__(RemoteHelper)
@@ -252,6 +277,105 @@ class TestRemoteHelper(unittest.TestCase):
 
         self.assertIn("failed to delete", out.getvalue())
         self.assertEqual(h._refs_cache["refs/heads/old-branch"], "still-there")
+
+    def test_a_helper_that_never_saw_the_option_is_not_a_dry_run(self):
+        """The flag defaults off.  If it did not, every push would be a preview."""
+        h = RemoteHelper.__new__(RemoteHelper)
+        self.assertFalse(h.dry_run)
+
+    @patch("git_remote_seafile.helper.rev_parse", return_value="newsha123")
+    @patch("git_remote_seafile.helper.is_ancestor", return_value=True)
+    def test_dry_run_reports_an_update_and_writes_nothing(self, mock_ancestor, mock_rev):
+        """`git push --dry-run`: the answer of a push, the footprint of a read."""
+        h = RemoteHelper.__new__(RemoteHelper)
+        h.client = MagicMock()
+        h.repo_id = "repo1"
+        h.repo_path = "/git-repo"
+        h._refs_cache = {"refs/heads/main": "oldsha456"}
+        h.dry_run = True
+
+        out = io.StringIO()
+        with patch("sys.stdout", out), patch("git_remote_seafile.helper.RemoteLock") as mock_lock:
+            h.cmd_push(["refs/heads/main:refs/heads/main"])
+
+        output = out.getvalue()
+        self.assertIn("ok refs/heads/main\n", output)
+        # Git reads the response block until the blank line, so it has to be there.
+        self.assertTrue(output.endswith("\n\n"))
+        h.client.upload_file.assert_not_called()
+        h.client.delete_entry.assert_not_called()
+        # The lock is itself a side effect, and taking it would park a real push
+        # behind the settlement window to answer a question nobody acts on.
+        mock_lock.assert_not_called()
+
+    @patch("git_remote_seafile.helper.rev_parse", return_value="localsha")
+    @patch("git_remote_seafile.helper.is_ancestor", return_value=False)
+    def test_dry_run_reports_a_non_fast_forward(self, mock_ancestor, mock_rev):
+        """A rejected update must preview as rejected, not as ok."""
+        h = RemoteHelper.__new__(RemoteHelper)
+        h.client = MagicMock()
+        h.repo_id = "repo1"
+        h.repo_path = "/git-repo"
+        h._refs_cache = {"refs/heads/main": "newersha"}
+        h.dry_run = True
+
+        out = io.StringIO()
+        with patch("sys.stdout", out), patch("git_remote_seafile.helper.RemoteLock") as mock_lock:
+            h.cmd_push(["refs/heads/main:refs/heads/main"])
+
+        self.assertIn("error refs/heads/main non-fast-forward", out.getvalue())
+        h.client.upload_file.assert_not_called()
+        mock_lock.assert_not_called()
+
+    def test_dry_run_reports_a_deletion_without_deleting(self):
+        """The deletion preview deletes nothing, and does not rewrite the cache."""
+        h = RemoteHelper.__new__(RemoteHelper)
+        h.client = MagicMock()
+        h.repo_id = "repo1"
+        h.repo_path = "/git-repo"
+        h._refs_cache = {"refs/heads/old-branch": "stale-sha"}
+        h.dry_run = True
+
+        out = io.StringIO()
+        with patch("sys.stdout", out), patch("git_remote_seafile.helper.RemoteLock") as mock_lock:
+            h.cmd_push([":refs/heads/old-branch"])
+
+        self.assertIn("ok refs/heads/old-branch", out.getvalue())
+        h.client.delete_entry.assert_not_called()
+        # _refs_cache is a push exclusion list, and nothing was pushed.
+        self.assertIn("refs/heads/old-branch", h._refs_cache)
+        mock_lock.assert_not_called()
+
+    def test_dry_run_still_refuses_a_disallowed_namespace(self):
+        """It previews a push, so it refuses exactly what a push would refuse."""
+        h = RemoteHelper.__new__(RemoteHelper)
+        h.client = MagicMock()
+        h.repo_id = "repo1"
+        h.repo_path = "/git-repo"
+        h._refs_cache = {}
+        h.dry_run = True
+
+        out = io.StringIO()
+        with patch("sys.stdout", out), patch("git_remote_seafile.helper.RemoteLock"):
+            h.cmd_push(["HEAD:refs/notes/commits"])
+
+        self.assertIn("refusing to push outside refs/heads and refs/tags", out.getvalue())
+        h.client.upload_file.assert_not_called()
+
+    @patch("git_remote_seafile.helper.rev_parse", return_value=None)
+    def test_dry_run_reports_a_missing_local_ref(self, mock_rev):
+        h = RemoteHelper.__new__(RemoteHelper)
+        h.client = MagicMock()
+        h.repo_id = "repo1"
+        h.repo_path = "/git-repo"
+        h._refs_cache = {}
+        h.dry_run = True
+
+        out = io.StringIO()
+        with patch("sys.stdout", out), patch("git_remote_seafile.helper.RemoteLock"):
+            h.cmd_push(["refs/heads/gone:refs/heads/gone"])
+
+        self.assertIn("error refs/heads/gone local ref does not exist", out.getvalue())
 
     @patch("git_remote_seafile.helper.rev_parse", return_value="newsha123")
     @patch("git_remote_seafile.helper.is_ancestor", return_value=False)

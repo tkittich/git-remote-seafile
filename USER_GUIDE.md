@@ -465,6 +465,16 @@ git push origin feature-branch
 git push origin :old-branch   # Deletes remote branch
 ```
 
+`--dry-run` works too, and it is genuinely read-only: the helper reports which
+refs would move without acquiring the push lock, building a packfile, or writing
+a single ref.
+
+```bash
+git push --dry-run origin main
+# To seafile://code/myproject
+#    a1b2c3d..d4e5f6a  main -> main
+```
+
 ### 8.4 Set or Change Remote Default Branch (`set-head`)
 If you want to designate or change the default branch checked out on clone (e.g. from `master` to `main`, or to `dev`):
 ```bash

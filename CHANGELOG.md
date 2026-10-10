@@ -5,7 +5,13 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.7.2] - 2026-10-10
+
+Remote-helper dry-run support, plus the test-suite fix that had been reddening CI on the Windows 3.10–3.12 legs.
+
+### Added
+
+- **`git push --dry-run` now works.** Git sends `option dry-run true` ahead of the push commands and **aborts with `fatal: helper seafile does not support dry-run` (exit 128) if the helper answers `unsupported`** — before it writes a single push command — so the flag was simply unusable against a Seafile remote. The option is now accepted, and a dry run answers exactly as a push would by making the same four decisions (namespace, local ref, remote ref, fast-forward) while taking **no lock, building no packfile, and writing no ref**. Skipping the lock is deliberate: it is itself a side effect, and holding it would park a real push behind the settlement window to answer a question nobody acts on. Verified against a live remote — a dry run that reported a new tag left the tag list and `refs/heads/main` unchanged.
 
 ### Tests & Tooling
 
@@ -710,7 +716,7 @@ Data-loss and silent-failure fixes, and the Python floor raised to 3.9.
   with zero-config desktop-client token discovery, distributed locking, remote
   packfile compaction, and a Git LFS custom transfer agent.
 
-[Unreleased]: https://github.com/tkittich/git-remote-seafile/compare/v0.7.1...HEAD
+[0.7.2]: https://github.com/tkittich/git-remote-seafile/compare/v0.7.1...v0.7.2
 [0.7.1]: https://github.com/tkittich/git-remote-seafile/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/tkittich/git-remote-seafile/compare/v0.6.4...v0.7.0
 [0.6.4]: https://github.com/tkittich/git-remote-seafile/compare/v0.6.3...v0.6.4

@@ -32,6 +32,12 @@ from .git_util import (
 )
 
 
+#: The only ref namespaces this helper will write.  A module constant so the
+#: real push path and its `--dry-run` preview cannot drift apart on what counts
+#: as a legal destination.
+_ALLOWED_REF_PREFIXES = tuple(f"{ns}/" for ns in REF_NAMESPACES)
+
+
 class RemoteHelper:
     """Implements Git remote-helper protocol over Seafile Web API."""
     remote_name: str = ""
@@ -40,6 +46,11 @@ class RemoteHelper:
     library_name: str = ""
     repo_path: str = ""
     repo_id: str = ""
+    #: Set from ``option dry-run true``, which git sends for ``git push
+    #: --dry-run``.  Declared on the class, not only in __init__, so the
+    #: ``__new__``-built instances the tests use read as False instead of
+    #: raising AttributeError.
+    dry_run: bool = False
 
     def __init__(self, remote_name: str, url: str, client: SeafileClient | None = None):
         self.remote_name = remote_name
@@ -204,6 +215,63 @@ class RemoteHelper:
         self._report_safety_warnings(warnings)
         return warnings
 
+    def _push_dry_run(self, push_specs: list[str]) -> None:
+        """Report what cmd_push() *would* do, and write nothing.
+
+        Git asks for this by sending ``option dry-run true`` ahead of the push
+        commands -- that is `git push --dry-run` -- and then reads exactly the
+        same ``ok``/``error`` lines a real push emits.  So the accuracy of those
+        lines *is* the feature, and they come from the same decisions the real
+        path makes: the namespace check, whether the ref exists locally, whether
+        it exists remotely, and whether the update is a fast-forward.
+
+        Deliberately takes no lock and performs no write.  A dry run is an
+        advisory snapshot by definition, so the read-then-decide race that the
+        real path closes with the lock plus a CAS re-check is not one this can
+        close; taking the lock to answer a question nobody will act on would
+        also park a genuine push behind the settlement window.  Skipping the
+        pack build is what makes it fast, and that is safe because this helper
+        builds packs from the *local* repository -- git never hands it objects
+        that would then have to be consumed.
+        """
+        for spec in push_specs:
+            force = spec.startswith("+")
+            clean_spec = spec.lstrip("+")
+            src, dst = clean_spec.split(":", 1)
+
+            if not dst.startswith(_ALLOWED_REF_PREFIXES):
+                sys.stdout.write(f"error {dst} refusing to push outside refs/heads and refs/tags\n")
+                continue
+
+            try:
+                # Branch deletion: report it, delete nothing.
+                if not src:
+                    sys.stdout.write(f"ok {dst}\n")
+                    continue
+
+                local_sha = rev_parse(src)
+                if not local_sha:
+                    sys.stdout.write(f"error {dst} local ref does not exist\n")
+                    continue
+
+                remote_sha = self.client.get_file_text(self.repo_id, self._full_path(dst))
+                if remote_sha and not force:
+                    try:
+                        if not is_ancestor(remote_sha, local_sha):
+                            sys.stdout.write(f"error {dst} non-fast-forward\n")
+                            continue
+                    except GitError:
+                        sys.stdout.write(f"error {dst} fetch first\n")
+                        continue
+
+                sys.stdout.write(f"ok {dst}\n")
+            except Exception as ex:
+                err_line = str(ex).replace("\r", " ").replace("\n", " ").strip()
+                sys.stdout.write(f"error {dst} {err_line}\n")
+
+        sys.stdout.write("\n")
+        sys.stdout.flush()
+
     def cmd_push(self, push_specs: list[str]) -> None:
         """Process push instructions."""
         # Pre-flight safety checks (Trap 1, Trap 2, root pollution, typos)
@@ -218,10 +286,17 @@ class RemoteHelper:
             sys.stdout.flush()
             return
 
+        # A dry run answers the same question a push does -- what would change --
+        # and must change nothing to answer it.  Handled before the lock is
+        # taken, because taking the lock is itself a side effect.
+        if self.dry_run:
+            self._push_dry_run(push_specs)
+            return
+
         # Set while the push lock is held, acted on after it is released.
         auto_gc_min_packs = 0
         auto_gc_pack_count = 0
-        allowed_ref_prefixes = tuple(f"{ns}/" for ns in REF_NAMESPACES)
+        allowed_ref_prefixes = _ALLOWED_REF_PREFIXES
         reported_specs: set[str] = set()
 
         # Load session config once and reuse it for the push lock below and the
@@ -580,6 +655,14 @@ class RemoteHelper:
                 opt = parts[1] if len(parts) > 1 else ""
                 val = parts[2] if len(parts) > 2 else ""
                 if opt == "object-format" and val == "true":
+                    sys.stdout.write("ok\n")
+                elif opt == "dry-run":
+                    # `git push --dry-run` makes git send this, and git *dies*
+                    # on "unsupported" -- "helper seafile does not support
+                    # dry-run", exit 128 -- before it writes a single push
+                    # command.  So accepting the option is what makes the flag
+                    # usable at all; cmd_push() then reports without writing.
+                    self.dry_run = val == "true"
                     sys.stdout.write("ok\n")
                 elif opt in ("progress", "verbosity"):
                     sys.stdout.write("ok\n")
