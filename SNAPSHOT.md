@@ -1,15 +1,14 @@
 # SNAPSHOT.md — full-tree backup to Seafile, `.gitignore`d files included
 
 > **Status: local tool, not a shipped feature.** The implementation is
-> `tools/seafile_snapshot.py`; the tests are `tests/test_snapshot_tool.py`.
-> It is deliberately absent from `USER_GUIDE.md`, `DESIGN.md` and `CHANGELOG.md`
-> until a decision is made about whether it ships as a feature or stays a
-> personal utility. Everything below was measured on this machine unless a
-> claim is explicitly marked otherwise.
+> `tools/seafile_snapshot.py`; the tests are `tests/test_snapshot_tool.py`
+> (23 cases). The full suite is 486 tests across 90 targets. It is deliberately
+> absent from `USER_GUIDE.md`, `DESIGN.md` and `CHANGELOG.md` until a decision
+> is made about whether it ships as a feature. Everything below was measured on
+> this machine unless a claim is explicitly marked otherwise.
 >
-> This file is kept current two ways — a documentation guard fails the suite
-> when a mechanical claim here drifts, and a scheduled task refreshes the prose
-> and the measurements. See [Maintenance](#maintenance).
+> This file is kept current **as part of the work** — see
+> [Maintenance](#10-maintenance).
 
 ---
 
@@ -114,6 +113,10 @@ from a proprietary archive format.
 > `seafile.autogc` is off by default, so a frequent snapshot regime needs
 > `git-remote-seafile gc <url>` run deliberately (or `seafile.autogc` turned
 > on). A remote that is never compacted grows without bound.
+>
+> For small text trees this is a slow leak. For large binaries it is not — a
+> 32 MB file grows the remote by 32 MB per snapshot until it is compacted. See
+> caveat 5 in [section 7](#7-caveats).
 
 ## 6. Restore
 
@@ -172,39 +175,66 @@ makes the contrast real rather than assumed.
    "could not get object info", and `nested/inner.txt` is absent from the
    snapshot. A restore would produce a broken directory. The tool now prints a
    prominent warning naming each such path — **back those up separately**.
-2. **Empty directories are not captured.** Git does not track them.
-3. **The source's `.git` is not captured.** The vault records the *working
+2. **A source `filter=` attribute is neutralised — without that, Git LFS
+   silently destroys the backup.** This was a real bug, found by probing, not a
+   theoretical worry. A source `.gitattributes` containing `*.bin filter=lfs`
+   made `git add` store a **130-byte LFS pointer** in place of the 4 KB file,
+   and the real bytes went nowhere, because the vault has no LFS remote. The
+   snapshot looked correct and was worthless. `info/attributes` now carries
+   `* -text -filter -ident`; `git check-attr` confirms `filter: unset`.
+   Verified byte-identical afterwards, both with real `git-lfs` 3.7.1 and with
+   a deliberately content-mangling custom filter. Vaults written before the fix
+   are upgraded automatically on the next run.
+3. **Empty directories are not captured.** Git does not track them.
+4. **The source's `.git` is not captured.** The vault records the *working
    tree*, not the code repository's history — verified as 0 `.git/` entries in
    the snapshot. Code history needs `git push` to the code remote; the vault is
    not a substitute for it.
-4. **A snapshot is not a transaction.** The tree is read file by file. A file
+5. **Large files cost one full copy per snapshot until the remote is
+   compacted.** Measured with a 32 MB incompressible file, 1 KB changed per
+   snapshot:
+
+   | Snapshot | Remote size |
+   | :--- | ---: |
+   | 1 | 33 MB |
+   | 2 | 65 MB |
+   | 3 | 97 MB |
+   | after `gc --aggressive` | **33 MB** |
+
+   The three near-identical revisions *do* delta-compress to essentially one
+   copy — but only once something runs `gc`. Since `seafile.autogc` is off by
+   default and the helper does not compact on push, a 32 MB file snapshotted
+   daily grows the remote by 32 MB **per day** until someone runs
+   `git-remote-seafile gc`. This is the most important operational caveat for
+   large files, and it is a compaction problem, not a Git one.
+6. **A snapshot is not a transaction.** The tree is read file by file. A file
    changing mid-scan yields a snapshot that is internally consistent but not a
    point-in-time image of the whole tree.
-5. **Secrets are permanent.** The vault will happily record `.env`, keys and
+7. **Secrets are permanent.** The vault will happily record `.env`, keys and
    credentials, and Git history is forever. Push it only to a library only you
    can read.
-6. **The vault must be outside the source, and outside any synced library.**
+8. **The vault must be outside the source, and outside any synced library.**
    Both are enforced for the source/vault relationship; the synced-library rule
    is not detectable and is on you.
 
 ### Known Git-on-Windows limitations, NOT measured in this session
 
-7. **File modes and symlinks.** Git for Windows does not reliably record the
+9. **File modes and symlinks.** Git for Windows does not reliably record the
    executable bit (`core.fileMode`), and symlink support depends on developer
    mode and privileges. A restore performed on Linux may not reproduce
    permissions or symlinks. If that matters, verify before relying on it.
-8. **Case-insensitive filesystems.** Windows and macOS can collapse `Foo.txt`
-   and `foo.txt`; Git will warn, but the snapshot may not round-trip both.
-9. **Large files.** Git stores whole blobs: a one-byte change to a 1 GB file
-   stores a new 1 GB blob. Delta compression helps on the wire, not in the
-   remote's storage. For large, frequently-changing binaries use Git LFS, or a
-   purpose-built tool (see prior art).
+10. **Case-insensitive filesystems.** Windows and macOS can collapse `Foo.txt`
+    and `foo.txt`; Git will warn, but the snapshot may not round-trip both.
 
 ### Not a caveat, but worth knowing
 
-10. **Touching a file without changing its content produces no commit** — the
+11. **Touching a file without changing its content produces no commit** — the
     vault is content-addressed, not timestamped. If you want a heartbeat record
     of "a backup ran", this tool will not give you one.
+12. **There is no retention policy.** Every snapshot is kept forever; nothing
+    expires, and pruning would mean rewriting history, which the vault does not
+    do. Retention is a real feature of restic and Borg, and it is the clearest
+    reason to reach for one of them instead of this — see section 9.
 
 ## 8. Prior art
 
@@ -231,20 +261,77 @@ Notably, none of the prior art mentions the `core.autocrlf` trap. It is
 specific to Git for Windows, and it only surfaces when you actually run a
 restore.
 
-## 9. Maintenance
+## 9. Build or reuse?
 
-This file is maintained automatically in two layers, because they catch
-different things:
+Short answer: **keep the vault tool, and do not grow it into a backup engine.**
+It fills a gap none of the prior art fills, and it should not try to fill the
+gaps they do.
 
-- **Mechanical claims** (config keys, environment variables, subcommands, the
-  ignore-file name) are covered by `tests/test_docs_consistency.py`, which
-  scans this file because it is listed in `_DOC_NAMES`. Drift fails the suite.
-- **Prose and measurements** (test counts, push sizes, caveat list, prior art)
-  are invisible to that guard — the project's own experience is that prose
-  drift survives a green suite for releases at a time. A scheduled task
-  re-reads `tools/seafile_snapshot.py` and `tests/test_snapshot_tool.py`,
-  re-checks the claims here, and updates this file when they have moved.
+**Nothing else does this.** `git-store-file` stores a *named file list* to a
+branch in the *same* repository — a way to version a few local config files, not
+to capture a working tree. `safe-gitignore` is allowlist-driven (`# safe`
+markers), so it captures what you remembered to mark rather than everything.
+Neither pins byte-exactness, and neither handles the Windows `core.autocrlf`
+trap or the LFS-pointer trap, because neither was written for "restore this
+exactly on another machine".
 
-If you change the tool, the expected sequence is: change the tool, change its
-tests, run the suite, and let the guard tell you if this file's mechanical
-claims are now wrong.
+**What the vault is not, and should not become:**
+
+| Missing capability | Hand it to |
+| :--- | :--- |
+| Deduplication across *different* files, compression | restic / Borg |
+| Encryption at rest | restic / Borg, or `git-crypt` on the vault |
+| Retention and expiry policies | restic / Borg |
+| Efficient large, volatile binaries | Git LFS — this project ships a transfer agent — or keep them out of the vault entirely |
+
+The vault's value is that it is **Git**: history, diff, merge, and a
+content-addressed integrity check, for free, pushed through the helper you
+already run. If what you actually want is a backup *system*, restic pointed at a
+Seafile-backed WebDAV or rclone target is the better answer, and rebuilding that
+here would be a mistake.
+
+### Placement: this project, or its own?
+
+The tool has **zero code dependency** on the package — it imports nothing from
+`git_remote_seafile` and shells out to plain `git`. Its only tie is a *runtime*
+one: it pushes to a `seafile://` URL, so it needs the helper installed.
+
+That means it *could* be separate. It should not be:
+
+- The audience overlap is near-total. Anyone who wants a Seafile-backed Git
+  remote is a candidate for a Seafile-backed file backup, and vice versa.
+- It is ~500 lines that mostly invoke `git`. A separate repository means its own
+  CI matrix, its own docs guards, its own release process and version numbers —
+  real, recurring cost for very little isolation.
+- `tools/seafile_doctor.py` is the precedent: adjacent tooling already lives
+  here.
+
+It should also **not** be promoted to a `git-remote-seafile` subcommand. That
+CLI is about *the remote* (`check-auth`, `lock-status`, `unlock`, `gc`,
+`set-head`, `test`, `desktop-url`); a local-filesystem backup command dilutes
+it, and the docs guard would then require it to be documented as a first-class
+subcommand of a released package.
+
+The trigger to reconsider is concrete: **if it ever imports from
+`git_remote_seafile`, or grows a user interface, it has become its own thing.**
+
+## 10. Maintenance
+
+This file is kept current **as part of the work**, not by a robot: when a
+discussion changes the tool, the tests, or the thinking in here, this file is
+updated in the same pass. That is the convention.
+
+Two backstops exist, and they catch different things:
+
+- **Mechanical claims** — config keys, environment variables, subcommands, the
+  `seafile-ignore.txt` name — are guarded by `tests/test_docs_consistency.py`,
+  which scans this file because it is listed in `_DOC_NAMES`. Drift fails the
+  suite.
+- **Prose and measurements** — the numbers in section 7, the test counts, the
+  prior-art links — are invisible to that guard; the project's own experience is
+  that prose drift survives a green suite for releases at a time. A weekly
+  scheduled task re-checks them as a safety net. It is a backstop, not the
+  mechanism.
+
+If you change the tool: change the tool, change its tests, run the suite, and
+update this file. The guard will tell you if a mechanical claim went stale.

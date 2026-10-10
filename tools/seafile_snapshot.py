@@ -255,13 +255,22 @@ def ensure_identity(vault: Path, source: Path) -> None:
             )
 
 
+BYTE_EXACT_MARKER = "* -text -filter -ident"
+
 BYTE_EXACT_ATTRIBUTES = (
     "# Written by seafile_snapshot.py.  The vault exists to hold byte-exact\n"
-    "# copies of the source tree, so every path is marked non-text.  This\n"
-    "# disables end-of-line conversion on both add and checkout -- including\n"
-    "# conversion implied by a .gitattributes in the source tree, which this\n"
-    "# file outranks (info/attributes has the highest precedence).\n"
-    "* -text\n"
+    "# copies of the source tree, so every path is marked non-text and\n"
+    "# filter-free.  info/attributes has the highest precedence in Git's\n"
+    "# attribute chain, so this outranks any .gitattributes in the source tree.\n"
+    "#\n"
+    "#   -text    end-of-line conversion, on add and on checkout.\n"
+    "#   -filter  clean/smudge filters -- Git LFS above all.  Without this, a\n"
+    "#            source 'filter=lfs' attribute makes `git add` store a ~130\n"
+    "#            byte pointer instead of the file, and the real bytes are\n"
+    "#            uploaded nowhere, because the vault has no LFS remote.\n"
+    "#            Silent data loss in a tool whose job is a full backup.\n"
+    "#   -ident   $Id$ keyword expansion.\n"
+    "* -text -filter -ident\n"
 )
 
 
@@ -283,7 +292,10 @@ def ensure_byte_exact(vault: Path, git_dir: Path) -> None:
     attributes = git_dir / "info" / "attributes"
     attributes.parent.mkdir(parents=True, exist_ok=True)
     existing = attributes.read_text(encoding="utf-8") if attributes.exists() else ""
-    if "* -text" not in existing:
+    # Checked on the marker line, not on "-text": a vault created by an earlier
+    # version carries only "* -text", and appending is safe because a later line
+    # overrides an earlier one within the same attributes file.
+    if BYTE_EXACT_MARKER not in existing:
         attributes.write_text(existing + BYTE_EXACT_ATTRIBUTES, encoding="utf-8")
 
 

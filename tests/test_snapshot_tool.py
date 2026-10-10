@@ -257,7 +257,7 @@ class SnapshotFixture(unittest.TestCase):
         attrs = (self.vault / ".git" / "info" / "attributes").read_text(
             encoding="utf-8"
         )
-        self.assertIn("* -text", attrs)
+        self.assertIn("* -text -filter -ident", attrs)
 
     def test_restore_is_byte_identical(self):
         # The blob was always correct; it was the *checkout* that converted.
@@ -306,6 +306,67 @@ class SnapshotFixture(unittest.TestCase):
         self.assertEqual(
             (self.restored / ".gitattributes").read_bytes(), b"* text=auto\n"
         )
+
+    def test_a_source_filter_cannot_corrupt_the_backup(self):
+        # Git LFS is the common case.  A source `filter=lfs` attribute makes
+        # `git add` store a ~130-byte pointer instead of the file, and the real
+        # bytes are uploaded nowhere -- the vault has no LFS remote.  The backup
+        # would look fine and be worthless, so `filter` has to be neutralised
+        # alongside `text`.
+        (self.code / ".gitattributes").write_bytes(b"*.dat filter=upper\n")
+        (self.code / "data.dat").write_bytes(b"payload\n")
+
+        self.snapshot("--dry-run")  # creates the vault
+        # A filter that would visibly mangle the content if it ever ran.
+        _git(self.vault, "config", "filter.upper.clean", "tr a-z A-Z")
+
+        self.snapshot()
+
+        def vault_git(*args: str) -> subprocess.CompletedProcess[str]:
+            return _git(
+                self.code,
+                "--git-dir",
+                str(self.vault / ".git"),
+                "--work-tree",
+                str(self.code),
+                *args,
+            )
+
+        self.assertEqual(
+            vault_git("cat-file", "-p", "snapshot:data.dat").stdout, "payload\n"
+        )
+        self.assertIn(
+            "filter: unset", vault_git("check-attr", "filter", "--", "data.dat").stdout
+        )
+
+    def test_a_vault_written_by_an_older_version_is_upgraded(self):
+        # Vaults created before the -filter fix carry only "* -text".  The
+        # marker check must notice and append, and appending is safe because a
+        # later line overrides an earlier one within an attributes file.
+        self.snapshot("--dry-run")
+        attributes = self.vault / ".git" / "info" / "attributes"
+        attributes.write_bytes(b"* -text\n")
+
+        _git(self.vault, "config", "filter.upper.clean", "tr a-z A-Z")
+        (self.code / ".gitattributes").write_bytes(b"*.dat filter=upper\n")
+        (self.code / "data.dat").write_bytes(b"payload\n")
+
+        self.snapshot()
+
+        self.assertIn(
+            "* -text -filter -ident", attributes.read_text(encoding="utf-8")
+        )
+        stored = _git(
+            self.code,
+            "--git-dir",
+            str(self.vault / ".git"),
+            "--work-tree",
+            str(self.code),
+            "cat-file",
+            "-p",
+            "snapshot:data.dat",
+        ).stdout
+        self.assertEqual(stored, "payload\n")
 
     def test_restore_can_roll_back_to_an_older_snapshot(self):
         (self.code / "lf.txt").write_bytes(b"original\n")
