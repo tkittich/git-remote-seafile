@@ -9,7 +9,8 @@
 > marked otherwise.
 >
 > This file is kept current **as part of the work** — see
-> [Maintenance](#15-maintenance).
+> [Maintenance](#15-maintenance). Open work is collected in
+> [section 16](#16-own-review-issues-found).
 
 ---
 
@@ -53,6 +54,21 @@ source dir  --(--work-tree)-->  vault repo  --git push-->  seafile://code/<name>
 (only ever read)                 own .git, own index
 ```
 
+**Two words, two different things — and they are not interchangeable.** A
+**vault** is the *repository*: one directory, one `.git`, one remote, something
+you create, point at and eventually delete. A **snapshot** is a single *commit*
+inside it. "The vault holds forty snapshots" is a sentence; "the vault is a
+snapshot" is not. The tool keeps the same split — `--vault <path>` names the
+repository, while `--message`, `--ref`, `--dry-run` and `--restore` are all about
+snapshots.
+
+So neither word is being retired, because neither is a synonym for the other.
+What *was* wrong is that earlier drafts of this file used them loosely, which is
+what made the design read as if it had two names. The script is called
+`seafile_snapshot.py` because that is the verb the user wants ("take a
+snapshot"), and the flag is `--vault` because that is the object the user points
+at. See [section 16](#16-own-review-issues-found) for the full answer.
+
 Snapshots are ordinary commits built in the vault's **own** index. The source
 is never written to: not `.gitignore`, not `.git`, not the index. The code
 repository stays small, so `git clone` on a second machine stays fast — the
@@ -80,8 +96,9 @@ python tools/seafile_snapshot.py --source C:/code/myproject \
     --vault C:/code/myproject-vault \
     --code-remote origin \
     --remote seafile://code/myproject-vault \
-    --exclude node_modules --exclude venv --exclude .venv \
-    --exclude __pycache__ --exclude '*.pyc' --exclude dist --exclude build
+    --exclude '*node_modules/*' --exclude '*venv/*' --exclude '*.venv/*' \
+    --exclude '*__pycache__/*' --exclude '*.pyc' --exclude '*dist/*' \
+    --exclude '*build/*'
 ```
 
 Useful flags: `--branch` (default `snapshot`), `--message`, `--dry-run`,
@@ -90,6 +107,23 @@ Useful flags: `--branch` (default `snapshot`), `--message`, `--dry-run`,
 **Recommended exclusions** are the *reproducible* directories — `node_modules`,
 `venv`, `dist`, `build`, `__pycache__`. There is no default exclude list,
 because "all files" is the point; add them deliberately.
+
+> **Quote the patterns, and mind the leading `*`.** An exclusion is a Git
+> pathspec, and a *literal* pathspec is anchored at the root of the tree: the
+> pattern `node_modules` excludes `node_modules/` and **nothing else**, so
+> `packages/api/node_modules/` is still captured. Measured on a tree holding
+> `node_modules/x.js`, `pkg/node_modules/y.js` and `a/b/node_modules/z.js`, the
+> pattern `node_modules` removed **one of the three**. The form
+> `*node_modules/*` removes all three. `*.pyc` already works at any depth, because
+> a wildcard *does* cross `/` while a literal path is treated as a directory
+> prefix. Quote the pattern so your own shell does not expand it first.
+>
+> `*dist*` is the trap in the other direction — it matches `distance.txt` too.
+> Use `*dist/*`.
+>
+> This is a defect in the tool's own help text, not just in this document: the
+> help epilog and the module docstring both print the unquoted, root-anchored
+> form. See [section 16](#16-own-review-issues-found).
 
 > The vault is a Git repository and must **not** live inside a Seafile-synced
 > folder — the same rule as for the source, and for the same reason.
@@ -236,6 +270,24 @@ makes the contrast real rather than assumed.
 
 ## 8. Caveats
 
+Fifteen caveats, and taken as a flat list they look alarming. They are long
+because they were **unsorted**: the list mixed three different kinds of
+statement, and only one of the three is a to-do list.
+
+| Kind | Caveats | What it means |
+| :--- | :--- | :--- |
+| **Fixed already** — the tool handles it, and a test holds it | 2, 5, and the byte-exactness and multi-machine work in [section 6](#6-several-machines-one-vault) and [section 7](#7-restore) | Described here only so the *failure* is on record. |
+| **Fixable in the tool, not yet done** — the mechanism exists, and where marked it has been measured | 1 (nested repos), 6 (compaction), 9 (synced library), plus the `--exclude` bug in [section 16](#16-own-review-issues-found) | Real work, but no new ideas needed. |
+| **Inherent** — a property of Git, the filesystem or Windows, not of this design | 3, 4, 7, 8, 10, 11, 12, 13 | restic and Borg have most of these too. |
+| **Deliberate policy** — a choice, not a limitation | 14, 15 | Two of these are worth *keeping*: "a snapshot is not a transaction" and "there is no retention policy" are the honest limits of a Git-backed backup. |
+
+So the honest answer to "are the caveats fixable?" is: **two of the fifteen are
+already fixed, three are fixable and unfixed, and the remaining ten should not be
+fixed** — they should be *stated*, which is what this section is for. Add the
+unnumbered `--exclude` pathspec bug and the fixable pile is four items, of which
+that one is the only defect that is currently **silent**: see
+[section 16](#16-own-review-issues-found).
+
 ### Verified on this machine
 
 1. **Nested Git repositories are recorded as gitlinks — their contents are
@@ -246,6 +298,10 @@ makes the contrast real rather than assumed.
    snapshot. A restore would produce a broken directory. The tool prints a
    prominent warning naming each such path — **back those up separately**.
    Submodules are the same mechanism and are warned about identically.
+   **This is fixable, and the fix has been measured** — see
+   [the nested-repository fix](#the-nested-repository-fix-measured) at the end
+   of this section. Until it is implemented, the warning is the whole of the
+   protection.
 2. **A source `filter=` attribute is neutralised — without that, Git LFS
    silently destroys the backup.** This was a real bug, found by probing, not a
    theoretical worry. A source `.gitattributes` containing `*.bin filter=lfs`
@@ -345,6 +401,47 @@ the specific case the tool should detect itself.
     do. Retention is a real feature of restic and Borg — see
     [section 12](#12-how-this-compares-to-a-filesystem-snapshot-tool-restic-or-borg).
 
+### The nested-repository fix, measured
+
+Caveat 1 is not a Git limitation. It is a limitation of `git add`, and the
+plumbing underneath `git add` does not have it. Measured, in this order:
+
+```
+$ git add -A -f .                  # what the tool does today
+warning: adding embedded git repository: nested
+$ git ls-files -s -- nested
+160000 a75b13a8058b529ec3ccce95d963295dec54ca1a 0    nested   # a commit id, no contents
+
+$ git add -f nested/inner.txt      # the obvious fix
+fatal: Pathspec 'nested/inner.txt' is in submodule 'nested'
+
+$ git update-index --force-remove nested
+$ git update-index --add --cacheinfo 100644,"$sha",nested/inner.txt
+$ git write-tree                   # -> nested/inner.txt IS in the tree
+```
+
+The rule is that `update-index --cacheinfo` cannot insert a path *underneath* an
+existing gitlink — it fails with "appears as both a file and as a directory" —
+so the gitlink entry has to be dropped first, and the nested repository's files
+then inserted one at a time with `hash-object -w` + `update-index --cacheinfo`.
+
+Probed end to end on a three-level tree: `nested/` is a repository, and
+`nested/deep/` is another one inside it. The resulting snapshot restored **5 of
+5 files** — including `nested/loose.txt`, which is untracked *inside* the nested
+repository, and `nested/deep/deeper.txt`, two repositories down. Nothing in the
+source was touched.
+
+What this buys, and what it does not:
+
+- It captures the nested repository's **working tree** — tracked *and* untracked
+  files — which is what a file backup wants. It is still not that repository's
+  *history*; that needs a `git push` of its own.
+- It composes, because the walk is recursive.
+- It does **not** produce a submodule. A restore gives plain directories and
+  files, not a repository you can `git fetch` in. That is right for a backup and
+  wrong for a checkout — so the tool should keep warning, but describe the result
+  accurately instead of calling it broken.
+
 ## 9. What Seafile and `git-remote-seafile` already give you
 
 The tool deliberately reuses the transport rather than reimplementing it. What
@@ -417,8 +514,18 @@ snapshot's tree is the *whole* working tree: `.env`, keys, credentials,
 `node_modules`. In the same repository, one `git push --all` — or a mirror
 remote whose refspec happens to cover `refs/heads/*`, which is exactly what this
 project's own `mirror` does — sends all of it to the code remote. A separate
-repository makes that impossible rather than merely discouraged. This is the
-strongest reason, and it is not hypothetical.
+repository removes that failure mode entirely. This is the strongest reason, and
+it is not hypothetical.
+
+**But be precise about what a separate repository buys.** It separates the
+*object stores*, which is what stops an ordinary `git push --all` from carrying
+the snapshot along. It does **not**, by itself, keep the ignored files off the
+code remote's *server*: point the vault's `--remote` at the same library the code
+lives in and the snapshot is published there on purpose. The tool does not check
+for that yet — it is issue 3 in
+[section 16](#16-own-review-issues-found). So the accurate claim is that a
+separate repository turns publishing the ignored files from an accident into a
+deliberate act; the check that would make it an *error* is still to be written.
 
 **A branch also entangles the source's object database.** You would have to
 avoid the source's index (a temporary index via `GIT_INDEX_FILE`, as
@@ -570,17 +677,82 @@ not cross that line, because the tool still works standalone.
 
 ### Recommended next steps, in order
 
-1. **Warn when the vault is inside a synced library** — the one confirmed gap
-   with a confirmed detection path. Best-effort import of the helper's
-   discovery, silent when the helper is absent.
-2. **Surface `gc`** — either run `git-remote-seafile gc` after a snapshot when
+1. **Refuse a vault remote that is also a code remote** — issue 3 in
+   [section 16](#16-own-review-issues-found). The smallest change with the
+   largest effect: it turns §11's claim from an intention into a guarantee.
+2. **Fix `--exclude`** — the pathspec depth problem (issue 1), in the tool *and*
+   in its help epilog. Silent under-exclusion is the wrong kind of bug for a
+   backup to have.
+3. **Warn when the vault is inside a synced library** — a confirmed gap with a
+   confirmed detection path. Best-effort import of the helper's discovery,
+   silent when the helper is absent.
+4. **Capture nested repositories** instead of only warning about them — the
+   plumbing is measured and written up at the end of
+   [section 8](#8-caveats).
+5. **Surface `gc`** — either run `git-remote-seafile gc` after a snapshot when
    the helper reports enough packfiles, or document a schedule. Today the
    warning is printed and ignored.
-3. **Decide the shared-vs-per-machine vault question** before documenting this
+6. **Decide the shared-vs-per-machine vault question** before documenting this
    as a feature; it changes what "restore on a new machine" means.
-4. **Do not** add dedup, encryption, or retention. Point at restic.
+7. **Do not** add dedup, encryption, or retention. Point at restic.
 
 ## 13. What Git already gives us, and what we leave unused
+
+### First: Git has no snapshot *feature* — only primitives
+
+Asked directly: does Git already do this? **No.** There is no command whose job
+is "record this working tree, ignored files included, somewhere I can restore it
+from". What Git has is the four plumbing commands this tool is built from —
+`add -f`, `write-tree`, `commit-tree`, `update-ref` — which are a *vocabulary*,
+not a feature.
+
+The one candidate that looks like a feature is `git stash`, and it is the only
+command in Git whose stated purpose is "save the working state". It was probed
+rather than reasoned about, and it fails on four counts:
+
+```
+$ git stash push -a -q -m probe
+$ git rev-list --parents -n1 'stash@{0}'     # -> THREE parents
+$ git ls-tree -r --name-only 'stash@{0}'     # -> .gitignore tracked.txt
+$ git ls-tree -r --name-only 'stash@{0}^3'   # -> .env node_modules/dep.js
+$ ls -A                                      # -> .git .gitignore tracked.txt
+```
+
+1. **Ignored files do not go in the stash's tree.** They go in a *third parent*
+   (`stash@{0}^3`), a side channel for untracked files. The stash's own tree holds
+   the tracked files only.
+2. **Restoring the tree therefore does not restore them.** A tree checkout
+   materialised `.gitignore` and `tracked.txt`; `.env` and `node_modules/dep.js`
+   were absent. `git archive stash@{0}` agrees — two files.
+3. **`git stash push` mutates the source.** That last listing is the working
+   directory *after* the command: the untracked and ignored files were **deleted**
+   from it. A backup tool whose first promise is "your source is read-only" cannot
+   be built on that.
+4. **The non-destructive form is a silent no-op.** `git stash create` leaves the
+   working tree alone — and **silently ignores `-u`**: exit status 0, nothing on
+   stderr, and no commit object produced. `git stash create -h` does not even list
+   the flag. For a backup, a silent no-op is the worst possible failure mode. It
+   also requires a HEAD ("You do not have the initial commit yet"), so it cannot
+   snapshot a directory that is not yet a repository.
+
+The vault differs from `git stash` in exactly those four places: everything goes
+in **one** tree, the source is never written to, an unchanged tree is *reported*
+rather than silently skipped, and a directory with no `.git` works fine.
+
+The wider survey tells the same story — every other candidate exports something
+that already exists, rather than recording something that does not:
+
+| Candidate | Why it is not a snapshot |
+| :--- | :--- |
+| `git archive <commit>` | Exports a *tree*; untracked files are in no tree. |
+| `git bundle` | Packages refs and objects for transport, not working-tree files. |
+| `git worktree add` | Another checkout of the same repository — same tracked content. |
+| `git add -N` / `--intent-to-add` | Still bound by `.gitignore`; needs a second `add` anyway. |
+| GitHub/GitLab "download source" | A tarball of a commit. Untracked files are not in it. |
+
+So Git supplies the *storage model* and the *plumbing*; the tool supplies the
+feature. That is a small amount of code — but it is not zero, and it is not a
+configuration flag on anything else.
 
 **Taken advantage of today:**
 
@@ -664,3 +836,105 @@ rather than presented as invariants. Re-read them when the tool changes.
 
 If you change the tool: change the tool, change its tests, run the suite, and
 update this file. The guard will tell you if a mechanical claim went stale.
+
+## 16. Own review: issues found
+
+A pass over the tool looking for defects rather than features, ordered by how
+much each one matters. Everything here was measured or read out of the code, not
+guessed at.
+
+### 1. `--exclude` is root-anchored, so the documented invocation under-excludes
+
+**Silent, and it hits monorepos hardest.** `--exclude node_modules` excludes the
+root `node_modules/` and nothing else. Measured on a tree holding
+`node_modules/x.js`, `pkg/node_modules/y.js` and `a/b/node_modules/z.js`: **one of
+the three** was removed. The same holds for `dist` and `build` — precisely the
+directories a monorepo keeps under `packages/*/`. The user's mental model is "I
+excluded node_modules"; the behaviour is "I excluded one directory by that name".
+
+Fix: recommend `*node_modules/*` and friends, quoted (measured: that form removes
+all three, while `*dist*` is too broad because it also matches `distance.txt`).
+Better still, match in Python — read `git ls-files` and filter with `fnmatch` —
+which sidesteps pathspec semantics entirely and lets `--exclude node_modules`
+mean what everyone assumes. The help epilog prints the root-anchored form today,
+so it needs the same correction.
+
+### 2. `--dry-run` does not suppress `--code-remote`
+
+The code-repo push runs *before* the dry-run branch is reached, so
+`--dry-run --code-remote origin` really pushes. The help text for `--dry-run`
+promises "build the snapshot but do not move the branch or push" — true of the
+vault, false of the code remote. Fix: skip the code push under `--dry-run` and
+print what it would have done.
+
+### 3. Nothing checks that the vault's remote differs from the code remote
+
+The one with the worst blast radius, because it defeats the argument in
+[section 11](#11-why-a-separate-repository-not-a-branch-or-a-subdirectory). A
+separate *local* repository only keeps the ignored files away from the code
+remote if it is pushed somewhere else. Point `--remote` at the same library the
+code lives in and one push publishes `.env`, keys and the rest, with no warning.
+So the claim §11 used to make — that a separate repository makes this
+"impossible rather than merely discouraged" — overstated it; what a separate
+repository actually makes it is *deliberate*. §11 has been corrected to say that,
+but the check itself is still missing. Fix: compare `--remote` against every
+`remote.<name>.url` and `.pushurl` in the source repository and refuse on a match
+unless an explicit override flag is passed. Cheap, and it is the difference
+between a safety property and a safety hope.
+
+### 4. The lock has no stale recovery
+
+`VaultLock` uses `O_EXCL` and tells the user to delete the file by hand. A run
+killed with SIGKILL, or a crash, leaves the vault un-snapshotable until someone
+reads the message and acts. The pid is already written into the lock, so checking
+whether that pid is still alive would turn a dead end into an automatic recovery.
+The helper's own `lock.py` solves the harder distributed version of this and is
+worth reading first.
+
+### 5. No integrity check on restore
+
+`--restore` clones, checks out, and counts files. It never runs `git fsck`, and
+never re-hashes the restored files against the tree. Git verifies object hashes
+on read, so a corrupt *object* does fail loudly — but a silently wrong *checkout*
+(the `core.autocrlf` class of bug) would not. A `--verify` would have caught the
+CRLF bug directly instead of through a hand-written probe.
+
+### 6. Secrets are warned about in prose only
+
+The doc and the module docstring both say secrets are permanent. The tool prints
+nothing when it captures `.env`, `id_rsa`, `*.pem` or `credentials.json`. A
+one-line summary of suspicious names — especially under `--dry-run` — would put
+the warning where the decision is made.
+
+### Smaller notes
+
+- **`push_snapshot` is called with `commit=None`** when the tree is unchanged.
+  Harmless (the branch already equals the base, so the push is a no-op) and
+  *useful* in one case — a machine that snapshotted offline ends up pushing its
+  chain. But it is accidental rather than designed, and it prints
+  "pushing … / push complete" for nothing.
+- **The exec bit is lost.** Measured: `core.fileMode=false` on Git for Windows,
+  and `chmod +x` recorded as `100644`. `core.fileMode=true` is the fix on POSIX;
+  on Windows it is unreliable, so it stays a documented caveat there.
+- **`datetime.now()`** in the default message is naive local time. Harmless, but
+  a shared vault across timezones would read better with an offset.
+- **`--code-remote` pushes the source repo before the vault is touched**, so a
+  later failure leaves the code pushed and no snapshot. The ordering is
+  deliberate — the snapshot should sit on top of a pushed state — but it is worth
+  stating, because "snapshot aborted before touching the vault" is printed after
+  a real side effect has already happened.
+
+### What I would not change
+
+- **No dedup, compression, encryption or retention.** §12 says why; restic and
+  Borg own those problems.
+- **Do not merge diverged chains.** Refusing is correct.
+- **Do not promote this to a subcommand**, and do not split it into its own
+  repository yet.
+- **Keep `--exclude` opt-in.** "All files" is the point.
+
+### If only one thing gets fixed
+
+**Number 3.** Everything else here is a papercut or a missing convenience. That
+one decides whether the tool's central safety claim is true or merely
+aspirational.
