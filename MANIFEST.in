@@ -12,6 +12,7 @@ include USER_GUIDE.md
 include DESIGN.md
 include CONTRIBUTING.md
 include ROADMAP.md
+include SNAPSHOT.md
 include pyproject.toml
 
 # The source-checkout launcher, so an sdist can be run without installing it.
@@ -30,5 +31,6 @@ recursive-include tests *.py
 include tools/run_tests_parallel.py
 include tools/verify_docs_guards.py
 include tools/seafile_doctor.py
+include tools/seafile_snapshot.py
 
 global-exclude *.py[cod]

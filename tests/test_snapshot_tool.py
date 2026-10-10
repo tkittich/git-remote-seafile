@@ -227,6 +227,27 @@ class SnapshotFixture(unittest.TestCase):
         self.assertEqual(rc, 1)
         self.assertIn("another snapshot appears to be running", err)
 
+    def test_embedded_repositories_are_reported(self):
+        # git records a directory containing its own .git as a gitlink: the
+        # commit id is captured, the contents are not.  Silently producing a
+        # broken restore is the worst thing a backup tool can do, so this must
+        # be loud.
+        nested = self.code / "nested"
+        nested.mkdir()
+        (nested / "inner.txt").write_bytes(b"inner\n")
+        _git(nested, "init", "-q", "-b", "main", ".")
+        _git(nested, "config", "user.email", "inner@example.com")
+        _git(nested, "config", "user.name", "Inner")
+        _git(nested, "add", "-A")
+        _git(nested, "commit", "-qm", "inner")
+
+        rc, out, _ = self.snapshot()
+        self.assertEqual(rc, 0)
+        self.assertIn("embedded git repositories", out)
+        self.assertIn("nested", out)
+        # and the warning is telling the truth: the content is not there
+        self.assertNotIn("nested/inner.txt", self.tree())
+
     # -- byte-exactness and restore ----------------------------------------
 
     def test_vault_is_configured_to_be_byte_exact(self):

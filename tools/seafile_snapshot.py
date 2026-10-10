@@ -386,6 +386,22 @@ def describe_tree(git_dir: Path, work_tree: Path, tree: str) -> tuple[int, int]:
     return count, total
 
 
+def find_gitlinks(git_dir: Path, work_tree: Path, tree: str) -> list[str]:
+    """Paths recorded as gitlinks -- embedded repositories whose contents are absent.
+
+    ``git add`` records a directory that contains its own ``.git`` as a single
+    reference to that repository's commit, and the commit is *not* copied.  A
+    restore therefore produces a broken directory rather than the files, which
+    is silent data loss in something sold as a full backup.
+    """
+    listing = git(git_dir, work_tree, ["ls-tree", "-r", tree], cwd=work_tree).stdout
+    return [
+        line.split("\t", 1)[1]
+        for line in listing.splitlines()
+        if line.startswith("160000 commit ")
+    ]
+
+
 def diff_stat(git_dir: Path, work_tree: Path, parent: str, tree: str) -> str:
     proc = git(
         git_dir,
@@ -617,6 +633,20 @@ def main(argv: list[str] | None = None) -> int:
             print(f"branch : {args.branch}")
             print(f"files  : {count} ({human_bytes(size)})")
             print(f"base   : {parent[:12] if parent else '(first snapshot)'}")
+
+            gitlinks = find_gitlinks(git_dir, source, tree)
+            if gitlinks:
+                print(
+                    "\nWARNING: these paths are embedded git repositories.  Only "
+                    "their commit id is\nrecorded, NOT their contents, so a "
+                    "restore will produce a broken directory:"
+                )
+                for path in gitlinks:
+                    print(f"  {path}")
+                print(
+                    "  Back them up separately, or make them submodules with a "
+                    "remote that survives."
+                )
 
             unchanged = commit is None
             if unchanged:
