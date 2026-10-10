@@ -223,10 +223,11 @@ class SnapshotFixture(unittest.TestCase):
     def test_concurrent_run_is_blocked_by_the_lock(self):
         self.snapshot()
         lock = self.vault / ".git" / "seafile-snapshot.lock"
+        # No host, so the holder cannot be identified and nothing is reclaimed.
         lock.write_text("1234", encoding="utf-8")
         rc, _, err = self.snapshot("--dry-run")
         self.assertEqual(rc, 1)
-        self.assertIn("another snapshot appears to be running", err)
+        self.assertIn("another snapshot is running", err)
 
     def test_embedded_repositories_are_reported(self):
         # git records a directory containing its own .git as a gitlink: the
@@ -618,6 +619,226 @@ class SnapshotFixture(unittest.TestCase):
         subject = _git(self.vault, "log", "-1", "--format=%s", BRANCH).stdout.strip()
         self.assertTrue(subject.startswith("snapshot "), subject)
         self.assertIn(socket.gethostname(), subject)
+
+    # -- excludes match at any depth ---------------------------------------
+
+    def test_a_bare_exclude_name_matches_at_any_depth(self):
+        # A `git rm` pathspec is anchored at the tree root, so this used to drop
+        # the top-level `node_modules/` and silently keep the nested ones --
+        # which is exactly the layout a monorepo has.
+        (self.code / "packages" / "api" / "node_modules").mkdir(parents=True)
+        (self.code / "packages" / "api" / "node_modules" / "b.js").write_bytes(b"y\n")
+        (self.code / "packages" / "web" / "dist").mkdir(parents=True)
+        (self.code / "packages" / "web" / "dist" / "c.js").write_bytes(b"z\n")
+        (self.code / "packages" / "web" / "keep.js").write_bytes(b"k\n")
+
+        rc, _, err = self.snapshot(
+            "--exclude", "node_modules", "--exclude", "dist"
+        )
+        self.assertEqual(rc, 0, err)
+        tree = self.tree()
+        for gone in (
+            "node_modules/pkg/a.js",
+            "packages/api/node_modules/b.js",
+            "dist/bundle.js",
+            "packages/web/dist/c.js",
+        ):
+            with self.subTest(path=gone):
+                self.assertNotIn(gone, tree)
+        self.assertIn("packages/web/keep.js", tree)
+
+    def test_a_wildcard_exclude_matches_at_any_depth(self):
+        (self.code / "src" / "deep").mkdir(parents=True)
+        (self.code / "src" / "deep" / "cached.pyc").write_bytes(b"p\n")
+        rc, _, err = self.snapshot("--exclude", "*.pyc")
+        self.assertEqual(rc, 0, err)
+        self.assertNotIn("src/deep/cached.pyc", self.tree())
+
+    def test_the_excluded_count_is_reported(self):
+        rc, out, err = self.snapshot("--exclude", "node_modules")
+        self.assertEqual(rc, 0, err)
+        self.assertIn("excluded: 1 path(s)", out)
+
+    # -- the vault must not be pushed to a code remote ---------------------
+
+    def test_pushing_the_vault_to_a_code_remote_is_refused(self):
+        # A separate *local* repository keeps the snapshot out of the code
+        # repository's object database -- but not off the code remote's server.
+        _git(self.code, "remote", "add", "origin", str(self.remote))
+        rc, _, err = self.snapshot("--remote", self.remote)
+        self.assertEqual(rc, 1)
+        self.assertIn("the same place", err)
+        self.assertIn("--allow-shared-remote", err)
+
+    def test_a_pushurl_is_checked_too(self):
+        _git(self.code, "remote", "add", "origin", str(self.tmp / "other.git"))
+        _git(self.code, "remote", "set-url", "--push", "origin", str(self.remote))
+        rc, _, err = self.snapshot("--remote", self.remote)
+        self.assertEqual(rc, 1)
+        self.assertIn("the same place", err)
+
+    def test_a_different_vault_remote_is_allowed(self):
+        _git(self.code, "remote", "add", "origin", str(self.tmp / "code.git"))
+        rc, _, err = self.snapshot("--remote", self.remote)
+        self.assertEqual(rc, 0, err)
+
+    def test_allow_shared_remote_overrides_the_refusal(self):
+        _git(self.code, "remote", "add", "origin", str(self.remote))
+        rc, _, err = self.snapshot(
+            "--remote", self.remote, "--allow-shared-remote"
+        )
+        self.assertEqual(rc, 0, err)
+
+    def test_a_second_run_against_the_same_remote_pushes_nothing(self):
+        self.snapshot("--remote", self.remote)
+        rc, out, err = self.snapshot("--remote", self.remote)
+        self.assertEqual(rc, 0, err)
+        self.assertIn("the remote already has this snapshot", out)
+
+    # -- dry run -----------------------------------------------------------
+
+    def test_dry_run_does_not_push_the_code_remote(self):
+        # Pointed at a repository that does not exist, so a real push would
+        # fail.  --dry-run promising "do not push" has to cover this too.
+        _git(self.code, "remote", "add", "origin", str(self.tmp / "absent.git"))
+        rc, out, err = self.snapshot("--dry-run", "--code-remote", "origin")
+        self.assertEqual(rc, 0, err)
+        self.assertIn("would push the source repo", out)
+        self.assertNotIn("pushing source repo", out)
+
+    # -- secrets -----------------------------------------------------------
+
+    def test_captured_credentials_are_reported(self):
+        rc, out, _ = self.snapshot("--dry-run")
+        self.assertEqual(rc, 0)
+        self.assertIn("look like credentials", out)
+        self.assertIn(".env", out)
+
+    def test_no_secret_warning_when_nothing_looks_like_one(self):
+        rc, out, _ = self.snapshot("--dry-run", "--exclude", ".env")
+        self.assertEqual(rc, 0)
+        self.assertNotIn("look like credentials", out)
+
+    # -- stale locks -------------------------------------------------------
+
+    def test_a_stale_lock_from_a_dead_process_is_reclaimed(self):
+        self.snapshot()
+        lock = self.vault / ".git" / "seafile-snapshot.lock"
+        lock.write_text(f"{socket.gethostname()} 4294967295", encoding="utf-8")
+        rc, out, err = self.snapshot("--dry-run")
+        self.assertEqual(rc, 0, err)
+        self.assertIn("reclaiming a stale lock", out)
+
+    def test_a_lock_from_another_host_is_not_reclaimed(self):
+        self.snapshot()
+        lock = self.vault / ".git" / "seafile-snapshot.lock"
+        lock.write_text("some-other-machine 4294967295", encoding="utf-8")
+        rc, _, err = self.snapshot("--dry-run")
+        self.assertEqual(rc, 1)
+        self.assertIn("another snapshot is running", err)
+        self.assertTrue(lock.exists())
+
+    def test_a_lock_held_by_a_live_process_is_respected(self):
+        self.snapshot()
+        lock = self.vault / ".git" / "seafile-snapshot.lock"
+        lock.write_text(f"{socket.gethostname()} {os.getpid()}", encoding="utf-8")
+        rc, _, err = self.snapshot("--dry-run")
+        self.assertEqual(rc, 1)
+        self.assertIn("another snapshot is running", err)
+
+    # -- restore verification ----------------------------------------------
+
+    def test_restore_verifies_byte_exactness(self):
+        self.snapshot("--remote", str(self.remote))
+        rc, out, err = self.restore_to(self.restored)
+        self.assertEqual(rc, 0, err)
+        self.assertIn("verified byte-exact", out)
+
+    def test_verify_also_runs_fsck(self):
+        self.snapshot("--remote", str(self.remote))
+        rc, out, err = self.restore_to(self.restored, "--verify")
+        self.assertEqual(rc, 0, err)
+        self.assertIn("git fsck", out)
+
+    def test_verification_catches_a_mangled_checkout(self):
+        # The bug the check exists for: bytes on disk that disagree with the
+        # snapshot's blobs.  Only --no-filters hashes the file as it lies on
+        # disk; the two filter-aware checks can be fooled on a checkout made
+        # by something other than our own `restore` (see verify_restore).
+        self.snapshot("--remote", str(self.remote))
+        rc, _, err = self.restore_to(self.restored)
+        self.assertEqual(rc, 0, err)
+        (self.restored / "README.md").write_bytes(b"hello\r\n")
+
+        blob = _git(self.vault, "rev-parse", f"{BRANCH}:README.md").stdout.strip()
+        self.assertEqual(snap.verify_restore(self.restored, BRANCH), ["README.md"])
+        # The invariant the check rests on, and the only one of the three that
+        # is true of *any* checkout: the bytes on disk do not hash to the blob.
+        self.assertNotEqual(
+            _git(self.restored, "hash-object", "--no-filters", "--", "README.md")
+            .stdout.strip(),
+            blob,
+        )
+        # For the record: our restore pins core.autocrlf=false and
+        # `* -text -filter -ident`, so on this tree the filter-aware checks
+        # happen to agree as well.  That is a property of our restore, not
+        # something verify_restore may lean on.
+        status = _git(self.restored, "status", "--porcelain")
+        self.assertIn("README.md", status.stdout)
+        self.assertNotEqual(
+            _git(self.restored, "hash-object", "--", "README.md").stdout.strip(),
+            blob,
+        )
+
+
+class ExcludeMatchingTests(unittest.TestCase):
+    """The matcher behind --exclude, independent of git and of a filesystem."""
+
+    def test_a_bare_name_matches_any_depth(self):
+        for path in (
+            "node_modules/x.js",
+            "pkg/node_modules/y.js",
+            "a/b/node_modules/z.js",
+        ):
+            with self.subTest(path=path):
+                self.assertTrue(snap.exclude_matches(path, "node_modules"))
+
+    def test_a_bare_name_does_not_match_a_longer_component(self):
+        self.assertFalse(snap.exclude_matches("my_node_modules/x.js", "node_modules"))
+
+    def test_a_wildcard_crosses_separators(self):
+        self.assertTrue(snap.exclude_matches("a/b/c.pyc", "*.pyc"))
+
+    def test_a_trailing_slash_is_ignored(self):
+        self.assertTrue(snap.exclude_matches("pkg/dist/x.js", "dist/"))
+
+    def test_an_unrelated_name_does_not_match(self):
+        self.assertFalse(snap.exclude_matches("src/main.py", "dist"))
+
+    def test_an_empty_pattern_matches_nothing(self):
+        self.assertFalse(snap.exclude_matches("anything", "  "))
+
+
+class RemoteNormalisationTests(unittest.TestCase):
+    """``--remote`` comparison has to be loose, and in the safe direction."""
+
+    def test_a_trailing_slash_and_git_are_ignored(self):
+        self.assertEqual(
+            snap.normalise_remote("seafile://code/lib.git/"),
+            snap.normalise_remote("seafile://code/lib"),
+        )
+
+    def test_the_scheme_case_is_ignored(self):
+        self.assertEqual(
+            snap.normalise_remote("Seafile://code/lib"),
+            snap.normalise_remote("seafile://code/lib"),
+        )
+
+    def test_different_libraries_do_not_collide(self):
+        self.assertNotEqual(
+            snap.normalise_remote("seafile://code/lib"),
+            snap.normalise_remote("seafile://code/lib-vault"),
+        )
 
 
 if __name__ == "__main__":

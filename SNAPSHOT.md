@@ -2,15 +2,15 @@
 
 > **Status: local tool, not a shipped feature.** The implementation is
 > `tools/seafile_snapshot.py`; the tests are `tests/test_snapshot_tool.py`
-> (32 cases). The full suite is 495 tests across 90 targets. It is deliberately
-> absent from `USER_GUIDE.md`, `DESIGN.md` and `CHANGELOG.md` until a decision
-> is made about whether it ships as a feature or stays a personal utility.
-> Everything below was measured on this machine unless a claim is explicitly
-> marked otherwise.
+> (58 cases). It is deliberately absent from `USER_GUIDE.md`, `DESIGN.md` and
+> `CHANGELOG.md` until a decision is made about whether it ships as a feature or
+> stays a personal utility. Everything below was measured on this machine unless
+> a claim is explicitly marked otherwise.
 >
 > This file is kept current **as part of the work** — see
-> [Maintenance](#15-maintenance). Open work is collected in
-> [section 16](#16-own-review-issues-found).
+> [Maintenance](#15-maintenance). Defects found in review are in
+> [section 16](#16-own-review-issues-found); the helper/hooks question is in
+> [section 17](#17-should-the-helper-grow-hooks-or-support-restic-and-borg).
 
 ---
 
@@ -96,9 +96,8 @@ python tools/seafile_snapshot.py --source C:/code/myproject \
     --vault C:/code/myproject-vault \
     --code-remote origin \
     --remote seafile://code/myproject-vault \
-    --exclude '*node_modules/*' --exclude '*venv/*' --exclude '*.venv/*' \
-    --exclude '*__pycache__/*' --exclude '*.pyc' --exclude '*dist/*' \
-    --exclude '*build/*'
+    --exclude node_modules --exclude venv --exclude .venv \
+    --exclude __pycache__ --exclude '*.pyc' --exclude dist --exclude build
 ```
 
 Useful flags: `--branch` (default `snapshot`), `--message`, `--dry-run`,
@@ -108,22 +107,21 @@ Useful flags: `--branch` (default `snapshot`), `--message`, `--dry-run`,
 `venv`, `dist`, `build`, `__pycache__`. There is no default exclude list,
 because "all files" is the point; add them deliberately.
 
-> **Quote the patterns, and mind the leading `*`.** An exclusion is a Git
-> pathspec, and a *literal* pathspec is anchored at the root of the tree: the
-> pattern `node_modules` excludes `node_modules/` and **nothing else**, so
-> `packages/api/node_modules/` is still captured. Measured on a tree holding
-> `node_modules/x.js`, `pkg/node_modules/y.js` and `a/b/node_modules/z.js`, the
-> pattern `node_modules` removed **one of the three**. The form
-> `*node_modules/*` removes all three. `*.pyc` already works at any depth, because
-> a wildcard *does* cross `/` while a literal path is treated as a directory
-> prefix. Quote the pattern so your own shell does not expand it first.
+> **A pattern with no slash matches that name at *any* depth.** `--exclude
+> node_modules` drops `packages/api/node_modules/` as well as the top-level one —
+> what the name suggests, and what a monorepo needs. Wildcards still work across
+> separators (`*.pyc` matches `a/b/c.pyc`), and a trailing slash is ignored.
+> **Quote a wildcard** so your own shell does not expand it first.
 >
-> `*dist*` is the trap in the other direction — it matches `distance.txt` too.
-> Use `*dist/*`.
+> This needs saying because the tool used to hand the pattern to `git rm` as a
+> pathspec, where a *literal* path is anchored at the tree root. Measured on a
+> tree holding `node_modules/x.js`, `pkg/node_modules/y.js` and
+> `a/b/node_modules/z.js`, `--exclude node_modules` then removed **one of the
+> three**. Matching now happens in the tool — see
+> [section 16](#16-own-review-issues-found) — so the plain name behaves.
 >
-> This is a defect in the tool's own help text, not just in this document: the
-> help epilog and the module docstring both print the unquoted, root-anchored
-> form. See [section 16](#16-own-review-issues-found).
+> `*dist*` is the trap in the other direction: it also matches `distance.txt`.
+> Prefer the bare name, or `*dist/*` if a wildcard is genuinely wanted.
 
 > The vault is a Git repository and must **not** live inside a Seafile-synced
 > folder — the same rule as for the source, and for the same reason.
@@ -277,16 +275,16 @@ statement, and only one of the three is a to-do list.
 | Kind | Caveats | What it means |
 | :--- | :--- | :--- |
 | **Fixed already** — the tool handles it, and a test holds it | 2, 5, and the byte-exactness and multi-machine work in [section 6](#6-several-machines-one-vault) and [section 7](#7-restore) | Described here only so the *failure* is on record. |
-| **Fixable in the tool, not yet done** — the mechanism exists, and where marked it has been measured | 1 (nested repos), 6 (compaction), 9 (synced library), plus the `--exclude` bug in [section 16](#16-own-review-issues-found) | Real work, but no new ideas needed. |
+| **Fixable in the tool, not yet done** — the mechanism exists, and where marked it has been measured | 1 (nested repos), 6 (compaction), 9 (synced library) | Real work, but no new ideas needed. A fourth fixable item — the `--exclude` pathspec — was fixed in [section 16](#16-own-review-issues-found). |
 | **Inherent** — a property of Git, the filesystem or Windows, not of this design | 3, 4, 7, 8, 10, 11, 12, 13 | restic and Borg have most of these too. |
 | **Deliberate policy** — a choice, not a limitation | 14, 15 | Two of these are worth *keeping*: "a snapshot is not a transaction" and "there is no retention policy" are the honest limits of a Git-backed backup. |
 
 So the honest answer to "are the caveats fixable?" is: **two of the fifteen are
 already fixed, three are fixable and unfixed, and the remaining ten should not be
-fixed** — they should be *stated*, which is what this section is for. Add the
-unnumbered `--exclude` pathspec bug and the fixable pile is four items, of which
-that one is the only defect that is currently **silent**: see
-[section 16](#16-own-review-issues-found).
+fixed** — they should be *stated*, which is what this section is for. The
+unnumbered `--exclude` pathspec defect that sat alongside them is fixed as well;
+[section 16](#16-own-review-issues-found) records it and the five other defects
+found in the same pass.
 
 ### Verified on this machine
 
@@ -677,24 +675,24 @@ not cross that line, because the tool still works standalone.
 
 ### Recommended next steps, in order
 
-1. **Refuse a vault remote that is also a code remote** — issue 3 in
-   [section 16](#16-own-review-issues-found). The smallest change with the
-   largest effect: it turns §11's claim from an intention into a guarantee.
-2. **Fix `--exclude`** — the pathspec depth problem (issue 1), in the tool *and*
-   in its help epilog. Silent under-exclusion is the wrong kind of bug for a
-   backup to have.
-3. **Warn when the vault is inside a synced library** — a confirmed gap with a
+The first two of the previous list are **done** — see
+[section 16](#16-own-review-issues-found): the vault can no longer be pushed to a
+code remote, and `--exclude` matches at any depth. What remains:
+
+1. **Warn when the vault is inside a synced library** — a confirmed gap with a
    confirmed detection path. Best-effort import of the helper's discovery,
    silent when the helper is absent.
-4. **Capture nested repositories** instead of only warning about them — the
-   plumbing is measured and written up at the end of
-   [section 8](#8-caveats).
-5. **Surface `gc`** — either run `git-remote-seafile gc` after a snapshot when
+2. **Capture nested repositories** instead of only warning about them — the
+   plumbing is measured and written up at the end of [section 8](#8-caveats).
+3. **Surface `gc`** — either run `git-remote-seafile gc` after a snapshot when
    the helper reports enough packfiles, or document a schedule. Today the
    warning is printed and ignored.
-6. **Decide the shared-vs-per-machine vault question** before documenting this
+4. **Decide the shared-vs-per-machine vault question** before documenting this
    as a feature; it changes what "restore on a new machine" means.
-7. **Do not** add dedup, encryption, or retention. Point at restic.
+5. **Do not** add dedup, encryption, or retention. Point at restic — and note
+   that on a Seafile instance with WebDAV disabled there may be no restic route
+   at all; see
+   [section 17](#17-should-the-helper-grow-hooks-or-support-restic-and-borg).
 
 ## 13. What Git already gives us, and what we leave unused
 
@@ -779,19 +777,22 @@ before designing around them:**
 
 | Git feature | Status |
 | :--- | :--- |
-| `git notes` (per-snapshot metadata) | **Blocked.** The helper writes only `refs/heads/` and `refs/tags/` (`REF_NAMESPACES` in `refs.py`), and notes live under `refs/notes/`, so they could not be pushed to a `seafile://` remote at all. |
-| Custom ref namespaces (`refs/snapshots/<host>`) | **Blocked** by the same allowlist. A per-machine chain would have to be `refs/heads/snapshot-<host>`. |
+| `git notes` (per-snapshot metadata) | **Blocked, deliberately.** The helper writes only `refs/heads/` and `refs/tags/` (`REF_NAMESPACES` in `refs.py`), so notes under `refs/notes/` could not be pushed to a `seafile://` remote. That allowlist is shared with the ref advert *and* with compaction's reachability mirroring, so widening it is not a one-line change — see [section 17](#17-should-the-helper-grow-hooks-or-support-restic-and-borg). |
+| Custom ref namespaces (`refs/snapshots/<host>`) | **Blocked** by the same allowlist, for the same reason. A per-machine chain uses `refs/heads/snapshot-<host>`, which works today. |
 | Tags (`refs/tags/*`) | **Allowed, unused.** The natural way to mark a milestone snapshot. |
-| `git fsck` | **Unused.** A cheap integrity check of the vault; would make a good `--verify`. |
+| `git fsck` | **Used**, under `--restore --verify`. The byte-level check runs on every restore; `fsck` is the optional second pass. |
 | Shallow / partial clone | **Unused.** `--restore` fetches the whole history; `--depth` or `--filter=blob:none` would speed up restoring a large vault. |
 | `git count-objects` | **Unused.** The tool reports the tree's size but not the remote's growth. |
 | `git bundle` | **Unused.** A portable single-file snapshot, if one is ever needed offline. |
 | Commit signing, `git replace`, grafts | **Unused.** No need. |
 
 So the honest answer to "are we taking advantage of what Git offers?" is: **the
-storage and history model, yes; the metadata and maintenance surface, only
-partly.** And two of the obvious ideas — `git notes`, custom refs — are
-unavailable through this helper rather than merely unbuilt.
+storage and history model, yes; the metadata and maintenance surface, mostly.**
+Two of the obvious ideas — `git notes`, custom refs — are unavailable through
+this helper rather than merely unbuilt, and deliberately so. `git fsck` has since
+moved from this table to the one above, as `--restore --verify`. What is still
+unbuilt: shallow/partial clone, `git count-objects` in the report, and
+`git bundle`.
 
 ## 14. Prior art
 
@@ -837,11 +838,21 @@ rather than presented as invariants. Re-read them when the tool changes.
 If you change the tool: change the tool, change its tests, run the suite, and
 update this file. The guard will tell you if a mechanical claim went stale.
 
-## 16. Own review: issues found
+## 16. Own review: issues found, and what was fixed
 
 A pass over the tool looking for defects rather than features, ordered by how
 much each one matters. Everything here was measured or read out of the code, not
-guessed at.
+guessed at. **All six are now fixed**, each with a test. Every entry keeps the
+measurement that found it, because the measurement is the part worth keeping.
+
+| # | Issue | State |
+| :--- | :--- | :--- |
+| 1 | `--exclude` was anchored at the tree root | **Fixed** — matching moved into the tool |
+| 2 | `--dry-run` did not suppress `--code-remote` | **Fixed** |
+| 3 | Nothing checked the vault's remote against the code remote | **Fixed** — refused by default |
+| 4 | The lock had no stale recovery | **Fixed** — pid and host recorded, reclaimed when dead |
+| 5 | No integrity check on a restore | **Fixed** — byte-level, on every restore |
+| 6 | Secrets warned about in prose only | **Fixed** — reported at snapshot time |
 
 ### 1. `--exclude` is root-anchored, so the documented invocation under-excludes
 
@@ -852,20 +863,30 @@ the three** was removed. The same holds for `dist` and `build` — precisely the
 directories a monorepo keeps under `packages/*/`. The user's mental model is "I
 excluded node_modules"; the behaviour is "I excluded one directory by that name".
 
-Fix: recommend `*node_modules/*` and friends, quoted (measured: that form removes
-all three, while `*dist*` is too broad because it also matches `distance.txt`).
-Better still, match in Python — read `git ls-files` and filter with `fnmatch` —
-which sidesteps pathspec semantics entirely and lets `--exclude node_modules`
-mean what everyone assumes. The help epilog prints the root-anchored form today,
-so it needs the same correction.
+**Fixed** by moving the matching into the tool: after `git add`, it reads the
+index, matches each path with `fnmatch` against the whole path *or* against any
+single path component, and drops the matches with `update-index
+--force-remove` on stdin. So `--exclude node_modules` now means "a directory by
+that name, at any depth" — what the name suggests — and wildcards keep working
+(`*.pyc` matches `a/b/c.pyc`, because `fnmatch`'s `*` crosses `/`). A trailing
+slash is ignored. `*dist*` stays over-broad, so the help points at `*dist/*`
+only where a wildcard is genuinely wanted.
+
+The help epilog was corrected with it: it had been printing the unquoted,
+root-anchored form, which is how the wrong behaviour came to be documented as
+the recommended invocation.
 
 ### 2. `--dry-run` does not suppress `--code-remote`
 
-The code-repo push runs *before* the dry-run branch is reached, so
-`--dry-run --code-remote origin` really pushes. The help text for `--dry-run`
+The code-repo push ran *before* the dry-run branch was reached, so
+`--dry-run --code-remote origin` really pushed. The help text for `--dry-run`
 promises "build the snapshot but do not move the branch or push" — true of the
-vault, false of the code remote. Fix: skip the code push under `--dry-run` and
-print what it would have done.
+vault, false of the code remote.
+
+**Fixed**: the code push is now skipped under `--dry-run`, and the run prints
+`dry run -- would push the source repo to '<name>'` instead. The test points
+`--code-remote` at a repository that does not exist, so a regression fails
+loudly rather than silently pushing.
 
 ### 3. Nothing checks that the vault's remote differs from the code remote
 
@@ -876,53 +897,101 @@ remote if it is pushed somewhere else. Point `--remote` at the same library the
 code lives in and one push publishes `.env`, keys and the rest, with no warning.
 So the claim §11 used to make — that a separate repository makes this
 "impossible rather than merely discouraged" — overstated it; what a separate
-repository actually makes it is *deliberate*. §11 has been corrected to say that,
-but the check itself is still missing. Fix: compare `--remote` against every
-`remote.<name>.url` and `.pushurl` in the source repository and refuse on a match
-unless an explicit override flag is passed. Cheap, and it is the difference
-between a safety property and a safety hope.
+repository actually makes it is *deliberate*. §11 has been corrected to say that.
 
-### 4. The lock has no stale recovery
+**Fixed**: before anything is written, `--remote` is compared against every
+`remote.<name>.url` and `remote.<name>.pushurl` in the source repository (read
+with `--local`, so a global `insteadOf` cannot answer for it), and a match aborts
+the run with an explanation naming both remotes. The comparison is deliberately
+loose — a trailing slash, a trailing `.git` and the scheme's case are all ignored
+— because the two error directions are not symmetric: a false match costs one
+error message and an override flag, while a false miss publishes the secrets.
+`--allow-shared-remote` is the escape hatch. This was the smallest change here
+and the one that mattered most.
 
-`VaultLock` uses `O_EXCL` and tells the user to delete the file by hand. A run
-killed with SIGKILL, or a crash, leaves the vault un-snapshotable until someone
-reads the message and acts. The pid is already written into the lock, so checking
-whether that pid is still alive would turn a dead end into an automatic recovery.
-The helper's own `lock.py` solves the harder distributed version of this and is
-worth reading first.
+### 4. The lock had no stale recovery
+
+`VaultLock` used `O_EXCL` and told the user to delete the file by hand. A run
+killed with SIGKILL, or a crash, left the vault un-snapshotable until someone
+read the message and acted.
+
+**Fixed**: the lock now records `hostname pid`, and on contention the holder is
+identified. If the host is *this* host and the pid is gone, the lock is reclaimed
+with a printed notice; otherwise the run refuses as before. Reclaiming only ever
+happens for this host, because a pid from another machine means nothing here and
+guessing would be worse than refusing.
+
+One trap worth recording: the obvious liveness probe, `os.kill(pid, 0)`, is
+**wrong on Windows** — there `os.kill` is `TerminateProcess` for every signal
+except the two console events, so probing a pid that way would *kill* it. The
+Windows path goes through `OpenProcess`/`GetExitCodeProcess` instead, and treats
+"cannot tell" as alive, so a lock is never stolen on a guess. The helper's own
+`lock.py` solves the harder distributed version of this and is worth reading.
 
 ### 5. No integrity check on restore
 
-`--restore` clones, checks out, and counts files. It never runs `git fsck`, and
-never re-hashes the restored files against the tree. Git verifies object hashes
-on read, so a corrupt *object* does fail loudly — but a silently wrong *checkout*
-(the `core.autocrlf` class of bug) would not. A `--verify` would have caught the
-CRLF bug directly instead of through a hand-written probe.
+`--restore` cloned, checked out, and counted files. It never ran `git fsck`, and
+never re-hashed the restored files against the tree. Git verifies object hashes
+on read, so a corrupt *object* fails loudly — but a silently wrong *checkout*
+(the `core.autocrlf` class of bug) would not.
 
-### 6. Secrets are warned about in prose only
+**Fixed**, and the fix is more interesting than it looks, because **on a naive
+`git clone` of the vault both of the obvious checks pass a mangled restore**:
 
-The doc and the module docstring both say secrets are permanent. The tool prints
-nothing when it captures `.env`, `id_rsa`, `*.pem` or `credentials.json`. A
-one-line summary of suspicious names — especially under `--dry-run` — would put
-the warning where the decision is made.
+| Check | On a CRLF-mangled checkout |
+| :--- | :--- |
+| `git status --porcelain` | **empty** — it compares *through* `core.autocrlf`, so the mangling is normalised away before the comparison happens |
+| `git hash-object <path>` | **matches** — it applies the clean filter, re-normalising the very difference being looked for |
+| `git hash-object --no-filters <path>` | **mismatches** — it hashes the bytes as they lie on disk |
 
-### Smaller notes
+All three measured on one clone, in one run. So every restore now walks the
+snapshot's tree and re-hashes each file with `--no-filters`, failing loudly on a
+mismatch with a message that says the *vault* is intact and the checkout is at
+fault. `--verify` additionally runs `git fsck`. The two useless checks are worth
+remembering: a verification step that cannot fail is worse than no verification,
+because it gets believed.
 
-- **`push_snapshot` is called with `commit=None`** when the tree is unchanged.
-  Harmless (the branch already equals the base, so the push is a no-op) and
-  *useful* in one case — a machine that snapshotted offline ends up pushing its
-  chain. But it is accidental rather than designed, and it prints
-  "pushing … / push complete" for nothing.
+One correction, found by the test suite rather than by reading: on a checkout
+made by `--restore` itself, `git status` and plain `git hash-object` **do** see
+the mangling, because that clone has `core.autocrlf=false` and
+`* -text -filter -ident` pinned by [section 7](#7-restore). So "both obvious
+checks pass" is a property of a *naive* clone, not of our own restore — which is
+precisely why the check must not lean on either of them, and why the test
+asserts only the `--no-filters` invariant as load-bearing.
+
+### 6. Secrets were warned about in prose only
+
+The doc and the module docstring both say secrets are permanent, and the tool
+printed nothing when it captured `.env`, `id_rsa`, `*.pem` or `credentials.json`.
+
+**Fixed**: the captured paths are matched against a list of credential-shaped
+names (`.env*`, `*.pem`, `*.key`, `id_rsa*`, `.aws/credentials`, `.ssh/*`,
+`credentials.json`, …) and the matches are listed at the end of every run,
+`--dry-run` included. It is a warning, not a refusal — a *full* backup should
+capture `.env`; the point is that the user finds out before the first push,
+because Git history is permanent and the remote is the last part still under
+their control.
+
+### Smaller notes — two of these were fixed too
+
+- **`push_snapshot` was called with `commit=None`** when the tree was unchanged,
+  printing "pushing … / push complete" for a push that could not do anything.
+  **Fixed**: an unchanged tree against an up-to-date remote now reports `the
+  remote already has this snapshot; nothing to push`. The genuinely useful half
+  is kept — a machine that snapshotted offline still pushes its chain, because
+  there the remote really is behind.
+- **`datetime.now()`** in the default message was naive local time.
+  **Fixed**: the message carries the UTC offset now, since a shared vault need
+  not live in one timezone.
 - **The exec bit is lost.** Measured: `core.fileMode=false` on Git for Windows,
   and `chmod +x` recorded as `100644`. `core.fileMode=true` is the fix on POSIX;
-  on Windows it is unreliable, so it stays a documented caveat there.
-- **`datetime.now()`** in the default message is naive local time. Harmless, but
-  a shared vault across timezones would read better with an offset.
+  on Windows it is unreliable, so it stays a documented caveat there. **Not
+  fixed** — on Windows there is nothing to fix.
 - **`--code-remote` pushes the source repo before the vault is touched**, so a
   later failure leaves the code pushed and no snapshot. The ordering is
   deliberate — the snapshot should sit on top of a pushed state — but it is worth
   stating, because "snapshot aborted before touching the vault" is printed after
-  a real side effect has already happened.
+  a real side effect has already happened. **Not changed.**
 
 ### What I would not change
 
@@ -932,9 +1001,76 @@ the warning where the decision is made.
 - **Do not promote this to a subcommand**, and do not split it into its own
   repository yet.
 - **Keep `--exclude` opt-in.** "All files" is the point.
+- **Keep the secrets report a warning, not a refusal.** A backup that refuses to
+  back up is a backup that gets switched off.
 
-### If only one thing gets fixed
+### The shape of these six
 
-**Number 3.** Everything else here is a papercut or a missing convenience. That
-one decides whether the tool's central safety claim is true or merely
-aspirational.
+Four of the six were **silent**: the exclusion dropped fewer files than the flag
+implied, the dry run pushed, a restore could be wrong and still report success,
+and credentials were captured without a word. Only two were loud. That is the
+class of bug a backup tool actually suffers from, and it is why most of the fixes
+here are *"say something"* rather than *"do something differently"*.
+
+## 17. Should the helper grow hooks, or support restic and Borg?
+
+Short answer: **no to both** — and the second "no" is more interesting than the
+first.
+
+### Hooks: no, because Git already has the one that matters
+
+The helper is a *transport*. Git invokes it as `git-remote-seafile` during a
+push, on the user's machine, with the user's credentials. A hook mechanism inside
+it would mean executing configured commands at push time: a code-execution
+surface, another config file to document and guard, and a per-remote notion of
+"which commands" that has no equivalent anywhere else in Git.
+
+None of that is needed, because **`git push` already runs `.git/hooks/pre-push`**
+before any remote helper is invoked. Anything that should happen *around* a push
+can live there, with Git's own semantics, documentation and tooling.
+Reimplementing Git's own extension point inside a remote helper would be strictly
+worse: fewer people understand it, and the docs guards would have to learn a
+whole new config surface.
+
+The one genuine gap is "run something *after* a successful push" — Git has
+`pre-push` but no `post-push`. That belongs in a wrapper script
+(`git push && …`) or a scheduler, not in the transport. This project already has
+the shape of that answer in `tools/seafile_doctor.py`; a `tools/` script that
+wraps push-plus-snapshot would be the same kind of thing.
+
+### restic and Borg: no bridge, because the helper is the wrong layer
+
+restic and Borg want a **dumb blob store**: put bytes, get bytes, list a prefix,
+delete a prefix. A Git remote helper is not that. It speaks `list` / `fetch` /
+`push` and moves *packfiles and refs*. Bridging the two is not a feature, it is a
+second product — a Seafile backend for restic, with restic's repository format on
+top of it.
+
+That work already has an owner, and it is not this project. Seafile serves
+**WebDAV** at `https://<host>/seafdav/`; restic reaches WebDAV through rclone,
+and Borg needs a mounted path (davfs2 on Linux, or the Windows WebDAV client). So
+the honest instruction is "point restic at the Seafile WebDAV endpoint" — and
+this document should say that, rather than implying the helper is involved.
+
+**But check the caveat first.** WebDAV is **disabled by default** and turned on
+by the *server administrator* (`ENABLE_SEAFDAV = true`). On a hosted or shared
+Seafile instance that is not the user's decision. The Seafile manual is also
+explicit that WebDAV is "more suitable for infrequent file access" — every file
+is committed separately and bulk uploads are slow. So for many users the answer
+is not "use WebDAV" but "there is no restic route to this Seafile at all", which
+is a real argument for the vault existing in the first place: **it is the one
+backup path to Seafile that runs over the API the user already has credentials
+for.**
+
+### What the helper could usefully add — and what it should not
+
+Nothing in the push path. The two candidates are both convenience:
+
+| Candidate | Verdict |
+| :--- | :--- |
+| A `webdav-url` subcommand printing the SeafDAV URL for a library | **Plausible, deliberately not built.** It is ~15 lines and would turn "configure restic" from a research task into a copy-paste — but only where the server admin has enabled WebDAV, which the helper cannot discover, and it would need a `_COMMANDS` entry plus a docs-guard row. Worth doing only if restic support is actually wanted. |
+| Widening `REF_NAMESPACES` to `refs/notes/*` or a custom namespace | **No.** See [section 13](#13-what-git-already-gives-us-and-what-we-leave-unused): that allowlist is not only a push guard, it also decides what compaction mirrors for reachability — and a ref the compactor cannot see makes its objects look like garbage for `repack -a -d` to delete permanently. Widening a least-privilege boundary that three subsystems share, to enable metadata the commit message already carries, is a bad trade. |
+
+So the conclusion this document kept circling: **the helper does not need fixing
+for any of this.** Every limitation found while writing it was in the snapshot
+tool, and those are fixed in [section 16](#16-own-review-issues-found).

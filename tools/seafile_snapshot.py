@@ -38,7 +38,10 @@ Atomicity
   risk, because it is only ever read.
 * The branch moves via ``git update-ref`` with an **expected old value**, so a
   concurrent snapshot loses loudly instead of silently clobbering.
-* A vault-local lock file keeps two runs from interleaving.
+* A vault-local lock file keeps two runs from interleaving.  It records the
+  holding host and pid, so a lock left behind by a killed run is reclaimed
+  automatically once that process is gone -- but only on the *same* host, since
+  a pid from another machine means nothing here.
 * The push is a single ref update, guarded by the helper's distributed lease.
 * A **failed push rolls the local branch back** to what the remote actually has,
   so the vault never claims a snapshot the remote never took.  Without this, a
@@ -82,6 +85,12 @@ The snapshot holds the *whole* tree, tracked files included, so this one command
 reconstitutes the working directory.  Clone the code repository separately only
 if you want its branches and history.
 
+Every restore re-hashes the checked-out files against the snapshot's blobs and
+fails loudly on any difference.  The check is byte-level on purpose: on a mangled
+checkout ``git status`` reports a clean tree and a plain ``git hash-object``
+matches, because both normalise the difference away.  Add ``--verify`` to run
+``git fsck`` over the clone as well.
+
 Do **not** simply ``git clone`` the vault and check out.  On Windows the clone
 inherits ``core.autocrlf=true`` from Git for Windows' system config, and the
 vault's ``info/attributes`` -- the thing that makes it byte-exact -- is not
@@ -111,16 +120,28 @@ Recommended exclusions (reproducible junk you do not want in a backup)::
     --exclude node_modules --exclude venv --exclude .venv \
     --exclude __pycache__ --exclude '*.pyc' --exclude dist --exclude build
 
+A pattern with no slash matches that name at *any* depth, so
+``--exclude node_modules`` also drops ``packages/*/node_modules``.  Quote a
+wildcard so your own shell does not expand it first.
+
 Secrets
 =======
-This tool will happily back up ``.env``, keys and credentials, and Git history
-is permanent.  Push the vault to a library only you can read.  Never point the
-vault at a public remote.
+This tool will happily back up ``.env``, keys and credentials -- that is what a
+*full* backup means -- and Git history is permanent.  Every run therefore lists
+the captured paths that look like credentials, so the choice of remote is made
+with that in view.  Push the vault to a library only you can read; never point
+the vault at a public remote.
+
+A snapshot contains exactly the files ``.gitignore`` keeps *out* of the code
+repository, so ``--remote`` is refused when it names a place the source
+repository already pushes to -- ``--allow-shared-remote`` overrides that
+deliberately.
 """
 
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import os
 import socket
 import subprocess
@@ -152,6 +173,7 @@ def git(
     *,
     cwd: Path,
     check: bool = True,
+    stdin: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Run git against an explicit --git-dir/--work-tree pair.
 
@@ -168,6 +190,7 @@ def git(
         text=True,
         encoding="utf-8",
         errors="replace",
+        input=stdin,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     )
@@ -344,22 +367,105 @@ def ensure_byte_exact(vault: Path, git_dir: Path) -> None:
         attributes.write_text(existing + BYTE_EXACT_ATTRIBUTES, encoding="utf-8")
 
 
+def pid_is_alive(pid: int) -> bool:
+    """Whether ``pid`` is a running process *on this machine*.
+
+    ``os.kill(pid, 0)`` is the POSIX idiom, but on Windows ``os.kill`` is
+    ``TerminateProcess`` for every signal except the two console events -- so
+    probing a pid that way would *kill* it.  Windows goes through the documented
+    API instead, and treats "cannot tell" as alive so a lock is never stolen on
+    a guess.
+    """
+    if pid <= 0:
+        return False
+    if os.name == "nt":
+        import ctypes
+
+        process_query_limited_information = 0x1000
+        still_active = 259
+        kernel32 = ctypes.windll.kernel32
+        handle = kernel32.OpenProcess(process_query_limited_information, False, pid)
+        if not handle:
+            return False
+        try:
+            code = ctypes.c_ulong()
+            if not kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
+                return True
+            return code.value == still_active
+        finally:
+            kernel32.CloseHandle(handle)
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
 class VaultLock:
-    """An exclusive lock so two snapshots cannot interleave."""
+    """An exclusive lock so two snapshots cannot interleave.
+
+    The lock records the pid and hostname that took it, so one left behind by a
+    killed run can be recognised and reclaimed instead of deadlocking the vault
+    until someone deletes the file by hand.  Reclamation only happens when the
+    recorded host is *this* host: a pid from another machine means nothing here,
+    and guessing would be worse than refusing.
+    """
 
     def __init__(self, git_dir: Path) -> None:
         self.path = git_dir / "seafile-snapshot.lock"
         self._fd: int | None = None
 
-    def __enter__(self) -> "VaultLock":
+    def _holder(self) -> tuple[str, int] | None:
         try:
-            self._fd = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-        except FileExistsError:
-            raise SnapshotError(
-                f"another snapshot appears to be running (lock: {self.path}).\n"
-                f"If that run died, delete the lock file and retry."
-            ) from None
-        os.write(self._fd, str(os.getpid()).encode())
+            text = self.path.read_text(encoding="utf-8").strip()
+        except OSError:
+            return None
+        host, _, pid_text = text.partition(" ")
+        try:
+            return host, int(pid_text)
+        except ValueError:
+            return None
+
+    def _reclaim_if_stale(self) -> bool:
+        holder = self._holder()
+        if holder is None:
+            return False
+        host, pid = holder
+        if host != socket.gethostname() or pid_is_alive(pid):
+            return False
+        try:
+            self.path.unlink()
+        except FileNotFoundError:
+            pass
+        print(
+            f"reclaiming a stale lock left by pid {pid} on this machine "
+            f"(that run is gone)"
+        )
+        return True
+
+    def __enter__(self) -> "VaultLock":
+        for attempt in (1, 2):
+            try:
+                self._fd = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                break
+            except FileExistsError:
+                if attempt == 2 or not self._reclaim_if_stale():
+                    holder = self._holder()
+                    who = (
+                        f"{holder[0]} pid {holder[1]}"
+                        if holder
+                        else "an unknown run"
+                    )
+                    raise SnapshotError(
+                        f"another snapshot is running ({who}); lock: {self.path}.\n"
+                        f"If you are certain that run is dead, delete the lock "
+                        f"file and retry."
+                    ) from None
+        else:  # pragma: no cover - the loop always breaks or raises
+            raise SnapshotError(f"could not take the lock: {self.path}")
+        os.write(self._fd, f"{socket.gethostname()} {os.getpid()}".encode())
         return self
 
     def __exit__(self, *exc: object) -> None:
@@ -531,31 +637,81 @@ def commit_tree(
     return git(git_dir, work_tree, args, cwd=work_tree).stdout.strip()
 
 
+#: How many paths to hand to a single ``update-index`` invocation.  A tree can
+#: hold far more matches than one command line can carry, and Windows' limit is
+#: the smallest of the platforms this runs on.
+_INDEX_BATCH = 500
+
+
+def exclude_matches(path: str, pattern: str) -> bool:
+    """Whether ``path`` (a slash-separated index path) matches ``pattern``.
+
+    Deliberately *not* ``git rm``'s pathspec semantics, which are the wrong
+    shape here and fail silently.  A literal pathspec is anchored at the tree
+    root, so ``--exclude node_modules`` removes the top-level ``node_modules/``
+    and leaves ``packages/api/node_modules/`` in the snapshot -- measured on a
+    tree holding ``node_modules/x.js``, ``pkg/node_modules/y.js`` and
+    ``a/b/node_modules/z.js``, where it removed one of the three.
+
+    The rule used instead is the one people expect:
+
+    * ``fnmatch`` against the whole path, which is what makes a wildcard work
+      (``*.pyc`` matches ``a/b/c.pyc``: fnmatch's ``*`` crosses ``/``); or
+    * any single path *component* equal to the pattern, which is what makes a
+      bare name mean "a directory by that name, at any depth".
+    """
+    pattern = pattern.strip().rstrip("/")
+    if not pattern:
+        return False
+    if fnmatch.fnmatch(path, pattern):
+        return True
+    return pattern in path.split("/")
+
+
+def apply_excludes(git_dir: Path, work_tree: Path, excludes: list[str]) -> list[str]:
+    """Drop excluded paths from the vault index; return what was dropped.
+
+    ``update-index --force-remove`` with NUL-separated paths on stdin, rather
+    than one ``git rm`` per pattern: the matching is ours (see
+    :func:`exclude_matches`), and batching keeps the argument list short.
+    """
+    if not excludes:
+        return []
+    listing = git(git_dir, work_tree, ["ls-files", "-z"], cwd=work_tree).stdout
+    dropped = [
+        path
+        for path in listing.split("\0")
+        if path and any(exclude_matches(path, pat) for pat in excludes)
+    ]
+    for start in range(0, len(dropped), _INDEX_BATCH):
+        batch = dropped[start : start + _INDEX_BATCH]
+        git(
+            git_dir,
+            work_tree,
+            ["update-index", "--force-remove", "-z", "--stdin"],
+            cwd=work_tree,
+            stdin="\0".join(batch) + "\0",
+        )
+    return dropped
+
+
 def build_snapshot(
     git_dir: Path,
     work_tree: Path,
     parent: str | None,
     excludes: list[str],
     message: str,
-) -> tuple[str, str | None]:
+) -> tuple[str, str | None, list[str]]:
     """Stage the whole tree into the vault index and write a commit object.
 
-    Returns ``(tree, commit)``, where ``commit`` is ``None`` when the tree is
-    identical to ``parent`` -- an unchanged run should not pile up empty
+    Returns ``(tree, commit, excluded)``, where ``commit`` is ``None`` when the
+    tree is identical to ``parent`` -- an unchanged run should not pile up empty
     commits.  ``parent`` is passed in rather than read from the branch, because
     the caller may have just re-based on the remote tip.  The branch is *not*
     moved here: that is the caller's job, so a dry run can stop one step short.
     """
     git(git_dir, work_tree, ["add", "-A", "-f", "."], cwd=work_tree)
-
-    for pattern in excludes:
-        git(
-            git_dir,
-            work_tree,
-            ["rm", "--cached", "-r", "-q", "--ignore-unmatch", "--", pattern],
-            cwd=work_tree,
-            check=False,
-        )
+    excluded = apply_excludes(git_dir, work_tree, excludes)
 
     tree = git(git_dir, work_tree, ["write-tree"], cwd=work_tree).stdout.strip()
 
@@ -564,9 +720,9 @@ def build_snapshot(
             git_dir, work_tree, ["rev-parse", f"{parent}^{{tree}}"], cwd=work_tree
         ).stdout.strip()
         if parent_tree == tree:
-            return tree, None
+            return tree, None, excluded
 
-    return tree, commit_tree(git_dir, work_tree, tree, parent, message)
+    return tree, commit_tree(git_dir, work_tree, tree, parent, message), excluded
 
 
 def describe_tree(git_dir: Path, work_tree: Path, tree: str) -> tuple[int, int]:
@@ -600,6 +756,142 @@ def find_gitlinks(git_dir: Path, work_tree: Path, tree: str) -> list[str]:
         for line in listing.splitlines()
         if line.startswith("160000 commit ")
     ]
+
+
+#: Names that mean "this file is a credential".  Matched against the basename,
+#: except for the ones containing a slash, which are matched against the path.
+SECRET_PATTERNS = (
+    ".env",
+    ".env.*",
+    "*.env",
+    "*.pem",
+    "*.key",
+    "*.p12",
+    "*.pfx",
+    "*.jks",
+    "*.keystore",
+    "id_rsa*",
+    "id_dsa*",
+    "id_ecdsa*",
+    "id_ed25519*",
+    ".netrc",
+    ".npmrc",
+    ".pypirc",
+    ".git-credentials",
+    "credentials",
+    "credentials.json",
+    "secrets.*",
+    "*.secret",
+    ".aws/credentials",
+    ".ssh/*",
+)
+
+
+def find_secrets(paths: list[str]) -> list[str]:
+    """Return the captured paths that look like credentials.
+
+    The tool backs up ``.env`` and private keys quite happily -- that is what a
+    *full* backup means.  But Git history is permanent, so the moment before the
+    first push is the last moment the user can still choose a different remote.
+    Saying so costs one line; not saying so is how secrets end up in a library
+    someone else can read.
+    """
+    found: list[str] = []
+    for path in paths:
+        name = path.rsplit("/", 1)[-1]
+        for pattern in SECRET_PATTERNS:
+            subject = path if "/" in pattern else name
+            if fnmatch.fnmatch(subject, pattern):
+                found.append(path)
+                break
+    return found
+
+
+def index_paths(git_dir: Path, work_tree: Path) -> list[str]:
+    """Every path staged in the vault's index."""
+    listing = git(git_dir, work_tree, ["ls-files", "-z"], cwd=work_tree).stdout
+    return [path for path in listing.split("\0") if path]
+
+
+def source_remote_urls(source: Path) -> list[tuple[str, str]]:
+    """``(remote_name, url)`` for every URL the source repository can push to.
+
+    Read with ``--local``: a global ``insteadOf`` or a credential helper is not
+    what the user means by "my code remote", and a repository that is not a git
+    repository at all simply has no remotes.
+    """
+    proc = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(source),
+            "config",
+            "--local",
+            "--get-regexp",
+            r"^remote\..*\.(url|pushurl)$",
+        ],
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+    )
+    found: list[tuple[str, str]] = []
+    for line in proc.stdout.splitlines():
+        key, _, value = line.partition(" ")
+        value = value.strip()
+        if not value or not key.startswith("remote."):
+            continue
+        name = key[len("remote.") :].rsplit(".", 1)[0]
+        found.append((name, value))
+    return found
+
+
+def normalise_remote(url: str) -> str:
+    """Reduce a remote URL to something two spellings of it agree on.
+
+    Deliberately loose.  A trailing slash, a trailing ``.git`` and the case of
+    the scheme are all things that differ between two spellings of one remote,
+    and the two error directions are not symmetric: a false *match* produces a
+    clear message plus an override flag, while a false *miss* publishes the
+    secrets.  So it errs towards matching.
+    """
+    text = url.strip().rstrip("/")
+    if text.lower().endswith(".git"):
+        text = text[:-4]
+    scheme, sep, rest = text.partition("://")
+    if sep:
+        text = f"{scheme.lower()}://{rest}"
+    return text.rstrip("/").lower()
+
+
+def check_remote_is_not_a_code_remote(
+    source: Path, remote: str, *, allowed: bool
+) -> None:
+    """Refuse to push the vault to a remote the source repository already uses.
+
+    A separate *local* repository keeps the snapshot out of the code
+    repository's object database.  It does **not** keep it off the code remote's
+    *server*: point the vault at the same library and one push publishes
+    ``.env``, keys and everything else the code repository is careful to
+    exclude.  Nothing else in the design prevents that -- this check is the only
+    thing standing between "a separate repository" and "the same backup".
+    """
+    if allowed:
+        return
+    target = normalise_remote(remote)
+    for name, url in source_remote_urls(source):
+        if normalise_remote(url) != target:
+            continue
+        raise SnapshotError(
+            f"refusing to push the vault to '{remote}': that is the same place "
+            f"as the source repository's '{name}' remote.\n"
+            f"A snapshot contains the files .gitignore keeps *out* of the code "
+            f"repository -- .env, keys, credentials -- so pushing it there "
+            f"would publish them.\n"
+            f"Point the vault at a different library, or pass "
+            f"--allow-shared-remote if that is genuinely what you want."
+        )
 
 
 def diff_stat(git_dir: Path, work_tree: Path, parent: str, tree: str) -> str:
@@ -715,7 +1007,65 @@ def _checkout(repo: Path, rev: str, *, detach: bool = False) -> None:
         )
 
 
-def restore(remote: str, into: Path, branch: str, ref: str | None) -> None:
+def verify_restore(repo: Path, rev: str) -> list[str]:
+    """Paths whose bytes on disk disagree with the snapshot's blobs.
+
+    Byte-level on purpose, because the two filter-aware checks can both pass a
+    *mangled* restore -- measured on a plain ``git clone`` of the vault:
+
+    * ``git status`` compares *through* the attribute and ``core.autocrlf``
+      settings, so a checkout that rewrote every LF as CRLF still reports a
+      clean tree;
+    * plain ``git hash-object`` applies the clean filter, so it re-normalises
+      the very difference being looked for, and matches too.
+
+    ``--no-filters`` hashes the bytes as they lie on disk, which is the only one
+    of the three that cannot be fooled.  Our own :func:`restore` happens to pin
+    ``core.autocrlf=false`` and ``* -text -filter -ident``, so on *that* tree the
+    other two agree as well -- but this check must hold for any checkout,
+    including one made by hand, so it does not lean on them.
+    """
+    listing = subprocess.run(
+        ["git", "-C", str(repo), "ls-tree", "-r", "-z", "--full-tree", rev],
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if listing.returncode != 0:
+        raise SnapshotError(
+            f"could not list '{rev}' in {repo} (rc={listing.returncode})\n"
+            f"{listing.stderr.strip()}"
+        )
+    mismatched: list[str] = []
+    for entry in listing.stdout.split("\0"):
+        if not entry:
+            continue
+        meta, _, path = entry.partition("\t")
+        fields = meta.split()
+        if len(fields) < 3 or fields[1] != "blob":
+            continue
+        proc = subprocess.run(
+            ["git", "-C", str(repo), "hash-object", "--no-filters", "--", path],
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        if proc.stdout.strip() != fields[2]:
+            mismatched.append(path)
+    return mismatched
+
+
+def restore(
+    remote: str,
+    into: Path,
+    branch: str,
+    ref: str | None,
+    verify: bool = False,
+) -> None:
     """Materialise a snapshot into a new directory, byte-for-byte.
 
     A plain ``git clone`` of the vault is *not* enough on Windows: the clone
@@ -752,6 +1102,7 @@ def restore(remote: str, into: Path, branch: str, ref: str | None) -> None:
     # the branch first, then move to the requested revision.
     _checkout(into, branch)
     target = branch
+    verified_rev = branch
     if ref and ref != branch:
         proc = subprocess.run(
             ["git", "-C", str(into), "rev-parse", "--verify", f"{ref}^{{commit}}"],
@@ -768,9 +1119,44 @@ def restore(remote: str, into: Path, branch: str, ref: str | None) -> None:
         sha = proc.stdout.strip()
         _checkout(into, sha, detach=True)
         target = f"{ref} ({sha[:12]})"
+        verified_rev = sha
+
+    # A restore that differs from the snapshot is not a restore, and the
+    # autocrlf class of bug is invisible to `git status` -- so check the bytes.
+    mismatched = verify_restore(into, verified_rev)
+    if mismatched:
+        shown = "\n".join(f"  {path}" for path in mismatched[:20])
+        extra = (
+            ""
+            if len(mismatched) <= 20
+            else f"\n  ... and {len(mismatched) - 20} more"
+        )
+        raise SnapshotError(
+            f"{len(mismatched)} restored file(s) do not match the snapshot "
+            f"byte-for-byte:\n{shown}{extra}\n"
+            f"The blobs in the vault are intact -- this is a defect in the "
+            f"checkout, so please report it rather than trusting the restore."
+        )
+
+    if verify:
+        proc = subprocess.run(
+            ["git", "-C", str(into), "fsck", "--no-progress", "--no-dangling"],
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+        )
+        if proc.returncode != 0:
+            raise SnapshotError(
+                f"git fsck failed in {into} (rc={proc.returncode})\n"
+                f"{proc.stdout.strip()}"
+            )
+        print("git fsck: object store intact")
 
     files = sum(1 for p in into.rglob("*") if p.is_file() and ".git" not in p.parts)
     print(f"restored {files} files from {target} into {into}")
+    print(f"verified byte-exact against {verified_rev[:12]}")
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -784,8 +1170,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "recommended exclusions:\n  "
-            + " ".join(f"--exclude {p}" for p in RECOMMENDED_EXCLUDES)
-            + "\n\nnote: the vault is a git repository and must NOT live inside a\n"
+            + " ".join(f"--exclude '{p}'" for p in RECOMMENDED_EXCLUDES)
+            + "\n\nA pattern with no slash matches that name at ANY depth, so\n"
+            "--exclude node_modules also drops packages/*/node_modules.\n"
+            "Quote wildcards so your own shell does not expand them first.\n"
+            "\nnote: the vault is a git repository and must NOT live inside a\n"
             "Seafile-synced folder, for the same reason the source must not.\n"
         ),
     )
@@ -858,6 +1247,19 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "local-only snapshots and continue from the remote chain instead of "
         "refusing",
     )
+    parser.add_argument(
+        "--allow-shared-remote",
+        action="store_true",
+        help="permit --remote to be a URL the source repository already uses. "
+        "The snapshot holds the files .gitignore keeps out of the code "
+        "repository, so this publishes them; refused by default",
+    )
+    parser.add_argument(
+        "--verify",
+        action="store_true",
+        help="with --restore, also run 'git fsck' on the clone. Byte-exactness "
+        "is checked on every restore regardless",
+    )
     return parser.parse_args(argv)
 
 
@@ -875,6 +1277,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.into.expanduser().resolve(),
                 args.branch,
                 args.ref,
+                verify=args.verify,
             )
             return 0
 
@@ -882,22 +1285,36 @@ def main(argv: list[str] | None = None) -> int:
         vault = args.vault or source.with_name(source.name + "-vault")
         source, vault = resolve_paths(source, vault)
 
-        if args.code_remote:
-            print(f"pushing source repo to '{args.code_remote}' ...")
-            proc = subprocess.run(
-                ["git", "-C", str(source), "push", args.code_remote],
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
+        # Checked before anything is written: a snapshot holds exactly the files
+        # .gitignore keeps *out* of the code repository, so aiming the vault at
+        # a remote the source already pushes to publishes them.
+        if args.remote:
+            check_remote_is_not_a_code_remote(
+                source, args.remote, allowed=args.allow_shared_remote
             )
-            sys.stdout.write(proc.stdout)
-            if proc.returncode != 0:
-                raise SnapshotError(
-                    f"pushing the source repo failed (rc={proc.returncode}); "
-                    f"snapshot aborted before touching the vault"
+
+        if args.code_remote:
+            if args.dry_run:
+                print(
+                    f"dry run -- would push the source repo to "
+                    f"'{args.code_remote}'"
                 )
+            else:
+                print(f"pushing source repo to '{args.code_remote}' ...")
+                proc = subprocess.run(
+                    ["git", "-C", str(source), "push", args.code_remote],
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                )
+                sys.stdout.write(proc.stdout)
+                if proc.returncode != 0:
+                    raise SnapshotError(
+                        f"pushing the source repo failed (rc={proc.returncode}); "
+                        f"snapshot aborted before touching the vault"
+                    )
 
         git_dir = ensure_vault(vault, args.branch)
         ensure_identity(vault, source)
@@ -905,29 +1322,33 @@ def main(argv: list[str] | None = None) -> int:
         # The hostname is in the default message because a shared vault is a
         # single chain of snapshots from several machines, and the commit author
         # is the same person on all of them -- so without this, `git log` cannot
-        # say which machine saw which tree.
+        # say which machine saw which tree.  The offset is there because those
+        # machines need not share a timezone.
         message = args.message or (
-            f"snapshot {datetime.now().isoformat(timespec='seconds')} "
+            f"snapshot {datetime.now().astimezone().isoformat(timespec='seconds')} "
             f"on {socket.gethostname()}"
         )
 
+        remote_tip: str | None = None
         with VaultLock(git_dir):
             # Decide the base *after* consulting the remote, so a second machine
             # appends to the shared chain rather than building an unrelated one.
             if args.remote:
-                tip = fetch_remote_tip(git_dir, source, args.remote, args.branch)
+                remote_tip = fetch_remote_tip(
+                    git_dir, source, args.remote, args.branch
+                )
                 base = reconcile_with_remote(
                     git_dir,
                     source,
                     args.branch,
-                    tip,
+                    remote_tip,
                     reset_to_remote=args.reset_to_remote,
                     move=not args.dry_run,
                 )
             else:
                 base = current_tip(git_dir, source, args.branch)
 
-            tree, commit = build_snapshot(
+            tree, commit, excluded = build_snapshot(
                 git_dir, source, base, args.exclude, message
             )
             count, size = describe_tree(git_dir, source, tree)
@@ -937,6 +1358,8 @@ def main(argv: list[str] | None = None) -> int:
             print(f"branch : {args.branch}")
             print(f"files  : {count} ({human_bytes(size)})")
             print(f"base   : {base[:12] if base else '(first snapshot)'}")
+            if excluded:
+                print(f"excluded: {len(excluded)} path(s) left out")
 
             gitlinks = find_gitlinks(git_dir, source, tree)
             if gitlinks:
@@ -951,6 +1374,18 @@ def main(argv: list[str] | None = None) -> int:
                     "  Back them up separately, or make them submodules with a "
                     "remote that survives."
                 )
+
+            secrets = find_secrets(index_paths(git_dir, source))
+            if secrets:
+                print(
+                    f"\nWARNING: {len(secrets)} captured path(s) look like "
+                    f"credentials.  Git history is\npermanent -- push this vault "
+                    f"only to a library only you can read:"
+                )
+                for path in secrets[:20]:
+                    print(f"  {path}")
+                if len(secrets) > 20:
+                    print(f"  ... and {len(secrets) - 20} more")
 
             unchanged = commit is None
             if unchanged:
@@ -976,19 +1411,25 @@ def main(argv: list[str] | None = None) -> int:
                 set_branch(git_dir, source, args.branch, commit, base)
                 print(f"\nmoved refs/heads/{args.branch} -> {commit[:12]}")
 
-            if args.remote:
+            if not args.remote:
+                print("no --remote given; snapshot kept locally")
+            elif unchanged and base == remote_tip:
+                print("the remote already has this snapshot; nothing to push")
+            else:
+                # `commit or base`: when the tree is unchanged but this machine
+                # holds snapshots the remote has never seen (taken offline),
+                # there is no *new* commit to send -- the existing branch is the
+                # thing to push, and `base` is where it points.
                 push_snapshot(
                     git_dir,
                     source,
                     args.remote,
                     args.branch,
-                    commit,
+                    commit or base or "",
                     tree,
                     base,
                     message,
                 )
-            else:
-                print("no --remote given; snapshot kept locally")
         return 0
 
     except SnapshotError as exc:
