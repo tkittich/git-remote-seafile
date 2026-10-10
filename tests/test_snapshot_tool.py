@@ -62,22 +62,29 @@ class SnapshotFixture(unittest.TestCase):
         self.vault = self.tmp / "vault"
         self.code.mkdir()
 
-        (self.code / ".gitignore").write_text(
-            "node_modules/\n*.log\n.env\n", encoding="utf-8"
-        )
-        (self.code / ".env").write_text("SECRET=abc\n", encoding="utf-8")
-        (self.code / "app.log").write_text("log\n", encoding="utf-8")
-        (self.code / "README.md").write_text("hello\n", encoding="utf-8")
+        # write_bytes, not write_text: on Windows write_text rewrites every
+        # "\n" to "\r\n", so a fixture meant to be LF would silently be CRLF --
+        # and every byte-exactness assertion below would then be testing the
+        # wrong thing.
+        (self.code / ".gitignore").write_bytes(b"node_modules/\n*.log\n.env\n")
+        (self.code / ".env").write_bytes(b"SECRET=abc\n")
+        (self.code / "app.log").write_bytes(b"log\n")
+        (self.code / "README.md").write_bytes(b"hello\n")
         (self.code / "dist").mkdir()
-        (self.code / "dist" / "bundle.js").write_text("built\n", encoding="utf-8")
+        (self.code / "dist" / "bundle.js").write_bytes(b"built\n")
         (self.code / "node_modules" / "pkg").mkdir(parents=True)
-        (self.code / "node_modules" / "pkg" / "a.js").write_text("x\n", encoding="utf-8")
+        (self.code / "node_modules" / "pkg" / "a.js").write_bytes(b"x\n")
 
         _git(self.code, "init", "-q", "-b", "main", ".")
         _git(self.code, "config", "user.email", "dev@example.com")
         _git(self.code, "config", "user.name", "Dev")
         _git(self.code, "add", ".gitignore", "README.md")
         _git(self.code, "commit", "-qm", "init")
+
+        # A stand-in for the Seafile remote, and somewhere to restore into.
+        self.remote = self.tmp / "remote.git"
+        _git(self.tmp, "init", "-q", "--bare", str(self.remote))
+        self.restored = self.tmp / "restored"
 
     # -- helpers ---------------------------------------------------------
 
@@ -90,6 +97,11 @@ class SnapshotFixture(unittest.TestCase):
     def snapshot(self, *extra: object) -> tuple[int, str, str]:
         return self.run_tool(
             "--source", self.code, "--vault", self.vault, *extra
+        )
+
+    def restore_to(self, into: pathlib.Path, *extra: object):
+        return self.run_tool(
+            "--restore", "--remote", self.remote, "--into", into, *extra
         )
 
     def tree(self) -> set[str]:
@@ -151,7 +163,7 @@ class SnapshotFixture(unittest.TestCase):
         excludes = self.tmp / "global-excludes"
         excludes.write_text("*.log\n", encoding="utf-8")
         _git(self.vault, "config", "core.excludesFile", str(excludes))
-        (self.code / "fresh.log").write_text("new\n", encoding="utf-8")
+        (self.code / "fresh.log").write_bytes(b"new\n")
         self.snapshot()
         self.assertIn("fresh.log", self.tree())
 
@@ -177,7 +189,7 @@ class SnapshotFixture(unittest.TestCase):
     def test_deletions_and_additions_propagate(self):
         self.snapshot()
         (self.code / "app.log").unlink()
-        (self.code / "added.txt").write_text("new\n", encoding="utf-8")
+        (self.code / "added.txt").write_bytes(b"new\n")
         self.snapshot()
         tree = self.tree()
         self.assertNotIn("app.log", tree)
@@ -214,6 +226,95 @@ class SnapshotFixture(unittest.TestCase):
         rc, _, err = self.snapshot("--dry-run")
         self.assertEqual(rc, 1)
         self.assertIn("another snapshot appears to be running", err)
+
+    # -- byte-exactness and restore ----------------------------------------
+
+    def test_vault_is_configured_to_be_byte_exact(self):
+        self.snapshot()
+        proc = _git(self.vault, "config", "--get", "core.autocrlf")
+        self.assertEqual(proc.stdout.strip(), "false")
+        attrs = (self.vault / ".git" / "info" / "attributes").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("* -text", attrs)
+
+    def test_restore_is_byte_identical(self):
+        # The blob was always correct; it was the *checkout* that converted.
+        # Git for Windows ships core.autocrlf=true in its system config, so a
+        # naive clone rewrites LF to CRLF and the restore stops matching the
+        # original.  These bytes are the whole point of the tool.
+        (self.code / "lf.txt").write_bytes(b"a\nb\nc\n")
+        (self.code / "crlf.txt").write_bytes(b"a\r\nb\r\nc\r\n")
+        (self.code / "bin.dat").write_bytes(bytes(range(256)))
+        (self.code / "nonl.txt").write_bytes(b"no trailing newline")
+
+        self.snapshot("--remote", str(self.remote))
+        rc, _, _ = self.restore_to(self.restored)
+        self.assertEqual(rc, 0)
+
+        for name in (
+            "lf.txt",
+            "crlf.txt",
+            "bin.dat",
+            "nonl.txt",
+            ".gitignore",
+            ".env",
+            "README.md",
+        ):
+            self.assertEqual(
+                (self.restored / name).read_bytes(),
+                (self.code / name).read_bytes(),
+                f"{name} did not restore byte-for-byte",
+            )
+        self.assertEqual(
+            (self.restored / "node_modules" / "pkg" / "a.js").read_bytes(),
+            (self.code / "node_modules" / "pkg" / "a.js").read_bytes(),
+            "the ignored file did not restore byte-for-byte",
+        )
+
+    def test_a_source_gitattributes_does_not_defeat_byte_exactness(self):
+        # info/attributes outranks a .gitattributes in the source tree, and the
+        # source's own .gitattributes still has to survive the round trip.
+        (self.code / ".gitattributes").write_bytes(b"* text=auto\n")
+        (self.code / "lf.txt").write_bytes(b"a\nb\n")
+
+        self.snapshot("--remote", str(self.remote))
+        self.restore_to(self.restored)
+
+        self.assertEqual((self.restored / "lf.txt").read_bytes(), b"a\nb\n")
+        self.assertEqual(
+            (self.restored / ".gitattributes").read_bytes(), b"* text=auto\n"
+        )
+
+    def test_restore_can_roll_back_to_an_older_snapshot(self):
+        (self.code / "lf.txt").write_bytes(b"original\n")
+        self.snapshot("--remote", str(self.remote))
+        (self.code / "lf.txt").write_bytes(b"changed\n")
+        self.snapshot("--remote", str(self.remote))
+
+        rc, _, _ = self.restore_to(self.restored, "--ref", "snapshot~1")
+        self.assertEqual(rc, 0)
+        self.assertEqual((self.restored / "lf.txt").read_bytes(), b"original\n")
+
+    def test_restore_requires_a_remote_and_a_destination(self):
+        rc, _, err = self.run_tool("--restore", "--into", self.restored)
+        self.assertEqual(rc, 1)
+        self.assertIn("--restore requires --remote", err)
+
+        rc, _, err = self.run_tool("--restore", "--remote", self.remote)
+        self.assertEqual(rc, 1)
+        self.assertIn("--restore requires --into", err)
+
+    def test_restore_refuses_a_non_empty_destination(self):
+        self.snapshot("--remote", str(self.remote))
+        self.restored.mkdir(parents=True)
+        (self.restored / "keep.txt").write_bytes(b"mine\n")
+
+        rc, _, err = self.restore_to(self.restored)
+        self.assertEqual(rc, 1)
+        self.assertIn("not empty", err)
+        # and it must not have touched what was already there
+        self.assertEqual((self.restored / "keep.txt").read_bytes(), b"mine\n")
 
     # -- committer identity ------------------------------------------------
 

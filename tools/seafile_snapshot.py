@@ -41,6 +41,40 @@ Atomicity
 * A vault-local lock file keeps two runs from interleaving.
 * The push is a single ref update, guarded by the helper's distributed lease.
 
+Updates
+=======
+Each run is a commit on top of the previous one, so the vault is a linear chain
+of snapshots.  Only changed blobs are uploaded: Git is content-addressed, so a
+snapshot that changed one file in a 486 KB tree pushed 31 KB, and a snapshot
+that changed nothing pushes nothing at all (no commit is created).  The vault's
+index keeps a stat cache, so unchanged files are not re-hashed either.
+
+Because it is ordinary Git history, "roll back to last Tuesday" is ``git show``,
+``git diff``, or a checkout of an older commit -- not a restore from a
+proprietary archive format.
+
+Restoring
+=========
+::
+
+    python tools/seafile_snapshot.py --restore \
+        --remote seafile://code/myproject-vault \
+        --into C:/restore/myproject
+
+    # any revision works -- e.g. roll back three snapshots
+    ... --ref snapshot~3
+
+The snapshot holds the *whole* tree, tracked files included, so this one command
+reconstitutes the working directory.  Clone the code repository separately only
+if you want its branches and history.
+
+Do **not** simply ``git clone`` the vault and check out.  On Windows the clone
+inherits ``core.autocrlf=true`` from Git for Windows' system config, and the
+vault's ``info/attributes`` -- the thing that makes it byte-exact -- is not
+carried by a clone, while the source's own ``.gitattributes`` is.  The result is
+a restore with LF rewritten to CRLF.  ``--restore`` applies the byte-exact
+settings to the clone *before* checking out, so the files match the originals.
+
 Usage
 =====
 ::
@@ -221,6 +255,38 @@ def ensure_identity(vault: Path, source: Path) -> None:
             )
 
 
+BYTE_EXACT_ATTRIBUTES = (
+    "# Written by seafile_snapshot.py.  The vault exists to hold byte-exact\n"
+    "# copies of the source tree, so every path is marked non-text.  This\n"
+    "# disables end-of-line conversion on both add and checkout -- including\n"
+    "# conversion implied by a .gitattributes in the source tree, which this\n"
+    "# file outranks (info/attributes has the highest precedence).\n"
+    "* -text\n"
+)
+
+
+def ensure_byte_exact(vault: Path, git_dir: Path) -> None:
+    """Stop git from rewriting line endings inside the vault.
+
+    Git for Windows ships ``core.autocrlf=true`` in its *system* config, so a
+    freshly initialised vault converts LF to CRLF on checkout even though
+    ``git config --global core.autocrlf`` reports nothing.  The stored blob is
+    correct; the *restored* file is not -- and a backup whose restore differs
+    from the original is not a backup.
+
+    Both levers are pulled: the config, and an ``info/attributes`` override that
+    outranks any ``.gitattributes`` in the source tree.
+    """
+    git(git_dir, vault, ["config", "core.autocrlf", "false"], cwd=vault)
+    git(git_dir, vault, ["config", "core.safecrlf", "false"], cwd=vault)
+
+    attributes = git_dir / "info" / "attributes"
+    attributes.parent.mkdir(parents=True, exist_ok=True)
+    existing = attributes.read_text(encoding="utf-8") if attributes.exists() else ""
+    if "* -text" not in existing:
+        attributes.write_text(existing + BYTE_EXACT_ATTRIBUTES, encoding="utf-8")
+
+
 class VaultLock:
     """An exclusive lock so two snapshots cannot interleave."""
 
@@ -340,6 +406,83 @@ def human_bytes(n: int) -> str:
     return f"{n} B"
 
 
+def _checkout(repo: Path, rev: str, *, detach: bool = False) -> None:
+    args = ["git", "-C", str(repo), "checkout", "-f"]
+    if detach:
+        args.append("--detach")
+    args.append(rev)
+    proc = subprocess.run(
+        args,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+    )
+    if proc.returncode != 0:
+        raise SnapshotError(
+            f"checkout of '{rev}' failed (rc={proc.returncode})\n{proc.stdout.strip()}"
+        )
+
+
+def restore(remote: str, into: Path, branch: str, ref: str | None) -> None:
+    """Materialise a snapshot into a new directory, byte-for-byte.
+
+    A plain ``git clone`` of the vault is *not* enough on Windows: the clone
+    inherits ``core.autocrlf=true`` from Git for Windows' system config, and
+    ``info/attributes`` -- which is what makes the vault byte-exact -- is not
+    transferred by a clone.  The source's own ``.gitattributes`` *is*
+    transferred, so it would re-trigger conversion on checkout.
+
+    So: clone without checking anything out, apply the same byte-exact settings
+    to the clone, and only then check out.
+    """
+    if into.exists() and any(into.iterdir()):
+        raise SnapshotError(f"restore destination is not empty: {into}")
+
+    into.parent.mkdir(parents=True, exist_ok=True)
+    print(f"cloning {remote} -> {into} (no checkout) ...")
+    proc = subprocess.run(
+        ["git", "clone", "--no-checkout", remote, str(into)],
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+    )
+    if proc.returncode != 0:
+        raise SnapshotError(
+            f"clone failed (rc={proc.returncode})\n{proc.stdout.strip()}"
+        )
+
+    ensure_byte_exact(into, into / ".git")
+
+    # A --no-checkout clone has no local branch, so a revision like
+    # "snapshot~3" cannot resolve until the branch exists locally.  Materialise
+    # the branch first, then move to the requested revision.
+    _checkout(into, branch)
+    target = branch
+    if ref and ref != branch:
+        proc = subprocess.run(
+            ["git", "-C", str(into), "rev-parse", "--verify", f"{ref}^{{commit}}"],
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        if proc.returncode != 0:
+            raise SnapshotError(
+                f"cannot resolve '{ref}' in the vault\n{proc.stderr.strip()}"
+            )
+        sha = proc.stdout.strip()
+        _checkout(into, sha, detach=True)
+        target = f"{ref} ({sha[:12]})"
+
+    files = sum(1 for p in into.rglob("*") if p.is_file() and ".git" not in p.parts)
+    print(f"restored {files} files from {target} into {into}")
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="seafile_snapshot",
@@ -393,6 +536,24 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--message", default=None, help="snapshot commit message")
     parser.add_argument(
+        "--restore",
+        action="store_true",
+        help="restore a snapshot instead of taking one (needs --remote and "
+        "--into); byte-exact, unlike a plain git clone",
+    )
+    parser.add_argument(
+        "--into",
+        type=Path,
+        default=None,
+        help="destination directory for --restore",
+    )
+    parser.add_argument(
+        "--ref",
+        default=None,
+        help=f"snapshot to restore (default: the vault branch, "
+        f"{DEFAULT_BRANCH}); any revision works, e.g. 'snapshot~3' to roll back",
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="build the snapshot but do not move the branch or push "
@@ -406,6 +567,19 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
 
     try:
+        if args.restore:
+            if not args.remote:
+                raise SnapshotError("--restore requires --remote <url>")
+            if not args.into:
+                raise SnapshotError("--restore requires --into <directory>")
+            restore(
+                args.remote,
+                args.into.expanduser().resolve(),
+                args.branch,
+                args.ref,
+            )
+            return 0
+
         source = args.source.expanduser().resolve()
         vault = args.vault or source.with_name(source.name + "-vault")
         source, vault = resolve_paths(source, vault)
@@ -429,6 +603,7 @@ def main(argv: list[str] | None = None) -> int:
 
         git_dir = ensure_vault(vault, args.branch)
         ensure_identity(vault, source)
+        ensure_byte_exact(vault, git_dir)
         message = args.message or f"snapshot {datetime.now().isoformat(timespec='seconds')}"
 
         with VaultLock(git_dir):
