@@ -346,23 +346,51 @@ def make_helper_env(bin_dir: Path, stub_url: str, repo_root: Path) -> dict:
     return env
 
 
-def run_git(args, cwd, env, check: bool = True) -> subprocess.CompletedProcess:
-    """Run a git command, capturing output as text."""
-    proc = subprocess.run(
-        ["git"] + list(args),
-        cwd=str(cwd),
-        env=env,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-    )
+#: Ceiling for one git/helper invocation.  Every e2e command talks to a local
+#: stub server, so anything approaching this is a wedge (a hung helper, a
+#: protocol deadlock), not slowness -- and under the parallel runner a wedged
+#: worker would otherwise hold its slot forever.  Generous, because CI runners
+#: can be slow; the point is bounding the infinite, not timing the fast.
+_SUBPROCESS_TIMEOUT = 120
+
+
+def _text_of(output) -> str:
+    """TimeoutExpired's captured output may be bytes or str depending on where it stopped."""
+    if isinstance(output, bytes):
+        return output.decode("utf-8", errors="replace")
+    return output or ""
+
+
+def _run_with_timeout(argv: list[str], cwd, env, check, label: str) -> subprocess.CompletedProcess:
+    try:
+        proc = subprocess.run(
+            argv,
+            cwd=str(cwd),
+            env=env,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=_SUBPROCESS_TIMEOUT,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise AssertionError(
+            f"{label} hung past {_SUBPROCESS_TIMEOUT}s and was killed -- a "
+            f"wedged helper or a protocol deadlock, not a slow server.\n"
+            f"--- partial stdout ---\n{_text_of(exc.stdout)}\n"
+            f"--- partial stderr ---\n{_text_of(exc.stderr)}"
+        ) from exc
     if check and proc.returncode != 0:
         raise AssertionError(
-            f"git {' '.join(args)} failed (rc={proc.returncode})\n"
+            f"{label} {' '.join(map(str, argv[1:]))} failed (rc={proc.returncode})\n"
             f"--- stdout ---\n{proc.stdout}\n--- stderr ---\n{proc.stderr}"
         )
     return proc
+
+
+def run_git(args, cwd, env, check: bool = True) -> subprocess.CompletedProcess:
+    """Run a git command, capturing output as text."""
+    return _run_with_timeout(["git"] + list(args), cwd, env, check, label="git")
 
 
 def run_helper(args, cwd, env, check: bool = True) -> subprocess.CompletedProcess:
@@ -374,21 +402,10 @@ def run_helper(args, cwd, env, check: bool = True) -> subprocess.CompletedProces
     """
     bin_dir = Path(env["PATH"].split(os.pathsep)[0])
     launcher = bin_dir / "_grs_launcher.py"
-    proc = subprocess.run(
+    return _run_with_timeout(
         [sys.executable, str(launcher), *list(args)],
-        cwd=str(cwd),
-        env=env,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
+        cwd, env, check, label="git-remote-seafile",
     )
-    if check and proc.returncode != 0:
-        raise AssertionError(
-            f"git-remote-seafile {' '.join(args)} failed (rc={proc.returncode})\n"
-            f"--- stdout ---\n{proc.stdout}\n--- stderr ---\n{proc.stderr}"
-        )
-    return proc
 
 
 def init_repo(path: Path, env: dict) -> Path:

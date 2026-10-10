@@ -111,9 +111,12 @@ class TestFaultInjection(E2ETestCase):
         self.stub.faults["dir"] = 500
         proc = run_git(["ls-remote", self.url("repo3")], self.work, self.env, check=False)
         self.assertNotEqual(proc.returncode, 0, "git should report the helper failure")
+        # The helper names the failing transfer itself ("git-remote-seafile
+        # fatal error: ... HTTP 500"); matching that -- as the loud-clone test
+        # below does -- cannot be satisfied by an unrelated git error.
         combined = proc.stdout + proc.stderr
-        self.assertTrue("500" in combined or "fatal" in combined.lower(),
-                        f"expected a visible error, got:\n{combined}")
+        self.assertIn("git-remote-seafile", combined)
+        self.assertIn("HTTP 500", combined)
 
 
 class TestFetchFailureIsLoud(E2ETestCase):
@@ -595,9 +598,11 @@ class TestStubRealismAndRefFault(E2ETestCase):
         # 3. Running ls-remote should fail loudly rather than silently dropping feature
         proc = run_git(["ls-remote", self.url("repo_ref_fault")], self.work, self.env, check=False)
         self.assertNotEqual(proc.returncode, 0, "ls-remote should fail when a ref read fails")
-        combined = (proc.stdout + proc.stderr).lower()
-        self.assertTrue("500" in combined or "fatal" in combined or "error" in combined,
-                        f"Expected error in output:\n{proc.stdout}\n{proc.stderr}")
+        # Name the helper's own diagnosis, like the loud-clone test: "500" or
+        # "error" alone can come from an unrelated git failure.
+        combined = proc.stdout + proc.stderr
+        self.assertIn("git-remote-seafile", combined)
+        self.assertIn("HTTP 500", combined)
 
 
 if __name__ == "__main__":

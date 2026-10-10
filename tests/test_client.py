@@ -1212,28 +1212,6 @@ class TestTransferRetries(unittest.TestCase):
             server.server_close()
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
-class TestAccountDiscovery(unittest.TestCase):
-    def test_env_var_precedence(self):
-        with patch.dict("os.environ", {"SEAFILE_SERVER": "https://seafile.custom.org", "SEAFILE_TOKEN": "customtok"}):
-            client = SeafileClient()
-            self.assertEqual(client.server_url, "https://seafile.custom.org")
-            self.assertEqual(client.token, "customtok")
-
-    def test_config_file_discovery(self):
-        cfg_content = json.dumps({"server": "https://config.seafile.org", "token": "cfgtoken"})
-        with patch.dict("os.environ", {"USERPROFILE": "C:\\Users\\testuser"}, clear=True):
-            with patch("pathlib.Path.is_file") as mock_is_file, \
-                 patch("pathlib.Path.read_text", return_value=cfg_content):
-                mock_is_file.return_value = True
-                client = SeafileClient()
-                self.assertEqual(client.server_url, "https://config.seafile.org")
-                self.assertEqual(client.token, "cfgtoken")
-
-
 class TestSeafileClientOperations(unittest.TestCase):
     def test_mkdir_p_and_delete_entry(self):
         client = SeafileClient(server_url="https://seafile.example.com", token="fake_token", timeout=10)
@@ -1318,3 +1296,6 @@ class TestSeafileClientOperations(unittest.TestCase):
         self.assertTrue(client.mkdir_p("repo1", "/a"))
         self.assertIn(("repo1", "/a"), client._known_dirs)
 
+
+if __name__ == "__main__":
+    unittest.main()

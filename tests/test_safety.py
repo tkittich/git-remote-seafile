@@ -250,6 +250,67 @@ class TestSafetyGuardrails(unittest.TestCase):
         # Should not raise any SafetyError
         self.assertIsInstance(warnings, list)
 
+    def test_active_worktree_inside_an_unignored_synced_library_warns(self):
+        """Check 6 is the churn warning, and it must actually warn.
+
+        The push target is an unsynced library (so Traps 1/2 cannot fire and
+        the run must proceed), but the *current* working tree sits inside a
+        different synced library with no ignore rule -- exactly the setup the
+        README's churn warning is built around.  Every other unit test here
+        asserts either an exception or an empty warning list; this one pins
+        the third outcome: a non-blocking notice naming the library and the
+        ignore file that would silence it.
+        """
+        client = MagicMock()
+        client.get_repo_id.return_value = "target-repo-id"  # matches no synced lib
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            lib_dir = Path(tmpdir) / "Documents"
+            lib_dir.mkdir()  # deliberately NO seafile-ignore.txt
+
+            warnings = check_preflight_safety(
+                client,
+                "code",  # the unsynced target library
+                "/myproject",
+                local_worktree=lib_dir / "code" / "myproject",
+                push_mode=True,
+                synced_libs=[
+                    {"repo_id": "other-repo-id", "name": "Documents",
+                     "worktree": lib_dir, "server_url": "https://seafile.example.com"}
+                ],
+            )
+
+        self.assertEqual(len(warnings), 1, warnings)
+        warning = warnings[0]
+        self.assertIn("inside synced library", warning)
+        self.assertIn("Documents", warning)
+        self.assertIn("seafile-ignore.txt", warning)
+        self.assertIn("churn", warning)
+
+    def test_an_ignored_worktree_inside_a_synced_library_warns_nothing(self):
+        """The control for the churn warning: a rule silences it."""
+        client = MagicMock()
+        client.get_repo_id.return_value = "target-repo-id"
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            lib_dir = Path(tmpdir) / "Documents"
+            lib_dir.mkdir()
+            (lib_dir / "seafile-ignore.txt").write_text("code/\n", encoding="utf-8")
+
+            warnings = check_preflight_safety(
+                client,
+                "code",
+                "/myproject",
+                local_worktree=lib_dir / "code" / "myproject",
+                push_mode=True,
+                synced_libs=[
+                    {"repo_id": "other-repo-id", "name": "Documents",
+                     "worktree": lib_dir, "server_url": "https://seafile.example.com"}
+                ],
+            )
+
+        self.assertEqual(warnings, [])
+
     def test_safety_does_not_fallback_to_name_when_target_repo_id_resolved(self):
         # N-14: Server library is 'Documents' with repo_id 'server-id'.
         # Local synced library is also named 'Documents' but has repo_id 'local-id' (different library).

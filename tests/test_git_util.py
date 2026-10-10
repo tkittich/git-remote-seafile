@@ -467,10 +467,6 @@ class TestHexShaValidation(unittest.TestCase):
         self.assertIsNone(HEX_SHA_RE.fullmatch(""))
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class TestGitConfig(unittest.TestCase):
     def test_config_readers(self):
         with patch("git_remote_seafile.git_util.get_git_config", return_value="true"):
@@ -495,3 +491,6 @@ class TestGitConfig(unittest.TestCase):
             self.assertIn("not an integer", stderr.getvalue())
             self.assertIn("seafile.locklease", stderr.getvalue())
 
+
+if __name__ == "__main__":
+    unittest.main()

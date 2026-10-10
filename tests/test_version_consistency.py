@@ -12,7 +12,7 @@ pointing at the attribute the package defines, the build falls back to a version
 that is not the one the CLI reports -- silently, since nothing else reads both.
 
 ``pyproject.toml`` is parsed with a regex rather than ``tomllib`` because
-``tomllib`` only exists on Python 3.11+ and the supported floor is 3.9.
+``tomllib`` only exists on Python 3.11+ and the supported floor is 3.10.
 """
 
 from __future__ import annotations
