@@ -307,25 +307,6 @@ def _config(path: Path, key: str) -> str:
     return proc.stdout.strip()
 
 
-def _local_config(path: Path, key: str) -> str:
-    """Read a value from the repository's *own* config only.
-
-    ``git config --get`` reads through to the global and system files, so it
-    cannot answer "does this repository have an identity of its own?" -- and
-    that is exactly the question that decides whether to inherit one.  Using it
-    there made the vault inherit nothing whenever a global identity existed.
-    """
-    proc = subprocess.run(
-        ["git", "-C", str(path), "config", "--local", "--get", key],
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
-    )
-    return proc.stdout.strip()
-
-
 def ensure_identity(vault: Path, source: Path) -> None:
     """Give the vault a committer identity, inheriting the source repo's.
 
@@ -339,11 +320,18 @@ def ensure_identity(vault: Path, source: Path) -> None:
     the global file, so it reports an identity for a vault that has none, and
     the source repository is then never consulted.  That was a real bug -- the
     inheritance worked only in the test, which cleared the global config.
+
+    Both configs are read in one call each (see :func:`_read_local_config_map`),
+    and a value that is already correct is not rewritten -- the common case
+    after the first run is that there is nothing to do.
     """
+    vault_config = _read_local_config_map(vault)
+    source_config = _read_local_config_map(source)
     for key in ("user.name", "user.email"):
-        if _local_config(vault, key):
+        have = vault_config.get(key) or []
+        if have and have[0]:
             continue
-        inherited = _local_config(source, key)
+        inherited = (source_config.get(key) or [""])[0]
         if not inherited:
             # No local identity anywhere.  A global one is fine -- git resolves
             # it at commit time -- but if there is none either, fail here with
@@ -401,9 +389,18 @@ def ensure_byte_exact(vault: Path, git_dir: Path) -> None:
 
     Both levers are pulled: the config, and an ``info/attributes`` override that
     outranks any ``.gitattributes`` in the source tree.
+
+    The two config values are only written when they are not already correct,
+    so a vault that has been snapshotted before costs no subprocesses here.
+    Reading the *local* config is what makes that safe: a global
+    ``core.autocrlf`` is irrelevant, because the vault has to pin its own.
     """
-    git(git_dir, vault, ["config", "core.autocrlf", "false"], cwd=vault)
-    git(git_dir, vault, ["config", "core.safecrlf", "false"], cwd=vault)
+    current = _read_local_config_map(vault)
+    for key in ("core.autocrlf", "core.safecrlf"):
+        have = (current.get(key) or [""])[0]
+        if have == "false":
+            continue
+        git(git_dir, vault, ["config", key, "false"], cwd=vault)
 
     attributes = git_dir / "info" / "attributes"
     attributes.parent.mkdir(parents=True, exist_ok=True)
@@ -1269,7 +1266,11 @@ def check_paths_are_unsynced(*paths: tuple[str, Path]) -> None:
 
 
 def _read_config_key(git_dir: Path, key: str) -> str:
-    """A single value out of the *vault's own* config, or ''."""
+    """A single value out of the *vault's own* config, or ''.
+
+    Kept for one-off reads and for tests; the snapshot path itself reads every
+    key it needs in a single call via :func:`_read_local_config_map`.
+    """
     proc = subprocess.run(
         ["git", "--git-dir", str(git_dir), "config", "--local", "--get", key],
         text=True,
@@ -1281,10 +1282,24 @@ def _read_config_key(git_dir: Path, key: str) -> str:
     return proc.stdout.strip()
 
 
-def _read_config_multi(git_dir: Path, key: str) -> list[str]:
-    """All values stored under one multi-valued key, or []."""
+def _read_local_config_map(repo: Path) -> dict[str, list[str]]:
+    """Every key in a repository's *own* config, in a single git call.
+
+    A run consults five keys in :func:`remembered_settings` and two more in
+    :func:`ensure_identity`, and every ``git config`` is a separate process --
+    about 125 ms on Windows, nearly all of it process start-up.  One
+    ``--local --null --list`` answers them all at once.
+
+    ``--null`` is what makes the output unambiguous: a value may itself contain
+    a newline, so each pair is NUL-*terminated* rather than newline-separated.
+    ``--local`` keeps the global, system and command-scope values out, which is
+    the question every caller here is actually asking -- what does *this*
+    repository remember?  ``-C`` rather than ``--git-dir`` because a source
+    repository may use a ``.git`` *file* (a submodule or a linked worktree),
+    which ``--git-dir`` cannot open.
+    """
     proc = subprocess.run(
-        ["git", "--git-dir", str(git_dir), "config", "--local", "--get-all", key],
+        ["git", "-C", str(repo), "config", "--local", "--null", "--list"],
         text=True,
         encoding="utf-8",
         errors="replace",
@@ -1292,8 +1307,25 @@ def _read_config_multi(git_dir: Path, key: str) -> list[str]:
         stderr=subprocess.DEVNULL,
     )
     if proc.returncode != 0:
-        return []
-    return [line for line in proc.stdout.splitlines() if line]
+        return {}
+    found: dict[str, list[str]] = {}
+    for entry in proc.stdout.split("\0"):
+        if not entry:
+            continue
+        key, sep, value = entry.partition("\n")
+        if sep:
+            found.setdefault(key, []).append(value)
+    return found
+
+
+def _same_config_value(stored: str, desired: str) -> bool:
+    """Whether two spellings of a config value are the same setting.
+
+    Git rewrites a Windows path's backslashes to forward slashes as it stores
+    it, so a literal ``str(source)`` never compares equal to what comes back --
+    and without normalising, every run would look changed and be rewritten.
+    """
+    return stored.replace("\\", "/") == desired.replace("\\", "/")
 
 
 def remembered_settings(vault: Path, source: Path) -> dict[str, object]:
@@ -1313,7 +1345,13 @@ def remembered_settings(vault: Path, source: Path) -> dict[str, object]:
     if not git_dir.is_dir():
         return {}
 
-    remembered_source = _read_config_key(git_dir, "snapshot.source")
+    config = _read_local_config_map(vault)
+
+    def first(key: str) -> str:
+        values = config.get(key)
+        return values[0] if values else ""
+
+    remembered_source = first("snapshot.source")
     if remembered_source:
         resolved = Path(remembered_source).expanduser().resolve()
         if resolved != source.resolve():
@@ -1329,23 +1367,23 @@ def remembered_settings(vault: Path, source: Path) -> dict[str, object]:
             )
 
     remembered: dict[str, object] = {}
-    remote = _read_config_key(git_dir, "snapshot.remote")
+    remote = first("snapshot.remote")
     if remote:
         remembered["remote"] = remote
-    code_remote = _read_config_key(git_dir, "snapshot.coderemote")
+    code_remote = first("snapshot.coderemote")
     if code_remote:
         remembered["code_remote"] = code_remote
-    branch = _read_config_key(git_dir, "snapshot.branch")
+    branch = first("snapshot.branch")
     if branch:
         remembered["branch"] = branch
-    excludes = _read_config_multi(git_dir, "snapshot.exclude")
+    excludes = [v for v in config.get("snapshot.exclude", []) if v]
     if excludes:
         remembered["exclude"] = excludes
     return remembered
 
 
 def remember_settings(
-    git_dir: Path,
+    vault: Path,
     source: Path,
     *,
     remote: str | None,
@@ -1356,9 +1394,18 @@ def remember_settings(
     """Persist the resolved choices into the vault's own config.
 
     Written with ``git config --local``, so it lives and travels with the vault
-    and nothing is put in the user's global config.  ``--unset-all`` first, so a
-    value that was *cleared* on this run is actually cleared rather than
-    lingering from the previous one.
+    and nothing is put in the user's global config.
+
+    Only a value that actually *changed* is written, and a value that is being
+    cleared is ``--unset-all``'d.  Re-writing every key on every run would be
+    correct but wasteful: each ``git config`` is its own process, and a routine
+    run has nothing new to say.  The five-and-more writes a first run makes
+    collapse to none once the vault is settled -- measured on this machine, the
+    config plumbing was a little over half of a run's subprocess calls.
+
+    A single-valued key is set with a plain ``git config <key> <value>``, which
+    replaces whatever was there; only a key that is being *emptied* needs the
+    explicit ``--unset-all``.
     """
     settings: list[tuple[str, list[str]]] = [
         ("snapshot.source", [str(source)]),
@@ -1367,22 +1414,41 @@ def remember_settings(
         ("snapshot.branch", [branch]),
         ("snapshot.exclude", list(exclude)),
     ]
-    for key, values in settings:
-        # `--unset-all` exits 5 when the key is absent; that is not an error.
+
+    current = _read_local_config_map(vault)
+
+    def unchanged(stored: list[str], values: list[str]) -> bool:
+        if len(stored) != len(values):
+            return False
+        return all(
+            _same_config_value(a, b) for a, b in zip(stored, values, strict=True)
+        )
+
+    def run(*args: str) -> None:
         subprocess.run(
-            ["git", "--git-dir", str(git_dir), "config", "--local", "--unset-all", key],
+            ["git", "--git-dir", str(vault / ".git"), "config", "--local", *args],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
-        for value in values:
-            subprocess.run(
-                [
-                    "git", "--git-dir", str(git_dir), "config", "--local",
-                    "--add", key, value,
-                ],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
+
+    for key, values in settings:
+        stored = current.get(key, [])
+        if unchanged(stored, values):
+            continue
+        if not values:
+            # `--unset-all` exits 5 when the key is absent; that is not an error.
+            run("--unset-all", key)
+        elif len(values) == 1 and len(stored) <= 1:
+            # A single value over a single (or absent) key: a plain set replaces
+            # it.  This is the common shape, and one call instead of two.
+            run(key, values[0])
+        else:
+            # Either several values now, or a multi-valued key being rewritten
+            # -- git refuses to overwrite multiple values with one, so the old
+            # values are cleared first or they would linger.
+            run("--unset-all", key)
+            for value in values:
+                run("--add", key, value)
 
 
 def source_seafile_remote(source: Path) -> str | None:
@@ -1782,7 +1848,7 @@ def main(argv: list[str] | None = None) -> int:
         # with nothing to type.  Not on a dry run: a preview must not mutate.
         if not args.dry_run:
             remember_settings(
-                git_dir,
+                vault,
                 source,
                 remote=remote,
                 code_remote=code_remote,

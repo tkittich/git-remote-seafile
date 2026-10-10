@@ -200,6 +200,31 @@ either. Because the vault is ordinary Git history, "roll back to last Tuesday"
 is `git show`, `git diff`, or a checkout of an older commit — not a restore
 from a proprietary archive format.
 
+### What a run costs in subprocesses
+
+Every `git` invocation is a separate process, and on Windows that is about
+**125 ms** of pure start-up regardless of how little the command does — measured
+with `git --version` in a loop. The count therefore matters more than the work.
+A settled vault (the second and later runs) used to make **28** calls, of which
+**16 were config plumbing**: five remembered keys read one at a time, five keys
+rewritten unconditionally, the two byte-exactness pairs reset every run.
+
+All of that is now both batched and idempotent:
+
+| | Before | After |
+| :--- | ---: | ---: |
+| Remembered settings read | 5 calls | **1** (`config --local --null --list`) |
+| Remembered settings written | 5 keys, ~8 calls | **0 when nothing changed** |
+| Byte-exactness (`autocrlf`, `safecrlf`) | 2 calls, always | **0 when already set** |
+| Identity (`user.name`, `user.email`) | 6 calls | **2 reads, 0 writes** once inherited |
+| **Whole run, unchanged tree** | **28 calls** | **16 calls** |
+
+The saving is why the test module's parallel time fell from 167 s to 128 s:
+nearly half of what the suite spent was process start-up, not Git. There is a
+floor here — a snapshot inherently needs `fetch`, `add`, `write-tree`,
+`rev-parse`, `ls-tree`, `ls-files` and the push, and none of those can be
+avoided without re-implementing Git's index. Sixteen calls is close to it.
+
 > **Watch the remote's packfile count.** The helper warns on every push and
 > `seafile.autogc` is off by default, so a frequent snapshot regime needs
 > `git-remote-seafile gc <url>` run deliberately (or `seafile.autogc` turned

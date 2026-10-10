@@ -97,6 +97,16 @@ class _SnapshotFixture(unittest.TestCase):
 
     # -- helpers ---------------------------------------------------------
 
+    def _second_machine(self) -> tuple[pathlib.Path, pathlib.Path]:
+        """A second source tree and its own (never cloned) vault.
+
+        Lives on the fixture because two separate multi-machine classes need
+        it; a shared *helper* is safe, where a shared *test* would be run twice.
+        """
+        code_b = self.tmp / "code-b"
+        shutil.copytree(self.code, code_b)
+        return code_b, self.tmp / "vault-b"
+
     def run_tool(self, *argv: object) -> tuple[int, str, str]:
         out, err = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
@@ -413,13 +423,13 @@ class ByteExactnessTests(_SnapshotFixture):
         self.assertEqual((self.restored / "keep.txt").read_bytes(), b"mine\n")
 
 class MultiMachineTests(_SnapshotFixture):
-    """One shared vault, several machines: linear chain, or a loud refusal."""
+    """One shared vault, several machines: a linear chain, or a loud refusal.
 
-    def _second_machine(self) -> tuple[pathlib.Path, pathlib.Path]:
-        """A second source tree and its own (never cloned) vault."""
-        code_b = self.tmp / "code-b"
-        shutil.copytree(self.code, code_b)
-        return code_b, self.tmp / "vault-b"
+    Split from :class:`PushRaceTests` on purpose.  The parallel runner schedules
+    one unit of work per class, so six end-to-end snapshots in one class is
+    ~110 s that cannot overlap with anything -- and it was setting the module's
+    wall time on its own.  Two classes of comparable weight overlap instead.
+    """
 
     def test_a_second_machine_appends_to_a_shared_remote(self):
         # The bug this guards: a second machine built on its own unrelated
@@ -501,6 +511,10 @@ class MultiMachineTests(_SnapshotFixture):
         self.assertEqual(
             _git(self.remote, "rev-list", "--count", BRANCH).stdout.strip(), "2"
         )
+
+
+class PushRaceTests(_SnapshotFixture):
+    """A push that fails -- refused outright, or losing a race -- recovers."""
 
     def test_a_rejected_push_rolls_the_local_branch_back(self):
         # A push the remote refuses must not leave the vault claiming a snapshot
