@@ -398,6 +398,150 @@ class SnapshotFixture(unittest.TestCase):
         # and it must not have touched what was already there
         self.assertEqual((self.restored / "keep.txt").read_bytes(), b"mine\n")
 
+    # -- several machines, one shared vault --------------------------------
+
+    def _second_machine(self) -> tuple[pathlib.Path, pathlib.Path]:
+        """A second source tree and its own (never cloned) vault."""
+        code_b = self.tmp / "code-b"
+        shutil.copytree(self.code, code_b)
+        return code_b, self.tmp / "vault-b"
+
+    def test_a_second_machine_appends_to_a_shared_remote(self):
+        # The bug this guards: a second machine built on its own unrelated
+        # genesis, the helper rejected the push as non-fast-forward, and the
+        # rejection never moved its branch back -- so it was rejected forever.
+        self.snapshot("--remote", str(self.remote))
+        a_tip = _git(self.remote, "rev-parse", BRANCH).stdout.strip()
+
+        code_b, vault_b = self._second_machine()
+        (code_b / "b-only.txt").write_bytes(b"from b\n")
+        rc, out, err = self.run_tool(
+            "--source", code_b, "--vault", vault_b, "--remote", str(self.remote)
+        )
+        self.assertEqual(rc, 0, err)
+        self.assertIn("push complete", out)
+
+        # one linear chain holding both machines' snapshots
+        self.assertEqual(
+            _git(self.remote, "rev-list", "--count", BRANCH).stdout.strip(), "2"
+        )
+        tip = _git(self.remote, "rev-parse", BRANCH).stdout.strip()
+        self.assertEqual(_git(self.remote, "rev-parse", f"{tip}^").stdout.strip(), a_tip)
+        self.assertIn(
+            "b-only.txt",
+            _git(self.remote, "ls-tree", "-r", "--name-only", BRANCH).stdout,
+        )
+
+    def test_a_machine_that_is_behind_fast_forwards_first(self):
+        self.snapshot("--remote", str(self.remote))
+        # machine B starts from the shared chain rather than its own genesis
+        _git(self.tmp, "clone", "-q", "-b", BRANCH, str(self.remote), str(self.vault))
+
+        # machine A moves the chain on
+        (self.code / "a2.txt").write_bytes(b"a2\n")
+        self.snapshot("--remote", str(self.remote))
+        a_tip = _git(self.remote, "rev-parse", BRANCH).stdout.strip()
+
+        # machine B snapshots: it must extend A's newest commit, not its stale one
+        (self.code / "b.txt").write_bytes(b"b\n")
+        rc, out, _ = self.snapshot("--remote", str(self.remote))
+        self.assertEqual(rc, 0)
+        self.assertIn(a_tip[:12], out)
+        self.assertEqual(
+            _git(self.remote, "rev-parse", f"{BRANCH}^").stdout.strip(), a_tip
+        )
+
+    def test_diverged_vaults_are_refused_without_changing_anything(self):
+        self.snapshot("--remote", str(self.remote))
+
+        code_b, vault_b = self._second_machine()
+        # B snapshots while offline, so it never sees the remote's commit
+        self.run_tool("--source", code_b, "--vault", vault_b)
+        b_before = _git(vault_b, "rev-parse", BRANCH).stdout.strip()
+
+        rc, _, err = self.run_tool(
+            "--source", code_b, "--vault", vault_b, "--remote", str(self.remote)
+        )
+        self.assertEqual(rc, 1)
+        self.assertIn("diverged", err)
+        # refusing is the whole point: nothing moved on either side
+        self.assertEqual(_git(vault_b, "rev-parse", BRANCH).stdout.strip(), b_before)
+        self.assertEqual(
+            _git(self.remote, "rev-list", "--count", BRANCH).stdout.strip(), "1"
+        )
+
+    def test_reset_to_remote_adopts_the_remote_chain(self):
+        self.snapshot("--remote", str(self.remote))
+        code_b, vault_b = self._second_machine()
+        self.run_tool("--source", code_b, "--vault", vault_b)
+        (code_b / "b-only.txt").write_bytes(b"from b\n")
+
+        rc, _, err = self.run_tool(
+            "--source", code_b,
+            "--vault", vault_b,
+            "--remote", str(self.remote),
+            "--reset-to-remote",
+        )
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(
+            _git(self.remote, "rev-list", "--count", BRANCH).stdout.strip(), "2"
+        )
+
+    def test_a_rejected_push_rolls_the_local_branch_back(self):
+        # A push the remote refuses must not leave the vault claiming a snapshot
+        # the remote never took -- that divergence is otherwise permanent,
+        # because the next run builds on the advanced branch and is refused
+        # again.
+        hook = self.remote / "hooks" / "pre-receive"
+        hook.write_bytes(b"#!/bin/sh\nexit 1\n")
+        hook.chmod(0o755)
+
+        rc, _, err = self.snapshot("--remote", self.remote.as_uri())
+        self.assertEqual(rc, 1)
+        self.assertIn("rolled back", err)
+
+        proc = _git(self.vault, "rev-parse", "-q", "--verify", f"refs/heads/{BRANCH}")
+        self.assertNotEqual(proc.returncode, 0)
+
+    def test_a_push_that_loses_a_race_is_reparented_and_retried(self):
+        # Two machines can land between this run's fetch and its push.  The
+        # loser's commit is rejected as non-fast-forward; because a snapshot is
+        # just a tree it is re-committed on the new tip and pushed again, so the
+        # chain stays linear and nothing is lost.
+        self.snapshot("--remote", str(self.remote))
+        r = _git(self.remote, "rev-parse", BRANCH).stdout.strip()
+
+        _git(self.tmp, "clone", "-q", "-b", BRANCH, str(self.remote), str(self.vault))
+        (self.code / "b.txt").write_bytes(b"b\n")
+
+        _git(self.remote, "config", "user.name", "Other")
+        _git(self.remote, "config", "user.email", "other@example.com")
+        real_git = snap.git
+        state = {"raced": False}
+
+        def racing_git(git_dir, work_tree, args, **kwargs):
+            # just before the push, another machine lands a commit on the remote
+            if args and args[0] == "push" and not state["raced"]:
+                state["raced"] = True
+                tree = _git(self.remote, "rev-parse", f"{r}^{{tree}}").stdout.strip()
+                rival = _git(
+                    self.remote, "commit-tree", tree, "-p", r, "-m", "rival"
+                ).stdout.strip()
+                _git(self.remote, "update-ref", f"refs/heads/{BRANCH}", rival)
+            return real_git(git_dir, work_tree, args, **kwargs)
+
+        with unittest.mock.patch.object(snap, "git", racing_git):
+            rc, out, err = self.snapshot("--remote", str(self.remote))
+        self.assertEqual(rc, 0, err)
+        self.assertIn("re-parenting the snapshot and retrying", out)
+
+        self.assertEqual(
+            _git(self.remote, "rev-list", "--count", BRANCH).stdout.strip(), "3"
+        )
+        # the retried snapshot sits on top of the rival's commit, not beside it
+        rival = _git(self.remote, "rev-parse", f"{BRANCH}^").stdout.strip()
+        self.assertEqual(_git(self.remote, "rev-parse", f"{rival}^").stdout.strip(), r)
+
     # -- committer identity ------------------------------------------------
 
     def test_identity_is_inherited_from_the_source_repo(self):

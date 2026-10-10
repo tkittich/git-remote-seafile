@@ -40,6 +40,10 @@ Atomicity
   concurrent snapshot loses loudly instead of silently clobbering.
 * A vault-local lock file keeps two runs from interleaving.
 * The push is a single ref update, guarded by the helper's distributed lease.
+* A **failed push rolls the local branch back** to what the remote actually has,
+  so the vault never claims a snapshot the remote never took.  Without this, a
+  rejected push left the branch advanced and every later run re-pushed the same
+  doomed commit.
 
 Updates
 =======
@@ -48,6 +52,16 @@ of snapshots.  Only changed blobs are uploaded: Git is content-addressed, so a
 snapshot that changed one file in a 486 KB tree pushed 31 KB, and a snapshot
 that changed nothing pushes nothing at all (no commit is created).  The vault's
 index keeps a stat cache, so unchanged files are not re-hashed either.
+
+Several machines
+================
+When ``--remote`` is given the remote tip is fetched **before** the snapshot is
+built, and the new commit is based on that tip, so several machines can append
+to one shared vault.  A machine that is behind fast-forwards first; one that is
+ahead (snapshots taken offline) simply pushes.  If the two have genuinely
+diverged the run stops with an explanation and no changes -- pass
+``--reset-to-remote`` to adopt the remote chain deliberately.  A push that loses
+a race with another machine is re-parented on the new tip and retried once.
 
 Because it is ordinary Git history, "roll back to last Tuesday" is ``git show``,
 ``git diff``, or a checkout of an older commit -- not a restore from a
@@ -338,19 +352,168 @@ def current_tip(git_dir: Path, work_tree: Path, branch: str) -> str | None:
     return proc.stdout.strip() or None
 
 
-def build_snapshot(
+def is_ancestor(git_dir: Path, work_tree: Path, older: str, newer: str) -> bool:
+    """True iff ``older`` is an ancestor of ``newer`` (equal counts)."""
+    proc = git(
+        git_dir,
+        work_tree,
+        ["merge-base", "--is-ancestor", older, newer],
+        cwd=work_tree,
+        check=False,
+    )
+    return proc.returncode == 0
+
+
+def set_branch(
+    git_dir: Path, work_tree: Path, branch: str, commit: str, expected: str | None
+) -> None:
+    """Point ``refs/heads/<branch>`` at ``commit``.
+
+    ``expected`` is the compare-and-swap guard: when given, the update only
+    happens if the branch still points there, so a racing writer loses loudly
+    instead of being clobbered.  ``None`` means an unconditional update, used
+    when deliberately adopting the remote's history.
+    """
+    args = ["update-ref", f"refs/heads/{branch}", commit]
+    if expected:
+        args.append(expected)
+    git(git_dir, work_tree, args, cwd=work_tree)
+
+
+def delete_branch(git_dir: Path, work_tree: Path, branch: str, expected: str) -> None:
+    git(
+        git_dir,
+        work_tree,
+        ["update-ref", "-d", f"refs/heads/{branch}", expected],
+        cwd=work_tree,
+        check=False,
+    )
+
+
+def fetch_remote_tip(
+    git_dir: Path, work_tree: Path, remote: str, branch: str
+) -> str | None:
+    """Fetch ``refs/heads/<branch>`` from ``remote`` and return its commit.
+
+    ``None`` means the remote simply has no such branch yet -- a brand-new
+    vault remote, which is not an error.  Any *other* fetch failure is raised:
+    carrying on after a network error would build a snapshot on a stale base
+    and have it rejected at push time, with the reason buried in the push.
+    """
+    proc = git(
+        git_dir,
+        work_tree,
+        ["fetch", "--quiet", "--no-tags", remote, f"refs/heads/{branch}"],
+        cwd=work_tree,
+        check=False,
+    )
+    if proc.returncode != 0:
+        blob = f"{proc.stderr}\n{proc.stdout}".lower()
+        if "couldn't find remote ref" in blob or "remote ref does not exist" in blob:
+            return None
+        raise SnapshotError(
+            f"could not fetch '{branch}' from {remote} (rc={proc.returncode})\n"
+            f"{(proc.stderr or proc.stdout).strip()}"
+        )
+    out = git(
+        git_dir,
+        work_tree,
+        ["rev-parse", "--verify", "FETCH_HEAD^{commit}"],
+        cwd=work_tree,
+        check=False,
+    )
+    return out.stdout.strip() or None
+
+
+DIVERGENCE_HELP = (
+    "the local vault and the remote have diverged: each holds snapshots the "
+    "other does not.\n"
+    "That happens when this machine snapshot while offline and another machine "
+    "pushed to the same remote in the meantime.\n"
+    "Nothing has been changed.  To resolve, either:\n"
+    "  * keep the remote chain and re-snapshot this tree on top of it --\n"
+    "    re-run with --reset-to-remote (the local-only snapshots are dropped,\n"
+    "    but the current tree is captured again by the new snapshot); or\n"
+    "  * keep this machine's chain -- push it to a different --remote, or to a\n"
+    "    different --branch."
+)
+
+
+def reconcile_with_remote(
     git_dir: Path,
     work_tree: Path,
     branch: str,
+    tip: str | None,
+    *,
+    reset_to_remote: bool,
+    move: bool,
+) -> str | None:
+    """Decide which commit the next snapshot should extend, after a fetch.
+
+    The vault is an append-only log of tree states, so the correct base is the
+    *remote* tip whenever this machine can fast-forward to it.  Building on the
+    local branch instead is what breaks a shared vault: a second machine starts
+    from its own unrelated genesis, its push is rejected as non-fast-forward,
+    and because the rejection never moves its branch back it is rejected again
+    on every later run.
+
+    Returns the commit to use as the new snapshot's parent, and (unless ``move``
+    is false, as in a dry run) brings the local branch in line with it.
+    """
+    local = current_tip(git_dir, work_tree, branch)
+
+    if tip is None:
+        # Nothing on the remote yet: the local branch is all there is.
+        return local
+
+    if local is None or local == tip:
+        if move and local is None:
+            set_branch(git_dir, work_tree, branch, tip, None)
+        return tip
+
+    if is_ancestor(git_dir, work_tree, local, tip):
+        # This machine is behind: fast-forward, then extend the remote chain.
+        if move:
+            set_branch(git_dir, work_tree, branch, tip, local)
+        return tip
+
+    if is_ancestor(git_dir, work_tree, tip, local):
+        # This machine is ahead -- snapshots taken while offline.  Keep them;
+        # the push fast-forwards.
+        return local
+
+    if not reset_to_remote:
+        raise SnapshotError(DIVERGENCE_HELP)
+    if move:
+        set_branch(git_dir, work_tree, branch, tip, None)
+    return tip
+
+
+def commit_tree(
+    git_dir: Path, work_tree: Path, tree: str, parent: str | None, message: str
+) -> str:
+    """Write a commit object for ``tree`` on top of ``parent``."""
+    args = ["commit-tree", tree]
+    if parent:
+        args += ["-p", parent]
+    args += ["-m", message]
+    return git(git_dir, work_tree, args, cwd=work_tree).stdout.strip()
+
+
+def build_snapshot(
+    git_dir: Path,
+    work_tree: Path,
+    parent: str | None,
     excludes: list[str],
     message: str,
-) -> tuple[str, str | None, str | None]:
+) -> tuple[str, str | None]:
     """Stage the whole tree into the vault index and write a commit object.
 
-    Returns ``(tree, commit, parent)``, where ``commit`` is ``None`` when the
-    tree is identical to the previous snapshot -- an unchanged run should not
-    pile up empty commits.  The branch is *not* moved here: that is the caller's
-    job, so a dry run can stop one step short.
+    Returns ``(tree, commit)``, where ``commit`` is ``None`` when the tree is
+    identical to ``parent`` -- an unchanged run should not pile up empty
+    commits.  ``parent`` is passed in rather than read from the branch, because
+    the caller may have just re-based on the remote tip.  The branch is *not*
+    moved here: that is the caller's job, so a dry run can stop one step short.
     """
     git(git_dir, work_tree, ["add", "-A", "-f", "."], cwd=work_tree)
 
@@ -364,21 +527,15 @@ def build_snapshot(
         )
 
     tree = git(git_dir, work_tree, ["write-tree"], cwd=work_tree).stdout.strip()
-    parent = current_tip(git_dir, work_tree, branch)
 
     if parent:
         parent_tree = git(
             git_dir, work_tree, ["rev-parse", f"{parent}^{{tree}}"], cwd=work_tree
         ).stdout.strip()
         if parent_tree == tree:
-            return tree, None, parent
+            return tree, None
 
-    commit_args = ["commit-tree", tree]
-    if parent:
-        commit_args += ["-p", parent]
-    commit_args += ["-m", message]
-    commit = git(git_dir, work_tree, commit_args, cwd=work_tree).stdout.strip()
-    return tree, commit, parent
+    return tree, commit_tree(git_dir, work_tree, tree, parent, message)
 
 
 def describe_tree(git_dir: Path, work_tree: Path, tree: str) -> tuple[int, int]:
@@ -432,6 +589,80 @@ def human_bytes(n: int) -> str:
             return f"{value:.1f} {unit}" if unit != "B" else f"{int(value)} B"
         value /= 1024
     return f"{n} B"
+
+
+def _looks_like_non_fast_forward(output: str) -> bool:
+    """Whether a push failed because the remote moved ahead of us."""
+    low = output.lower()
+    return (
+        "non-fast-forward" in low
+        or "fetch first" in low
+        or "[rejected]" in low
+    )
+
+
+def push_snapshot(
+    git_dir: Path,
+    work_tree: Path,
+    remote: str,
+    branch: str,
+    commit: str,
+    tree: str,
+    base: str | None,
+    message: str,
+) -> None:
+    """Push the snapshot, re-parenting once if the remote moved under us.
+
+    Two machines snapshotting the same vault can race between this run's fetch
+    and its push; the helper rejects the loser with a non-fast-forward.  Since
+    a snapshot is just a tree, the loser re-commits that tree on top of the new
+    remote tip and pushes again -- no data is lost and the chain stays linear.
+
+    On any other failure the local branch is rolled back to what the remote
+    actually has, so the vault never claims a snapshot the remote never took.
+    That rollback is also what makes a plain re-run the correct remedy: the next
+    run fetches the true tip and appends to it.
+    """
+    spec = f"refs/heads/{branch}:refs/heads/{branch}"
+    current = commit
+    for attempt in (1, 2):
+        print(f"pushing to {remote} ...")
+        proc = git(
+            git_dir, work_tree, ["push", remote, spec], cwd=work_tree, check=False
+        )
+        if proc.returncode == 0:
+            print("push complete")
+            return
+
+        sys.stdout.write(proc.stdout or "")
+        sys.stderr.write(proc.stderr or "")
+
+        if attempt == 1 and _looks_like_non_fast_forward(
+            f"{proc.stdout}\n{proc.stderr}"
+        ):
+            tip = fetch_remote_tip(git_dir, work_tree, remote, branch)
+            if tip and tip != base:
+                print(
+                    f"remote moved to {tip[:12]}; re-parenting the snapshot and "
+                    f"retrying"
+                )
+                rebased = commit_tree(git_dir, work_tree, tree, tip, message)
+                set_branch(git_dir, work_tree, branch, rebased, current)
+                current, base = rebased, tip
+                continue
+        break
+
+    if base:
+        set_branch(git_dir, work_tree, branch, base, current)
+        rolled_back = base[:12]
+    else:
+        delete_branch(git_dir, work_tree, branch, current)
+        rolled_back = "(deleted)"
+    raise SnapshotError(
+        f"push to {remote} failed.\n"
+        f"The local branch was rolled back to {rolled_back} so the vault still "
+        f"matches the remote; nothing was lost.  Re-run to retry."
+    )
 
 
 def _checkout(repo: Path, rev: str, *, detach: bool = False) -> None:
@@ -586,7 +817,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="build the snapshot but do not move the branch or push "
         "(the vault is still initialised if missing, so its location and "
-        "config can be inspected)",
+        "config can be inspected; the remote is still fetched, so the diff is "
+        "shown against the real base)",
+    )
+    parser.add_argument(
+        "--reset-to-remote",
+        action="store_true",
+        help="if the local vault and the remote have diverged, discard the "
+        "local-only snapshots and continue from the remote chain instead of "
+        "refusing",
     )
     return parser.parse_args(argv)
 
@@ -635,8 +874,23 @@ def main(argv: list[str] | None = None) -> int:
         message = args.message or f"snapshot {datetime.now().isoformat(timespec='seconds')}"
 
         with VaultLock(git_dir):
-            tree, commit, parent = build_snapshot(
-                git_dir, source, args.branch, args.exclude, message
+            # Decide the base *after* consulting the remote, so a second machine
+            # appends to the shared chain rather than building an unrelated one.
+            if args.remote:
+                tip = fetch_remote_tip(git_dir, source, args.remote, args.branch)
+                base = reconcile_with_remote(
+                    git_dir,
+                    source,
+                    args.branch,
+                    tip,
+                    reset_to_remote=args.reset_to_remote,
+                    move=not args.dry_run,
+                )
+            else:
+                base = current_tip(git_dir, source, args.branch)
+
+            tree, commit = build_snapshot(
+                git_dir, source, base, args.exclude, message
             )
             count, size = describe_tree(git_dir, source, tree)
 
@@ -644,7 +898,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"vault  : {vault}")
             print(f"branch : {args.branch}")
             print(f"files  : {count} ({human_bytes(size)})")
-            print(f"base   : {parent[:12] if parent else '(first snapshot)'}")
+            print(f"base   : {base[:12] if base else '(first snapshot)'}")
 
             gitlinks = find_gitlinks(git_dir, source, tree)
             if gitlinks:
@@ -663,8 +917,8 @@ def main(argv: list[str] | None = None) -> int:
             unchanged = commit is None
             if unchanged:
                 print("no changes since the last snapshot")
-            elif parent:
-                stat = diff_stat(git_dir, source, parent, tree)
+            elif base:
+                stat = diff_stat(git_dir, source, base, tree)
                 if stat:
                     print(stat)
 
@@ -681,25 +935,20 @@ def main(argv: list[str] | None = None) -> int:
             if unchanged:
                 print("\nnothing to commit; branch left where it is")
             else:
-                ref_args = ["update-ref", f"refs/heads/{args.branch}", commit]
-                if parent:
-                    ref_args.append(parent)
-                git(git_dir, source, ref_args, cwd=source)
+                set_branch(git_dir, source, args.branch, commit, base)
                 print(f"\nmoved refs/heads/{args.branch} -> {commit[:12]}")
 
             if args.remote:
-                print(f"pushing to {args.remote} ...")
-                git(
+                push_snapshot(
                     git_dir,
                     source,
-                    [
-                        "push",
-                        args.remote,
-                        f"refs/heads/{args.branch}:refs/heads/{args.branch}",
-                    ],
-                    cwd=source,
+                    args.remote,
+                    args.branch,
+                    commit,
+                    tree,
+                    base,
+                    message,
                 )
-                print("push complete")
             else:
                 print("no --remote given; snapshot kept locally")
         return 0
