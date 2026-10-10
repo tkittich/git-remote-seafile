@@ -30,6 +30,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 import unittest.mock
 
@@ -480,6 +481,14 @@ class MultiMachineTests(_SnapshotFixture):
         self.snapshot("--remote", str(self.remote))
 
         code_b, vault_b = self._second_machine()
+        # B's tree must differ from A's: two commits of the *same* tree, made
+        # with the same identity inside the same wall-clock second (the
+        # default message's timestamp has one-second granularity), are the
+        # same commit object -- and then the vaults are legitimately not
+        # divergent, so the refusal this test exists for cannot happen.  The
+        # sibling reset-to-remote test below writes its marker for the same
+        # reason.
+        (code_b / "b-only.txt").write_bytes(b"from b\n")
         # B snapshots while offline, so it never sees the remote's commit
         self.run_tool("--source", code_b, "--vault", vault_b)
         b_before = _git(vault_b, "rev-parse", BRANCH).stdout.strip()
@@ -570,6 +579,38 @@ class PushRaceTests(_SnapshotFixture):
         # the retried snapshot sits on top of the rival's commit, not beside it
         rival = _git(self.remote, "rev-parse", f"{BRANCH}^").stdout.strip()
         self.assertEqual(_git(self.remote, "rev-parse", f"{rival}^").stdout.strip(), r)
+
+    def test_a_fetch_failure_during_the_retry_still_rolls_back(self):
+        # The rollback is the invariant that makes a re-run the correct remedy,
+        # so it must survive a failure in the retry itself: the push is
+        # rejected, the tool re-fetches the tip to look for a race, and that
+        # fetch dies (a network blip is exactly when this happens).  The
+        # branch used to stay advanced at the rejected commit, which read as
+        # permanent divergence on the next run.
+        hook = self.remote / "hooks" / "pre-receive"
+        hook.write_bytes(b"#!/bin/sh\nexit 1\n")
+        hook.chmod(0o755)
+
+        real_fetch = snap.fetch_remote_tip
+        calls = {"n": 0}
+
+        def fetch_that_dies_on_retry(*args, **kwargs):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return real_fetch(*args, **kwargs)  # main()'s reconcile fetch
+            raise snap.SnapshotError("network down")
+
+        with unittest.mock.patch.object(
+            snap, "fetch_remote_tip", side_effect=fetch_that_dies_on_retry
+        ):
+            rc, _, err = self.snapshot("--remote", self.remote.as_uri())
+
+        self.assertEqual(calls["n"], 2)
+        self.assertEqual(rc, 1)
+        self.assertIn("could not re-check the remote tip", err)
+        self.assertIn("rolled back", err)
+        proc = _git(self.vault, "rev-parse", "-q", "--verify", f"refs/heads/{BRANCH}")
+        self.assertNotEqual(proc.returncode, 0)
 
 class CommitterIdentityTests(_SnapshotFixture):
     """Who commits in the vault: the source's identity, never an inherited lie."""
@@ -751,6 +792,22 @@ class CredentialWarningTests(_SnapshotFixture):
         self.assertEqual(rc, 0)
         self.assertNotIn("look like credentials", out)
 
+    def test_location_patterns_match_at_any_depth(self):
+        # .ssh/* and .aws/credentials name a *location*, so they must match
+        # below the tree root too -- fnmatch anchors at the start, which used
+        # to make them root-only and blind to deploy/.ssh/known_hosts.
+        self.assertEqual(
+            snap.find_secrets(
+                ["deploy/.ssh/known_hosts", "infra/.aws/credentials"]
+            ),
+            ["deploy/.ssh/known_hosts", "infra/.aws/credentials"],
+        )
+        (self.code / "deploy" / ".ssh").mkdir(parents=True)
+        (self.code / "deploy" / ".ssh" / "known_hosts").write_bytes(b"host key\n")
+        rc, out, _ = self.snapshot("--dry-run")
+        self.assertEqual(rc, 0)
+        self.assertIn("deploy/.ssh/known_hosts", out)
+
 class StaleLockTests(_SnapshotFixture):
     """A lock left by a dead run is reclaimed; a live or foreign one is not."""
 
@@ -778,6 +835,42 @@ class StaleLockTests(_SnapshotFixture):
         rc, _, err = self.snapshot("--dry-run")
         self.assertEqual(rc, 1)
         self.assertIn("another snapshot is running", err)
+
+    def test_an_unparseable_lock_is_reclaimed_once_it_is_old(self):
+        # A run that died between creating the lock and writing it leaves an
+        # empty file that can never name its owner.  A fresh one may be a run
+        # mid-write, so it is respected; an old one is reclaimed.
+        self.snapshot()
+        lock = self.vault / ".git" / "seafile-snapshot.lock"
+        lock.write_bytes(b"")
+        rc, _, err = self.snapshot("--dry-run")
+        self.assertEqual(rc, 1)
+        self.assertIn("another snapshot is running", err)
+
+        old = time.time() - (snap._UNPARSEABLE_LOCK_GRACE_SECONDS + 5)
+        os.utime(lock, (old, old))
+        rc, out, err = self.snapshot("--dry-run")
+        self.assertEqual(rc, 0, err)
+        self.assertIn("unparseable lock", out)
+
+    @unittest.skipUnless(os.name == "nt", "exercises the Win32 API directly")
+    def test_an_access_denied_process_is_not_declared_dead(self):
+        # OpenProcess fails with ERROR_ACCESS_DENIED for a live process owned
+        # by another (elevated) user; reading that as "dead" would let a
+        # concurrent run steal its lock.  Only "no such process" proves death.
+        import ctypes
+
+        with unittest.mock.patch.object(
+            ctypes.windll.kernel32, "OpenProcess", return_value=0
+        ):
+            with unittest.mock.patch.object(
+                ctypes.windll.kernel32, "GetLastError", return_value=5
+            ):  # ERROR_ACCESS_DENIED
+                self.assertTrue(snap.pid_is_alive(1234))
+            with unittest.mock.patch.object(
+                ctypes.windll.kernel32, "GetLastError", return_value=87
+            ):  # ERROR_INVALID_PARAMETER: no such process
+                self.assertFalse(snap.pid_is_alive(1234))
 
 class RestoreVerificationTests(_SnapshotFixture):
     """--restore proves the bytes, by the only check that cannot be fooled."""
@@ -943,11 +1036,42 @@ class VaultMemoryTests(_SnapshotFixture):
 
     def test_an_explicit_flag_overrides_what_the_vault_remembers(self):
         self.snapshot("--remote", self.remote, "--exclude", "dist")
-        # --no-push wins over the remembered remote.
+        # --no-push wins over the remembered remote for THIS run...
         rc, out, err = self.run_tool(
             "--source", self.code, "--vault", self.vault, "--no-push"
         )
         self.assertEqual(rc, 0, err)
+        self.assertIn("kept locally", out)
+        # ...but it is a per-run override, not a clearing: the scheduled job's
+        # remote survives, and a bare re-run still pushes.  (A regression here
+        # erased the memory, and this test still passed -- it only looked at
+        # the run that did the damage.)
+        self.assertEqual(
+            snap._read_config_key(self.vault / ".git", "snapshot.remote"),
+            str(self.remote),
+        )
+        rc, out, err = self.run_tool("--source", self.code, "--vault", self.vault)
+        self.assertEqual(rc, 0, err)
+        self.assertIn("push", out.lower())
+
+    def test_no_push_suppresses_a_remembered_code_remote_too(self):
+        # --no-push promises "pushes nothing"; a remembered --code-remote is
+        # also a push, and it used to fire anyway.  The remote must accept the
+        # first push, or the run aborts before it can remember anything.
+        origin = self.tmp / "code-origin.git"
+        _git(self.tmp, "init", "-q", "--bare", str(origin))
+        _git(self.code, "remote", "add", "origin", str(origin))
+        _git(self.code, "push", "-q", "-u", "origin", "main")
+        self.snapshot("--code-remote", "origin")
+        self.assertEqual(
+            snap._read_config_key(self.vault / ".git", "snapshot.coderemote"),
+            "origin",
+        )
+        rc, out, err = self.run_tool(
+            "--source", self.code, "--vault", self.vault, "--no-push"
+        )
+        self.assertEqual(rc, 0, err)
+        self.assertNotIn("pushing source repo", out)
         self.assertIn("kept locally", out)
 
     def test_a_dry_run_does_not_write_the_remembered_settings(self):
@@ -1022,6 +1146,197 @@ class ArgumentValidationTests(unittest.TestCase):
         )
         self.assertEqual(rc, 1)
         self.assertIn("--dry-run does not apply to --restore", err)
+
+    def test_positional_source_with_restore_is_refused(self):
+        # The restore tree comes from the remote; a positional SOURCE here
+        # would be silently ignored, which is the failure class this guard
+        # exists for.
+        rc, _, err = self.run_tool(
+            "--restore", "--remote", "seafile://code/x", "--into", "C:/tmp/x",
+            "C:/somewhere",
+        )
+        self.assertEqual(rc, 1)
+        self.assertIn("SOURCE (positional) does not apply to --restore", err)
+
+    def test_source_flag_with_restore_is_refused(self):
+        rc, _, err = self.run_tool(
+            "--restore", "--remote", "seafile://code/x", "--into", "C:/tmp/x",
+            "--source", "C:/somewhere",
+        )
+        self.assertEqual(rc, 1)
+        self.assertIn("--source does not apply to --restore", err)
+
+
+class SyncedFolderGuardTests(_SnapshotFixture):
+    """The tool's own synced-library guard, for source, vault and restore."""
+
+    def run_tool(self, *argv: object) -> tuple[int, str, str]:
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = snap.main([str(a) for a in argv])
+        return rc, out.getvalue(), err.getvalue()
+
+    def test_both_the_source_and_the_vault_are_checked(self):
+        checked: list[pathlib.Path] = []
+        real = snap.directory_is_seafile_synced
+
+        def recording(path: pathlib.Path) -> bool:
+            checked.append(path)
+            return real(path)
+
+        with unittest.mock.patch.object(
+            snap, "directory_is_seafile_synced", side_effect=recording
+        ):
+            rc, _, err = self.snapshot()
+        self.assertEqual(rc, 0, err)
+        self.assertIn(self.code.resolve(), checked)
+        self.assertIn(self.vault.resolve(), checked)
+
+    def test_a_synced_vault_is_refused(self):
+        with unittest.mock.patch.object(
+            snap,
+            "directory_is_seafile_synced",
+            side_effect=lambda p: p == self.vault.resolve(),
+        ):
+            rc, _, err = self.snapshot()
+        self.assertEqual(rc, 1)
+        self.assertIn("vault is inside a Seafile-synced library", err)
+
+    def test_a_synced_source_is_refused(self):
+        with unittest.mock.patch.object(
+            snap,
+            "directory_is_seafile_synced",
+            side_effect=lambda p: p == self.code.resolve(),
+        ):
+            rc, _, err = self.snapshot()
+        self.assertEqual(rc, 1)
+        self.assertIn("source is inside a Seafile-synced library", err)
+
+    def test_a_missing_seafile_client_leaves_the_guard_off_but_the_run_working(self):
+        # The lazy import degrades to "cannot tell" when the package is not
+        # importable (a source checkout without pip install); the run must
+        # still work, which is why the degradation is silent -- and why the
+        # wiring above is pinned: a regression to always-False would ship
+        # without this suite noticing anything but these tests.
+        with unittest.mock.patch.dict(
+            sys.modules,
+            {"git_remote_seafile": None, "git_remote_seafile.safety": None},
+        ):
+            self.assertFalse(snap.directory_is_seafile_synced(self.code))
+        with unittest.mock.patch.object(
+            snap, "directory_is_seafile_synced", return_value=False
+        ):
+            rc, _, err = self.snapshot()
+        self.assertEqual(rc, 0, err)
+
+    def test_a_synced_restore_destination_is_refused(self):
+        self.snapshot("--remote", str(self.remote))
+        with unittest.mock.patch.object(
+            snap, "directory_is_seafile_synced", return_value=True
+        ):
+            rc, _, err = self.restore_to(self.restored)
+        self.assertEqual(rc, 1)
+        self.assertIn("restore destination is inside a Seafile-synced library", err)
+        self.assertFalse(self.restored.exists() and any(self.restored.iterdir()))
+
+
+class ConfigPlumbingTests(_SnapshotFixture):
+    """The vault's remembered settings: read once, written only when changed."""
+
+    def _config_writes(self):
+        """A spy around subprocess.run recording local config *writes*."""
+        calls: list[list[str]] = []
+        real_run = snap.subprocess.run
+
+        def spy(cmd, *args, **kwargs):
+            if (
+                isinstance(cmd, list)
+                and "config" in cmd
+                and "--local" in cmd
+                and not any(
+                    str(a).startswith("--get") or str(a) in ("--list", "--null")
+                    for a in cmd
+                )
+            ):
+                calls.append([str(c) for c in cmd])
+            return real_run(cmd, *args, **kwargs)
+
+        return calls, spy
+
+    def test_a_settled_run_writes_no_config(self):
+        self.snapshot("--remote", str(self.remote))
+        (self.code / "README.md").write_bytes(b"changed\n")
+        calls, spy = self._config_writes()
+        with unittest.mock.patch.object(snap.subprocess, "run", side_effect=spy):
+            rc, _, err = self.snapshot("--remote", str(self.remote))
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(calls, [])
+
+    def test_changing_one_setting_writes_only_that_key(self):
+        self.snapshot("--remote", str(self.remote), "--branch", BRANCH)
+        calls, spy = self._config_writes()
+        with unittest.mock.patch.object(snap.subprocess, "run", side_effect=spy):
+            rc, _, err = self.snapshot(
+                "--remote", str(self.remote), "--branch", "other"
+            )
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(
+            calls,
+            [["git", "-C", str(self.vault), "config", "--local",
+              "snapshot.branch", "other"]],
+        )
+
+    def test_shrinking_a_multi_valued_key_drops_the_old_values(self):
+        self.snapshot("--exclude", "dist", "--exclude", "node_modules")
+        self.assertEqual(
+            _git(self.vault, "config", "--local", "--get-all", "snapshot.exclude")
+            .stdout.split(),
+            ["dist", "node_modules"],
+        )
+        rc, _, err = self.snapshot("--exclude", "dist")
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(
+            _git(self.vault, "config", "--local", "--get-all", "snapshot.exclude")
+            .stdout.split(),
+            ["dist"],
+        )
+
+    def test_an_exclude_backslash_is_data_not_a_separator(self):
+        # _same_config_value normalises separators for snapshot.source only;
+        # for every other key a backslash is data, so a\b and a/b are
+        # different settings and the rewrite actually happens.
+        self.snapshot("--exclude", "a\\b")
+        self.assertEqual(
+            _git(self.vault, "config", "--local", "--get-all", "snapshot.exclude")
+            .stdout.split(),
+            ["a\\b"],
+        )
+        rc, _, err = self.snapshot("--exclude", "a/b")
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(
+            _git(self.vault, "config", "--local", "--get-all", "snapshot.exclude")
+            .stdout.split(),
+            ["a/b"],
+        )
+
+    def test_a_failing_config_write_is_not_silent(self):
+        self.snapshot("--remote", str(self.remote))
+        real_run = snap.subprocess.run
+
+        def failing_write(cmd, *args, **kwargs):
+            if "config" in cmd and "--local" in cmd and "--list" not in cmd:
+                return subprocess.CompletedProcess(cmd, 128, "", "cannot lock")
+            return real_run(cmd, *args, **kwargs)
+
+        # A settled run writes nothing, so change a setting to force a write:
+        # a silent failure here would leave the vault remembering "snapshot"
+        # while this run believed it had recorded "other".
+        with unittest.mock.patch.object(
+            snap.subprocess, "run", side_effect=failing_write
+        ):
+            rc, _, err = self.snapshot("--remote", str(self.remote), "--branch", "other")
+        self.assertEqual(rc, 1)
+        self.assertIn("could not update the vault's memory", err)
 
 
 if __name__ == "__main__":

@@ -106,7 +106,9 @@ Usage
     cd C:/code/myproject
     python tools/seafile_snapshot.py
 
-    # what that run would do, without writing anything
+    # what that run would do: nothing is pushed, the branch does not move, and
+    # the remembered settings are left alone -- but the vault is initialised if
+    # missing and the snapshot is built into its index, so the diff is real
     python tools/seafile_snapshot.py --dry-run
 
     # the same, said explicitly
@@ -130,9 +132,12 @@ specific first:
 4. **the current directory** for the source, ``'<source>-vault'`` for the vault.
 
 So the first run is the only one that needs an argument, and every explicit flag
-is written back to the vault for next time.  ``--no-push`` overrides any
-remembered or derived remote; ``--dry-run`` previews without writing anything,
-including the remembered settings.
+is written back to the vault for next time.  ``--no-push`` overrides the
+remembered or derived remote *for that run* -- it pushes nothing (the vault and
+the code repo alike) and leaves the vault's memory alone, so a one-off local run
+does not unhook a scheduled job; ``--dry-run`` previews the run (the vault is
+initialised if missing and the snapshot is built into its index) without moving
+the branch, pushing, or touching the remembered settings.
 
 The recommended exclusions are **never applied silently**.  A snapshot is a
 backup, and the one failure that cannot be forgiven is a backup that quietly
@@ -189,10 +194,16 @@ import os
 import socket
 import subprocess
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 
 DEFAULT_BRANCH = "snapshot"
+
+#: How old an unparseable lock file must be before it is reclaimed: a live run
+#: writes its identity immediately after creating the file, so a fresh one may
+#: simply be mid-write.
+_UNPARSEABLE_LOCK_GRACE_SECONDS = 30.0
 
 RECOMMENDED_EXCLUDES = (
     "node_modules",
@@ -307,7 +318,9 @@ def _config(path: Path, key: str) -> str:
     return proc.stdout.strip()
 
 
-def ensure_identity(vault: Path, source: Path) -> None:
+def ensure_identity(
+    vault: Path, source: Path, vault_config: dict[str, list[str]] | None = None
+) -> None:
     """Give the vault a committer identity, inheriting the source repo's.
 
     A vault created by ``git init`` has none of its own, so it falls back to the
@@ -323,9 +336,11 @@ def ensure_identity(vault: Path, source: Path) -> None:
 
     Both configs are read in one call each (see :func:`_read_local_config_map`),
     and a value that is already correct is not rewritten -- the common case
-    after the first run is that there is nothing to do.
+    after the first run is that there is nothing to do.  Pass ``vault_config``
+    (a map already read for this vault) to avoid a second read of it.
     """
-    vault_config = _read_local_config_map(vault)
+    if vault_config is None:
+        vault_config = _read_local_config_map(vault)
     source_config = _read_local_config_map(source)
     for key in ("user.name", "user.email"):
         have = vault_config.get(key) or []
@@ -378,7 +393,11 @@ BYTE_EXACT_ATTRIBUTES = (
 )
 
 
-def ensure_byte_exact(vault: Path, git_dir: Path) -> None:
+def ensure_byte_exact(
+    vault: Path,
+    git_dir: Path,
+    vault_config: dict[str, list[str]] | None = None,
+) -> None:
     """Stop git from rewriting line endings inside the vault.
 
     Git for Windows ships ``core.autocrlf=true`` in its *system* config, so a
@@ -391,13 +410,15 @@ def ensure_byte_exact(vault: Path, git_dir: Path) -> None:
     outranks any ``.gitattributes`` in the source tree.
 
     The two config values are only written when they are not already correct,
-    so a vault that has been snapshotted before costs no subprocesses here.
-    Reading the *local* config is what makes that safe: a global
-    ``core.autocrlf`` is irrelevant, because the vault has to pin its own.
+    so a vault that has been snapshotted before costs no *writes* here (one
+    config read -- see :func:`_read_local_config_map`).  Reading the *local*
+    config is what makes that safe: a global ``core.autocrlf`` is irrelevant,
+    because the vault has to pin its own.
     """
-    current = _read_local_config_map(vault)
+    if vault_config is None:
+        vault_config = _read_local_config_map(vault)
     for key in ("core.autocrlf", "core.safecrlf"):
-        have = (current.get(key) or [""])[0]
+        have = (vault_config.get(key) or [""])[0]
         if have == "false":
             continue
         git(git_dir, vault, ["config", key, "false"], cwd=vault)
@@ -428,10 +449,15 @@ def pid_is_alive(pid: int) -> bool:
 
         process_query_limited_information = 0x1000
         still_active = 259
+        error_invalid_parameter = 87
         kernel32 = ctypes.windll.kernel32
         handle = kernel32.OpenProcess(process_query_limited_information, False, pid)
         if not handle:
-            return False
+            # A live process owned by another (elevated) user denies
+            # OpenProcess outright; treating that as "dead" would let a
+            # concurrent run steal its lock.  Only "no such process" proves
+            # death -- anything else reads as alive (see the docstring).
+            return kernel32.GetLastError() != error_invalid_parameter
         try:
             code = ctypes.c_ulong()
             if not kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
@@ -476,7 +502,23 @@ class VaultLock:
     def _reclaim_if_stale(self) -> bool:
         holder = self._holder()
         if holder is None:
-            return False
+            # An empty or unreadable lock file is a run that died between
+            # creating it and writing its identity.  A *live* run's lock is
+            # written immediately after creation, so a fresh unparseable lock
+            # may be a run mid-write -- require some age before reclaiming.
+            try:
+                age = time.time() - self.path.stat().st_mtime
+            except OSError:
+                return False
+            if age < _UNPARSEABLE_LOCK_GRACE_SECONDS:
+                return False
+            try:
+                self.path.unlink()
+            except FileNotFoundError:
+                pass
+            print("reclaiming an unparseable lock file left behind earlier "
+                  f"(that run is gone): {self.path}")
+            return True
         host, pid = holder
         if host != socket.gethostname() or pid_is_alive(pid):
             return False
@@ -511,16 +553,25 @@ class VaultLock:
         else:  # pragma: no cover - the loop always breaks or raises
             raise SnapshotError(f"could not take the lock: {self.path}")
         os.write(self._fd, f"{socket.gethostname()} {os.getpid()}".encode())
+        os.fsync(self._fd)
         return self
 
     def __exit__(self, *exc: object) -> None:
         if self._fd is not None:
             os.close(self._fd)
             self._fd = None
-        try:
-            self.path.unlink()
-        except FileNotFoundError:
-            pass
+        # A Windows scanner can hold the just-closed file for a moment, and a
+        # sharing violation here would report a *successful* run as failed.
+        # Retry briefly; if it still will not unlink, leave it -- the stale
+        # reclaim above recognises it on the next run.
+        for _ in range(5):
+            try:
+                self.path.unlink()
+                return
+            except FileNotFoundError:
+                return
+            except OSError:
+                time.sleep(0.05)
 
 
 def current_tip(git_dir: Path, work_tree: Path, branch: str) -> str | None:
@@ -840,13 +891,23 @@ def find_secrets(paths: list[str]) -> list[str]:
     first push is the last moment the user can still choose a different remote.
     Saying so costs one line; not saying so is how secrets end up in a library
     someone else can read.
+
+    A pattern with a slash (``.ssh/*``) names a location, not a filename, so it
+    is matched against the whole path -- but anchored at any depth, not just
+    the tree root: ``deploy/.ssh/known_hosts`` must be caught as readily as a
+    top-level ``.ssh`` directory.
     """
     found: list[str] = []
     for path in paths:
         name = path.rsplit("/", 1)[-1]
         for pattern in SECRET_PATTERNS:
-            subject = path if "/" in pattern else name
-            if fnmatch.fnmatch(subject, pattern):
+            if "/" in pattern:
+                if fnmatch.fnmatch(path, pattern) or fnmatch.fnmatch(
+                    path, f"*/{pattern}"
+                ):
+                    found.append(path)
+                    break
+            elif fnmatch.fnmatch(name, pattern):
                 found.append(path)
                 break
     return found
@@ -959,16 +1020,6 @@ def human_bytes(n: int) -> str:
     return f"{n} B"
 
 
-def _looks_like_non_fast_forward(output: str) -> bool:
-    """Whether a push failed because the remote moved ahead of us."""
-    low = output.lower()
-    return (
-        "non-fast-forward" in low
-        or "fetch first" in low
-        or "[rejected]" in low
-    )
-
-
 def push_snapshot(
     git_dir: Path,
     work_tree: Path,
@@ -985,47 +1036,76 @@ def push_snapshot(
     and its push; the helper rejects the loser with a non-fast-forward.  Since
     a snapshot is just a tree, the loser re-commits that tree on top of the new
     remote tip and pushes again -- no data is lost and the chain stays linear.
+    Whether the remote actually moved is decided by *fetching the tip again*,
+    not by matching words in git's output: the rejection text is
+    locale-dependent, and any other failure deserves the same check.
 
-    On any other failure the local branch is rolled back to what the remote
-    actually has, so the vault never claims a snapshot the remote never took.
-    That rollback is also what makes a plain re-run the correct remedy: the next
-    run fetches the true tip and appends to it.
+    On any failure the local branch is rolled back to what the remote actually
+    has, so the vault never claims a snapshot the remote never took.  That
+    rollback is also what makes a plain re-run the correct remedy: the next
+    run fetches the true tip and appends to it.  It runs even when the retry
+    itself fails -- a fetch dying mid-retry is no reason to leave the branch
+    advanced past a commit the server refused.
     """
     spec = f"refs/heads/{branch}:refs/heads/{branch}"
     current = commit
-    for attempt in (1, 2):
-        print(f"pushing to {remote} ...")
-        proc = git(
-            git_dir, work_tree, ["push", remote, spec], cwd=work_tree, check=False
+    try:
+        for attempt in (1, 2):
+            print(f"pushing to {remote} ...")
+            proc = git(
+                git_dir, work_tree, ["push", remote, spec], cwd=work_tree, check=False
+            )
+            if proc.returncode == 0:
+                print("push complete")
+                return
+
+            sys.stdout.write(proc.stdout or "")
+            sys.stderr.write(proc.stderr or "")
+
+            if attempt == 1:
+                try:
+                    tip = fetch_remote_tip(git_dir, work_tree, remote, branch)
+                except SnapshotError as fetch_failure:
+                    # The remote cannot be re-read; the rollback below still
+                    # restores the last state the server is known to have.
+                    sys.stderr.write(
+                        f"could not re-check the remote tip ({fetch_failure}); "
+                        f"rolling the local branch back\n"
+                    )
+                    break
+                if tip and tip != base:
+                    print(
+                        f"remote moved to {tip[:12]}; re-parenting the snapshot "
+                        f"and retrying"
+                    )
+                    rebased = commit_tree(git_dir, work_tree, tree, tip, message)
+                    set_branch(git_dir, work_tree, branch, rebased, current)
+                    current, base = rebased, tip
+                    continue
+            break
+    except SnapshotError as retry_failure:
+        # A failure while re-parenting (the fetch, commit-tree, or the branch
+        # move) must not skip the rollback: the push failed, so the branch is
+        # pointing at a commit the remote never took.
+        sys.stderr.write(
+            f"the push retry failed ({retry_failure}); rolling the local "
+            f"branch back\n"
         )
-        if proc.returncode == 0:
-            print("push complete")
-            return
 
-        sys.stdout.write(proc.stdout or "")
-        sys.stderr.write(proc.stderr or "")
-
-        if attempt == 1 and _looks_like_non_fast_forward(
-            f"{proc.stdout}\n{proc.stderr}"
-        ):
-            tip = fetch_remote_tip(git_dir, work_tree, remote, branch)
-            if tip and tip != base:
-                print(
-                    f"remote moved to {tip[:12]}; re-parenting the snapshot and "
-                    f"retrying"
-                )
-                rebased = commit_tree(git_dir, work_tree, tree, tip, message)
-                set_branch(git_dir, work_tree, branch, rebased, current)
-                current, base = rebased, tip
-                continue
-        break
-
-    if base:
-        set_branch(git_dir, work_tree, branch, base, current)
-        rolled_back = base[:12]
-    else:
-        delete_branch(git_dir, work_tree, branch, current)
-        rolled_back = "(deleted)"
+    try:
+        if base:
+            set_branch(git_dir, work_tree, branch, base, current)
+            rolled_back = base[:12]
+        else:
+            delete_branch(git_dir, work_tree, branch, current)
+            rolled_back = "(deleted)"
+    except SnapshotError as rollback_failure:
+        raise SnapshotError(
+            f"push to {remote} failed, and the rollback failed too "
+            f"({rollback_failure}).  The vault branch may point at a commit "
+            f"the remote does not have; re-run with --reset-to-remote to "
+            f"adopt the remote chain."
+        ) from rollback_failure
     raise SnapshotError(
         f"push to {remote} failed.\n"
         f"The local branch was rolled back to {rolled_back} so the vault still "
@@ -1069,39 +1149,70 @@ def verify_restore(repo: Path, rev: str) -> list[str]:
     ``core.autocrlf=false`` and ``* -text -filter -ident``, so on *that* tree the
     other two agree as well -- but this check must hold for any checkout,
     including one made by hand, so it does not lean on them.
+
+    Every path is hashed in a single ``hash-object --stdin-paths`` process:
+    one subprocess per file made a large restore spend its time in process
+    start-up (``ls-tree -z`` emits raw, unquoted paths, which is what the
+    NUL-separated stdin expects).  Both sides run in *bytes* end to end, so a
+    filename that is not valid UTF-8 is hashed as the filename it actually is
+    rather than a ``replace``-decoded approximation of it.
     """
     listing = subprocess.run(
         ["git", "-C", str(repo), "ls-tree", "-r", "-z", "--full-tree", rev],
-        text=True,
-        encoding="utf-8",
-        errors="replace",
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     )
     if listing.returncode != 0:
         raise SnapshotError(
             f"could not list '{rev}' in {repo} (rc={listing.returncode})\n"
-            f"{listing.stderr.strip()}"
+            f"{listing.stderr.decode('utf-8', errors='replace').strip()}"
         )
-    mismatched: list[str] = []
-    for entry in listing.stdout.split("\0"):
+    paths: list[bytes] = []
+    expected: list[bytes] = []
+    for entry in listing.stdout.split(b"\0"):
         if not entry:
             continue
-        meta, _, path = entry.partition("\t")
+        meta, _, path = entry.partition(b"\t")
         fields = meta.split()
-        if len(fields) < 3 or fields[1] != "blob":
+        if len(fields) < 3 or fields[1] != b"blob":
             continue
-        proc = subprocess.run(
-            ["git", "-C", str(repo), "hash-object", "--no-filters", "--", path],
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+        paths.append(path)
+        expected.append(fields[2])
+    if not paths:
+        return []
+    if any(b"\n" in path for path in paths):
+        # --stdin-paths is newline-separated and cannot express a path that
+        # contains one; refuse loudly rather than verify a subset silently.
+        raise SnapshotError(
+            "a filename in the snapshot contains a newline, so the byte "
+            "verification cannot hash every path; refusing to certify the "
+            "restore"
         )
-        if proc.stdout.strip() != fields[2]:
-            mismatched.append(path)
-    return mismatched
+
+    proc = subprocess.run(
+        ["git", "-C", str(repo), "hash-object", "--no-filters", "--stdin-paths"],
+        input=b"\n".join(paths) + b"\n",
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if proc.returncode != 0:
+        raise SnapshotError(
+            f"could not hash the restored files in {repo} (rc={proc.returncode})\n"
+            f"{proc.stderr.decode('utf-8', errors='replace').strip()}"
+        )
+    hashes = proc.stdout.split()
+    if len(hashes) != len(expected):
+        # git outputs one hash per input path, in order; a short output means
+        # something ate a path, and guessing which would be worse than failing.
+        raise SnapshotError(
+            f"hash-object returned {len(hashes)} hashes for {len(paths)} "
+            f"paths in {repo}"
+        )
+    return [
+        path.decode("utf-8", errors="surrogateescape")
+        for path, expected_sha, actual_sha in zip(paths, expected, hashes, strict=True)
+        if actual_sha != expected_sha
+    ]
 
 
 def restore(
@@ -1143,12 +1254,27 @@ def restore(
     ensure_byte_exact(into, into / ".git")
 
     # A --no-checkout clone has no local branch, so a revision like
-    # "snapshot~3" cannot resolve until the branch exists locally.  Materialise
-    # the branch first, then move to the requested revision.
-    _checkout(into, branch)
+    # "snapshot~3" cannot resolve until the branch exists locally.  When the
+    # requested revision *is* the branch, checking it out materialises both at
+    # once; otherwise the branch ref is created without touching the worktree
+    # (``git branch``), and only the requested revision is checked out --
+    # checking the branch out first would write the whole tree twice.
     target = branch
     verified_rev = branch
     if ref and ref != branch:
+        proc = subprocess.run(
+            ["git", "-C", str(into), "branch", branch, f"origin/{branch}"],
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        if proc.returncode != 0:
+            raise SnapshotError(
+                f"could not materialise '{branch}' in the clone "
+                f"(rc={proc.returncode})\n{proc.stderr.strip()}"
+            )
         proc = subprocess.run(
             ["git", "-C", str(into), "rev-parse", "--verify", f"{ref}^{{commit}}"],
             text=True,
@@ -1165,6 +1291,8 @@ def restore(
         _checkout(into, sha, detach=True)
         target = f"{ref} ({sha[:12]})"
         verified_rev = sha
+    else:
+        _checkout(into, branch)
 
     # A restore that differs from the snapshot is not a restore, and the
     # autocrlf class of bug is invisible to `git status` -- so check the bytes.
@@ -1318,12 +1446,22 @@ def _read_local_config_map(repo: Path) -> dict[str, list[str]]:
     return found
 
 
-def _same_config_value(stored: str, desired: str) -> bool:
-    """Whether two spellings of a config value are the same setting.
+#: Sentinel for :func:`remember_settings`: "this setting was suppressed for
+#: *this* run -- leave whatever the vault remembers alone".  Distinct from
+#: ``None``, which means "the setting is empty; clear it".
+_UNSET = object()
 
-    Git rewrites a Windows path's backslashes to forward slashes as it stores
-    it, so a literal ``str(source)`` never compares equal to what comes back --
-    and without normalising, every run would look changed and be rewritten.
+
+def _same_config_value(stored: str, desired: str) -> bool:
+    """Whether two spellings of the path-valued ``snapshot.source`` agree.
+
+    git stores config values verbatim -- backslashes and all -- so a value
+    written by this tool round-trips exactly.  The normalisation covers the
+    other writers: a value typed into the config file by hand (or by a shell
+    whose path mangling rewrites separators) may spell the same directory with
+    ``/`` where this tool wrote ``\\``.  Only ``snapshot.source`` holds a
+    filesystem path; for every other key a backslash is data, so they are
+    compared literally (see :func:`remember_settings`).
     """
     return stored.replace("\\", "/") == desired.replace("\\", "/")
 
@@ -1386,15 +1524,22 @@ def remember_settings(
     vault: Path,
     source: Path,
     *,
-    remote: str | None,
-    code_remote: str | None,
+    remote: object,
+    code_remote: object,
     exclude: list[str],
     branch: str,
+    vault_config: dict[str, list[str]] | None = None,
 ) -> None:
     """Persist the resolved choices into the vault's own config.
 
     Written with ``git config --local``, so it lives and travels with the vault
     and nothing is put in the user's global config.
+
+    ``remote`` and ``code_remote`` accept three kinds of value: a string (the
+    setting to remember), ``None`` (the setting is empty for this run -- clear
+    what was remembered), or :data:`_UNSET` (the setting was *suppressed* for
+    this run, e.g. by ``--no-push`` -- leave what the vault remembers alone, so
+    a one-off local run does not unhook a scheduled job from its remote).
 
     Only a value that actually *changed* is written, and a value that is being
     cleared is ``--unset-all``'d.  Re-writing every key on every run would be
@@ -1407,48 +1552,72 @@ def remember_settings(
     replaces whatever was there; only a key that is being *emptied* needs the
     explicit ``--unset-all``.
     """
-    settings: list[tuple[str, list[str]]] = [
-        ("snapshot.source", [str(source)]),
-        ("snapshot.remote", [remote] if remote else []),
-        ("snapshot.coderemote", [code_remote] if code_remote else []),
-        ("snapshot.branch", [branch]),
-        ("snapshot.exclude", list(exclude)),
+    settings: list[tuple[str, list[str], bool]] = [
+        # (key, values this run, compare path-normalised)
+        ("snapshot.source", [str(source)], True),
+        ("snapshot.remote", [remote] if isinstance(remote, str) and remote else [], False),
+        (
+            "snapshot.coderemote",
+            [code_remote] if isinstance(code_remote, str) and code_remote else [],
+            False,
+        ),
+        ("snapshot.branch", [branch], False),
+        ("snapshot.exclude", list(exclude), False),
     ]
+    suppressed = {key for key, value in (("snapshot.remote", remote),
+                                         ("snapshot.coderemote", code_remote))
+                  if value is _UNSET}
 
-    current = _read_local_config_map(vault)
+    if vault_config is None:
+        vault_config = _read_local_config_map(vault)
 
-    def unchanged(stored: list[str], values: list[str]) -> bool:
+    def unchanged(stored: list[str], values: list[str], path_key: bool) -> bool:
         if len(stored) != len(values):
             return False
-        return all(
-            _same_config_value(a, b) for a, b in zip(stored, values, strict=True)
-        )
+        if path_key:
+            return all(
+                _same_config_value(a, b) for a, b in zip(stored, values, strict=True)
+            )
+        return all(a == b for a, b in zip(stored, values, strict=True))
 
-    def run(*args: str) -> None:
-        subprocess.run(
-            ["git", "--git-dir", str(vault / ".git"), "config", "--local", *args],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+    def run(key: str, *args: str, ok_rc: tuple[int, ...] = (0,)) -> None:
+        proc = subprocess.run(
+            ["git", "-C", str(vault), "config", "--local", *args],
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
         )
+        if proc.returncode not in ok_rc:
+            # A silent failure here would leave the vault remembering a
+            # previous run's settings while this run believes it has updated
+            # them -- exactly the divergence the next bare run then trusts.
+            raise SnapshotError(
+                f"could not update the vault's memory ({key}, "
+                f"rc={proc.returncode})\n{proc.stderr.strip()}"
+            )
 
-    for key, values in settings:
-        stored = current.get(key, [])
-        if unchanged(stored, values):
+    for key, values, path_key in settings:
+        if key in suppressed:
+            continue
+        stored = vault_config.get(key, [])
+        if unchanged(stored, values, path_key):
             continue
         if not values:
             # `--unset-all` exits 5 when the key is absent; that is not an error.
-            run("--unset-all", key)
+            run(key, "--unset-all", key, ok_rc=(0, 5))
         elif len(values) == 1 and len(stored) <= 1:
             # A single value over a single (or absent) key: a plain set replaces
             # it.  This is the common shape, and one call instead of two.
-            run(key, values[0])
+            run(key, key, values[0])
         else:
             # Either several values now, or a multi-valued key being rewritten
             # -- git refuses to overwrite multiple values with one, so the old
             # values are cleared first or they would linger.
-            run("--unset-all", key)
+            run(key, "--unset-all", key, ok_rc=(0, 5))
             for value in values:
-                run("--add", key, value)
+                run(key, "--add", key, value)
 
 
 def source_seafile_remote(source: Path) -> str | None:
@@ -1575,8 +1744,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--no-push",
         action="store_true",
-        help="snapshot locally and do not push at all, ignoring any remembered "
-        "or derived --remote",
+        help="this run pushes nothing -- neither the vault nor the code repo "
+        "-- and leaves the vault's remembered remote alone, so a one-off "
+        "local run does not unhook a scheduled job",
     )
     parser.add_argument("--message", default=None, help="snapshot commit message")
     parser.add_argument(
@@ -1654,6 +1824,10 @@ def validate_args(args: argparse.Namespace) -> None:
             ("--reset-to-remote", args.reset_to_remote),
             ("--allow-shared-remote", args.allow_shared_remote),
             ("--no-push", args.no_push),
+            # The source is meaningless on a restore -- the tree comes from the
+            # remote -- and would otherwise be silently ignored.
+            ("--source", args.source),
+            ("SOURCE (positional)", args.source_positional),
         ):
             if value:
                 problems.append(f"{flag} does not apply to --restore")
@@ -1705,12 +1879,18 @@ def resolve_snapshot_settings(
 
     branch = args.branch or str(remembered.get("branch") or DEFAULT_BRANCH)
 
+    remote: str | None
+    code_remote: str | None
     if args.no_push:
-        remote: str | None = None
+        # Suppressed for THIS run only.  remember_settings is told (via _UNSET)
+        # to leave the vault's memory alone, so a one-off local run does not
+        # unhook a scheduled job from its remote; the code repo is not pushed
+        # either -- the flag's name promises "do not push at all".
+        remote = None
+        code_remote = None
     else:
         remote = args.remote or remembered.get("remote") or derive_vault_remote(source)
-
-    code_remote = args.code_remote or remembered.get("code_remote")
+        code_remote = args.code_remote or remembered.get("code_remote")
 
     exclude = list(args.exclude) if args.exclude is not None else list(
         remembered.get("exclude") or []
@@ -1802,9 +1982,15 @@ def main(argv: list[str] | None = None) -> int:
                 raise SnapshotError("--restore requires --remote <url>")
             if not args.into:
                 raise SnapshotError("--restore requires --into <directory>")
+            into = args.into.expanduser().resolve()
+            # The snapshot guard protects where the tool *writes* a tree; a
+            # restore writes one too, and a restored tree -- secrets included,
+            # by design -- inside a synced library would be uploaded straight
+            # back into its original library by the desktop client.
+            check_paths_are_unsynced(("restore destination", into))
             restore(
                 args.remote,
-                args.into.expanduser().resolve(),
+                into,
                 args.branch or DEFAULT_BRANCH,
                 args.ref,
                 verify=args.verify,
@@ -1842,18 +2028,23 @@ def main(argv: list[str] | None = None) -> int:
                     )
 
         git_dir = ensure_vault(vault, branch)
-        ensure_identity(vault, source)
-        ensure_byte_exact(vault, git_dir)
+        # One read of the vault's config serves identity, byte-exactness and
+        # the remembered settings below: none of them writes a key another one
+        # compares against, so the map cannot go stale between the three.
+        vault_config = _read_local_config_map(vault)
+        ensure_identity(vault, source, vault_config=vault_config)
+        ensure_byte_exact(vault, git_dir, vault_config=vault_config)
         # Remember *after* the vault exists, so the first run leaves the next one
         # with nothing to type.  Not on a dry run: a preview must not mutate.
         if not args.dry_run:
             remember_settings(
                 vault,
                 source,
-                remote=remote,
-                code_remote=code_remote,
+                remote=_UNSET if args.no_push else remote,
+                code_remote=_UNSET if args.no_push else code_remote,
                 exclude=exclude,
                 branch=branch,
+                vault_config=vault_config,
             )
         # The hostname is in the default message because a shared vault is a
         # single chain of snapshots from several machines, and the commit author
