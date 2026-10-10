@@ -87,25 +87,67 @@ snapshot never enters its history.
 
 ## 4. Usage
 
+Every option has a default, so a bare run is a complete run. The first run is the
+only one that needs an argument, and even that can be just a directory:
+
 ```bash
+# Snapshot C:/code/myproject into C:/code/myproject-vault and push it to
+# Seafile, inferring the destination from the source repo's own remote
+cd C:/code/myproject
+python tools/seafile_snapshot.py
+
+# From elsewhere; the vault defaults to '<source>-vault'
+python tools/seafile_snapshot.py C:/code/myproject
+
 # see what would be captured, write nothing
-python tools/seafile_snapshot.py --source C:/code/myproject --dry-run
+python tools/seafile_snapshot.py C:/code/myproject --dry-run
 
 # snapshot + push, and push the code repo first in the same command
 python tools/seafile_snapshot.py --source C:/code/myproject \
     --vault C:/code/myproject-vault \
     --code-remote origin \
     --remote seafile://code/myproject-vault \
-    --exclude node_modules --exclude venv --exclude .venv \
-    --exclude __pycache__ --exclude '*.pyc' --exclude dist --exclude build
+    --default-excludes
 ```
 
-Useful flags: `--branch` (default `snapshot`), `--message`, `--dry-run`,
-`--restore`, `--into`, `--ref`, `--reset-to-remote`.
+### Defaults, and where they come from
 
-**Recommended exclusions** are the *reproducible* directories — `node_modules`,
-`venv`, `dist`, `build`, `__pycache__`. There is no default exclude list,
-because "all files" is the point; add them deliberately.
+Resolved most specific first:
+
+1. **the flag you passed** — always wins;
+2. **what the vault remembered** from its last run — written into the vault's own
+   config under `snapshot.*` at the end of every non-dry run;
+3. **the source repository** — a single `seafile://` remote names the vault's
+   destination (`seafile://code/app` → `seafile://code/app-vault`); two such
+   remotes are ambiguous and derive nothing;
+4. **the current directory** for the source, `'<source>-vault'` for the vault.
+
+So a scheduled job is the bare command, and an explicit flag is written back for
+next time. `--no-push` overrides any remembered or derived remote; `--dry-run`
+previews without writing anything, including the remembered settings.
+
+The vault is the bottom of the chain *and* the place the chain is stored, which is
+what makes the second run argument-free. It also means the vault remembers which
+source it belongs to: a run pointing a **different** tree at an existing vault is
+refused, because one vault is one linear chain of snapshots of one tree and a
+later reader cannot undo a mix.
+
+### Exclusions are never silent
+
+**There is no default exclude list.** "All files" is the point of a snapshot, and
+the failure that cannot be forgiven is a backup that quietly omitted the file that
+mattered — `node_modules` is reproducible, `.env` is not, and the tool cannot tell
+them apart. Instead it captures everything and then names the reproducible bulk it
+noticed, with the flags to drop it:
+
+```
+WARNING: the snapshot includes reproducible build output that is usually not worth
+backing up.  Leave it out next time with --default-excludes, or explicitly:
+  --exclude 'build' --exclude 'dist' --exclude 'node_modules' --exclude '*.pyc'
+```
+
+`--default-excludes` adds the recommended set (`node_modules`, `venv`, `.venv`,
+`__pycache__`, `*.pyc`, `dist`, `build`) on top of anything passed to `--exclude`.
 
 > **A pattern with no slash matches that name at *any* depth.** `--exclude
 > node_modules` drops `packages/api/node_modules/` as well as the top-level one —
@@ -123,8 +165,23 @@ because "all files" is the point; add them deliberately.
 > `*dist*` is the trap in the other direction: it also matches `distance.txt`.
 > Prefer the bare name, or `*dist/*` if a wildcard is genuinely wanted.
 
-> The vault is a Git repository and must **not** live inside a Seafile-synced
-> folder — the same rule as for the source, and for the same reason.
+### Refusals, not guesses
+
+The failures this tool can cause are quiet ones, so wherever a guess would be
+silent it refuses instead (see [section 16](#16-own-review-issues-found)):
+
+- **Neither the source nor the vault may live in a Seafile-synced folder.**
+  Checked at startup via `safety.discover_local_synced_libraries()`, before
+  anything is written. The sync client rewrites files underneath it and competes
+  with git for every path — the problem this tool exists to avoid.
+- **A vault belongs to one source** — records it, and refuses a different one.
+- **`--code-remote <name>` must name a real remote** of the source, so a typo
+  fails before the snapshot instead of after it.
+- **`--no-push` with `--remote`** is contradictory and refused.
+- **Flags that would be ignored are errors.** `--ref` without `--restore` is the
+  sharp one: a run meant to restore an *old* snapshot would otherwise quietly take
+  a *new* one. `--into`, `--verify`, `--message`, `--code-remote`, `--exclude`,
+  `--dry-run` and the rest are rejected against `--restore` and vice versa.
 
 ## 5. Updates
 

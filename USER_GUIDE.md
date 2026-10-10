@@ -745,29 +745,64 @@ Why a separate repository rather than a branch or a subdirectory in the source? 
 
 ### 15.2 Capturing a snapshot
 
-```bash
-# Create the vault and take the first snapshot, pushing it to Seafile
-python tools/seafile_snapshot.py ~/code/myproject \
-    --vault ~/.seafile-snapshots/myproject \
-    --remote seafile://backups/myproject
+Every option has a default, so the first run is the only one that needs an argument — and even that can be just the directory:
 
-# Later runs are the same command: the vault is reused, and an
-# unchanged tree produces no commit at all
-python tools/seafile_snapshot.py ~/code/myproject \
-    --vault ~/.seafile-snapshots/myproject \
-    --remote seafile://backups/myproject
+```bash
+# The whole thing: snapshot C:/code/myproject into C:/code/myproject-vault
+# and push it to Seafile, inferring the destination from the source repo
+cd C:/code/myproject
+python tools/seafile_snapshot.py
+
+# From elsewhere, naming the tree. The vault defaults to '<source>-vault'.
+python tools/seafile_snapshot.py C:/code/myproject
+
+# What that would do, without writing anything
+python tools/seafile_snapshot.py C:/code/myproject --dry-run
+
+# The same, said explicitly
+python tools/seafile_snapshot.py --source C:/code/myproject \
+    --vault C:/code/myproject-vault \
+    --remote seafile://code/myproject-vault
 ```
+
+**The first run teaches the vault what you chose, and later runs remember it.** The destination, branch and exclusions are written into the vault's own config, so a scheduled job can be nothing more than the bare command — and an explicit flag always wins and is written back for next time.
+
+Defaults are resolved most-specific-first:
+
+| Priority | Source | Example |
+| :--- | :--- | :--- |
+| 1 | The flag you passed | `--remote seafile://backups/app` |
+| 2 | What the vault remembered | the remote from the last run |
+| 3 | The source repository | `seafile://code/app` → `seafile://code/app-vault` |
+| 4 | The current directory | source = `.`, vault = `<source>-vault` |
+
+`--no-push` overrides any remembered or derived remote, keeping the snapshot local. `--dry-run` previews without writing anything — including the remembered settings.
 
 | Flag | Effect |
 | :--- | :--- |
-| `--vault <dir>` | Where the vault repository lives. Reused on later runs; created on the first. |
-| `--remote <url-or-path>` | The Seafile destination to push the vault to. |
-| `--exclude <glob>` | Repeatable. Skip paths matching the glob, e.g. `--exclude '*/node_modules'`. |
+| `SOURCE` (positional) or `--source <dir>` | The tree to snapshot. Default: the current directory. |
+| `--vault <dir>` | Where the vault repository lives. Default: `<source>-vault` beside the source. |
+| `--remote <url>` | The Seafile destination. Default: remembered, else derived from the source's own `seafile://` remote. |
+| `--no-push` | Snapshot locally; ignore any remembered or derived remote. |
+| `--exclude <glob>` | Repeatable. Skip matching paths, e.g. `--exclude node_modules`. |
+| `--default-excludes` | Add the recommended junk exclusions (§15.2.1). |
+| `--code-remote <name>` | Also `git push <name>` in the source repo first; the name is validated up front. |
 | `--dry-run` | Report what would be committed and pushed, and do neither. |
-| `--code-remote <name>` | Name of the source's code remote, used by the shared-remote guard (§15.5). |
-| `--allow-shared-remote` | Override that guard deliberately. |
+| `--allow-shared-remote` | Override the shared-remote guard (§15.5) deliberately. |
 
 **An unchanged tree commits nothing.** The tool compares the new tree against the previous snapshot and stops if they match, so a scheduled job — hourly, say — costs a directory walk and a push that transfers nothing. This is what makes it safe to run far more often than you would run a backup.
+
+#### 15.2.1 What is *not* excluded by default
+
+Nothing. The tool captures the whole tree, including `node_modules/`, `dist/` and `__pycache__/`, and then **tells you** what it noticed:
+
+```
+WARNING: the snapshot includes reproducible build output that is usually not worth
+backing up.  Leave it out next time with --default-excludes, or explicitly:
+  --exclude 'build' --exclude 'dist' --exclude 'node_modules' --exclude '*.pyc'
+```
+
+This is deliberate. A snapshot is a backup, and the one failure that cannot be forgiven is a backup that quietly omitted the file that mattered. `node_modules` is reproducible; `.env` is not; the tool cannot tell them apart, so it does not try. `--default-excludes` adds exactly the set above, on top of anything you passed to `--exclude`.
 
 ### 15.3 Byte-exactness, and why it needs enforcing
 
@@ -820,6 +855,10 @@ which hashes the bytes as they lie on disk. That is the only one of Git's three 
 - **It will not push the vault to one of the source's own code remotes.** A whole-tree backup legitimately contains `.env`, keys and build artefacts; pouring that into a shared code library is almost never what anyone wants. If the vault's destination collides with a URL in the source's `remote.*.url` / `remote.*.pushurl`, the push is refused and the colliding remote named. `--allow-shared-remote` overrides it.
 - **It reports credential-shaped paths at the end of every run.** This is a *warning, not a refusal* — a full backup *should* capture `.env`; the point is to find out before the first push, not after.
 - **It will not run on a stale lock.** A `seafile-snapshot.lock` left behind by a killed process is detected by checking whether the owning PID is still alive, and reclaimed rather than blocking every future run.
+- **A vault belongs to one source tree.** The vault records the source directory it first saw and refuses a run that points a *different* tree at it — mixing two trees into one linear chain of snapshots is not something a later reader could undo. Give each tree its own vault.
+- **Neither the source nor the vault may live in a Seafile-synced folder.** Checked at startup, before anything is written. The sync client rewrites files underneath whatever lives in a synced folder and competes with Git for every path — the exact problem this tool exists to avoid.
+- **`--code-remote <name>` must name a real remote** of the source. Without this check a typo would fail *after* the snapshot was built, leaving a commit for a run the user reads as failed.
+- **Flags that would otherwise be ignored are errors.** `--ref` without `--restore` is the sharp one: a run meant to restore an *old* snapshot would quietly take a *new* one instead. `--no-push` together with `--remote` is contradictory and also refused.
 
 ### 15.6 Several machines, one vault
 
@@ -838,7 +877,7 @@ Measured on real pushes, not estimated (`SNAPSHOT.md` §8):
 | A 1-byte edit to an 8 MB file | +8202 KB, until `gc --aggressive` |
 | A 32 MB file snapshotted three times | remote grows 33 → 65 → 97 MB |
 
-The last row is the one to watch: **`seafile.autogc` is off**, so a large file that changes daily grows the Seafile library by its own size every day. Run `git-remote-seafile gc` (§10) on the *vault's* remote periodically, or keep large build artefacts out with `--exclude`.
+The last row is the one to watch: **`seafile.autogc` is off**, so a large file that changes daily grows the Seafile library by its own size every day. Run `git-remote-seafile gc` (§10) on the *vault's* remote periodically, or keep large build artefacts out with `--default-excludes` (§15.2.1).
 
 The full design — the alternatives that do not work, the nested-repository handling, the own-review findings, and a comparison with restic and Borg — is in [SNAPSHOT.md](SNAPSHOT.md).
 

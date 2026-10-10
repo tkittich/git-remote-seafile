@@ -178,22 +178,24 @@ git clone seafile://seafile.example.com/code/myproject
 
 A `.gitignore`d file never enters a commit, so **no remote helper can carry it** — `.env`, a local database, build output. `tools/seafile_snapshot.py` closes that gap: it captures the working tree **as it lies on disk**, ignored files and all, into versioned, byte-exact snapshots in a Seafile library, over the same transport the helper uses.
 
-```bash
-# Capture ~/code/myproject into a vault, and push the vault to Seafile
-python tools/seafile_snapshot.py ~/code/myproject \
-    --vault ~/.seafile-snapshots/myproject \
-    --remote seafile://backups/myproject
+Every option has a default, so the first run is the only one that needs an argument — and later runs can be a bare command:
 
-# Later runs reuse the vault; an unchanged tree commits nothing at all
-python tools/seafile_snapshot.py ~/code/myproject --vault ~/.seafile-snapshots/myproject \
-    --remote seafile://backups/myproject
+```bash
+cd C:/code/myproject
+
+# Snapshot into C:/code/myproject-vault and push it to Seafile, inferring the
+# destination from the source repo's own seafile:// remote
+python tools/seafile_snapshot.py
+
+# Preview it without writing anything
+python tools/seafile_snapshot.py --dry-run
 
 # Restore into a fresh directory, verifying byte-exactness on the way
-python tools/seafile_snapshot.py ~/code/myproject --vault ~/.seafile-snapshots/myproject \
-    --restore ~/restored
+python tools/seafile_snapshot.py --restore --remote seafile://code/myproject-vault \
+    --into C:/restore/myproject
 ```
 
-It maintains a **separate vault repository** whose `--work-tree` is the source, so the source stays read-only and untouched. Byte-exactness is enforced with `core.autocrlf=false` plus `* -text -filter -ident` in the vault's own `info/attributes` — a plain `git clone` of the vault silently loses that, which is why `--restore` exists. See [USER_GUIDE.md §15](USER_GUIDE.md) for the user-facing walkthrough and [SNAPSHOT.md](SNAPSHOT.md) for the full design.
+The destination, branch and exclusions are **remembered in the vault** after the first run, so a scheduled job can be nothing more than `python tools/seafile_snapshot.py`. It maintains a **separate vault repository** whose `--work-tree` is the source, so the source stays read-only and untouched. Byte-exactness is enforced with `core.autocrlf=false` plus `* -text -filter -ident` in the vault's own `info/attributes` — a plain `git clone` of the vault silently loses that, which is why `--restore` exists. Recommended junk exclusions are **never applied silently**: the tool captures everything and tells you what it noticed, because a backup that quietly omits a file is worse than a large one. See [USER_GUIDE.md §15](USER_GUIDE.md) for the walkthrough and [SNAPSHOT.md](SNAPSHOT.md) for the full design.
 
 ### Diagnostics for the Seafile desktop client
 

@@ -841,5 +841,142 @@ class RemoteNormalisationTests(unittest.TestCase):
         )
 
 
+class DefaultsAndMemoryTests(SnapshotFixture):
+    """Sensible defaults, and the vault as the place they are remembered."""
+
+    def test_source_defaults_to_the_working_directory(self):
+        previous = os.getcwd()
+        os.chdir(self.code)
+        try:
+            rc, out, err = self.run_tool("--vault", self.vault, "--dry-run")
+        finally:
+            os.chdir(previous)
+        self.assertEqual(rc, 0, err)
+        self.assertIn(f"source : {self.code}", out)
+        self.assertIn("vault  :", out)
+
+    def test_a_positional_source_works_like_the_flag(self):
+        rc, out, err = self.run_tool(str(self.code), "--vault", self.vault, "--dry-run")
+        self.assertEqual(rc, 0, err)
+        self.assertIn(f"source : {self.code}", out)
+
+    def test_two_different_sources_are_refused(self):
+        other = self.tmp / "other"
+        other.mkdir()
+        rc, _, err = self.run_tool(
+            str(other), "--source", self.code, "--vault", self.vault
+        )
+        self.assertEqual(rc, 1)
+        self.assertIn("two different sources", err)
+
+    def test_the_vault_defaults_to_a_sibling_of_the_source(self):
+        self.assertEqual(
+            snap.default_vault_for(pathlib.Path("/code/myproject")),
+            pathlib.Path("/code/myproject-vault"),
+        )
+
+    def test_the_remote_is_derived_from_the_source_seafile_remote(self):
+        _git(self.code, "remote", "add", "origin", "seafile://code/myproject.git")
+        rc, out, err = self.run_tool(
+            "--source", self.code, "--vault", self.vault, "--dry-run"
+        )
+        self.assertEqual(rc, 0, err)
+        self.assertIn("seafile://code/myproject.git-vault", out)
+
+    def test_a_second_seafile_remote_makes_derivation_give_up(self):
+        # Two is ambiguous; guessing wrong files a whole-tree backup somewhere
+        # the user did not choose, so it is better to push nothing.
+        _git(self.code, "remote", "add", "a", "seafile://code/one")
+        _git(self.code, "remote", "add", "b", "seafile://code/two")
+        self.assertIsNone(snap.derive_vault_remote(self.code))
+
+    def test_a_non_seafile_remote_derives_nothing(self):
+        _git(self.code, "remote", "add", "origin", "https://github.com/x/y.git")
+        self.assertIsNone(snap.derive_vault_remote(self.code))
+
+    def test_settings_are_remembered_and_a_bare_re_run_repeats_them(self):
+        self.snapshot("--remote", self.remote, "--exclude", "dist")
+        # A second run with no remote and no excludes at all: both come back
+        # from the vault's own config.
+        rc, out, err = self.run_tool("--source", self.code, "--vault", self.vault)
+        self.assertEqual(rc, 0, err)
+        self.assertIn("push", out.lower())
+        self.assertNotIn("dist/bundle.js", self.tree())
+
+    def test_an_explicit_flag_overrides_what_the_vault_remembers(self):
+        self.snapshot("--remote", self.remote, "--exclude", "dist")
+        # --no-push wins over the remembered remote.
+        rc, out, err = self.run_tool(
+            "--source", self.code, "--vault", self.vault, "--no-push"
+        )
+        self.assertEqual(rc, 0, err)
+        self.assertIn("kept locally", out)
+
+    def test_a_dry_run_does_not_write_the_remembered_settings(self):
+        self.snapshot("--dry-run", "--remote", self.remote)
+        self.assertEqual(snap._read_config_key(self.vault / ".git", "snapshot.remote"), "")
+
+    def test_a_vault_refuses_a_different_source(self):
+        self.snapshot()  # records this source in the vault
+        other = self.tmp / "elsewhere"
+        shutil.copytree(self.code, other)
+        rc, _, err = self.run_tool("--source", other, "--vault", self.vault)
+        self.assertEqual(rc, 1)
+        self.assertIn("belongs to a different source", err)
+
+    def test_default_excludes_can_be_opted_into(self):
+        rc, out, err = self.run_tool(
+            "--source", self.code, "--vault", self.vault, "--default-excludes"
+        )
+        self.assertEqual(rc, 0, err)
+        tree = self.tree()
+        self.assertNotIn("node_modules/pkg/a.js", tree)
+        self.assertNotIn("dist/bundle.js", tree)
+        self.assertIn("README.md", tree)  # ordinary files are untouched
+
+    def test_verbose_output_is_not_a_requirement(self):
+        # A bare run must be quiet enough for cron: one summary, and no traceback.
+        rc, out, err = self.run_tool(
+            "--source", self.code, "--vault", self.vault, "--dry-run"
+        )
+        self.assertEqual(rc, 0, err)
+        self.assertNotIn("Traceback", out + err)
+
+
+class ArgumentValidationTests(unittest.TestCase):
+    """Flags that used to be silently ignored now say so."""
+
+    def run_tool(self, *argv: object) -> tuple[int, str, str]:
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = snap.main([str(a) for a in argv])
+        return rc, out.getvalue(), err.getvalue()
+
+    def test_ref_without_restore_is_refused(self):
+        # The sharp one: without this, a run meant to restore an old snapshot
+        # quietly takes a new one instead.
+        rc, _, err = self.run_tool("--ref", "snapshot~3")
+        self.assertEqual(rc, 1)
+        self.assertIn("--ref only applies to --restore", err)
+
+    def test_into_without_restore_is_refused(self):
+        rc, _, err = self.run_tool("--into", "C:/tmp/x")
+        self.assertEqual(rc, 1)
+        self.assertIn("--into only applies to --restore", err)
+
+    def test_no_push_and_remote_together_are_refused(self):
+        rc, _, err = self.run_tool("--no-push", "--remote", "seafile://code/x")
+        self.assertEqual(rc, 1)
+        self.assertIn("contradict each other", err)
+
+    def test_restore_rejects_snapshot_only_flags(self):
+        rc, _, err = self.run_tool(
+            "--restore", "--remote", "seafile://code/x", "--into", "C:/tmp/x",
+            "--dry-run",
+        )
+        self.assertEqual(rc, 1)
+        self.assertIn("--dry-run does not apply to --restore", err)
+
+
 if __name__ == "__main__":
     unittest.main()

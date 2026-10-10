@@ -17,6 +17,10 @@ The snapshot tool ships. `tools/seafile_snapshot.py` captures a working tree —
 - **`--exclude <glob>` (repeatable), `--dry-run`, `--code-remote <name>`.** Excludes use an fnmatch matcher, so `*/node_modules` and `*dist*` mean what they look like rather than being root-anchored pathspecs that match nothing below the root.
 - **`--allow-shared-remote`.** Pushing the vault to one of the *source's own* code remotes is refused by default: mixing a whole-tree backup (which legitimately contains `.env`, keys and build artefacts) into a shared code library is almost never intended. The refusal names the colliding remote; the flag overrides it deliberately.
 - **Credential-shaped paths are reported at the end of every run.** Not a refusal — a full backup *should* capture `.env` — but a warning, so the first push is not the moment you find out.
+- **A vault belongs to one source tree.** It records the source directory it first saw and refuses a run pointing a *different* tree at it: one vault is one linear chain of snapshots of one tree, and mixing two is not something a later reader could undo.
+- **Neither the source nor the vault may live in a Seafile-synced folder.** Checked at startup — before anything is written — via `safety.discover_local_synced_libraries()`. The sync client rewrites files underneath whatever lives in a synced folder and competes with Git for every path, which is the exact problem the tool exists to avoid. The helper cannot see the vault (it is told about the *source* and nothing else), so this check is the vault's only line of defence.
+- **`--code-remote <name>` must name a real remote** of the source. Without it a typo failed *after* the snapshot was built, leaving a commit for a run the user reads as failed.
+- **Flags that would otherwise be ignored are errors.** `--ref` without `--restore` is the sharp one: a run meant to restore an *old* snapshot would quietly take a *new* one instead. The snapshot-only and restore-only flag sets are now mutually rejected, and `--no-push` with `--remote` is refused as contradictory.
 
 ### Fixed
 
@@ -25,16 +29,21 @@ The snapshot tool ships. `tools/seafile_snapshot.py` captures a working tree —
 - **Stale locks are reclaimed.** A `seafile-snapshot.lock` left by a killed process is detected via `pid_is_alive` rather than blocking every future run.
 - **Nested repositories are captured.** A nested repo appears to Git as a submodule gitlink; it is replaced with a real tree entry and its files added with `--cacheinfo`, so a doubly-nested tree snapshots whole.
 
+### Changed
+
+- **Every option now has a default, and the vault remembers the rest.** A bare `python tools/seafile_snapshot.py` is a complete run: the source is the current directory, the vault is `<source>-vault` beside it, and the destination, branch and exclusions are written into the vault's own config (`snapshot.*`) at the end of the first run, so a scheduled job needs no arguments. Defaults resolve most-specific-first — the flag you passed, then what the vault remembered, then the source repository (a single `seafile://` remote names the vault's destination: `seafile://code/app` → `seafile://code/app-vault`), then the current directory. A positional `SOURCE` argument is accepted as well as `--source`; `--no-push` overrides any remembered or derived remote.
+- **The recommended exclusions became `--default-excludes`, and are never silent.** Previously they were printed as advice in `--help` only. They are still not applied by default: a snapshot is a backup, and the failure that cannot be forgiven is a backup that quietly omitted the file that mattered — `node_modules` is reproducible, `.env` is not, and the tool cannot tell them apart. It now captures everything and then **names the reproducible bulk it noticed**, with the exact `--exclude` flags to drop it. `--default-excludes` (or `--no-default-excludes`) adds the set on top of any `--exclude`.
+
 ### Documentation
 
-- **`SNAPSHOT.md`** — the snapshot tool's design document, in 17 sections: the gap, the approach that does not work (renaming `.gitignore`), the vault design, usage, multi-machine semantics, restore, caves, the cost model measured on real pushes, prior art, an own-review section with the six issues found and fixed, and an analysis of whether the helper should grow hooks or support restic/Borg.
-- **`USER_GUIDE.md` §17** documents the snapshot tool for users, and **`README.md`** lists it alongside the other tools.
+- **`SNAPSHOT.md`** — the snapshot tool's design document, in 17 sections: the gap, the approach that does not work (renaming `.gitignore`), the vault design, usage, defaults, multi-machine semantics, restore, caveats, the cost model measured on real pushes, prior art, an own-review section with the six issues found and fixed, and an analysis of whether the helper should grow hooks or support restic/Borg.
+- **`USER_GUIDE.md` §15** documents the snapshot tool for users, and **`README.md`** lists it alongside the other tools.
 - `SNAPSHOT.md` joins the docs-consistency guard's document set.
 
 ### Tests & Tooling
 
-- **`tests/test_snapshot_tool.py`** — 58 cases across three classes, covering the byte-exactness traps, the exclude matcher, the restore verification, the multi-machine race, identity resolution, stale-lock reclamation, and the shared-remote refusal.
-- Suite: 463 → 521 tests across 92 targets, all green; docs guards 9 → 9 (the document set grew, the guard count did not).
+- **`tests/test_snapshot_tool.py`** — 124 cases across five classes, covering the byte-exactness traps, the exclude matcher, the restore verification, the multi-machine race, identity resolution, stale-lock reclamation, the shared-remote refusal, the new defaults and vault memory, and the argument validation.
+- Suite: 463 → 587 tests across 92 targets, all green; docs guards 9/9.
 
 ## [0.7.2] - 2026-10-10
 

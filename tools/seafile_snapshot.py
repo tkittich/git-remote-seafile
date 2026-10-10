@@ -102,27 +102,51 @@ Usage
 =====
 ::
 
-    # snapshot only, no push -- see what would be captured
-    python tools/seafile_snapshot.py --source C:/code/myproject --dry-run
+    # the whole thing, from inside the project -- no arguments at all
+    cd C:/code/myproject
+    python tools/seafile_snapshot.py
 
-    # snapshot + push to Seafile
+    # what that run would do, without writing anything
+    python tools/seafile_snapshot.py --dry-run
+
+    # the same, said explicitly
     python tools/seafile_snapshot.py --source C:/code/myproject \
         --vault C:/code/myproject-vault \
         --remote seafile://code/myproject-vault
 
     # also push the code repo itself first, in one command
-    python tools/seafile_snapshot.py --source C:/code/myproject \
-        --code-remote origin \
-        --remote seafile://code/myproject-vault
+    python tools/seafile_snapshot.py --code-remote origin
 
-Recommended exclusions (reproducible junk you do not want in a backup)::
+Defaults
+========
+Every option has one, so a bare run is a complete run.  They are resolved most
+specific first:
+
+1. **the flag you passed** -- always wins;
+2. **what the vault remembered** from its last run (its own git config, under
+   ``snapshot.*``);
+3. **the source repository** -- a single ``seafile://`` remote names the vault's
+   destination (``seafile://code/app`` -> ``seafile://code/app-vault``);
+4. **the current directory** for the source, ``'<source>-vault'`` for the vault.
+
+So the first run is the only one that needs an argument, and every explicit flag
+is written back to the vault for next time.  ``--no-push`` overrides any
+remembered or derived remote; ``--dry-run`` previews without writing anything,
+including the remembered settings.
+
+The recommended exclusions are **never applied silently**.  A snapshot is a
+backup, and the one failure that cannot be forgiven is a backup that quietly
+omitted the file that mattered -- ``node_modules`` is reproducible, ``.env`` is
+not, and this tool cannot tell them apart.  It captures everything, then points
+at the reproducible bulk it noticed::
 
     --exclude node_modules --exclude venv --exclude .venv \
     --exclude __pycache__ --exclude '*.pyc' --exclude dist --exclude build
 
-A pattern with no slash matches that name at *any* depth, so
-``--exclude node_modules`` also drops ``packages/*/node_modules``.  Quote a
-wildcard so your own shell does not expand it first.
+``--default-excludes`` adds exactly that set.  A pattern with no slash matches
+that name at *any* depth, so ``--exclude node_modules`` also drops
+``packages/*/node_modules``.  Quote a wildcard so your own shell does not expand
+it first.
 
 Secrets
 =======
@@ -136,6 +160,25 @@ A snapshot contains exactly the files ``.gitignore`` keeps *out* of the code
 repository, so ``--remote`` is refused when it names a place the source
 repository already pushes to -- ``--allow-shared-remote`` overrides that
 deliberately.
+
+Guarding against mistakes
+==========================
+The failures this tool can cause are quiet ones, so it refuses rather than
+guesses wherever a guess would be silent:
+
+* **A vault belongs to one source.**  It records the source directory it first
+  saw, and refuses a run pointing a *different* tree at it -- mixing two trees
+  into one linear chain of snapshots is not something a later reader could undo.
+* **Neither the source nor the vault may live in a Seafile-synced folder** --
+  the sync client rewrites files underneath it and competes with git for every
+  path, which is the exact problem this tool exists to avoid.  Checked at
+  startup, before anything is written.
+* **``--code-remote`` must name a real remote** of the source, so a typo fails
+  before the snapshot instead of after it.
+* **Flags that would be ignored are errors, not no-ops.**  ``--ref`` without
+  ``--restore`` is the sharp one: a run meant to restore an *old* snapshot would
+  otherwise quietly take a *new* one.
+* **``--no-push`` and ``--remote`` together** are contradictory and refused.
 """
 
 from __future__ import annotations
@@ -160,6 +203,11 @@ RECOMMENDED_EXCLUDES = (
     "dist",
     "build",
 )
+
+# Settings a run remembers in the vault, so a bare re-run repeats the last one.
+# ``source`` is recorded too, and a mismatch is refused (``remembered_settings``)
+# -- the vault names, and belongs to, exactly one source directory.
+_REMEMBERED_KEYS = ("source", "remote", "coderemote", "excludes", "branch")
 
 
 class SnapshotError(RuntimeError):
@@ -1159,59 +1207,310 @@ def restore(
     print(f"verified byte-exact against {verified_rev[:12]}")
 
 
+def default_vault_for(source: Path) -> Path:
+    """Where the vault lives when ``--vault`` is not given.
+
+    Beside the source, as a sibling: ``/code/myproject`` -> ``/code/myproject-vault``.
+    Predictable, easy to find, and inspectable with plain ``git`` -- a vault the
+    user cannot locate is a vault they will not trust.
+    """
+    return source.with_name(source.name + "-vault")
+
+
+def directory_is_seafile_synced(path: Path) -> bool:
+    """Whether ``path`` is inside one of the desktop client's synced libraries.
+
+    Only meaningful where the Seafile client is installed; on a machine without
+    it there are no synced libraries and this is simply ``False``.  Imported
+    lazily so the tool keeps working if the package layout ever changes -- a
+    failed import means "cannot tell", not "safe".
+    """
+    try:
+        from git_remote_seafile.safety import discover_local_synced_libraries
+    except Exception:
+        return False
+    target = path.resolve()
+    try:
+        libraries = discover_local_synced_libraries()
+    except Exception:
+        return False
+    for lib in libraries:
+        worktree = lib.get("worktree")
+        if worktree is None:
+            continue
+        try:
+            target.relative_to(Path(worktree).resolve())
+            return True
+        except ValueError:
+            continue
+    return False
+
+
+def check_paths_are_unsynced(*paths: tuple[str, Path]) -> None:
+    """Refuse to snapshot a source, or write a vault, inside a synced library.
+
+    This is the tool's own version of the helper's Trap 1/Trap 2 guard, and the
+    reason it exists is the same: the Seafile client rewrites files underneath
+    whatever lives in a synced folder, and it fights Git for control of every
+    path Git touches.  The helper cannot see the vault (it is told about the
+    *source* via ``GIT_WORK_TREE`` and nothing else), so for the vault this check
+    is the only line of defence.
+    """
+    for label, path in paths:
+        if directory_is_seafile_synced(path):
+            raise SnapshotError(
+                f"{label} is inside a Seafile-synced library:\n  {path}\n"
+                f"The sync client rewrites files underneath it and competes with "
+                f"Git for every path, which is the exact problem this tool "
+                f"exists to avoid.\n"
+                f"Move it outside the synced folder -- e.g. under C:/code/ -- "
+                f"or sync that library with 'auto sync' disabled."
+            )
+
+
+def _read_config_key(git_dir: Path, key: str) -> str:
+    """A single value out of the *vault's own* config, or ''."""
+    proc = subprocess.run(
+        ["git", "--git-dir", str(git_dir), "config", "--local", "--get", key],
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+    )
+    return proc.stdout.strip()
+
+
+def _read_config_multi(git_dir: Path, key: str) -> list[str]:
+    """All values stored under one multi-valued key, or []."""
+    proc = subprocess.run(
+        ["git", "--git-dir", str(git_dir), "config", "--local", "--get-all", key],
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+    )
+    if proc.returncode != 0:
+        return []
+    return [line for line in proc.stdout.splitlines() if line]
+
+
+def remembered_settings(vault: Path, source: Path) -> dict[str, object]:
+    """What the vault remembers from its previous run, if anything.
+
+    The vault is the bottom of the resolution chain, and it is also where every
+    resolved choice is *written* at the end of a run -- so ``seafile_snapshot.py
+    --source C:/code/app`` once, then ``seafile_snapshot.py`` with no arguments
+    at all from any directory, does the same thing again.
+
+    A vault belongs to exactly one source directory, so a mismatch here is a
+    mistake worth stopping for rather than silently snapshotting the wrong tree
+    into it.  Passing ``--vault`` and ``--source`` together *is* that mismatch,
+    so the refusal names both and the flag that fixes it.
+    """
+    git_dir = vault / ".git"
+    if not git_dir.is_dir():
+        return {}
+
+    remembered_source = _read_config_key(git_dir, "snapshot.source")
+    if remembered_source:
+        resolved = Path(remembered_source).expanduser().resolve()
+        if resolved != source.resolve():
+            raise SnapshotError(
+                f"this vault belongs to a different source directory:\n"
+                f"  vault    : {vault}\n"
+                f"  remembers: {resolved}\n"
+                f"  this run : {source.resolve()}\n"
+                f"A vault holds one linear chain of snapshots of one tree; "
+                f"snapshotting a second tree into it would mix the two.\n"
+                f"Point --source at the remembered directory, or give this tree "
+                f"its own --vault."
+            )
+
+    remembered: dict[str, object] = {}
+    remote = _read_config_key(git_dir, "snapshot.remote")
+    if remote:
+        remembered["remote"] = remote
+    code_remote = _read_config_key(git_dir, "snapshot.coderemote")
+    if code_remote:
+        remembered["code_remote"] = code_remote
+    branch = _read_config_key(git_dir, "snapshot.branch")
+    if branch:
+        remembered["branch"] = branch
+    excludes = _read_config_multi(git_dir, "snapshot.exclude")
+    if excludes:
+        remembered["exclude"] = excludes
+    return remembered
+
+
+def remember_settings(
+    git_dir: Path,
+    source: Path,
+    *,
+    remote: str | None,
+    code_remote: str | None,
+    exclude: list[str],
+    branch: str,
+) -> None:
+    """Persist the resolved choices into the vault's own config.
+
+    Written with ``git config --local``, so it lives and travels with the vault
+    and nothing is put in the user's global config.  ``--unset-all`` first, so a
+    value that was *cleared* on this run is actually cleared rather than
+    lingering from the previous one.
+    """
+    settings: list[tuple[str, list[str]]] = [
+        ("snapshot.source", [str(source)]),
+        ("snapshot.remote", [remote] if remote else []),
+        ("snapshot.coderemote", [code_remote] if code_remote else []),
+        ("snapshot.branch", [branch]),
+        ("snapshot.exclude", list(exclude)),
+    ]
+    for key, values in settings:
+        # `--unset-all` exits 5 when the key is absent; that is not an error.
+        subprocess.run(
+            ["git", "--git-dir", str(git_dir), "config", "--local", "--unset-all", key],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        for value in values:
+            subprocess.run(
+                [
+                    "git", "--git-dir", str(git_dir), "config", "--local",
+                    "--add", key, value,
+                ],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+
+
+def source_seafile_remote(source: Path) -> str | None:
+    """The one ``seafile://`` remote the source repository pushes to, if any.
+
+    Deriving the vault's destination from the code remote is the most useful
+    default available, because the two are almost always siblings -- the code
+    library and its snapshot library, side by side.  It is only used when the
+    *source* has exactly one such remote; two is ambiguous, and guessing wrong
+    puts a whole-tree backup somewhere the user did not choose.
+    """
+    found: list[str] = []
+    for _name, url in source_remote_urls(source):
+        if url.lower().startswith("seafile://") and url not in found:
+            found.append(url)
+    if len(found) == 1:
+        return found[0]
+    return None
+
+
+def derive_vault_remote(source: Path) -> str | None:
+    """The natural Seafile destination for the vault of ``source``.
+
+    ``seafile://code/myproject`` -> ``seafile://code/myproject-vault``: the same
+    library and path, suffixed, so the backup sits beside the thing it backs up
+    and is recognisably related to it.
+    """
+    code = source_seafile_remote(source)
+    if not code:
+        return None
+    return f"{code.rstrip('/') or code}-vault"
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="seafile_snapshot",
         description=(
             "Snapshot a working tree (gitignored files included) into a separate "
             "vault repository and push it to Seafile. The source directory is "
-            "never modified."
+            "never modified.\n\n"
+            "Every option has a default, so a bare run works: the source is the "
+            "current directory, the vault is '<source>-vault' beside it, and the "
+            "remote, branch and exclusions are remembered in the vault after the "
+            "first run. An explicit flag always wins, and is written back to the "
+            "vault for next time."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
-            "recommended exclusions:\n  "
+            "defaults, in the order they are tried:\n"
+            "  1. the flag you passed\n"
+            "  2. what the vault remembered from its last run\n"
+            "  3. the source repository (a seafile:// remote names the vault's\n"
+            "     destination: seafile://code/app -> seafile://code/app-vault)\n"
+            "  4. the current directory (--source) / '<source>-vault' (--vault)\n"
+            "\nrecommended exclusions (never applied silently -- this is what\n"
+            "--default-excludes adds):\n  "
             + " ".join(f"--exclude '{p}'" for p in RECOMMENDED_EXCLUDES)
             + "\n\nA pattern with no slash matches that name at ANY depth, so\n"
             "--exclude node_modules also drops packages/*/node_modules.\n"
             "Quote wildcards so your own shell does not expand them first.\n"
-            "\nnote: the vault is a git repository and must NOT live inside a\n"
-            "Seafile-synced folder, for the same reason the source must not.\n"
+            "\nnote: neither the source nor the vault may live inside a\n"
+            "Seafile-synced folder -- the sync client rewrites files underneath\n"
+            "it and competes with git for every path. Checked at startup.\n"
         ),
+    )
+    parser.add_argument(
+        "source_positional",
+        nargs="?",
+        type=Path,
+        default=None,
+        metavar="SOURCE",
+        help="directory to snapshot (same as --source, so "
+        "'seafile_snapshot.py C:/code/app' works)",
     )
     parser.add_argument(
         "--source",
         type=Path,
-        default=Path.cwd(),
-        help="directory to snapshot (default: current directory)",
+        default=None,
+        help="directory to snapshot (default: the current directory)",
     )
     parser.add_argument(
         "--vault",
         type=Path,
         default=None,
-        help="vault repository location (default: <source>-vault)",
+        help="vault repository location (default: '<source>-vault' beside the "
+        "source)",
     )
     parser.add_argument(
         "--branch",
-        default=DEFAULT_BRANCH,
-        help=f"branch in the vault holding snapshots (default: {DEFAULT_BRANCH})",
+        default=None,
+        help=f"branch in the vault holding snapshots "
+        f"(default: remembered, else {DEFAULT_BRANCH})",
     )
     parser.add_argument(
         "--remote",
         default=None,
         help="Seafile remote URL to push to, e.g. seafile://code/myproject-vault "
-        "(omit to snapshot without pushing)",
+        "(default: remembered, else derived from the source's own seafile:// "
+        "remote; pass --no-push to snapshot locally instead)",
     )
     parser.add_argument(
         "--code-remote",
         default=None,
-        help="also run a normal 'git push <name>' in the source repo first",
+        help="also run a normal 'git push <name>' in the source repo first "
+        "(default: remembered, else the code repo is not pushed)",
     )
     parser.add_argument(
         "--exclude",
         action="append",
-        default=[],
+        default=None,
         metavar="PATTERN",
-        help="pathspec to leave out of the snapshot (repeatable)",
+        help="path matching this glob is left out of the snapshot (repeatable; "
+        "default: remembered, else nothing is excluded)",
+    )
+    parser.add_argument(
+        "--default-excludes",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="add the recommended exclusions on top of any --exclude "
+        f"({', '.join(RECOMMENDED_EXCLUDES)}). Not on by default: a snapshot is "
+        "a backup, and silently dropping files is how a backup fails at the one "
+        "moment it mattered",
+    )
+    parser.add_argument(
+        "--no-push",
+        action="store_true",
+        help="snapshot locally and do not push at all, ignoring any remembered "
+        "or derived --remote",
     )
     parser.add_argument("--message", default=None, help="snapshot commit message")
     parser.add_argument(
@@ -1263,10 +1562,175 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def validate_args(args: argparse.Namespace) -> None:
+    """Reject combinations that would otherwise be silently ignored.
+
+    Each of these is a flag that does nothing where it is passed, which is worse
+    than a wrong answer: the user believes they asked for something and gets no
+    signal either way.  ``--ref`` without ``--restore`` is the sharpest -- a run
+    meant to restore an *old* snapshot quietly takes a *new* one instead.
+    """
+    problems: list[str] = []
+
+    if not args.restore:
+        for flag, value in (("--verify", args.verify), ("--into", args.into),
+                            ("--ref", args.ref)):
+            if value:
+                problems.append(f"{flag} only applies to --restore")
+    else:
+        for flag, value in (
+            ("--vault", args.vault),
+            ("--dry-run", args.dry_run),
+            ("--message", args.message),
+            ("--code-remote", args.code_remote),
+            ("--exclude", args.exclude),
+            ("--default-excludes", args.default_excludes),
+            ("--reset-to-remote", args.reset_to_remote),
+            ("--allow-shared-remote", args.allow_shared_remote),
+            ("--no-push", args.no_push),
+        ):
+            if value:
+                problems.append(f"{flag} does not apply to --restore")
+
+    if args.no_push and args.remote:
+        problems.append("--no-push and --remote contradict each other")
+    if (
+        args.source is not None
+        and args.source_positional is not None
+        and args.source.expanduser().resolve()
+        != Path(args.source_positional).expanduser().resolve()
+    ):
+        problems.append(
+            f"two different sources were given: '{args.source_positional}' "
+            f"(positional) and '{args.source}' (--source)"
+        )
+
+    if problems:
+        raise SnapshotError(
+            "the arguments do not make sense together:\n  "
+            + "\n  ".join(problems)
+        )
+
+
+def resolve_snapshot_settings(
+    args: argparse.Namespace,
+) -> tuple[Path, Path, str | None, str | None, list[str], str]:
+    """Turn a parsed command line into the settings a run actually uses.
+
+    The chain, most specific first:
+
+    1. **the flag you passed** -- always wins;
+    2. **what the vault remembered** from its last run;
+    3. **the source repository** -- a single ``seafile://`` remote names the
+       vault's destination;
+    4. **the current directory** for ``--source``, ``'<source>-vault'`` for
+       ``--vault``.
+
+    Returns ``(source, vault, remote, code_remote, exclude, branch)``.
+    """
+    explicit = args.source or args.source_positional
+    source = (explicit or Path.cwd()).expanduser().resolve()
+    vault = (args.vault or default_vault_for(source)).expanduser().resolve()
+    source, vault = resolve_paths(source, vault)
+
+    # A vault may not exist yet, so the bottom of the chain is remembered-first:
+    # there is nothing to remember until a first run has happened.
+    remembered = remembered_settings(vault, source)
+
+    branch = args.branch or str(remembered.get("branch") or DEFAULT_BRANCH)
+
+    if args.no_push:
+        remote: str | None = None
+    else:
+        remote = args.remote or remembered.get("remote") or derive_vault_remote(source)
+
+    code_remote = args.code_remote or remembered.get("code_remote")
+
+    exclude = list(args.exclude) if args.exclude is not None else list(
+        remembered.get("exclude") or []
+    )
+    if args.default_excludes:
+        for pattern in RECOMMENDED_EXCLUDES:
+            if pattern not in exclude:
+                exclude.append(pattern)
+
+    # Everything that can be checked before a single byte is written: a typo in
+    # a remote name or a vault inside a synced folder is far cheaper to catch
+    # now than after the first push has published a whole tree.
+    if remote:
+        check_remote_is_not_a_code_remote(
+            source, remote, allowed=args.allow_shared_remote
+        )
+    if code_remote:
+        check_code_remote_is_git_remote(source, code_remote)
+    check_paths_are_unsynced(("source", source), ("vault", vault))
+
+    return source, vault, remote, code_remote, exclude, branch
+
+
+def check_code_remote_is_git_remote(source: Path, name: str) -> None:
+    """Fail before the snapshot if ``--code-remote <name>`` is not a remote.
+
+    ``git push origin`` against a name that does not exist fails *after* the
+    snapshot is built, which is a confusing half-done state: the vault has a new
+    commit for a run the user will read as failed.  A one-line check up front
+    turns that into the error it is.
+    """
+    if not source.is_dir() or not (source / ".git").exists():
+        raise SnapshotError(
+            f"--code-remote '{name}' was given, but {source} is not a git "
+            f"repository, so there is no '{name}' to push to"
+        )
+    names = {remote_name for remote_name, _url in source_remote_urls(source)}
+    if name not in names:
+        listing = ", ".join(sorted(names)) or "none"
+        raise SnapshotError(
+            f"--code-remote '{name}' is not a remote of {source} "
+            f"(it has: {listing})"
+        )
+
+
+def suggest_excludes(
+    git_dir: Path, work_tree: Path, excluded: list[str]
+) -> list[str]:
+    """Name reproducible junk that was captured, and how to leave it out.
+
+    Deliberately a *suggestion* and not a default.  A snapshot is a backup; the
+    one failure that cannot be forgiven is a backup that quietly omitted the file
+    that mattered.  ``node_modules`` is reproducible and ``.env`` is not, and the
+    tool cannot tell them apart -- so it captures everything, and points at what
+    is merely bulky.
+
+    Returns the patterns found (for testing); prints the advice.
+    """
+    present = {pattern for pattern in RECOMMENDED_EXCLUDES} - set(excluded)
+    if not present:
+        return []
+    listing = git(
+        git_dir, work_tree, ["ls-files", "-z"], cwd=work_tree
+    ).stdout
+    paths = [p for p in listing.split("\0") if p]
+    found: list[str] = []
+    for pattern in sorted(present):
+        hit = any(exclude_matches(path, pattern) for path in paths)
+        if hit:
+            found.append(pattern)
+    if not found:
+        return []
+    flags = " ".join(f"--exclude {p!r}" for p in found)
+    print(
+        f"\nWARNING: the snapshot includes reproducible build output that is "
+        f"usually not worth\nbacking up.  Leave it out next time with "
+        f"--default-excludes, or explicitly:\n  {flags}"
+    )
+    return found
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
 
     try:
+        validate_args(args)
         if args.restore:
             if not args.remote:
                 raise SnapshotError("--restore requires --remote <url>")
@@ -1275,34 +1739,29 @@ def main(argv: list[str] | None = None) -> int:
             restore(
                 args.remote,
                 args.into.expanduser().resolve(),
-                args.branch,
+                args.branch or DEFAULT_BRANCH,
                 args.ref,
                 verify=args.verify,
             )
             return 0
 
-        source = args.source.expanduser().resolve()
-        vault = args.vault or source.with_name(source.name + "-vault")
-        source, vault = resolve_paths(source, vault)
+        source, vault, remote, code_remote, exclude, branch = (
+            resolve_snapshot_settings(args)
+        )
 
-        # Checked before anything is written: a snapshot holds exactly the files
-        # .gitignore keeps *out* of the code repository, so aiming the vault at
-        # a remote the source already pushes to publishes them.
-        if args.remote:
-            check_remote_is_not_a_code_remote(
-                source, args.remote, allowed=args.allow_shared_remote
-            )
+        if args.dry_run and remote:
+            print(f"dry run -- would push the vault to {remote}")
 
-        if args.code_remote:
+        if code_remote:
             if args.dry_run:
                 print(
                     f"dry run -- would push the source repo to "
-                    f"'{args.code_remote}'"
+                    f"'{code_remote}'"
                 )
             else:
-                print(f"pushing source repo to '{args.code_remote}' ...")
+                print(f"pushing source repo to '{code_remote}' ...")
                 proc = subprocess.run(
-                    ["git", "-C", str(source), "push", args.code_remote],
+                    ["git", "-C", str(source), "push", code_remote],
                     text=True,
                     encoding="utf-8",
                     errors="replace",
@@ -1316,9 +1775,20 @@ def main(argv: list[str] | None = None) -> int:
                         f"snapshot aborted before touching the vault"
                     )
 
-        git_dir = ensure_vault(vault, args.branch)
+        git_dir = ensure_vault(vault, branch)
         ensure_identity(vault, source)
         ensure_byte_exact(vault, git_dir)
+        # Remember *after* the vault exists, so the first run leaves the next one
+        # with nothing to type.  Not on a dry run: a preview must not mutate.
+        if not args.dry_run:
+            remember_settings(
+                git_dir,
+                source,
+                remote=remote,
+                code_remote=code_remote,
+                exclude=exclude,
+                branch=branch,
+            )
         # The hostname is in the default message because a shared vault is a
         # single chain of snapshots from several machines, and the commit author
         # is the same person on all of them -- so without this, `git log` cannot
@@ -1333,33 +1803,33 @@ def main(argv: list[str] | None = None) -> int:
         with VaultLock(git_dir):
             # Decide the base *after* consulting the remote, so a second machine
             # appends to the shared chain rather than building an unrelated one.
-            if args.remote:
-                remote_tip = fetch_remote_tip(
-                    git_dir, source, args.remote, args.branch
-                )
+            if remote:
+                remote_tip = fetch_remote_tip(git_dir, source, remote, branch)
                 base = reconcile_with_remote(
                     git_dir,
                     source,
-                    args.branch,
+                    branch,
                     remote_tip,
                     reset_to_remote=args.reset_to_remote,
                     move=not args.dry_run,
                 )
             else:
-                base = current_tip(git_dir, source, args.branch)
+                base = current_tip(git_dir, source, branch)
 
             tree, commit, excluded = build_snapshot(
-                git_dir, source, base, args.exclude, message
+                git_dir, source, base, exclude, message
             )
             count, size = describe_tree(git_dir, source, tree)
 
             print(f"source : {source}")
             print(f"vault  : {vault}")
-            print(f"branch : {args.branch}")
+            print(f"branch : {branch}")
             print(f"files  : {count} ({human_bytes(size)})")
             print(f"base   : {base[:12] if base else '(first snapshot)'}")
             if excluded:
                 print(f"excluded: {len(excluded)} path(s) left out")
+
+            suggest_excludes(git_dir, source, excluded)
 
             gitlinks = find_gitlinks(git_dir, source, tree)
             if gitlinks:
@@ -1408,11 +1878,12 @@ def main(argv: list[str] | None = None) -> int:
             if unchanged:
                 print("\nnothing to commit; branch left where it is")
             else:
-                set_branch(git_dir, source, args.branch, commit, base)
-                print(f"\nmoved refs/heads/{args.branch} -> {commit[:12]}")
+                set_branch(git_dir, source, branch, commit, base)
+                print(f"\nmoved refs/heads/{branch} -> {commit[:12]}")
 
-            if not args.remote:
-                print("no --remote given; snapshot kept locally")
+            if not remote:
+                print("no --remote; snapshot kept locally (pass --remote, or set "
+                      "one in the source repo, to push)")
             elif unchanged and base == remote_tip:
                 print("the remote already has this snapshot; nothing to push")
             else:
@@ -1423,8 +1894,8 @@ def main(argv: list[str] | None = None) -> int:
                 push_snapshot(
                     git_dir,
                     source,
-                    args.remote,
-                    args.branch,
+                    remote,
+                    branch,
                     commit or base or "",
                     tree,
                     base,
