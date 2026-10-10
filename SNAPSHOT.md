@@ -1046,21 +1046,80 @@ delete a prefix. A Git remote helper is not that. It speaks `list` / `fetch` /
 second product — a Seafile backend for restic, with restic's repository format on
 top of it.
 
-That work already has an owner, and it is not this project. Seafile serves
-**WebDAV** at `https://<host>/seafdav/`; restic reaches WebDAV through rclone,
-and Borg needs a mounted path (davfs2 on Linux, or the Windows WebDAV client). So
-the honest instruction is "point restic at the Seafile WebDAV endpoint" — and
-this document should say that, rather than implying the helper is involved.
+That work already has an owner, and it is not this project — but the first
+version of this section got the owner's address wrong, so it is worth being
+precise.
 
-**But check the caveat first.** WebDAV is **disabled by default** and turned on
-by the *server administrator* (`ENABLE_SEAFDAV = true`). On a hosted or shared
-Seafile instance that is not the user's decision. The Seafile manual is also
-explicit that WebDAV is "more suitable for infrequent file access" — every file
-is committed separately and bulk uploads are slow. So for many users the answer
-is not "use WebDAV" but "there is no restic route to this Seafile at all", which
-is a real argument for the vault existing in the first place: **it is the one
-backup path to Seafile that runs over the API the user already has credentials
-for.**
+**Correction.** This document first said "restic reaches WebDAV through rclone",
+as though WebDAV were the only road in. It is not. **rclone ships a native
+Seafile backend** (`backend/seafile/`) that speaks the Seafile REST API directly
+— the same `/api2` surface this helper uses — with no WebDAV involved. It works
+against Community and Professional editions, supports Seafile 6.x through 9.x
+(and newer), supports **encrypted libraries**, supports 2FA, and is actively
+integration-tested against a current Seafile image. So the honest instruction is
+not "enable WebDAV and point restic at it" — it is:
+
+```
+restic -r rclone:seafile:backups/restic-repo init
+restic -r rclone:seafile:backups/restic-repo backup ~/code/myproject
+```
+
+with an rclone remote of `type = seafile` configured against the server. **No
+WebDAV, no administrator, no `ENABLE_SEAFDAV`.**
+
+Two caveats on that route, both real:
+
+- **rclone's Seafile backend authenticates with username and password** (plus a
+  2FA code), and it explicitly **does not support a Library API Token** — which
+  is the credential shape this helper's zero-config path prefers. A user who has
+  only ever set up token-based access needs a password login for rclone.
+- **It is not fast.** rclone's Seafile backend drives the API's per-file
+  endpoints; restic's many small pack and index objects mean many such calls.
+
+So the restic route exists after all — it just does not run through this helper,
+which is the actual point of this section: **the helper still has no restic
+bridge, and should not grow one.**
+
+### What changes if Seafile WebDAV is enabled
+
+Little, for this project — and less than the first draft of this section
+implied. WebDAV is one of *several* ways into a Seafile library, and the only one
+that needs the administrator to act. Turning it on:
+
+| Route | WebDAV required? | Who enables it |
+| :--- | :--- | :--- |
+| `git-remote-seafile` (this project) | **No** | — |
+| The snapshot tool's vault | **No** | — |
+| rclone → restic/Borg | **No** (native Seafile backend) | — |
+| davfs2 mount / Windows WebDAV client → Borg | **Yes** | Server administrator (`ENABLE_SEAFDAV = true`) |
+| Direct WebDAV access (any client) | **Yes** | Server administrator |
+
+What enabling WebDAV genuinely changes:
+
+- **A `davfs2`-style mount becomes possible**, which is the one route Borg
+  actually needs (Borg wants a mounted path, not a remote). If you want Borg
+  specifically, and the native rclone backend does not fit your workflow, WebDAV
+  is how you get there.
+- **Nothing at all for the helper.** It does not read or write WebDAV and has no
+  code path that would notice the setting.
+- **Nothing at all for the vault.** The vault pushes over the helper, so it
+  inherits the same answer.
+
+And the caveats that remain, unchanged:
+
+- WebDAV is **disabled by default** and turned on by the *server administrator*
+  (`ENABLE_SEAFDAV = true`). On a hosted or shared Seafile instance, that is not
+  the user's decision — which is exactly why it is a bad thing to depend on.
+- The Seafile manual is explicit that WebDAV is "more suitable for infrequent
+  file access": every file is committed separately and bulk uploads are slow.
+
+So: enabling WebDAV adds a route (Borg over a mounted path) and changes nothing
+for this project. It is a *nice-to-have for other tools*, not a switch that
+alters the helper's design — and the existence of the native rclone backend means
+the restic route never depended on it in the first place. That is a stronger
+version of the argument the vault exists on: **it is a backup path to Seafile
+that needs nothing from the server administrator beyond the account you already
+have.**
 
 ### What the helper could usefully add — and what it should not
 

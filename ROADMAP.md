@@ -1,8 +1,8 @@
 # Engineering Roadmap & Backlog
 
-**Baseline:** v0.7.2 (v0.7.2 release — helper dry-run support and test hardening)  
-**Scope:** Active architectural backlog and milestones following releases v0.4.0 through v0.7.2.  
-**Test Suite:** 460+ tests, all green (`tools/run_tests_parallel.py`). **Python:** 3.10+ (3.9 EOL).
+**Baseline:** v0.8.0 (whole-tree snapshot tool — the vault, byte-exactness, and multi-machine capture)  
+**Scope:** Active architectural backlog and milestones following releases v0.4.0 through v0.8.0.  
+**Test Suite:** 520+ tests, all green (`tools/run_tests_parallel.py`). **Python:** 3.10+ (3.9 EOL).
 
 > [!NOTE]
 > All critical and high-severity findings from `archive/REVIEW.*.md` (including ticket-based distributed locking, abandoned ticket cleanup, post-lock ref verification, exception propagation, GC lock fencing, pack index validation, surrogateescape paths, container PID isolation, D/F ref pruning, multi-spec pack batching, Git LFS transfer progress, safety guardrails, parallel ref enumeration, smart pack fetch filtering, disk-staged streaming, and modular helper decoupling) have been completed. All findings from the October 2026 review cycle (REVIEW.glm/gemini/qwen/VERIFY/BACKLOG, now archived) were verified fixed or explicitly dispositioned, as was the cycle that followed it at v0.7.0 (REVIEW.deepseek/gemini/qwen), closed in v0.7.1. Minor or low-priority items remain tracked in the backlog below. See [CHANGELOG.md](CHANGELOG.md) for detailed release notes.
@@ -128,6 +128,19 @@
 * **Remote-Helper Dry-Run:** Git sends `option dry-run true` ahead of the push commands and *aborts* on `unsupported` — `fatal: helper seafile does not support dry-run`, exit 128 — before it writes a single push command, so accepting the option is what makes `git push --dry-run` usable at all. `cmd_push` routes it to `_push_dry_run`, which reproduces the real path's four decisions (namespace, local ref, remote ref, fast-forward) and emits the same `ok`/`error` lines while taking no lock, building no packfile, and writing no ref. The lock is skipped deliberately: it is itself a side effect, and holding it would park a real push behind the settlement window to answer a question nobody acts on. `_ALLOWED_REF_PREFIXES` was hoisted to a module constant so the real path and the preview cannot drift apart on what is a legal destination.
 * **Windows Clock-Resolution Test Flake:** Four `test_lock` cases stamped a peer ticket with `order_ts = time.time()` and then asserted that an `acquire()` a few hundred microseconds later lost to it. Windows `time.time()` is backed by `GetSystemTimeAsFileTime` — **15.625 ms** granularity — through Python 3.12 (3.13 moved to `GetSystemTimePreciseAsFileTime`), so both stamps land in one tick and the queue falls through the tied `order_ts` and the always-tied integer mtime to the nonce, where the test's own random uuid4 sorts first about two runs in three. The protocol was never wrong — a tie is total and deterministic, so every contender agrees on the winner and mutual exclusion holds; only FIFO fairness degrades below the clock's resolution. The fixture now stamps strictly in the past, and a new test freezes the clock to pin the behaviour rather than leave it to chance.
 * **Coverage:** Suite 454 → 463 tests.
+
+---
+
+### Phase 4.11: v0.8.0 — Whole-Tree Snapshots: The Vault (Completed Deliverables)
+* **`tools/seafile_snapshot.py`:** Captures a working tree **including `.gitignore`d files** into versioned, byte-exact snapshots in a Seafile library — the one gap the helper cannot close, since an ignored file never enters a commit. It is a `tools/` script, not a subcommand: it does not extend the protocol and imports nothing from `git_remote_seafile` unconditionally.
+* **The Vault:** A *separate* repository whose `--work-tree` is the source (`git --git-dir=<vault>/.git --work-tree=<source>`), so the source stays read-only. A branch in the source would publish the ignored files, and a subdirectory inside the source would place snapshot data inside the tree being snapshotted — hence a separate repository. See DESIGN §7.13 and SNAPSHOT §11.
+* **Byte-Exactness:** Pins `core.autocrlf=false` **and** `* -text -filter -ident` in the vault's own `info/attributes`, which outranks a source `.gitattributes`. An attributes override must name every class it neutralises — `* -text` alone leaves `filter=lfs` active, which silently stored a 130-byte LFS pointer. Because `info/attributes` survives no clone, `--restore` clones `--no-checkout` and re-applies the settings.
+* **Atomic, Idempotent Capture:** A vault-local index, `update-ref` with an expected old value, and `seafile-snapshot.lock`; an unchanged tree produces **no commit at all**, so a frequent schedule is cheap. Stale locks are reclaimed via a live-PID check rather than blocking every future run.
+* **Restore Verification:** `--restore` verifies on every run with `git hash-object --no-filters` — the only one of Git's three hash checks that reads the bytes on disk (`git status` compares through the filters; plain `hash-object` applies the clean filter). `--verify` adds `git fsck`.
+* **Guards:** Excludes use an fnmatch matcher instead of root-anchored pathspecs; pushing the vault to one of the source's own code remotes is refused unless `--allow-shared-remote`; credential-shaped paths are reported (not refused) at the end of every run.
+* **Multi-Machine Fix:** The next snapshot bases on the **remote tip**, not the local branch — the original branched from the local branch, so a peer's push was rejected `(fetch first)` *and still moved the local branch*, failing every later run while the first looked successful. One retry re-parents on a lost race, and a failed push rolls the local branch back.
+* **Documentation:** `SNAPSHOT.md` (17 sections) is the design document; `USER_GUIDE.md` §15 is the user-facing walkthrough; README lists the tool; DESIGN §7.13 records the architecture. `SNAPSHOT.md` joins the docs-consistency guard's document set.
+* **Coverage:** Suite 463 → 521 tests across 92 targets; `tests/test_snapshot_tool.py` is 58 cases.
 
 ---
 

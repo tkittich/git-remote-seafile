@@ -5,6 +5,37 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.0] - 2026-10-10
+
+The snapshot tool ships. `tools/seafile_snapshot.py` captures a working tree — **including the files `.gitignore` excludes** — into versioned, byte-exact snapshots stored in a Seafile library, using the same transport the helper already provides. It closes the one gap the helper structurally cannot: a `.gitignore`d file never enters a commit, so no remote helper can ever carry it.
+
+### Added
+
+- **`tools/seafile_snapshot.py` — whole-tree snapshots over Seafile.** Pointed at a source directory, it maintains a separate *vault* repository whose `--work-tree` **is** that source, so the source stays read-only and untouched; the vault commits the tree as it lies on disk, secret files and build output included. `--remote <url-or-path>` pins the vault's Seafile destination. Every run is atomic — a vault-local index, `update-ref` with an expected old value, and a `seafile-snapshot.lock` — and **an unchanged tree produces no commit at all**, so a scheduler can run it as often as it likes without growing the remote.
+- **Byte-exactness is enforced, not assumed.** Git for Windows sets `core.autocrlf=true` in its *system* config, so a fresh `git init` inherits it while `git config --global core.autocrlf` reports nothing. The vault pins `core.autocrlf=false` **and** writes `* -text -filter -ident` into the vault's own `info/attributes`, which outranks any `.gitattributes` copied from the source. An attributes override must name **every** attribute class it neutralises: `* -text` alone does not disable `filter`, and a source `filter=lfs` attribute silently stored a 130-byte LFS *pointer* with the real bytes uploaded nowhere. A plain `git clone` of the vault is lossy for the same reason — `info/attributes` is not transferred by a clone — so `--restore` clones `--no-checkout` and re-applies the settings before checking out.
+- **`--restore` and `--verify`.** `--restore` rebuilds the tree into a target directory and verifies byte-exactness on **every** run using `git hash-object --no-filters`, the one hash check that reads the bytes on disk rather than the bytes a filter would produce. `--verify` additionally runs `git fsck` over the vault.
+- **`--exclude <glob>` (repeatable), `--dry-run`, `--code-remote <name>`.** Excludes use an fnmatch matcher, so `*/node_modules` and `*dist*` mean what they look like rather than being root-anchored pathspecs that match nothing below the root.
+- **`--allow-shared-remote`.** Pushing the vault to one of the *source's own* code remotes is refused by default: mixing a whole-tree backup (which legitimately contains `.env`, keys and build artefacts) into a shared code library is almost never intended. The refusal names the colliding remote; the flag overrides it deliberately.
+- **Credential-shaped paths are reported at the end of every run.** Not a refusal — a full backup *should* capture `.env` — but a warning, so the first push is not the moment you find out.
+
+### Fixed
+
+- **Multi-machine snapshots were permanently broken.** The vault's next snapshot branched from the *local* branch rather than the remote tip, so a second machine's push was rejected `(fetch first)` **and still moved its local branch** — which made every subsequent run fail too, while the first run *looked* like it had worked. The run now fetches the remote tip and bases on it, retries once by re-parenting on a lost race, and rolls the local branch back to what the remote holds on failure.
+- **`ensure_identity` read the wrong config scope.** It used `git config --get`, which reads through to the *global* config, so the source repository's own identity was never consulted — and the test for it was green for the wrong reason. Now `--local`.
+- **Stale locks are reclaimed.** A `seafile-snapshot.lock` left by a killed process is detected via `pid_is_alive` rather than blocking every future run.
+- **Nested repositories are captured.** A nested repo appears to Git as a submodule gitlink; it is replaced with a real tree entry and its files added with `--cacheinfo`, so a doubly-nested tree snapshots whole.
+
+### Documentation
+
+- **`SNAPSHOT.md`** — the snapshot tool's design document, in 17 sections: the gap, the approach that does not work (renaming `.gitignore`), the vault design, usage, multi-machine semantics, restore, caves, the cost model measured on real pushes, prior art, an own-review section with the six issues found and fixed, and an analysis of whether the helper should grow hooks or support restic/Borg.
+- **`USER_GUIDE.md` §17** documents the snapshot tool for users, and **`README.md`** lists it alongside the other tools.
+- `SNAPSHOT.md` joins the docs-consistency guard's document set.
+
+### Tests & Tooling
+
+- **`tests/test_snapshot_tool.py`** — 58 cases across three classes, covering the byte-exactness traps, the exclude matcher, the restore verification, the multi-machine race, identity resolution, stale-lock reclamation, and the shared-remote refusal.
+- Suite: 463 → 521 tests across 92 targets, all green; docs guards 9 → 9 (the document set grew, the guard count did not).
+
 ## [0.7.2] - 2026-10-10
 
 Remote-helper dry-run support, plus the test-suite fix that had been reddening CI on the Windows 3.10–3.12 legs.
@@ -716,6 +747,7 @@ Data-loss and silent-failure fixes, and the Python floor raised to 3.9.
   with zero-config desktop-client token discovery, distributed locking, remote
   packfile compaction, and a Git LFS custom transfer agent.
 
+[0.8.0]: https://github.com/tkittich/git-remote-seafile/compare/v0.7.2...v0.8.0
 [0.7.2]: https://github.com/tkittich/git-remote-seafile/compare/v0.7.1...v0.7.2
 [0.7.1]: https://github.com/tkittich/git-remote-seafile/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/tkittich/git-remote-seafile/compare/v0.6.4...v0.7.0

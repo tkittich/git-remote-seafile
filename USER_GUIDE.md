@@ -722,7 +722,129 @@ git-remote-seafile test seafile://code/myproject
 
 ---
 
-## 15. Acknowledgments & Inspirations
+## 15. Whole-Tree Snapshots (`tools/seafile_snapshot.py`)
+
+Everything above moves *commits*. That leaves one gap the helper cannot close by construction: **a file your `.gitignore` excludes never enters a commit, so no remote helper can ever carry it.** `.env`, a local database, an editor's state directory, build output you would rather not rebuild — none of it reaches Seafile through a push, however many remotes you add.
+
+`tools/seafile_snapshot.py` closes that gap. It captures the working tree **as it lies on disk** — ignored files and all — into versioned, byte-exact snapshots stored in a Seafile library, over the same transport the helper already uses. It is a script, not a subcommand, and it needs no credentials of its own: it reaches Seafile the way `git push` does.
+
+> [!IMPORTANT]
+> **Keep the Golden Rule (§2).** A snapshot's *source* may be anywhere — including inside a synced library — because the tool never writes to it. The snapshot's *destination* is a Seafile library, and like every other remote in this guide it should be an unsynced one.
+
+### 15.1 The vault
+
+Pointed at a source directory, the tool maintains a **separate repository — the vault — whose `--work-tree` is that source**:
+
+```bash
+git --git-dir=<vault>/.git --work-tree=<source> …
+```
+
+The source stays read-only and untouched: nothing is committed into it, no branch is created in it, and its own index and refs are never consulted. The vault does the commiting, and the vault is what you push to Seafile.
+
+Why a separate repository rather than a branch or a subdirectory in the source? Because either alternative would *publish* the ignored files into the source's own history — and, in the subdirectory case, would place snapshot data inside the tree it is trying to snapshot. The reasoning is worked through in `SNAPSHOT.md` §11.
+
+### 15.2 Capturing a snapshot
+
+```bash
+# Create the vault and take the first snapshot, pushing it to Seafile
+python tools/seafile_snapshot.py ~/code/myproject \
+    --vault ~/.seafile-snapshots/myproject \
+    --remote seafile://backups/myproject
+
+# Later runs are the same command: the vault is reused, and an
+# unchanged tree produces no commit at all
+python tools/seafile_snapshot.py ~/code/myproject \
+    --vault ~/.seafile-snapshots/myproject \
+    --remote seafile://backups/myproject
+```
+
+| Flag | Effect |
+| :--- | :--- |
+| `--vault <dir>` | Where the vault repository lives. Reused on later runs; created on the first. |
+| `--remote <url-or-path>` | The Seafile destination to push the vault to. |
+| `--exclude <glob>` | Repeatable. Skip paths matching the glob, e.g. `--exclude '*/node_modules'`. |
+| `--dry-run` | Report what would be committed and pushed, and do neither. |
+| `--code-remote <name>` | Name of the source's code remote, used by the shared-remote guard (§15.5). |
+| `--allow-shared-remote` | Override that guard deliberately. |
+
+**An unchanged tree commits nothing.** The tool compares the new tree against the previous snapshot and stops if they match, so a scheduled job — hourly, say — costs a directory walk and a push that transfers nothing. This is what makes it safe to run far more often than you would run a backup.
+
+### 15.3 Byte-exactness, and why it needs enforcing
+
+A snapshot tool that quietly changes your files is worse than none. Git will rewrite line endings on checkout if `core.autocrlf` says so, and on Windows the trap is sharp: **Git for Windows sets `core.autocrlf=true` in its *system* config**, so `git config --global core.autocrlf` reports nothing while the effective value is `true`, and a fresh `git init` inherits it.
+
+The vault therefore pins, for itself:
+
+```
+core.autocrlf=false
+```
+
+and writes this into its own `info/attributes`:
+
+```
+* -text -filter -ident
+```
+
+`info/attributes` **outranks** any `.gitattributes` copied from the source, which is what makes the pin hold. Two details worth knowing, because both were learned the hard way:
+
+- **An attributes override must name *every* attribute class it means to neutralise.** `* -text` alone does **not** disable `filter`: a source `.gitattributes` carrying `filter=lfs` still applies, and the vault silently stored a **130-byte LFS pointer** while the real bytes went nowhere.
+- **A plain `git clone` of the vault is lossy.** `info/attributes` is not carried by a clone; the source's `.gitattributes` is. Restoring by cloning the vault by hand can therefore hand you the wrong bytes. That is why `--restore` exists.
+
+### 15.4 Restoring and verifying
+
+```bash
+# Rebuild a tree into a target directory, verifying byte-exactness
+python tools/seafile_snapshot.py ~/code/myproject --vault <vault> \
+    --restore ~/restored --remote seafile://backups/myproject
+
+# Additionally run `git fsck` over the vault
+python tools/seafile_snapshot.py ~/code/myproject --vault <vault> --verify
+```
+
+`--restore` clones `--no-checkout`, re-applies the settings above, then checks out — and verifies the result on **every** run with
+
+```bash
+git hash-object --no-filters -- <path>
+```
+
+which hashes the bytes as they lie on disk. That is the only one of Git's three hash checks that cannot be fooled:
+
+| Check | What it hashes | Fooled by a mangled checkout? |
+| :--- | :--- | :--- |
+| `git status --porcelain` | the file *through* the filters | Yes — compares filtered bytes to filtered bytes |
+| `git hash-object` | the file after the clean filter | Yes — the filter can normalise the difference away |
+| `git hash-object --no-filters` | the raw bytes on disk | **No** — and it holds for *any* checkout, including one you made by hand |
+
+### 15.5 What the tool refuses to do
+
+- **It will not push the vault to one of the source's own code remotes.** A whole-tree backup legitimately contains `.env`, keys and build artefacts; pouring that into a shared code library is almost never what anyone wants. If the vault's destination collides with a URL in the source's `remote.*.url` / `remote.*.pushurl`, the push is refused and the colliding remote named. `--allow-shared-remote` overrides it.
+- **It reports credential-shaped paths at the end of every run.** This is a *warning, not a refusal* — a full backup *should* capture `.env`; the point is to find out before the first push, not after.
+- **It will not run on a stale lock.** A `seafile-snapshot.lock` left behind by a killed process is detected by checking whether the owning PID is still alive, and reclaimed rather than blocking every future run.
+
+### 15.6 Several machines, one vault
+
+A vault is a Git repository, so it can be pushed to from more than one machine — but each machine needs to branch from the **remote tip**, not from its own local branch. Getting this wrong is subtle: the second machine's push is rejected `(fetch first)` **and its local branch still moves**, so the first run looks like it worked while every later run fails. The tool fetches the remote tip and bases on it, retries once by re-parenting if it loses a race, and rolls its local branch back to what the remote holds if a push fails.
+
+Per-machine chains are kept separate (`refs/heads/snapshot-<host>`), and `SNAPSHOT.md` §6 documents how to read which machine took which snapshot.
+
+### 15.7 What it costs
+
+Measured on real pushes, not estimated (`SNAPSHOT.md` §8):
+
+| Situation | Transferred |
+| :--- | :--- |
+| A 486 KB tree with one 4 KB and one 10 KB file changed | 31 KB |
+| Nothing changed | **0 KB — and no commit** |
+| A 1-byte edit to an 8 MB file | +8202 KB, until `gc --aggressive` |
+| A 32 MB file snapshotted three times | remote grows 33 → 65 → 97 MB |
+
+The last row is the one to watch: **`seafile.autogc` is off**, so a large file that changes daily grows the Seafile library by its own size every day. Run `git-remote-seafile gc` (§10) on the *vault's* remote periodically, or keep large build artefacts out with `--exclude`.
+
+The full design — the alternatives that do not work, the nested-repository handling, the own-review findings, and a comparison with restic and Borg — is in [SNAPSHOT.md](SNAPSHOT.md).
+
+---
+
+## 16. Acknowledgments & Inspirations
 
 `git-remote-seafile` builds upon pioneering concepts and implementations in the Git remote helper and cloud storage ecosystem:
 - [git-remote-dropbox](https://github.com/anishathalye/git-remote-dropbox) by Anish Athalye: The landmark implementation that demonstrated transparent Git packfile transport and distributed locking over cloud storage APIs.
@@ -734,7 +856,7 @@ git-remote-seafile test seafile://code/myproject
 
 ---
 
-## 16. AI Disclosure & Authorship
+## 17. AI Disclosure & Authorship
 
 This project—including its source code, test suites, architecture specifications, and documentation—was authored primarily with generative AI assistance from multiple AI systems, in collaboration with human architectural design, real-world forensic diagnostics, and verification by [@tkittich](https://github.com/tkittich). All code and protocol implementations are fully open source, tested on Windows (with CI workflows configured for cross-platform validation), and licensed under the Apache License 2.0.
 
