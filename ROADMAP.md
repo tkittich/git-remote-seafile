@@ -1,8 +1,8 @@
 # Engineering Roadmap & Backlog
 
-**Baseline:** v0.7.1 (v0.7.1 release — review closure)  
-**Scope:** Active architectural backlog and milestones following releases v0.4.0 through v0.7.1.  
-**Test Suite:** 450+ tests, all green (`tools/run_tests_parallel.py`). **Python:** 3.10+ (3.9 EOL).
+**Baseline:** v0.7.2 (v0.7.2 release — helper dry-run support and test hardening)  
+**Scope:** Active architectural backlog and milestones following releases v0.4.0 through v0.7.2.  
+**Test Suite:** 460+ tests, all green (`tools/run_tests_parallel.py`). **Python:** 3.10+ (3.9 EOL).
 
 > [!NOTE]
 > All critical and high-severity findings from `archive/REVIEW.*.md` (including ticket-based distributed locking, abandoned ticket cleanup, post-lock ref verification, exception propagation, GC lock fencing, pack index validation, surrogateescape paths, container PID isolation, D/F ref pruning, multi-spec pack batching, Git LFS transfer progress, safety guardrails, parallel ref enumeration, smart pack fetch filtering, disk-staged streaming, and modular helper decoupling) have been completed. All findings from the October 2026 review cycle (REVIEW.glm/gemini/qwen/VERIFY/BACKLOG, now archived) were verified fixed or explicitly dispositioned, as was the cycle that followed it at v0.7.0 (REVIEW.deepseek/gemini/qwen), closed in v0.7.1. Minor or low-priority items remain tracked in the backlog below. See [CHANGELOG.md](CHANGELOG.md) for detailed release notes.
@@ -121,6 +121,13 @@
 * **Dead Branches Removed (D19, D20, D24):** Unreachable `get_repo_id` cache re-validation and `_detect_remote_object_format` fallback dropped; `install_packfile` passes `--git-dir`; `refs.__all__` exports `is_valid_ref_name`.
 * **Docs & Guards (D8–D13, D15, D17):** DESIGN §7.1, USER_GUIDE §12/§14 and PROPOSALS corrected against the code; the no-path URL form documented; the missing `v0.6.2` release notes restored with a tag↔notes guard; per-subcommand `--help`; a magic deletion count in the gc tests replaced by a named assertion.
 * **Coverage:** `gc.py` 76% → 100% via 21 in-process tests for the recovery and fail-closed paths (the e2e harness runs the helper in a subprocess, which the parent coverage run never records). Suite 383 → 454 tests.
+
+---
+
+### Phase 4.10: v0.7.2 — Helper Dry-Run Support & Clock-Resolution Test Hardening (Completed Deliverables)
+* **Remote-Helper Dry-Run:** Git sends `option dry-run true` ahead of the push commands and *aborts* on `unsupported` — `fatal: helper seafile does not support dry-run`, exit 128 — before it writes a single push command, so accepting the option is what makes `git push --dry-run` usable at all. `cmd_push` routes it to `_push_dry_run`, which reproduces the real path's four decisions (namespace, local ref, remote ref, fast-forward) and emits the same `ok`/`error` lines while taking no lock, building no packfile, and writing no ref. The lock is skipped deliberately: it is itself a side effect, and holding it would park a real push behind the settlement window to answer a question nobody acts on. `_ALLOWED_REF_PREFIXES` was hoisted to a module constant so the real path and the preview cannot drift apart on what is a legal destination.
+* **Windows Clock-Resolution Test Flake:** Four `test_lock` cases stamped a peer ticket with `order_ts = time.time()` and then asserted that an `acquire()` a few hundred microseconds later lost to it. Windows `time.time()` is backed by `GetSystemTimeAsFileTime` — **15.625 ms** granularity — through Python 3.12 (3.13 moved to `GetSystemTimePreciseAsFileTime`), so both stamps land in one tick and the queue falls through the tied `order_ts` and the always-tied integer mtime to the nonce, where the test's own random uuid4 sorts first about two runs in three. The protocol was never wrong — a tie is total and deterministic, so every contender agrees on the winner and mutual exclusion holds; only FIFO fairness degrades below the clock's resolution. The fixture now stamps strictly in the past, and a new test freezes the clock to pin the behaviour rather than leave it to chance.
+* **Coverage:** Suite 454 → 463 tests.
 
 ---
 
