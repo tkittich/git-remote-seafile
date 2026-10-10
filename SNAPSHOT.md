@@ -2,14 +2,14 @@
 
 > **Status: local tool, not a shipped feature.** The implementation is
 > `tools/seafile_snapshot.py`; the tests are `tests/test_snapshot_tool.py`
-> (29 cases). The full suite is 492 tests across 90 targets. It is deliberately
+> (32 cases). The full suite is 495 tests across 90 targets. It is deliberately
 > absent from `USER_GUIDE.md`, `DESIGN.md` and `CHANGELOG.md` until a decision
 > is made about whether it ships as a feature or stays a personal utility.
 > Everything below was measured on this machine unless a claim is explicitly
 > marked otherwise.
 >
 > This file is kept current **as part of the work** — see
-> [Maintenance](#13-maintenance).
+> [Maintenance](#15-maintenance).
 
 ---
 
@@ -167,6 +167,27 @@ chains is meaningless — they are two different working trees, not two edits to
 one file — and quietly dropping a machine's snapshots is the kind of silent
 data loss this project treats as a bug. The refusal names the remedy.
 
+### Which machine took which snapshot
+
+A shared chain is one log written by several machines, and the commit *author*
+is the same person on all of them — the identity is inherited from the source
+repository, which is the same repository cloned everywhere. So the default
+snapshot message carries the **hostname**:
+
+```
+snapshot 2026-10-10T21:45:42 on workstation-a
+snapshot 2026-10-10T21:45:46 on laptop-b
+```
+
+**Found while probing this, and fixed:** the vault was taking its identity from
+the *global* git config rather than from the source repository. `git config
+--get` reads through to the global file, so the check "does the vault have an
+identity of its own?" was answered *yes* by the global one, and the source
+repository was never consulted. The existing inheritance test only passed
+because it cleared the global config — green for the wrong reason. Inheritance
+now reads each repository's **own** config only, and there is a test that keeps
+a global identity present.
+
 ## 7. Restore
 
 ```bash
@@ -322,7 +343,7 @@ the specific case the tool should detect itself.
 15. **There is no retention policy.** Every snapshot is kept forever; nothing
     expires, and pruning would mean rewriting history, which the vault does not
     do. Retention is a real feature of restic and Borg — see
-    [section 11](#11-why-a-new-tool-and-what-hand-it-to-restic-or-borg-means).
+    [section 12](#12-how-this-compares-to-a-filesystem-snapshot-tool-restic-or-borg).
 
 ## 9. What Seafile and `git-remote-seafile` already give you
 
@@ -387,12 +408,81 @@ Grouped by how much is actually known about each.
 - **`--restore` fetches the whole history.** For a vault with years of
   snapshots that is slow, and a shallow or partial restore is not implemented.
 
-## 11. Why a new tool, and what "hand it to restic or Borg" means
+## 11. Why a separate repository, not a branch or a subdirectory
 
-An earlier version of this section said "hand it to restic / Borg" in a table
-and left it there, which read as a contradiction — they are backup tools, and
-so is this. The distinction is narrower than it looked, and worth stating
-plainly.
+Measured, and the reason is structural rather than stylistic.
+
+**A branch in the source repository would publish the ignored files.** The
+snapshot's tree is the *whole* working tree: `.env`, keys, credentials,
+`node_modules`. In the same repository, one `git push --all` — or a mirror
+remote whose refspec happens to cover `refs/heads/*`, which is exactly what this
+project's own `mirror` does — sends all of it to the code remote. A separate
+repository makes that impossible rather than merely discouraged. This is the
+strongest reason, and it is not hypothetical.
+
+**A branch also entangles the source's object database.** You would have to
+avoid the source's index (a temporary index via `GIT_INDEX_FILE`, as
+`git-store-file` does) — but the snapshot's *objects* still land in the source
+repository. An interrupted run leaves dangling objects there, and any later
+`git gc` in the source repo now has to reason about the snapshot chain. The
+vault writes nothing to the source at all: measured, the source's `.git` is
+**2125 KB before and 2125 KB after three snapshots**, while the vault holds
+4188 KB separately. A clone of the code repository therefore carries 2125 KB no
+matter how many snapshots exist.
+
+**It works on a directory that is not a repository.** Measured: a plain
+directory containing `a.txt` and `.env` and no `.git` at all snapshotted fine
+(it uses the global git identity). A branch-based design has nowhere to put the
+branch.
+
+**And the lifecycles are different.** The vault can be deleted, recreated,
+given its own remote, its own permissions (an encrypted Seafile library) and its
+own retention. The code repository's history is the thing you least want to
+touch, and mixing them means pruning the snapshot chain would mean touching it.
+
+**A subdirectory inside the source (`.vault/`, `snapshots/`) is worse, and the
+tool refuses it.** Two independent reasons, either of which is disqualifying:
+
+1. `git add -A -f .` runs with `--work-tree=<source>`, so a vault under the
+   source is *inside its own snapshot*. Because it contains a `.git`, it is
+   recorded as a gitlink — a broken directory on restore, plus a permanent
+   warning.
+2. If the source sits in a synced Seafile library, the client would sync the
+   vault's `.git` — precisely the corruption the project's Golden Rule exists to
+   prevent.
+
+The guard is tested (`test_vault_inside_the_source_is_refused`). A hidden
+directory is not a loophole; `-f` does not care about dot-prefixes.
+
+## 12. How this compares to a filesystem snapshot tool, restic or Borg
+
+An earlier version of this file said "hand it to restic / Borg" in a table and
+left it there, which read as a contradiction — they are backup tools, and so is
+this. The distinction is narrower than it looked, and worth stating plainly.
+
+| | Filesystem snapshot (ZFS/btrfs, VSS, Time Machine) | restic / Borg | The vault |
+| :--- | :--- | :--- | :--- |
+| Storage granularity | filesystem blocks, copy-on-write | content-defined chunks | whole-file blobs in a Git object DB |
+| Cost of a 1-byte edit to a big file | ≈ zero | only the changed chunks | **a full new blob until `gc`** — measured: 8 MB file, 1-byte edit → **+8202 KB**, then `gc --aggressive` → back to 8284 KB |
+| Identical files stored once | yes (blocks) | yes (chunks, globally) | yes, exactly — measured: two identical 1 MB files share one blob SHA, 1099 KB of object store for 2 MB of content |
+| Portable across filesystems and OSes | no | yes | yes |
+| Reaches Seafile through the existing helper | no | only via WebDAV/rclone | **yes — plain `git push`** |
+| History / diff semantics | a list of snapshots | a list of snapshots | **a real Git DAG**: `git log`, `git diff`, `git show`, `git bisect` |
+| Restore granularity | whole dataset | whole file | whole file, and **the whole tree in one command** |
+| Encryption at rest | filesystem-level | built in | none — use a Seafile encrypted library |
+| Retention / expiry | usually built in | built in | **none** |
+| Integrity check | filesystem-level | content checksums | Git's own object hashing |
+| Needs the tree to be a Git repo | no | no | no |
+
+Two axes carry the whole comparison:
+
+- **Cost model.** Filesystem snapshots are near-free per change (block COW);
+  restic and Borg are cheap per change (chunk dedup); Git is cheap **on the
+  wire** (delta compression inside a pack) but expensive **at rest** until `gc`
+  runs. That is the measured 8 MB → +8202 KB → 8284 KB above.
+- **What you get back.** Only the vault hands you a Git DAG, so "what changed
+  between Tuesday and Friday, ignored files included" is a `git diff`, and a
+  rollback is a checkout rather than a restore from a proprietary archive.
 
 **restic and Borg are whole backup *systems*.** They own the storage format,
 the deduplication, the encryption, the retention policy, and the scheduling.
@@ -419,6 +509,20 @@ The honest summary: **if you want a backup system, use restic pointed at a
 Seafile-backed WebDAV or rclone target. If you want your ignored files to travel
 with the repository you already push to Seafile, use the vault.** They can
 coexist, and the vault is the smaller, sharper tool.
+
+### Should we borrow their features?
+
+**Not their storage format — their behaviours.** Taking them one at a time:
+
+| Feature | Verdict |
+| :--- | :--- |
+| Chunk-level dedup / compression | **No.** That is restic's and Borg's whole reason for existing; reimplementing it inside a Git object database is not possible without abandoning Git, and abandoning Git abandons the reason to have this tool. |
+| Encryption at rest | **Borrow, but not in code.** Point the vault at a **Seafile encrypted library**. That is one setting, works today, and needs no change to the tool. `git-crypt` is the alternative if the encryption must be per-repository. |
+| Retention / expiry | **Borrow the concept, not the implementation.** This is the one genuine gap: the vault keeps everything. Pruning would mean rewriting the chain, which the vault deliberately does not do. If you need retention, run restic alongside — do not add a prune to a backup that is meant to be append-only. |
+| Compaction on a schedule | **Already available.** Git has `gc`; the helper exposes it as `git-remote-seafile gc`. The vault just does not call it — see the recommended next steps. |
+| Snapshot naming / tagging | **Cheap to borrow.** restic has `--tag`; Git's equivalent is `refs/tags/*`, which this helper *does* allow. Not needed yet, but it is the natural way to mark a milestone snapshot. |
+| Progress reporting, dry-run, verification | **Already present** (`--dry-run`), and see `git fsck` in [section 13](#13-what-git-already-gives-us-and-what-we-leave-unused). |
+| Scheduling | **Out of scope for the tool.** Use the OS scheduler, or the agent's automations. |
 
 ### Why a new tool rather than an existing one
 
@@ -476,7 +580,48 @@ not cross that line, because the tool still works standalone.
    as a feature; it changes what "restore on a new machine" means.
 4. **Do not** add dedup, encryption, or retention. Point at restic.
 
-## 12. Prior art
+## 13. What Git already gives us, and what we leave unused
+
+**Taken advantage of today:**
+
+- **Content-addressed dedup.** Two identical files are one blob — measured:
+  `big1.bin` and `big2.bin` share a blob SHA, and 2 MB of content costs 1099 KB
+  of object store.
+- **Packfile delta compression.** Near-identical revisions collapse — but only
+  when `gc` runs (the 8 MB measurement in [section 12](#12-how-this-compares-to-a-filesystem-snapshot-tool-restic-or-borg)).
+- **The commit DAG.** History, `diff`, and rollback for free.
+- **Object integrity.** Every object is hash-verified when read, so a corrupt
+  restore fails loudly instead of silently.
+- **Plumbing**: `write-tree`, `commit-tree`, and `update-ref` with a
+  compare-and-swap expected value — which is what makes the branch move safe.
+- **`merge-base --is-ancestor`** — the fast-forward decision in the
+  multi-machine reconciliation.
+- **`info/attributes`** — the byte-exact override, at the top of Git's
+  attribute-precedence chain.
+- **`add -f`** — the actual lever that makes the `.gitignore`-rename trick
+  unnecessary.
+- **`fetch`** — reading the remote tip before building.
+
+**Available and unused — and two of these are *blocked*, which is worth knowing
+before designing around them:**
+
+| Git feature | Status |
+| :--- | :--- |
+| `git notes` (per-snapshot metadata) | **Blocked.** The helper writes only `refs/heads/` and `refs/tags/` (`REF_NAMESPACES` in `refs.py`), and notes live under `refs/notes/`, so they could not be pushed to a `seafile://` remote at all. |
+| Custom ref namespaces (`refs/snapshots/<host>`) | **Blocked** by the same allowlist. A per-machine chain would have to be `refs/heads/snapshot-<host>`. |
+| Tags (`refs/tags/*`) | **Allowed, unused.** The natural way to mark a milestone snapshot. |
+| `git fsck` | **Unused.** A cheap integrity check of the vault; would make a good `--verify`. |
+| Shallow / partial clone | **Unused.** `--restore` fetches the whole history; `--depth` or `--filter=blob:none` would speed up restoring a large vault. |
+| `git count-objects` | **Unused.** The tool reports the tree's size but not the remote's growth. |
+| `git bundle` | **Unused.** A portable single-file snapshot, if one is ever needed offline. |
+| Commit signing, `git replace`, grafts | **Unused.** No need. |
+
+So the honest answer to "are we taking advantage of what Git offers?" is: **the
+storage and history model, yes; the metadata and maintenance surface, only
+partly.** And two of the obvious ideas — `git notes`, custom refs — are
+unavailable through this helper rather than merely unbuilt.
+
+## 14. Prior art
 
 The design is well-trodden. The closest relatives:
 
@@ -486,7 +631,7 @@ The design is well-trodden. The closest relatives:
 | **[`safe-gitignore`](https://github.com/sstraus/safe.gitignore)** | A post-commit hook that copies `# safe`-marked ignored files into a **separate private repository**, preserving directory structure, with optional `git-crypt` encryption. Closest in spirit to the vault, but allowlist-driven rather than whole-tree. |
 | **Dotfiles bare-repository idiom** ([write-up](https://www.atlassian.com/git/tutorials/dotfiles)) | `git --git-dir=$HOME/.dotfiles --work-tree=$HOME` is the direct ancestor of the vault pattern: a Git directory whose work-tree is somewhere else. |
 | **[`git-remote-dropbox`](https://github.com/anishathalye/git-remote-dropbox)** | The landmark demonstration of transparent Git packfile transport plus distributed locking over a cloud storage API — the model `git-remote-seafile` itself follows. |
-| **[git-annex](https://git-annex.branchable.com/)**, **[BorgBackup](https://www.borgbackup.org/)**, **[restic](https://restic.net/)** | Occupy the same "back up everything, incrementally" space with purpose-built formats. They deduplicate and compress better than Git and handle large binaries properly; they do not give you Git's history, diff and merge semantics. See [section 11](#11-why-a-new-tool-and-what-hand-it-to-restic-or-borg-means). |
+| **[git-annex](https://git-annex.branchable.com/)**, **[BorgBackup](https://www.borgbackup.org/)**, **[restic](https://restic.net/)** | Occupy the same "back up everything, incrementally" space with purpose-built formats. They deduplicate and compress better than Git and handle large binaries properly; they do not give you Git's history, diff and merge semantics. See [section 12](#12-how-this-compares-to-a-filesystem-snapshot-tool-restic-or-borg). |
 
 Reference documentation:
 
@@ -501,7 +646,7 @@ Notably, none of the prior art mentions the `core.autocrlf` trap. It is
 specific to Git for Windows, and it only surfaces when you actually run a
 restore.
 
-## 13. Maintenance
+## 15. Maintenance
 
 This file is kept current **as part of the work**, not by a robot: when a
 discussion changes the tool, the tests, or the thinking in here, this file is

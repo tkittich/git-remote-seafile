@@ -122,6 +122,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import socket
 import subprocess
 import sys
 from datetime import datetime
@@ -235,6 +236,25 @@ def _config(path: Path, key: str) -> str:
     return proc.stdout.strip()
 
 
+def _local_config(path: Path, key: str) -> str:
+    """Read a value from the repository's *own* config only.
+
+    ``git config --get`` reads through to the global and system files, so it
+    cannot answer "does this repository have an identity of its own?" -- and
+    that is exactly the question that decides whether to inherit one.  Using it
+    there made the vault inherit nothing whenever a global identity existed.
+    """
+    proc = subprocess.run(
+        ["git", "-C", str(path), "config", "--local", "--get", key],
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+    )
+    return proc.stdout.strip()
+
+
 def ensure_identity(vault: Path, source: Path) -> None:
     """Give the vault a committer identity, inheriting the source repo's.
 
@@ -242,12 +262,23 @@ def ensure_identity(vault: Path, source: Path) -> None:
     global identity.  When that is missing too, ``commit-tree`` dies with a bare
     "Author identity unknown" -- so resolve it up front and prefer the source
     repository's own identity, which is whose code this is.
+
+    Only the repositories' *own* config is consulted when deciding whether to
+    inherit.  ``_config`` cannot be used for that decision: it reads through to
+    the global file, so it reports an identity for a vault that has none, and
+    the source repository is then never consulted.  That was a real bug -- the
+    inheritance worked only in the test, which cleared the global config.
     """
     for key in ("user.name", "user.email"):
-        if _config(vault, key):
+        if _local_config(vault, key):
             continue
-        inherited = _config(source, key)
+        inherited = _local_config(source, key)
         if not inherited:
+            # No local identity anywhere.  A global one is fine -- git resolves
+            # it at commit time -- but if there is none either, fail here with
+            # an actionable message rather than inside commit-tree.
+            if _config(vault, key):
+                continue
             raise SnapshotError(
                 f"no git identity is configured for the vault.\n"
                 f"Set one and retry:\n"
@@ -871,7 +902,14 @@ def main(argv: list[str] | None = None) -> int:
         git_dir = ensure_vault(vault, args.branch)
         ensure_identity(vault, source)
         ensure_byte_exact(vault, git_dir)
-        message = args.message or f"snapshot {datetime.now().isoformat(timespec='seconds')}"
+        # The hostname is in the default message because a shared vault is a
+        # single chain of snapshots from several machines, and the commit author
+        # is the same person on all of them -- so without this, `git log` cannot
+        # say which machine saw which tree.
+        message = args.message or (
+            f"snapshot {datetime.now().isoformat(timespec='seconds')} "
+            f"on {socket.gethostname()}"
+        )
 
         with VaultLock(git_dir):
             # Decide the base *after* consulting the remote, so a second machine

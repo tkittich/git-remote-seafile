@@ -26,6 +26,7 @@ import io
 import os
 import pathlib
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
@@ -566,6 +567,57 @@ class SnapshotFixture(unittest.TestCase):
             rc, _, err = self.snapshot("--dry-run")
         self.assertEqual(rc, 1)
         self.assertIn("no git identity is configured", err)
+
+    def _global_config(self, name: str, email: str) -> pathlib.Path:
+        path = self.tmp / "global-config"
+        path.write_text(
+            f"[user]\n\tname = {name}\n\temail = {email}\n", encoding="utf-8"
+        )
+        return path
+
+    def test_the_source_identity_wins_over_a_global_one(self):
+        # The bug this guards: `git config --get` reads through to the global
+        # file, so the old check "does the vault have an identity?" was answered
+        # *yes* by the global one, the source repo was never consulted, and the
+        # vault committed under the global identity instead.  The inheritance
+        # test above only passed because it cleared the global config -- a green
+        # check for the wrong reason.
+        global_cfg = self._global_config("Global Person", "global@example.com")
+        with unittest.mock.patch.dict(
+            os.environ, {"GIT_CONFIG_GLOBAL": str(global_cfg)}
+        ):
+            rc, _, _ = self.snapshot()
+        self.assertEqual(rc, 0)
+        self.assertEqual(
+            _git(self.vault, "config", "--local", "--get", "user.email").stdout.strip(),
+            "dev@example.com",
+        )
+        self.assertEqual(
+            _git(self.vault, "config", "--local", "--get", "user.name").stdout.strip(),
+            "Dev",
+        )
+
+    def test_a_global_identity_is_accepted_when_the_source_has_none(self):
+        _git(self.code, "config", "--local", "--unset", "user.email")
+        _git(self.code, "config", "--local", "--unset", "user.name")
+        global_cfg = self._global_config("Global Person", "global@example.com")
+        with unittest.mock.patch.dict(
+            os.environ, {"GIT_CONFIG_GLOBAL": str(global_cfg)}
+        ):
+            rc, _, err = self.snapshot()
+        self.assertEqual(rc, 0, err)
+        # Nothing is copied into the vault: git resolves the global one itself.
+        proc = _git(self.vault, "config", "--local", "--get", "user.email")
+        self.assertNotEqual(proc.returncode, 0)
+
+    def test_the_default_message_names_the_machine(self):
+        # A shared vault is one chain of snapshots from several machines, and the
+        # commit author is the same person on all of them -- so the message is
+        # the only thing that makes `git log` readable across machines.
+        self.snapshot()
+        subject = _git(self.vault, "log", "-1", "--format=%s", BRANCH).stdout.strip()
+        self.assertTrue(subject.startswith("snapshot "), subject)
+        self.assertIn(socket.gethostname(), subject)
 
 
 if __name__ == "__main__":
