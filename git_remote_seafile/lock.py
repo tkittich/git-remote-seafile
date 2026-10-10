@@ -253,6 +253,18 @@ class RemoteLock:
         # formats is not a FIFO comparison at all.  (Differently-formatted
         # ticket clients contend through the scan itself; the old single-file
         # mirror that used to gate this is gone as of v0.7.0.)
+        #
+        # The nonce is the final tie-break, and for our own ticket it is a
+        # random uuid4.  That is safe -- the key is total, and once both
+        # tickets are visible (the settlement window's job) every contender
+        # sorts the same set the same way and so agrees on the winner -- but it
+        # is not fair, and on Windows through Python 3.12 it is reached far
+        # more often than the clock's 15.625 ms granularity suggests: two
+        # acquisitions inside one tick tie on order_ts *and* on the integer
+        # mtime, leaving the nonce to decide.  Fairness below the clock's
+        # resolution is not on offer, so the tie-break stays; what must not
+        # change is the determinism, because that is what stops a tie from
+        # producing two winners.
         all_modern = bool(active_tickets) and all(_f(t.get("order_ts")) > 0 for t in active_tickets)
         for t in active_tickets:
             if all_modern:

@@ -26,14 +26,33 @@ LEGACY_LOCK = "/path/.git-lock.json"
 # on its own in TestLockSettlementWindow, and everywhere else it would only add
 # a real second of sleeping to each acquisition.
 
+#: How far in the past `_ticket` stamps the fixture it builds.
+#:
+#: A ticket from this helper models one *already on the remote* -- uploaded by a
+#: peer that got there first -- so its FIFO key must be strictly earlier than
+#: the acquire() that discovers it.  "Strictly" is the part that has to be
+#: written down, because the wall clock cannot be relied on to supply it: on
+#: Windows ``time.time()`` is backed by ``GetSystemTimeAsFileTime`` with a
+#: 15.625 ms granularity through Python 3.12 (3.13 moved to
+#: ``GetSystemTimePreciseAsFileTime``), so a ticket stamped at call time and an
+#: acquire() a few hundred microseconds later land in the *same* tick.  The
+#: queue then falls through the tied ``order_ts`` and the always-tied integer
+#: mtime to the nonce, where our own random uuid4 can sort before the peer's
+#: literal nonce and win a lock the test says must be refused.  CI saw exactly
+#: that shape: intermittent "RepositoryLockedError not raised" failures on the
+#: windows-latest 3.10/3.11/3.12 legs only.  One second is far wider than any
+#: tick and still leaves the 60 s lease well inside its window.
+_FIXTURE_TICKET_AGE = 1.0
+
 
 def _ticket(nonce: str, owner: str = "alice", machine: str = "nodeA", **overrides) -> str:
+    stamped = time.time() - _FIXTURE_TICKET_AGE
     payload = {
         "owner": owner,
         "machine": machine,
         "nonce": nonce,
-        "timestamp": time.time(),
-        "order_ts": time.time(),
+        "timestamp": stamped,
+        "order_ts": stamped,
         "lease": 60,
         "pid": 1234,
     }
@@ -401,6 +420,39 @@ class TestConcurrencyAndLocking(unittest.TestCase):
         lock = RemoteLock(store.client("token123"), "repo1", "/path", timeout=0, lease=60, settle=0)
         with self.assertRaises(RepositoryLockedError) as ctx:
             lock.acquire()
+        self.assertIn("locked by 'alice'", str(ctx.exception))
+
+    def test_a_stalled_wall_clock_still_yields_to_a_ticket_already_on_the_remote(self):
+        """Regression: Windows <=3.12 stamps time.time() in 15.625 ms steps.
+
+        Every other test here lets the clock run, which on this machine puts the
+        peer ticket and our own acquisition in different ticks and hides the
+        bug.  Pinning ``time.time()`` to a single value reproduces what Python
+        3.10-3.12 on Windows does to *every* acquisition: a peer ticket and the
+        acquire() that follows it receive the same timestamp, the queue falls
+        through the tied ``order_ts`` and the tied integer mtime to the nonce,
+        and a uuid4 that happens to sort before the peer's name wins a lock it
+        must lose.  CI caught this as an intermittent failure on the
+        windows-latest 3.10/3.11/3.12 legs, never on 3.13+ or another OS.
+
+        The peer is named ``zulu-`` on purpose: 'z' sorts above every hex digit,
+        so the pre-fix code lost this test on *every* run rather than on the
+        ~60% of runs where the uuid4 happens to sort first.
+
+        The patch is global rather than scoped to the lock module because
+        ``_ticket`` reads the same ``time`` module, and the point of the test is
+        that both sides of the comparison see one frozen clock.
+        """
+        store = _SharedLockStore()
+        with patch("time.time", return_value=1_800_000_000.0):
+            store.put_ticket(
+                "/path/.git-lock.d/zulu-nonce.json", json.loads(_ticket("zulu-nonce"))
+            )
+
+            lock = RemoteLock(store.client("token123"), "repo1", "/path", timeout=0, lease=60, settle=0)
+            with self.assertRaises(RepositoryLockedError) as ctx:
+                lock.acquire()
+
         self.assertIn("locked by 'alice'", str(ctx.exception))
 
     def test_ticket_based_ordering_is_not_mtime_based_for_modern_tickets(self):

@@ -5,6 +5,12 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Tests & Tooling
+
+- **The lock-ordering tests no longer depend on the wall clock's resolution.** Four tests in `test_lock.py` stamped a peer ticket with `order_ts = time.time()` and then asserted that an `acquire()` a few hundred microseconds later lost to it. On Windows, `time.time()` is backed by `GetSystemTimeAsFileTime` with a **15.625 ms** granularity through Python 3.12 — 3.13 moved to `GetSystemTimePreciseAsFileTime` — so the two stamps landed in the *same* tick, the queue fell through the tied `order_ts` and the always-tied integer mtime to the **nonce**, and the test's own random `uuid4` sorted before the peer's literal nonce in roughly two runs out of three. This is what had been intermittently reddening CI on the `windows-latest` 3.10/3.11/3.12 legs, and only those. The fixture now stamps a ticket that models "already on the remote" strictly in the past, and a new test freezes the clock so the behaviour is pinned rather than left to chance. **No production change was needed**: a tie is still broken deterministically, so every contender agrees on the winner and mutual exclusion holds; only FIFO fairness degrades below the clock's resolution, which no ordering rule can recover.
+
 ## [0.7.1] - 2026-10-10
 
 Review-closure patch: every finding from the October 2026 review cycle is closed, including two `UnboundLocalError` crashes in the commands a user reaches for when something is already wrong, and remote `gc` being broken outright on SHA-256 repositories.
