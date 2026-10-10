@@ -13,7 +13,7 @@ Answers, without touching the client or the server:
 Everything here reads only:
   <ccnet>/seafile.ini        -> where seafile-data lives
   <seafile-data>/repo.db     -> libraries, worktrees, per-file sync errors
-  <seafile-data>/sync_error.db
+                                (the FileSyncError table lives in repo.db)
   <ccnet>/logs/seafile.log   -> sync state machine (re-commit / upload cycles)
 
 Databases are read through ``git_remote_seafile.sqlite_read.open_live_sqlite_ro``,
@@ -111,8 +111,15 @@ def load_libs(ccnet: Path):
         if con is None:
             return data, []
         props: dict[str, dict[str, str]] = {}
-        for repo_id, key, value in con.execute("select repo_id, key, value from RepoProperty"):
-            props.setdefault(repo_id, {})[key] = value
+        try:
+            for repo_id, key, value in con.execute("select repo_id, key, value from RepoProperty"):
+                props.setdefault(repo_id, {})[key] = value
+        except Exception as ex:
+            # A schema the client changed (or a torn copy) surfaces here as a
+            # raw traceback instead of a diagnosis; say what happened and
+            # report no libraries rather than die.
+            print("could not read repo.db's RepoProperty table: %s" % ex)
+            return data, []
         for repo_id, kv in props.items():
             wt = kv.get("worktree")
             if not wt:
@@ -150,6 +157,12 @@ def cmd_libs(args, ccnet):
 
 
 def cmd_where(args, ccnet):
+    """Exit 0 when the path is inside a synced library, 1 when it is not.
+
+    A diagnostic answer is a result either way, but scripts gate on it -- and
+    a "not synced" answer that exits 0 is indistinguishable from a successful
+    check of nothing.
+    """
     target = Path(args.path).resolve()
     _, libs = load_libs(ccnet)
     for lib in libs:
@@ -167,7 +180,7 @@ def cmd_where(args, ccnet):
         print('section "The Golden Rule: Working Tree Placement".')
         return 0
     print("not inside any synced library: %s" % target)
-    return 0
+    return 1
 
 
 def cmd_errors(args, ccnet):
@@ -179,14 +192,20 @@ def cmd_errors(args, ccnet):
         cutoff = None
         if args.days:
             cutoff = dt.datetime.now().timestamp() - args.days * 86400
-        rows = list(
-            con.execute(
-                "select repo_name, path, err_id, timestamp from FileSyncError order by timestamp"
+        try:
+            rows = list(
+                con.execute(
+                    "select repo_name, path, err_id, timestamp from FileSyncError order by timestamp"
+                )
             )
-        )
+            total = list(con.execute("select count(*) from FileSyncError"))[0][0]
+        except Exception as ex:
+            # Same contract as load_libs: a schema the client changed is a
+            # diagnosis ("cannot read the error table"), not a traceback.
+            print("could not read repo.db's FileSyncError table: %s" % ex)
+            return 1
         if cutoff:
             rows = [r for r in rows if (r[3] or 0) >= cutoff]
-        total = list(con.execute("select count(*) from FileSyncError"))[0][0]
         print("%d sync errors in the client's table (%d shown)" % (total, len(rows)))
         if not rows:
             return 0
@@ -290,7 +309,12 @@ def cmd_churn(args, ccnet):
                 blocks.setdefault(key, {})
                 blocks[key][day] = blocks[key].get(day, 0) + 1
             if rest.startswith("Transfer repo") and "'finished'" in rest:
-                key = rest.split("'")[1]
+                parts = rest.split("'")
+                if len(parts) < 2:
+                    # An unexpected log shape must not kill the whole report
+                    # mid-run; the rest of the file is still worth reading.
+                    continue
+                key = parts[1]
                 uploads.setdefault(key, {})
                 uploads[key][day] = uploads[key].get(day, 0) + 1
     print("seafile.log: %.1f MB" % (size / 1e6))

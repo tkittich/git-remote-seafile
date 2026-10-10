@@ -625,6 +625,37 @@ class TestConcurrencyAndLocking(unittest.TestCase):
             [],
         )
 
+    def test_lock_status_flags_an_expired_queue_as_stale(self):
+        """A dead lock must say so, not pose as one that expires in 0 seconds.
+
+        get_status reads without reaping, so an expired ticket used to be
+        presented as the current holder with ``Expires: in 0s`` -- indistinguishable
+        from a live lock, with no hint that a plain push would simply reap it
+        and take the lock.
+        """
+        store = _SharedLockStore()
+        store.put_ticket(
+            "/path/.git-lock.d/old.json",
+            json.loads(_ticket("old", timestamp=time.time() - 3600, lease=60)),
+        )
+        lock = RemoteLock(store.client("tok"), "repo1", "/path", settle=0)
+
+        status = lock.get_status()
+        self.assertTrue(status["locked"])
+        self.assertTrue(status["stale"])
+        self.assertEqual(status["nonce"], "old")
+        self.assertEqual(status["expires_in"], 0)
+
+        # a live ticket on top makes the queue non-stale again
+        store.put_ticket(
+            "/path/.git-lock.d/live.json",
+            json.loads(_ticket("live", timestamp=time.time(), lease=60)),
+        )
+        status = lock.get_status()
+        self.assertTrue(status["locked"])
+        self.assertFalse(status["stale"])
+        self.assertEqual(status["nonce"], "live")
+
     def test_abandoned_ticket_cleaned_up_on_acquire_timeout(self):
         """When acquire() times out, its candidate ticket must be deleted immediately."""
         store = _SharedLockStore()

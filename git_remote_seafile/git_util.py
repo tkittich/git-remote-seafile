@@ -6,6 +6,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
@@ -357,5 +358,12 @@ def get_git_config_int(key: str, default: int) -> int:
     try:
         return int(val)
     except ValueError:
+        # Out-of-range values are refused with a warning by RemoteConfig; a
+        # value that is not a number at all deserves the same visibility --
+        # a silent default reads exactly like the setting was honoured.
+        sys.stderr.write(
+            f"Warning: {key}='{val}' is not an integer; using {default}.\n"
+        )
+        sys.stderr.flush()
         return default
 

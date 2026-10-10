@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import contextlib
+import io
 import os
 import subprocess
 import tempfile
@@ -483,4 +485,13 @@ class TestGitConfig(unittest.TestCase):
 
         with patch("git_remote_seafile.git_util.get_git_config", return_value="35"):
             self.assertEqual(get_git_config_int("seafile.gcthreshold", default=20), 35)
+
+        with patch("git_remote_seafile.git_util.get_git_config", return_value="abc"):
+            # A non-numeric value must not silently read as the default --
+            # a typo'd setting looks exactly like an honoured one otherwise.
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                self.assertEqual(get_git_config_int("seafile.locklease", default=60), 60)
+            self.assertIn("not an integer", stderr.getvalue())
+            self.assertIn("seafile.locklease", stderr.getvalue())
 

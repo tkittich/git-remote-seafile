@@ -25,6 +25,7 @@ import tempfile
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
+from urllib.parse import quote
 
 # Everything SQLite may keep beside the database.  ``-wal``/``-shm`` for WAL
 # mode, ``-journal`` for the rollback journal modes.
@@ -71,7 +72,13 @@ def open_live_sqlite_ro(db_path: Path) -> Iterator[sqlite3.Connection | None]:
     with tempfile.TemporaryDirectory(prefix="grs-sqlite-") as tmp:
         try:
             copy = _copy_with_sidecars(path, Path(tmp))
-            con = sqlite3.connect(f"file:{copy.as_posix()}?mode=ro", uri=True)
+            # quote(): the temp dir lives under the user profile, and a
+            # profile path with a space or a '?' in it must not be read as
+            # URI syntax.  A failure here yields None either way, but a
+            # *silent* "no synced libraries found" for such a user is worth
+            # the one call of insurance.
+            uri = f"file:{quote(copy.as_posix(), safe='/:')}?mode=ro"
+            con = sqlite3.connect(uri, uri=True)
         except (OSError, sqlite3.Error):
             yield None
             return

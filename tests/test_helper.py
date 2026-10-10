@@ -36,6 +36,20 @@ class TestRemoteHelper(unittest.TestCase):
             h.run()
         self.assertEqual(out.getvalue(), "ok\n")
 
+        # gitremote-helpers(7) also documents an explicit algorithm pin.  The
+        # helper cannot enforce one -- it detects the format from the refs --
+        # so accepting and advertising the real format lets git's own check
+        # catch a genuine mismatch instead of failing operations that would
+        # have worked.
+        out = io.StringIO()
+        with patch("sys.stdin", io.StringIO("option object-format sha1\n")), patch("sys.stdout", out):
+            h.run()
+        self.assertEqual(out.getvalue(), "ok\n")
+        out = io.StringIO()
+        with patch("sys.stdin", io.StringIO("option object-format sha256\n")), patch("sys.stdout", out):
+            h.run()
+        self.assertEqual(out.getvalue(), "ok\n")
+
         # Unsupported option replies 'unsupported\n'
         out = io.StringIO()
         with patch("sys.stdin", io.StringIO("option unknown-opt value\n")), patch("sys.stdout", out):
@@ -733,6 +747,50 @@ class TestRemoteHelper(unittest.TestCase):
         # The directory cache must forget the deleted path (public API), or a
         # future D/F ref conflict can never be recreated.
         h.client.evict_known_dir.assert_called_once_with("repo1", "/git-repo/refs/heads/feature")
+
+    def test_cmd_push_delete_does_not_prune_on_an_unconfirmed_listing(self):
+        # list_dir answers [] for both "empty" and "missing/unreachable"; a
+        # transient failure used to read as "prune it" -- a destructive call
+        # keyed on an answer the server never actually gave.  dir_exists()
+        # re-asks and only an explicit 200 confirms.
+        h = RemoteHelper.__new__(RemoteHelper)
+        h.client = MagicMock()
+        h.repo_id = "repo1"
+        h.repo_path = "/git-repo"
+        h._refs_cache = {"refs/heads/feature/auth": "sha123"}
+        h.client.delete_entry.return_value = True
+        h.client.list_dir.side_effect = Exception("transient listing failure")
+        h.client.dir_exists.return_value = False
+
+        out = io.StringIO()
+        with patch("sys.stdout", out), patch("git_remote_seafile.helper.RemoteLock"):
+            h.cmd_push([":refs/heads/feature/auth"])
+
+        # the ref delete itself succeeds; only the prune's listing is broken,
+        # and no parent directory was touched on that broken answer
+        self.assertIn("ok refs/heads/feature/auth", out.getvalue())
+        pruned = [
+            c for c in h.client.delete_entry.call_args_list
+            if c.args[1] == "/git-repo/refs/heads/feature"
+        ]
+        self.assertEqual(pruned, [])
+
+    def test_cmd_push_reports_a_malformed_refspec_instead_of_dying(self):
+        # git never sends a spec without the src:dst colon, but a hand-driven
+        # protocol can; the split used to raise ValueError and kill the helper
+        # mid-protocol with no error line for git to read.
+        h = RemoteHelper.__new__(RemoteHelper)
+        h.client = MagicMock()
+        h.repo_id = "repo1"
+        h.repo_path = "/git-repo"
+        h._refs_cache = {}
+        with patch("git_remote_seafile.helper.check_preflight_safety", return_value=[]):
+            out = io.StringIO()
+            with patch("sys.stdout", out), patch("git_remote_seafile.helper.RemoteLock"):
+                h.cmd_push(["+refs/heads/main"])
+
+        self.assertIn("invalid refspec", out.getvalue())
+        self.assertIn("missing ':'", out.getvalue())
 
     @patch("git_remote_seafile.helper.rev_parse", return_value="sha123")
     @patch("git_remote_seafile.helper.get_objects_to_push", return_value=["obj1"])

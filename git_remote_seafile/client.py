@@ -216,6 +216,23 @@ class SeafileClient:
         if self.token:
             self.session.headers.update({"Authorization": f"Token {self.token}"})
 
+    def close(self) -> None:
+        """Release both sessions' connection pools.
+
+        A one-shot CLI run lets process exit do this; the doctor, the test
+        suite and any tool that builds several clients in one process do not,
+        and every unclosed session pins its sockets until the cyclic
+        collector gets to them.
+        """
+        self.session.close()
+        self._file_session.close()
+
+    def __enter__(self) -> "SeafileClient":
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self.close()
+
     def _record_server_date_header(self, resp: requests.Response, *args: Any, **kwargs: Any) -> None:
         date_hdr = resp.headers.get("Date") if hasattr(resp, "headers") else None
         if date_hdr:
@@ -448,8 +465,13 @@ class SeafileClient:
           rewritten URL 404s.  It stays opt-in (``seafile.forcefilehost`` /
           ``SEAFILE_FORCE_FILE_HOST``).
 
-        The authority comparison is exact, port included: a file server on
-        ``host:8082`` is a different endpoint, not a mistyped scheme.
+        The authority comparison goes through :func:`normalize_netloc`, so two
+        spellings of one server (``HTTP://Host:443`` vs ``https://host``) are
+        the same place -- a user-typed ``SEAFILE_SERVER`` keeps its case, and
+        the link the server returns need not match it character for character.
+        A genuinely different endpoint still compares different: a file server
+        on ``host:8082`` is not ``host``, and ``host:8082`` over http stays
+        ``host:8082``.
         """
         srv = urlparse(self.server_url)
         tgt = urlparse(raw_url)
@@ -459,7 +481,11 @@ class SeafileClient:
                 (srv.scheme, srv.netloc, tgt.path, tgt.params, tgt.query, tgt.fragment)
             )
 
-        if tgt.netloc == srv.netloc and tgt.scheme == "http" and srv.scheme == "https":
+        if (
+            normalize_netloc(tgt.netloc) == normalize_netloc(srv.netloc)
+            and tgt.scheme == "http"
+            and srv.scheme == "https"
+        ):
             return urlunparse(
                 ("https", tgt.netloc, tgt.path, tgt.params, tgt.query, tgt.fragment)
             )
@@ -649,8 +675,23 @@ class SeafileClient:
         if file_resp.status_code == 404:
             return None
         if file_resp.status_code != 200:
-            raise SeafileAPIError(f"Failed to download file from {dl_url}: HTTP {file_resp.status_code}")
+            raise SeafileAPIError(
+                f"Failed to download {clean_path}: HTTP {file_resp.status_code} "
+                f"(GET {self._error_origin(dl_url)})"
+            )
         return file_resp.content
+
+    @staticmethod
+    def _error_origin(url: str) -> str:
+        """``scheme://netloc`` of a transfer URL, for error messages.
+
+        The path of a download/upload link carries its own short-lived bearer
+        token, so -- exactly as the upload error below already does -- only the
+        origin is named: enough to see a wrong scheme or host, not enough to
+        reuse the token that ended up in a CI log or a pasted issue.
+        """
+        origin = urlparse(url)
+        return f"{origin.scheme}://{origin.netloc}"
 
     def upload_file(
         self,
@@ -669,6 +710,10 @@ class SeafileClient:
         docs advertise possible, and because a file object supports seek/tell,
         ``requests`` still sends a Content-Length instead of chunked encoding.
         Passing ``bytes`` stays supported for small payloads (packfiles, refs).
+
+        A bare ``str`` is *content* (encoded UTF-8), never a filename -- pass a
+        ``pathlib.Path`` to upload a file from disk.  A path spelled as ``str``
+        would otherwise be uploaded as a file whose body is its own name.
         """
         if isinstance(content, os.PathLike):
             with open(content, "rb") as fh:
@@ -755,11 +800,10 @@ class SeafileClient:
             # here is the difference between a working push and an opaque
             # "HTTP 400", and the origin is enough to see it -- the path is
             # deliberately omitted because it carries the upload token.
-            origin = urlparse(upload_url)
             raise SeafileAPIError(
                 f"Failed to upload {filename} to {clean_parent}: "
                 f"HTTP {up_resp.status_code} "
-                f"(POST {origin.scheme}://{origin.netloc}) {up_resp.text}"
+                f"(POST {self._error_origin(upload_url)}) {up_resp.text}"
             )
         return True
 
@@ -794,7 +838,10 @@ class SeafileClient:
             if file_resp.status_code == 404:
                 return False
             if file_resp.status_code != 200:
-                raise SeafileAPIError(f"Failed to download file from {dl_url}: HTTP {file_resp.status_code}")
+                raise SeafileAPIError(
+                    f"Failed to download {clean_path}: HTTP {file_resp.status_code} "
+                    f"(GET {self._error_origin(dl_url)})"
+                )
 
             dest_path = Path(dest)
             dest_path.parent.mkdir(parents=True, exist_ok=True)

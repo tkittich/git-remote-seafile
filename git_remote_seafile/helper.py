@@ -76,7 +76,15 @@ class RemoteHelper:
             full_parent = self._full_path(parent)
             try:
                 entries = self.client.list_dir(self.repo_id, full_parent)
-                if isinstance(entries, list) and len(entries) == 0:
+                # list_dir answers [] for both a genuinely empty directory and
+                # a missing/unreachable one; dir_exists() re-asks and only
+                # confirms on an explicit 200, so a transient failure reads as
+                # "stop" rather than "delete this parent".
+                if (
+                    isinstance(entries, list)
+                    and len(entries) == 0
+                    and self.client.dir_exists(self.repo_id, full_parent)
+                ):
                     self.client.delete_entry(self.repo_id, full_parent)
                     # The directory cache must forget this path or it will
                     # never be recreated (a future D/F ref conflict).
@@ -237,6 +245,12 @@ class RemoteHelper:
         for spec in push_specs:
             force = spec.startswith("+")
             clean_spec = spec.lstrip("+")
+            if ":" not in clean_spec:
+                # git itself never sends a spec without the src:dst colon; a
+                # hand-driven protocol can.  A ValueError here would kill the
+                # helper mid-protocol with no error line for git to read.
+                sys.stdout.write(f"error {clean_spec} invalid refspec (missing ':')\n")
+                continue
             src, dst = clean_spec.split(":", 1)
 
             if not dst.startswith(_ALLOWED_REF_PREFIXES):
@@ -313,6 +327,14 @@ class RemoteHelper:
                 for spec in push_specs:
                     force = spec.startswith("+")
                     clean_spec = spec.lstrip("+")
+                    if ":" not in clean_spec:
+                        # See _push_dry_run: a malformed spec must produce a
+                        # protocol error line, not a dead helper.
+                        sys.stdout.write(
+                            f"error {clean_spec} invalid refspec (missing ':')\n"
+                        )
+                        reported_specs.add(clean_spec)
+                        continue
                     src, dst = clean_spec.split(":", 1)
 
                     if not dst.startswith(allowed_ref_prefixes):
@@ -654,7 +676,14 @@ class RemoteHelper:
                 parts = line.split(None, 2)
                 opt = parts[1] if len(parts) > 1 else ""
                 val = parts[2] if len(parts) > 2 else ""
-                if opt == "object-format" and val == "true":
+                if opt == "object-format" and val in ("true", "sha1", "sha256"):
+                    # gitremote-helpers(7) documents {'true'|algorithm}: "true"
+                    # asks the helper to report the format -- cmd_list does,
+                    # from the refs themselves.  An explicit algorithm pins the
+                    # helper to it, which this helper cannot enforce; accepting
+                    # and then advertising the format the refs actually use is
+                    # what lets git's own check catch a real mismatch, instead
+                    # of failing operations that would have worked.
                     sys.stdout.write("ok\n")
                 elif opt == "dry-run":
                     # `git push --dry-run` makes git send this, and git *dies*

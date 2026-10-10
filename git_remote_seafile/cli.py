@@ -377,6 +377,9 @@ def main() -> int:
                 print(f"Repository at {url} is UNLOCKED.")
                 return 0
             print(f"Repository at {url} is LOCKED:")
+            if status.get("stale"):
+                print("  State    : STALE -- the ticket's lease has expired, so a "
+                      "plain push would reclaim it")
             print(f"  Owner    : {status.get('owner')}")
             print(f"  Machine  : {status.get('machine')}")
             if status.get("pid"):

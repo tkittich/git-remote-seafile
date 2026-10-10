@@ -51,6 +51,10 @@ def _server_url_from_bare_host(segment: str) -> str:
     implies, so ``host:80`` stays plain HTTP rather than being forced onto HTTPS
     with its port silently dropped (which redirected the request to :443).  Only
     a portless host falls back to the documented HTTPS default.
+
+    An unbracketed IPv6 address is refused with the spelling that works: its
+    colons make ``host:port`` splitting meaningless, and guessing would produce
+    a nonsense authority that fails far from where the URL was written.
     """
     host = segment.split("@")[-1]
     if ":" not in host:
@@ -59,6 +63,12 @@ def _server_url_from_bare_host(segment: str) -> str:
     hostname, _, port_s = host.rpartition(":")
     if not hostname:
         raise ValueError(f"Invalid Seafile URL format: missing host in '{segment}'")
+    if ":" in hostname:
+        raise ValueError(
+            f"Invalid Seafile URL format: '{segment}' looks like an unbracketed "
+            f"IPv6 address. Write it with the explicit scheme and brackets: "
+            f"seafile://https://[{host}]/<library>/<path>"
+        )
     if not port_s.isdigit() or not (0 < int(port_s) < 65536):
         raise ValueError(
             f"Invalid Seafile URL format: invalid port '{port_s}' in host '{segment}'"

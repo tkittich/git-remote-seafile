@@ -239,6 +239,56 @@ class TestLFSTransferAgent(unittest.TestCase):
         finally:
             agent._temp_dir.cleanup()
 
+    def test_lfs_download_flags_a_size_mismatch(self):
+        # git-lfs sends the expected size with the request; a truncated or
+        # corrupted remote object used to be handed over silently and only
+        # fail later on the final hash.
+        mock_client = MagicMock()
+
+        def fake_download(repo_id, file_path, dest, progress_callback=None):
+            Path(dest).write_bytes(b"SHORT")
+            return True
+
+        mock_client.download_file_to = MagicMock(side_effect=fake_download)
+        agent = LFSTransferAgent(mock_client, "repo1", "/git-test")
+        try:
+            stdout_buf = io.StringIO()
+            with patch("sys.stdout", stdout_buf):
+                agent.handle_download(
+                    {"event": "download", "oid": "abcdef0123456789", "size": 1024}
+                )
+
+            resp = json.loads(stdout_buf.getvalue().strip())
+            self.assertEqual(resp["event"], "complete")
+            self.assertEqual(resp["error"]["code"], 502)
+            self.assertIn("expected 1024", resp["error"]["message"])
+            self.assertIn("downloaded 5 bytes", resp["error"]["message"])
+        finally:
+            agent._temp_dir.cleanup()
+
+    def test_lfs_download_accepts_a_matching_size(self):
+        mock_client = MagicMock()
+
+        def fake_download(repo_id, file_path, dest, progress_callback=None):
+            Path(dest).write_bytes(b"EXACT")
+            return True
+
+        mock_client.download_file_to = MagicMock(side_effect=fake_download)
+        agent = LFSTransferAgent(mock_client, "repo1", "/git-test")
+        try:
+            stdout_buf = io.StringIO()
+            with patch("sys.stdout", stdout_buf):
+                agent.handle_download(
+                    {"event": "download", "oid": "abcdef0123456789", "size": 5}
+                )
+
+            msgs = [json.loads(line) for line in stdout_buf.getvalue().strip().splitlines() if line]
+            resp = msgs[-1]
+            self.assertEqual(resp["event"], "complete")
+            self.assertNotIn("error", resp)
+        finally:
+            agent._temp_dir.cleanup()
+
     def test_lfs_upload_internal_server_error(self):
         mock_client = MagicMock()
         mock_client.upload_file.side_effect = RuntimeError("Network timeout")

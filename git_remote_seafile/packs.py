@@ -30,13 +30,13 @@ def check_remote_has_packs(client: SeafileClient, repo_id: str, remote_pack_dir:
     """True if the remote already holds at least one packfile.
 
     Used to tell a genuinely empty repository apart from one whose ref
-    listing failed. Returns False when the question cannot be answered.
+    listing failed.  A missing pack directory is the genuine-empty answer;
+    any *other* listing failure propagates, so the caller's empty-repository
+    guard cannot be silenced by the same transient error that emptied the ref
+    listing.
     """
-    try:
-        entries = client.list_dir(repo_id, remote_pack_dir)
-        if not isinstance(entries, list):
-            return False
-    except Exception:
+    entries = client.list_dir(repo_id, remote_pack_dir)  # 404 -> []; failures raise
+    if not isinstance(entries, list):
         return False
     return any(e.get("name", "").endswith(".pack") for e in entries if isinstance(e, dict))
 
@@ -62,6 +62,12 @@ def fetch_pack_artifact(
     failure reason -- 'missing' (nothing downloaded), 'empty' (zero bytes), or
     'truncated' (size mismatch) -- and the caller decides whether that is
     fatal (a pack) or regenerable (an index).
+
+    Residual: when the listing omitted the size entirely (``expected_size is
+    None``), the in-memory fallback cannot be size-checked up front, and a
+    huge artifact would be buffered before it could be refused.  Every
+    current caller passes the size from the listing; keep that contract for
+    any future caller.
     """
     downloaded = False
     if hasattr(client, "download_file_to"):

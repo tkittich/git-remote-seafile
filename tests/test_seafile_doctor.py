@@ -163,6 +163,7 @@ class TestWhere(DoctorFixture):
 
         self.assertIn("INSIDE SYNCED LIBRARY", out)
         self.assertIn("code/app.py", out)
+        self.assertEqual(self.rc, 0)  # scripts gate on this
 
     def test_a_path_outside_every_library_says_so(self):
         lib, _ = self._library("Documents")
@@ -171,6 +172,7 @@ class TestWhere(DoctorFixture):
         out = self._run(doc.cmd_where, path=str(self.tmp / "elsewhere"))
 
         self.assertIn("not inside any synced library", out)
+        self.assertEqual(self.rc, 1)  # "not synced" is a finding, not a failure
 
 
 class TestErrors(DoctorFixture):

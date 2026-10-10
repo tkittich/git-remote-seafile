@@ -134,6 +134,18 @@ class TestUrlParsingModule(unittest.TestCase):
         self.assertIn("Invalid Seafile URL format", str(ctx.exception))
         self.assertIn("invalid port 'lib'", str(ctx.exception))
 
+    def test_unbracketed_ipv6_is_rejected_with_the_working_spelling(self):
+        """Colons make bare-host port splitting meaningless for IPv6.
+
+        ``seafile://2001:db8::1/lib/repo`` used to rpartition into a nonsense
+        host and port; it now names the explicit-scheme bracketed form that
+        does parse.
+        """
+        with self.assertRaises(ValueError) as ctx:
+            parse_seafile_url("seafile://2001:db8::1/lib/repo")
+        self.assertIn("IPv6", str(ctx.exception))
+        self.assertIn("seafile://https://[2001:db8::1]/", str(ctx.exception))
+
     def test_empty_host_explicit_scheme_rejected(self):
         for url in ("seafile://https:///lib/repo", "seafile://http:///lib/repo"):
             with self.subTest(url=url):

@@ -180,6 +180,24 @@ class LFSTransferAgent:
                 return
 
             size = temp_dest.stat().st_size if temp_dest.is_file() else 0
+            # git-lfs sends the expected size with the download request; a
+            # mismatch means the stored object is truncated or corrupt.  LFS
+            # would catch it on the final hash, but an early, explicit error
+            # beats a confusing hash failure later.
+            expected = msg.get("size")
+            if isinstance(expected, int) and not isinstance(expected, bool) and expected >= 0 and size != expected:
+                self._send_json({
+                    "event": "complete",
+                    "oid": oid,
+                    "error": {
+                        "code": 502,
+                        "message": (
+                            f"Object {oid} downloaded {size} bytes but the "
+                            f"request expected {expected}"
+                        ),
+                    },
+                })
+                return
             final_delta = size - last_bytes
             if final_delta > 0:
                 self._send_progress(oid, size, final_delta)

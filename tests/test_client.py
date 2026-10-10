@@ -564,6 +564,71 @@ class TestClientAPI(unittest.TestCase):
         with self.assertRaises(SeafileAPIError):
             self.client.get_file_bytes("repo1", "/bad.txt")
 
+    def test_download_error_redacts_the_transfer_token(self):
+        """A download link embeds a bearer token; the error must not carry it.
+
+        The upload error already omits the path for exactly this reason, but
+        the download half printed the whole URL -- which ends up in CI logs
+        and pasted issue reports.  The origin and the repo-side path are kept:
+        they are what names a wrong scheme or host.
+        """
+        link = '"https://seafile.example.com/seafhttp/files/SECRET-TOKEN/file.pack"'
+
+        def route(url, **kwargs):
+            if "/api2/repos/" in url:
+                return MagicMock(status_code=200, text=link)
+            return MagicMock(status_code=502)
+
+        self.client.session.get = MagicMock(side_effect=route)
+        with self.assertRaises(SeafileAPIError) as ctx:
+            self.client.get_file_bytes("repo1", "/objects/pack/pack-x.pack")
+        msg = str(ctx.exception)
+        self.assertIn("HTTP 502", msg)
+        self.assertIn("GET https://seafile.example.com", msg)
+        self.assertIn("/objects/pack/pack-x.pack", msg)
+        self.assertNotIn("SECRET-TOKEN", msg)
+
+    def test_download_file_to_error_redacts_the_transfer_token(self):
+        link = '"https://seafile.example.com/seafhttp/files/SECRET-TOKEN/big.bin"'
+
+        def route(url, **kwargs):
+            if "/api2/repos/" in url:
+                return MagicMock(status_code=200, text=link)
+            return MagicMock(status_code=503)
+
+        self.client.session.get = MagicMock(side_effect=route)
+        with tempfile.TemporaryDirectory() as td:
+            with self.assertRaises(SeafileAPIError) as ctx:
+                self.client.download_file_to("repo1", "/lfs/big.bin", Path(td) / "out")
+        msg = str(ctx.exception)
+        self.assertIn("GET https://seafile.example.com", msg)
+        self.assertNotIn("SECRET-TOKEN", msg)
+
+    def test_adjust_url_upgrades_across_host_spelling(self):
+        """Same server, different spelling: what the exact compare missed.
+
+        ``SEAFILE_SERVER`` is kept verbatim (``https://MyServer.com``), but the
+        link the server returns need not match that spelling.  The miss meant
+        the http→https upgrade never fired -- and a redirected POST is
+        re-issued as a GET, which the upload endpoint answers with HTTP 400.
+        """
+        client = SeafileClient(server_url="https://MyServer.com", token="t")
+        raw_url = "http://myserver.com/seafhttp/upload-api/abc"
+        self.assertEqual(
+            client._adjust_url(raw_url),
+            "https://myserver.com/seafhttp/upload-api/abc",
+        )
+        # a genuinely different endpoint (a real port) is still left alone
+        raw_url = "http://myserver.com:8082/seafhttp/files/abc/file"
+        self.assertEqual(client._adjust_url(raw_url), raw_url)
+
+    def test_client_closes_its_sessions(self):
+        """close() and the context manager release both sessions harmlessly."""
+        client = SeafileClient(server_url="https://seafile.example.com", token="t")
+        with client as entered:
+            self.assertIs(entered, client)
+        client.close()  # a second close must be harmless
+
     def test_api_quotes_paths(self):
         mock_resp = MagicMock(status_code=200, json=lambda: [])
         self.client.session.get = MagicMock(return_value=mock_resp)

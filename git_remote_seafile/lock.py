@@ -574,16 +574,25 @@ class RemoteLock:
                 pass
 
     def get_status(self) -> dict[str, Any]:
-        """Inspect current repository lock status."""
+        """Inspect current repository lock status.
+
+        Read-only: tickets are neither reaped nor rewritten.  The winner is
+        the earliest ticket whose lease is *still active*; if every ticket has
+        expired (or its local PID is dead) the earliest one is still reported,
+        but flagged ``stale`` -- a plain push would reap it and take the lock,
+        and ``lock-status`` should say so rather than present a dead lock as a
+        live one that happens to expire in 0 seconds.
+        """
         now = self._get_server_time()
-        # Read-only query; do not reap stale tickets during status inspection.
         try:
             tickets = self._scan_tickets(now, reap=False)
         except Exception:
             tickets = []
         if tickets:
             tickets.sort(key=lambda t: t.get("_order_key", (0, 0, "")))
-            winner = tickets[0]
+            active = [t for t in tickets if self._is_lock_active(t, now)]
+            stale = not active
+            winner = active[0] if active else tickets[0]
             try:
                 w_time = float(winner.get("timestamp", 0))
                 w_lease = float(winner.get("lease", self.lease))
@@ -601,6 +610,7 @@ class RemoteLock:
                 "nonce": winner.get("nonce"),
                 "expires_in": max(0, int(exp - now)),
                 "expires_at": exp,
+                "stale": stale,
             }
         return {"locked": False}
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 import unittest
 from unittest.mock import MagicMock
 
+from git_remote_seafile.client import SeafileAPIError
 from git_remote_seafile.packs import (
     PACK_NAME_RE,
     check_remote_has_packs,
@@ -49,8 +50,14 @@ class TestPacksModule(unittest.TestCase):
         client.list_dir.return_value = [{"name": "some-other-file.txt"}]
         self.assertFalse(check_remote_has_packs(client, "r1", "/git-repo/objects/pack"))
 
-        client.list_dir.side_effect = Exception("network failure")
-        self.assertFalse(check_remote_has_packs(client, "r1", "/git-repo/objects/pack"))
+        # A missing pack directory is the genuine-empty answer (list_dir maps
+        # a 404 to []); any *other* listing failure propagates.  Swallowing it
+        # used to let cmd_list's empty-repository guard be silenced by the
+        # same transient error that emptied the ref listing -- exactly the
+        # silent-empty-clone the guard exists to prevent.
+        client.list_dir.side_effect = SeafileAPIError("HTTP 500")
+        with self.assertRaises(SeafileAPIError):
+            check_remote_has_packs(client, "r1", "/git-repo/objects/pack")
 
         client.list_dir.side_effect = None
         client.list_dir.return_value = None
