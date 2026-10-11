@@ -2,52 +2,56 @@
 """Run the test suite across processes.
 
 Why this exists: ``python -m unittest discover tests`` is single-threaded, and
-the end-to-end module dominates the run.  Measured on a 12-core / 24-thread
-machine (AMD 5900X), 268 tests:
+the end-to-end and snapshot modules dominate the run.  Measured on a 12-core /
+24-thread machine (AMD 5900X), 612 tests across 118 targets:
 
-    python -m unittest discover tests       204.4 s    <- the baseline
-    this runner,  -j 1                      261.1 s    <- not a baseline; see below
-    this runner,  -j 2                      141.2 s
-    this runner,  -j 4                       84.6 s
-    this runner,  -j 6                       66.1 s
-    this runner, -j 12                       52.7 s    <- default here (one per CPU)
-    this runner, -j 24                       50.4 s
+    this runner,  -j 4                      341.9 s
+    this runner,  -j 8                      238.6 s
+    this runner,  -j 8 --granularity test   298.5 s    <- worse; see below
 
-Repeated ``-j 12`` runs land between 52.7 s and 56.5 s, so read the column as
-indicative rather than exact.  The ordering, and the shape of the curve, are
-what the numbers are here to show.
+Read the column as indicative rather than exact: repeated runs spread by around
+a tenth.  The ordering, and the shape of the curve, are what the numbers are
+here to show.
 
-``test_e2e`` is most of the suite because every case shells out to a real
-``git`` and starts a stub HTTP server: its ten classes are 117.8 s of the 204.4 s
-serial run, close to three fifths.  So distributing the work takes the wall time
-down towards the longest single unit of work -- 37.0 s here -- and not towards
-zero.
+The single-threaded baseline is not carried forward.  It was 204.4 s when the
+suite held 268 tests, and the suite has since more than doubled, so that figure
+is exactly the kind of stale number this docstring was rewritten to remove; run
+``python -m unittest discover tests`` if you want a current one.
+
+**The critical path is the floor.**  ``test_snapshot_tool.ByteExactnessTests``
+is the longest single unit of work -- 115.6 s of the 238.6 s wall time at
+``-j 8`` -- and a class is the smallest thing the runner can schedule, so
+distributing the work takes the wall time down towards that, not towards zero.
+``test_snapshot_tool`` and ``test_e2e`` are most of the suite because every case
+builds temp trees and shells out to a real ``git`` repeatedly, which is why the
+work is I/O- and subprocess-bound rather than CPU-starved.
 
 ``-j 1`` is *slower* than the plain serial command, and that is the granularity
 argument in miniature: one process per class pays an interpreter start-up and a
-fresh ``import requests`` for each of the 68 targets, about 0.8 s apiece and
-~57 s over the run.  Use ``python -m unittest discover tests`` for a baseline;
-``-j 1`` is not one.
+fresh ``import requests`` for each of the 118 targets.  Use ``python -m unittest
+discover tests`` for a baseline; ``-j 1`` is not one.
 
 **Granularity is the test class.**  Not the module, and not the test:
 
-    class granularity, -j 12                52.7 s    <- the default
-    test  granularity, -j 12                89.1 s
+    class granularity, -j 8                 238.6 s    <- 118 targets
+    test  granularity, -j 8                 298.5 s    <- 612 targets
 
-* Per module would leave the whole of ``test_e2e`` on one worker, and that module
-  alone takes 117.8 s in a single process -- 2.2x the class-granularity wall time
-  above -- which is not worth the complexity.
+* Per module would leave the whole of ``test_snapshot_tool`` on one worker, and
+  that module is the bulk of the suite's work -- more than the class-granularity
+  wall time above -- which is not worth the complexity.
 * Per test is *worse*, which is not obvious.  ``E2ETestCase`` does its expensive
   work in ``setUpClass`` (a temp directory, a stub HTTP server, a git
   environment); scheduling per test repeats all of that for every test in the
-  class.  The 200 extra interpreter start-ups cost less than the setup they
+  class.  The 494 extra interpreter start-ups cost less than the setup they
   duplicate.
 
-**The curve flattens early.**  Twelve workers are 1.6x four, not 3x, and 24
-workers buy only a couple of seconds over 12 -- less than the run-to-run
-spread.  The heavy targets are themselves multi-process -- each E2E case runs
-``git`` several times and serves HTTP -- so a dozen of them at once contend for
-the same cores.  Six to twelve workers is the useful range on this machine.
+**The curve flattens early.**  Eight workers are 1.4x four, not 2x, and beyond
+eight the wall time barely moves -- measured on this suite at 607 tests earlier
+the same day, ``-j 16`` was 215.5 s and ``-j 24`` 212.7 s against 257.7 s at
+``-j 8``.  The default is one worker per CPU, which on a wide machine is more
+than the suite can use.  The heavy targets are themselves multi-process -- each
+E2E case runs ``git`` several times and serves HTTP -- so a dozen of them at
+once contend for the same cores.
 
 A class is the smallest thing ``unittest`` can load on its own, and each worker
 is handed the next class the moment it finishes, so one slow class does not

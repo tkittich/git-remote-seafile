@@ -755,6 +755,9 @@ Everything above moves *commits*. That leaves one gap the helper cannot close by
 
 `tools/seafile_snapshot.py` closes that gap. It captures the working tree **as it lies on disk** — ignored files and all — into versioned, byte-exact snapshots stored in a Seafile library, over the same transport the helper already uses. It is a script, not a subcommand, and it needs no credentials of its own: it reaches Seafile the way `git push` does.
 
+> [!NOTE]
+> **Getting the tool: it comes with the source, not the wheel.** `pip install git-remote-seafile` installs the *helper* only — `tools/` is not part of the installed package, and no wheel contains it, so the `python tools/seafile_snapshot.py` commands below would fail on a plain `pip install git+…`. Clone the repository, or unpack the sdist attached to a [GitHub Release](https://github.com/tkittich/git-remote-seafile/releases); the sdist ships `tools/`, and the script locates the package itself, so it runs from any directory inside that checkout with nothing installed. `pip install -e .` from a clone gives you both at once. The same applies to `tools/seafile_doctor.py` (README, *Diagnostics for the Seafile desktop client*).
+
 > [!IMPORTANT]
 > **Keep the Golden Rule (§2).** A snapshot's *source* may be anywhere — including inside a synced library — because the tool never writes to it. The snapshot's *destination* is a Seafile library, and like every other remote in this guide it should be an unsynced one.
 

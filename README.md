@@ -186,6 +186,9 @@ git clone seafile://seafile.example.com/code/myproject
 
 A `.gitignore`d file never enters a commit, so **no remote helper can carry it** — `.env`, a local database, build output. `tools/seafile_snapshot.py` closes that gap: it captures the working tree **as it lies on disk**, ignored files and all, into versioned, byte-exact snapshots in a Seafile library, over the same transport the helper uses.
 
+> [!NOTE]
+> **The tools ship with the source, not with the wheel.** `pip install` gives you the helper (`git-remote-seafile`) and nothing else — no wheel contains `tools/`, so `python tools/seafile_snapshot.py` fails for a plain `pip install git+…`. To get the snapshot tool (or `tools/seafile_doctor.py` below), clone the repository, or unpack the sdist attached to a [GitHub Release](https://github.com/tkittich/git-remote-seafile/releases). The sdist ships `tools/`, and the script locates the package itself, so it runs from any directory inside that checkout without installing anything; `pip install -e .` from a clone gives you both at once.
+
 > [!WARNING]
 > **A snapshot copies the whole tree, so it holds what you would never commit.** The vault will contain `.env`, keys and local databases — that is the point — so push it to a library whose access matches the secrets it carries. Nested Git repositories are recorded only as gitlinks: a restore rebuilds the directory but not its contents. Symlinks are stored faithfully (a `120000` entry holding the target path), but a restore onto Windows without Developer Mode turns each one back into a text file containing that path. The byte-for-byte check that runs after **every** restore (not only under `--verify`) then names it as a mismatch and **aborts the restore** — the vault is intact, so re-running with `core.symlinks` enabled reproduces the links.
 
@@ -233,6 +236,8 @@ which needs a path argument).
 
 It copies the client's databases to a temporary directory before opening them,
 so a running client is never blocked or torn, and it never writes anything back.
+Like the snapshot tool above, it ships with the source checkout and the sdist
+rather than the wheel.
 
 ---
 
