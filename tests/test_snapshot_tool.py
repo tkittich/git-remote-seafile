@@ -683,6 +683,24 @@ class CommitterIdentityTests(_SnapshotFixture):
         self.assertEqual(rc, 1)
         self.assertIn("no git identity is configured", err)
 
+    def test_a_fresh_dry_run_needs_no_identity_at_all(self):
+        """A preview must work on a machine with no git identity anywhere.
+
+        CI runners have none: the dry run writes nothing (REVIEW.snap-tool-deep
+        R3), so it cannot inherit-and-pin identity either, and building the
+        preview commit used to die in commit-tree with "empty ident name".
+        The preview stops at the tree, which answers everything it prints.
+        """
+        empty = self.tmp / "no-global"
+        empty.write_text("", encoding="utf-8")
+        with unittest.mock.patch.dict(
+            os.environ,
+            {"GIT_CONFIG_GLOBAL": str(empty), "GIT_CONFIG_SYSTEM": str(empty)},
+        ):
+            rc, out, err = self.snapshot("--dry-run")
+        self.assertEqual(rc, 0, err)
+        self.assertIn("dry run", out)
+
     def _global_config(self, name: str, email: str) -> pathlib.Path:
         path = self.tmp / "global-config"
         path.write_text(

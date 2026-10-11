@@ -922,12 +922,16 @@ def build_snapshot(
     parent: str | None,
     excludes: list[str],
     message: str,
+    make_commit: bool = True,
 ) -> tuple[str, str | None, list[str]]:
     """Stage the whole tree into the vault index and write a commit object.
 
     Returns ``(tree, commit, excluded)``, where ``commit`` is ``None`` when the
     tree is identical to ``parent`` -- an unchanged run should not pile up empty
-    commits.  ``parent`` is passed in rather than read from the branch, because
+    commits -- or when ``make_commit`` is false: a preview stops at the tree,
+    because a commit would need an identity the preview has deliberately not
+    written, and every report the preview prints is derived from the tree
+    alone.  ``parent`` is passed in rather than read from the branch, because
     the caller may have just re-based on the remote tip.  The branch is *not*
     moved here: that is the caller's job, so a dry run can stop one step short.
     """
@@ -935,6 +939,9 @@ def build_snapshot(
     excluded = apply_excludes(git_dir, work_tree, excludes)
 
     tree = git(git_dir, work_tree, ["write-tree"], cwd=work_tree).stdout.strip()
+
+    if not make_commit:
+        return tree, None, excluded
 
     if parent:
         parent_tree = git(
@@ -2286,8 +2293,16 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 base = current_tip(git_dir, source, branch)
 
+            # A dry run stops one step before the branch move, so it does not
+            # need the commit either -- and building one would need an
+            # identity the preview has deliberately not written (the dry run
+            # writes nothing, REVIEW.snap-tool-deep.md R3).  CI runners have
+            # no global identity, which is why passing locally did not mean
+            # passing there.  write-tree alone answers every question a
+            # preview prints (file count, size, diffstat, secrets, gitlinks).
             tree, commit, excluded = build_snapshot(
-                git_dir, source, base, exclude, message
+                git_dir, source, base, exclude, message,
+                make_commit=not args.dry_run,
             )
             count, size = describe_tree(git_dir, source, tree)
 
