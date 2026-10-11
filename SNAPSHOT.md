@@ -415,8 +415,17 @@ paths it captured, so the choice of remote is made with that in view. Push it
 only to a library only you can read.
 
 **File modes and symlinks** — Git for Windows does not reliably record the
-executable bit (`core.fileMode`), and symlink support depends on developer mode.
-A restore performed on Linux may not reproduce permissions or symlinks.
+executable bit (`core.fileMode`), so a restore elsewhere may not reproduce file
+permissions. Symlinks are captured faithfully — a `120000` tree entry whose blob
+is the link target, recorded even when the source checkout has
+`core.symlinks=false` — and a restore on Linux or macOS rebuilds real links.
+Windows is the exception: without `core.symlinks` enabled (Developer Mode, or an
+elevated process) `git checkout` writes a regular text file containing the
+target path instead. The restore's byte verification names that as a mismatch,
+and because the check runs on every restore — not only under `--verify` — the
+run stops there rather than reporting success over a tree of text files. The
+vault is intact: enabling `core.symlinks` and restoring again reproduces the
+links.
 
 **Case-insensitive filesystems** — Windows and macOS can collapse `Foo.txt` and
 `foo.txt`; Git will warn, but the snapshot may not round-trip both.

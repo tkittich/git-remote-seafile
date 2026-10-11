@@ -1304,6 +1304,13 @@ def verify_restore(repo: Path, rev: str) -> list[str]:
     paths: list[bytes] = []
     expected: list[bytes] = []
     symlinks: list[str] = []
+    #: Blob SHA for *every* entry, symlinks included.  ``expected`` is parallel
+    #: to ``paths``, which deliberately excludes symlinks, so a symlink must not
+    #: be looked up by its position in that list: doing so compared the link
+    #: against an unrelated file's blob, which reported every correctly-restored
+    #: link as a mismatch -- and raised IndexError outright when the tree held
+    #: nothing but symlinks.
+    blob_sha: dict[str, bytes] = {}
     for entry in listing.stdout.split(b"\0"):
         if not entry:
             continue
@@ -1321,7 +1328,9 @@ def verify_restore(repo: Path, rev: str) -> list[str]:
         # reading the link) and never sent through hash-object.
         # (archive/REVIEW.snap-tool-deep.md, finding C-1.)
         if fields[0] == b"120000":
-            symlinks.append(path.decode("utf-8", errors="surrogateescape"))
+            link = path.decode("utf-8", errors="surrogateescape")
+            symlinks.append(link)
+            blob_sha[link] = fields[2]
             continue
         paths.append(path)
         expected.append(fields[2])
@@ -1347,7 +1356,7 @@ def verify_restore(repo: Path, rev: str) -> list[str]:
             mismatched_symlinks.append(link)
             continue
         blob = subprocess.run(
-            ["git", "-C", str(repo), "cat-file", "blob", expected[symlinks.index(link)]],
+            ["git", "-C", str(repo), "cat-file", "blob", blob_sha[link]],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )

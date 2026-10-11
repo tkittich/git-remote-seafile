@@ -461,6 +461,9 @@ git clone seafile://seafile.example.com/code/myproject
 > [!NOTE]
 > **Shallow and partial clones are detected, so they work.** The helper skips a redundant remote pack download when the requested tip commits already exist locally. That inference is only sound in a full clone — in a `--depth` or `--filter` clone the tip can be present while deeper trees and blobs are not — so the helper withholds the skip there and fetches the pack instead. `--depth 1` and `--filter=blob:none` are supported; they simply cost the download a full clone would have skipped.
 
+> [!NOTE]
+> **Symlinks survive the repository, but not every Windows checkout.** A symlink is an ordinary tree entry — mode `120000`, with the link target stored as the blob's content — so packfiles carry it verbatim and a clone on Linux or macOS reproduces real links. Windows is the exception: unless `core.symlinks` is enabled (Developer Mode, or an elevated process), Git checks a link out as a **regular text file whose contents are the target path**. The repository is unaffected and `git status` stays clean, because Git knows the entry is a link; only that working tree differs, and a clone on a symlink-capable machine gets the links back. Nothing in the helper needs to special-case this — there is no symlink code in it, because a packfile never had a link to preserve.
+
 ### 8.3 Normal Fetch, Pull, and Push
 All standard Git commands work transparently:
 ```bash
@@ -890,6 +893,9 @@ which hashes the bytes as they lie on disk. That is the only one of Git's three 
 | `git status --porcelain` | the file *through* the filters | Yes — compares filtered bytes to filtered bytes |
 | `git hash-object` | the file after the clean filter | Yes — the filter can normalise the difference away |
 | `git hash-object --no-filters` | the raw bytes on disk | **No** — and it holds for *any* checkout, including one you made by hand |
+
+> [!NOTE]
+> **A symlink restored onto Windows without `core.symlinks` fails that check, and the restore aborts.** Git checks a `120000` entry out as a plain text file whose contents are the target path, so the verification finds no link to read and names the path as a mismatch. Because the check runs on **every** restore — not only under `--verify` — the run stops there rather than quietly handing back a tree of files where the source had links. The blobs are intact: enabling `core.symlinks` (Developer Mode, or an elevated process) and restoring again reproduces the links. Symlinks are verified by reading the link itself, never by `hash-object`, which on POSIX would follow the link and hash its target.
 
 ### 15.5 What the tool refuses to do
 

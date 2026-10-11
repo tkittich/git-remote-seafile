@@ -53,6 +53,46 @@ def _git(cwd: pathlib.Path, *args: str) -> subprocess.CompletedProcess[str]:
     )
 
 
+def _symlinks_round_trip() -> bool:
+    """Can this machine create a symlink *and* have git carry it as one?
+
+    Probes the property the symlink tests actually need, rather than reading
+    ``core.symlinks``: that key is usually unset (git auto-detects it), and
+    ``os.symlink`` can succeed while git still stores the target path as an
+    ordinary file.  Both halves matter -- a snapshot records a link only if
+    ``git add`` writes a ``120000`` entry, and a restore reproduces one only
+    if ``git checkout`` creates a link rather than a text file.
+
+    Windows needs Developer Mode (or an elevated process) for either half, so
+    the CI Windows runner answers False here and the tests skip instead of
+    failing on something the platform cannot do.  Any failure at all reads as
+    "no": a capability probe that raises is a probe that breaks collection.
+    """
+    probe = pathlib.Path(tempfile.mkdtemp(prefix="grs-symlink-probe-"))
+    try:
+        repo = probe / "repo"
+        repo.mkdir()
+        (repo / "target").write_bytes(b"x\n")
+        os.symlink("target", repo / "link")
+        _git(repo, "init", "-q", "-b", "main", ".")
+        _git(repo, "config", "user.email", "probe@example.com")
+        _git(repo, "config", "user.name", "Probe")
+        _git(repo, "add", "-A")
+        # Half one: is the on-disk link recorded as a 120000 entry?
+        entry = _git(repo, "ls-files", "-s", "--", "link").stdout.split()
+        if not entry or entry[0] != "120000":
+            return False
+        # Half two: does a checkout hand the link back?
+        _git(repo, "commit", "-qm", "probe")
+        (repo / "link").unlink()
+        _git(repo, "checkout", "--", "link")
+        return (repo / "link").is_symlink()
+    except Exception:  # any failure means "this platform cannot do it"
+        return False
+    finally:
+        shutil.rmtree(probe, ignore_errors=True)
+
+
 class _SnapshotFixture(unittest.TestCase):
     """A source repository with ignored files, plus an empty vault path.
 
@@ -1009,6 +1049,128 @@ class RestoreVerificationTests(_SnapshotFixture):
             _git(self.restored, "hash-object", "--", "README.md").stdout.strip(),
             blob,
         )
+
+
+class SymlinkVerificationTests(unittest.TestCase):
+    """``verify_restore`` must judge a symlink by *its own* blob.
+
+    A symlink is a tree entry of mode ``120000`` whose blob is the link
+    target, and :func:`verify_restore` collects those entries into a list
+    deliberately kept apart from the regular files'.  Reading that list as if
+    it were parallel to the other one compared a link against an unrelated
+    file's blob, so a correctly restored link was reported as a mismatch --
+    and a mismatch aborts the restore -- while a tree holding nothing but
+    symlinks raised IndexError outright.
+
+    Both trees here are built with ``update-index --cacheinfo``, which records
+    a ``120000`` entry *without* asking the OS for a symlink, so these cases
+    run on every platform -- including the Windows CI runner, where a real
+    symlink is not available.
+    """
+
+    def setUp(self):
+        self.tmp = pathlib.Path(tempfile.mkdtemp(prefix="grs-symlink-"))
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+
+    def _repo_with(
+        self, regular: dict[str, bytes], links: dict[str, str]
+    ) -> pathlib.Path:
+        """A committed repo holding the given files and ``120000`` entries.
+
+        The links exist only in the index: ``--cacheinfo`` never touches the
+        working tree, which is exactly the state a Windows checkout without
+        ``core.symlinks`` leaves behind (a path that is not a link on disk).
+        """
+        repo = self.tmp / "repo"
+        repo.mkdir()
+        _git(repo, "init", "-q", "-b", "main", ".")
+        _git(repo, "config", "user.email", "dev@example.com")
+        _git(repo, "config", "user.name", "Dev")
+        for name, body in regular.items():
+            (repo / name).write_bytes(body)
+        _git(repo, "add", *regular)
+        scratch = self.tmp / "scratch"
+        for name, target in links.items():
+            scratch.write_bytes(target.encode())
+            sha = _git(repo, "hash-object", "-w", "--", str(scratch)).stdout.strip()
+            # The comma form: the space-separated `--cacheinfo <mode> <sha>
+            # <path>` spelling is rejected with "option `cacheinfo' takes no
+            # value" on the git versions this project supports.
+            _git(repo, "update-index", "--add", "--cacheinfo", f"120000,{sha},{name}")
+        _git(repo, "commit", "-qm", "tree")
+        return repo
+
+    def test_a_tree_of_only_symlinks_does_not_raise(self):
+        # The crash: `expected` (regular files) is empty while `symlinks` is
+        # not, so indexing `expected` by the link's position raised IndexError
+        # and no restore of such a tree could complete.
+        #
+        # The links have to be *readable* for the old code to reach the lookup
+        # at all -- an unreadable one is reported and skipped -- so os.readlink
+        # is patched to return the target the blobs hold: the tree as a POSIX
+        # restore produces it, where every link is correct and the only thing
+        # missing is a regular file to index.
+        repo = self._repo_with({}, {"a": "target", "b": "target"})
+        with unittest.mock.patch.object(os, "readlink", return_value="target"):
+            self.assertEqual(snap.verify_restore(repo, "main"), [])
+
+    def test_a_correctly_restored_link_matches_its_own_blob(self):
+        # The regression, and the reason this is a bug rather than a doc fix:
+        # with `expected` non-empty the old lookup used the *first regular
+        # file's* blob for the link, so a link whose bytes on disk were right
+        # was still reported -- and a report aborts the restore.
+        #
+        # os.readlink is what verify_restore uses to judge a link, so it is
+        # patched to return the target the blob holds: the state a POSIX
+        # restore produces.  The tree deliberately holds a regular file whose
+        # blob differs from that target, because that file is what the old
+        # positional lookup would have compared the link against.
+        repo = self._repo_with({"data.txt": b"unrelated bytes\n"}, {"a": "target"})
+        with unittest.mock.patch.object(os, "readlink", return_value="target"):
+            self.assertEqual(snap.verify_restore(repo, "main"), [])
+
+    def test_a_link_absent_from_the_working_tree_is_reported(self):
+        # The Windows text-file case, and the one legitimate mismatch: the
+        # entry is a link in the tree, but nothing readable as a link is on
+        # disk.  verify_restore must still name it rather than pass silently.
+        repo = self._repo_with({"data.txt": b"unrelated bytes\n"}, {"a": "target"})
+        self.assertEqual(snap.verify_restore(repo, "main"), ["a"])
+
+
+@unittest.skipUnless(
+    _symlinks_round_trip(), "this machine cannot round-trip a symlink"
+)
+class SymlinkSnapshotTests(_SnapshotFixture):
+    """A real symlink survives a snapshot and comes back as a link.
+
+    The unit cases above pin :func:`verify_restore` in isolation; these drive
+    the whole tool, so the capture side (``git add`` recording ``120000``) and
+    the restore side (``git checkout`` making a link) are covered too.  They
+    skip where the platform cannot do either half.
+    """
+
+    def test_a_snapshot_records_a_symlink_as_a_120000_entry(self):
+        os.symlink("README.md", self.code / "link.txt")
+        rc, out, err = self.snapshot("--remote", str(self.remote))
+        self.assertEqual(rc, 0, err)
+        entry = _git(
+            self.vault, "ls-tree", BRANCH, "--", "link.txt"
+        ).stdout.split()
+        self.assertEqual(entry[0], "120000")
+        # The blob is the target *path*, not the target's contents.
+        self.assertEqual(
+            _git(self.vault, "cat-file", "blob", f"{BRANCH}:link.txt").stdout,
+            "README.md",
+        )
+
+    def test_a_restored_symlink_is_not_reported_as_a_mismatch(self):
+        os.symlink("README.md", self.code / "link.txt")
+        self.snapshot("--remote", str(self.remote))
+        rc, out, err = self.restore_to(self.restored)
+        self.assertEqual(rc, 0, err)
+        self.assertTrue((self.restored / "link.txt").is_symlink())
+        self.assertEqual(os.readlink(self.restored / "link.txt"), "README.md")
+        self.assertEqual(snap.verify_restore(self.restored, BRANCH), [])
 
 
 class ExcludeMatchingTests(unittest.TestCase):
