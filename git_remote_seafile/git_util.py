@@ -314,6 +314,14 @@ def install_packfile(
 
         # Both artefacts are complete; publish them.
         #
+        # Order matters.  Git discovers packfiles by scanning for *.idx and
+        # assumes the sibling .pack exists, so publishing the index first
+        # exposes a window in which a concurrent process (git status, an IDE
+        # fetch, git log) can list an idx whose pack is not there yet and die
+        # with "cannot open packfile".  A pack without its idx, by contrast,
+        # is simply ignored by git until the index lands -- so pack first,
+        # idx second is the order with no observable broken state in between.
+        #
         # git writes pack and index files read-only (0444) to protect them.  On
         # Windows `os.replace` onto a read-only destination fails with
         # "PermissionError: [WinError 5] Access is denied", so re-installing a
@@ -326,8 +334,8 @@ def install_packfile(
                 target.chmod(0o644)
             except OSError:
                 pass  # absent, or on a filesystem that cannot express this
-        os.replace(staged_idx, target_idx)
         os.replace(staged_pack, target_pack)
+        os.replace(staged_idx, target_idx)
     finally:
         # After a successful publish the staged files have been renamed away;
         # after a failure this is what keeps the final path clean for a retry.
@@ -340,6 +348,27 @@ def get_git_config(key: str, default: str | None = None) -> str | None:
     if code != 0 or not out:
         return default
     return out.decode("utf-8").strip()
+
+
+def get_trusted_git_config_bool(key: str, default: bool = False) -> bool:
+    """Read a boolean *security-relevant* git config value, ignoring repo-local config.
+
+    `git config --get` reads every scope, including the `.git/config` of the
+    repository being operated on.  That is the right behavior for tuning keys
+    (lock timeouts, gc thresholds) but a trust-boundary inversion for the
+    safety gates: a hostile or careless repository that ships
+    `[seafile] skipsafetychecks = true` in its own config would otherwise
+    disarm the guardrails for every helper operation launched from that
+    checkout.  Keys read here answer only to the machine owner (system and
+    global scopes) and the environment; the repository being cloned or pushed
+    to never gets a vote.
+    """
+    out, _, code = run_git(["config", "--system", "--get", key])
+    if code != 0 or not out:
+        out, _, code = run_git(["config", "--global", "--get", key])
+    if code != 0 or not out:
+        return default
+    return out.decode("utf-8").strip().lower() in ("true", "1", "yes", "on")
 
 
 def get_git_config_bool(key: str, default: bool = False) -> bool:

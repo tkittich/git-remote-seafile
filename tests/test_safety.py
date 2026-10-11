@@ -3,6 +3,7 @@
 import io
 import os
 import sqlite3
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -25,7 +26,7 @@ class TestSafetyGuardrails(unittest.TestCase):
     def test_is_safety_checks_enabled(self):
         # Default should be enabled
         with patch.dict(os.environ, {}, clear=True):
-            with patch("git_remote_seafile.safety.get_git_config_bool", return_value=False):
+            with patch("git_remote_seafile.safety.get_trusted_git_config_bool", return_value=False):
                 self.assertTrue(is_safety_checks_enabled())
 
         # Environment variable overrides
@@ -33,10 +34,64 @@ class TestSafetyGuardrails(unittest.TestCase):
             with patch.dict(os.environ, {"SEAFILE_SKIP_SAFETY_CHECKS": val}):
                 self.assertFalse(is_safety_checks_enabled())
 
-        # Git config override
+        # Git config override -- the trusted (system/global-scope) reader,
+        # deliberately: repo-local config must not be able to set this key.
         with patch.dict(os.environ, {}, clear=True):
-            with patch("git_remote_seafile.safety.get_git_config_bool", return_value=True):
+            with patch("git_remote_seafile.safety.get_trusted_git_config_bool", return_value=True):
                 self.assertFalse(is_safety_checks_enabled())
+
+    def test_repo_local_config_cannot_disarm_safety_checks(self):
+        """A repository shipping `[seafile] skipsafetychecks = true` in its own
+        .git/config must not disarm the guardrails (REVIEW.glm.md H-12).
+
+        The trusted reader consults only the system and global scopes, so the
+        repo-local setting is invisible to it.  Runs against real git: the
+        repo-local value is set for real in a scratch repository, then
+        get_trusted_git_config_bool is executed inside it and must still
+        answer the default (False).
+        """
+        from git_remote_seafile.git_util import get_trusted_git_config_bool
+
+        with tempfile.TemporaryDirectory(prefix="grs-safety-scope-") as td:
+            repo = Path(td) / "hostile.git"
+            repo.mkdir()
+            env = dict(os.environ)
+            for var in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE",
+                        "GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM"):
+                env.pop(var, None)
+            def git(*args):
+                proc = subprocess.run(["git", *args], cwd=td, env=env,
+                                      capture_output=True)
+                if proc.returncode != 0:
+                    raise RuntimeError(proc.stderr.decode("utf-8", "replace"))
+            git("init", "--bare", "-q", str(repo))
+            # The hostile repo sets the key in its own config.
+            git("--git-dir", str(repo), "config", "seafile.skipsafetychecks", "true")
+            # Ordinary `git config --get` (run inside the repo) does read it:
+            proc = subprocess.run(
+                ["git", "--git-dir", str(repo), "config", "--get",
+                 "seafile.skipsafetychecks"],
+                env=env, capture_output=True,
+            )
+            self.assertEqual(proc.returncode, 0)
+            self.assertEqual(proc.stdout.decode().strip(), "true")
+            # ...but the trusted reader, executed with that repo as context,
+            # must not.  Point the search at the hostile repository the way
+            # the helper itself would be (cwd inside it) while keeping the
+            # real user scopes readable via isolated, empty global/system
+            # files so the test is hermetic.
+            empty_global = Path(td) / "empty-global"
+            empty_system = Path(td) / "empty-system"
+            empty_global.write_text("")
+            empty_system.write_text("")
+            hostile_env = dict(env)
+            hostile_env["GIT_CONFIG_GLOBAL"] = str(empty_global)
+            hostile_env["GIT_CONFIG_SYSTEM"] = str(empty_system)
+            with patch("os.getcwd", return_value=str(repo)):
+                with patch.dict(os.environ, hostile_env, clear=True):
+                    self.assertFalse(
+                        get_trusted_git_config_bool("seafile.skipsafetychecks", False)
+                    )
 
     def test_safe_relative_to(self):
         base = Path("/home/user/Documents")

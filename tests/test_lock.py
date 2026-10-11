@@ -571,6 +571,52 @@ class TestConcurrencyAndLocking(unittest.TestCase):
         self.assertTrue(lock.verify_ownership())
         self.assertEqual(lock.ownership_state(), LEASE_HELD)
 
+    def test_renew_write_failure_is_unknown_not_held(self):
+        """A renew that cannot REWRITE the ticket is LEASE_UNKNOWN (REVIEW.glm.md G-1).
+
+        The read side distinguishing takeover from unreadable ticket is
+        tested above; this is the third state: the ticket is readable and
+        ours, but the re-upload fails (connection dropped mid-renew).  The
+        lease can no longer be *proven*, and verify_ownership() must answer
+        False so the fence holds -- but the state is UNKNOWN, not LOST,
+        because no other client provably holds anything.
+        """
+        mock_client = MagicMock()
+        mock_client.token = "token123"
+        mock_client.get_file_text.return_value = None
+        lock = RemoteLock(mock_client, "repo1", "/path", timeout=5, lease=60, settle=0)
+        lock.acquire()
+
+        # Ticket reads back as ours...
+        mock_client.get_file_text.return_value = json.dumps({"nonce": lock._nonce})
+        # ...but the rewrite fails.
+        def broken_upload(*args, **kwargs):
+            raise RuntimeError("connection reset during write")
+        mock_client.upload_file.side_effect = broken_upload
+        with patch("sys.stderr", io.StringIO()):
+            self.assertFalse(lock.renew())
+        self.assertEqual(lock.ownership_state(), LEASE_UNKNOWN)
+
+    def test_maybe_renew_rewrites_the_ticket_through_the_client(self):
+        """The renewal path the push-side progress callback relies on works.
+
+        cmd_push registers on_upload_progress -> lock.maybe_renew(20.0) so a
+        long pack upload cannot outlive its lease; its wiring is pinned in
+        test_helper.py (G-4).  This pins the lock side of that contract: a
+        forced renewal rewrites the ticket through the client and leaves
+        ownership verifiable.
+        """
+        store = _SharedLockStore()
+        lock = RemoteLock(store.client("token123"), "repo1", "/path", timeout=60, lease=600, settle=0)
+        lock.acquire()
+        self.assertTrue(lock.acquired)
+
+        lock.maybe_renew(0)  # interval 0: force the renewal path now
+        after = store.get_text("repo1", f"/path/.git-lock.d/{lock._nonce}.json")
+        # The rewrite carried the same nonce, and ownership still verifies.
+        self.assertEqual(json.loads(after)["nonce"], lock._nonce)
+        self.assertTrue(lock.verify_ownership())
+
     def test_renew_fails_when_the_ticket_is_gone(self):
         """A missing ticket means the lease lapsed and was reaped; renew must fail."""
         mock_client = MagicMock()
@@ -628,6 +674,153 @@ class TestConcurrencyAndLocking(unittest.TestCase):
         # "nothing to release" instead of a success that did nothing
         self.assertFalse(lock.unlock())
 
+    def test_non_force_unlock_deletes_only_the_winner_ticket(self):
+        """Non-force unlock deletes the ticket the authorization covered -- not the queue.
+
+        unlock() used to sweep every .json in .git-lock.d even without --force,
+        destroying a *waiter's* active ticket: the waiter's next renew_state()
+        would then report LEASE_LOST and abort a push that was never contested
+        (REVIEW.glm.md H-3).  The ownership check authorizes deleting the
+        winning ticket only; --force remains the queue sweep.
+        """
+        import socket
+        store = _SharedLockStore()
+        # The winner belongs to this machine/user, so non-force is authorized.
+        # It must also be the earliest *active* ticket -- get_status()'s winner
+        # is active[0] -- so the foreign waiter's ticket is stamped older but
+        # expired, and a live one younger than ours.
+        # owner must match _owner_id() = sha256(token)[:8]; the fixture client
+        # uses token "token123", so derive the owner the same way.
+        import hashlib
+        owner_id = hashlib.sha256(b"token123").hexdigest()[:8]
+        # The winner must be *active* to be get_status()'s winner, and a
+        # same-machine ticket is only active when its PID is alive -- use this
+        # test process's own pid (README: the fixture hostnames nodeA/nodeB
+        # are not usable here because the winner must match the real machine).
+        winner = _ticket("winner-nonce", owner=owner_id, machine=socket.gethostname(),
+                         timestamp=time.time() - 10, order_ts=time.time() - 10,
+                         lease=60, pid=os.getpid())
+        store.put_ticket("/path/.git-lock.d/winner-nonce.json", json.loads(winner))
+        store.put_ticket("/path/.git-lock.d/winner-nonce.json", json.loads(winner))
+        expired_waiter = _ticket("expired-waiter", owner="bob", machine="elsewhere",
+                                 timestamp=time.time() - 3600, order_ts=time.time() - 3600,
+                                 lease=60, pid=999999)
+        store.put_ticket("/path/.git-lock.d/expired-waiter.json", json.loads(expired_waiter))
+        live_waiter = _ticket("live-waiter", owner="carol", machine="third-mach",
+                              timestamp=time.time() + 30, order_ts=time.time() + 30,
+                              lease=600, pid=999999)
+        store.put_ticket("/path/.git-lock.d/live-waiter.json", json.loads(live_waiter))
+
+        lock = RemoteLock(store.client("token123"), "repo1", "/path", timeout=5, lease=60, settle=0)
+        self.assertTrue(lock.unlock(force=False))
+
+        remaining = sorted(k for k in store.files if ".git-lock.d" in k)
+        self.assertEqual(remaining,
+                         ["/path/.git-lock.d/expired-waiter.json",
+                          "/path/.git-lock.d/live-waiter.json"],
+                         "non-force unlock must not touch other clients' tickets")
+
+    def test_force_unlock_sweeps_the_whole_queue(self):
+        """--force is the break-the-glass path: every ticket goes."""
+        store = _SharedLockStore()
+        store.put_ticket("/path/.git-lock.d/a.json",
+                         json.loads(_ticket("a", owner="alice", machine="nodeA")))
+        store.put_ticket("/path/.git-lock.d/b.json",
+                         json.loads(_ticket("b", owner="bob", machine="nodeB")))
+
+        lock = RemoteLock(store.client("token123"), "repo1", "/path", timeout=5, lease=60, settle=0)
+        self.assertTrue(lock.unlock(force=True))
+        self.assertEqual([k for k in store.files if ".git-lock.d" in k], [])
+
+    def test_unlock_refuses_to_act_on_an_unverifiable_queue(self):
+        """A listing failure must not read as 'nothing to release' (REVIEW.glm.md H-3/G-13).
+
+        The old behavior returned False for a get_status() that swallowed a
+        listing error, so the CLI printed 'not locked; nothing to release'
+        for a queue it never saw.  Now the unknown state raises, and the
+        operator decides.
+        """
+        store = _SharedLockStore()
+        store.put_ticket("/path/.git-lock.d/foreign.json",
+                         json.loads(_ticket("foreign", owner="alice", machine="nodeA")))
+        lock = RemoteLock(store.client("token123"), "repo1", "/path", timeout=5, lease=60, settle=0)
+
+        def broken_list(repo_id, path):
+            raise RuntimeError("transient server error")
+        # _scan_tickets reaches the store through the mock client built in
+        # .client() -- side_effect was bound at construction, so patch the
+        # client's method, not the store's.
+        client = lock.client
+        with patch.object(client, "list_dir", side_effect=broken_list):
+            with self.assertRaises(RepositoryLockedError) as ctx:
+                lock.unlock(force=False)
+        self.assertIn("unverifiable", str(ctx.exception))
+
+    def test_get_status_reports_a_listing_failure_as_unknown_not_unlocked(self):
+        """get_status must distinguish 'cannot tell' from 'unlocked' (REVIEW.glm.md H-4/G-3).
+
+        A transient server error during lock-status used to print 'UNLOCKED'
+        and exit 0 -- exactly the false confidence 'unlock --force' feeds on.
+        """
+        store = _SharedLockStore()
+        store.put_ticket("/path/.git-lock.d/a.json",
+                         json.loads(_ticket("a", owner="alice", machine="nodeA")))
+        lock = RemoteLock(store.client("token123"), "repo1", "/path", timeout=5, lease=60, settle=0)
+
+        def broken_list(repo_id, path):
+            raise RuntimeError("transient server error")
+        client = lock.client
+        with patch.object(client, "list_dir", side_effect=broken_list):
+            status = lock.get_status()
+        self.assertIsNone(status["locked"])
+        self.assertIn("transient server error", status.get("error", ""))
+
+    def test_mixed_ticket_formats_fall_back_to_mtime_ordering(self):
+        """One legacy ticket forces the whole queue onto mtime ordering (REVIEW.glm.md G-12).
+
+        _scan_tickets' fallback: when any visible ticket lacks ``order_ts``,
+        every ticket is ordered by (mtime, 0, nonce) -- comparing an order_ts
+        against an mtime across formats is not a FIFO comparison at all.  A
+        regression that compared order_ts floats against mtime ints across
+        formats would pass the all-modern test above; this pins the
+        cross-format case: the legacy ticket wins on mtime even though the
+        modern ticket's order_ts is earlier.
+        """
+        store = _SharedLockStore()
+        now = int(time.time())
+        # Legacy (v0.4-era) ticket: no order_ts field, newer mtime.
+        legacy_payload = json.loads(_ticket("legacy", owner="alice", machine="nodeA",
+                         timestamp=now - 60, lease=600, pid=999999))
+        del legacy_payload["order_ts"]
+        # The modern ticket was acquired earlier but rewrote its file later.
+        modern = _ticket("modern", owner="bob", machine="nodeB",
+                         timestamp=now - 120, order_ts=now - 120,
+                         lease=600, pid=999999)
+        store.put_ticket("/path/.git-lock.d/legacy.json", legacy_payload)
+        store.put_ticket("/path/.git-lock.d/modern.json", json.loads(modern))
+        # mtimes: modern's file is older on disk than legacy's.
+        store.mtime_override["/path/.git-lock.d/legacy.json"] = now - 30
+        store.mtime_override["/path/.git-lock.d/modern.json"] = now - 300
+
+        lock = RemoteLock(store.client("token123"), "repo1", "/path", timeout=0, lease=60, settle=0)
+        with self.assertRaises(RepositoryLockedError) as ctx:
+            lock.acquire()
+        # The mixed-format queue must order on mtime for BOTH tickets: the
+        # earliest mtime (modern's file, now-300) holds the lock.  If the
+        # code compared cross-format -- order_ts against mtime -- the modern
+        # ticket's earlier order_ts would still win here, so assert the
+        # *losing* side too: swap the mtimes and the legacy ticket must win.
+        self.assertIn("locked by 'bob'", str(ctx.exception))
+
+        # Mirror image: legacy's file oldest -> legacy wins.  Under a broken
+        # cross-format comparison the modern order_ts would win regardless.
+        store.mtime_override["/path/.git-lock.d/legacy.json"] = now - 300
+        store.mtime_override["/path/.git-lock.d/modern.json"] = now - 30
+        lock2 = RemoteLock(store.client("token123"), "repo1", "/path", timeout=0, lease=60, settle=0)
+        with self.assertRaises(RepositoryLockedError) as ctx2:
+            lock2.acquire()
+        self.assertIn("locked by 'alice'", str(ctx2.exception))
+
     def test_lock_status_flags_an_expired_queue_as_stale(self):
         """A dead lock must say so, not pose as one that expires in 0 seconds.
 
@@ -680,9 +873,14 @@ class TestConcurrencyAndLocking(unittest.TestCase):
         with patch("sys.platform", "win32"):
             mock_kernel32 = MagicMock()
             mock_kernel32.OpenProcess.return_value = 0
-            mock_kernel32.GetLastError.return_value = 5  # ERROR_ACCESS_DENIED
             mock_ctypes = MagicMock()
-            mock_ctypes.windll.kernel32 = mock_kernel32
+            # _is_pid_alive builds its own WinDLL("kernel32",
+            # use_last_error=True) and reads the failure through
+            # ctypes.get_last_error() -- the documented pattern (REVIEW.glm.md
+            # H-2): reading GetLastError() through ctypes.windll can return a
+            # stale value.  The mock therefore answers get_last_error().
+            mock_ctypes.get_last_error.return_value = 5  # ERROR_ACCESS_DENIED
+            mock_ctypes.WinDLL.return_value = mock_kernel32
             with patch.dict("sys.modules", {"ctypes": mock_ctypes, "ctypes.wintypes": MagicMock()}):
                 self.assertTrue(_is_pid_alive(1234))
 

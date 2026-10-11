@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import unittest
 
-from git_remote_seafile.url import parse_seafile_url
+from git_remote_seafile.url import mask_url, parse_seafile_url
 
 
 class TestUrlParsingModule(unittest.TestCase):
@@ -180,6 +180,36 @@ class TestUrlParsingModule(unittest.TestCase):
                 with self.assertRaises(ValueError) as ctx:
                     parse_seafile_url(url)
                 self.assertIn("invalid host", str(ctx.exception))
+
+
+class TestMaskUrl(unittest.TestCase):
+    """REVIEW.glm.md H-21: userinfo in a user-typed URL must not reach output."""
+
+    def test_userinfo_is_redacted(self):
+        self.assertEqual(mask_url("seafile://user:pass@host/lib/repo"),
+                         "seafile://host/lib/repo")
+
+    def test_nested_scheme_userinfo_is_redacted(self):
+        # The explicit-server spelling nests the real scheme:
+        # urlparse must see the *inner* authority.
+        self.assertEqual(mask_url("seafile://https://user:pass@host:8443/lib/repo"),
+                         "seafile://https://host:8443/lib/repo")
+
+    def test_username_only_is_redacted(self):
+        self.assertEqual(mask_url("seafile://user@host/lib"), "seafile://host/lib")
+
+    def test_at_sign_without_userinfo_is_left_alone(self):
+        # A stray @ with nothing before it parses to username=None; guessing
+        # would corrupt a legal URL, so it is returned unchanged.
+        self.assertEqual(mask_url("seafile://@host/lib"), "seafile://@host/lib")
+
+    def test_urls_without_userinfo_are_unchanged(self):
+        for url in ("seafile://host/lib/repo", "seafile://https://host/lib",
+                    "plain"):
+            self.assertEqual(mask_url(url), url)
+
+    def test_non_seafile_scheme_is_redacted_too(self):
+        self.assertEqual(mask_url("https://user:pass@host/lib"), "https://host/lib")
 
 
 if __name__ == "__main__":

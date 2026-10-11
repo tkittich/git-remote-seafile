@@ -252,7 +252,7 @@ There is a floor here — a snapshot inherently needs `fetch`, `add`,
 can be avoided without re-implementing Git's index. Fourteen calls is close to
 it.
 
-> **Watch the remote's packfile count.** The helper warns on every push and
+> **Watch the remote's packfile count.** The helper warns once the remote reaches the packfile threshold (seafile.gcthreshold, default 20) and
 > `seafile.autogc` is off by default, so a frequent snapshot regime needs
 > `git-remote-seafile gc <url>` run deliberately (or `seafile.autogc` turned
 > on). A remote that is never compacted grows without bound — see the
@@ -396,7 +396,7 @@ Measured with a 32 MB incompressible file, 1 KB changed per snapshot:
 | 1 | 33 MB |
 | 2 | 65 MB |
 | 3 | 97 MB |
-| after `gc --aggressive` | **33 MB** |
+| after `gc` | **33 MB** |
 
 The three near-identical revisions *do* delta-compress to essentially one copy —
 but only once something runs `gc`. Since `seafile.autogc` is off by default and
@@ -555,7 +555,7 @@ A hidden directory is not a loophole; `-f` does not care about dot-prefixes.
 | | Filesystem snapshot (ZFS/btrfs, VSS, Time Machine) | restic / Borg | The vault |
 | :--- | :--- | :--- | :--- |
 | Storage granularity | filesystem blocks, copy-on-write | content-defined chunks | whole-file blobs in a Git object DB |
-| Cost of a 1-byte edit to a big file | ≈ zero | only the changed chunks | **a full new blob until `gc`** — measured: 8 MB file, 1-byte edit → **+8202 KB**, then `gc --aggressive` → back to 8284 KB |
+| Cost of a 1-byte edit to a big file | ≈ zero | only the changed chunks | **a full new blob until `gc`** — measured: 8 MB file, 1-byte edit → **+8202 KB**, then `git-remote-seafile gc` → back to 8284 KB |
 | Identical files stored once | yes (blocks) | yes (chunks, globally) | yes, exactly — measured: two identical 1 MB files share one blob SHA, 1099 KB of object store for 2 MB of content |
 | Portable across filesystems and OSes | no | yes | yes |
 | Reaches Seafile through the existing helper | no | only via WebDAV/rclone | **yes — plain `git push`** |

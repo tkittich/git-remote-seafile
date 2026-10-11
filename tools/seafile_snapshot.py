@@ -198,6 +198,15 @@ import time
 from datetime import datetime
 from pathlib import Path
 
+# Running as documented from a bare source checkout -- `python
+# tools/seafile_snapshot.py` -- puts only tools/ on sys.path, so the
+# git_remote_seafile package (whose safety module this tool consults below)
+# would be unimportable and the synced-folder guard silently off.  The doctor
+# solves the same problem the same way; do this before any library import.
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
 DEFAULT_BRANCH = "snapshot"
 
 #: How old an unparseable lock file must be before it is reclaimed: a live run
@@ -450,14 +459,34 @@ def pid_is_alive(pid: int) -> bool:
         process_query_limited_information = 0x1000
         still_active = 259
         error_invalid_parameter = 87
-        kernel32 = ctypes.windll.kernel32
-        handle = kernel32.OpenProcess(process_query_limited_information, False, pid)
+        # Same prototype discipline as git_remote_seafile.lock._is_pid_alive:
+        # ctypes.windll.kernel32.GetLastError() can return a stale value
+        # (ctypes' own foreign calls may clobber the thread's last error
+        # between OpenProcess failing and this read), and without restype the
+        # 64-bit HANDLE truncates to c_int -- either defect can read a *live*
+        # lock holder as dead and let a concurrent run steal its lock.  A
+        # dedicated WinDLL with use_last_error=True plus explicit
+        # argtypes/restype is the documented pattern.
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.OpenProcess.restype = ctypes.c_void_p
+        kernel32.OpenProcess.argtypes = (
+            ctypes.c_ulong, ctypes.c_int, ctypes.c_ulong,
+        )
+        kernel32.GetExitCodeProcess.restype = ctypes.c_int
+        kernel32.GetExitCodeProcess.argtypes = (
+            ctypes.c_void_p, ctypes.POINTER(ctypes.c_ulong),
+        )
+        kernel32.CloseHandle.restype = ctypes.c_int
+        kernel32.CloseHandle.argtypes = (ctypes.c_void_p,)
+        handle = kernel32.OpenProcess(
+            process_query_limited_information, False, pid
+        )
         if not handle:
             # A live process owned by another (elevated) user denies
             # OpenProcess outright; treating that as "dead" would let a
             # concurrent run steal its lock.  Only "no such process" proves
             # death -- anything else reads as alive (see the docstring).
-            return kernel32.GetLastError() != error_invalid_parameter
+            return ctypes.get_last_error() != error_invalid_parameter
         try:
             code = ctypes.c_ulong()
             if not kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
@@ -648,8 +677,21 @@ def fetch_remote_tip(
         check=False,
     )
     if proc.returncode != 0:
-        blob = f"{proc.stderr}\n{proc.stdout}".lower()
-        if "couldn't find remote ref" in blob or "remote ref does not exist" in blob:
+        # "No such branch on the remote" is the not-an-error case, but it
+        # is decided by asking the remote, not by matching words in git's
+        # output: the rejection text is locale-dependent (and differs
+        # between git transports), the same reason push_snapshot refuses
+        # to sniff it.  An ls-remote that succeeds and finds no ref names
+        # the branch as absent; an ls-remote failure is a transport
+        # problem and is raised.
+        listing = git(
+            git_dir,
+            work_tree,
+            ["ls-remote", "--heads", remote, f"refs/heads/{branch}"],
+            cwd=work_tree,
+            check=False,
+        )
+        if listing.returncode == 0 and not listing.stdout.strip():
             return None
         raise SnapshotError(
             f"could not fetch '{branch}' from {remote} (rc={proc.returncode})\n"
@@ -1353,18 +1395,29 @@ def directory_is_seafile_synced(path: Path) -> bool:
     """Whether ``path`` is inside one of the desktop client's synced libraries.
 
     Only meaningful where the Seafile client is installed; on a machine without
-    it there are no synced libraries and this is simply ``False``.  Imported
-    lazily so the tool keeps working if the package layout ever changes -- a
-    failed import means "cannot tell", not "safe".
+    it there are no synced libraries and this is simply ``False``.  Read
+    failures (a corrupt repo.db, an import problem) also return ``False`` --
+    the caller treats that as "not synced", so the failure is announced on
+    stderr first: silently answering "safe" for a state nobody verified is the
+    one thing a fail-closed tool must not do.
     """
-    try:
-        from git_remote_seafile.safety import discover_local_synced_libraries
-    except Exception:
-        return False
     target = path.resolve()
     try:
-        libraries = discover_local_synced_libraries()
-    except Exception:
+        import git_remote_seafile.safety as _safety  # sys.path set above
+        libraries = _safety.discover_local_synced_libraries()
+    except Exception as ex:
+        # Fail LOUD, not open: a corrupt repo.db or an import problem means
+        # "cannot tell", and the caller treats False as "safe to write here".
+        # The docstring's contract ("cannot tell, not safe") is only honest if
+        # the failure is announced -- the same reasoning as
+        # safety.check_preflight_safety's transient-failure warning.
+        print(
+            f"Warning: could not check for Seafile-synced folders ({ex}); "
+            "treating the destination as not synced, so the guard could not run. "
+            "Check the path is not inside a synced library.",
+            file=sys.stderr,
+        )
+        sys.stderr.flush()
         return False
     for lib in libraries:
         worktree = lib.get("worktree")

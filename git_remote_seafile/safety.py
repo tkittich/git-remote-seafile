@@ -7,7 +7,7 @@ import os
 import sys
 from pathlib import Path
 
-from .git_util import get_git_config_bool, run_git
+from .git_util import get_trusted_git_config_bool, run_git
 from .seafile_paths import get_candidate_db_paths
 from .sqlite_read import open_live_sqlite_ro
 
@@ -23,8 +23,15 @@ def is_safety_checks_enabled() -> bool:
     env_val = os.environ.get("SEAFILE_SKIP_SAFETY_CHECKS", "").strip().lower()
     if env_val in ("1", "true", "yes", "on"):
         return False
-    # 2. Git config override
-    if get_git_config_bool("seafile.skipsafetychecks", False):
+    # 2. Git config override -- read through the *trusted* scope reader, not
+    # the ordinary one: an unscoped `git config --get` also reads the
+    # `.git/config` of the repository being operated on, so a hostile or
+    # careless repository could ship `[seafile] skipsafetychecks = true` in
+    # its own config and silently disarm the guardrails for every operation
+    # launched from that checkout.  Only the machine owner (system/global
+    # scopes) may set this; the repository being cloned or pushed to never
+    # gets a vote.
+    if get_trusted_git_config_bool("seafile.skipsafetychecks", False):
         return False
     return True
 

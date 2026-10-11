@@ -325,7 +325,10 @@ class TestLFSTransferAgent(unittest.TestCase):
             output_lines = [json.loads(line) for line in stdout_buf.getvalue().strip().splitlines()]
             # Line 1: init response -> {}
             self.assertEqual(output_lines[0], {})
-            # Line 2: unknown event -> 400 error
+            # Line 2: unknown event -> 400 error.  The reply must carry the
+            # "event" key -- git-lfs dispatches on it, and a bare {"error": ...}
+            # matches no state of its wait loop (REVIEW.glm.md H-16).
+            self.assertEqual(output_lines[1]["event"], "complete")
             self.assertEqual(output_lines[1]["error"]["code"], 400)
             self.assertIn("Unknown event: unknown_event_type", output_lines[1]["error"]["message"])
         finally:

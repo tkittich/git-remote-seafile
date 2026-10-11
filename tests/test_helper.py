@@ -81,13 +81,26 @@ class TestRemoteHelper(unittest.TestCase):
         self.assertEqual(out.getvalue(), "ok\n")
         self.assertFalse(h.dry_run)
 
-    def test_unknown_command_replies_error(self):
-        """An unrecognized top-level command must fail loudly, not reply with an empty no-op line."""
+    def test_unknown_command_fails_loudly_on_stderr_and_stops(self):
+        """An unrecognized top-level command must fail loudly, not reply with an empty no-op line.
+
+        The failure belongs on stderr and must end the loop (REVIEW.glm.md
+        H-15): "error unsupported" on stdout is not a line git's helper
+        reader recognizes, so writing it and continuing to read commands
+        left the protocol in an undefined state.  GitError propagating out
+        of run() is what makes the helper exit non-zero.
+        """
         h = RemoteHelper.__new__(RemoteHelper)
         out = io.StringIO()
-        with patch("sys.stdin", io.StringIO("frobnicate\n")), patch("sys.stdout", out):
-            h.run()
-        self.assertEqual(out.getvalue(), "error unsupported\n")
+        err = io.StringIO()
+        with patch("sys.stdin", io.StringIO("frobnicate\n")), \
+                patch("sys.stdout", out), patch("sys.stderr", err):
+            with self.assertRaises(GitError) as ctx:
+                h.run()
+        self.assertIn("frobnicate", str(ctx.exception))
+        self.assertIn("unsupported helper command", err.getvalue())
+        # Nothing fake went onto the protocol stream for git to misparse.
+        self.assertEqual(out.getvalue(), "")
 
     def test_cmd_list_detects_sha256_format(self):
         h = RemoteHelper.__new__(RemoteHelper)
@@ -407,6 +420,49 @@ class TestRemoteHelper(unittest.TestCase):
 
         output = out.getvalue()
         self.assertIn("ok refs/heads/main", output)
+
+    @patch("git_remote_seafile.helper.is_ancestor", return_value=True)
+    @patch("git_remote_seafile.helper.rev_parse", return_value="sha123")
+    @patch("git_remote_seafile.helper.get_objects_to_push", return_value=["obj1"])
+    @patch("git_remote_seafile.helper.create_packfile", return_value=("packsha9", b"PACK", b"IDX"))
+    def test_pack_upload_progress_callback_renews_the_lock(self, mock_pack, mock_objs, mock_rev, mock_ancestor):
+        """The pack upload must renew the lease while it streams (REVIEW.glm.md G-4).
+
+        on_upload_progress -> lock.maybe_renew(20.0) is what keeps a long push
+        from outliving its lease while the bytes are still streaming; gc's
+        equivalent callback is pinned by test_gc.py, but the push side -- where
+        the transfer is the whole point of the lock -- was not pinned at all.
+        A regression dropping progress_callback from the packfile upload_file
+        call would let a slow push hold a lapsed lease, and the fence would
+        then refuse the very ref write the uploaded pack was for.
+        """
+        h = RemoteHelper.__new__(RemoteHelper)
+        h.client = MagicMock()
+        h.repo_id = "repo1"
+        h.repo_path = "/git-repo"
+        h._refs_cache = {}
+
+        mock_lock = MagicMock()
+        mock_lock.__enter__.return_value = mock_lock
+
+        out = io.StringIO()
+        with patch("sys.stdout", out),                 patch("git_remote_seafile.helper.RemoteLock", return_value=mock_lock):
+            h.cmd_push(["refs/heads/main:refs/heads/main"])
+
+        pack_calls = [c for c in h.client.upload_file.call_args_list
+                      if len(c.args) > 2 and c.args[2] == "pack-packsha9.pack"]
+        self.assertTrue(pack_calls, "the .pack upload was never issued")
+        cb = pack_calls[0].kwargs.get("progress_callback")
+        self.assertIsNotNone(
+            cb,
+            "the pack upload was issued without a progress callback -- "
+            "a long push can no longer renew its lease mid-stream",
+        )
+        # The callback must be the renewing one: invoking it mid-transfer
+        # pings the lock (a real transfer calls it on every chunk).
+        with patch("sys.stderr", io.StringIO()):
+            cb(1, 10)
+        mock_lock.maybe_renew.assert_called()
 
     @patch("git_remote_seafile.helper.rev_parse", return_value="commit50sha")
     @patch("git_remote_seafile.helper.is_ancestor", return_value=True)
@@ -850,10 +906,12 @@ class TestRemoteHelper(unittest.TestCase):
             "fetch sha2\n"
             "\n"
             "unknown-cmd\n"
-            "\n"
         )
+        # The unknown command ends the run loudly now (REVIEW.glm.md H-15):
+        # the helper must not go on reading an undefined protocol state.
         with patch("sys.stdin", io.StringIO(commands)), patch("sys.stdout", io.StringIO()):
-            h.run()
+            with self.assertRaises(GitError):
+                h.run()
 
         h.cmd_capabilities.assert_called_once()
         self.assertEqual(h.cmd_list.call_count, 2)
@@ -1075,7 +1133,7 @@ class TestFetchSafety(unittest.TestCase):
                     "git_remote_seafile.safety.get_local_work_tree",
                     return_value=None,
                 ), patch(
-                    "git_remote_seafile.safety.get_git_config_bool",
+                    "git_remote_seafile.safety.get_trusted_git_config_bool",
                     return_value=False,
                 ), patch(
                     "git_remote_seafile.helper.get_git_dir",
@@ -1111,7 +1169,7 @@ class TestFetchSafety(unittest.TestCase):
             ]
 
             with patch(
-                "git_remote_seafile.safety.get_git_config_bool", return_value=False
+                "git_remote_seafile.safety.get_trusted_git_config_bool", return_value=False
             ), patch.dict(os.environ, {"SEAFILE_SKIP_SAFETY_CHECKS": ""}):
                 # push: the un-ignored path in a synced library is blocked
                 with self.assertRaises(SafetyError) as ctx:

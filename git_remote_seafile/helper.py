@@ -722,7 +722,12 @@ class RemoteHelper:
                 self.cmd_fetch(fetch_specs)
             else:
                 # Git sends no unknown commands today, but an empty line would be read as a
-                # successful no-op; fail loudly instead (Qwen H2).
-                sys.stdout.write("error unsupported\n")
+                # successful no-op; fail loudly instead (Qwen H2).  The failure must be
+                # on stderr and must stop the loop: "error unsupported" on stdout is not
+                # a line git's helper reader recognizes, so writing it and continuing
+                # leaves the protocol in an undefined state (REVIEW.glm.md H-15).  The
+                # comment about empty lines was stale besides -- run() consumes empty
+                # lines at the top of the loop and never reaches this branch with one.
                 sys.stderr.write(f"git-remote-seafile: unsupported helper command '{line}'\n")
                 sys.stderr.flush()
+                raise GitError(f"unsupported helper command '{line}'")

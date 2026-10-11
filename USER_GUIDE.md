@@ -902,7 +902,7 @@ Measured on real pushes, not estimated (`SNAPSHOT.md` §8):
 | :--- | :--- |
 | A 486 KB tree with one 4 KB and one 10 KB file changed | 31 KB |
 | Nothing changed | **0 KB — and no commit** |
-| A 1-byte edit to an 8 MB file | +8202 KB, until `gc --aggressive` |
+| A 1-byte edit to an 8 MB file | +8202 KB, until `git-remote-seafile gc` |
 | A 32 MB file snapshotted three times | remote grows 33 → 65 → 97 MB |
 
 The last row is the one to watch: **`seafile.autogc` is off**, so a large file that changes daily grows the Seafile library by its own size every day. Run `git-remote-seafile gc` (§10) on the *vault's* remote periodically, or keep large build artefacts out with `--default-excludes` (§15.2.1).
@@ -919,7 +919,7 @@ The full design — the alternatives that do not work, the nested-repository ana
 - [git-remote-s3](https://github.com/jason-riddle/git-remote-s3): Git remote helper for Amazon S3 object stores.
 - [Git Remote Helpers Protocol Specification](https://git-scm.com/docs/git-remote-helpers): Official Git documentation on building custom remote helpers (`git-remote-helpers(7)`).
 - [Git LFS Custom Transfer Agent Protocol](https://github.com/git-lfs/git-lfs/blob/main/docs/custom-transfers.md): Official Git LFS specification for line-based stdio custom transfer agents.
-- [Seafile Web API v2.1](https://manual.seafile.com/develop/web_api_v2.1/): The underlying REST API provided by Seafile Ltd.
+- [Seafile Web API v2](https://manual.seafile.com/develop/web_api_v2/): The underlying REST API provided by Seafile Ltd.
 
 ---
 

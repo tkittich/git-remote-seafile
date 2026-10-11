@@ -105,11 +105,21 @@ def err_text(code: int) -> str:
 # Commands
 # --------------------------------------------------------------------------
 def load_libs(ccnet: Path):
+    """Return ``(seafile-data, libraries, db_ok)``.
+
+    ``db_ok`` distinguishes "read the client database fine, it really lists
+    nothing" from "could not read the database at all": for `where` -- whose
+    exit code scripts gate on -- those are not the same answer.  A verified
+    negative is exit 1; an unverifiable state used to read as the same exit 1,
+    telling a script "safe" for a state nobody checked (REVIEW.glm.md T-19).
+    """
     data = seafile_data(ccnet)
     libs = []
     with open_live_sqlite_ro(data / "repo.db") as con:
         if con is None:
-            return data, []
+            # The database file itself is absent: on a machine without the
+            # desktop client this is genuinely "no libraries".
+            return data, [], (data / "repo.db").is_file()
         props: dict[str, dict[str, str]] = {}
         try:
             for repo_id, key, value in con.execute("select repo_id, key, value from RepoProperty"):
@@ -118,8 +128,11 @@ def load_libs(ccnet: Path):
             # A schema the client changed (or a torn copy) surfaces here as a
             # raw traceback instead of a diagnosis; say what happened and
             # report no libraries rather than die.
-            print("could not read repo.db's RepoProperty table: %s" % ex)
-            return data, []
+            # stderr, not stdout: report mode prints structured sections, and
+            # a diagnosis interleaved with data reads as one of them (and as
+            # contradictory with the "no synced libraries" line that follows).
+            print("could not read repo.db's RepoProperty table: %s" % ex, file=sys.stderr)
+            return data, [], False
         for repo_id, kv in props.items():
             wt = kv.get("worktree")
             if not wt:
@@ -136,11 +149,11 @@ def load_libs(ccnet: Path):
                     "user": kv.get("username", ""),
                 }
             )
-    return data, libs
+    return data, libs, True
 
 
 def cmd_libs(args, ccnet):
-    data, libs = load_libs(ccnet)
+    data, libs, _db_ok = load_libs(ccnet)
     print("seafile-data : %s" % data)
     print("logs         : %s" % (ccnet / "logs"))
     print()
@@ -164,7 +177,14 @@ def cmd_where(args, ccnet):
     check of nothing.
     """
     target = Path(args.path).resolve()
-    _, libs = load_libs(ccnet)
+    _, libs, db_ok = load_libs(ccnet)
+    if not db_ok:
+        # "Could not check" is not "not inside any synced library": scripts
+        # gate on this exit code, and both used to answer exit 1 (REVIEW.glm.md
+        # T-19).  The unverifiable state gets its own exit code and message.
+        print("could not read the sync client's repo.db; cannot determine "
+              "whether %s is inside a synced library" % target)
+        return 2
     for lib in libs:
         try:
             rel = target.relative_to(lib["worktree"].resolve())
@@ -202,7 +222,7 @@ def cmd_errors(args, ccnet):
         except Exception as ex:
             # Same contract as load_libs: a schema the client changed is a
             # diagnosis ("cannot read the error table"), not a traceback.
-            print("could not read repo.db's FileSyncError table: %s" % ex)
+            print("could not read repo.db's FileSyncError table: %s" % ex, file=sys.stderr)
             return 1
         if cutoff:
             rows = [r for r in rows if (r[3] or 0) >= cutoff]
@@ -218,7 +238,7 @@ def cmd_errors(args, ccnet):
             print("    %s" % err_text(code))
             days: dict[str, int] = {}
             for _, _, _, ts in group:
-                key = dt.datetime.fromtimestamp(ts).strftime("%Y-%m-%d") if ts else "?"
+                key = _day_key(ts)
                 days[key] = days.get(key, 0) + 1
             print("    when: %s" % ", ".join("%s x%d" % (d, n) for d, n in sorted(days.items())))
             for _, path, _, ts in group[: args.limit]:
@@ -238,11 +258,27 @@ def _ts(ts) -> str:
         return str(ts)
 
 
+def _day_key(ts) -> str:
+    """The ``YYYY-MM-DD`` histogram key for a raw timestamp.
+
+    Same guard as _ts: a live client's log rows can carry absurd values
+    (ms-vs-s confusion, negatives), and on Windows fromtimestamp raises
+    OSError for the negative ones -- one bad row must not kill the whole
+    churn/errors report (REVIEW.glm.md T-3/T-20).
+    """
+    if not ts:
+        return "?"
+    try:
+        return dt.datetime.fromtimestamp(ts).strftime("%Y-%m-%d")
+    except (OverflowError, OSError, ValueError):
+        return str(ts)
+
+
 CONFLICT_RE = re.compile(r"^(?P<base>.*) \(SFConflict (?P<who>.*?) (?P<stamp>\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2})\)(?P<ext>\.[^.]*)?$")
 
 
 def cmd_conflicts(args, ccnet):
-    _, libs = load_libs(ccnet)
+    _, libs, _db_ok = load_libs(ccnet)
     total = 0
     for lib in libs:
         wt = lib["worktree"]
@@ -323,7 +359,18 @@ def cmd_churn(args, ccnet):
                          ("completed upload cycles ('finished')", uploads)):
         print(label)
         for key, days in table.items():
-            recent = sorted(days.items())[-args.days:]
+            # The window must be chosen on a real date key, not the log's
+            # MM/DD/YY spelling: lexicographic order puts December of last
+            # year after January of this one, so the window picks the wrong
+            # days across a year boundary (REVIEW.glm.md T-20).  --days 0
+            # means "no window" and negative values are refused -- a bare
+            # [-0:] is the whole list, the opposite of what the number says.
+            window = max(args.days, 0) or None
+
+            def _sort_key(item):
+                m, d, y = item[0].split("/")
+                return "20%s-%s-%s" % (y, m, d)
+            recent = sorted(days.items(), key=_sort_key)[-window:] if window else sorted(days.items(), key=_sort_key)
             if not recent:
                 continue
             print("  %s" % key)

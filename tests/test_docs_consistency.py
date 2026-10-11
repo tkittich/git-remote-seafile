@@ -62,8 +62,11 @@ _DOC_NAMES = (
 _DOC_CONFIG_KEY = re.compile(r"`(seafile\.[a-z][a-z0-9]*)`")
 
 # A *read* of a config key.  Only literal calls are seen (see the module
-# docstring).
-_CODE_CONFIG_READ = re.compile(r'get_git_config_[a-z]+\("([^"]+)"\s*,\s*([^)]+)\)')
+# docstring).  `get_trusted_git_config_bool` counts too -- it is the
+# system/global-scoped reader safety.py uses for `seafile.skipsafetychecks`
+# (REVIEW.glm.md H-12); the key is as documented a setting as any other, it
+# just refuses to answer to repo-local config.
+_CODE_CONFIG_READ = re.compile(r'get_(?:trusted_)?git_config_[a-z]+\("([^"]+)"\s*,\s*([^)]+)\)')
 
 # An environment variable the code actually consults -- not merely one it
 # mentions in an error message, which several do.

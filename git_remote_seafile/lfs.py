@@ -249,4 +249,12 @@ class LFSTransferAgent:
             elif event == "terminate":
                 break
             else:
-                self._send_json({"error": {"code": 400, "message": f"Unknown event: {event}"}})
+                # git-lfs dispatches on the "event" key; a bare {"error": ...}
+                # matches no state of its wait loop, which can hang the
+                # transfer (REVIEW.glm.md H-16).  The well-formed complete
+                # event with an error payload is what a caller can react to.
+                self._send_json({
+                    "event": "complete",
+                    "oid": msg.get("oid") or "",
+                    "error": {"code": 400, "message": f"Unknown event: {event}"},
+                })

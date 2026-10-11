@@ -872,19 +872,26 @@ class StaleLockTests(_SnapshotFixture):
         # OpenProcess fails with ERROR_ACCESS_DENIED for a live process owned
         # by another (elevated) user; reading that as "dead" would let a
         # concurrent run steal its lock.  Only "no such process" proves death.
+        #
+        # pid_is_alive builds its own WinDLL("kernel32", use_last_error=True)
+        # and reads the failure through ctypes.get_last_error() -- the
+        # documented pattern (REVIEW.glm.md T-2/T-22): reading GetLastError()
+        # through ctypes.windll can return a stale value.  The real module's
+        # get_last_error is patched so both outcomes below exercise the
+        # dispatch logic against a controlled error code.
         import ctypes
 
+        real_get_last_error = ctypes.get_last_error
         with unittest.mock.patch.object(
-            ctypes.windll.kernel32, "OpenProcess", return_value=0
-        ):
-            with unittest.mock.patch.object(
-                ctypes.windll.kernel32, "GetLastError", return_value=5
-            ):  # ERROR_ACCESS_DENIED
-                self.assertTrue(snap.pid_is_alive(1234))
-            with unittest.mock.patch.object(
-                ctypes.windll.kernel32, "GetLastError", return_value=87
-            ):  # ERROR_INVALID_PARAMETER: no such process
-                self.assertFalse(snap.pid_is_alive(1234))
+            ctypes, "get_last_error", return_value=5
+        ):  # ERROR_ACCESS_DENIED
+            self.assertTrue(snap.pid_is_alive(1234))
+        with unittest.mock.patch.object(
+            ctypes, "get_last_error", return_value=87
+        ):  # ERROR_INVALID_PARAMETER: no such process
+            self.assertFalse(snap.pid_is_alive(1234))
+        # The patch restored the real reader (leak-check discipline).
+        self.assertEqual(ctypes.get_last_error, real_get_last_error)
 
 class RestoreVerificationTests(_SnapshotFixture):
     """--restore proves the bytes, by the only check that cannot be fooled."""
@@ -1235,16 +1242,23 @@ class SyncedFolderGuardTests(_SnapshotFixture):
         self.assertIn("source is inside a Seafile-synced library", err)
 
     def test_a_missing_seafile_client_leaves_the_guard_off_but_the_run_working(self):
-        # The lazy import degrades to "cannot tell" when the package is not
-        # importable (a source checkout without pip install); the run must
-        # still work, which is why the degradation is silent -- and why the
-        # wiring above is pinned: a regression to always-False would ship
-        # without this suite noticing anything but these tests.
+        # A "cannot tell" answer must not read as a verified "safe" (REVIEW.glm.md
+        # T-9/T-18): an unimportable package or an unreadable repo.db returns
+        # False so the run still works, but announces the degradation on
+        # stderr -- the same reasoning as safety.py's transient-failure
+        # warning.  The sys.path insertion the tool does at startup makes the
+        # package importable from a bare checkout, so the import branch below
+        # is defense in depth, pinned so it cannot silently regress.
         with unittest.mock.patch.dict(
             sys.modules,
             {"git_remote_seafile": None, "git_remote_seafile.safety": None},
         ):
-            self.assertFalse(snap.directory_is_seafile_synced(self.code))
+            err = io.StringIO()
+            with unittest.mock.patch.object(sys, "stderr", err):
+                self.assertFalse(snap.directory_is_seafile_synced(self.code))
+            self.assertIn(
+                "could not check for Seafile-synced folders", err.getvalue()
+            )
         with unittest.mock.patch.object(
             snap, "directory_is_seafile_synced", return_value=False
         ):

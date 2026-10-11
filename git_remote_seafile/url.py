@@ -25,6 +25,44 @@ def normalize_netloc(url_or_netloc: str) -> str:
     return host
 
 
+def mask_url(url: str) -> str:
+    """Return *url* with any ``user:password@`` userinfo redacted.
+
+    A URL a user typed may embed credentials (`seafile://user:pass@host/...`),
+    and URLs end up echoed -- in the gc tip that names the raw URL, in lock
+    wait messages, in CLI status lines.  Anything interpolated into output
+    goes through this first, so the token a user keeps in the URL never lands
+    in a terminal scrollback or a pasted log.  URLs without userinfo are
+    returned unchanged.
+
+    Nested schemes are the common spelling here (`seafile://https://host/...`
+    is how parse_seafile_url accepts an explicit server), so the seafile://
+    prefix is stripped before parsing and re-added afterwards: urlparse sees
+    the *inner* scheme's authority, which is where the credentials live.
+    """
+    prefix = ""
+    body = url
+    if url[:10].lower() == "seafile://":
+        prefix = url[:10]
+        body = url[10:]
+    if "@" not in body:
+        return url
+    parsed = urlparse(body if "://" in body else f"//{body}")
+    if not parsed.username:
+        return url
+    host = (parsed.hostname or "").lower()
+    netloc = host
+    if parsed.port and not ((parsed.scheme == "https" and parsed.port == 443) or (parsed.scheme == "http" and parsed.port == 80)):
+        netloc = f"{netloc}:{parsed.port}"
+    rest = parsed.path or ""
+    if parsed.query:
+        rest = f"{rest}?{parsed.query}"
+    if parsed.fragment:
+        rest = f"{rest}#{parsed.fragment}"
+    scheme = f"{parsed.scheme}://" if parsed.scheme else ""
+    return f"{prefix}{scheme}{netloc}{rest}"
+
+
 def _looks_like_host(segment: str) -> bool:
     """Heuristic: does this URL segment name a server rather than a library?
 

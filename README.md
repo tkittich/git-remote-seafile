@@ -165,6 +165,7 @@ git clone seafile://seafile.example.com/code/myproject
 | `git-remote-seafile set-head <url> <branch>` | Set default branch (`HEAD`) pointer after verifying branch exists. |
 | `git-remote-seafile test <url>` | Discover refs and verify connectivity without cloning. |
 | `git-remote-seafile desktop-url <path>` | Convert a local synced directory path to a `seafile://` remote URL. |
+| `git-remote-seafile version` | Display the helper version. |
 
 ---
 
@@ -236,7 +237,7 @@ so a running client is never blocked or torn, and it never writes anything back.
 - [git-remote-s3](https://github.com/jason-riddle/git-remote-s3): Git remote helper for Amazon S3 object stores.
 - [Git Remote Helpers Protocol Specification](https://git-scm.com/docs/git-remote-helpers): Official Git documentation on building custom remote helpers.
 - [Git LFS Custom Transfer Agent Protocol](https://github.com/git-lfs/git-lfs/blob/main/docs/custom-transfers.md): Specification for custom large-object transport agents.
-- [Seafile Web API v2.1](https://manual.seafile.com/develop/web_api_v2.1/): The underlying REST API provided by Seafile Ltd.
+- [Seafile Web API v2](https://manual.seafile.com/develop/web_api_v2/): The underlying REST API provided by Seafile Ltd.
 
 ---
 

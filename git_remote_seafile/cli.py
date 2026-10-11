@@ -14,6 +14,7 @@ from .safety import (
     discover_local_synced_libraries,
     get_local_work_tree,
 )
+from .url import mask_url
 
 
 # (name, usage, summary, options) for every subcommand, in listing order.
@@ -344,7 +345,7 @@ def main() -> int:
                 for ref_name, _ in iter_refs(helper.client, helper.repo_id, helper.repo_path, "refs/heads")
             }
             if head_target not in existing_branches:
-                sys.stderr.write(f"Error: branch '{head_target}' does not exist on remote {url}\n")
+                sys.stderr.write(f"Error: branch '{head_target}' does not exist on remote {mask_url(url)}\n")
                 return 1
             # set-head is an explicit administrative maintenance command. It bypasses
             # RemoteLock to allow recovering remotes where an interrupted operation left a
@@ -358,7 +359,7 @@ def main() -> int:
                 head_content,
                 replace=True,
             )
-            print(f"Updated remote HEAD on {url} to {head_target} (was {old_head or 'unset'})")
+            print(f"Updated remote HEAD on {mask_url(url)} to {head_target} (was {old_head or 'unset'})")
             return 0
         except Exception as ex:
             print(f"Failed to set HEAD: {ex}")
@@ -373,10 +374,19 @@ def main() -> int:
             helper = RemoteHelper("lock-status", url)
             lock = RemoteLock(helper.client, helper.repo_id, helper.repo_path)
             status = lock.get_status()
+            if status.get("locked") is None:
+                # A listing failure is not "unlocked": reporting it as such
+                # sent operators to `unlock --force` on a false confidence.
+                # Fail loudly and distinctly instead.
+                sys.stderr.write(
+                    f"Could not inspect the lock queue for {mask_url(url)} "
+                    f"({status.get('error', 'unknown error')}).\n"
+                )
+                return 1
             if not status.get("locked"):
-                print(f"Repository at {url} is UNLOCKED.")
+                print(f"Repository at {mask_url(url)} is UNLOCKED.")
                 return 0
-            print(f"Repository at {url} is LOCKED:")
+            print(f"Repository at {mask_url(url)} is LOCKED:")
             if status.get("stale"):
                 print("  State    : STALE -- the ticket's lease has expired, so a "
                       "plain push would reclaim it")
@@ -405,12 +415,12 @@ def main() -> int:
             lock = RemoteLock(helper.client, helper.repo_id, helper.repo_path)
             was_locked = lock.unlock(force=force)
             if not was_locked:
-                print(f"Repository at {url} is not locked; nothing to release.")
+                print(f"Repository at {mask_url(url)} is not locked; nothing to release.")
                 return 0
             if force:
-                print(f"Forcibly unlocked repository at {url}.")
+                print(f"Forcibly unlocked repository at {mask_url(url)}.")
             else:
-                print(f"Unlocked repository at {url}.")
+                print(f"Unlocked repository at {mask_url(url)}.")
             return 0
         except RepositoryLockedError as rle:
             sys.stderr.write(f"Error: {rle}\n")

@@ -58,18 +58,48 @@ def _is_pid_alive(pid: int) -> bool:
         try:
             import ctypes
             from ctypes import wintypes
+            # A dedicated WinDLL instance with use_last_error=True is the
+            # documented way to read the failing call's error code:
+            # ctypes.windll.kernel32.GetLastError() can return a stale value
+            # because ctypes' own internal foreign calls between OpenProcess
+            # and this call may clobber the thread's last error -- and a stale
+            # read here misclassifies a *live* holder as dead, which lets the
+            # fast-reclaim path steal an active lock.  Proper prototypes also
+            # matter: without restype, HANDLE (64-bit) truncates to c_int and
+            # a truncated handle can read as 0 (same steal) or close an
+            # unrelated kernel object in CloseHandle.
             PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
-            kernel32 = ctypes.windll.kernel32
-            handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, wintypes.DWORD(pid))
+            STILL_ACTIVE = 259
+            ERROR_ACCESS_DENIED = 5
+            ERROR_INVALID_PARAMETER = 87
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            kernel32.OpenProcess.restype = ctypes.c_void_p
+            kernel32.OpenProcess.argtypes = (
+                wintypes.DWORD, wintypes.BOOL, wintypes.DWORD,
+            )
+            kernel32.GetExitCodeProcess.restype = wintypes.BOOL
+            kernel32.GetExitCodeProcess.argtypes = (
+                ctypes.c_void_p, ctypes.POINTER(wintypes.DWORD),
+            )
+            kernel32.CloseHandle.restype = wintypes.BOOL
+            kernel32.CloseHandle.argtypes = (ctypes.c_void_p,)
+            handle = kernel32.OpenProcess(
+                PROCESS_QUERY_LIMITED_INFORMATION, False, wintypes.DWORD(pid)
+            )
             if not handle:
-                ERROR_ACCESS_DENIED = 5
-                if kernel32.GetLastError() == ERROR_ACCESS_DENIED:
+                err = ctypes.get_last_error()
+                # Access denied means the process exists but is protected --
+                # alive for our purposes.  An invalid PID reads as dead.
+                if err == ERROR_ACCESS_DENIED:
                     return True
-                return False
+                if err == ERROR_INVALID_PARAMETER:
+                    return False
+                # Unknown failure: answer "alive" and let the lease expire
+                # rather than reclaim on a guess.
+                return True
             try:
                 exit_code = wintypes.DWORD()
                 if kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
-                    STILL_ACTIVE = 259
                     return exit_code.value == STILL_ACTIVE
                 return False
             finally:
@@ -582,12 +612,18 @@ class RemoteLock:
         but flagged ``stale`` -- a plain push would reap it and take the lock,
         and ``lock-status`` should say so rather than present a dead lock as a
         live one that happens to expire in 0 seconds.
+
+        A listing failure is reported as ``{"locked": None}`` rather than
+        ``{"locked": False}``: the two send an operator to different places,
+        and a transient server error silently reading as "UNLOCKED" is exactly
+        the false confidence ``unlock --force`` feeds on.  Callers must treat
+        ``None`` as "could not tell" (the CLI exits non-zero on it).
         """
         now = self._get_server_time()
         try:
             tickets = self._scan_tickets(now, reap=False)
-        except Exception:
-            tickets = []
+        except Exception as ex:
+            return {"locked": None, "error": str(ex)}
         if tickets:
             tickets.sort(key=lambda t: t.get("_order_key", (0, 0, "")))
             active = [t for t in tickets if self._is_lock_active(t, now)]
@@ -620,8 +656,26 @@ class RemoteLock:
         Returns True when a lock actually existed and was cleared, False when
         there was nothing to release -- so the CLI can say "nothing to
         release" instead of reporting success for a no-op.
+
+        What is deleted depends on ``force``.  Without it, the caller has
+        proven ownership of the winning ticket, and only that ticket is
+        deleted: the rest of the queue belongs to other clients -- a waiter
+        whose next scan would otherwise conclude its lease lapsed -- and the
+        nonce discipline this module keeps everywhere else ("only our own
+        ticket is ever deleted") is preserved.  ``--force`` is the emergency
+        break-the-glass path: it sweeps every ticket in the directory, which
+        is what recovering from an abandoned queue requires, and why it is
+        gated behind an explicit flag.
         """
         status = self.get_status()
+        if status.get("locked") is None:
+            # "Could not tell" must not read as "nothing to release": the
+            # caller (the CLI) reports the error and exits non-zero.
+            raise RepositoryLockedError(
+                f"Could not inspect the lock queue ({status.get('error', 'unknown error')}); "
+                "refusing to unlock on an unverifiable state. Retry, or use "
+                "--force to clear the queue without a status check."
+            )
         if not status.get("locked"):
             return False
 
@@ -633,8 +687,17 @@ class RemoteLock:
                     f"Repository is locked by '{status.get('owner')}' on '{status.get('machine')}'. "
                     "Use --force to break the lock."
                 )
+            # Owner proven: delete only the winning ticket, not the queue.
+            winner_nonce = status.get("nonce")
+            if winner_nonce:
+                try:
+                    self.client.delete_entry(self.repo_id, f"{self.lock_dir}/{winner_nonce}.json")
+                except Exception:
+                    pass
+            self.acquired = False
+            return True
 
-        # Clear tickets in lock_dir
+        # Force: sweep every ticket in the directory.
         try:
             entries = self.client.list_dir(self.repo_id, self.lock_dir)
             if isinstance(entries, list):

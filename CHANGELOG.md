@@ -5,6 +5,35 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+The fix pass for the 2026-10-11 review cycle (REVIEW.glm.md — this repository's own full-tree review, cross-checked against the gemini and qwen peer reviews). 591 tests / 113 targets, all green.
+
+### Fixed
+
+Helper:
+
+- **Branch-deletion push errors can no longer corrupt the protocol stream.** Every `error <ref>` line now goes through one sanitizer that flattens ``/`
+`; the branch-deletion path was the one site still writing a raw exception message, whose second line git would have parsed as a helper command.
+- **Packfiles are published pack-first, index-second.** Git discovers packs by scanning for `*.idx` and assumes the sibling `.pack` exists; installing the index first exposed a window in which a concurrent `git status` could hit "cannot open packfile". A pack without its index is simply ignored, so the new order has no observable broken state.
+- **Repo-local git config can no longer disarm the safety guardrails.** `seafile.skipsafetychecks` is read through a system/global-scoped reader: a repository shipping `[seafile] skipsafetychecks = true` in its own `.git/config` silently disabled Trap 1/Trap 2 for every operation launched from that checkout.
+- **Credentials in a user-typed URL no longer reach the terminal.** A new `mask_url()` strips `user:password@` before the gc tip and every CLI status line interpolates a URL.
+- **An unknown helper command fails loudly.** It used to write `error unsupported` (a line git's helper reader does not know) to stdout and keep reading; it now diagnoses on stderr and exits non-zero.
+- **The LFS unknown-event reply carries `event: "complete"`.** A bare `{"error": ...}` matches no dispatch state of git-lfs's wait loop and could hang the transfer.
+- **`lock-status` and `unlock` no longer treat "could not inspect the lock queue" as "unlocked".** A listing failure reports a distinct error state (`locked: None`): `lock-status` exits 1 with a diagnosis, and non-force `unlock` refuses to act on a queue it could not read.
+- **Non-force `unlock` deletes only the winning ticket.** It used to sweep every ticket in `.git-lock.d`, destroying other clients' (even waiters') tickets; the queue sweep is now `--force`'s documented job.
+
+Tools:
+
+- **`seafile_snapshot.py` decides "branch absent on remote" by asking the remote** (`ls-remote`), not by matching English git error text — the old sniff was locale-dependent and broke first-run on localized git.
+- **The snapshot tool's synced-folder guard works from a bare checkout and warns when it cannot tell.** A missing `sys.path` made the guard a silent no-op for the documented `python tools/seafile_snapshot.py` invocation, and read failures returned "not synced" without a word.
+- **The snapshot tool's Windows PID probe no longer misreads a live lock holder as dead.** `OpenProcess` now goes through a properly prototyped `WinDLL("kernel32", use_last_error=True)`: `GetLastError()` through `ctypes.windll` can return a stale value and an unprototyped HANDLE truncates — either defect could let a concurrent run steal a lock. The helper's own `_is_pid_alive` had the same defect and was fixed the same way.
+- **`seafile_doctor.py` hardening:** the sync-error histogram guards absurd timestamps like the rest of the file; the churn window sorts on a real date key (the `MM/DD/YY` string sort picked the wrong days across a year boundary) and `--days 0` means "no window"; database-read diagnoses go to stderr, not stdout; and `where` answers exit 2 "could not read repo.db" so a script never receives a verified negative for an unknown state.
+
+Docs:
+
+- Three places advertised a `gc --aggressive` flag that does not exist; they now reference `git-remote-seafile gc`. The acknowledgment links say "Seafile Web API v2" like the body text and v0.5.4 changelog entry already did. `SNAPSHOT.md`'s gc-notice wording matches the actual threshold behavior; the README command table lists `version`.
+
 ## [0.8.0] - 2026-10-11
 
 The snapshot tool ships. `tools/seafile_snapshot.py` captures a working tree — **including the files `.gitignore` excludes** — into versioned, byte-exact snapshots stored in a Seafile library, using the same transport the helper already provides. It closes the one gap the helper structurally cannot: a `.gitignore`d file never enters a commit, so no remote helper can ever carry it. The release also folds every fix from the four-way review cycle (GLM, qwen, gemini, deepseek — `archive/REVIEW.*-v0.8.0.md`); the tag originally pointed at a commit whose release build failed, so the review fixes joined the release rather than following it.
