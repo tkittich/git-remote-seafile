@@ -160,7 +160,7 @@ git clone seafile://seafile.example.com/code/myproject
 | `git-remote-seafile check-safety <url>` | Test pre-flight safety guardrails (Trap 1 & 2 path collisions). |
 | `git-remote-seafile lock-status <url>` | Inspect remote repository lock status and lease holder details. |
 | `git-remote-seafile unlock <url> [--force]` | Release a held lock or forcibly break an abandoned lock. |
-| `git-remote-seafile gc <url> [--min-packs N]` | Consolidate and delta-compress remote packfiles—also runs automatically after a push. Fail-closed: refuses to compact if any pack fails to download or verify, or if refs sit outside heads/tags. |
+| `git-remote-seafile gc <url> [--min-packs N]` | Consolidate and delta-compress remote packfiles. Fail-closed: refuses to compact if any pack fails to download or verify, or if refs sit outside heads/tags. Opt-in automatic compaction exists too (`git config seafile.autogc true`); off by default, the helper only warns. |
 | `git-remote-seafile lfs-transfer <url>` | Git LFS Custom Transfer Agent—invoked by Git LFS itself once you point it here (`git config lfs.customtransfer.seafile.*`, see [USER_GUIDE.md](USER_GUIDE.md)). No manual invocation needed. |
 | `git-remote-seafile set-head <url> <branch>` | Set default branch (`HEAD`) pointer after verifying branch exists. |
 | `git-remote-seafile test <url>` | Discover refs and verify connectivity without cloning. |
