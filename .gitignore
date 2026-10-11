@@ -22,8 +22,13 @@ ENV/
 # Testing & Coverage
 .pytest_cache/
 .coverage
+# Parallel mode -- which pyproject.toml turns on for the whole suite, so that a
+# worker process cannot overwrite the driver's data -- writes one file per
+# process.  The plain `.coverage` above matches none of them.
+.coverage.*
 htmlcov/
 unittest-output.txt
+coverage-report.txt
 
 # Linter cache
 # Same reasoning as .review-venv/: ruff writes its own .gitignore, and relying

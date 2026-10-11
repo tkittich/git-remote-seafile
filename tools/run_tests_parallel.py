@@ -3,18 +3,20 @@
 
 Why this exists: ``python -m unittest discover tests`` is single-threaded, and
 the end-to-end and snapshot modules dominate the run.  Measured on a 12-core /
-24-thread machine (AMD 5900X), 681 tests across 134 targets:
+24-thread machine (AMD 5900X), 693 tests across 138 targets:
 
-    this runner,  -j 4                      341.4 s
-    this runner,  -j 8                      243.4 s
-    this runner,  -j 8 --granularity test   389.6 s    <- worse; see below
+    this runner,  -j 4                      339.0 s
+    this runner,  -j 8                      271.6 s
+    this runner,  -j 8 --granularity test   387.9 s    <- worse; see below
 
 Read the column as indicative rather than exact.  On an idle machine repeated
 runs spread by around a tenth, and the box's throughput drifts by much more
 between sessions -- the same ``-j 8`` run has measured 232.9 s, 243.3 s, 245.9 s,
-250.6 s and 328.9 s across sessions and suite sizes on this box -- so the ratios
-and the shape of the curve
-are what these numbers are here to show, not the seconds.
+250.6 s, 271.6 s, 310.2 s and 328.9 s across sessions and suite sizes on this box
+-- so the *shape* of the curve is what these numbers are here to show, not the
+seconds or the ratio.  The 339.0 s and 271.6 s above are one back-to-back pair on
+this box and give 1.25x; an earlier pair gave 1.40x.  Both are real, which is the
+point.
 
 The single-threaded baseline is not carried forward.  It was 204.4 s when the
 suite held 268 tests, and the suite has since more than doubled, so that figure
@@ -22,22 +24,23 @@ is exactly the kind of stale number this docstring was rewritten to remove; run
 ``python -m unittest discover tests`` if you want a current one.
 
 **The critical path is the floor.**  ``test_snapshot_tool.ByteExactnessTests``
-is the longest single unit of work -- 114.7 s of the 243.4 s wall time at
-``-j 8`` -- and a class is the smallest thing the runner can schedule, so
-distributing the work takes the wall time down towards that, not towards zero.
+is the longest single unit of work -- 95.7 s of the 271.6 s wall time at
+``-j 8``, measured on its own at ``-j 1`` -- and a class is the smallest thing
+the runner can schedule, so distributing the work takes the wall time down
+towards that, not towards zero.
 ``test_snapshot_tool`` and ``test_e2e`` are most of the suite because every case
 builds temp trees and shells out to a real ``git`` repeatedly, which is why the
 work is I/O- and subprocess-bound rather than CPU-starved.
 
 ``-j 1`` is *slower* than the plain serial command, and that is the granularity
 argument in miniature: one process per class pays an interpreter start-up and a
-fresh ``import requests`` for each of the 134 targets.  Use ``python -m unittest
+fresh ``import requests`` for each of the 138 targets.  Use ``python -m unittest
 discover tests`` for a baseline; ``-j 1`` is not one.
 
 **Granularity is the test class.**  Not the module, and not the test:
 
-    class granularity, -j 8                 243.4 s    <- 134 targets
-    test  granularity, -j 8                 389.6 s    <- 681 targets
+    class granularity, -j 8                 271.6 s    <- 138 targets
+    test  granularity, -j 8                 387.9 s    <- 693 targets
 
 * Per module would leave the whole of ``test_snapshot_tool`` on one worker, and
   that module is the bulk of the suite's work -- more than the class-granularity
@@ -45,17 +48,17 @@ discover tests`` for a baseline; ``-j 1`` is not one.
 * Per test is *worse*, which is not obvious.  ``E2ETestCase`` does its expensive
   work in ``setUpClass`` (a temp directory, a stub HTTP server, a git
   environment); scheduling per test repeats all of that for every test in the
-  class.  The 547 extra interpreter start-ups cost less than the setup they
+  class.  The 555 extra interpreter start-ups cost less than the setup they
   duplicate.
 
-**The curve flattens early.**  Eight workers are 1.4x four, not 2x, and beyond
-eight the wall time barely moves -- measured at 642 tests, ``-j 16`` was
-243.4 s and ``-j 24`` 227.9 s against 232.9 s at ``-j 8``, a spread inside the
-run-to-run noise the column above already disclaims, and not an ordering.  The
-default is one worker per CPU, which on a wide machine is more than the suite
-can use.  The heavy targets are themselves multi-process -- each
-E2E case runs ``git`` several times and serves HTTP -- so a dozen of them at
-once contend for the same cores.
+**The curve flattens early.**  Eight workers are clearly better than four and
+nowhere near twice as good, and beyond eight the wall time barely moves --
+measured at 642 tests, ``-j 16`` was 243.4 s and ``-j 24`` 227.9 s against
+232.9 s at ``-j 8``, a spread inside the run-to-run noise the column above
+already disclaims, and not an ordering.  The default is one worker per CPU, which
+on a wide machine is more than the suite can use.  The heavy targets are
+themselves multi-process -- each E2E case runs ``git`` several times and serves
+HTTP -- so a dozen of them at once contend for the same cores.
 
 A class is the smallest thing ``unittest`` can load on its own, and each worker
 is handed the next class the moment it finishes, so one slow class does not
@@ -175,7 +178,13 @@ def _worker(target: str, out_path: str) -> int:
 
 
 def _start_worker(target: str, log_dir: Path, job_index: int) -> tuple:
-    """Spawn a worker for *target*; return (target, proc, log_path, result_path, started)."""
+    """Spawn a worker for *target*.
+
+    Returns ``(target, proc, log_file, log_path, result_path, started)``.  The
+    open log file travels in the tuple rather than being stashed on the
+    ``Popen``: the reaper has to close it once the process is gone, and an
+    attribute invented on a stdlib object is invisible to a type checker.
+    """
     log_path = log_dir / f"job-{job_index}.log"
     result_path = log_dir / f"job-{job_index}.json"
     log_file = open(log_path, "wb")
@@ -201,15 +210,14 @@ def _start_worker(target: str, log_dir: Path, job_index: int) -> tuple:
         stdout=log_file,
         stderr=subprocess.STDOUT,
     )
-    proc._grs_log_file = log_file  # closed by the caller when the proc is reaped
-    return target, proc, log_path, result_path, time.monotonic()
+    return target, proc, log_file, log_path, result_path, time.monotonic()
 
 
 def _reap(entry) -> dict:
     """Wait for one worker, close its log, and return its result."""
-    target, proc, log_path, result_path, started = entry
+    target, proc, log_file, log_path, result_path, started = entry
     proc.wait()
-    proc._grs_log_file.close()
+    log_file.close()
     elapsed = time.monotonic() - started
 
     try:

@@ -15,15 +15,47 @@ class GitError(Exception):
     pass
 
 
-def run_git(args: list[str], input_bytes: bytes | None = None) -> tuple[bytes, bytes, int]:
-    """Execute a git command and return (stdout, stderr, returncode)."""
+#: How long one git subprocess may run before it is killed.  Generous enough for
+#: any legitimate local operation -- a `pack-objects` over a large repository is
+#: minutes, not hours -- while still bounding the two ways a git child can hang
+#: forever: a wedged `index-pack`/`repack`, which in `gc` holds the remote lease
+#: open until it expires and another client lawfully takes over, and a
+#: credential-helper prompt on a machine with nobody at the keyboard.
+#:
+#: Deliberately **not** a config key.  A timeout the repository being operated on
+#: could raise is a timeout a hostile repository could remove, and this one
+#: exists to protect the user from a hang, not to be tuned per checkout.
+GIT_TIMEOUT = 300
+
+
+def run_git(
+    args: list[str],
+    input_bytes: bytes | None = None,
+    timeout: float | None = GIT_TIMEOUT,
+) -> tuple[bytes, bytes, int]:
+    """Execute a git command and return (stdout, stderr, returncode).
+
+    ``timeout`` bounds the wait (``None`` disables it).  A child that overruns is
+    killed and the call raises ``GitError``: "the command hung" is a failure to
+    report, not a state to wait out.
+    """
     proc = subprocess.Popen(
         ["git"] + args,
         stdin=subprocess.PIPE if input_bytes is not None else None,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     )
-    out, err = proc.communicate(input=input_bytes)
+    try:
+        out, err = proc.communicate(input=input_bytes, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        try:
+            proc.communicate(timeout=5)
+        except Exception:
+            pass
+        raise GitError(
+            f"git {' '.join(args)} did not finish within {timeout:g}s and was killed"
+        ) from None
     return out, err, proc.returncode
 
 
@@ -127,9 +159,29 @@ def filter_existing_objects(shas: list[str] | str | None) -> list[str]:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )
-        out, _ = proc.communicate(("\n".join(candidates) + "\n").encode("utf-8"))
+        out, _ = proc.communicate(
+            ("\n".join(candidates) + "\n").encode("utf-8"), timeout=GIT_TIMEOUT
+        )
         if proc.returncode != 0:
             return []
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        try:
+            proc.communicate(timeout=5)
+        except Exception:
+            pass
+        # "Cannot tell" must not be answered as "none of them exist".  Both
+        # callers read an empty list as "nothing here to skip", so the result is
+        # more work (a redundant download, a fuller rev-list) rather than a
+        # wrong skip -- the safe direction.  But a wait cut short is worth
+        # saying out loud, because the alternative is a silent slowdown that
+        # nothing in the output explains.
+        sys.stderr.write(
+            f"Warning: git cat-file --batch-check did not finish within "
+            f"{GIT_TIMEOUT:g}s; assuming no objects are present.\n"
+        )
+        sys.stderr.flush()
+        return []
     except Exception:
         return []
 
@@ -377,7 +429,7 @@ def install_packfile(
                     shutil.copyfile(idx_bytes, staged_idx)
             else:
                 staged_idx.write_bytes(idx_bytes)
-            # Verify the index matches the packfile (N-5)
+            # Verify the index matches the packfile.
             _, err, code = run_git([*git_dir_args, "verify-pack", "-v", str(staged_idx)])
             if code != 0:
                 try:

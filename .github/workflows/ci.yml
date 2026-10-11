@@ -143,6 +143,49 @@ jobs:
         python -m unittest tests.test_docs_consistency
         python tools/verify_docs_guards.py
 
+  # One job rather than fifteen, for the same reason as `lint`: a type checker
+  # does not care which platform it runs on, and it runs alongside the matrix
+  # rather than after it, so it adds no wall clock to the pipeline.
+  #
+  # The scope and the strictness live in pyproject.toml under [tool.mypy], so
+  # this job and a local `mypy` cannot disagree about what is checked.  What was
+  # missing was the *enforcement*: the annotations were there and nothing ran
+  # them, which is how the package accumulated errors a job would have caught on
+  # arrival (D6).
+  #
+  # There is no annotation step here, unlike `lint` and the test jobs.  ruff has
+  # `--output-format github` and unittest output is parsed by
+  # ci_report_failures.py; mypy 2.4.0 offers only `json`.  Its findings are
+  # already `path:line:col`, which is what the log shows -- so this job is a
+  # gate first and a report second.
+  typecheck:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+
+    - name: Set up Python
+      uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+      with:
+        python-version: '3.11'
+
+    # Pinned, like ruff: an unpinned type checker turns a green branch red
+    # overnight when a release changes its inference, and the failure says
+    # nothing about what actually changed.
+    #
+    # `types-requests` is not optional.  With no stub for `requests`, the
+    # checker reports the *missing stub* as errors inside this code, which is
+    # noise rather than a finding.  `-e .` brings the dependency the stub
+    # describes, so this run and a local one resolve the same imports.
+    - name: Install mypy and the requests stub
+      run: |
+        python -m pip install --upgrade pip
+        pip install mypy==2.4.0 types-requests -e .
+
+    # Bare `mypy`: the files to check come from [tool.mypy], so there is no
+    # second place to keep in step with it.
+    - name: Type check
+      run: mypy
+
   # The dependency floor in pyproject.toml is a *security* floor -- it names the
   # releases that fixed three CVEs in requests' own credential handling -- and
   # every job above installs the *latest* requests instead.  A floor that has
@@ -186,3 +229,66 @@ jobs:
     - name: Report test results
       if: always()
       run: python .github/ci_report_failures.py unittest-output.txt
+
+  # One leg, for the same reason as `min-deps`: the question is what the suite
+  # *executes*, not which platform it runs on, and the matrix already covers the
+  # platforms.  3.11 rather than the floor, because this is a measurement rather
+  # than a compatibility claim.
+  #
+  # The configuration lives in pyproject.toml under [tool.coverage.*].  Two
+  # settings there are load-bearing.  The suite runs in worker processes
+  # (tools/run_tests_parallel.py) and the end-to-end tests exercise the helper
+  # as a subprocess of `git`, so measuring the driver alone would produce a
+  # number that looks like coverage and is not: `parallel` keeps each process's
+  # data in its own file instead of letting the last one overwrite it, and
+  # `patch` installs a startup hook and puts the setting in the environment, so
+  # the workers are measured -- and so is the helper, because the hook lives in
+  # site-packages and the variable is inherited through `git`.
+  #
+  # There is deliberately no threshold.  A `fail_under` chosen to make today's
+  # build green is one that gets raised for the wrong reason or lowered for a
+  # worse one; what this job is for is that a *drop* is visible, and a published
+  # table does that.
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+
+    - name: Set up Python
+      uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+      with:
+        python-version: '3.11'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        # Pinned for the same reason as ruff and mypy.  `patch` needs 7.4+.
+        pip install coverage==7.16.2 -e .
+
+    # The suite's own exit status is not this job's verdict -- the step below
+    # fails the job if unittest did not print OK, exactly as in the matrix jobs.
+    # Swallowing it here is what lets a report still be produced for a run that
+    # failed, which is when a coverage number is most worth having.
+    - name: Run the suite under coverage
+      run: |
+        coverage run tools/run_tests_parallel.py -j 0 > unittest-output.txt 2>&1 || echo "the suite did not pass; the report below still describes what ran"
+        coverage combine
+        coverage report --show-missing | tee coverage-report.txt
+
+    - name: Report test results
+      if: always()
+      run: python .github/ci_report_failures.py unittest-output.txt
+
+    # The report is the deliverable, and a workflow log needs admin rights to
+    # download while the job summary does not -- the same reasoning that made
+    # ci_report_failures.py emit annotations instead of printing to the log.
+    - name: Publish the coverage report
+      if: always()
+      run: |
+        {
+          echo '### Coverage'
+          echo
+          echo '```'
+          cat coverage-report.txt 2>/dev/null || echo '(no report: the run did not reach coverage report)'
+          echo '```'
+        } >> "$GITHUB_STEP_SUMMARY"

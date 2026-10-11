@@ -83,3 +83,46 @@ target-version = "py310"
 [tool.ruff.lint]
 select = ["F", "E9", "B"]
 
+[tool.mypy]
+# Read by the `typecheck` job in .github/workflows/ci.yml.
+#
+# Scope is the code that ships: the package and tools/.  `tests/` is
+# deliberately out of scope.  It is a namespace package (no `__init__.py`), so
+# mypy resolves each module under two names and stops before checking anything,
+# and its test doubles are `MagicMock`s whose attributes no annotation can
+# describe.  A check that has to exclude a third of what it sees is not one
+# people trust.
+files = ["git_remote_seafile", "tools"]
+# The floor, not the interpreter -- the same reasoning as [tool.ruff] above:
+# this decides which syntax and which stdlib signatures are legal, so it has to
+# track requires-python.
+python_version = "3.10"
+# With the annotations enforced, a `# type: ignore` that is no longer needed is
+# itself a defect: it would silently absorb the next real error on that line.
+warn_unused_ignores = true
+
+[tool.coverage.run]
+# Read by the `coverage` job in .github/workflows/ci.yml.
+#
+# `source` is the package, so the report is about shipped code rather than
+# about tools/ or the tests.
+source = ["git_remote_seafile"]
+# The suite runs in worker processes (tools/run_tests_parallel.py) and the
+# end-to-end tests exercise the helper as a subprocess of `git`.  `parallel`
+# keeps each process's data in its own file rather than letting the last one
+# overwrite it; `patch` installs a startup hook and puts the setting in the
+# environment, so the workers are measured -- and so is the helper, because
+# the hook lives in site-packages and the variable is inherited through
+# `git`.  Without both, the report would describe the parent process alone: a
+# number that looks like coverage and is not.
+parallel = true
+patch = ["subprocess"]
+
+[tool.coverage.report]
+# Per-line detail is the point of publishing a report: a percentage nobody can
+# act on is decoration.
+show_missing = true
+# Deliberately no `fail_under`.  A threshold chosen to make today's build green
+# is one that gets raised for the wrong reason or lowered for a worse one; what
+# matters first is that a *drop* is visible in review, and publishing the table
+# gives exactly that.

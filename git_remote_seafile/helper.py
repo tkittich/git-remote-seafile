@@ -134,8 +134,10 @@ class RemoteHelper:
                 entries = self.client.list_dir(self.repo_id, full_parent)
                 # list_dir answers [] for both a genuinely empty directory and
                 # a missing/unreachable one; dir_exists() re-asks and only
-                # confirms on an explicit 200, so a transient failure reads as
-                # "stop" rather than "delete this parent".
+                # confirms on an explicit 200 (raising on anything that is
+                # neither 200 nor 404), so a transient failure reads as "stop"
+                # rather than "delete this parent" -- the outer except below
+                # catches the raise and breaks the loop.
                 if (
                     isinstance(entries, list)
                     and len(entries) == 0
@@ -370,7 +372,7 @@ class RemoteHelper:
 
         # Load session config once and reuse it for the push lock below and the
         # post-lock auto-GC so these values resolve through one documented
-        # dataclass (Qwen N-6).
+        # dataclass.
         try:
             session_config = RemoteConfig.load()
             with RemoteLock(self.client, self.repo_id, self.repo_path, config=session_config) as lock:
@@ -446,7 +448,7 @@ class RemoteHelper:
                             reported_specs.add(dst)
                             continue
 
-                        # Always re-read ref under lock to catch concurrent pushes (N-1)
+                        # Always re-read ref under lock to catch concurrent pushes
                         remote_sha = self.client.get_file_text(self.repo_id, self._full_path(dst))
                         if remote_sha:
                             self._refs_cache[dst] = remote_sha
@@ -542,7 +544,7 @@ class RemoteHelper:
 
                     for dst, local_sha, expected_remote_sha in pending_updates:
                         try:
-                            # CAS check: verify remote ref hasn't changed since fast-forward check (N-1)
+                            # CAS check: verify remote ref hasn't changed since fast-forward check
                             current_remote = self.client.get_file_text(self.repo_id, self._full_path(dst))
                             if current_remote != expected_remote_sha and not force:
                                 _proto_error(dst, "fetch first")
@@ -861,10 +863,10 @@ class RemoteHelper:
                 self.cmd_fetch(fetch_specs)
             else:
                 # Git sends no unknown commands today, but an empty line would be read as a
-                # successful no-op; fail loudly instead (Qwen H2).  The failure must be
+                # successful no-op; fail loudly instead.  The failure must be
                 # on stderr and must stop the loop: "error unsupported" on stdout is not
                 # a line git's helper reader recognizes, so writing it and continuing
-                # leaves the protocol in an undefined state (REVIEW.glm.md H-15).  The
+                # leaves the protocol in an undefined state.  The
                 # comment about empty lines was stale besides -- run() consumes empty
                 # lines at the top of the loop and never reaches this branch with one.
                 sys.stderr.write(f"git-remote-seafile: unsupported helper command '{line}'\n")

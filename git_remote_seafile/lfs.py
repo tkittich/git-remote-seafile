@@ -8,7 +8,7 @@ import re
 import sys
 import tempfile
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeGuard
 
 from .client import SeafileClient
 
@@ -45,8 +45,15 @@ class LFSTransferAgent:
         parent = f"{self.lfs_dir}/{oid[:2]}/{oid[2:4]}"
         return parent, oid
 
-    def _is_valid_oid(self, oid: Any) -> bool:
-        """Validate OID is a safe hex/alphanumeric string with no path traversal."""
+    def _is_valid_oid(self, oid: Any) -> TypeGuard[str]:
+        """Validate OID is a safe hex/alphanumeric string with no path traversal.
+
+        Declared as a ``TypeGuard`` so the ``if not self._is_valid_oid(oid):
+        return`` guard at every call site also narrows ``oid`` from the
+        ``Any | None`` that a JSON lookup yields to a plain ``str``.  The check
+        and the type then say the same thing, and the calls below it -- which
+        all want a ``str`` -- need no separate assertion.
+        """
         if not isinstance(oid, str) or not re.fullmatch(r"[0-9a-zA-Z_-]{4,64}", oid):
             return False
         return ".." not in oid and "/" not in oid and "\\" not in oid
@@ -251,7 +258,7 @@ class LFSTransferAgent:
             else:
                 # git-lfs dispatches on the "event" key; a bare {"error": ...}
                 # matches no state of its wait loop, which can hang the
-                # transfer (REVIEW.glm.md H-16).  The well-formed complete
+                # transfer.  The well-formed complete
                 # event with an error payload is what a caller can react to.
                 self._send_json({
                     "event": "complete",

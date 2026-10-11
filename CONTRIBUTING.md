@@ -45,22 +45,25 @@ python tools/run_tests_parallel.py -k e2e   # only matching classes
 python tools/run_tests_parallel.py --list   # show the units of work
 ```
 
-Measured on a 12-core AMD 5900X, **681 tests across 134 targets**:
+Measured on a 12-core AMD 5900X, **693 tests across 138 targets**:
 
 | workers | wall time |
 | ------- | --------- |
-| 4 | 341.4 s |
-| 8 | 243.4 s |
-| 8, `--granularity test` | 389.6 s (681 targets instead of 134) |
+| 4 | 339.0 s |
+| 8 | 271.6 s |
+| 8, `--granularity test` | 387.9 s (693 targets instead of 138) |
 
 Treat the column as indicative rather than exact. On an idle machine repeated runs
 spread by about a tenth, and the machine's throughput drifts by much more between
-sessions — the same `-j 8` run has measured 232.9 s, 243.3 s, 245.9 s, 250.6 s and
-328.9 s across sessions and suite sizes. The shape is the point: eight workers are
-1.4x four, not 2x, and beyond eight the wall time barely moves, because the heavy
-cases are themselves multi-process. The wall time is bounded by the slowest single
-unit of work, not by throughput, and that unit is now a snapshot class —
-`test_snapshot_tool.ByteExactnessTests`, 114.7 s against a 243.4 s wall at `-j 8`.
+sessions — the same `-j 8` run has measured 232.9 s, 243.3 s, 245.9 s, 250.6 s,
+271.6 s, 310.2 s and 328.9 s across sessions and suite sizes. The shape is the
+point: eight workers are clearly better than four and nowhere near twice as good,
+and beyond eight the wall time barely moves, because the heavy cases are themselves
+multi-process. The *factor* is not stable — the 339.0 s and 271.6 s above are one
+back-to-back pair and give 1.25x where an earlier pair gave 1.40x — so quote the
+shape, not the ratio. The wall time is bounded by the slowest single unit of work,
+not by throughput, and that unit is now a snapshot class —
+`test_snapshot_tool.ByteExactnessTests`, 95.7 s against a 271.6 s wall at `-j 8`.
 
 The serial baseline is deliberately not listed. It was 204.4 s when this table
 was first taken at 268 tests, and the suite has since more than doubled, so that
@@ -70,7 +73,7 @@ for it: the snapshot module makes the serial path a long wait, which is the
 whole reason this runner exists.
 
 The unit of work is the test class — see the module docstring for why per-test
-scheduling is measurably *worse* here (389.6 s against 243.4 s, for five times
+scheduling is measurably *worse* here (387.9 s against 271.6 s, for five times
 the process start-ups).
 
 Because the unit of work is the class, a **class that defines `test_*` methods
@@ -115,16 +118,81 @@ this repository fails the lint job.
 
 ---
 
+## Type checking
+
+CI runs [mypy](https://mypy-lang.org/) as its own job, alongside the test matrix
+and the linter:
+
+```bash
+pip install mypy==2.4.0 types-requests   # the versions CI pins
+mypy
+```
+
+Bare `mypy`: the files to check, the interpreter to check against and the
+strictness all come from `[tool.mypy]` in `pyproject.toml`, so there is no second
+place to keep in step with it. Two choices there are worth knowing:
+
+- **`tests/` is out of scope.** It is a namespace package (no `__init__.py`), so
+  mypy resolves each module under two names and stops before checking anything;
+  and its test doubles are `MagicMock`s whose attributes no annotation can
+  describe. The scope is the code that ships.
+- **`warn_unused_ignores` is on.** With the annotations enforced, a
+  `# type: ignore` that has stopped being necessary is itself a defect: it would
+  silently absorb the next real error on that line.
+
+`types-requests` is not optional. Without a stub for `requests`, the checker
+reports the *missing stub* as errors inside this code, which is noise rather than
+a finding.
+
+---
+
+## Coverage
+
+`[tool.coverage.*]` in `pyproject.toml` configures a `coverage` job that runs the
+suite and publishes a per-file table to the job summary:
+
+```bash
+pip install coverage==7.16.2
+coverage run tools/run_tests_parallel.py -j 0
+coverage combine
+coverage report --show-missing
+```
+
+`parallel` and `patch = ["subprocess"]` are load-bearing rather than tidiness.
+The suite runs in worker processes and the end-to-end tests exercise the helper
+as a child of `git`, so measuring the driver alone would produce a number that
+looks like coverage and is not: `parallel` keeps each process's data in its own
+file instead of letting the last one overwrite it, and `patch` installs a startup
+hook and puts the setting in the environment — the hook lives in site-packages
+and the variable is inherited through `git`, so the helper is measured too.
+
+There is deliberately **no threshold**. A `fail_under` chosen to make today's
+build green is one that gets raised for the wrong reason or lowered for a worse
+one; what the job is for is that a *drop* is visible in a review.
+
+At v0.8.7 the suite covered **91%** of the package — 2944 statements, 264 missed
+— with `cli.py` at 88%, `client.py` 92%, `helper.py` 96% and `lock.py` 84%. Read
+that as a dated observation rather than a target: it is here so a later drop is
+visible, and it moves whenever the suite does.
+
+The report is a measurement, not a promise. It counts the paths a stub exercises,
+and `DESIGN.md` §4.3.1 says plainly that none of this has been validated against
+a real Seafile instance.
+
+---
+
 ## Continuous Integration
 
 `.github/workflows/ci.yml` runs on every push to `main` and on every pull
-request, in three jobs:
+request, in five jobs:
 
 | Job | What it does |
 | :--- | :--- |
 | `test` | The whole suite on a 3 × 5 matrix — Ubuntu, Windows and macOS × Python 3.10–3.14 — with `fail-fast: false`, so one platform's failure never hides another's. |
 | `lint` | `ruff check --output-format github`, then the documentation guards *and* the drift scenarios that prove they still work. |
+| `typecheck` | `mypy`, scoped and configured by `[tool.mypy]` in `pyproject.toml`. |
 | `min-deps` | Installs `requests` at exactly the version `pyproject.toml` declares as its floor, with `--no-deps`, and runs the whole suite against it. |
+| `coverage` | Runs the whole suite under `coverage` and publishes the per-file table to the job summary. |
 
 Four properties of that workflow are deliberate, and worth knowing before you
 change it:
@@ -198,9 +266,25 @@ is why the notes file is part of a release rather than an optional extra.
 ### Tagging
 
 ```bash
-git tag -a v<x.y.z> -m "v<x.y.z>"
-git push origin v<x.y.z>
+git tag -a v<x.y.z> -m "v<x.y.z> - <the release-notes title>"
+git push origin v<x.y.z>   # naming the tag is what carries it
+git push origin            # the branch
+git push mirror            # the mirror carries heads and tags
 ```
+
+**The tag message is the notes file's `# ` title, with the hash dropped.** Every
+tag in this history is named that way (`v0.8.6 - The Hardening Pass: a Token
+Scope, a Tested Floor, an Attested Release`), and the message is what
+`git describe` and the repository's tag list show. A bare `-m "v0.8.7"` is not
+wrong in a way any check catches — it just quietly makes one tag in the list look
+different from all the others.
+
+**A bare `git push origin` does not carry tags.** `push.followTags` is unset and
+`origin` has no tag refspec, so the branch goes up and the tag stays local: a
+release that looks pushed and is not. The command above names the tag explicitly,
+which is why it works. `mirror` is a second remote whose refspecs cover heads
+*and* tags, so it needs the tag too — a release is not complete until both have
+it.
 
 The tag is the whole release. The workflow compares it against the package
 version (`v$(__version__) == $GITHUB_REF_NAME`) and stops before building

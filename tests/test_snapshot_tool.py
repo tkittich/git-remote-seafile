@@ -1719,5 +1719,22 @@ class ConfigPlumbingTests(_SnapshotFixture):
         self.assertIn("could not update the vault's memory", err)
 
 
+class SubprocessTimeoutTests(unittest.TestCase):
+    """H-24 -- the snapshot tool holds its vault lock for the whole run, so a git
+    child that never returns blocks every other local snapshot as well: a
+    credential prompt on a scheduled machine, or a server that stalls mid-push."""
+
+    def test_run_converts_a_timeout_into_a_snapshot_error(self):
+        with unittest.mock.patch.object(
+            snap.subprocess,
+            "run",
+            side_effect=subprocess.TimeoutExpired(cmd="git push", timeout=1),
+        ):
+            with self.assertRaises(snap.SnapshotError) as ctx:
+                snap._run(["git", "push", "seafile://code/app"])
+        self.assertIn("did not finish within", str(ctx.exception))
+        self.assertIn("push", str(ctx.exception))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -600,5 +600,43 @@ class TestCloneCompletenessProbes(unittest.TestCase):
             self.assertTrue(objects_may_be_incomplete())
 
 
+class TestSubprocessTimeouts(unittest.TestCase):
+    """H-24 -- a git child that never returns is an error, not a wait.
+
+    Covers both spawn sites: ``run_git`` (which every helper-side git command
+    goes through) and ``filter_existing_objects`` (which dodges it, because it
+    feeds the child on stdin).  The second must also stay *safe* when its wait is
+    cut short -- it answers "nothing is present", the direction that costs a
+    redundant download rather than a wrong skip -- but it says so on stderr
+    instead of silently looking like an empty object store.
+    """
+
+    def test_run_git_kills_the_child_and_raises_on_timeout(self):
+        with patch("subprocess.Popen") as popen:
+            popen.return_value.communicate.side_effect = [
+                subprocess.TimeoutExpired(cmd="git rev-parse", timeout=1),
+                (b"", b""),
+            ]
+            with self.assertRaises(GitError) as ctx:
+                run_git(["rev-parse", "HEAD"], timeout=1)
+        popen.return_value.kill.assert_called_once()
+        self.assertIn("did not finish within 1s", str(ctx.exception))
+
+    def test_filter_existing_objects_warns_and_returns_empty_on_timeout(self):
+        stderr = io.StringIO()
+        with (
+            patch("git_remote_seafile.git_util.get_git_dir", return_value=None),
+            patch("subprocess.Popen") as popen,
+            patch("sys.stderr", stderr),
+        ):
+            popen.return_value.communicate.side_effect = [
+                subprocess.TimeoutExpired(cmd="git cat-file", timeout=1),
+                (b"", b""),
+            ]
+            self.assertEqual(filter_existing_objects(["a" * 40]), [])
+        popen.return_value.kill.assert_called_once()
+        self.assertIn("cat-file", stderr.getvalue())
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1313,6 +1313,10 @@ class TestSeafileClientOperations(unittest.TestCase):
 
         # Mock mkdir response
         client.session.post.return_value = MagicMock(status_code=200)
+        # dir_exists() now answers False only on an explicit 404 (anything else
+        # raises), so a mocked GET has to say 404 rather than fall through to an
+        # unset MagicMock status_code.
+        client.session.get.return_value = MagicMock(status_code=404)
         self.assertTrue(client.mkdir_p("repo1", "/a/b/c"))
 
         # Mock delete response: 200 on /file/
@@ -1389,6 +1393,108 @@ class TestSeafileClientOperations(unittest.TestCase):
 
         self.assertTrue(client.mkdir_p("repo1", "/a"))
         self.assertIn(("repo1", "/a"), client._known_dirs)
+
+
+class TestClientFailsLoudly(unittest.TestCase):
+    """A12.10 / H-7 / H-8 -- three places the client answered a question it had
+    not been given the answer to.
+
+    "Does this directory exist?" on a 5xx, "did this download finish?" on a
+    short body, and "what is the server's clock?" with no ``Date`` header.  Each
+    now reports what it actually knows instead of guessing in the caller's
+    favour.
+    """
+
+    def _client(self) -> SeafileClient:
+        client = SeafileClient(
+            server_url="https://seafile.example.com", token="fake_token", timeout=10
+        )
+        client.session = MagicMock()
+        return client
+
+    # -- H-7: dir_exists must not read "cannot tell" as "does not exist" ------
+
+    def test_dir_exists_returns_false_only_on_an_explicit_404(self):
+        client = self._client()
+        client.session.get.return_value = MagicMock(status_code=404, text="")
+        self.assertFalse(client.dir_exists("repo1", "/gone"))
+
+    def test_dir_exists_raises_on_a_transient_error(self):
+        client = self._client()
+        client.session.get.return_value = MagicMock(status_code=503, text="busy")
+        with self.assertRaises(SeafileAPIError):
+            client.dir_exists("repo1", "/maybe")
+
+    def test_dir_exists_and_list_dir_agree_on_a_5xx(self):
+        """The two neighbours must not disagree about the same server state."""
+        client = self._client()
+        client.session.get.return_value = MagicMock(status_code=503, text="busy")
+        with self.assertRaises(SeafileAPIError):
+            client.dir_exists("repo1", "/maybe")
+        client.session.get.return_value = MagicMock(status_code=503, text="busy")
+        with self.assertRaises(SeafileAPIError):
+            client.list_dir("repo1", "/maybe")
+
+    # -- H-8: the local-clock fallback must not be silent ---------------------
+
+    def test_get_server_time_warns_once_when_it_uses_the_local_clock(self):
+        client = self._client()
+        fake = io.StringIO()
+        with patch("sys.stderr", fake):
+            client.get_server_time()
+            client.get_server_time()
+        self.assertEqual(fake.getvalue().count("local clock"), 1)
+
+    def test_get_server_time_uses_the_learned_offset_silently(self):
+        client = self._client()
+        client._server_time_offset = 100.0
+        fake = io.StringIO()
+        with patch("sys.stderr", fake):
+            estimated = client.get_server_time()
+        self.assertAlmostEqual(estimated, time.time() + 100, delta=2)
+        self.assertEqual(fake.getvalue(), "")
+
+    # -- A12.10: a short body is a failure, not a small file ------------------
+
+    def _download_client(self, declared: int | None, delivered: bytes) -> SeafileClient:
+        client = self._client()
+        client.session.get.return_value = MagicMock(
+            status_code=200, text="https://files.example.com/seafhttp/files/abc"
+        )
+        client._adjust_url = MagicMock(side_effect=lambda u: u)
+        file_resp = MagicMock()
+        file_resp.status_code = 200
+        file_resp.headers = {} if declared is None else {"Content-Length": str(declared)}
+        file_resp.iter_content.return_value = [delivered] if delivered else []
+        client._transfer_session = MagicMock(
+            return_value=MagicMock(get=MagicMock(return_value=file_resp))
+        )
+        return client
+
+    def test_download_raises_when_the_body_is_short(self):
+        client = self._download_client(declared=1000, delivered=b"x" * 400)
+        with tempfile.TemporaryDirectory() as td:
+            dest = Path(td) / "object.bin"
+            with self.assertRaises(SeafileAPIError):
+                client.download_file_to("repo1", "/o/1", dest)
+            # The partial file is deliberately left in place; the point is that
+            # the caller is told, not that the bytes are cleaned up for it.
+            self.assertEqual(dest.stat().st_size, 400)
+
+    def test_download_succeeds_on_a_complete_body(self):
+        client = self._download_client(declared=1000, delivered=b"x" * 1000)
+        with tempfile.TemporaryDirectory() as td:
+            dest = Path(td) / "object.bin"
+            self.assertTrue(client.download_file_to("repo1", "/o/1", dest))
+            self.assertEqual(dest.stat().st_size, 1000)
+
+    def test_download_without_a_declared_length_is_not_second_guessed(self):
+        """A chunked response has no length to compare against -- accept it."""
+        client = self._download_client(declared=None, delivered=b"y" * 123)
+        with tempfile.TemporaryDirectory() as td:
+            dest = Path(td) / "object.bin"
+            self.assertTrue(client.download_file_to("repo1", "/o/1", dest))
+            self.assertEqual(dest.stat().st_size, 123)
 
 
 if __name__ == "__main__":

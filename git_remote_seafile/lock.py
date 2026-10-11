@@ -720,7 +720,7 @@ class RemoteLock:
         return result
 
     def verify_ownership(self) -> bool:
-        """Verify that this process still actively holds the lock on the remote (N-4).
+        """Verify that this process still actively holds the lock on the remote.
 
         Two questions, and the second is the one a ticket read cannot answer.
         Reading our own ticket back proves the *lease* is ours -- it is gone or

@@ -1,8 +1,8 @@
 # Engineering Roadmap & Backlog
 
-**Baseline:** v0.8.6 (the CI- and repository-hardening pass — a scoped workflow token, a concurrency group, a pip cache, a derived worker count, a tested dependency floor, attested release artifacts and the community files — closing the v0.8.0 cycle's one-liner and CI tranches)  
+**Baseline:** v0.8.7 (the fail-loud pass — a subprocess timeout everywhere one was missing, three client defects that each reported a failure as a success, the dangling review citations inlined, and the type check and coverage report D6 had left half-done)  
 **Scope:** What shipped in each release line, the active backlog, and the v1.0.0 horizon.  
-**Test Suite:** 681 tests across 134 targets, all green (`tools/run_tests_parallel.py`). **Python:** 3.10+ (3.9 EOL).
+**Test Suite:** 693 tests across 138 targets, all green (`tools/run_tests_parallel.py`). **Python:** 3.10+ (3.9 EOL).
 
 > [!NOTE]
 > All critical and high-severity findings from `archive/REVIEW.*.md` (including ticket-based distributed locking, abandoned ticket cleanup, post-lock ref verification, exception propagation, GC lock fencing, pack index validation, surrogateescape paths, container PID isolation, D/F ref pruning, multi-spec pack batching, Git LFS transfer progress, safety guardrails, parallel ref enumeration, smart pack fetch filtering, disk-staged streaming, and modular helper decoupling) have been completed. All findings from the October 2026 review cycle (REVIEW.glm/gemini/qwen/VERIFY/BACKLOG, now archived) were verified fixed or explicitly dispositioned, as was the earlier v0.7.0 cycle (REVIEW.deepseek/gemini/qwen), closed in v0.7.1. What is *left* is enumerated in §1.1 and §1.2 — §1.2 records, per row, whether the finding has been re-derived against the current release or is still only transcribed from the review that raised it. See [CHANGELOG.md](CHANGELOG.md) for detailed release notes.
@@ -45,12 +45,7 @@ re-probe before fixing.
 | ID / Source | Component | Description & Impact | Verified | Effort | Risk | Planned Target |
 |---|---|---|---|:---:|:---:|:---:|
 | **H-13 / C-01** | `url.py` | **A reverse-proxy context path cannot be expressed.** A Seafile served under a subpath has nowhere to put it: `seafile://host/seafile/code/app` reads `seafile` as the *library* name, and `normalize_netloc()` drops the path, so `SEAFILE_SERVER` cannot carry it either. Needs URL syntax or a dedicated configuration key for the context path, plus a deployment note. | probed | M | Medium | v0.9.0 |
-| **H-24 / qwen** | `git_util.py`, `gc.py`, `tools/` | **No subprocess timeout anywhere.** A wedged `git repack` / `index-pack` blocks `gc` indefinitely while the remote lease expires and another client lawfully takes over; a credential-helper GUI prompt hangs a scheduled snapshot forever. | probed | M | Medium | v0.9.0 |
 | **H-23 / qwen** | `sqlite_read.py`, `safety.py` | A torn WAL copy is indistinguishable from "no database", so `discover_local_synced_libraries()` reports zero libraries and the synced-folder guard silently does not run — precisely while the desktop client is writing. | transcribed | S | Medium | v0.9.0 |
-| **C8** | `git_remote_seafile/`, `tools/` | **21 references to review files that are not in the repository.** Comments cite `REVIEW.glm.md H-15`, `REVIEW.sonnet.md B1`, `(N-16)`, `(#24)`; the reviews live in the gitignored `archive/`, so a reader of the shipped source cannot follow any of them. Inline the reasoning or drop the citation. | probed | S | Low | v0.9.0 |
-| **A12.10** | `client.py` | A download's `Content-Length` is read and handed to the progress callback but never compared against what was written, so a truncated body is reported as success. | probed | S | Low | v0.9.0 |
-| **H-7** | `client.py` | `dir_exists()` returns `False` for *every* non-200, including a transient 5xx — "cannot tell" answered as "does not exist". `list_dir()` beside it raises for anything that is not 200/404, so the two disagree about the same state. | probed | S | Low | v0.9.0 |
-| **H-8** | `client.py` | `get_server_time()` silently falls back to the *local* clock when no `Date` header has ever been seen, so the lock's ordering can rest on a clock the protocol does not trust. | probed | S | Low | v0.9.0 |
 | **H-20 / qwen** | `lock.py` | Mixed ticket formats force the mtime fallback, and waiters re-upload on every poll, so the "winner" can flip each round while neither lease expires. Needs a legacy client in contention. | transcribed | M | Low | v0.9.0 |
 | **H-19** | `helper.py` | Deleting the branch the remote `HEAD` points at leaves a dangling symbolic ref. | transcribed | S | Low | v0.9.0 |
 | **H-17 / C-06** | `client.py` | One 30 s timeout covers the server's post-upload commit phase, which for a large pack is the slowest part of the request. | transcribed | S | Low | v0.9.0 |
@@ -75,7 +70,6 @@ re-probe before fixing.
 | **T-15 / T-21** | `run_tests_parallel.py` | `_start_worker` leaks the log file handle if `Popen` raises; workers get only `tests/` on `PYTHONPATH`; load failures report `tests=0`, so a partial run reads as a smaller suite. | transcribed | S | Low | v0.9.0 |
 | **R1 / R2 / R4 / P** | `seafile_snapshot.py` | `push_snapshot`'s second-failure message claims the vault "matches the remote" while the branch sits behind the tip; `delete_branch` swallows CAS failures (`check=False`), so a rollback can silently no-op; a failed restore leaves `into/` behind and blocks the retry; the vault lock is held across all network I/O, so a large first snapshot blocks every other local run. | transcribed | M | Low | v0.9.0 |
 | **G-5…G-10** | `tests/` | Six suite gaps: three `_load_credentials` branches untested; `test_helper.py` feeds `cmd_fetch` a spec shape the helper never produces; `fetch_pack_artifact`'s "empty" outcome is never produced; `test_refs.py`'s concurrency assertion is the suite's one flake candidate; `test_gc.py`'s "preserves all branches and tags" asserts less than its name promises; `e2e_harness.py` carries a stale cross-reference. | transcribed | S | Low | v0.9.0 |
-| **D6 (residual)** | `.github/workflows/ci.yml` | Two halves of D6 were **not** done, deliberately. A **type-check job**: mypy 2.4.0 reports 17 errors across four modules plus missing `requests`/`urllib3` stubs, so the job would be red on arrival — the annotations are aspirational, not enforced. A **coverage report**: `.coverage` is gitignored but nothing produces or publishes one. | probed | M | Low | v0.9.0 |
 | **C9** | `README.md`, `USER_GUIDE.md` | The two overlap heavily — the comparison tables are near-duplicates. Decide which is canonical and cut the other to a summary. | transcribed | M | None | v1.0.0 |
 | **A13** | — | The measured cost of a commit on the wire has never been published as a reproducible number, and with `seafile.autogc` off a large file snapshotted daily grows the remote daily. Measure and state it. | transcribed | M | Low | v1.0.0 |
 | **T1 / T2** | `tests/` | An opt-in tier that runs against a real Seafile instance, and concurrency tests against one. Everything today is validated against a stub, which `DESIGN.md` §4.3.1 states plainly. | transcribed | L | Medium | v1.0.0 |
@@ -86,10 +80,22 @@ re-probe before fixing.
 `A12.2` (`match` → `fullmatch`), `A12.16` (`desktop-url`), `D1`, `D4`, `D5`,
 `D7`, `D9` and `D10` landed in v0.8.6; `A11` (the unconditional "no `SFConflict`
 files" claim) was scoped to the paths the tool writes in v0.8.6; `C6` (the
-unverifiable LFS memory figure) was replaced with a measured one. `T-17` /
-`SNAP-01` (the vault's `git()` inheriting an ambient `GIT_DIR`) and `C-08`
-(bracketed IPv6 netloc) were fixed earlier and re-verified against v0.8.6, so
-they are not listed above.
+unverifiable LFS memory figure) was replaced with a measured one. v0.8.7 closed
+`H-24`, `C8`, `A12.10`, `H-7`, `H-8` and the `D6` residual — the six rows above
+that a patch release could carry, which is why every row that is left still
+names v0.9.0, v1.0.0 or `won't do`. `T-17` / `SNAP-01` (the vault's `git()`
+inheriting an ambient `GIT_DIR`) and `C-08` (bracketed IPv6 netloc) were fixed
+earlier and re-verified against v0.8.6, so they are not listed above.
+
+### 1.3 Found during the v0.8.7 pass
+
+Two gaps the release work itself exposed. Neither is a defect in shipped code, so
+neither belongs in the table above.
+
+| ID / Source | Component | Description & Impact | Effort | Risk | Planned Target |
+|---|---|---|---|:---:|:---:|:---:|
+| **Release pre-flight** | `tools/` | A `tools/release_check.py` that answers, *before* the tag exists, every question the release job answers after it: `__version__` ↔ the tag being cut, the notes file's shape, that its compare link's base tag is real, that the CHANGELOG has the matching section *and* its reference link, and that the tree is clean. Today the first feedback on a malformed release is a red tag, which is public. | S | Low | v0.9.0 |
+| **`push.followTags`** | — | Not a repository change — a maintainer-side git setting. With it a bare `git push` carries any tag that points at what is being pushed, which is the failure that produced v0.8.6's "pushed, but no tag". `CONTRIBUTING.md` §Tagging now names the tag explicitly and says why, so this is a convenience rather than a fix. | S | None | next touch |
 
 ---
 
@@ -164,6 +170,14 @@ One line per capability — see [CHANGELOG.md](CHANGELOG.md) for the full detail
 - **Repository and community files (D9/D10).** Dependabot keeps the SHA-pinned actions fresh (and deliberately does *not* move the dependency floor — a bot raising a security floor is not a security review); issue forms route a vulnerability report to the private channel instead of into a public issue; a pull-request template carries the checklist a release actually runs; `CODEOWNERS` claims every path; and `CODE_OF_CONDUCT.md` adopts the Contributor Covenant 2.1 by reference. `.gitignore` names `.review-venv/` and `.ruff_cache/` rather than depending on the `.gitignore` files inside them.
 - **Two code one-liners (A12.2) and two doc corrections.** `HEX_SHA_RE` is now asked with `fullmatch` at both call sites — `$` also matches before a trailing newline, so `match` accepted a 41-character string that is not a SHA. The `USER_GUIDE`'s unconditional "no `SFConflict` files are ever created" is scoped to the paths the tool writes, with the unexercised server-side-merge case named as such; and the README's LFS memory figure is replaced with a measured one (0.16 MB streaming against 128 MB buffered on a 64 MB payload, `tracemalloc` over 16 KiB reads) instead of an unverifiable decimal.
 - **`ROADMAP` §1.2** now carries the backlog the archive had been holding — the Tier 3 list from the v0.8.2 verification plus the findings the `-r2` reviews left open, each row marked **probed** (re-derived against this release) or **transcribed** (a lead, not a fact). Suite: 671 → 681 tests / 130 → 134 targets.
+
+**v0.8.7 (2026-10-12) — the fail-loud pass.**
+- **Nothing shells out to `git` without a bound any more (H-24).** Every `timeout=` in the tree was on an HTTP call; the 25 `subprocess` sites had none. A wedged `git repack` / `index-pack` inside `gc` held the remote lease open past its expiry, at which point another client lawfully takes over; a credential helper waiting on a GUI prompt hung a scheduled snapshot forever. `git_util.run_git`, `gc` and the snapshot tool's runner now bound every call and fail loudly, naming the command and the limit — and the limit is a constant, not a config key, because a repository must not be able to raise the ceiling that protects the lease. `filter_existing_objects` is the one deliberate exception: it degrades to "assume no objects are present" with a warning on stderr, because a false negative there costs a re-upload rather than an object.
+- **Three client defects that each reported a failure as a success (A12.10, H-7, H-8).** A download read `Content-Length` into the progress callback and never compared it against what it had written, so a truncated body returned `True`; a short body now raises. `dir_exists()` answered `False` for *every* non-200 — "cannot tell" reported as "does not exist" — while `list_dir()` beside it raised for anything that was not 200/404, so the two disagreed about the same state; only an explicit 404 is a `False` now. And `get_server_time()` fell back to the *local* clock whenever no `Date` header had been seen, quietly resting the lock's ordering on a clock the protocol does not trust; it still falls back, but says so once, on stderr.
+- **The shipped source stops citing documents a reader cannot open (C8).** 23 comments across seven files named `REVIEW.*.md`, `archive/…`, `(N-16)`, `(Qwen …)` — every one of them in the gitignored `archive/`, so none could be followed from a checkout. The reasoning is inlined; an identifier survives only where it names a fact about the review itself rather than standing in for the explanation.
+- **The type check and the coverage report are enforced rather than aspirational (D6 residual).** mypy was installed and the package and `tools/` made clean, and `pyproject.toml` now carries `[tool.mypy]` so a new `typecheck` job and a local `mypy` cannot disagree about scope or strictness. `[tool.coverage.*]` and a new `coverage` job produce a per-file report and publish it to the job summary. `tests/` is deliberately outside the type check — it is a namespace package, so mypy resolves each module under two names and stops before checking anything, and its test doubles are `MagicMock`s no annotation can describe. There is deliberately no coverage threshold either: a `fail_under` chosen to make today's build green is one that gets raised for the wrong reason or lowered for a worse one.
+- **`.gitignore` gained `.coverage.*`.** Parallel mode — which `pyproject.toml` turns on for the whole suite, so that a worker cannot overwrite the driver's data — writes one data file per process, and the plain `.coverage` rule matched none of them.
+- **`CONTRIBUTING.md` §Tagging names the tag, and says why it has to be named.** Its `-m` example was a bare `v<x.y.z>` where every real tag in the history carries the release-notes title, and it did not say that a bare `git push origin` leaves the tag behind — which is exactly how v0.8.6 came to be reported as pushed with no tag. `mirror` is named too: it carries heads *and* tags, so it needs the tag as well. Suite: 681 → 693 tests / 134 → 138 targets.
 
 ---
 

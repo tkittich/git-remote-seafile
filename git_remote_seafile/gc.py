@@ -10,7 +10,7 @@ from typing import Any
 
 from .client import SeafileAPIError, SeafileClient
 from .config import RemoteConfig
-from .git_util import clean_git_env
+from .git_util import GIT_TIMEOUT, clean_git_env
 from .lock import RemoteLock, describe_ownership_failure
 from .packs import fetch_pack_artifact, is_valid_pack_name
 from .refs import REF_NAMESPACES, is_valid_ref_name, iter_refs
@@ -19,6 +19,26 @@ from .refs import REF_NAMESPACES, is_valid_ref_name, iter_refs
 #: scratch repository -- the only namespaces whose objects ``repack -a -d`` is
 #: told are reachable.
 _MIRRORED_PREFIXES = tuple(f"{ns}/" for ns in REF_NAMESPACES)
+
+
+def _run_git(
+    args: list[str], env: dict[str, str], **kwargs: Any
+) -> subprocess.CompletedProcess[Any]:
+    """Run git against the scratch repository, bounded by ``GIT_TIMEOUT``.
+
+    Compaction holds the remote lease for the whole operation, so a git child
+    that never returns is not merely a stuck command -- it is a stuck *lease*,
+    and the queue will lawfully hand the lock to another client while this
+    process still believes it owns it.  A timeout is therefore converted into a
+    RuntimeError so the caller's ordinary failure path (which releases the
+    lease) runs, rather than the process blocking until someone kills it.
+    """
+    try:
+        return subprocess.run(["git", *args], env=env, timeout=GIT_TIMEOUT, **kwargs)
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(
+            f"git {' '.join(args)} did not finish within {GIT_TIMEOUT:g}s; aborting compaction."
+        ) from None
 
 
 def refs_outside_namespaces(client: SeafileClient, repo_id: str, repo_path: str) -> list[str]:
@@ -91,7 +111,7 @@ def compact_repository(
             lock.maybe_renew(20.0)
 
         def lock_still_ours() -> bool:
-            """Whether we can still prove we hold the lock (N-4).
+            """Whether we can still prove we hold the lock.
 
             gc prefers verify_ownership() and falls back to renew() for a lock
             object supplied by a caller that predates ownership fencing.  A lock
@@ -181,7 +201,7 @@ def compact_repository(
             if obj_format == "sha256":
                 init_cmd.append("--object-format=sha256")
             init_cmd.append(str(bare_repo))
-            subprocess.run(init_cmd, check=True, capture_output=True, env=scratch_env)
+            _run_git(init_cmd[1:], scratch_env, check=True, capture_output=True)
 
             local_pack_dir = bare_repo / "objects" / "pack"
             local_pack_dir.mkdir(parents=True, exist_ok=True)
@@ -257,10 +277,10 @@ def compact_repository(
                 # here.
                 verified = False
                 if idx_file.is_file():
-                    res = subprocess.run(
-                        ["git", "-C", str(bare_repo), "verify-pack", "-v", str(idx_file)],
+                    res = _run_git(
+                        ["-C", str(bare_repo), "verify-pack", "-v", str(idx_file)],
+                        scratch_env,
                         capture_output=True,
-                        env=scratch_env,
                     )
                     verified = (res.returncode == 0)
 
@@ -269,11 +289,11 @@ def compact_repository(
                         idx_file.unlink(missing_ok=True)
                     except Exception:
                         pass
-                    subprocess.run(
-                        ["git", "-C", str(bare_repo), "index-pack", "-o", str(idx_file), str(pack_file)],
+                    _run_git(
+                        ["-C", str(bare_repo), "index-pack", "-o", str(idx_file), str(pack_file)],
+                        scratch_env,
                         check=True,
                         capture_output=True,
-                        env=scratch_env,
                     )
 
             # 4. Mirror remote refs so git repack knows all roots are reachable.
@@ -309,11 +329,11 @@ def compact_repository(
             maybe_renew()
             if verbose:
                 sys.stderr.write("  Repacking objects with delta compression...\n")
-            res = subprocess.run(
-                ["git", "-C", str(bare_repo), "repack", "-a", "-d", "-l"],
+            res = _run_git(
+                ["-C", str(bare_repo), "repack", "-a", "-d", "-l"],
+                scratch_env,
                 capture_output=True,
                 text=True,
-                env=scratch_env,
             )
             maybe_renew()
             if res.returncode != 0:
@@ -346,7 +366,7 @@ def compact_repository(
                         repo_id, pack_dir, n_idx.name, n_idx, replace=True, progress_callback=on_upload_progress
                     )
 
-            # Fencing check (N-4): verify lock ownership before touching anything
+            # Fencing check: verify lock ownership before touching anything
             # else.  It comes before the upload verification below so that a
             # lost lease is reported as a lost lease -- "we are not allowed to
             # finish this" is a different problem from "the bytes are not
@@ -393,7 +413,12 @@ def compact_repository(
             # message.
             for name, expected in sorted(expected_sizes.items(), key=lambda kv: str(kv[0])):
                 try:
-                    got = int(remote_sizes.get(name))
+                    raw_size = remote_sizes.get(name)
+                    if raw_size is None:
+                        # Not listed at all -- distinct from a listed-but-junk
+                        # size, and the same verdict either way.
+                        raise TypeError("not listed on the remote")
+                    got = int(raw_size)
                 except (TypeError, ValueError):
                     unverified.append(f"{name} is not listed on the remote with a readable size")
                     continue

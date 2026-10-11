@@ -91,6 +91,7 @@ These hold on every code path, and each is the reason some check below exists. T
 - **Time decides who waits, never who holds.** A ticket's grant marker ranks it; a clock estimate may only break ties among peers (§4.4).
 - **Every destructive step re-proves ownership immediately before it acts** — before a ref is written, and before each individual packfile is deleted.
 - **A lost race is loud.** Where a check and a write cannot be made atomic, the write is followed by a read-back, and a mismatch is reported as a failure rather than assumed to be success.
+- **No external command runs unbounded.** Every `git` invocation is bounded by a hard-coded timeout, and a timeout is a failure rather than a silent truncation. The bound protects the lease as much as the run: a wedged `git repack` or `index-pack` inside `gc` would otherwise hold the remote lock open past its expiry, at which point another client lawfully takes over (§4.4). It is deliberately **not** a configuration key — a repository must not be able to raise the ceiling that protects its own concurrency guarantee.
 
 ### 3.4 Data safety
 
@@ -369,6 +370,9 @@ Specific mappings worth stating:
 - **A stale cached library id is not detected** (`SeafileClient.get_repo_id`). A cache hit is served without a request, so a library deleted server-side since the last lookup fails later, at the point of use, with the server's error rather than a clean not-found. This is a known limitation (§7), not an oversight: the revalidation that existed briefly cost a listing fetch on every lookup.
 - **A malformed port is an invalid URL, on every path.** `parse_seafile_url` and `normalize_netloc()` both report `invalid port '<value>'` and name the URL, rather than letting urllib's bare `ValueError` escape — that message mentions neither the URL nor the fact that the fault is a *URL* fault, which sends the reader looking at the server. The guarded read is on the credential, transfer-session and URL-adjustment paths.
 - **An empty remote has no inferable object format.** The format is derived from ref hash lengths, and there are no refs; the first push therefore assumes the local repository's format.
+- **A short download is a failure.** `Content-Length` is compared against the bytes actually written, and a mismatch raises. Returning success because the HTTP layer did is the shape of failure this project treats as the worst kind: a packfile that is quietly incomplete is a corrupt object store, found later and far from the cause.
+- **"Cannot tell" is never answered as "does not exist".** `dir_exists()` returns `False` only for an explicit 404 and raises otherwise, which is what `list_dir()` beside it already did for anything that is not 200 or 404. A transient 5xx used to read as an absent directory, and the ref-pruning path acted on that reading; it now stops the loop instead of deleting a parent. `mkdir_p` likewise aborts with the client's own message rather than proceeding to attempt a creation it cannot confirm.
+- **A server time that was never learned is announced.** `get_server_time()` still falls back to the local clock when no `Date` header has been seen — a server that sends no date must not make the lock unusable — but it now says so once on `stderr`. Silence would have rested the lock's ordering on a clock the protocol does not trust (§3.3).
 
 ---
 

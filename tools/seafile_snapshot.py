@@ -197,6 +197,7 @@ import sys
 import time
 from datetime import datetime
 from pathlib import Path
+from typing import Any, TypedDict
 
 # Running as documented from a bare source checkout -- `python
 # tools/seafile_snapshot.py` -- puts only tools/ on sys.path, so the
@@ -234,6 +235,32 @@ class SnapshotError(RuntimeError):
     """A failure the operator can act on."""
 
 
+#: How long one git subprocess may run before it is killed.  A snapshot holds
+#: its vault lock for the whole run, so a git child that never returns blocks
+#: every *other* local snapshot as well -- a credential-helper prompt on a
+#: scheduled machine, or a server that accepts the connection and then stalls.
+#: Long enough for a first push of a large tree, bounded so a hang is an error
+#: rather than a wait.  Not a config key, for the same reason the library's own
+#: ``GIT_TIMEOUT`` is not one.
+GIT_TIMEOUT = 600
+
+
+def _run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[Any]:
+    """``subprocess.run`` bounded by ``GIT_TIMEOUT``, failing as a ``SnapshotError``.
+
+    ``subprocess.run`` already kills the child when the timeout fires; this only
+    converts the bare ``TimeoutExpired`` into the tool's own error type, so the
+    message names the command that hung instead of arriving as a traceback.
+    """
+    kwargs.setdefault("timeout", GIT_TIMEOUT)
+    try:
+        return subprocess.run(cmd, **kwargs)
+    except subprocess.TimeoutExpired:
+        raise SnapshotError(
+            f"git {' '.join(cmd[1:])} did not finish within {GIT_TIMEOUT:g}s and was killed"
+        ) from None
+
+
 def git(
     git_dir: Path,
     work_tree: Path | None,
@@ -253,12 +280,11 @@ def git(
     operations would go to the caller's index, writing the whole tree
     (ignored files included) into whatever repository launched us.  The
     library's own ``clean_git_env`` exists for exactly this and gc.py uses
-    it; the snapshot tool does the same scrubbing here (REVIEW.glm.md T-17,
-    archive/REVIEW.snap-tool-antigravity.md SNAP-01).
+    it; the snapshot tool does the same scrubbing here.
 
     ``GIT_TERMINAL_PROMPT=0`` plus a detached stdin turn a credential prompt
     under a scheduler into a fast, clean failure instead of a hang holding
-    the vault lock (archive/.../SNAP-05).
+    the vault lock.
     """
     cmd = ["git", f"--git-dir={git_dir}"]
     if work_tree is not None:
@@ -272,7 +298,7 @@ def git(
     ):
         env.pop(var, None)
     env["GIT_TERMINAL_PROMPT"] = "0"
-    proc = subprocess.run(
+    proc = _run(
         cmd,
         cwd=str(cwd),
         env=env,
@@ -320,7 +346,7 @@ def ensure_vault(vault: Path, branch: str) -> Path:
         return git_dir
 
     vault.mkdir(parents=True, exist_ok=True)
-    proc = subprocess.run(
+    proc = _run(
         ["git", "init", "-q", str(vault)],
         text=True,
         encoding="utf-8",
@@ -339,7 +365,7 @@ def ensure_vault(vault: Path, branch: str) -> Path:
     # operation on every version, and it keeps the documented floor honest
     # instead of raising it to match an implementation detail.  For the same
     # reason `init.defaultBranch` (also 2.28) cannot be the mechanism here.
-    proc = subprocess.run(
+    proc = _run(
         ["git", "-C", str(vault), "symbolic-ref", "HEAD", f"refs/heads/{branch}"],
         text=True,
         encoding="utf-8",
@@ -357,7 +383,7 @@ def ensure_vault(vault: Path, branch: str) -> Path:
 
 def _config(path: Path, key: str) -> str:
     """Read a git config value, with the usual global/system fallbacks."""
-    proc = subprocess.run(
+    proc = _run(
         ["git", "-C", str(path), "config", "--get", key],
         text=True,
         encoding="utf-8",
@@ -417,7 +443,7 @@ def ensure_identity(
             # writing any: a preview must not mutate the vault, but
             # surfacing a missing identity early is part of the preview.
             continue
-        proc = subprocess.run(
+        proc = _run(
             ["git", "-C", str(vault), "config", key, inherited],
             text=True,
             encoding="utf-8",
@@ -1164,7 +1190,7 @@ def source_remote_urls(source: Path) -> list[tuple[str, str]]:
     what the user means by "my code remote", and a repository that is not a git
     repository at all simply has no remotes.
     """
-    proc = subprocess.run(
+    proc = _run(
         [
             "git",
             "-C",
@@ -1358,7 +1384,7 @@ def _checkout(repo: Path, rev: str, *, detach: bool = False) -> None:
     if detach:
         args.append("--detach")
     args.append(rev)
-    proc = subprocess.run(
+    proc = _run(
         args,
         text=True,
         encoding="utf-8",
@@ -1397,7 +1423,7 @@ def verify_restore(repo: Path, rev: str) -> list[str]:
     filename that is not valid UTF-8 is hashed as the filename it actually is
     rather than a ``replace``-decoded approximation of it.
     """
-    listing = subprocess.run(
+    listing = _run(
         ["git", "-C", str(repo), "ls-tree", "-r", "-z", "--full-tree", rev],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -1415,8 +1441,9 @@ def verify_restore(repo: Path, rev: str) -> list[str]:
     #: be looked up by its position in that list: doing so compared the link
     #: against an unrelated file's blob, which reported every correctly-restored
     #: link as a mismatch -- and raised IndexError outright when the tree held
-    #: nothing but symlinks.
-    blob_sha: dict[str, bytes] = {}
+    #: nothing but symlinks.  The SHA is held decoded because it is handed to
+    #: :func:`_run` as an element of a ``list[str]`` argument vector.
+    blob_sha: dict[str, str] = {}
     for entry in listing.stdout.split(b"\0"):
         if not entry:
             continue
@@ -1432,11 +1459,10 @@ def verify_restore(repo: Path, rev: str) -> list[str]:
         # link and hashes the target, so a correct restore would report
         # a spurious mismatch.  Symlinks are verified separately (by
         # reading the link) and never sent through hash-object.
-        # (archive/REVIEW.snap-tool-deep.md, finding C-1.)
         if fields[0] == b"120000":
             link = path.decode("utf-8", errors="surrogateescape")
             symlinks.append(link)
-            blob_sha[link] = fields[2]
+            blob_sha[link] = fields[2].decode("ascii")
             continue
         paths.append(path)
         expected.append(fields[2])
@@ -1461,7 +1487,7 @@ def verify_restore(repo: Path, rev: str) -> list[str]:
             # text-file case): that is a difference worth naming.
             mismatched_symlinks.append(link)
             continue
-        blob = subprocess.run(
+        blob = _run(
             ["git", "-C", str(repo), "cat-file", "blob", blob_sha[link]],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -1470,7 +1496,7 @@ def verify_restore(repo: Path, rev: str) -> list[str]:
             mismatched_symlinks.append(link)
     if not paths:
         return mismatched_symlinks
-    proc = subprocess.run(
+    proc = _run(
         ["git", "-C", str(repo), "hash-object", "--no-filters", "--stdin-paths"],
         input=b"\n".join(paths) + b"\n",
         stdout=subprocess.PIPE,
@@ -1486,7 +1512,7 @@ def verify_restore(repo: Path, rev: str) -> list[str]:
         # git outputs one hash per input path, in order; a short output means
         # something ate a path, and guessing which would be worse than failing.
         # The path it could not open is named on stderr -- append it, or the
-        # count mismatch is all the user gets (archive/.../SNAP-08).
+        # count mismatch is all the user gets.
         detail = proc.stderr.decode("utf-8", errors="replace").strip()
         raise SnapshotError(
             f"hash-object returned {len(hashes)} hashes for {len(paths)} "
@@ -1523,7 +1549,7 @@ def restore(
 
     into.parent.mkdir(parents=True, exist_ok=True)
     print(f"cloning {remote} -> {into} (no checkout) ...")
-    proc = subprocess.run(
+    proc = _run(
         ["git", "clone", "--no-checkout", remote, str(into)],
         text=True,
         encoding="utf-8",
@@ -1547,7 +1573,7 @@ def restore(
     target = branch
     verified_rev = branch
     if ref and ref != branch:
-        proc = subprocess.run(
+        proc = _run(
             ["git", "-C", str(into), "branch", branch, f"origin/{branch}"],
             text=True,
             encoding="utf-8",
@@ -1560,7 +1586,7 @@ def restore(
                 f"could not materialise '{branch}' in the clone "
                 f"(rc={proc.returncode})\n{proc.stderr.strip()}"
             )
-        proc = subprocess.run(
+        proc = _run(
             ["git", "-C", str(into), "rev-parse", "--verify", f"{ref}^{{commit}}"],
             text=True,
             encoding="utf-8",
@@ -1583,7 +1609,7 @@ def restore(
     # machines away by the time someone restores; the restored revision is
     # where the broken directory actually materialises, so repeat it here
     # rather than let the certification below claim byte-exactness for a tree
-    # with holes in it (archive/REVIEW.snap-tool-deep.md, finding C-2).
+    # with holes in it.
     restored_gitlinks = find_gitlinks(into / ".git", into, verified_rev)
     if restored_gitlinks:
         print(
@@ -1617,7 +1643,7 @@ def restore(
         )
 
     if verify:
-        proc = subprocess.run(
+        proc = _run(
             ["git", "-C", str(into), "fsck", "--no-progress", "--no-dangling"],
             text=True,
             encoding="utf-8",
@@ -1715,7 +1741,7 @@ def _read_config_key(git_dir: Path, key: str) -> str:
     Kept for one-off reads and for tests; the snapshot path itself reads every
     key it needs in a single call via :func:`_read_local_config_map`.
     """
-    proc = subprocess.run(
+    proc = _run(
         ["git", "--git-dir", str(git_dir), "config", "--local", "--get", key],
         text=True,
         encoding="utf-8",
@@ -1742,7 +1768,7 @@ def _read_local_config_map(repo: Path) -> dict[str, list[str]]:
     repository may use a ``.git`` *file* (a submodule or a linked worktree),
     which ``--git-dir`` cannot open.
     """
-    proc = subprocess.run(
+    proc = _run(
         ["git", "-C", str(repo), "config", "--local", "--null", "--list"],
         text=True,
         encoding="utf-8",
@@ -1782,7 +1808,23 @@ def _same_config_value(stored: str, desired: str) -> bool:
     return stored.replace("\\", "/") == desired.replace("\\", "/")
 
 
-def remembered_settings(vault: Path, source: Path) -> dict[str, object]:
+class _Remembered(TypedDict, total=False):
+    """What a vault remembers, keyed exactly as :func:`remember_settings` writes it.
+
+    ``total=False`` because a vault remembers only what it has been told: a
+    fresh vault has written nothing, and a key stays absent until a run sets it.
+    A ``TypedDict`` rather than ``dict[str, object]`` so that the resolution
+    chain reads ``str | None`` / ``list[str] | None`` out of ``.get`` instead of
+    ``object``, which is what the defaults are actually made of.
+    """
+
+    remote: str
+    code_remote: str
+    branch: str
+    exclude: list[str]
+
+
+def remembered_settings(vault: Path, source: Path) -> _Remembered:
     """What the vault remembers from its previous run, if anything.
 
     The vault is the bottom of the resolution chain, and it is also where every
@@ -1820,7 +1862,7 @@ def remembered_settings(vault: Path, source: Path) -> dict[str, object]:
                 f"its own --vault."
             )
 
-    remembered: dict[str, object] = {}
+    remembered: _Remembered = {}
     remote = first("snapshot.remote")
     if remote:
         remembered["remote"] = remote
@@ -1901,7 +1943,7 @@ def remember_settings(
         return all(a == b for a, b in zip(stored, values, strict=True))
 
     def run(key: str, *args: str, ok_rc: tuple[int, ...] = (0,)) -> None:
-        proc = subprocess.run(
+        proc = _run(
             ["git", "-C", str(vault), "config", "--local", *args],
             text=True,
             encoding="utf-8",
@@ -2332,7 +2374,7 @@ def main(argv: list[str] | None = None) -> int:
                 )
             else:
                 print(f"pushing source repo to '{code_remote}' ...")
-                proc = subprocess.run(
+                proc = _run(
                     ["git", "-C", str(source), "push", code_remote],
                     text=True,
                     encoding="utf-8",
@@ -2357,7 +2399,6 @@ def main(argv: list[str] | None = None) -> int:
             # and the inherited identity.  Those writes were safe-looking but
             # a "pure preview" that pins identity and attributes is mutating
             # state a later real run will commit under, without disclosure
-            # (archive/REVIEW.snap-tool-deep.md R3 / antigravity SNAP-07-nit).
             # Reads are harmless and still happen, so a dry run reports the
             # same settings a real run would apply.
             ensure_identity(vault, source, vault_config=vault_config)
@@ -2366,7 +2407,6 @@ def main(argv: list[str] | None = None) -> int:
             # The identity *check* still runs on a preview -- failing
             # early with the actionable message beats a commit-tree
             # traceback -- but read-only: a dry run writes nothing at all
-            # (archive/REVIEW.snap-tool-deep.md R3).
             ensure_identity(vault, source, vault_config=vault_config,
                             write_identity=False)
         # Remember *after* the vault exists, so the first run leaves the next one
@@ -2411,7 +2451,7 @@ def main(argv: list[str] | None = None) -> int:
             # A dry run stops one step before the branch move, so it does not
             # need the commit either -- and building one would need an
             # identity the preview has deliberately not written (the dry run
-            # writes nothing, REVIEW.snap-tool-deep.md R3).  CI runners have
+            # writes nothing).  CI runners have
             # no global identity, which is why passing locally did not mean
             # passing there.  write-tree alone answers every question a
             # preview prints (file count, size, diffstat, secrets, gitlinks).
@@ -2457,8 +2497,11 @@ def main(argv: list[str] | None = None) -> int:
                 if len(secrets) > 20:
                     print(f"  ... and {len(secrets) - 20} more")
 
-            unchanged = commit is None
-            if unchanged:
+            # A ``None`` commit *is* the "tree unchanged" signal: build_snapshot
+            # returns one when there is nothing new to record.  Testing
+            # ``commit is None`` directly rather than through an alias also lets
+            # the type checker narrow it where the commit is dereferenced.
+            if commit is None:
                 print("no changes since the last snapshot")
             elif base:
                 stat = diff_stat(git_dir, source, base, tree)
@@ -2466,7 +2509,7 @@ def main(argv: list[str] | None = None) -> int:
                     print(stat)
 
             if args.dry_run:
-                if unchanged:
+                if commit is None:
                     print("\ndry run -- nothing to commit, nothing pushed")
                 else:
                     print(
@@ -2475,7 +2518,7 @@ def main(argv: list[str] | None = None) -> int:
                     )
                 return 0
 
-            if unchanged:
+            if commit is None:
                 print("\nnothing to commit; branch left where it is")
             else:
                 set_branch(git_dir, source, branch, commit, base)
@@ -2484,7 +2527,7 @@ def main(argv: list[str] | None = None) -> int:
             if not remote:
                 print("no --remote; snapshot kept locally (pass --remote, or set "
                       "one in the source repo, to push)")
-            elif unchanged and base == remote_tip:
+            elif commit is None and base == remote_tip:
                 print("the remote already has this snapshot; nothing to push")
             else:
                 # `commit or base`: when the tree is unchanged but this machine

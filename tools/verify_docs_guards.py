@@ -20,7 +20,11 @@ import tests.test_docs_consistency as dc
 _REAL_READ = dc._read
 _REAL_SOURCE = dc._source_text
 
-SCENARIOS = []
+#: One row per injected drift: the scenario's name, the guard test it should
+#: trip, the per-document substitutions, and any source-level substitutions.
+SCENARIOS: list[
+    tuple[str, str, dict[str, list[tuple[str, str]]], list[tuple[str, str]] | None]
+] = []
 
 
 def scenario(name, test_name, overrides, source_override=None):

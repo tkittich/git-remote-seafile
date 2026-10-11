@@ -205,6 +205,7 @@ class SeafileClient:
         self._force_file_host: bool | None = None  # resolved lazily; see below
         self._server_time_offset: float | None = None
         self._server_time_offsets: list[float] = []
+        self._warned_no_server_time: bool = False
         self.session = requests.Session()
         # File transfers go through a session as well, so they get connection
         # reuse, the `verify`/proxy settings and the retry adapter.  This second
@@ -270,9 +271,24 @@ class SeafileClient:
                 pass
 
     def get_server_time(self) -> float:
-        """Return estimated server timestamp synchronized with HTTP Date response header."""
+        """Estimated server timestamp, from the offset learned off ``Date`` headers.
+
+        The offset is the median of the last few observations, so it is stable
+        across a burst of requests.  When no ``Date`` header has been seen at
+        all -- the first call, or a server that omits it -- this falls back to
+        the *local* clock, which the protocol does not vouch for.  That is worth
+        saying once on stderr: the lock derives ticket ordering from this value,
+        and a queue that came out mis-ordered is otherwise unexplainable.
+        """
         if self._server_time_offset is not None:
             return time.time() + self._server_time_offset
+        if not self._warned_no_server_time:
+            self._warned_no_server_time = True
+            sys.stderr.write(
+                "Warning: no server Date header seen yet; using the local clock for "
+                "lock ordering.\n"
+            )
+            sys.stderr.flush()
         return time.time()
 
     def _adopt_token(self, token: str | None, source: str) -> None:
@@ -663,7 +679,16 @@ class SeafileClient:
         if resp.status_code == 200:
             self._known_dirs.add((repo_id, clean_path))
             return True
-        return False
+        if resp.status_code == 404:
+            return False
+        # Anything else is "cannot tell", and answering "cannot tell" as "does
+        # not exist" is how a transient 5xx becomes a duplicate mkdir or a
+        # skipped path.  list_dir() beside this raises for exactly these states,
+        # so the two now agree: 200 is yes, 404 is no, anything else is an error
+        # the caller can decide about.
+        raise SeafileAPIError(
+            f"Failed to check dir {clean_path}: HTTP {resp.status_code} {resp.text}"
+        )
 
     def evict_known_dir(self, repo_id: str, dir_path: str) -> None:
         """Forget a cached directory (the caller deleted it on the server)."""
@@ -875,11 +900,14 @@ class SeafileClient:
         ``stream=True`` `requests` reads the entire body into memory before the
         first chunk is written, which is the bug this exists to avoid.
 
-        A mid-stream failure leaves a partial file at *dest*: the method does
-        not unlink it, because *dest* may be a caller-managed path.  Callers
-        must therefore treat *dest* as untrusted after an exception -- every
-        current caller stages into a temp/scratch location and verifies the
-        byte count before use.
+        A body shorter than the declared ``Content-Length`` is a failure, not a
+        small file, and raises rather than returning True -- a truncated object
+        written into the LFS store is indistinguishable from a complete one
+        afterwards.  Any other mid-stream failure leaves a partial file at
+        *dest*: the method does not unlink it, because *dest* may be a
+        caller-managed path.  Callers must therefore treat *dest* as untrusted
+        after an exception -- every current caller stages into a temp/scratch
+        location and verifies the byte count before use.
         """
         clean_path = "/" + file_path.strip("/")
         url = f"{self.server_url}/api2/repos/{repo_id}/file/?p={quote(clean_path, safe='/')}"
@@ -921,6 +949,19 @@ class SeafileClient:
                                 progress_callback(transferred, total_size or transferred)
                             except Exception:
                                 pass
+            # A short body is a *failed* download, not a small one.  The server
+            # declares the length up front, so a stream that ends early is a
+            # truncated transfer -- a dropped connection, a proxy that cut the
+            # response -- and returning True would hand the caller a partial
+            # object with nothing to notice it by.  The LFS path is why this
+            # matters: a truncated object is written straight into the store.
+            # Checked only when the server declared a length (a chunked response
+            # has none, and there is then nothing to compare against).
+            if total_size and transferred != total_size:
+                raise SeafileAPIError(
+                    f"Truncated download of {clean_path}: got {transferred} of "
+                    f"{total_size} bytes"
+                )
             return True
         finally:
             file_resp.close()

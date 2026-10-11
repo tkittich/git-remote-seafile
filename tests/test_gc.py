@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import contextlib
 import io
+import subprocess
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+from git_remote_seafile import gc as gc_module
 from git_remote_seafile.gc import compact_repository, describe_size_delta
 from git_remote_seafile.lock import LEASE_LOST
 
@@ -1107,6 +1109,23 @@ class TestGcVerifiesTheUploadBeforeDeletingAnything(unittest.TestCase):
         self.assertTrue(res["cleanup_stopped"])
         self.assertIn("another client took over the lock", err.getvalue())
         self.assertIn("stopped deleting obsolete packfiles", err.getvalue())
+
+
+class TestGcSubprocessTimeout(unittest.TestCase):
+    """H-24 -- compaction holds the remote lease while it works, so a git child
+    that never returns must fail the run rather than hold the lease open past
+    its expiry, where the queue will lawfully hand it to another client."""
+
+    def test_run_git_converts_a_timeout_into_a_named_failure(self):
+        with patch.object(
+            gc_module.subprocess,
+            "run",
+            side_effect=subprocess.TimeoutExpired(cmd="git repack", timeout=1),
+        ):
+            with self.assertRaises(RuntimeError) as ctx:
+                gc_module._run_git(["-C", "scratch", "repack", "-a", "-d", "-l"], {})
+        self.assertIn("did not finish within", str(ctx.exception))
+        self.assertIn("repack", str(ctx.exception))
 
 
 

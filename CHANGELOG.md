@@ -5,6 +5,88 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.7] - 2026-10-12
+
+A patch release: every change in it is a defect rather than a capability. The theme is the one the
+fail-closed principle has always stated and the code did not always follow — **a check that cannot
+answer must not be read as an answer, and a command that never finished must not be read as one that
+did.**
+
+Three of the four groups below are that sentence in different clothes. Nothing bounded a subprocess, so
+a wedged `git repack` held the remote lock past its own expiry while another client lawfully took over.
+A download compared nothing against its `Content-Length`, so a truncated packfile was reported as a
+success. A `dir_exists()` answered "does not exist" for every non-200, including the ones that mean "I
+could not tell". And the shipped source cited twenty-three documents that are not in the repository, so
+no reader could follow a single one of them.
+
+The fourth is the two halves of `D6` that the v0.8.6 pass deliberately left undone — and the reason it
+left them is the reason they were worth doing properly: a type check that is red on arrival and a
+coverage report nothing produces are both worse than nothing, because they look like enforcement.
+
+### Added
+
+- **A `typecheck` CI job (D6 residual).** mypy 2.4.0, pinned, run bare so that the scope and the
+  strictness come from `[tool.mypy]` in `pyproject.toml` rather than from the workflow. The package
+  and `tools/` are clean; `tests/` is deliberately out of scope, because it is a namespace package
+  (mypy resolves each module under two names and stops before checking anything) and its test doubles
+  are `MagicMock`s no annotation can describe. `warn_unused_ignores` is on, so an ignore that has
+  stopped being necessary fails the job instead of absorbing the next real error on its line.
+- **A `coverage` CI job (D6 residual).** It runs the whole suite under `coverage` and publishes the
+  per-file table to the job summary, because a workflow log needs admin rights to download and a job
+  summary does not. `[tool.coverage.*]` holds the configuration, and `parallel` plus
+  `patch = ["subprocess"]` are what make the number mean anything: the suite runs in worker processes
+  and the end-to-end tests exercise the helper as a child of `git`, so measuring the driver alone would
+  report a figure that looks like coverage and is not. There is deliberately **no threshold** — a
+  `fail_under` chosen to make today's build green is one that gets raised for the wrong reason or
+  lowered for a worse one. At this release the suite covers **91%** of the package (2944 statements,
+  264 missed), recorded as a dated observation rather than a target.
+- **Twelve regression tests for everything below**, in four classes. Suite: 681 → 693 tests /
+  134 → 138 targets.
+
+### Changed
+
+- **Every `git` invocation is bounded (H-24).** The tree had timeouts on its HTTP calls and none at
+  all on its twenty-five `subprocess` sites. `git_util.run_git`, `gc`'s runner and the snapshot tool's
+  runner now bound every call and fail loudly, naming the command and the limit. The bound is a
+  constant rather than a configuration key, on purpose: a repository must not be able to raise the
+  ceiling that protects its own concurrency guarantee, because the failure it prevents is a `gc` that
+  holds the remote lease open past expiry while another client lawfully takes over.
+- **`filter_existing_objects` degrades instead of failing.** It is the one deliberate exception: a
+  timeout there warns on stderr and answers "assume no objects are present", because the cost of a
+  false negative is a re-upload rather than a lost object.
+- **`dir_exists()` no longer answers "does not exist" for a transient error (H-7).** It returned
+  `False` for *every* non-200 while `list_dir()` beside it raised for anything that was not 200 or 404,
+  so the two disagreed about the same state. Only an explicit 404 is a `False` now. The ref-pruning
+  loop already caught the raise and stopped; `mkdir_p` now aborts with the client's own message instead
+  of proceeding to a creation it could not confirm.
+- **`.gitignore` gained `.coverage.*`.** Parallel mode — which `pyproject.toml` turns on for the whole
+  suite, so that a worker cannot overwrite the driver's data — writes one data file per process, and
+  the plain `.coverage` rule matched none of them.
+
+### Fixed
+
+- **A truncated download is a failure, not a success (A12.10).** `download_file_to` read
+  `Content-Length` into the progress callback and never compared it against what it had written, so a
+  short body returned `True`. A packfile that is quietly incomplete is a corrupt object store found
+  later and far from the cause; a mismatch now raises.
+- **A server time that was never learned is announced (H-8).** `get_server_time()` fell back to the
+  *local* clock whenever no `Date` header had been seen, which rested the lock's ordering on a clock
+  the protocol does not trust. It still falls back — a server that sends no date must not make the lock
+  unusable — but it now says so once, on stderr.
+- **The shipped source stops citing documents a reader cannot open (C8).** Twenty-three comments
+  across seven files named `REVIEW.*.md`, `archive/…`, `(N-16)` and `(Qwen …)`; every one of them lives
+  in the gitignored `archive/`, so none could be followed from a checkout. The reasoning is inlined, and
+  an identifier survives only where it names a fact about the review rather than standing in for the
+  explanation.
+- **`ROADMAP.md` re-targeted.** The six rows a patch release could carry are closed and recorded in §2;
+  every row that is left still names v0.9.0, v1.0.0 or `won't do`.
+- **`CONTRIBUTING.md` §Tagging says what to name the tag, and why.** Its `-m` example was a bare
+  `v<x.y.z>` while every real tag in the history carries the release-notes title, and it did not say
+  that a bare `git push origin` leaves the tag behind — which is how v0.8.6 came to be reported as
+  pushed with no tag. The procedure now names the tag explicitly, names `mirror` as a remote that
+  needs it too, and `ROADMAP.md` §1.3 tracks the two follow-ups (`tools/release_check.py`, and
+  `push.followTags` as a maintainer convenience).
+
 ## [0.8.6] - 2026-10-12
 
 Two tranches, and neither of them is code — which is the point. A workflow with no token scope, no
@@ -1277,6 +1359,7 @@ Data-loss and silent-failure fixes, and the Python floor raised to 3.9.
   with zero-config desktop-client token discovery, distributed locking, remote
   packfile compaction, and a Git LFS custom transfer agent.
 
+[0.8.7]: https://github.com/tkittich/git-remote-seafile/compare/v0.8.6...v0.8.7
 [0.8.6]: https://github.com/tkittich/git-remote-seafile/compare/v0.8.5...v0.8.6
 [0.8.5]: https://github.com/tkittich/git-remote-seafile/compare/v0.8.4...v0.8.5
 [0.8.4]: https://github.com/tkittich/git-remote-seafile/compare/v0.8.3...v0.8.4

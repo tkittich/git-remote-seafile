@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sys
 from dataclasses import dataclass
+from typing import Any
 
 from .git_util import (
     get_git_config,
@@ -45,7 +46,10 @@ class RemoteConfig:
         a race guard rather than the lock itself.  Only a negative value -- a
         settlement window that would elapse before it started -- is refused.
         """
-        values = {
+        # Annotated because the literal alone infers ``dict[str, int]`` -- bool
+        # is a subtype of int, so ``auto_gc`` does not widen it -- and that
+        # cannot then be splatted into the dataclass's ``auto_gc: bool`` field.
+        values: dict[str, Any] = {
             "lock_timeout": get_git_config_int("seafile.locktimeout", 15),
             "lock_lease": get_git_config_int("seafile.locklease", 60),
             "lock_settle": get_git_config_int("seafile.locksettle", 1),

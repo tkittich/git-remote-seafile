@@ -111,7 +111,7 @@ def load_libs(ccnet: Path):
     nothing" from "could not read the database at all": for `where` -- whose
     exit code scripts gate on -- those are not the same answer.  A verified
     negative is exit 1; an unverifiable state used to read as the same exit 1,
-    telling a script "safe" for a state nobody checked (REVIEW.glm.md T-19).
+    telling a script "safe" for a state nobody checked.
     """
     data = seafile_data(ccnet)
     libs = []
@@ -182,8 +182,8 @@ def cmd_where(args, ccnet):
     _, libs, db_ok = load_libs(ccnet)
     if not db_ok:
         # "Could not check" is not "not inside any synced library": scripts
-        # gate on this exit code, and both used to answer exit 1 (REVIEW.glm.md
-        # T-19).  The unverifiable state gets its own exit code and message.
+        # gate on this exit code, and both used to answer exit 1.  The
+        # unverifiable state gets its own exit code and message.
         print("could not read the sync client's repo.db; cannot determine "
               "whether %s is inside a synced library" % target)
         return 2
@@ -266,7 +266,7 @@ def _day_key(ts) -> str:
     Same guard as _ts: a live client's log rows can carry absurd values
     (ms-vs-s confusion, negatives), and on Windows fromtimestamp raises
     OSError for the negative ones -- one bad row must not kill the whole
-    churn/errors report (REVIEW.glm.md T-3/T-20).
+    churn/errors report.
     """
     if not ts:
         return "?"
@@ -364,7 +364,7 @@ def cmd_churn(args, ccnet):
             # The window must be chosen on a real date key, not the log's
             # MM/DD/YY spelling: lexicographic order puts December of last
             # year after January of this one, so the window picks the wrong
-            # days across a year boundary (REVIEW.glm.md T-20).  --days 0
+            # days across a year boundary.  --days 0
             # means "no window" and negative values are refused -- a bare
             # [-0:] is the whole list, the opposite of what the number says.
             window = max(args.days, 0) or None
@@ -537,7 +537,7 @@ def main(argv=None):
         # it is a state nobody checked, and `where` documents exit 1 as a
         # *verified* negative for precisely that reason.  It used to escape as
         # a traceback, which also exits 1, so a script gating on the code was
-        # told "safe" by a crash (REVIEW.sonnet.md B1).
+        # told "safe" by a crash.
         sys.stderr.write(
             f"Error: {exc}\n"
             "The Seafile client is installed but its data directory could not be "
