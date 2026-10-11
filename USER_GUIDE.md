@@ -335,6 +335,23 @@ pip install -e .
 ```
 Ensure `~/.local/bin` (or your Python bin path) is in your `$PATH`.
 
+### Upgrading & Version Compatibility
+
+Upgrade by reinstalling from the repository. There is no migration step and no state stored outside your libraries:
+
+```bash
+cd /path/to/your/checkout
+git pull
+pip install -e .
+```
+
+Two compatibility facts are worth knowing before upgrading a fleet:
+
+- **v0.7.0 removed the legacy lock protocol outright.** The `.git-lock.json` single-file lock was replaced by the `.git-lock.d/` ticket queue, and an old mirror is deleted when found so existing repositories self-clean. Do not run a v0.1–v0.3 helper against the same repository as a v0.7.0+ one: those clients predate the ticket protocol and cannot see its locks.
+- **v0.8.4's lock grant marker is a fleet property.** The marker stops a later arrival from preempting a live holder, but only once **every** client pushing to that repository is on v0.8.4 or later. A newer client will not preempt an older holder; an older client ignores the marker and can still preempt a newer one. Upgrading one machine is not the same as being protected.
+
+There is no `protocol: 2` marker file in a repository to make old and new clients refuse each other, so a mixed fleet is a matter of discipline rather than enforcement.
+
 ---
 
 ## 6. Authentication & Configuration
@@ -372,9 +389,11 @@ export SEAFILE_SERVER="https://seafile.example.com"
 export SEAFILE_TOKEN="d82f8a19234857bf9e349204958671bc9842"
 ```
 
-> **Scoping note**: `SEAFILE_TOKEN` without a matching `SEAFILE_SERVER` is adopted for
-> *any* server the remote URL names. If you work against more than one Seafile instance,
-> set both variables together so each token is only sent to its own server.
+> **Scoping note**: `SEAFILE_TOKEN` is only used when `SEAFILE_SERVER` is also set, and only
+> when it names the same server as the remote URL. A token set on its own is **ignored**, with a
+> note on `stderr` explaining why — a URL can name any server, and a token sent to one it was never
+> meant for is a credential leak. Always set both variables together. The same rule applies to
+> `~/.git-seafile.json`: a `token` with no `server` beside it in the same file is not used.
 
 ### Verifying Authentication
 Run the built-in diagnostic check:
@@ -417,6 +436,29 @@ git config seafile.locksettle 0
 - A link naming a **different host** is left exactly as the server sent it. A **clustered or object-store-backed** deployment genuinely serves files from a different host, and forcing it onto the API host would make it 404. If instead you have a **reverse proxy** returning an internal host (`http://internal-docker-host:8082/...`) that your machine cannot reach, set this to `true` to rewrite the link's host onto your configured server.
 
 The host comparison is exact, port included: `http://your-server:8082/...` is a different endpoint rather than a mistyped scheme, and is left alone.
+
+### TLS, Private CAs and Proxies
+
+The helper makes no TLS decisions of its own: there is deliberately no `verify` option and no flag to disable certificate checking. Trust and proxying come from the environment, through the standard variables the underlying HTTP library honours.
+
+| Variable | Effect |
+| :--- | :--- |
+| `REQUESTS_CA_BUNDLE` | Path to a CA bundle — the usual answer for a **self-hosted instance with a private CA** |
+| `SSL_CERT_FILE` | Path to a CA bundle, honoured as an alternative |
+| `HTTPS_PROXY` / `HTTP_PROXY` | Proxy URL for outbound requests |
+| `NO_PROXY` | Comma-separated hosts that bypass the proxy; **include your Seafile host** if it is internal |
+
+```bash
+# A self-hosted server with an internal CA, reached through a proxy
+export REQUESTS_CA_BUNDLE=/etc/ssl/certs/company-ca.pem
+export HTTPS_PROXY=http://proxy.internal:3128
+export NO_PROXY=seafile.internal.example.com
+```
+
+> [!IMPORTANT]
+> **Git's `http.sslCAInfo` is not read.** The helper is a separate process from `git-http-fetch`, so a setup that works for a GitHub remote can still fail here with a certificate error. Point `REQUESTS_CA_BUNDLE` at your CA — there is no way to disable verification, by design.
+
+[SECURITY.md](SECURITY.md) covers the full credential and transport policy.
 
 ---
 
@@ -749,6 +791,10 @@ Inspect repository references without cloning:
 git-remote-seafile test seafile://code/myproject
 ```
 
+### Deeper Recovery
+
+The table below covers the common failures. For a repository that is unreadable, a lock held by a machine that no longer exists, half-uploaded packfiles, or conflict artifacts inside `refs/`, see [RUNBOOK.md](RUNBOOK.md) — it gives the diagnosis and the recovery step for each, and lists what to capture before opening an issue.
+
 ### Common Issues
 
 | Error | Cause | Resolution |
@@ -759,6 +805,7 @@ git-remote-seafile test seafile://code/myproject
 | `Cannot use the library root '/'` | Remote URL points to library root without project subfolder | Specify a subfolder name, e.g. `seafile://library/myproject` or `seafile://library/seafile-git/myproject`. |
 | `Seafile library not found: 'XYZ'` | Library not yet created, name typo, or permissions | Create the library via the Seafile Web UI, or verify spelling. The helper will suggest close matches. |
 | `HTTP 401 Unauthorized` | Invalid or expired token | Run `git-remote-seafile check-auth` and verify credentials in `~/.git-seafile.json`. |
+| `Could not find Seafile credentials for '…'` | `SEAFILE_TOKEN` was set without `SEAFILE_SERVER`, so it was ignored | Set `SEAFILE_SERVER` alongside the token. A token is only sent to the server it names — see [SECURITY.md](SECURITY.md). |
 | `HTTP 403 Forbidden` on push | Read-only library permissions | Ensure your Seafile account has Read-Write permission on the target library. |
 | `Push failed: Repository is locked by '<owner>' on '<machine>'` | Another client is mid-push and holds the lock | Wait for that push to finish, or raise `seafile.locktimeout`. If the other client crashed, the lease expires on its own (`seafile.locklease`, default 60s). `git-remote-seafile lock-status <url>` names the holder; `unlock <url> --force` breaks a stale lock. |
 

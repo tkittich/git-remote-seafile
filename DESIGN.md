@@ -1,8 +1,14 @@
 # Architecture & Design Specification: git-remote-seafile
 
-**Author**: Community Contribution  
-**Target Organization**: [haiwen](https://github.com/haiwen) (Seafile Ecosystem)  
-**Status**: Ready for Upstream Integration  
+**Status**: implementation reference for v0.8.5 — describes what the code does *today*.  
+Per-release history lives in [CHANGELOG.md](CHANGELOG.md), not here.
+
+**Repository**: [tkittich/git-remote-seafile](https://github.com/tkittich/git-remote-seafile)  
+**Upstream interest**: [haiwen](https://github.com/haiwen) (Seafile ecosystem) — see §8
+
+**Companion documents**: [USER_GUIDE.md](USER_GUIDE.md) (operator-facing), [SECURITY.md](SECURITY.md)  
+(credentials, threat model, reporting), [RUNBOOK.md](RUNBOOK.md) (recovery procedures),  
+[SNAPSHOT.md](SNAPSHOT.md) (the whole-tree capture tool).
 
 ---
 
@@ -11,8 +17,11 @@
 `git-remote-seafile` introduces native Git remote support for Seafile servers using Git's standard Remote Helper specification (`gitremote-helpers(7)`).
 
 It allows Seafile users and organizations to use existing Seafile libraries for private, TLS-secured, access-controlled Git repository hosting without:
+
 1. Deploying a separate Git server (e.g. GitLab, Gitea), or
-2. Experiencing the severe performance thrashing and data corruption that occurs when placing live `.git/` working trees inside desktop-synced folders.
+2. Experiencing the performance thrashing and data corruption that occurs when placing live `.git/` working trees inside desktop-synced folders.
+
+The helper is a **transport**: it moves commits. A commit contains only what the repository's `.gitignore` permits, so a companion tool captures the rest — see §4.10.
 
 ---
 
@@ -29,6 +38,7 @@ Attempting to fix this by modifying the desktop client to understand Git is tech
 ### 2.1 Why Client-Side Daemon Patches Fail (Case Study: `vacaboja/seafile`)
 
 Recent community efforts (such as the `vacaboja/seafile` fork and [PR #2988](https://github.com/haiwen/seafile/pull/2988) to `haiwen/seafile`) attempted to solve Git object loss by modifying the Linux sync daemon (`daemon/wt-monitor-linux.c`):
+
 - **The specific bug addressed**: Upstream Seafile intentionally ignores `IN_CREATE` for regular files, assuming GUI copy tools will later fire `IN_CLOSE_WRITE`. When Git creates objects or packfiles via the `link(2)` syscall (hard links) or atomic link-renames, `IN_CREATE` fires on the directory, but **no file descriptor is opened or closed**. Upstream Seafile drops `IN_CREATE`, misses the file entirely, and silently omits the Git object from server uploads ([haiwen/seafile#2677](https://github.com/haiwen/seafile/issues/2677), [#2833](https://github.com/haiwen/seafile/issues/2833)).
 - **The fork's workaround**: Queues `IN_CREATE` events in a 1-second timeout hash table (`recheck_accu`) and checks if nanosecond `st_mtim` remains unchanged, synthesising a deferred `WT_EVENT_CREATE_OR_UPDATE`.
 - **Why client-side patches remain fundamentally insufficient**:
@@ -40,67 +50,60 @@ Recent community efforts (such as the `vacaboja/seafile` fork and [PR #2988](htt
 ### 2.2 The Windows Dilemma: Same-Second Edits & Mandatory File Locks
 
 On Windows systems, desktop syncing of active code introduces additional OS-level failure modes:
-1. **1-Second `mtime` Truncation ("Racy Sync")**:
+
+1. **1-Second `mtime` Truncation ("Racy Sync")**:  
    Seafile's index format (`common/index/index.c`, adapted from Git's internal directory cache) tracks modification timestamps in integer seconds (`ce_mtime.sec`). Standard Windows CRT file stats truncate `st_mtime` to whole seconds. If an automated script, compiler, or Git command modifies a file multiple times within the **same second** without altering the byte length:
    ```text
    Disk mtime == Index mtime  AND  Disk size == Index size
    ```
    Seafile concludes the file is unchanged, silently skipping the update until a later touch or full library rescan.
-2. **Mandatory File Locking (`ERROR_SHARING_VIOLATION` / Error 32)**:
+2. **Mandatory File Locking (`ERROR_SHARING_VIOLATION` / Error 32)**:  
    Unlike Linux advisory locks, Windows enforces mandatory sharing locks. When Seafile detects `FILE_NOTIFY_CHANGE_LAST_WRITE` via `ReadDirectoryChangesW` (`wt-monitor-win32.c`), it immediately opens the file for block hashing. Rapid atomic saves (`write temp` -> `rename`) or Git index updates collide with Seafile's open read handle, resulting in `Permission denied` errors in editors and compilers.
-3. **`ReadDirectoryChangesW` Event Overflows**:
+3. **`ReadDirectoryChangesW` Event Overflows**:  
    Rapid bursts of filesystem operations (e.g. `git checkout` or `git rebase` touching dozens of files in milliseconds) easily overflow the client's 1 MB event buffer (`ERROR_NOTIFY_ENUM_DIR`), forcing costly full-library directory rescans after temporary Git lock files have already vanished.
 
-### The Solution: API-Driven Git Remote Helper
+### 2.3 The Approach: an API-Driven Git Remote Helper
+
 Instead of synchronizing the local `.git/` directory, the developer's working tree remains completely outside Seafile's file watcher. Git uses Seafile Server as an authentic remote destination over the standard **Seafile Web API (`/api2`)**.
 
 ---
 
-## 3. Remote Storage Architecture
+## 3. Invariants
 
-Within the designated Seafile library (created via the Seafile Web UI, such as an unsynced dedicated library like `code` or inside a synced library's ignored subfolder like `seafile-git/`), each Git repository is stored in a clean, bare-like layout:
+These hold on every code path, and each is the reason some check below exists. They are stated as obligations on the implementation, not as descriptions of any one release.
 
-```text
-/<repo-path>/
-├── HEAD                        <- Symbolic ref ("ref: refs/heads/main\n")
-├── .git-lock.d/                <- Distributed ticket directory (v0.4.3)
-│   └── <nonce>.json            <- Deterministic client lock ticket
-├── refs/
-│   ├── heads/
-│   │   ├── main                <- Commit SHA ("3a8f94b15c...\n")
-│   │   └── feature-auth        <- Commit SHA
-│   └── tags/
-│       └── v1.0.0
-└── objects/
-    └── pack/
-        ├── pack-9a8f4c....pack <- Git binary packfile containing objects
-        └── pack-9a8f4c....idx  <- Corresponding packfile index
-```
+### 3.1 Transport
 
-### Why Packfiles Instead of Loose Objects?
-- A standard commit can involve dozens of loose objects. Transferring individual loose objects over HTTP would require dozens of requests per push/fetch.
-- By packaging commits into Git packfiles using `git pack-objects`, every `git push` transfers **exactly two files** (`.pack` and `.idx`) regardless of commit size.
-- Pushes complete in hundreds of milliseconds.
-- Storage inside Seafile is content-addressed, deduplicated, and block-compressed according to standard Seafile server storage mechanisms.
+- **Objects travel as packs, never loose.** Every `git push` transfers exactly two files per pack — `.pack` and `.idx` — regardless of commit size. A standard commit's dozens of loose objects would otherwise become dozens of HTTP requests.
+- **Refs are written last.** A ref must never name an object the remote does not already hold. Objects upload first; the ref write is the commit point.
+- **The helper does not touch tracked content.** Push and fetch never modify the working tree, the index, or local refs. Packs are staged on disk under `.git` and streamed to Seafile with `StreamingMultipartFile`, without buffering gigabyte payloads in memory; the staging directories are removed in a `finally`.
+- **One sanitizer, one direction.** Every `error <dst>` protocol line goes to `stdout` through the same sanitizer; human-readable diagnostics go to `stderr`. Mixing them corrupts the wire protocol.
 
----
+### 3.2 Storage
 
-## 4. Seafile Web API (`/api2`) Integration
+- **The remote layout is bare-like and nothing else is assumed to exist.** `HEAD`, `refs/heads/*`, `refs/tags/*`, `objects/pack/`, and the lock directory. A repository is readable by any client that follows the layout, without a local database.
+- **Every remote-supplied name is validated before use.** Packfile names must match a strict regex; ref names must satisfy the rules of `git check-ref-format` as measured, not as assumed.
+- **Refs are the only source of truth.** The helper keeps no cache of remote state between invocations. This costs efficiency (§7) and buys the property that two machines cannot disagree about the remote because of stale local state.
 
-`git-remote-seafile` uses exclusively standard, stable endpoints present in all modern Seafile servers (CE and Pro):
+### 3.3 Concurrency
 
-1. **Authentication**: Reuses existing desktop client tokens (`Accounts` table in `accounts.db`) or token headers (`Authorization: Token <token>`).
-2. **Directory Listing**: `GET /api2/repos/{repo-id}/dir/?p=/{repo-path}/refs/heads/`
-3. **Ref Reading**: `GET /api2/repos/{repo-id}/file/?p=/{repo-path}/refs/heads/{branch}`
-4. **Packfile & Ref Upload**:
-   - `GET /api2/repos/{repo-id}/upload-link/?p=/{repo-path}/objects/pack/`
-   - `POST {upload-link}` with `multipart/form-data` and `replace=1`.
-5. **Download Link**: `GET /api2/repos/{repo-id}/file/?p=/{repo-path}/{file}` returns a short-lived URL, which is then fetched directly.
-6. **Branch Deletion**: `DELETE /api2/repos/{repo-id}/file/?p=/{repo-path}/refs/heads/{branch}`, falling back to `/dir/`. Seafile's `/file/` endpoint deletes both files and directories, while `/dir/` returns 404 for a file — and a ref can be either, since `refs/heads/feature/auth` is stored as a directory containing a file `auth`. In v0.4.3, deleting a nested ref automatically prunes newly-empty parent directories up to `refs/heads` on Seafile and evicts them from the client directory cache, preventing future directory/file (D/F) ref conflicts.
+- **The lock is advisory, and is never what makes a write safe.** Seafile exposes no atomic server-side primitive — `replace=1` is last-writer-wins and `replace=0` renames rather than failing — so no scheme built from files and clocks can provide true mutual exclusion. The lock reduces contention; correctness rests on §3.4.
+- **Time decides who waits, never who holds.** A ticket's grant marker ranks it; a clock estimate may only break ties among peers (§4.4).
+- **Every destructive step re-proves ownership immediately before it acts** — before a ref is written, and before each individual packfile is deleted.
+- **A lost race is loud.** Where a check and a write cannot be made atomic, the write is followed by a read-back, and a mismatch is reported as a failure rather than assumed to be success.
+
+### 3.4 Data safety
+
+- **Nothing is deleted until its replacement is proven present.** The consolidated packfiles must be listed back at their expected sizes before any superseded pack is removed (§4.5).
+- **A refusal beats a guess.** Configuration that is contradictory, a remote that cannot be read, a probe that cannot answer — each is an error, not a default. The recurring failure this prevents is the silent one.
+- **Ambiguity is reported, never resolved silently.** The snapshot tool's excludes are opt-in for exactly this reason: `node_modules` is reproducible, `.env` is not, and the tool cannot tell them apart.
+- **The source tree of a capture is read-only.** The snapshot tool's vault is a *second* repository whose work-tree is the source; the source's index and refs are never written (§4.10).
 
 ---
 
-## 5. Protocol Flow (Git Core ↔ Helper)
+## 4. Protocol
+
+### 4.1 Wire Protocol (Git Core ↔ Helper)
 
 ```mermaid
 sequenceDiagram
@@ -125,148 +128,316 @@ sequenceDiagram
 
     Note over Git,Helper: Push Transaction
     Git->>Helper: push refs/heads/main:refs/heads/main
-    Helper->>Git: (internal) run git pack-objects
-    Helper->>API: GET upload-link
+    Helper->>Helper: acquire the advisory lock
+    Helper->>Helper: wait one settlement window, re-scan
+    Helper->>API: GET refs/heads/main (post-lock re-read)
+    Helper->>Helper: git pack-objects (stage to disk under .git)
+    Helper->>API: GET upload-link for objects/pack/
     API-->>Helper: temporary upload URL
     Helper->>API: POST pack-[sha].pack and pack-[sha].idx
-    Helper->>API: POST /refs/heads/main (new commit SHA)
+    Helper->>API: GET refs/heads/main (final CAS read)
+    Helper->>API: POST refs/heads/main (new commit SHA)
+    Helper->>API: GET refs/heads/main (read-back)
     Helper->>Git: ok refs/heads/main
 ```
 
----
+
+The ref is not written with a single request that is itself atomic. Seafile has no compare-and-swap on a path, so the sequence is: re-read the destination ref *after* the lock is taken (bypassing the pre-lock `list` cache), verify the fresh SHA is an ancestor of the local commit (`git merge-base --is-ancestor`), build the pack excluding objects the fresh tips already cover, re-read the ref one final time immediately before writing, write it, and then read it back. A peer that ignores the advisory lock can land between the final read and the write; the read-back is what notices, and the push is reported as `error <dst> fetch first` rather than `ok`.
+
+Two details of the write itself are easy to get wrong and are therefore explicit here:
+
+- **The ref is uploaded into its parent directory**, not to the ref path directly. `refs/heads/main` is created by uploading a file named `main` to `p` = `/…/refs/heads/`, with `replace=1`.
+- **A read that cannot settle the question is a warning, not a failure.** `None` from the read-back, or a transport error, means the write is *unverified*; the upload already returned success, and reporting a good push as failed is its own defect.
+
+Fetch and enumeration details:
+
+- **Ref enumeration is concurrent** (`ThreadPoolExecutor(max_workers=8)`) with a deterministic alphabetical sort on output, so wire-protocol ordering is stable while latency on many-ref repositories drops.
+- **Smart pack fetch filtering** (`filter_existing_objects`): if every requested commit already exists locally, the pack download is skipped entirely. This is only sound when object presence implies object *completeness*, which holds for a full clone and not for a shallow or partial one. `objects_may_be_incomplete()` withholds the skip when `git rev-parse --is-shallow-repository` is true or a promisor remote is configured, and the probe fails safe: if it cannot answer, the pack is fetched. Note that the helper never *creates* such a repository — it implements neither Git's `depth` nor `filter` option — so the guard exists for a repository that is shallow or partial for some other reason (§7).
+- **`fetch_pack_artifact` owns the stream → capped-fallback → size-verify pattern** shared by fetch and gc, so gc's index downloads gain the size check fetch already had. The in-memory fallback is capped at 16 MB and errors are surfaced to `stderr`.
+- **Pack installation** (`install_packfile`) **makes both publish targets writable before `os.replace`.** Git writes pack and index files `0444`; replacing a read-only *destination* fails on Windows, where POSIX needs only directory write permission. Where the destination is on the same volume, a staged pack is renamed rather than copied.
+- **Multipart header parameters are sanitized**, and stream seek offsets are preserved, before any upload.
+- **`--dry-run` is accepted rather than refused.** Git sends `option dry-run true` ahead of the push commands and *aborts* on `unsupported` (`fatal: helper seafile does not support dry-run`, exit 128), so accepting it is what makes the flag usable at all. The dry-run path reproduces the real path's four decisions — namespace, local ref, remote ref, fast-forward — and emits the same `ok`/`error` lines while taking no lock, building no packfile, and writing no ref. The lock is skipped deliberately: it is itself a side effect, and holding it would park a real push behind the settlement window to answer a question nobody will act on.
+- **Object format is negotiated on the wire.** The helper advertises `option` and `object-format`, replies `ok` to `option object-format` in its documented forms (`true`, or an algorithm pin it advertises against rather than enforces), and emits `:object-format <alg>` during `list` by inspecting remote ref hash lengths — enabling native push and clone of SHA-256 repositories. For an empty remote the format is not inferable this way (§7).
+- **UTF-8 and LF discipline is normalized at the CLI entry point** for every subcommand, so a Windows console's default encoding cannot corrupt a ref name mid-protocol.
+- **Non-UTF-8 repository filenames are handled with `surrogateescape`** rather than crashing the listing.
+
+### 4.2 Remote Repository Layout
+
+Within the designated Seafile library (created via the Seafile Web UI, such as an unsynced dedicated library like `code`, or an ignored subfolder of a synced library), each Git repository is stored in a clean, bare-like layout:
+
+```text
+/<repo-path>/
+├── HEAD                        <- Symbolic ref ("ref: refs/heads/main\n")
+├── .git-lock.d/                <- Distributed ticket directory
+│   └── <nonce>.json            <- Deterministic client lock ticket
+├── refs/
+│   ├── heads/
+│   │   ├── main                <- Commit SHA ("3a8f94b15c...\n")
+│   │   └── feature-auth        <- Commit SHA
+│   └── tags/
+│       └── v1.0.0
+└── objects/
+    └── pack/
+        ├── pack-9a8f4c....pack <- Git binary packfile containing objects
+        └── pack-9a8f4c....idx  <- Corresponding packfile index
+```
+
+Only `refs/heads` and `refs/tags` are treated as ref namespaces. Other refs — `refs/notes/*`, custom namespaces, Git's internal refs — are not advertised, not pushed, and not carried by a mirror push. A repository that depends on them should not be mirrored here.
+
+`HEAD` is stored as a symbolic ref. The `set-head` subcommand rewrites it and reports the value it replaced, so changing a remote's default branch is observable rather than silent.
+
+Ref names are validated against measured `git check-ref-format` behaviour rather than a guess: `@` is permitted *inside* a component (`refs/heads/@` is legal), while a bare whole-name `@` (the HEAD alias) and any `@{` sequence are rejected. That rule judges *components*, not the separator: `refs/heads/` and `refs/heads/a/` satisfy it, because it says nothing about a trailing slash. A push destination is therefore validated three times over — it must fall inside an advertised namespace, it must have no empty or trailing component, and it must satisfy the component rule. The middle check is the one with teeth: `refs/heads/` passes the other two, names a *namespace* rather than a ref, and a directory is a legal target for the delete endpoint — so a destination of `refs/heads/` would otherwise remove every branch in the repository. A ref such as `refs/heads/feature/auth` is stored as a directory containing a file, so a ref can be either a file or a directory on the remote — which is why deletion tries the file endpoint and falls back to the directory endpoint, and why deleting a nested ref prunes newly-empty parent directories up to `refs/heads` and evicts them from the client directory cache. Skipping that pruning is how directory/file ref conflicts are manufactured.
+
+### 4.3 Seafile Web API (`/api2`) Surface
+
+`git-remote-seafile` uses exclusively standard, stable endpoints:
+
+1. **Authentication**: Reuses existing desktop client tokens (`Accounts` table in `accounts.db`) or token headers (`Authorization: Token <token>`). Precedence is documented in [USER_GUIDE.md](USER_GUIDE.md) §6 and [SECURITY.md](SECURITY.md).
+2. **Directory Listing**: `GET /api2/repos/{repo-id}/dir/?p=/{repo-path}/refs/heads/`
+3. **Ref Reading**: `GET /api2/repos/{repo-id}/file/?p=/{repo-path}/refs/heads/{branch}`
+4. **Packfile & Ref Upload**:
+   - `GET /api2/repos/{repo-id}/upload-link/?p=/{repo-path}/objects/pack/`
+   - `POST {upload-link}` with `multipart/form-data` and `replace=1`.
+5. **Download Link**: `GET /api2/repos/{repo-id}/file/?p=/{repo-path}/{file}` returns a short-lived URL, which is then fetched directly.
+6. **Branch Deletion**: `DELETE /api2/repos/{repo-id}/file/?p=/{repo-path}/refs/heads/{branch}`, falling back to `/dir/`. Seafile's `/file/` endpoint deletes both files and directories, while `/dir/` returns 404 for a file.
+
+The HTTP adapter's connection pool is widened so the concurrent ref requests above do not serialise behind a small pool. Hostnames and default ports are normalized before configuration and token lookups, so `seafile.example.com`, `seafile.example.com:443` and an explicit scheme do not become three different remote identities. An explicit port on the bare-host form is honoured rather than stripped (`:80` selects `http`, `:443` selects `https`, any other port keeps its number over `https`); a non-numeric port is rejected by the URL parser as an invalid Seafile URL, but not on every path, and that exception is a known gap (§5).
+
+#### 4.3.1 Compatibility matrix
+
+The endpoints above are the documented v2 API. **The test suite validates the helper against a stub, not against a live server** (see §9 of the review lineage recorded in ROADMAP); the matrix below states what is *claimed*, and the honest answer is that the claims marked "unverified" have not been exercised against a real instance.
+
+| Component                              | Claimed support                | Evidence                                                                                                     |
+| -------------------------------------- | ------------------------------ | ------------------------------------------------------------------------------------------------------------ |
+| Seafile CE (Docker or bare)            | Supported                      | Endpoints are the documented `/api2` surface                                                                 |
+| Seafile Pro                            | Supported                      | Same `/api2` surface; no Pro-only call is made                                                               |
+| Seafile 7.x – 12.x                     | Expected to work               | Endpoints are long-stable; **not** exercised in CI                                                           |
+| SHA-256 repositories                   | Supported                      | Object format negotiated on the wire (§4.1)                                                                  |
+| Encrypted libraries                    | **Not detected**               | The helper does not inspect library encryption; behaviour is untested                                        |
+| Server-side file locking               | Not used                       | Pro-only, and the owner is the Seafile *user* rather than the machine — see §7                               |
+| `seaf-gc` (server storage reclamation) | Administrator's responsibility | Removing a pack from the repository does not free blocks until the server GC runs after the retention window |
+
+Self-hosted instances on private CAs are the common case and are supported through the standard TLS environment variables; see [SECURITY.md](SECURITY.md) and [USER_GUIDE.md](USER_GUIDE.md) §6.
+
+### 4.4 Locking
+
+A cooperative, ticket-based distributed lock at `/.git-lock.d/<nonce>.json`. It is **advisory** (§3.3) and its purpose is to reduce contention, not to provide exclusion.
+
+**The ticket.** Each client deposits one file containing an owner hash, machine identifier, holding PID, nonce, expiry, an ordering stamp (`order_ts`), and a grant marker (`holding`). Only its creator writes it, and the nonce names the file.
+
+**Acquisition.** A client uploads its ticket, waits one settlement window (`seafile.locksettle`, default 1s), and re-scans — so a peer still uploading during the first read cannot be overlooked and two clients cannot both conclude they are first. The cost is one fixed interval per push, which the user guide states rather than rounds away.
+
+**Ordering — the grant is the primary key.** A ticket the queue has granted the lock (`"holding": true`) outranks every ticket that has merely asked for it, whatever their timestamps say. Among peers at the same rank, the key is `order_ts`, captured once at acquisition and preserved across renewals, with the directory `mtime` and the nonce as tie-breakers.
+
+The grant has to be primary because `order_ts` is a *client-side estimate* of server time — the local clock plus the offset implied by the `Date:` header, whose resolution is one second, smoothed by a median over recent samples. Approximate shared time is exactly what an expiry check needs and exactly what an ownership decision cannot use: two estimates half a second apart are indistinguishable from a genuinely earlier arrival, so ranking on it lets a newcomer whose estimate happens to land behind an active holder's sort *ahead* of it and acquire the lock mid-push — with its own ticket intact and unexpired, so nothing a ticket read could detect.
+
+
+The marker must be written in a **second pass**, after the queue has agreed the client won. A marker written on the first upload would claim the lock before it was awarded, and `holding` must always mean "granted", never "asked".
+
+**Expiry and liveness.** A lease is 60 seconds by default (`seafile.locklease`) and is refreshed in transfer every 20 seconds during active socket writes, with no background daemon threads; purely local compute phases (pack generation, `git repack`) renew before and after the phase rather than during it. An unexpired lock held on the same machine — verified by hostname *and* machine identifier — is reclaimed immediately if the holding process has terminated (`OpenProcess` on Windows, `os.kill` on POSIX).
+
+**The fence** (`verify_ownership()`). Ownership re-verification is two-part, and both parts are needed:
+
+1. **Lease.** Renewal reads the holder's ticket back before rewriting it. A ticket that is gone, unreadable, or carrying a foreign nonce means the lease lapsed and was reaped — most plausibly by a new holder — and renewal fails closed rather than resurrecting it.
+2. **Queue.** Reading our own ticket back proves the lease and says nothing about whether another client has since been *granted* the lock: in the preemption above, our ticket reads back perfectly while the queue has already given the lock away. The fence therefore also scans the queue and fails when an active ticket sorts ahead of ours.
+
+Three distinct states are reported, because they send an operator to different places:
+
+| State             | Meaning                                             | Message                                                                    |
+| ----------------- | --------------------------------------------------- | -------------------------------------------------------------------------- |
+| `LEASE_LOST`      | Our ticket is gone or carries a foreign nonce       | `another client took over the lock`                                        |
+| `LEASE_PREEMPTED` | Our ticket is alive, but another ticket was granted | `another client was granted the lock while this ticket was still held`     |
+| `LEASE_UNKNOWN`   | The ticket could not be read or rewritten           | `the lock ticket could not be read or rewritten, so ownership is unproven` |
+
+The queue scan is read-only — a verification step that reaped tickets would be doing acquisition's job — and rate-limited to one listing per second, so fencing once per deleted ref does not list the queue once per ref. The lease is still re-proven on every call, so a ticket that has been *reaped* is caught immediately rather than once per window. Listing errors are retried and fail closed.
+
+**Fairness below the clock's resolution.** A tie on every key is total and deterministic, so all contenders agree on a winner and mutual exclusion holds; only FIFO *fairness* degrades. This is visible on Windows, where `time.time()` is backed by `GetSystemTimeAsFileTime` with 15.625 ms granularity through Python 3.12 (3.13 moved to `GetSystemTimePreciseAsFileTime`).
+
+**Mixed-version fleets.** The grant marker takes effect once every client pushing to a repository is on v0.8.4 or later. A newer client will not preempt an older holder, but an older client ignores the marker and can still preempt a newer holder. The guarantee is a fleet property, not a per-client one.
+
+**Management.** Lock status is inspectable read-only via `lock-status`, which never reaps or mutates tickets, and a lock can be released or broken via `unlock` (with `--force` for emergency recovery). `lock-status` reports whether the winning ticket carries a grant marker; its absence is not an error, but it does mean the marker-based protection is not in force for that lock.
+
+**Version note.** The v0.1–v0.3 single-file lock (`.git-lock.json`) was removed in v0.7.0; the ticket queue is the only protocol, and an orphaned mirror is deleted when found so existing repositories self-clean. Do not mix a v0.7.0+ helper with a v0.1–v0.3 helper on one repository: those clients predate the ticket protocol and cannot see its locks.
+
+### 4.5 Compaction
+
+Over time, pushes accumulate packfiles in `/objects/pack/`. The `gc` subcommand downloads them, runs `git repack -ad -l` to consolidate and delta-compress, uploads the result, and removes the obsolete packs.
+
+**Deletion is gated three times over:**
+
+1. **Ownership** is re-validated before any deletion begins.
+2. **The upload is proven, not assumed.** The remote pack directory is listed again and every new `.pack`/`.idx` must appear at the size it has locally. A truncated write, a proxy that answered `2xx` for a failed upload, and an `.idx` that never landed all look identical to a successful upload otherwise. An unverifiable upload is a **refusal, not a warning** — until the new packfiles are proven present, the old ones are the repository's only complete copy.
+3. **Ownership** is re-validated again before each individual pack is removed.
+
+Order matters between gates 1 and 2: the ownership check runs first so that a lost lease is reported *as* a lost lease rather than as "the bytes are not there".
+
+Losing the lease part-way through cleanup stops the remaining deletions and says so, rather than failing the run: the consolidated packfiles are verified by that point, so the leftovers are only clutter. The result distinguishes "deleted nothing" from "deleted some, stopped". The operation exits non-zero on a failed compaction.
+
+Related details:
+
+- **Remote packs are verified before compaction runs**: a pack that fails to download, or whose size disagrees with the directory listing, aborts the operation.
+- **Downloaded `.idx` files are validated with `git verify-pack -v`**; a corrupted or truncated index is discarded and reconstructed locally with `git index-pack`.
+- **The scratch repository is initialised with the *remote's* object format**, and `verify-pack`/`index-pack` are run with `-C <bare-repo>` so they inherit it. Both halves are required, because those commands run with `GIT_DIR` scrubbed and either alone still fails on a SHA-256 remote.
+- **Scratch space comes from the system temporary directory** (`TMPDIR`, or `TEMP`/`TMP` on Windows) and needs room for roughly 2–3× the repository's packed size. Compacting a large library on a small `tmpfs` fails late, and after the lock is taken.
+- **`git repack` is not a lock primitive.** Ownership is proven by the fence (§4.4), not by the presence of a Git lock file.
+- **Removing a pack from the repository does not reclaim server storage.** Raw reclamation requires the administrator to run `seaf-gc` after the library retention window has elapsed.
+
+### 4.6 Git LFS
+
+- Implements the official Git LFS line-based JSON custom transfer protocol, handling `init`, `upload`, and `download` events over standard I/O.
+- Large binary assets are stored directly in Seafile `/lfs/` while commit histories stay small.
+- Progress events carry incremental `bytesSinceLast` rather than total file size, so throughput rates and ETAs are accurate.
+- Transfer scratch storage is placed under `.git/lfs/tmp` when available, eliminating cross-volume copies.
+
+A dual-remote configuration (GitHub plus Seafile) is a supported topology, but note the interaction: with `lfs.standalonetransferagent seafile` set, LFS objects route to Seafile **even when the Git remote being pushed is not Seafile**. See [USER_GUIDE.md](USER_GUIDE.md) §11.
+
+### 4.7 Pre-flight Safety Guardrails (`safety.py`)
+
+Before any push, the helper runs pre-flight checks to prevent data loss and filesystem thrashing:
+
+1. **Zero-Configuration Client Discovery**: Reads the local Seafile desktop client's SQLite configuration (`repo.db`, discovered via `<ccnet>/seafile.ini`) to map all actively synced local libraries and their root directories (`discover_local_synced_libraries()`). A folder name is matched to the remote only when the library's repo id is otherwise unknown, so two local libraries that happen to share a folder name are not conflated.
+2. **Trap 1 (Working Tree & Remote Collision)**: Detects if the current Git working tree resides inside a synced library and shares the exact path with the remote URL. Hard-aborts before locking or uploading, so server packfiles cannot download over an active working tree. During `git clone` no work tree can be named yet, so the guard resolves the *clone destination* from the `GIT_DIR`/`GIT_WORK_TREE` variables Git exports to the helper (measured: `GIT_DIR` is the destination's `.git`, absolute) before falling back to the process cwd — so cloning into a synced library is blocked regardless of where the clone was launched from.
+3. **Trap 2 (Download Reflection Loop)**: Detects pushes into synced libraries where the remote subfolder is not listed in `seafile-ignore.txt`. Aborts to prevent the desktop client from downloading server packfiles back to the local drive. The helper's parser is deliberately more permissive than the client's: it is a safety net, not a reimplementation of the client's glob rules.
+4. **Library Typo Suggestions**: Uses fuzzy matching (`difflib.get_close_matches`) against `/api2/repos/` to suggest the intended library when a name is misspelled. Suggestions are built from the listing the lookup already fetched.
+5. **Git Protocol Conformance**: Emits standard `error <dst> safety check failed: ...` lines on `stdout` and full human-readable diagnostic guidance on `stderr`.
+6. **Bypass Controls**: Supports non-interactive CI environments via `SEAFILE_SKIP_SAFETY_CHECKS=1` or `git config seafile.skipsafetychecks true`. That key is read through the system/global-scoped reader, so a repository-local value cannot disable the guard.
+
+The Seafile ignore file is **`seafile-ignore.txt`** — no leading dot — and it is read from the **library root only**. Its patterns are root-anchored and use glib globs, where `*` crosses `/` and a trailing `/` matches a folder and everything beneath it. It is **not retroactive**: a file already synced is not removed by adding a pattern.
+
+### 4.8 Configuration
+
+All behavioural settings resolve through one `RemoteConfig.load()` passed to both the push lock and compaction, so the two cannot disagree:
+
+| Key                        | Default | Meaning                                                           |
+| -------------------------- | ------- | ----------------------------------------------------------------- |
+| `seafile.locktimeout`      | `15`    | Seconds to wait for the lock before giving up                     |
+| `seafile.locklease`        | `60`    | Lease duration in seconds                                         |
+| `seafile.locksettle`       | `1`     | Settlement window in seconds, per acquisition                     |
+| `seafile.autogc`           | `false` | Compact automatically after a push once the threshold is exceeded |
+| `seafile.gcthreshold`      | `20`    | Packfile count at which auto-GC triggers                          |
+| `seafile.forcefilehost`    | `false` | Force the file-host header on uploads                             |
+| `seafile.skipsafetychecks` | `false` | Disable pre-flight checks (system/global scope only)              |
+
+
+Implausible values — a negative timeout, a non-positive lease, a sub-1 threshold — fall back to the documented defaults **with a warning**, rather than defeating the mechanism silently.
+
+### 4.9 Module Map
+
+| Module                               | Responsibility                                                                                                                                                        |
+| ------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `url.py`                             | Seafile URL parsing, scheme extraction, port normalization, path validation (`parse_seafile_url`, `SeafileURL`)                                                       |
+| `config.py`                          | Git configuration resolution with typed structured defaults (`RemoteConfig`)                                                                                          |
+| `client.py`                          | Seafile Web API client, token discovery, server-time estimation                                                                                                       |
+| `refs.py`                            | Ref namespace advertisement, concurrent ref enumeration, mirror ref handling                                                                                          |
+| `packs.py`                           | Remote packfile discovery, streaming download, integrity verification, atomic installation (`fetch_and_install_pack`, `check_remote_has_packs`, `is_valid_pack_name`) |
+| `lock.py`                            | Distributed ticket-based lease (`RemoteLock`), ownership fencing                                                                                                      |
+| `gc.py`                              | Remote packfile compaction and verified deletion                                                                                                                      |
+| `lfs.py`                             | Git LFS custom transfer agent                                                                                                                                         |
+| `safety.py`                          | Pre-flight guardrails and synced-library discovery                                                                                                                    |
+| `git_util.py`                        | Git plumbing wrappers, shallow/promisor probing, `merge-base` ancestry                                                                                                |
+| `helper.py`                          | The remote-helper protocol handler (`capabilities`, `list`, `push`, `fetch`)                                                                                          |
+| `cli.py`                             | Subcommand dispatch and stdio discipline                                                                                                                              |
+| `seafile_paths.py`, `sqlite_read.py` | Desktop client discovery and read-only SQLite access                                                                                                                  |
+
+### 4.10 The Snapshot Complement
+
+A commit carries only what `.gitignore` permits, so `tools/seafile_snapshot.py` captures what a commit structurally cannot: the whole tree, including ignored files, into a separate **vault** repository whose `--work-tree` is the source. It is deliberately not a subcommand — it does not extend the protocol and imports nothing from `git_remote_seafile` unconditionally.
+
+Its invariants are stated in §3.4; the full design — the vault, byte-exactness enforcement, restore verification, the cost model, and the options it refuses — is in [SNAPSHOT.md](SNAPSHOT.md), which is the authoritative write-up. Today a nested repository is detected and warned about loudly; its contents are not captured.
 
 ---
 
-## 6. Fast-Forward Safety & Conflict Guarantees
+## 5. Failure Model
 
-- **Post-lock ref verification**: While holding the active remote lock, `cmd_push` re-reads all destination refs from Seafile, bypassing the pre-lock `cmd_list` cache.
-- **Fast-forward check**: The helper checks if the freshly re-read remote SHA is an ancestor of the local commit (`git merge-base --is-ancestor`) and uses fresh tips for pack object exclusion.
-- **Optimistic compare-and-swap (CAS)**: Immediately before uploading ref files, the helper re-reads each ref one final time to verify it has not shifted since the fast-forward check. If another developer pushed to that branch in the interim, the helper outputs `error <dst> fetch first` or `error <dst> non-fast-forward`.
-- Git aborts the push, prompting the user to `git pull` and merge using standard Git tools.
-- **Zero file duplication**: No `(SFConflict ...)` files can ever be generated.
+Every failure the helper can detect maps to exactly one of three responses. The distinction is deliberate: treating a warning as a failure reports good work as broken, and treating a failure as a warning is how data is lost.
+
+| Response                                   | When                                                               | Examples                                                                                                                                                                                            |
+| ------------------------------------------ | ------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Fail closed** (abort, non-zero)          | The safe state cannot be proven                                    | Remote pack failed to download or verify; a listing error during ref discovery; the consolidated upload could not be verified; the lock cannot be acquired within the timeout; a safety check trips |
+| **Fail loud** (report as a protocol error) | A race was lost or a write contradicted                            | Ref read-back mismatch → `error <dst> fetch first`; fast-forward violation → `error <dst> non-fast-forward`; ownership fence fails → the state-specific message from §4.4                           |
+| **Warn and continue**                      | The operation succeeded, but a check could not settle the question | Ref read-back returned `None` or hit a transport error → unverified write; unknown directory-entry types and malformed LFS JSON lines; implausible config value → documented default used           |
+
+Specific mappings worth stating:
+
+- **Deleting a ref that does not exist** is a no-op, not an error.
+- **Errors propagate as exceptions, never as process exits.** The library raises a typed error — `SeafileClientNotFoundError` and friends — and `cli.py` is the only layer that turns one into an exit code and a message. A library that called `sys.exit` directly would terminate before the message was chosen, which is how a subcommand ends up reporting `UnboundLocalError` instead of the failure that actually happened.
+- **A push destination that would delete a directory** is refused; only file refs are deletable. A bare `push :refs/heads/` is refused rather than deleting every branch.
+- **Losing the lock during gc cleanup** stops the remaining deletions and reports them; it does not fail the run, because the new packfiles are already verified.
+- **A failed auto-GC after a push** does not fail the push. The push succeeded; compaction is housekeeping.
+- **A stale cached library id is not detected** (`SeafileClient.get_repo_id`). A cache hit is served without a request, so a library deleted server-side since the last lookup fails later, at the point of use, with the server's error rather than a clean not-found. This is a known limitation (§7), not an oversight: the revalidation that existed briefly cost a listing fetch on every lookup.
+- **A malformed port is caught on the parse path but not on the normalisation path.** `parse_seafile_url` reports `invalid port 'abc'` as an invalid Seafile URL; `normalize_netloc()` reads `urlparse(...).port` with no guard, so `https://host:abc` raises urllib's bare `ValueError` instead. A known gap rather than a design choice; the callers are `_load_credentials`, `_transfer_session` and the URL-adjustment path.
+- **An empty remote has no inferable object format.** The format is derived from ref hash lengths, and there are no refs; the first push therefore assumes the local repository's format.
 
 ---
 
-## 7. Advanced Storage & Concurrency Features
+## 6. Security & Threat Model
 
-### 7.1 Distributed Ticket-Based Lease Locking
-- In multi-developer teams, concurrent pushes could race during packfile uploads.
-- `git-remote-seafile` implements a cooperative ticket-based distributed lock protocol stored at `/.git-lock.d/<nonce>.json` on the remote repository.
-- Each client deposits an individual ticket containing owner hash, machine ID, holding PID, nonce, expiration, and a grant marker. Tickets are evaluated deterministically, and the **primary key is the grant**: a ticket the queue has granted the lock to (`"holding": true`) outranks every ticket that has merely asked for it, whatever their timestamps say. Among tickets at the same rank the key is `order_ts` — captured once at acquisition and preserved across renewals — with the directory `mtime` and the nonce as tie-breakers (see §7.10). The grant has to be primary because `order_ts` is a *client-side estimate* of server time (the local clock plus the offset implied by the `Date:` header, whose resolution is one second): approximate shared time is all an expiry check needs, but it cannot decide ownership, because two estimates half a second apart are indistinguishable from a genuinely earlier arrival. Until v0.8.4 it was the primary key, and a newcomer whose estimate came out behind an active holder's therefore sorted ahead of it and acquired the lock while the holder was mid-push — with its own ticket intact and unexpired, so nothing a ticket read could detect. A client does not claim the lock from a single read of the queue: it waits one settlement window (`seafile.locksettle`, default 1s) and reads again, so a peer that is still uploading during the first read cannot be overlooked and two clients cannot both conclude they are first. Listing errors are retried and fail closed. Because Seafile does not expose atomic server-side mutex primitives, the lock protocol is cooperative and advisory; write safety is reinforced with post-lock ref re-reads, optimistic compare-and-swap (CAS) verification before writing refs, and lease ownership fencing prior to GC deletions.
-- The v0.1–v0.3 single-file lock (`.git-lock.json`) was removed in v0.7.0: this protocol coordinates exclusively via the distributed ticket queue in `.git-lock.d/`, and `acquire()` deletes an orphaned mirror when it finds one so existing repositories self-clean. Do not mix v0.7.0+ with a v0.1–v0.3 helper on the same repository — those clients predate the ticket protocol and cannot see its locks.
-- **Dead Local PID Fast-Reclaim**: When inspecting an unexpired lock held on the same machine (verifying both hostname and local machine hardware/container identifier), liveness checks (`OpenProcess` on Windows, `os.kill` on POSIX) immediately reclaim the lock if the holding process has terminated or crashed.
-- **In-Transfer Progress Renewal**: Multi-gigabyte packfile uploads and downloads — including the pack downloads inside remote garbage collection — continuously refresh their lock lease every 20 seconds during active socket writes, without background daemon threads. Purely local compute phases (pack generation, `git repack`) renew before and after the phase rather than during it.
-- **Sound Ownership Fencing**: Lease renewal reads the holder's ticket back before rewriting it. The nonce names the ticket file and only its creator writes it, so a ticket that is gone or carries a foreign nonce means the lease lapsed and was reaped — most plausibly by a new holder. Renewal fails closed in that case instead of resurrecting the ticket. Reading our own ticket back proves the *lease*, though, and says nothing about whether another client has since been *granted* the lock: our ticket would still read back as ours, intact and unexpired, while the queue had already given the lock away. The fence therefore also scans the queue and fails with `LEASE_PREEMPTED` when an active ticket sorts ahead of ours. That two-part check is what lets the pre-deletion fence in GC and the pre-ref-write fence in push detect a takeover *and* an overtaking; the three states are reported distinctly (`another client took over the lock`, `another client was granted the lock while this ticket was still held`, and `the lock ticket could not be read or rewritten, so ownership is unproven`) because they send an operator to different places. The queue scan is rate-limited to one listing per second so that fencing once per deleted ref does not list the queue once per ref; the lease itself is re-proven on every call, so a reaped ticket is still caught immediately.
-- **CLI Management**: Operators can inspect active lock status via `git-remote-seafile lock-status <url>` and release or break locks via `git-remote-seafile unlock <url> [--force]`. Status inspection is strictly read-only and never reaps or mutates tickets.
+This section states what the *protocol* assumes and defends against. Deployment policy — where credentials live, how to configure TLS for a self-signed instance, and how to report a vulnerability — is in [SECURITY.md](SECURITY.md).
 
-### 7.2 Remote Packfile Compaction (`git-remote-seafile gc`)
-- Over time, numerous pushes create multiple packfiles in `/objects/pack/`.
-- The `gc` subcommand downloads all packs, invokes `git repack -ad -l` to consolidate and delta-compress them into a single unified packfile, uploads the result, and removes obsolete remote packs from Seafile. The deletions are gated three times over: lock ownership is re-validated before they begin, the consolidated packfiles must be *proven* present — the remote pack directory is listed again and every new `.pack`/`.idx` must appear at the size it has locally, so a truncated write, a proxy that answered `2xx` for a failed one, or an `.idx` that never landed all leave the old packs in place — and ownership is re-validated again before each individual pack is removed. An unverifiable upload is a refusal, not a warning: until the new packfiles are proven present, the old ones are still the repository's only complete copy. Note that while obsolete packs are removed immediately from the repository, raw storage reclamation on the Seafile server backend requires the administrator to run `seaf-gc` after the library retention window has elapsed. Scratch space comes from the system temporary directory (`TMPDIR`, or `TEMP`/`TMP` on Windows), which needs room for roughly 2–3× the repository's packed size.
+### 6.1 Assets
 
-### 7.3 Git LFS Custom Transfer Agent Protocol
-- Implements the official Git LFS line-based JSON custom transfer protocol.
-- Handles `init`, `upload`, and `download` events over standard I/O.
-- Allows large binary assets to be stored directly in Seafile `/lfs/` while maintaining small, agile Git commit histories.
+- **Repository contents and history.** The helper's product is the only copy of a repository in some deployments.
+- **Seafile credentials.** A token grants whatever the account grants, across every library the account can see — not merely the one repository being pushed to.
 
-### 7.4 Automated Pre-Flight Safety Guardrails (`safety.py`)
-To prevent data loss and filesystem thrashing, `git-remote-seafile` enforces pre-flight safety verification before any push operation:
-1. **Zero-Configuration Client Discovery**: Reads local Seafile desktop client SQLite configuration (`repo.db` discovered via `<ccnet>/seafile.ini`) to map all actively synced local libraries and their root directories.
-2. **Trap 1 (Working Tree & Remote Collision)**: Detects if the current Git working tree resides inside a synced library and shares the exact path with the remote URL. Hard-aborts immediately before locking or uploading to prevent server packfiles from downloading over the active working tree. Recommends pushing to an unsynced library or an ignored subfolder (such as `seafile-git/`). During `git clone` no work tree can be named yet, so the guard resolves the *clone destination* from the `GIT_DIR`/`GIT_WORK_TREE` variables Git exports to the helper (measured: `GIT_DIR` is the destination's `.git`, absolute) before falling back to the process cwd — so cloning into a synced library is blocked regardless of where the clone is launched from.
-3. **Trap 2 (Download Reflection Loop)**: Detects pushes into synced libraries where the remote subfolder is not listed in `seafile-ignore.txt`. Aborts to prevent the desktop client from downloading server packfiles right back to the local drive.
-4. **Library Typo Suggestions**: Uses fuzzy matching (`difflib.get_close_matches`) against `/api2/repos/` to provide helpful suggestions when library names are misspelled.
-5. **Git Protocol Conformance**: Emits standard `error <dst> safety check failed: ...` protocol lines on `stdout` and full human-readable diagnostic guidance on `stderr`.
-6. **Bypass Controls**: Supports non-interactive CI environments and automated testing via `SEAFILE_SKIP_SAFETY_CHECKS=1` or `git config seafile.skipsafetychecks true`.
+### 6.2 Trust boundaries
 
-### 7.5 High-Throughput Transfer & Scalability (v0.5.0)
-- **Parallel Ref Enumeration (M-9)**: Concurrently resolves remote branch and tag hashes using `concurrent.futures.ThreadPoolExecutor(max_workers=8)` in `refs.py`, eliminating sequential latency overhead on repositories with large ref counts while strictly preserving deterministic alphabetical sort order for Git wire protocol stability.
-- **Smart Pack Fetch Filtering (M-9)**: During `fetch`, the helper inspects requested commit objects against local Git object availability (`filter_existing_objects`). When all requested commits already exist locally, redundant remote packfile downloads are bypassed and protocol termination (`\n`) is emitted immediately. *Completeness guard*: this optimization operates on tip commit object presence, which implies object completeness only in a full clone. `objects_may_be_incomplete()` (`git_util.py`) withholds the skip when the repository is shallow (`git rev-parse --is-shallow-repository`) or has a promisor remote (`remote.<name>.promisor`), so such a repository fetches the pack instead of skipping it and failing at checkout. The probe fails safe: if it cannot answer, the pack is fetched. Note that the helper never *creates* such a repository: it does not implement Git's `depth` or `filter` options, so a `--depth`/`--filter` clone is silently a full one (USER_GUIDE §8.2) and the guard exists for a repository that is shallow or partial for some other reason.
-- **Disk-Staged Pack Streaming (H-1)**: During `push`, packfiles and index files generated by `git pack-objects` are staged on disk in temporary directories residing directly within `.git`, and streamed to Seafile via `StreamingMultipartFile` without buffering gigabyte payloads in RAM. Temporary staging directories are cleaned up immediately via `try...finally`.
+- **The Seafile server is trusted with content and credentials.** A push sends repository contents to it in the clear over the API (transport encryption notwithstanding); there is no client-side encryption. The helper is not `git-remote-gcrypt`.
+- **The remote URL is not trusted.** It arrives from configuration or the command line, and the credentials the helper will attach to it are chosen by matching the host, so a URL is an input that can redirect credentials if the matching is loose.
+- **A repository's contents are not trusted.** Packfiles and index files from a remote are validated (`verify-pack`, size checks, name regexes) before they are installed locally, because a repository may be shared with someone hostile.
+- **The lock queue is not a security boundary.** Tickets are advisory and readable by anyone with access to the library. They disclose the owner hash, the machine identifier, the holding PID and the nonce. Do not treat the lock directory as private.
 
-### 7.6 Integrity & Concurrency Hardening (v0.5.1)
-- **Post-Lock Ref Re-Reading & Optimistic CAS (N-1)**: Eliminates lost-update races by re-fetching destination ref tips after lock acquisition and verifying they haven't shifted immediately prior to writing ref files. Each ref is then read back *after* the write: because Seafile exposes no atomic server-side compare-and-swap, the check and the write are separate round trips, and a peer that ignores the advisory lock can land between them. A read-back that returns a string differing from the SHA just written means that happened, and the ref is reported as `error <dst> fetch first` instead of `ok`. A read that cannot settle the question — `None`, or a transport failure — is reported as an unverified write (a warning), never as a failed push: the upload already returned success, and reporting a good push as failed is its own defect.
-- **Fail-Closed Ref Discovery & GC Guard (N-2)**: Ref reading exceptions propagate instead of silently dropping branches; GC validates mirrored ref integrity before running repack.
-- **Ownership Fencing (N-4)**: GC verifies active lock ownership and validity immediately before deleting obsolete remote packfiles.
-- **Pack Index Verification & Local Regeneration (N-5)**: Downloaded `.idx` files are validated with `git verify-pack -v`; corrupted or truncated indexes are discarded and reconstructed locally via `git index-pack`.
-- **Surrogateescape Path Handling (N-8)**: Safely handles non-UTF-8 repository filenames without crashing.
+### 6.3 Threats and mitigations
 
-### 7.7 Robustness & Disambiguation (v0.5.2)
-- **Header Injection & Streaming Offset Hardening (N-11)**: Sanitizes multipart form header parameters and preserves stream seek offsets in `StreamingMultipartFile`.
-- **Clock Calibration Smoothing & API Isolation (N-12)**: Isolates server time estimation strictly to API responses and applies median filtering across samples to eliminate clock jitter.
-- **Safety Library Matching Disambiguation (N-14)**: Distinguishes between local libraries sharing folder names across distinct repo IDs by restricting folder-name matching strictly to unknown target IDs.
-- **Pack & Ref Name Sanitization (N-15)**: Strict regex validation for packfile names and control character / malformed syntax filtering for remote refs.
-- **Credential Netloc Normalization (N-16)**: Standardizes hostnames and default ports across configuration and token lookups.
-- **Connection Pool Scaling (N-17)**: Expands HTTP adapter connection pool capacity for thread-safe concurrent ref requests.
-- **Structured Error Propagation (N-18)**: Replaces fatal system exits with `SeafileClientNotFoundError`.
-- **Streaming Fetch Logging & Bounded Fallback (N-7)**: Surfaces streaming fetch errors to stderr and caps in-memory fallback to 16MB.
+| Threat                                                        | Mitigation                                                                                                                                              |
+| ------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Credentials sent to an unintended host via a crafted URL      | Tokens are adopted only when the URL's host matches the credential's scope; a token is not attached to a plain-HTTP non-loopback destination by default |
+| A launcher that puts the current directory on `sys.path`      | Launchers invoke Python with `-I` (isolated mode) so a file in the working directory cannot shadow an import                                            |
+| A malicious packfile or index installed locally               | Strict name regexes; `verify-pack -v`; size verified against the directory listing; local regeneration of a bad index                                   |
+| A hostile or buggy server answering `2xx` for a failed upload | gc re-lists the remote pack directory and requires every new file at its expected size before deleting anything (§4.5)                                  |
+| A stale lock holder writing inside a live holder's push       | Ownership fencing at every destructive step; the fence detects both takeover and preemption, with distinct messages (§4.4)                              |
+| Information disclosure through the lock queue                 | Documented as readable; no secret is placed in a ticket beyond a token-derived hash                                                                     |
+| A silently truncated backup                                   | The snapshot tool's excludes are opt-in and named; an omitted file is never silent                                                                      |
 
-### 7.8 Modular Helper Architecture (v0.6.0)
-- **Separation of Concerns**: Decomposed monolithic helper logic into single-responsibility modules:
-  - **`url.py`**: Seafile URL parsing, scheme extraction, port normalization, and path validation (`parse_seafile_url`, `SeafileURL`).
-  - **`config.py`**: Git configuration resolution with typed structured defaults (`RemoteConfig`).
-  - **`packs.py`**: Remote packfile discovery, streaming downloads, integrity verification, and atomic installation (`fetch_and_install_pack`, `check_remote_has_packs`, `is_valid_pack_name`).
-  - **`helper.py`**: Lean protocol handler focused strictly on Git remote helper commands (`capabilities`, `list`, `push`, `fetch`).
+### 6.4 What this design does not protect against
 
-### 7.9 Protocol Compliance & Fail-Closed Hardening (v0.6.1)
-- **Wire Object-Format Negotiation (N-1)**: Advertises `option` and `object-format` capabilities to Git core, replies `ok` to `option object-format` in its documented forms (`true`, or an algorithm pin the helper advertises against rather than enforces), and emits `:object-format <alg>` during `list` by inspecting remote ref hash lengths, enabling native Git push and clone of SHA-256 repositories.
-- **Fail-Closed Remote GC Compaction (N-2, N-3)**: Remote compaction aborts immediately if any remote pack fails to download or verify size against directory listings; Step 7 deletes only successfully compacted packs, preventing remote data loss.
-- **Git LFS Incremental Delta Reporting (N-4)**: Sends incremental `bytesSinceLast` in LFS progress events instead of total file size, ensuring accurate throughput rates and ETAs in Git LFS.
-- **Cross-Subcommand Stdio Discipline (N-5)**: Normalizes UTF-8 encoding and LF line discipline at the CLI entry point for all subcommands.
-- **Ref Name Character Conformance (N-12)**: Permits legal `@` characters in ref names per `git check-ref-format` while strictly forbidding standalone `@` components and `@{` reflog sequences.
-- **Push Lock Ownership Fencing (N-14)**: Enforces `lock.verify_ownership()` immediately before writing remote ref files in `cmd_push`.
-- **Atomic Move Optimization (N-7)**: Supports `move=True` during packfile installation, renaming staged packs directly into local staging rather than copying across directories.
-- **LFS Scratch Co-location (N-8)**: Places LFS transfer scratch storage under `.git/lfs/tmp` when available, eliminating cross-volume copies.
+- **A malicious server operator.** They hold the content and can serve anything; validation catches a corrupted pack, not a deliberately crafted history.
+- **A compromised account.** The lock is advisory and per-account; a second client using the same credentials is not distinguishable from the first.
+- **An attacker with library write access.** They can delete refs and packs, or plant a `.git-lock.d/` queue that changes who wins.
+- **Transport downgrade.** The helper does not force HTTPS; a `seafile://` URL without an explicit scheme is resolved by the rules in §4.3, and a plain-HTTP remote is the user's choice. TLS configuration is environmental (see [SECURITY.md](SECURITY.md)).
 
-### 7.10 Protocol, Config & Review-Closure Hardening (v0.6.2 – v0.6.4)
-- **URL & Ref Conformance Completion (v0.6.2)**: The `seafile://` prefix and the embedded explicit http(s) scheme are matched case-insensitively per RFC 3986 (previously only the CLI argument probe was lowercased, so `SEAFILE://host/lib` silently mis-parsed); `desktop-url` classifies mixed-case server URLs correctly. Ref names permit `@` inside components — `refs/heads/@` is legal per measured `git check-ref-format` — rejecting only the bare whole-name `@` (HEAD alias) and `@{` sequences.
-- **RemoteConfig Production Wiring (v0.6.2/v0.6.3)**: `cmd_push` and the `gc` subcommand resolve `seafile.locktimeout`/`locklease`/`autogc`/`gcthreshold` through one `RemoteConfig.load()` passed to both the push lock and compaction; implausible values (negative timeout, non-positive lease, sub-1 threshold) fall back to the documented defaults with a warning instead of defeating the mechanism.
-- **Sound Lock-Ownership Fencing (v0.6.3)**: `RemoteLock.renew()` reads the holder's ticket back before rewriting it — a ticket that is gone, unreadable, or carries a foreign nonce fails the renewal instead of resurrecting it. This makes `verify_ownership()` a real fence: after a lease lapse and takeover by another client, gc's pre-deletion check and push's pre-ref-write check detect the takeover and refuse, where the previous blind re-upload reported ownership of a lock the caller no longer held (reproduced with a stateful-store test before the fix).
-- **Takeover-Proof Ticket Ordering (v0.6.3)**: Lock tickets carry `order_ts` — captured once at acquire, preserved by renewal — and ordering prefers it when all tickets in a scan carry it, falling back to directory `mtime` for scans that mix ticket formats. Previously the mtime key let every renewal push the healthy holder to the back of the queue.
-- **In-Transfer Renewal Coverage & Honest Exit Codes (v0.6.3)**: GC's pack downloads (the longest locked phase) renew the lease via progress callbacks; `gc` exits non-zero on a failed compaction and reports deletions it could not perform; the manual `gc` path resolves config through the same `RemoteConfig`.
-- **Clone-Destination Collision Guard (v0.6.4)**: The Trap-1 fallback resolves the clone destination from `GIT_DIR`/`GIT_WORK_TREE` (see §7.4), closing the clone-from-outside-a-synced-library blind spot.
-- **Robustness Polish (v0.6.4)**: `SeafileClient.get_repo_id` validated a cached id against the fresh repo listing (a deleted library raised a clean not-found instead of a dead id); unknown directory-entry types and malformed LFS JSON lines warn on stderr; `set-head` reports the HEAD value it replaced; the e2e stub dispatches `/file/` vs `/dir/` deletions like the real server. **The revalidation did not survive v0.7.1** — see §7.11: it cost a listing fetch on every lookup and put the typo suggestion behind a call that had already raised, so a cache hit now returns immediately and a stale cached id is *not* detected.
+---
 
-### 7.11 Architecture Cleanup & Review-Closure Hardening (v0.7.0 – v0.7.1)
-- **Modular Test Suite & Shared Pack Path (v0.7.0)**: The single `test_remote.py` monolith is split per module, and `packs.fetch_pack_artifact` owns the stream → capped-fallback → size-verify pattern that fetch and gc each duplicated, so gc's index downloads gain the size check fetch already had. The legacy `.git-lock.json` mirror is removed outright — `.git-lock.d/` tickets are the only lock protocol — and Python 3.9 (EOL) is dropped (`requires-python >= 3.10`).
-- **Fail-Loud CLI Error Paths (v0.7.1)**: `test` and `unlock` named their exception in an `except` clause whose `from … import` ran *inside* the `try` but after the first statement that could raise, so any earlier failure died with `UnboundLocalError` instead of the intended message; both names are hoisted to module scope. Library-typo suggestions, previously built behind a call that had already raised, are constructed where the miss is detected (`SeafileClient.get_repo_id`, from the listing it already fetched). Making the suggestion reachable is also what moved the cache hit back above the listing fetch, and so what removed the v0.6.4 revalidation (§7.10): a cache hit is served without a request, and a cached id is therefore never checked against a fresh listing.
-- **SHA-256 Remote Compaction (v0.7.1)**: `gc` initialises its scratch repository with the *remote's* object format and runs `verify-pack`/`index-pack` with `-C <bare-repo>` so they inherit it. Both halves are required, because those commands run with `GIT_DIR` scrubbed; either alone still fails. Previously the scratch repo was SHA-1, so compaction failed on every SHA-256 remote — and with `seafile.autogc` on it retried forever while packs grew unbounded.
-- **URL Port and Scheme Fidelity (v0.7.1)**: An explicit port on the bare host form is honoured rather than stripped: `:80` selects `http`, `:443` selects `https`, and any other port keeps its number over `https`. A non-numeric port is reported as an invalid Seafile URL rather than escaping as a raw `ValueError`.
-- **Ticket-Settlement Window (v0.7.1)**: `acquire()` waits one settlement window (`seafile.locksettle`, default 1s) and re-scans before declaring a win, so a peer still uploading during the first read cannot be overlooked — see §7.1. The cost is one fixed interval per push, which the user guide states rather than rounds away.
-- **Windows Pack Re-Install (v0.7.1)**: `install_packfile` makes both publish targets writable before `os.replace`; git writes pack and index files `0444`, and replacing a read-only *destination* fails on Windows where POSIX needs only directory write permission.
+## 7. Non-Goals
 
-### 7.12 Helper Dry-Run & Clock-Resolution Test Hardening (v0.7.2)
-- **Remote-Helper Dry-Run (`git push --dry-run`)**: Git sends `option dry-run true` ahead of the push commands and *aborts* on `unsupported` — `fatal: helper seafile does not support dry-run`, exit 128 — so accepting the option is what makes the flag usable at all. `cmd_push` routes it to `_push_dry_run`, which reproduces the real path's four decisions (namespace, local ref, remote ref, fast-forward) and emits the same `ok`/`error` lines while taking no lock, building no packfile, and writing no ref. The lock is skipped on purpose: it is itself a side effect, and holding it would park a real push behind the settlement window to answer a question nobody will act on.
-- **Windows Clock-Resolution Test Flake**: Four `test_lock` cases stamped a peer ticket with `order_ts = time.time()` and then asserted that an `acquire()` a few hundred microseconds later lost to it. Windows `time.time()` is backed by `GetSystemTimeAsFileTime` — **15.625 ms** granularity — through Python 3.12 (3.13 moved to `GetSystemTimePreciseAsFileTime`), so both stamps land in one tick and the queue falls through the tied `order_ts` and the always-tied integer mtime to the nonce, where the test's own random uuid4 sorts first about two runs in three. The protocol was never wrong — a tie is total and deterministic, so every contender agrees on the winner and mutual exclusion holds; only FIFO fairness degrades below the clock's resolution, which §7.1 now records. The fixture stamps strictly in the past, and a new test freezes the clock to pin the behaviour.
+Explicitly out of scope, with the reason, so a reader does not infer an intention that is not there:
 
-### 7.13 Whole-Tree Snapshots — the Vault Complement (v0.8.0)
-
-The helper is a **transport**: it moves commits, and a commit contains only what the repository's `.gitignore` permits. `tools/seafile_snapshot.py` (v0.8.0) is the complement — a capture tool for the files a commit structurally cannot carry — and it is deliberately *not* a subcommand, because it does not extend the protocol and imports nothing from `git_remote_seafile` unconditionally.
-
-- **The vault is a second repository, not a branch.** A snapshot needs the whole tree, including ignored files. Committing that into the *source* would publish it (the snapshot tree is the whole tree, and a mirror push carries `refs/heads/*`), and a subdirectory inside the source would place snapshot data inside the tree being snapshotted — which the helper refuses anyway. So the tool maintains a **separate vault repository whose `--work-tree` is the source** (`git --git-dir=<vault>/.git --work-tree=<source>`), leaving the source read-only and its index and refs untouched.
-- **Byte-exactness is enforced structurally.** Git for Windows sets `core.autocrlf=true` in its *system* config, so a fresh `git init` inherits it while `git config --global core.autocrlf` reports nothing. The vault pins `core.autocrlf=false` **and** writes `* -text -filter -ident` into its own `info/attributes`, which outranks a `.gitattributes` copied from the source. The override must name **every** attribute class: `* -text` alone does not disable `filter`, and a source `filter=lfs` attribute silently stored a 130-byte LFS pointer. Because `info/attributes` is not transferred by a clone, `--restore` clones `--no-checkout` and re-applies the settings before checking out.
-- **Atomicity without a commit when nothing changed.** A vault-local index, `update-ref` with an expected old value, and a `seafile-snapshot.lock`; an unchanged tree produces **no commit and no transfer**, which is what makes a frequent schedule cheap.
-- **Restore verification uses the only honest hash check.** Three checks exist: `git status --porcelain` compares through the filters, plain `git hash-object` applies the clean filter, and `git hash-object --no-filters` hashes the bytes on disk. Only the last cannot be fooled by a mangled checkout — and it holds for *any* checkout, not merely one made by this tool.
-- **The shared-remote guard.** A whole-tree backup legitimately contains `.env` and keys, so pushing the vault to one of the source's own code remotes is **refused** unless `--allow-shared-remote` is given — see §7.4 and the helper's own remote-collision checks.
-- **Multi-machine correctness.** The vault's next snapshot bases on the **remote tip**, not the local branch: the original code branched from the local branch, so a second machine's push was rejected `(fetch first)` *and still moved its local branch*, failing every later run while the first looked successful. By default all machines append to one shared chain on `refs/heads/snapshot` — the hostname rides in the commit message, not the ref name — and an explicit `--branch snapshot-<host>` gives per-machine chains when wanted.
-- **Defaults, and the vault as the place they are remembered.** Every option has a default, resolved most-specific-first: the explicit flag, then the vault's own config (`snapshot.*`), then the source repository (a single `seafile://` remote names the vault's destination, `seafile://code/app` → `seafile://code/app-vault`), then the current directory and `<source>-vault`. Writing the resolved settings back into the vault is what makes the second run argument-free; the vault is therefore both the bottom of the resolution chain and its persistent store.
-- **Excludes are never silent.** The recommended junk list is `--default-excludes`, not a default: the tool captures everything and then names the reproducible bulk it noticed. A snapshot is a backup, and the irrecoverable failure is a backup that quietly omitted the file that mattered — `node_modules` is reproducible, `.env` is not, and the tool cannot tell them apart.
-- **Refusals rather than guesses.** A vault records and enforces the one source tree it belongs to. Neither source nor vault may sit inside a Seafile-synced folder — checked at startup via `safety.discover_local_synced_libraries()`, and for the vault this is the *only* line of defence, since the helper is told about the source (`GIT_WORK_TREE`) and never the vault. `--code-remote` must name a real remote, `--no-push` with `--remote` is contradictory, and flags that would otherwise be ignored — `--ref` without `--restore` above all — are errors, because each of those failures is otherwise silent.
-
-The full design — including the `.gitignore`-renaming approach that does not work, the measured (not yet wired-in) nested-repository capture via `update-index --cacheinfo`, the cost model, and the analysis of whether the helper should grow hooks or support restic/Borg — is in [SNAPSHOT.md](SNAPSHOT.md). Today a nested repository is detected and warned about loudly; its contents are not captured.
+- **A true mutex.** Seafile offers no atomic create-if-absent, no compare-and-swap, and no server-enforced lock on Community Edition. No arrangement of files and clocks provides mutual exclusion on such storage. The lock is advisory and documented as such; correctness rests on read-back and CAS (§3.3). A content-addressed ref scheme that removes clock dependence from correctness entirely is a possible future direction, but it is a protocol change and has not been designed here.
+- **A server-side lock dependency.** Seafile Pro's file-lock API exists, but it is Pro-only, the lock owner is the Seafile *user* rather than the machine — so for the common single-account, several-machines scenario it fences nobody — and it would require a patched server on CE. It may become an optional probed capability; it will not become a requirement.
+- **Client-side encryption.** Use `git-remote-gcrypt` in front of this helper if that is the requirement.
+- **`--depth` and `--filter`.** Not implemented; a shallow or partial clone is silently a full one. The helper never *creates* such a repository, and the fetch-skip guard exists only for a repository that is shallow or partial for another reason (§4.1).
+- **`--atomic`.** Not advertised, so Git fails the multi-ref push clearly rather than leaving it half-applied.
+- **Signed pushes and `push-option`.** Not implemented.
+- **Peeled tags (`^{}`).** Not advertised; an annotated tag appears as its tag-object SHA. Git copes; `ls-remote --tags` output has not been compared against a native remote.
+- **Bare vaults.** The snapshot tool's vault is a working repository with a `--work-tree`. `git init --bare` re-shapes `--git-dir`, the tests, the documentation and `restore`; it is a deliberate revisit, not an oversight.
+- **Server storage reclamation.** Removing a pack from a repository does not free blocks on the Seafile backend; that is `seaf-gc` and the administrator's retention policy.
+- **A repository health command.** A `fsck`-style subcommand that reports stray refs, orphaned tickets and half-uploaded packs would back the manual procedures in [RUNBOOK.md](RUNBOOK.md). It is proposed, not implemented; the runbook gives the manual equivalent.
 
 ---
 
 ## 8. Upstream Integration Path for Haiwen / Seafile
 
 To incorporate this capability into the official Seafile ecosystem:
+
 1. **Repository Home**: Hosted at `tkittich/git-remote-seafile`; can be adopted upstream as `haiwen/git-remote-seafile` or bundled within official client distributions.
 2. **Packaging**: This repository ships wheel and sdist assets on each GitHub Release; PyPI publication is deferred to the official Seafile repository once the code is merged upstream, alongside (or instead of) bundling into Seafile Windows/macOS client installers.
-3. **Desktop Applet Integration**: A proposed Qt patch is included in `contrib/seafile-client-context-menu.patch`, adding a *"Copy Git Remote URL"* action to the Seafile desktop applet's right-click context menu. It targets the client's `repo-tree-view` and will need rebasing onto a current seafile-client checkout.
+3. **Desktop Applet Integration**: A proposed Qt patch is included in `contrib/seafile-client-context-menu.patch`, adding a *"Copy Git Remote URL"* action to the Seafile desktop applet's right-click context menu. It targets the client's `repo-tree-view`, and its blob ids and hunk headers are placeholders rather than a patch that applies to any real checkout — treat it as documentation of the intended change, not as a patch to apply.
 
 ---
 
 ## 9. Acknowledgments & Prior Art
 
 `git-remote-seafile` draws technical inspiration and design patterns from:
+
 - [git-remote-dropbox](https://github.com/anishathalye/git-remote-dropbox) by Anish Athalye: Pioneered transparent Git packfile transport and cooperative lockfiles over cloud file storage APIs.
 - [git-remote-gcrypt](https://spwhitton.name/tech/code/git-remote-gcrypt/) by Joey Hess: Pioneered decentralized, encrypted, push-to-anything Git remotes.
 - [git-remote-s3](https://github.com/jason-riddle/git-remote-s3): Git remote helper for Amazon S3 object stores.
@@ -279,4 +450,3 @@ To incorporate this capability into the official Seafile ecosystem:
 ## 10. AI Disclosure & Authorship
 
 This design specification and the underlying implementation were authored primarily with generative AI assistance from multiple AI systems, in collaboration with human architectural design, real-world forensic diagnostics, and verification on Windows by [@tkittich](https://github.com/tkittich). All code and protocol implementations are fully open source and licensed under the Apache License 2.0.
-

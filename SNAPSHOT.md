@@ -2,7 +2,7 @@
 
 > **Status: shipped in v0.8.0.** The implementation is `tools/seafile_snapshot.py`;
 > the tests are `tests/test_snapshot_tool.py` (101 cases across 24 classes), and
-> the tool is documented in `USER_GUIDE.md` §15, `DESIGN.md` §7.13 and
+> the tool is documented in `USER_GUIDE.md` §15, `DESIGN.md` §4.10 and
 > `CHANGELOG.md`'s 0.8.0 entry. Everything below describes the tool **as it
 > ships**; measurements were taken on this machine unless a claim says otherwise.
 >

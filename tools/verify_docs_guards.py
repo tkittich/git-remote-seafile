@@ -98,6 +98,19 @@ scenario(
     # heading `## [0.8.1]` still parses, so only the new link guard notices.
     {"CHANGELOG.md": [("[0.8.1]: ", "[0.8.1] ")]},
 )
+scenario(
+    "DESIGN.md loses a normative section",
+    "TestDesignIsASpecNotAChangelog.test_the_normative_sections_are_present",
+    # Renames the heading rather than deleting the section: the guard matches
+    # on titles, so a rename is exactly the drift it should catch.
+    {"DESIGN.md": [("## 7. Non-Goals", "## 7. Things We Do Not Do")]},
+)
+scenario(
+    "DESIGN.md regrows a release-narrative heading",
+    "TestDesignIsASpecNotAChangelog.test_no_heading_names_a_release",
+    # The precise shape the rebuild removed, reintroduced on a live heading.
+    {"DESIGN.md": [("## 5. Failure Model", "## 5. Failure Model (v0.9.0)")]},
+)
 
 
 def run_one(test_name):

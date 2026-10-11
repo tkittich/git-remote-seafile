@@ -10,6 +10,8 @@ include README.md
 include CHANGELOG.md
 include USER_GUIDE.md
 include DESIGN.md
+include SECURITY.md
+include RUNBOOK.md
 include CONTRIBUTING.md
 include ROADMAP.md
 include SNAPSHOT.md

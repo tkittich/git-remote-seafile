@@ -3,7 +3,7 @@
 
 Why this exists: ``python -m unittest discover tests`` is single-threaded, and
 the end-to-end and snapshot modules dominate the run.  Measured on a 12-core /
-24-thread machine (AMD 5900X), 640 tests across 123 targets:
+24-thread machine (AMD 5900X), 642 tests across 124 targets:
 
     this runner,  -j 4                      319.4 s
     this runner,  -j 8                      232.9 s
@@ -11,7 +11,7 @@ the end-to-end and snapshot modules dominate the run.  Measured on a 12-core /
 
 Read the column as indicative rather than exact.  On an idle machine repeated
 runs spread by around a tenth, and the box's throughput drifts by much more
-between sessions -- the same ``-j 8`` run has measured 232.9 s, 243.3 s and
+between sessions -- the same ``-j 8`` run has measured 232.9 s, 243.3 s, 250.6 s and
 328.9 s across sessions on this box -- so the ratios and the shape of the curve
 are what these numbers are here to show, not the seconds.
 
@@ -30,13 +30,13 @@ work is I/O- and subprocess-bound rather than CPU-starved.
 
 ``-j 1`` is *slower* than the plain serial command, and that is the granularity
 argument in miniature: one process per class pays an interpreter start-up and a
-fresh ``import requests`` for each of the 123 targets.  Use ``python -m unittest
+fresh ``import requests`` for each of the 124 targets.  Use ``python -m unittest
 discover tests`` for a baseline; ``-j 1`` is not one.
 
 **Granularity is the test class.**  Not the module, and not the test:
 
-    class granularity, -j 8                 232.9 s    <- 123 targets
-    test  granularity, -j 8                 293.8 s    <- 640 targets
+    class granularity, -j 8                 232.9 s    <- 124 targets
+    test  granularity, -j 8                 293.8 s    <- 642 targets
 
 * Per module would leave the whole of ``test_snapshot_tool`` on one worker, and
   that module is the bulk of the suite's work -- more than the class-granularity
@@ -44,11 +44,11 @@ discover tests`` for a baseline; ``-j 1`` is not one.
 * Per test is *worse*, which is not obvious.  ``E2ETestCase`` does its expensive
   work in ``setUpClass`` (a temp directory, a stub HTTP server, a git
   environment); scheduling per test repeats all of that for every test in the
-  class.  The 509 extra interpreter start-ups cost less than the setup they
+  class.  The 518 extra interpreter start-ups cost less than the setup they
   duplicate.
 
 **The curve flattens early.**  Eight workers are 1.4x four, not 2x, and beyond
-eight the wall time barely moves -- on this suite at 640 tests, ``-j 16`` was
+eight the wall time barely moves -- on this suite at 642 tests, ``-j 16`` was
 243.4 s and ``-j 24`` 227.9 s against 232.9 s at ``-j 8``, a spread inside the
 run-to-run noise the column above already disclaims, and not an ordering.  The
 default is one worker per CPU, which on a wide machine is more than the suite

@@ -50,6 +50,8 @@ _DOC_NAMES = (
     "README.md",
     "USER_GUIDE.md",
     "DESIGN.md",
+    "SECURITY.md",
+    "RUNBOOK.md",
     "CHANGELOG.md",
     "CONTRIBUTING.md",
     "ROADMAP.md",
@@ -665,6 +667,75 @@ class TestSnapshotNarrativeHasNotRegressed(unittest.TestCase):
                 if needle in text:
                     offenders.append(f"{name}: {needle!r}")
         self.assertEqual(offenders, [], chr(10).join(offenders))
+
+
+class TestDesignIsASpecNotAChangelog(unittest.TestCase):
+    """DESIGN.md drifted into a release-by-release narrative and had to be rebuilt.
+
+    By v0.8.4 the document's second half was nine subsections titled
+    ``(v0.5.0)`` through ``(v0.8.0)``, each listing fixes under their review
+    identifiers, with later entries silently superseding earlier ones.  A reader
+    could not answer "what does the protocol guarantee *today*?" without
+    replaying history, and the same material was already in CHANGELOG.md in more
+    detail.  The rebuild split each mixed subsection into the invariant (which
+    belongs in a spec) and the narrative (which does not), and added the
+    normative sections the document had never had.
+
+    Nothing mechanical prevents the drift from returning.  The guards in this
+    file check *tokens* -- config keys, env vars, subcommands -- not structure,
+    so a future release could add ``(v1.1)`` headings back one at a time and
+    every one of them would stay green.  These two tests pin the shape instead:
+    the normative sections must be present, and no heading may name a release.
+
+    Deliberately matched on section *titles* rather than numbers, so a
+    deliberate renumbering is not a test failure -- but removing or renaming a
+    normative section is.
+    """
+
+    #: The sections that make the document a specification.
+    REQUIRED_TITLES = (
+        "Invariants",
+        "Protocol",
+        "Failure Model",
+        "Security & Threat Model",
+        "Non-Goals",
+    )
+
+    #: A heading that describes a *release* rather than the system, e.g.
+    #: `### 7.5 High-Throughput Transfer & Scalability (v0.5.0)`.
+    _RELEASE_HEADING = re.compile(r"(?m)^#{2,4} .*\(v[0-9]+\.[0-9]+\.[0-9]+")
+
+    def _level_two_headings(self) -> list[str]:
+        return re.findall(r"(?m)^## (.+)$", _read("DESIGN.md"))
+
+    def test_the_normative_sections_are_present(self):
+        headings = self._level_two_headings()
+        self.assertTrue(headings, "no level-2 headings parsed from DESIGN.md")
+        missing = [
+            title
+            for title in self.REQUIRED_TITLES
+            if not any(h.rstrip().endswith(title) for h in headings)
+        ]
+        self.assertEqual(
+            missing,
+            [],
+            "DESIGN.md has lost a normative section. It is a specification, not "
+            "a release log: keep the invariants/protocol/failure-model/"
+            "security/non-goals shape, and put per-release history in "
+            "CHANGELOG.md, where it already is.",
+        )
+
+    def test_no_heading_names_a_release(self):
+        found = self._RELEASE_HEADING.findall(_read("DESIGN.md"))
+        self.assertEqual(
+            found,
+            [],
+            "a DESIGN.md heading names a release. That is how the document "
+            "became a changelog: version-stamped headings accumulate, later "
+            "ones supersede earlier ones, and no reader can tell which "
+            "statements are still true. Describe the system, not the release "
+            "that changed it.",
+        )
 
 
 if __name__ == "__main__":

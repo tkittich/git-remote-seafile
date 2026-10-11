@@ -177,6 +177,8 @@ git clone seafile://seafile.example.com/code/myproject
 
 - [User's Guide (USER_GUIDE.md)](USER_GUIDE.md): Full walkthrough of setup, configuration files, multi-account usage, and dual-remote (GitHub + Seafile) setups.
 - [Architecture & Design Spec (DESIGN.md)](DESIGN.md): Technical protocol specifications and upstream RFC for Seafile maintainers.
+- [Security Policy (SECURITY.md)](SECURITY.md): Credential handling and precedence, the threat model, TLS/private-CA and proxy configuration, and how to report a vulnerability.
+- [Operations Runbook (RUNBOOK.md)](RUNBOOK.md): Recovery procedures — a stuck lock, stray or conflicting refs, half-uploaded packfiles, and what to capture before opening an issue.
 - [Snapshot Tool Design (SNAPSHOT.md)](SNAPSHOT.md): The design of the whole-tree snapshot tool — the vault, byte-exactness, multi-machine semantics, and the measured cost model.
 - [Changelog (CHANGELOG.md)](CHANGELOG.md): What changed in each release.
 - [Contributing Guidelines (CONTRIBUTING.md)](CONTRIBUTING.md): How to contribute, run tests, and adhere to development standards.
