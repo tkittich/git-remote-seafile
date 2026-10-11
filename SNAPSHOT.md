@@ -649,7 +649,7 @@ before designing around them:**
 | `git notes` (per-snapshot metadata) | **Blocked, deliberately.** The helper writes only `refs/heads/` and `refs/tags/` (`REF_NAMESPACES` in `refs.py`), so notes under `refs/notes/` could not be pushed to a `seafile://` remote. The allowlist is shared with the ref advert *and* with compaction's reachability mirroring, so widening it is not a one-line change — see [section 14](#14-hooks-resticborg-bridges-and-what-the-helper-should-not-grow). |
 | Custom ref namespaces (`refs/snapshots/<host>`) | **Blocked** by the same allowlist. A per-machine chain is one `--branch snapshot-<host>` run away — an ordinary branch name, no custom namespace needed. |
 | Tags (`refs/tags/*`) | **Allowed, unused.** The natural way to mark a milestone snapshot. |
-| Shallow / partial clone | **Unused.** `--restore` fetches the whole history; `--depth` or `--filter=blob:none` would speed up restoring a large vault. |
+| Shallow / partial clone | **Blocked by the helper.** `--restore` fetches the whole history, and `--depth` or `--filter=blob:none` would speed up restoring a large vault — but the helper does not implement Git's `depth`/`filter` options, so Git silently falls back to a full clone (USER_GUIDE §8.2). Making this useful needs helper support first. |
 | `git count-objects` | **Unused.** The tool reports the tree's size but not the remote's growth. |
 | `git bundle` | **Unused.** A portable single-file snapshot, if one is ever needed offline. |
 | Commit signing, `git replace`, grafts | **Unused.** No need. |
@@ -731,6 +731,9 @@ Borg, and changes nothing for the helper or the vault.
    warning is printed and nothing acts on it.
 3. **Shallow/partial restore** — `--restore` fetches the whole history; for a
    vault with years of snapshots, `--depth` or `--filter=blob:none` would help.
+   This needs the *helper* to implement Git's `depth`/`filter` options first:
+   today it answers `unsupported`, and Git silently does a full clone, so the
+   flag is accepted and ignored (section 12, USER_GUIDE §8.2).
 
 **Open questions, deliberately unresolved:**
 

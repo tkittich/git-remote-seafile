@@ -311,6 +311,13 @@ Before developing `git-remote-seafile`, extensive real-world testing and diagnos
 - Git 2.20+
 - `requests` library
 
+> [!NOTE]
+> **A SHA-256 repository needs Git 2.29+, not 2.20.** The floor above is the
+> ordinary SHA-1 case. SHA-256 support arrives with `object-format` negotiation
+> (Git 2.29), which the helper needs before it can name the format of the refs it
+> lists, and `gc` on a SHA-256 remote initialises its scratch repository with
+> `--object-format=sha256` for the same reason.
+
 ### Windows Installation
 1. Clone or download `git-remote-seafile`:
    ```powershell
@@ -459,7 +466,7 @@ git clone seafile://seafile.example.com/code/myproject
 ```
 
 > [!NOTE]
-> **Shallow and partial clones are detected, so they work.** The helper skips a redundant remote pack download when the requested tip commits already exist locally. That inference is only sound in a full clone — in a `--depth` or `--filter` clone the tip can be present while deeper trees and blobs are not — so the helper withholds the skip there and fetches the pack instead. `--depth 1` and `--filter=blob:none` are supported; they simply cost the download a full clone would have skipped.
+> **A `--depth` or `--filter` clone is silently a full clone.** The helper does not implement Git's `depth` or `filter` options. Git sends them anyway, the helper answers `unsupported`, and Git then falls back to a full clone *without a word* — so `git clone --depth 1 seafile://…` and `git clone --filter=blob:none seafile://…` cost exactly what a plain clone costs. Nothing is broken; nothing is smaller either. What the helper does handle is a repository that is shallow or partial for some *other* reason (cloned from a different remote, restored from a bundle): the fetch-skip optimisation reasons from tip-commit presence, which implies a complete object store only in a full clone, so the helper withholds the skip there and fetches the pack instead of leaving `git checkout` to report missing objects.
 
 > [!NOTE]
 > **Symlinks survive the repository, but not every Windows checkout.** A symlink is an ordinary tree entry — mode `120000`, with the link target stored as the blob's content — so packfiles carry it verbatim and a clone on Linux or macOS reproduces real links. Windows is the exception: unless `core.symlinks` is enabled (Developer Mode, or an elevated process), Git checks a link out as a **regular text file whose contents are the target path**. The repository is unaffected and `git status` stays clean, because Git knows the entry is a link; only that working tree differs, and a clone on a symlink-capable machine gets the links back. Nothing in the helper needs to special-case this — there is no symlink code in it, because a packfile never had a link to preserve.

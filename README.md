@@ -224,7 +224,7 @@ working tree.
 ```bash
 python tools/seafile_doctor.py report    # everything below, in one pass
 python tools/seafile_doctor.py libs      # which libraries are synced, and where
-python tools/seafile_doctor.py where ~/Documents/code/app   # is this inside a synced library? (exit 1 = no)
+python tools/seafile_doctor.py where ~/Documents/code/app   # is this inside a synced library? (exit 1 = no, exit 2 = could not check)
 python tools/seafile_doctor.py errors    # the client's sync-error table, decoded
 python tools/seafile_doctor.py conflicts # the *SFConflict* residue, by month
 python tools/seafile_doctor.py churn     # re-commit / upload cycles per day
