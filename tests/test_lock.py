@@ -15,9 +15,11 @@ from git_remote_seafile.config import RemoteConfig
 from git_remote_seafile.lock import (
     LEASE_HELD,
     LEASE_LOST,
+    LEASE_PREEMPTED,
     LEASE_UNKNOWN,
     RemoteLock,
     RepositoryLockedError,
+    _queue_key,
 )
 
 LEGACY_LOCK = "/path/.git-lock.json"
@@ -132,9 +134,10 @@ class TestConcurrencyAndLocking(unittest.TestCase):
         lock = RemoteLock(mock_client, "repo1", "/path", timeout=5, lease=60, settle=0)
         with lock:
             self.assertTrue(lock.acquired)
-            # Exactly one artifact is written: the ticket. The v0.1-v0.6
-            # legacy .git-lock.json mirror is gone.
-            self.assertEqual(mock_client.upload_file.call_count, 1)
+            # Two writes, and both are the ticket: the upload that enters the
+            # queue (unmarked) and the rewrite that marks it as the granted
+            # holder.  The v0.1-v0.6 legacy .git-lock.json mirror is gone.
+            self.assertEqual(mock_client.upload_file.call_count, 2)
         self.assertFalse(lock.acquired)
         mock_client.delete_entry.assert_called_once_with(
             "repo1", f"/path/.git-lock.d/{lock._nonce}.json"
@@ -985,6 +988,159 @@ class TestLockSettlementWindow(unittest.TestCase):
         self.assertEqual(store.listings, 1)
 
 
+class TestHoldingMarkerOutranksTheServerTimeEstimate(unittest.TestCase):
+    """A1: a granted lock must not be preempted by a later arrival's clock.
+
+    ``order_ts`` is a client-side *estimate* of server time -- the local clock
+    plus the offset implied by the ``Date`` header, whose one-second resolution
+    means two clients routinely disagree by a fraction of a second.  Ordering
+    the whole queue on it made that estimate the thing that decides who holds
+    the lock: a newcomer whose estimate came out half a second behind an active
+    holder's sorted ahead of it and acquired the lock while the holder was
+    still pushing, with its own ticket intact and unexpired.  Reading our own
+    ticket back could not detect that -- it is still ours.
+
+    The fix is a marker.  The winner publishes ``holding: true`` on its ticket,
+    and the queue sorts granted holders ahead of every ticket that has merely
+    asked, so "estimated an earlier time" no longer outranks "was granted".
+    """
+
+    def test_a_newcomer_with_an_earlier_estimate_cannot_preempt_the_holder(self):
+        store = _SharedLockStore()
+        a = RemoteLock(store.client("token-A"), "repo1", "/path", timeout=5, lease=60, settle=0)
+        a.acquire()
+        self.assertTrue(a.acquired)
+
+        b = RemoteLock(store.client("token-B"), "repo1", "/path", timeout=0, lease=60, settle=0)
+        # Half a second behind is well inside what the one-second Date header
+        # can produce, and it is enough to have won the queue before the fix.
+        with patch.object(b, "_get_server_time", return_value=a._order_ts - 0.5):
+            with patch("sys.stderr", io.StringIO()):
+                with self.assertRaises(RepositoryLockedError) as ctx:
+                    b.acquire()
+
+        self.assertIn("locked by", str(ctx.exception))
+        # And A, mid-push throughout, is never told it lost the lock it holds.
+        with patch("sys.stderr", io.StringIO()):
+            self.assertTrue(a.verify_ownership())
+        self.assertEqual(a.ownership_state(), LEASE_HELD)
+
+    def test_the_winner_publishes_the_marker_and_every_renewal_keeps_it(self):
+        """The renewal trap: renewal rewrites the whole ticket body.
+
+        The initial upload, the post-win rewrite and every renewal each used to
+        build their own copy of the ticket dict.  Adding the marker to one of
+        them and not the others drops it on the first renewal -- and the ticket
+        still looks perfectly well-formed, so nothing notices.
+        """
+        store = _SharedLockStore()
+        a = RemoteLock(store.client("token-A"), "repo1", "/path", timeout=5, lease=60, settle=0)
+        a.acquire()
+
+        ticket_path = f"/path/.git-lock.d/{a._nonce}.json"
+        first = json.loads(store.files[ticket_path])
+        self.assertTrue(first["holding"], "the granted holder must mark its ticket")
+        self.assertGreater(first["held_since"], 0)
+
+        self.assertTrue(a.maybe_renew(0))  # interval 0: force the renewal path now
+        after = json.loads(store.files[ticket_path])
+        self.assertTrue(
+            after["holding"],
+            "a renewal that dropped the marker would un-grant a lock we still hold",
+        )
+
+    def test_verify_ownership_reports_preemption_while_our_ticket_is_alive(self):
+        """The failure reading our own ticket back cannot see.
+
+        This is the shape A1 produces once the settlement window misses a
+        ticket: two clients both marked holding, each with a live ticket.  Our
+        ticket reads back as ours, so renew() would happily renew it -- which
+        is exactly why the fence has to look at the queue, and why the state is
+        PREEMPTED rather than LOST: nothing was reaped, we were overtaken.
+        """
+        store = _SharedLockStore()
+        a = RemoteLock(store.client("token-A"), "repo1", "/path", timeout=5, lease=60, settle=0)
+        a.acquire()
+
+        store.put_ticket("/path/.git-lock.d/bob-nonce.json", {
+            "owner": "bob", "machine": "nodeB", "nonce": "bob-nonce",
+            "timestamp": time.time(), "order_ts": a._order_ts - 1.0,
+            "lease": 60, "pid": 4242, "holding": True,
+        })
+
+        err = io.StringIO()
+        with patch("sys.stderr", err):
+            self.assertFalse(a.verify_ownership())
+        self.assertEqual(a.ownership_state(), LEASE_PREEMPTED)
+        self.assertIn("preempted by 'bob'", err.getvalue())
+        # A's own ticket is untouched -- a verification step never reaps.
+        self.assertIn(f"/path/.git-lock.d/{a._nonce}.json", store.files)
+
+    def test_a_crashed_holder_is_still_reaped_despite_the_marker(self):
+        """The marker must not turn a dead holder into a permanent lock.
+
+        A crashed holder's ticket keeps ``holding: true`` until its lease runs
+        out, exactly as an unmarked one did, so reclaim is unchanged: expired
+        lease, or a dead PID on this machine.
+        """
+        store = _SharedLockStore()
+        now = time.time()
+        store.put_ticket("/path/.git-lock.d/dead-nonce.json", {
+            "owner": "crashed", "machine": "nodeZ", "nonce": "dead-nonce",
+            "timestamp": now - 600, "order_ts": now - 600,
+            "lease": 60, "pid": 424242, "holding": True,
+        })
+
+        lock = RemoteLock(store.client("token123"), "repo1", "/path", timeout=0, lease=60, settle=0)
+        with patch("sys.stderr", io.StringIO()):
+            lock.acquire()
+
+        self.assertTrue(lock.acquired)
+        self.assertNotIn("/path/.git-lock.d/dead-nonce.json", store.files)
+
+    def test_the_queue_scan_is_rate_limited_but_the_lease_is_not(self):
+        """Fencing once per deleted ref must not list the queue once per ref.
+
+        A `push --delete` of forty refs fences forty times, and each fence used
+        to be a ticket read plus a ticket rewrite.  The queue scan is the extra
+        read, so it is cached for a window; the lease is still re-proven on
+        every call, because a *reaped* ticket has to be caught immediately
+        rather than up to a window later.
+        """
+        store = _LateCommitStore()
+        client = store.client("token123")
+        lock = RemoteLock(client, "repo1", "/path", timeout=5, lease=60, settle=0)
+        lock.acquire()
+
+        store.listings = 0
+        uploads_before = client.upload_file.call_count
+        with patch("sys.stderr", io.StringIO()):
+            self.assertTrue(lock.verify_ownership())
+            self.assertTrue(lock.verify_ownership())
+
+        self.assertEqual(store.listings, 1, "the second fence reused the cached scan")
+        self.assertEqual(
+            client.upload_file.call_count, uploads_before + 2,
+            "the lease must be re-proven on every call, not once per window",
+        )
+
+    def test_the_sort_key_puts_a_granted_holder_ahead_of_an_earlier_estimate(self):
+        """The marker is the *primary* key, not one more element of the tuple.
+
+        If it were appended after ``order_ts`` it would only break ties, and a
+        holder with a later estimate would still lose -- which is the bug.
+        """
+        holder = {"holding": True, "_order_key": (200.0, 0.0, "zulu")}
+        newcomer = {"holding": False, "_order_key": (100.0, 0.0, "alpha")}
+        self.assertIs(min([holder, newcomer], key=_queue_key), holder)
+
+        # Among peers, and for tickets from before the marker existed, the FIFO
+        # tuple still decides, so the order stays total and identical for all.
+        first = {"_order_key": (100.0, 0.0, "alpha")}
+        second = {"_order_key": (200.0, 0.0, "zulu")}
+        self.assertIs(min([second, first], key=_queue_key), first)
+
+
 class _FlakyScanStore(_SharedLockStore):
     """A store whose directory listing fails on selected calls.
 
@@ -1023,12 +1179,12 @@ class TestLockAcquireFailurePaths(unittest.TestCase):
         single dropped connection was fatal to the whole push.
         """
         store = _SharedLockStore()
-        attempts: list[str] = []
+        attempts: list[bool] = []
         real_upload = store.upload
 
         def flaky_upload(repo_id, parent, filename, content, replace=True,
                          progress_callback=None):
-            attempts.append(filename)
+            attempts.append(json.loads(content)["holding"])
             if len(attempts) == 1:
                 raise OSError("connection reset by peer")
             return real_upload(repo_id, parent, filename, content, replace=replace)
@@ -1041,7 +1197,14 @@ class TestLockAcquireFailurePaths(unittest.TestCase):
             lock.acquire()
 
         self.assertTrue(lock.acquired)
-        self.assertEqual(len(attempts), 2, "the failed upload must have been retried")
+        # Three writes, and the marker tells them apart: the entry upload that
+        # was dropped, the retry that landed, and only then the rewrite that
+        # publishes the grant.  A marker written on the *first* attempt would
+        # claim the lock before the queue had agreed we won.
+        self.assertEqual(
+            attempts, [False, False, True],
+            "the failed entry upload must be retried before the marker is published",
+        )
         self.assertIn(f"/path/.git-lock.d/{lock._nonce}.json", store.files)
 
     def test_an_upload_failure_that_outlasts_the_timeout_fails_closed(self):

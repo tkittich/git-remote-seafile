@@ -90,6 +90,25 @@ def compact_repository(
         def maybe_renew() -> None:
             lock.maybe_renew(20.0)
 
+        def lock_still_ours() -> bool:
+            """Whether we can still prove we hold the lock (N-4).
+
+            gc prefers verify_ownership() and falls back to renew() for a lock
+            object supplied by a caller that predates ownership fencing.  A lock
+            that offers no way to ask at all is treated as "do not block": the
+            fence exists to stop a *known* loss of ownership, and a caller that
+            never supplied a fenced lock is not evidence of one.
+            """
+            if hasattr(lock, "verify_ownership"):
+                return bool(lock.verify_ownership())
+            if hasattr(lock, "renew"):
+                return bool(lock.renew())
+            return True
+
+        def ownership_reason() -> str:
+            state = lock.ownership_state() if hasattr(lock, "ownership_state") else ""
+            return describe_ownership_failure(state)
+
         def on_upload_progress(transferred: int, total: int) -> None:
             maybe_renew()
 
@@ -327,41 +346,102 @@ def compact_repository(
                         repo_id, pack_dir, n_idx.name, n_idx, replace=True, progress_callback=on_upload_progress
                     )
 
+            # Fencing check (N-4): verify lock ownership before touching anything
+            # else.  It comes before the upload verification below so that a
+            # lost lease is reported as a lost lease -- "we are not allowed to
+            # finish this" is a different problem from "the bytes are not
+            # there", and they send the user to different places.
+            if not lock_still_ours():
+                raise RuntimeError(
+                    f"refusing to delete obsolete packfiles: {ownership_reason()}. "
+                    "Compacted packfiles were uploaded, but old packs were left untouched to prevent data corruption."
+                )
+
+            # 6b. Prove the consolidated packfiles are actually there, and
+            # whole, before a single old pack is deleted.  This is the step that
+            # deserves the most paranoia in the whole tool: what gc deletes are
+            # the packfiles the repository is *currently* served from, and an
+            # upload that returned True is not evidence that the bytes are on
+            # the server -- a truncated write, a quota error that a proxy
+            # answered 2xx, or an .idx that never landed all look identical from
+            # here.  Comparing the remote listing's sizes against the local
+            # files is the cheapest check that catches all three, and it fails
+            # closed: an upload that cannot be verified leaves the old packs
+            # alone, so the repository keeps the copy it already had.
+            expected_sizes: dict[str, int] = {}
+            for np in new_packs:
+                expected_sizes[np.name] = np.stat().st_size
+                n_idx = np.with_suffix(".idx")
+                if n_idx.is_file():
+                    expected_sizes[n_idx.name] = n_idx.stat().st_size
+
+            try:
+                verified_listing = client.list_dir(repo_id, pack_dir)
+            except Exception as ex:
+                raise RuntimeError(
+                    "refusing to delete obsolete packfiles: could not list the remote pack "
+                    f"directory to verify the upload ({ex}). Nothing was deleted."
+                ) from ex
+            remote_sizes: dict[Any, Any] = {
+                e.get("name"): e.get("size")
+                for e in verified_listing
+                if isinstance(e, dict) and e.get("name")
+            }
+            unverified: list[str] = []
+            # Sorted by str() because the keys are normally names but a caller
+            # may hand us path-like objects; the order is only for a stable
+            # message.
+            for name, expected in sorted(expected_sizes.items(), key=lambda kv: str(kv[0])):
+                try:
+                    got = int(remote_sizes.get(name))
+                except (TypeError, ValueError):
+                    unverified.append(f"{name} is not listed on the remote with a readable size")
+                    continue
+                if got != expected:
+                    unverified.append(f"{name} is {got} bytes on the remote but {expected} locally")
+            if unverified:
+                raise RuntimeError(
+                    "refusing to delete obsolete packfiles: the consolidated packfiles could not "
+                    "be verified on the remote (" + "; ".join(unverified) + "). The old packfiles "
+                    "were left untouched -- until the new ones are proven present, they are still "
+                    "the repository's only complete copy."
+                )
+
             # 7. Delete obsolete old packs from Seafile
             if verbose:
                 sys.stderr.write("  Cleaning up obsolete remote packfiles...\n")
 
-            # Fencing check (N-4): verify lock ownership before deleting any remote packs
-            lock_valid = False
-            if hasattr(lock, "verify_ownership"):
-                lock_valid = lock.verify_ownership()
-            elif hasattr(lock, "renew"):
-                lock_valid = lock.renew()
-            else:
-                lock_valid = True
-
-            if not lock_valid:
-                state = lock.ownership_state() if hasattr(lock, "ownership_state") else ""
-                raise RuntimeError(
-                    f"refusing to delete obsolete packfiles: {describe_ownership_failure(state)}. "
-                    "Compacted packfiles were uploaded, but old packs were left untouched to prevent data corruption."
-                )
-
             deleted_count = 0
             failed_deletions: list[str] = []
+            cleanup_stopped: str = ""
             for old_p in downloaded_packs:
-                maybe_renew()
-                if old_p not in new_pack_names:
-                    old_idx = old_p.removesuffix(".pack") + ".idx"
-                    if client.delete_entry(repo_id, f"{pack_dir}/{old_p}"):
-                        deleted_count += 1
-                    else:
-                        failed_deletions.append(old_p)
-                    if not client.delete_entry(repo_id, f"{pack_dir}/{old_idx}"):
-                        # An orphaned .idx is invisible to fetch (which keys on
-                        # .pack names) but is clutter; name it so a later gc or
-                        # a manual cleanup can remove it.
-                        failed_deletions.append(old_idx)
+                if old_p in new_pack_names:
+                    continue
+                # Fence *every* deletion, not just the first.  maybe_renew()
+                # cannot stand in here: its False also means "the renewal
+                # interval has not elapsed", which is what most of its calls
+                # return, so a lease lost mid-loop would read as an ordinary
+                # no-op and the loop would keep deleting packfiles inside
+                # another client's push.  verify_ownership() answers exactly one
+                # question, and it also renews, so the lease cannot lapse while
+                # the loop runs.
+                if not lock_still_ours():
+                    cleanup_stopped = (
+                        f"stopped deleting obsolete packfiles: {ownership_reason()}. "
+                        "The consolidated packfiles are verified and in place, so nothing was lost; "
+                        "the leftovers are unreferenced and a later gc will remove them."
+                    )
+                    break
+                old_idx = old_p.removesuffix(".pack") + ".idx"
+                if client.delete_entry(repo_id, f"{pack_dir}/{old_p}"):
+                    deleted_count += 1
+                else:
+                    failed_deletions.append(old_p)
+                if not client.delete_entry(repo_id, f"{pack_dir}/{old_idx}"):
+                    # An orphaned .idx is invisible to fetch (which keys on
+                    # .pack names) but is clutter; name it so a later gc or
+                    # a manual cleanup can remove it.
+                    failed_deletions.append(old_idx)
 
             new_total_bytes = sum(np.stat().st_size for np in new_packs)
             # Signed on purpose: compaction can grow a repository, and the
@@ -382,6 +462,13 @@ def compact_repository(
                     )
                 sys.stderr.flush()
 
+            if cleanup_stopped:
+                # Outside the verbose block deliberately: a compaction that
+                # stopped short of finishing its cleanup is not a detail worth
+                # mentioning only when the user asked for detail.
+                sys.stderr.write(f"Warning: {cleanup_stopped}\n")
+                sys.stderr.flush()
+
             return {
                 "status": "ok",
                 "old_packs": len(old_packs),
@@ -389,4 +476,5 @@ def compact_repository(
                 "saved_kb": saved_kb,
                 "deleted_packs": deleted_count,
                 "deletion_failures": failed_deletions,
+                "cleanup_stopped": cleanup_stopped,
             }

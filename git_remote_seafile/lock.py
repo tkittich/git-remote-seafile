@@ -28,15 +28,56 @@ class RepositoryLockedError(Exception):
 LEASE_HELD = "held"
 LEASE_LOST = "lost"
 LEASE_UNKNOWN = "unknown"
+#: Our own ticket is still in the queue and still ours, but another active
+#: ticket has been granted the lock ahead of it.  Kept distinct from LEASE_LOST
+#: on purpose: LOST means our ticket is *gone*, so the user should go looking
+#: for the client that reaped it, while PREEMPTED means our ticket is still
+#: there and the queue says someone else holds -- an ordering failure, not a
+#: lapse, and the two send an operator to different places.
+LEASE_PREEMPTED = "preempted"
 
 
 def describe_ownership_failure(state: str) -> str:
     """Phrase a failed ownership re-check in terms of what actually happened."""
     if state == LEASE_LOST:
         return "another client took over the lock"
+    if state == LEASE_PREEMPTED:
+        return "another client was granted the lock while this ticket was still held"
     if state == LEASE_UNKNOWN:
         return "the lock ticket could not be read or rewritten, so ownership is unproven"
     return "lock ownership could not be verified"
+
+
+#: How long a queue scan stays good for the fence in verify_ownership().
+#:
+#: The fence runs before *every* destructive step, and the delete path calls it
+#: once per deleted ref, so re-listing the queue on each call turns an N-ref
+#: `push --delete` into N listings.  Rate-limiting the scan costs the fence
+#: nothing that matters: the takeover it exists to catch is one where another
+#: client holds while our own ticket is still alive, and that condition lasts
+#: as long as the other client holds it -- a scan from under a second ago
+#: answers it.  The lease itself is still re-proven on every single call, since
+#: renew() reads and rewrites the ticket; a ticket that has been *reaped* is
+#: therefore caught immediately rather than once per window.
+_FENCE_REUSE_SECONDS = 1.0
+
+
+def _queue_key(ticket: dict[str, Any]) -> tuple:
+    """Sort key for the ticket queue: granted holders first, then FIFO.
+
+    The holder rank has to be the *primary* key rather than one more element of
+    the FIFO tuple.  ``order_ts`` is a client-side estimate of server time
+    (local clock + the median offset implied by the ``Date`` header, which has
+    one-second resolution), which is all an expiry check needs -- approximate
+    shared time -- but it cannot decide who *holds*, because two estimates half
+    a second apart are indistinguishable from a genuinely earlier arrival.  A
+    newcomer whose estimate came out behind an active holder's therefore sorted
+    ahead of it and acquired the lock while the holder was mid-push.
+
+    Among tickets at the same rank the FIFO tuple still decides, so the order
+    stays total and every client sorts the same set the same way.
+    """
+    return (0 if ticket.get("holding") else 1, *ticket.get("_order_key", (0.0, 0.0, "")))
 
 
 def _f(val: Any) -> float:
@@ -186,6 +227,15 @@ class RemoteLock:
         # renewal rewrites the ticket file, which bumps its mtime, so the queue
         # must not be ordered on mtime for tickets that carry this field.
         self._order_ts: float = 0.0
+        #: True once acquire() has been granted the lock and published the
+        #: ``holding`` marker on our ticket.  Every renewal preserves it: the
+        #: renewal rewrites the ticket body, so a marker dropped there would
+        #: disappear exactly when the fence needs it.
+        self._holding: bool = False
+        #: Cache for verify_ownership()'s queue scan, so a delete loop that
+        #: fences once per ref does not list the queue once per ref.
+        self._preemptor_cached: dict[str, Any] | None = None
+        self._preemptor_checked_at: float | None = None
 
     def _owner_id(self) -> str:
         """A stable, non-secret identifier for the credentials in use."""
@@ -199,8 +249,42 @@ class RemoteLock:
             return self.client.get_server_time()
         return time.time()
 
-    def _is_lock_active(self, info: dict[str, Any], now: float) -> bool:
-        """Check if lock payload is active. Returns False if expired or dead local PID."""
+    def _ticket_payload(self, now: float, holding: bool) -> dict[str, Any]:
+        """The body of our lock ticket.
+
+        One builder for all three writers -- the upload that enters the queue,
+        the rewrite that marks the winner, and every renewal.  They each used to
+        carry their own copy of this dict, and that is exactly how a field can
+        be added to the winning ticket and then silently dropped by the next
+        renewal: the marker would be gone by the time the fence read it, and no
+        single-shot test would notice, because the ticket still looks perfectly
+        well-formed.
+        """
+        owner, machine = (
+            self._identity if self._identity else (self._owner_id(), socket.gethostname())
+        )
+        return {
+            "owner": owner,
+            "machine": machine,
+            "machine_id": _LOCAL_MACHINE_ID,
+            "nonce": self._nonce,
+            "timestamp": now,
+            "order_ts": self._order_ts,
+            "lease": self.lease,
+            "pid": os.getpid(),
+            "holding": holding,
+            "held_since": now if holding else 0.0,
+        }
+
+    def _is_lock_active(self, info: dict[str, Any], now: float, quiet: bool = False) -> bool:
+        """Check if lock payload is active. Returns False if expired or dead local PID.
+
+        ``quiet`` suppresses the dead-PID reclaim notice.  That message belongs
+        to *acquire*, which is about to take the lock over and should say so;
+        verify_ownership() only asks whether a ticket still counts, and it asks
+        once per destructive step, so announcing a reclaim there would print
+        the same line over and over for a decision nobody is making.
+        """
         lock_machine = info.get("machine", "")
         lock_machine_id = info.get("machine_id")
         lock_pid = info.get("pid")
@@ -218,10 +302,11 @@ class RemoteLock:
 
         if same_machine and lock_pid_int > 0:
             if not _is_pid_alive(lock_pid_int):
-                sys.stderr.write(
-                    f"Reclaiming stale lock from dead local process (PID {lock_pid_int}).\n"
-                )
-                sys.stderr.flush()
+                if not quiet:
+                    sys.stderr.write(
+                        f"Reclaiming stale lock from dead local process (PID {lock_pid_int}).\n"
+                    )
+                    sys.stderr.flush()
                 return False
 
         try:
@@ -334,7 +419,7 @@ class RemoteLock:
                 my_ticket["_order_key"] = (int(now), 0.0, nonce)
             my_ticket["_path"] = f"{self.lock_dir}/{nonce}.json"
             tickets.append(my_ticket)
-        tickets.sort(key=lambda t: t.get("_order_key", (0, 0, "")))
+        tickets.sort(key=_queue_key)
         return tickets
 
     def acquire(self) -> None:
@@ -362,17 +447,11 @@ class RemoteLock:
             while True:
                 now = self._get_server_time()
 
-                # 1. Upload ticket
-                lock_payload = {
-                    "owner": owner,
-                    "machine": hostname,
-                    "machine_id": _LOCAL_MACHINE_ID,
-                    "nonce": nonce,
-                    "timestamp": now,
-                    "order_ts": self._order_ts,
-                    "lease": self.lease,
-                    "pid": os.getpid(),
-                }
+                # 1. Upload ticket.  We are not a holder yet: the marker is
+                # published only once the queue agrees we won (below), so that
+                # "holding" always means "granted" and never "asked".
+                self._holding = False
+                lock_payload = self._ticket_payload(now, holding=False)
                 payload_bytes = json.dumps(lock_payload).encode("utf-8")
                 try:
                     self.client.upload_file(
@@ -432,6 +511,37 @@ class RemoteLock:
                     winner = self._candidates(settled, lock_payload, nonce, now)[0]
 
                 if winner.get("nonce") == nonce:
+                    # Publish the holding marker before claiming anything.  This
+                    # is the fix for the ordering race: from here on the queue
+                    # sorts us ahead of every newcomer, because "was granted"
+                    # now outranks "estimated an earlier server time".  A
+                    # rewrite that fails leaves us unmarked, which is exactly
+                    # the pre-fix behaviour and no worse, so retry rather than
+                    # push with a marker no other client can see.
+                    try:
+                        self.client.upload_file(
+                            self.repo_id,
+                            self.lock_dir,
+                            f"{nonce}.json",
+                            json.dumps(self._ticket_payload(now, holding=True)).encode("utf-8"),
+                            replace=True,
+                        )
+                    except Exception as ex:
+                        if isinstance(ex, RepositoryLockedError):
+                            raise
+                        if time.monotonic() - start_time >= self.timeout:
+                            raise RepositoryLockedError(
+                                f"Failed to publish lock ownership marker: {ex}"
+                            ) from ex
+                        sys.stderr.write(
+                            f"Transient error publishing lock ownership marker ({ex}); retrying...\n"
+                        )
+                        sys.stderr.flush()
+                        time.sleep(2)
+                        continue
+                    self._holding = True
+                    self._preemptor_cached = None
+                    self._preemptor_checked_at = None
                     self.acquired = True
                     self._last_renewed = time.monotonic()
                     return
@@ -528,17 +638,11 @@ class RemoteLock:
             return LEASE_LOST
 
         now = self._get_server_time()
-        payload = {
-            "owner": self._identity[0] if self._identity else self._owner_id(),
-            "machine": self._identity[1] if self._identity else socket.gethostname(),
-            "machine_id": _LOCAL_MACHINE_ID,
-            "nonce": self._nonce,
-            "timestamp": now,
-            "order_ts": self._order_ts,
-            "lease": self.lease,
-            "pid": os.getpid(),
-        }
-        payload_bytes = json.dumps(payload).encode("utf-8")
+        # Built by the one builder, with `holding` carried through.  A renewal
+        # that rewrote this ticket without the marker would quietly un-grant the
+        # lock while we still hold it, and the next newcomer's scan would be
+        # free to take it.
+        payload_bytes = json.dumps(self._ticket_payload(now, holding=self._holding)).encode("utf-8")
         try:
             self.client.upload_file(
                 self.repo_id,
@@ -575,16 +679,88 @@ class RemoteLock:
             return self.renew()
         return False
 
+    def _queue_preemptor(self) -> dict[str, Any] | None:
+        """The ticket that has been granted the lock ahead of ours, if any.
+
+        Read-only: the queue is listed, but nothing here is reaped or rewritten.
+        A *verification* step that deleted a ticket would be doing acquisition's
+        job, and reaping from inside a push is how a fence turns into a second
+        way to lose a lock.
+
+        Only tickets that are still active count, so a holder that crashed
+        cannot fence anyone out: the next acquire() would reap that same ticket,
+        and a dead lease must not read as a live preemption.
+
+        The answer is cached for ``_FENCE_REUSE_SECONDS``; see that constant for
+        why the window costs the fence nothing that matters.
+        """
+        now_mono = time.monotonic()
+        if (
+            self._preemptor_checked_at is not None
+            and now_mono - self._preemptor_checked_at < _FENCE_REUSE_SECONDS
+        ):
+            return self._preemptor_cached
+
+        now = self._get_server_time()
+        tickets = self._scan_tickets(now, reap=False)
+        active = [t for t in tickets if self._is_lock_active(t, now, quiet=True)]
+        mine = next((t for t in active if t.get("nonce") == self._nonce), None)
+        if mine is None:
+            # Our ticket is gone, or its lease has run out.  Neither is an
+            # ordering failure and neither is something this scan can name: the
+            # lease read in renew() is the authority on both, and it reports
+            # LEASE_LOST for the first and re-takes the ticket for the second.
+            result = None
+        else:
+            first = min(active, key=_queue_key)
+            result = None if first.get("nonce") == self._nonce else first
+
+        self._preemptor_cached = result
+        self._preemptor_checked_at = now_mono
+        return result
+
     def verify_ownership(self) -> bool:
         """Verify that this process still actively holds the lock on the remote (N-4).
 
-        Renewal reads the ticket back before rewriting it, so a lease that
-        lapsed and was reaped by a new holder returns False here instead of
-        being resurrected.  Callers must fence destructive steps (gc pack
-        deletion, push ref writes) on this result; when it is False they should
-        read ownership_state() to tell a takeover from an unreadable ticket and
-        report the right one.
+        Two questions, and the second is the one a ticket read cannot answer.
+        Reading our own ticket back proves the *lease* is ours -- it is gone or
+        carries a foreign nonce once another client reaps it, so a lapsed lease
+        cannot be resurrected here.  It says nothing about whether some other
+        client has since been *granted* the lock: our ticket would still read
+        back as ours, intact and unexpired, while the queue had already given
+        the lock away.  So the queue is scanned too, and a ticket that sorts
+        ahead of ours fails this with LEASE_PREEMPTED.
+
+        Callers must fence destructive steps (gc pack deletion, push ref writes)
+        on this result; when it is False they should read ownership_state() to
+        tell the three cases apart -- a takeover, a preemption, or an unreadable
+        ticket -- and report the right one.
         """
+        if not self.acquired or not self._nonce:
+            self._last_ownership_state = LEASE_LOST
+            return False
+
+        try:
+            preemptor = self._queue_preemptor()
+        except Exception as ex:
+            # Fail closed, and as UNKNOWN rather than LOST: a queue we could not
+            # read proves nothing about who holds the lock.
+            self._last_ownership_state = LEASE_UNKNOWN
+            sys.stderr.write(
+                f"Warning: could not re-read the lock queue ({ex}); ownership unproven.\n"
+            )
+            sys.stderr.flush()
+            return False
+
+        if preemptor is not None:
+            self._last_ownership_state = LEASE_PREEMPTED
+            sys.stderr.write(
+                f"Warning: lock preempted by '{preemptor.get('owner', 'another user')}' on "
+                f"'{preemptor.get('machine', 'another machine')}'; not continuing.\n"
+            )
+            sys.stderr.flush()
+            return False
+
         return self.renew()
 
     def release(self) -> None:
@@ -597,6 +773,12 @@ class RemoteLock:
         if not self.acquired:
             return
         self.acquired = False
+        # Drop the grant with the ticket, and the cached scan with it: both
+        # describe a lock we no longer hold, and a later acquire() on this
+        # instance must not read a stale "no preemptor" answer.
+        self._holding = False
+        self._preemptor_cached = None
+        self._preemptor_checked_at = None
         if self._nonce:
             try:
                 self.client.delete_entry(self.repo_id, f"{self.lock_dir}/{self._nonce}.json")
@@ -613,6 +795,13 @@ class RemoteLock:
         and ``lock-status`` should say so rather than present a dead lock as a
         live one that happens to expire in 0 seconds.
 
+        A ticket that has been *granted* the lock (``holding``) outranks every
+        ticket that has merely asked for it, so the reported winner is the
+        client that actually holds it rather than whichever contender happens to
+        carry the earliest server-time estimate.  ``holding`` is reported too,
+        because "locked, but by a ticket that was never granted" is the shape of
+        a queue that needs ``--force``.
+
         A listing failure is reported as ``{"locked": None}`` rather than
         ``{"locked": False}``: the two send an operator to different places,
         and a transient server error silently reading as "UNLOCKED" is exactly
@@ -625,7 +814,7 @@ class RemoteLock:
         except Exception as ex:
             return {"locked": None, "error": str(ex)}
         if tickets:
-            tickets.sort(key=lambda t: t.get("_order_key", (0, 0, "")))
+            tickets.sort(key=_queue_key)
             active = [t for t in tickets if self._is_lock_active(t, now)]
             stale = not active
             winner = active[0] if active else tickets[0]
@@ -647,6 +836,7 @@ class RemoteLock:
                 "expires_in": max(0, int(exp - now)),
                 "expires_at": exp,
                 "stale": stale,
+                "holding": bool(winner.get("holding")),
             }
         return {"locked": False}
 

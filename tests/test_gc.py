@@ -9,6 +9,38 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from git_remote_seafile.gc import compact_repository, describe_size_delta
+from git_remote_seafile.lock import LEASE_LOST
+
+
+def _uploaded_size(content) -> int:
+    """The size a fixture should report for an upload argument.
+
+    gc hands ``upload_file`` the *path* of the consolidated packfile so the
+    client can stream it, while lock tickets arrive as bytes.  A fixture that
+    models a remote has to answer for both -- and it has to answer with a real
+    int.  gc compares the remote's reported size against the local file's
+    before it deletes anything, so a MagicMock leaking into that comparison
+    fails the check.  That is the guard working, not a fixture detail to paper
+    over.
+    """
+    try:
+        return content.stat().st_size
+    except AttributeError:
+        return len(content)
+
+
+def _pack_listing(base_entries: list[dict], uploaded_sizes: dict[str, int]) -> list[dict]:
+    """A pack-directory listing that shows what was actually uploaded.
+
+    gc verifies the consolidated packfile is present on the remote, at the size
+    it has locally, *before* it deletes the packfiles it replaces.  A fixture
+    whose listing is frozen at its pre-upload state therefore fails that check:
+    correctly, but for a reason that has nothing to do with what the test is
+    about.  Modelling the remote as "what was there, plus what we just sent it"
+    keeps the guard exercised instead of stubbed out.
+    """
+    return base_entries + [{"name": n, "size": s} for n, s in uploaded_sizes.items()]
+
 
 class TestRemoteGC(unittest.TestCase):
     def test_a_growth_is_not_reported_as_a_saving(self):
@@ -44,8 +76,13 @@ class TestRemoteGC(unittest.TestCase):
         # directory and the ref namespace, and it now refuses to run at all when
         # no refs can be read -- an empty ref listing is exactly what a failed
         # request looks like, and compacting on that guess destroys history.
+        # The pack branch also has to show what was uploaded: gc verifies the
+        # consolidated packfile landed, at the right size, before it deletes the
+        # packfiles it replaces.
+        uploaded_sizes: dict[str, int] = {}
         mock_client.list_dir.side_effect = lambda repo_id, path: (
-            [{"name": "pack-1.pack"}, {"name": "pack-2.pack"}] if "objects/pack" in path
+            _pack_listing([{"name": "pack-1.pack"}, {"name": "pack-2.pack"}], uploaded_sizes)
+            if "objects/pack" in path
             else [{"type": "file", "name": "main"}] if "refs/heads" in path
             else []
         )
@@ -60,6 +97,8 @@ class TestRemoteGC(unittest.TestCase):
             if ".git-lock" in filename or ".git-lock.d" in parent:
                 lock_payloads.append(content.decode("utf-8"))
                 ticket_paths.append(f"{parent.rstrip('/')}/{filename}")
+            else:
+                uploaded_sizes[filename] = _uploaded_size(content)
             return True
 
         mock_client.upload_file.side_effect = fake_upload
@@ -92,6 +131,10 @@ class TestRemoteGC(unittest.TestCase):
             p_idx.name = "pack-abcdef1234567890abcdef1234567890abcdef12.idx"
             p_idx.read_bytes.return_value = b"NEW-IDX"
             p_idx.stat.return_value.st_size = 7
+            # Neither staged pack derives an index of its own; the pair is
+            # spelled out, so gc verifies exactly two files landed.
+            p_pack.with_suffix.return_value.is_file.return_value = False
+            p_idx.with_suffix.return_value.is_file.return_value = False
 
             mock_glob.return_value = [p_pack, p_idx]
 
@@ -193,8 +236,10 @@ class TestRemoteGC(unittest.TestCase):
     @patch("subprocess.run")
     def test_gc_preserves_all_branches_and_tags(self, mock_subprocess):
         mock_client = MagicMock()
+        uploaded_sizes: dict[str, int] = {}
         mock_client.list_dir.side_effect = lambda repo_id, path: (
-            [{"name": "pack-1.pack"}, {"name": "pack-2.pack"}] if "objects/pack" in path
+            _pack_listing([{"name": "pack-1.pack"}, {"name": "pack-2.pack"}], uploaded_sizes)
+            if "objects/pack" in path
             else [{"type": "file", "name": "main"}, {"type": "file", "name": "dev"}, {"type": "file", "name": "feature"}] if "refs/heads" in path
             else [{"type": "file", "name": "v1.0"}, {"type": "file", "name": "v2.0"}] if "refs/tags" in path
             else []
@@ -207,6 +252,8 @@ class TestRemoteGC(unittest.TestCase):
         def fake_upload(repo_id, parent, filename, content, replace=True, progress_callback=None):
             if ".git-lock" in filename or ".git-lock.d" in parent:
                 lock_payloads.append(content.decode("utf-8"))
+            else:
+                uploaded_sizes[filename] = _uploaded_size(content)
             return True
 
         mock_client.upload_file.side_effect = fake_upload
@@ -230,6 +277,7 @@ class TestRemoteGC(unittest.TestCase):
             p_pack.name = "pack-sha123.pack"
             p_pack.read_bytes.return_value = b"NEW-PACK"
             p_pack.stat.return_value.st_size = 10
+            p_pack.with_suffix.return_value.is_file.return_value = False
             mock_glob.return_value = [p_pack]
 
             res = compact_repository(mock_client, "repo1", "/path", min_packs=2, verbose=False)
@@ -332,24 +380,30 @@ class TestGcRecoveryAndFencing(unittest.TestCase):
 
         The lock plumbing mirrors test_gc_compaction_flow: renew()'s takeover
         fence reads its own ticket back before rewriting it, so uploads of
-        lock files have to be replayable through get_file_text.
+        lock files have to be replayable through get_file_text.  Pack uploads
+        are recorded by name and size so the pack listing can show them -- gc
+        checks they landed before it deletes anything.
         """
         client = MagicMock()
+        client.get_file_bytes.return_value = body
+        client.delete_entry.return_value = delete_ok
+
+        lock_payloads: list[str] = []
+        uploaded_sizes: dict[str, int] = {}
+
         client.list_dir.side_effect = lambda repo_id, path: (
-            entries
+            _pack_listing(entries, uploaded_sizes)
             if "objects/pack" in path
             else [{"type": "file", "name": "main"}]
             if "refs/heads" in path
             else []
         )
-        client.get_file_bytes.return_value = body
-        client.delete_entry.return_value = delete_ok
-
-        lock_payloads: list[str] = []
 
         def fake_upload(repo_id, parent, filename, content, replace=True, progress_callback=None):
             if ".git-lock" in filename or ".git-lock.d" in parent:
                 lock_payloads.append(content.decode("utf-8"))
+            else:
+                uploaded_sizes[filename] = _uploaded_size(content)
             return True
 
         client.upload_file.side_effect = fake_upload
@@ -360,6 +414,11 @@ class TestGcRecoveryAndFencing(unittest.TestCase):
             return "sha-main"
 
         client.get_file_text.side_effect = fake_get_text
+        # Exposed so a test that overrides list_dir or upload_file can still
+        # keep the remote consistent with what was sent: gc verifies the
+        # consolidated packfile landed before it deletes anything, so a listing
+        # that forgets the upload fails that check.
+        client.uploaded_sizes = uploaded_sizes
         return client
 
     @staticmethod
@@ -379,11 +438,16 @@ class TestGcRecoveryAndFencing(unittest.TestCase):
 
         The new name has to differ from every old pack, or step 7 would find
         nothing to delete and the assertions about deletion would be vacuous.
+        No index is staged, so the pack is the only thing gc has to verify
+        landed before it deletes anything -- and ``with_suffix`` is pinned to
+        answer that honestly, because an auto-created MagicMock there would be
+        truthy and stage a phantom ``.idx`` under a name no listing can show.
         """
         p_pack = MagicMock()
         p_pack.name = "pack-abcdef1234567890abcdef1234567890abcdef12.pack"
         p_pack.read_bytes.return_value = b"NEW-PACK"
         p_pack.stat.return_value.st_size = 8
+        p_pack.with_suffix.return_value.is_file.return_value = False
         mock_glob.return_value = [p_pack]
 
     @staticmethod
@@ -568,6 +632,7 @@ class TestGcRecoveryAndFencing(unittest.TestCase):
             if progress_callback is not None:
                 upload_callbacks.append(1)
                 progress_callback(1, 2)  # drives gc's upload callback
+            client.uploaded_sizes[filename] = _uploaded_size(content)
             return True
 
         client.upload_file.side_effect = fake_upload
@@ -693,7 +758,7 @@ class TestGcRecoveryAndFencing(unittest.TestCase):
         """
         client = self._client([{"name": "pack-1.pack"}, {"name": "pack-2.pack"}])
         client.list_dir.side_effect = lambda repo_id, path: (
-            [{"name": "pack-1.pack"}, {"name": "pack-2.pack"}]
+            _pack_listing([{"name": "pack-1.pack"}, {"name": "pack-2.pack"}], client.uploaded_sizes)
             if "objects/pack" in path
             else [{"type": "dir", "name": "heads"}]
             if path.endswith("/refs")
@@ -827,6 +892,221 @@ class TestGcRecoveryAndFencing(unittest.TestCase):
         self.assertTrue(pack_calls, "no pack was verified or indexed")
         for call in pack_calls:
             self.assertIn("-C", call.args[0])
+
+
+class _FencedOnceLock:
+    """A lock that proves ownership once, then reports it lost.
+
+    gc fences before the upload verification and again before every deletion.
+    This models the *second* call failing, which is the case that used to go
+    unnoticed: the delete loop ignored its renewal result, so a lease lost
+    mid-cleanup kept deleting packfiles inside another client's push.
+    """
+
+    def __init__(self, *args, **kwargs):
+        self.calls = 0
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def maybe_renew(self, _interval):
+        pass
+
+    def verify_ownership(self):
+        self.calls += 1
+        return self.calls == 1
+
+    def ownership_state(self):
+        return LEASE_LOST
+
+
+class TestGcVerifiesTheUploadBeforeDeletingAnything(unittest.TestCase):
+    """A5: the packs gc deletes are the ones the repository is served from.
+
+    The upload returning True is not evidence that the bytes reached the
+    server.  A truncated write, a quota error a proxy answered 2xx, or an .idx
+    that never landed all look exactly like a success from here, and what gc
+    would then do is delete the only complete copy of the repository.  So the
+    consolidated packfiles have to be *proven* present -- listed, at the size
+    they have locally -- before a single old pack goes.
+    """
+
+    _NEW_PACK = "pack-abcdef1234567890abcdef1234567890abcdef12.pack"
+
+    def _client_with_listing(self, base_entries):
+        """A client whose pack listing grows to include what it was sent.
+
+        gc reads the pack directory twice -- once to discover what is there,
+        and again to prove the consolidated packfile landed -- so a listing
+        frozen at either state models the wrong remote.  This one starts from
+        ``base_entries`` and adds each upload as it happens, and
+        ``remote_size_override`` describes a remote that stored a file *wrong*:
+        the size it claims is the size gc has to trust.
+        """
+        client = MagicMock()
+        client.get_file_bytes.return_value = b"PACK-DATA"
+        client.delete_entry.return_value = True
+        #: name -> the size the remote will claim, or None for "never landed".
+        client.remote_size_override = {}
+        uploaded_sizes: dict[str, int] = {}
+        lock_payloads: list[str] = []
+
+        def list_dir(repo_id, path):
+            if "objects/pack" in path:
+                entries = list(base_entries)
+                for name, size in uploaded_sizes.items():
+                    claimed = client.remote_size_override.get(name, size)
+                    if claimed is None:
+                        continue  # the write never landed, so it is not listed
+                    entries.append({"name": name, "size": claimed})
+                return entries
+            if "refs/heads" in path:
+                return [{"type": "file", "name": "main"}]
+            return []
+
+        client.list_dir.side_effect = list_dir
+
+        def fake_upload(repo_id, parent, filename, content, replace=True, progress_callback=None):
+            if ".git-lock" in filename or ".git-lock.d" in parent:
+                lock_payloads.append(content.decode("utf-8"))
+            else:
+                uploaded_sizes[filename] = _uploaded_size(content)
+            return True
+
+        client.upload_file.side_effect = fake_upload
+
+        def fake_get_text(repo_id, path):
+            # Ref files carry a SHA; the lock plumbing has to replay its own
+            # ticket so renew()'s takeover fence can read it back.
+            if ".git-lock" in path:
+                return lock_payloads[-1] if lock_payloads else None
+            return "sha-main"
+
+        client.get_file_text.side_effect = fake_get_text
+        return client
+
+    @staticmethod
+    def _deleted_paths(client):
+        """Pack paths the run tried to delete, ignoring the lock's own ticket."""
+        return [
+            c.args[1] for c in client.delete_entry.call_args_list
+            if len(c.args) > 1 and ".git-lock" not in c.args[1]
+        ]
+
+    @staticmethod
+    def _subprocess_fake():
+        """A no-op git: these tests are about the checks, not the repacking."""
+
+        def fake(cmd, **kwargs):
+            if "pack-objects" in cmd:
+                return MagicMock(returncode=0, stdout=b"abcdef1234567890abcdef1234567890abcdef12\n")
+            return MagicMock(returncode=0)
+
+        return fake
+
+    @staticmethod
+    def _staged_pack(mock_glob):
+        """The consolidated pack the scratch repack is supposed to have made."""
+        p_pack = MagicMock()
+        p_pack.name = TestGcVerifiesTheUploadBeforeDeletingAnything._NEW_PACK
+        p_pack.read_bytes.return_value = b"NEW-PACK"
+        p_pack.stat.return_value.st_size = 8
+        p_pack.with_suffix.return_value.is_file.return_value = False
+        mock_glob.return_value = [p_pack]
+
+    @patch("subprocess.run")
+    def test_a_truncated_upload_leaves_the_old_packs_alone(self, mock_subprocess):
+        """A pack that landed short must not count as landed.
+
+        The fixture uploads the pack in full and then reports it short on the
+        remote, which is what a write the server never finished looks like.
+        """
+        client = self._client_with_listing([{"name": "pack-1.pack"}, {"name": "pack-2.pack"}])
+        client.remote_size_override[self._NEW_PACK] = 3
+        mock_subprocess.side_effect = self._subprocess_fake()
+
+        with patch("pathlib.Path.glob") as mock_glob:
+            self._staged_pack(mock_glob)
+            with self.assertRaises(RuntimeError) as ctx:
+                compact_repository(client, "repo1", "/path", min_packs=2, verbose=False)
+
+        self.assertIn("could not be verified", str(ctx.exception))
+        self.assertIn("3 bytes on the remote but 8 locally", str(ctx.exception))
+        self.assertEqual(self._deleted_paths(client), [], "nothing may be deleted on an unverified upload")
+
+    @patch("subprocess.run")
+    def test_a_pack_absent_from_the_listing_leaves_the_old_packs_alone(self, mock_subprocess):
+        """The upload reported success and the file is simply not there."""
+        client = self._client_with_listing([{"name": "pack-1.pack"}, {"name": "pack-2.pack"}])
+        client.remote_size_override[self._NEW_PACK] = None
+        mock_subprocess.side_effect = self._subprocess_fake()
+
+        with patch("pathlib.Path.glob") as mock_glob:
+            self._staged_pack(mock_glob)
+            with self.assertRaises(RuntimeError) as ctx:
+                compact_repository(client, "repo1", "/path", min_packs=2, verbose=False)
+
+        self.assertIn("not listed on the remote with a readable size", str(ctx.exception))
+        self.assertEqual(self._deleted_paths(client), [], "nothing may be deleted on an unverified upload")
+
+    @patch("subprocess.run")
+    def test_a_listing_failure_during_verification_leaves_the_old_packs_alone(self, mock_subprocess):
+        """Cannot verify is not the same as verified, and must not be read as such."""
+        client = self._client_with_listing([{"name": "pack-1.pack"}, {"name": "pack-2.pack"}])
+        mock_subprocess.side_effect = self._subprocess_fake()
+
+        calls = {"n": 0}
+        real_list_dir = client.list_dir.side_effect
+
+        def flaky_list_dir(repo_id, path):
+            if "objects/pack" in path:
+                calls["n"] += 1
+                # The first read discovers the packs; the verification read is
+                # the one that fails.
+                if calls["n"] >= 2:
+                    raise RuntimeError("connection reset")
+            return real_list_dir(repo_id, path)
+
+        client.list_dir.side_effect = flaky_list_dir
+
+        with patch("pathlib.Path.glob") as mock_glob:
+            self._staged_pack(mock_glob)
+            with self.assertRaises(RuntimeError) as ctx:
+                compact_repository(client, "repo1", "/path", min_packs=2, verbose=False)
+
+        self.assertIn("could not list the remote pack directory", str(ctx.exception))
+        self.assertEqual(self._deleted_paths(client), [], "nothing may be deleted when the check cannot run")
+
+    @patch("subprocess.run")
+    def test_a_lease_lost_mid_cleanup_stops_deleting_and_says_so(self, mock_subprocess):
+        """The delete loop must fence every deletion, not just the first.
+
+        maybe_renew() cannot serve here -- its False also means "the renewal
+        interval has not elapsed", so a lost lease read as an ordinary no-op and
+        the loop kept deleting.  The consolidated packfiles are already verified
+        by this point, so the run stops short of finishing its cleanup rather
+        than failing: nothing is lost, and the leftovers are just clutter.
+        """
+        client = self._client_with_listing([
+            {"name": "pack-1.pack"}, {"name": "pack-2.pack"}, {"name": "pack-3.pack"},
+        ])
+        mock_subprocess.side_effect = self._subprocess_fake()
+        err = io.StringIO()
+
+        with patch("pathlib.Path.glob") as mock_glob, patch(
+            "git_remote_seafile.gc.RemoteLock", _FencedOnceLock
+        ), contextlib.redirect_stderr(err):
+            self._staged_pack(mock_glob)
+            res = compact_repository(client, "repo1", "/path", min_packs=2, verbose=False)
+
+        self.assertEqual(res["status"], "ok")
+        self.assertEqual(res["deleted_packs"], 0, "the lease was lost, so no pack may be deleted")
+        self.assertTrue(res["cleanup_stopped"])
+        self.assertIn("another client took over the lock", err.getvalue())
+        self.assertIn("stopped deleting obsolete packfiles", err.getvalue())
 
 
 

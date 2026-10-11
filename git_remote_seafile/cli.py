@@ -397,6 +397,13 @@ def main() -> int:
             if status.get("nonce"):
                 print(f"  Nonce    : {status.get('nonce')}")
             print(f"  Protocol : {status.get('protocol')}")
+            if not status.get("holding"):
+                # The grant marker is what stops a newcomer from preempting an
+                # active holder, so its absence is worth naming: either the
+                # winning ticket is from a client older than v0.8.4, or the
+                # queue is abandoned and needs --force.
+                print("  Granted  : not marked -- a pre-v0.8.4 ticket, or an "
+                      "abandoned queue that --force would clear")
             print(f"  Expires  : in {status.get('expires_in')}s")
             return 0
         except Exception as ex:
