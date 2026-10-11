@@ -170,11 +170,13 @@ def cmd_libs(args, ccnet):
 
 
 def cmd_where(args, ccnet):
-    """Exit 0 when the path is inside a synced library, 1 when it is not.
+    """Exit 0 when the path is inside a synced library, 1 when it is not, 2 when
+    that cannot be determined.
 
     A diagnostic answer is a result either way, but scripts gate on it -- and
     a "not synced" answer that exits 0 is indistinguishable from a successful
-    check of nothing.
+    check of nothing.  Exit 1 therefore means *checked*: it is a verified
+    negative, and 2 is the honest answer for a state nobody could read.
     """
     target = Path(args.path).resolve()
     _, libs, db_ok = load_libs(ccnet)
@@ -509,6 +511,9 @@ def main(argv=None):
     try:
         ccnet = ccnet_dir()
     except (SeafileClientNotFoundError, FileNotFoundError) as exc:
+        # No client at all.  That is a definite answer rather than an
+        # unverifiable one -- nothing can be inside a synced library -- so it
+        # stays exit 1, which is what `where` documents as "not inside".
         sys.stderr.write(f"Error: {exc}\n")
         return 1
     fn = {
@@ -523,7 +528,29 @@ def main(argv=None):
     for attr, default in (("limit", 10), ("days", 10)):
         if not hasattr(args, attr):
             setattr(args, attr, default)
-    return fn(args, ccnet)
+    try:
+        return fn(args, ccnet)
+    except (SeafileClientNotFoundError, FileNotFoundError) as exc:
+        # The client is installed but its data directory cannot be resolved --
+        # a `.ccnet` without a `seafile.ini`, most often, which `seafile_data`
+        # raises for.  That is not "the path is not inside a synced library";
+        # it is a state nobody checked, and `where` documents exit 1 as a
+        # *verified* negative for precisely that reason.  It used to escape as
+        # a traceback, which also exits 1, so a script gating on the code was
+        # told "safe" by a crash (REVIEW.sonnet.md B1).
+        sys.stderr.write(
+            f"Error: {exc}\n"
+            "The Seafile client is installed but its data directory could not be "
+            "resolved, so this could not be checked.\n"
+        )
+        return 2
+    except Exception as exc:
+        # Any other failure is still "could not check".  A traceback exits 1 as
+        # well, and 1 means "checked, and the answer is no" -- so the exit code
+        # must not depend on whether the failure was anticipated.  The exception
+        # type is named so the message still reads as a bug report.
+        sys.stderr.write(f"Error: {type(exc).__name__}: {exc}\n")
+        return 2
 
 
 if __name__ == "__main__":

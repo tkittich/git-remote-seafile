@@ -275,6 +275,31 @@ class SeafileClient:
             return time.time() + self._server_time_offset
         return time.time()
 
+    def _adopt_token(self, token: str | None, source: str) -> None:
+        """Take a token, warning if it is about to travel in the clear.
+
+        A Seafile token is a bearer credential: sent over plain HTTP, anything
+        on the network path can read it and use it.  The scheme is the user's
+        choice in the URL, so this warns rather than refuses -- but it warns on
+        every adoption, because the alternative is a credential silently
+        leaving the machine readable.
+
+        Loopback is exempt.  A Seafile desktop client on `http://localhost` is
+        not on a network path, and warning on every `git push` for those users
+        would train them to ignore the message.
+        """
+        self.token = token
+        if not token or not self.server_url.startswith("http://"):
+            return
+        host = (urlparse(self.server_url).hostname or "").lower()
+        if host == "localhost" or host == "::1" or host.startswith("127."):
+            return
+        sys.stderr.write(
+            f"Warning: {source} is being sent to {self.server_url} over plain HTTP, "
+            "where anything on the network path can read it. Use https:// instead.\n"
+        )
+        sys.stderr.flush()
+
     def _load_credentials(self, require_token: bool = True) -> None:
         """Load credentials from env vars, config file, or local Seafile client.
 
@@ -283,18 +308,30 @@ class SeafileClient:
         finds a server *and* a token, and raises if it cannot.
         """
         # 1. Environment variables
+        #
+        # A token is only ever sent to the server it was *declared* for.  A
+        # bare SEAFILE_TOKEN used to be adopted for whatever server the URL
+        # happened to name -- so `git clone seafile://somewhere.example/lib/path`,
+        # a command a user is far more likely to have been handed than to have
+        # written, silently posted the user's Seafile token to that host.  That
+        # is a confused deputy: the URL is attacker-chosen, the credential is
+        # not.  Scoping it costs an explicit SEAFILE_SERVER, and the message
+        # below names the omission rather than reporting "no credentials".
         env_server = os.environ.get("SEAFILE_SERVER")
         env_token = os.environ.get("SEAFILE_TOKEN")
         if env_server and (env_token or not require_token):
             if not self.server_url or normalize_netloc(env_server) == normalize_netloc(self.server_url):
                 self.server_url = env_server.rstrip("/")
-                self.token = env_token
+                self._adopt_token(env_token, "SEAFILE_TOKEN")
                 return
-        elif env_token and self.server_url:
-            self.token = env_token
-            return
 
         # 2. Config file (~/.git-seafile.json)
+        #
+        # Bound before the read so the failure message below can name a token
+        # that arrived without a server beside it, rather than treating the
+        # whole file as absent.
+        cfg_server: str | None = None
+        cfg_token: str | None = None
         config_path = Path.home() / ".git-seafile.json"
         if config_path.is_file():
             if os.name != "nt":
@@ -317,11 +354,8 @@ class SeafileClient:
                 if cfg_server and (cfg_token or not require_token):
                     if not self.server_url or normalize_netloc(cfg_server) == normalize_netloc(self.server_url):
                         self.server_url = cfg_server.rstrip("/")
-                        self.token = cfg_token
+                        self._adopt_token(cfg_token, f"the token in {config_path}")
                         return
-                elif cfg_token and self.server_url and not cfg_server:
-                    self.token = cfg_token
-                    return
             except Exception as ex:
                 # Not fatal -- accounts.db may still authenticate -- but silence
                 # here means a user who mistyped a token in this file gets a
@@ -371,25 +405,37 @@ class SeafileClient:
             if row and row[0] and (row[1] or not require_token):
                 if not self.server_url:
                     self.server_url = row[0].rstrip("/")
-                self.token = row[1]
+                self._adopt_token(row[1], "the token in the Seafile client's accounts.db")
                 if len(row) > 2 and row[2] and not self.username:
                     self.username = row[2]
                 return
 
         if not self.server_url or (require_token and not self.token):
             if self.server_url:
-                # A token exported for a *different* server is deliberately not
-                # sent here -- but silence about it reads as "no credentials
-                # exist", so say why the environment was skipped.
-                env_skipped = ""
-                if env_server and env_token and normalize_netloc(env_server) != normalize_netloc(self.server_url):
-                    env_skipped = (
-                        f" (SEAFILE_SERVER names {normalize_netloc(env_server)}, so "
-                        "SEAFILE_SERVER/SEAFILE_TOKEN were not used for this server; "
-                        "they are only sent to the server they name)"
+                # Every source that *looked* usable is named here.  A skipped
+                # token that is not mentioned reads as "no credentials exist",
+                # and the user goes hunting for one that is already set.
+                skipped: list[str] = []
+                if env_token and not env_server:
+                    skipped.append(
+                        "SEAFILE_TOKEN was set without SEAFILE_SERVER, so it was not used: "
+                        "a token is only sent to the server it names, and a URL may name "
+                        "any server. Set SEAFILE_SERVER to the server the token belongs to"
                     )
+                elif env_server and env_token and normalize_netloc(env_server) != normalize_netloc(self.server_url):
+                    skipped.append(
+                        f"SEAFILE_SERVER names {normalize_netloc(env_server)}, so "
+                        "SEAFILE_SERVER/SEAFILE_TOKEN were not used for this server; "
+                        "they are only sent to the server they name"
+                    )
+                if cfg_token and not cfg_server:
+                    skipped.append(
+                        f"{config_path} holds a token but no \"server\", so the token was "
+                        "not used: a token is only sent to the server it names"
+                    )
+                detail = " (" + "; ".join(skipped) + ")" if skipped else ""
                 raise SeafileAuthError(
-                    f"Could not find Seafile credentials for '{self.server_url}'{env_skipped}. "
+                    f"Could not find Seafile credentials for '{self.server_url}'{detail}. "
                     "Set SEAFILE_TOKEN or configure ~/.git-seafile.json"
                 )
             if require_token:

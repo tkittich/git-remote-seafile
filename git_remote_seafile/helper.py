@@ -39,6 +39,59 @@ from .git_util import (
 _ALLOWED_REF_PREFIXES = tuple(f"{ns}/" for ns in REF_NAMESPACES)
 
 
+def _flatten(text: object) -> str:
+    """Collapse a message onto a single line.
+
+    git reads the helper's stdout a line at a time.  An exception whose text
+    carries a newline -- a git stderr dump, a path with a CRLF in it -- would
+    otherwise be read as a second, arbitrary protocol line, which is how a
+    failed push turns into an invented one.
+    """
+    return str(text).replace("\r", " ").replace("\n", " ").strip()
+
+
+def _proto_error(dst: str, message: object) -> None:
+    """Report one failure to git as ``error <dst> <message>``.
+
+    Every error the helper emits goes through here, so the flattening above is
+    a property of the protocol layer rather than a step each call site is
+    trusted to remember.  It was not: six call sites open-coded
+    ``str(ex).replace(...)`` while the delete path emitted the raw exception,
+    and the documentation claimed a shared sanitizer existed.  Now one does.
+    """
+    sys.stdout.write(f"error {dst} {_flatten(message)}\n")
+
+
+def _destination_error(dst: str) -> str | None:
+    """Why ``dst`` is not a ref this helper may write, or ``None`` if it is.
+
+    Two checks, because they catch different things.  The prefix test keeps the
+    helper inside the namespaces it advertises.  ``is_valid_ref_name`` is git's
+    own rule, and applying it to *destinations* is new: it was already applied
+    to every ref the helper lists, so a name that could never be advertised
+    could still be written or deleted.
+
+    The middle check is the one with teeth.  ``refs/heads/`` and
+    ``refs/heads/a/`` satisfy the prefix test, and ``is_valid_ref_name`` says
+    nothing about a trailing slash -- like git-check-ref-format, it judges
+    components, not the separator.  But ``_full_path`` strips the slash and the
+    deletion path removes what remains, and a *directory* is a legal target for
+    ``delete_entry``.  So ``git push origin :refs/heads/`` deleted every branch
+    in the repository.  A destination must name a ref, not a namespace.
+    """
+    for prefix in _ALLOWED_REF_PREFIXES:
+        if dst.startswith(prefix):
+            name = dst[len(prefix):]
+            break
+    else:
+        return "refusing to push outside refs/heads and refs/tags"
+    if not name or name.endswith("/"):
+        return "refusing to push a ref name with an empty or trailing component"
+    if not is_valid_ref_name(dst):
+        return "refusing to push a name git would reject (git-check-ref-format)"
+    return None
+
+
 class RemoteHelper:
     """Implements Git remote-helper protocol over Seafile Web API."""
     remote_name: str = ""
@@ -250,12 +303,13 @@ class RemoteHelper:
                 # git itself never sends a spec without the src:dst colon; a
                 # hand-driven protocol can.  A ValueError here would kill the
                 # helper mid-protocol with no error line for git to read.
-                sys.stdout.write(f"error {clean_spec} invalid refspec (missing ':')\n")
+                _proto_error(clean_spec, "invalid refspec (missing ':')")
                 continue
             src, dst = clean_spec.split(":", 1)
 
-            if not dst.startswith(_ALLOWED_REF_PREFIXES):
-                sys.stdout.write(f"error {dst} refusing to push outside refs/heads and refs/tags\n")
+            problem = _destination_error(dst)
+            if problem:
+                _proto_error(dst, problem)
                 continue
 
             try:
@@ -266,23 +320,22 @@ class RemoteHelper:
 
                 local_sha = rev_parse(src)
                 if not local_sha:
-                    sys.stdout.write(f"error {dst} local ref does not exist\n")
+                    _proto_error(dst, "local ref does not exist")
                     continue
 
                 remote_sha = self.client.get_file_text(self.repo_id, self._full_path(dst))
                 if remote_sha and not force:
                     try:
                         if not is_ancestor(remote_sha, local_sha):
-                            sys.stdout.write(f"error {dst} non-fast-forward\n")
+                            _proto_error(dst, "non-fast-forward")
                             continue
                     except GitError:
-                        sys.stdout.write(f"error {dst} fetch first\n")
+                        _proto_error(dst, "fetch first")
                         continue
 
                 sys.stdout.write(f"ok {dst}\n")
             except Exception as ex:
-                err_line = str(ex).replace("\r", " ").replace("\n", " ").strip()
-                sys.stdout.write(f"error {dst} {err_line}\n")
+                _proto_error(dst, ex)
 
         sys.stdout.write("\n")
         sys.stdout.flush()
@@ -296,7 +349,7 @@ class RemoteHelper:
             first_line = str(safe_err).splitlines()[0]
             for spec in push_specs:
                 dst = spec.lstrip("+").split(":", 1)[1] if ":" in spec else spec
-                sys.stdout.write(f"error {dst} safety check failed: {first_line}\n")
+                _proto_error(dst, f"safety check failed: {first_line}")
             sys.stdout.write("\n")
             sys.stdout.flush()
             return
@@ -311,7 +364,6 @@ class RemoteHelper:
         # Set while the push lock is held, acted on after it is released.
         auto_gc_min_packs = 0
         auto_gc_pack_count = 0
-        allowed_ref_prefixes = _ALLOWED_REF_PREFIXES
         reported_specs: set[str] = set()
 
         # Load session config once and reuse it for the push lock below and the
@@ -331,15 +383,14 @@ class RemoteHelper:
                     if ":" not in clean_spec:
                         # See _push_dry_run: a malformed spec must produce a
                         # protocol error line, not a dead helper.
-                        sys.stdout.write(
-                            f"error {clean_spec} invalid refspec (missing ':')\n"
-                        )
+                        _proto_error(clean_spec, "invalid refspec (missing ':')")
                         reported_specs.add(clean_spec)
                         continue
                     src, dst = clean_spec.split(":", 1)
 
-                    if not dst.startswith(allowed_ref_prefixes):
-                        sys.stdout.write(f"error {dst} refusing to push outside refs/heads and refs/tags\n")
+                    problem = _destination_error(dst)
+                    if problem:
+                        _proto_error(dst, problem)
                         reported_specs.add(dst)
                         continue
 
@@ -347,8 +398,29 @@ class RemoteHelper:
                     if not src:
                         ref_file = self._full_path(dst)
                         try:
-                            if not self.client.delete_entry(self.repo_id, ref_file):
-                                sys.stdout.write(f"error {dst} failed to delete ref on remote\n")
+                            # Read the ref before removing it, for three
+                            # reasons.  It proves the target is a *file*: a ref
+                            # is a file under refs/, while `delete_entry`
+                            # removes files and directories alike, so deleting
+                            # blind is how `:refs/heads/` took every branch with
+                            # it.  It turns deleting a ref that is not there
+                            # into git's own "remote ref does not exist" instead
+                            # of an `ok` for a no-op.  And it gives the lease
+                            # fence something to be checked *before* -- a
+                            # deletion is as destructive as a ref write, and
+                            # until now only writes were fenced.
+                            existing = self.client.get_file_text(self.repo_id, ref_file)
+                            if not existing:
+                                _proto_error(dst, "remote ref does not exist")
+                            elif not lock.verify_ownership():
+                                state = lock.ownership_state() if hasattr(lock, "ownership_state") else ""
+                                _proto_error(
+                                    dst,
+                                    "could not confirm lock ownership before deleting a ref "
+                                    f"({describe_ownership_failure(state)})",
+                                )
+                            elif not self.client.delete_entry(self.repo_id, ref_file):
+                                _proto_error(dst, "failed to delete ref on remote")
                             else:
                                 # Forget it here as well.  The cache is read back
                                 # as a push exclusion list, and it is only
@@ -360,7 +432,7 @@ class RemoteHelper:
                                 self._prune_empty_ref_parents(dst)
                                 sys.stdout.write(f"ok {dst}\n")
                         except Exception as ex:
-                            sys.stdout.write(f"error {dst} {ex}\n")
+                            _proto_error(dst, ex)
                         reported_specs.add(dst)
                         continue
 
@@ -368,7 +440,7 @@ class RemoteHelper:
                     try:
                         local_sha = rev_parse(src)
                         if not local_sha:
-                            sys.stdout.write(f"error {dst} local ref does not exist\n")
+                            _proto_error(dst, "local ref does not exist")
                             reported_specs.add(dst)
                             continue
 
@@ -382,18 +454,17 @@ class RemoteHelper:
                         if remote_sha and not force:
                             try:
                                 if not is_ancestor(remote_sha, local_sha):
-                                    sys.stdout.write(f"error {dst} non-fast-forward\n")
+                                    _proto_error(dst, "non-fast-forward")
                                     reported_specs.add(dst)
                                     continue
                             except GitError:
-                                sys.stdout.write(f"error {dst} fetch first\n")
+                                _proto_error(dst, "fetch first")
                                 reported_specs.add(dst)
                                 continue
 
                         pending_updates.append((dst, local_sha, remote_sha))
                     except Exception as ex:
-                        err_line = str(ex).replace("\r", " ").replace("\n", " ").strip()
-                        sys.stdout.write(f"error {dst} {err_line}\n")
+                        _proto_error(dst, ex)
                         sys.stderr.write(f"\nPush error for {dst}: {ex}\n")
                         sys.stderr.flush()
                         reported_specs.add(dst)
@@ -446,9 +517,8 @@ class RemoteHelper:
                             finally:
                                 shutil.rmtree(staging_dir, ignore_errors=True)
                     except Exception as ex:
-                        err_line = str(ex).replace("\r", " ").replace("\n", " ").strip()
                         for dst, _, _ in pending_updates:
-                            sys.stdout.write(f"error {dst} {err_line}\n")
+                            _proto_error(dst, ex)
                             reported_specs.add(dst)
                         sys.stderr.write(f"\nPush pack upload error: {ex}\n")
                         sys.stderr.flush()
@@ -457,14 +527,14 @@ class RemoteHelper:
                     # Update remote ref files and report ok for each updated target
                     if pending_updates and not lock.verify_ownership():
                         state = lock.ownership_state() if hasattr(lock, "ownership_state") else ""
-                        err_line = (
+                        reason = (
                             "could not confirm lock ownership before updating refs "
                             f"({describe_ownership_failure(state)})"
                         )
                         for dst, _, _ in pending_updates:
-                            sys.stdout.write(f"error {dst} {err_line}\n")
+                            _proto_error(dst, reason)
                             reported_specs.add(dst)
-                        sys.stderr.write(f"\nPush error: {err_line}\n")
+                        sys.stderr.write(f"\nPush error: {reason}\n")
                         sys.stderr.flush()
                         pending_updates.clear()
 
@@ -473,7 +543,7 @@ class RemoteHelper:
                             # CAS check: verify remote ref hasn't changed since fast-forward check (N-1)
                             current_remote = self.client.get_file_text(self.repo_id, self._full_path(dst))
                             if current_remote != expected_remote_sha and not force:
-                                sys.stdout.write(f"error {dst} fetch first\n")
+                                _proto_error(dst, "fetch first")
                                 reported_specs.add(dst)
                                 continue
 
@@ -516,7 +586,7 @@ class RemoteHelper:
                                 sys.stderr.flush()
                             else:
                                 if isinstance(landed, str) and landed != local_sha:
-                                    sys.stdout.write(f"error {dst} fetch first\n")
+                                    _proto_error(dst, "fetch first")
                                     sys.stderr.write(
                                         f"\nPush error for {dst}: the remote ref holds "
                                         f"{landed} after this push wrote {local_sha} -- "
@@ -550,8 +620,7 @@ class RemoteHelper:
                             sys.stdout.write(f"ok {dst}\n")
                             reported_specs.add(dst)
                         except Exception as ex:
-                            err_line = str(ex).replace("\r", " ").replace("\n", " ").strip()
-                            sys.stdout.write(f"error {dst} {err_line}\n")
+                            _proto_error(dst, ex)
                             sys.stderr.write(f"\nPush error for {dst}: {ex}\n")
                             sys.stderr.flush()
                             reported_specs.add(dst)
@@ -581,11 +650,10 @@ class RemoteHelper:
                 except Exception:
                     pass
         except Exception as lock_err:
-            err_line = str(lock_err).replace("\r", " ").replace("\n", " ").strip()
             for spec in push_specs:
                 dst = spec.lstrip("+").split(":", 1)[1] if ":" in spec else spec
                 if dst not in reported_specs:
-                    sys.stdout.write(f"error {dst} {err_line}\n")
+                    _proto_error(dst, lock_err)
             sys.stderr.write(f"\nPush failed: {lock_err}\n")
             sys.stderr.flush()
 
@@ -612,8 +680,7 @@ class RemoteHelper:
                     verbose=True,
                 )
             except Exception as ex:
-                err_line = str(ex).replace("\r", " ").replace("\n", " ").strip()
-                sys.stderr.write(f"Auto-compaction skipped: {err_line}\n")
+                sys.stderr.write(f"Auto-compaction skipped: {_flatten(ex)}\n")
                 sys.stderr.flush()
 
         sys.stdout.write("\n")

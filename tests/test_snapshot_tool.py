@@ -1380,6 +1380,42 @@ class BareRunTests(_SnapshotFixture):
         self.assertNotIn("Traceback", out + err)
 
 
+class VaultBranchTests(_SnapshotFixture):
+    """The vault's initial branch is the tool's choice, and it is named portably.
+
+    ``ensure_vault`` used ``git init -b <branch>``, which is Git 2.28; the tool
+    is documented to run on Git 2.20, so the branch is named with
+    ``symbolic-ref`` on the unborn HEAD instead.  That is the same operation on
+    every version -- the initial branch is only a symref -- so these pin the
+    observable contract rather than the command used to reach it.
+    """
+
+    def test_the_vault_starts_on_the_requested_branch(self):
+        vault = self.tmp / "named-vault"
+        snap.ensure_vault(vault, "custom-name")
+        proc = _git(vault, "symbolic-ref", "HEAD")
+        self.assertEqual(proc.returncode, 0)
+        self.assertEqual(proc.stdout.strip(), "refs/heads/custom-name")
+
+    def test_a_slash_in_the_branch_name_survives(self):
+        # `refs/heads/team/audit` is a legal branch; naming it must not be
+        # flattened to a single component by the plumbing.
+        vault = self.tmp / "nested-vault"
+        snap.ensure_vault(vault, "team/audit")
+        proc = _git(vault, "symbolic-ref", "HEAD")
+        self.assertEqual(proc.stdout.strip(), "refs/heads/team/audit")
+
+    def test_an_existing_vault_keeps_its_branch(self):
+        # A second call must be a no-op: it returns the same git dir and does
+        # not re-point HEAD, so a vault already on its branch stays there.
+        vault = self.tmp / "existing-vault"
+        git_dir = snap.ensure_vault(vault, "snapshot")
+        again = snap.ensure_vault(vault, "other-name")
+        self.assertEqual(git_dir, again)
+        proc = _git(vault, "symbolic-ref", "HEAD")
+        self.assertEqual(proc.stdout.strip(), "refs/heads/snapshot")
+
+
 class ArgumentValidationTests(unittest.TestCase):
     """Flags that used to be silently ignored now say so."""
 

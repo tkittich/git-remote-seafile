@@ -7,8 +7,18 @@
 # Linux distributions the name `python` is either absent or, worse, still
 # Python 2 -- only `python3` is guaranteed.  Naming it wrong made every git
 # operation fail with "python: command not found" from inside the helper.
+#
+# `-I` and an explicit bootstrap, rather than `-m`.  `python -m package`
+# prepends the *current working directory* to sys.path, and a remote helper runs
+# with the cwd set to the repository git is operating on -- which may be a tree
+# the user has just cloned and has not read.  A `requests.py` sitting in it
+# shadowed the real module, so `git clone seafile://host/lib/path` in such a tree
+# ran whatever that file contained, as the user.  `-I` (isolated: no cwd on
+# sys.path, no user site-packages, PYTHONPATH ignored) closes that; the bootstrap
+# then puts *this checkout* on sys.path explicitly.  That is also why the
+# launcher no longer exports PYTHONPATH -- `-I` would ignore it, and a variable
+# that is set but has no effect is worse than one that is absent.
 DIR="$(cd "$(dirname "$0")/.." && pwd)"
-export PYTHONPATH="$DIR:$PYTHONPATH"
 
 if command -v python3 >/dev/null 2>&1; then
     PY=python3
@@ -19,4 +29,14 @@ else
     exit 127
 fi
 
-exec "$PY" -m git_remote_seafile.cli "$@"
+# sys.argv under `-c` is ["-c", <DIR>, <the caller's arguments>], so the
+# bootstrap takes its own directory from argv[1] and hands the rest to the CLI
+# unchanged.  argv[0] is set to the program's name so argparse's usage lines
+# read `git-remote-seafile ...` rather than `-c ...`.
+exec "$PY" -I -c '
+import sys
+sys.path.insert(0, sys.argv[1])
+sys.argv = ["git-remote-seafile"] + sys.argv[2:]
+from git_remote_seafile.cli import main
+sys.exit(main())
+' "$DIR" "$@"

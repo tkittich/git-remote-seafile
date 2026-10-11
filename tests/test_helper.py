@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import io
 import os
 import tempfile
@@ -743,7 +744,22 @@ class TestRemoteHelper(unittest.TestCase):
     def test_cmd_push_tag_creation_and_deletion(self, mock_objs, mock_rev):
         h = RemoteHelper.__new__(RemoteHelper)
         h.client = MagicMock()
-        h.client.get_file_text.return_value = None
+        # The deletion path reads the ref before removing it, and that read is
+        # load-bearing: it is what proves the target is a *file* rather than the
+        # refs/tags directory `delete_entry` would otherwise happily remove, and
+        # what turns deleting a ref that is not there into git's "remote ref
+        # does not exist" instead of an `ok` for a no-op.  So the mock has to
+        # model the ref the push just created -- a blanket None describes a
+        # repository where the tag was never pushed, and the delete then
+        # reported `ok` for removing something that did not exist.
+        created = {"tag": False}
+
+        def fake_get_file_text(repo_id, path):
+            if path.endswith("refs/tags/v1.0.0") and created["tag"]:
+                return "tag_sha_123"
+            return None
+
+        h.client.get_file_text.side_effect = fake_get_file_text
         h.repo_id = "repo1"
         h.repo_path = "/git-repo"
         h._refs_cache = {}
@@ -757,7 +773,8 @@ class TestRemoteHelper(unittest.TestCase):
         uploaded = [c.args[2] for c in h.client.upload_file.call_args_list]
         self.assertIn("v1.0.0", uploaded)
 
-        # Now delete the tag
+        # Now delete the tag -- which the push above has just created.
+        created["tag"] = True
         out_del = io.StringIO()
         with patch("sys.stdout", out_del), patch("git_remote_seafile.helper.RemoteLock"):
             h.cmd_push([":refs/tags/v1.0.0"])
@@ -1047,6 +1064,89 @@ class TestRemoteHelper(unittest.TestCase):
         self.assertIn("line 2 fatal error", non_empty[0])
         # Ensure raw unhandled newlines were replaced so git protocol does not break
         self.assertNotIn("\n", non_empty[0])
+
+
+class TestPushDestinationValidation(unittest.TestCase):
+    """REVIEW.sonnet.md A3: a push destination is validated, not assumed.
+
+    The helper applied ``is_valid_ref_name`` to every ref it *listed* but never
+    to the destination of a push, so only a prefix test stood in the way.  That
+    test accepts ``refs/heads/`` -- and ``_full_path`` strips the trailing slash
+    to ``refs/heads``, which is a *directory*, which ``delete_entry`` removes as
+    happily as a file.  So ``git push origin :refs/heads/`` deleted every branch
+    in the repository.
+    """
+
+    def _helper(self, refs_cache=None):
+        h = RemoteHelper.__new__(RemoteHelper)
+        h.client = MagicMock()
+        h.repo_id = "repo1"
+        h.repo_path = "/git-repo"
+        h._refs_cache = dict(refs_cache or {})
+        return h
+
+    def _push(self, h, spec, lock=None):
+        out = io.StringIO()
+        with patch("sys.stdout", out), patch(
+            "git_remote_seafile.helper.RemoteLock", return_value=lock if lock else MagicMock()
+        ):
+            h.cmd_push([spec])
+        return out.getvalue()
+
+    def test_the_validator_agrees_with_git_on_the_boundary_names(self):
+        from git_remote_seafile.helper import _destination_error
+
+        for ok in ("refs/heads/main", "refs/heads/feature/auth", "refs/tags/v1.0"):
+            with self.subTest(dst=ok):
+                self.assertIsNone(_destination_error(ok))
+        for bad in ("refs/heads/", "refs/heads/a/", "refs/tags/", "refs/heads",
+                    "refs/notes/x", "HEAD", "refs/heads/a.lock", "refs/heads/.hidden"):
+            with self.subTest(dst=bad):
+                self.assertIsNotNone(_destination_error(bad))
+
+    def test_a_destination_naming_a_namespace_is_refused(self):
+        for dst in ("refs/heads/", "refs/heads/a/", "refs/tags/"):
+            with self.subTest(dst=dst):
+                h = self._helper()
+                output = self._push(h, ":" + dst)
+                self.assertIn("trailing component", output)
+                h.client.delete_entry.assert_not_called()
+
+    def test_a_destination_outside_the_namespaces_is_refused(self):
+        h = self._helper()
+        output = self._push(h, "refs/notes/x:refs/notes/x")
+        self.assertIn("refusing to push outside", output)
+
+    def test_a_destination_git_would_reject_is_refused(self):
+        h = self._helper()
+        output = self._push(h, "refs/heads/a..b:refs/heads/a..b")
+        self.assertIn("git-check-ref-format", output)
+
+    def test_deleting_a_ref_that_is_not_there_is_an_error(self):
+        """Not a silent `ok` -- and never a blind directory removal."""
+        h = self._helper({"refs/heads/gone": "stale-sha"})
+        h.client.get_file_text.return_value = None
+
+        output = self._push(h, ":refs/heads/gone")
+
+        self.assertIn("remote ref does not exist", output)
+        h.client.delete_entry.assert_not_called()
+        # The cached SHA is only usable while the ref exists; a no-op delete
+        # that reported `ok` left it behind as a push exclusion.
+        self.assertIn("refs/heads/gone", h._refs_cache)
+
+    def test_the_delete_path_is_fenced_by_the_lease(self):
+        h = self._helper()
+        h.client.get_file_text.return_value = "sha123"
+        lock = MagicMock()
+        lock.verify_ownership.return_value = False
+        lock.ownership_state.return_value = LEASE_LOST
+        lock.__enter__.return_value = lock
+
+        output = self._push(h, ":refs/heads/old", lock=lock)
+
+        self.assertIn("could not confirm lock ownership", output)
+        h.client.delete_entry.assert_not_called()
 
 
 class TestFetchSafety(unittest.TestCase):
@@ -1639,6 +1739,91 @@ class TestPushRefReadBack(unittest.TestCase):
         self.assertIn("ok refs/heads/main", out.getvalue())
         self.assertNotIn("error", out.getvalue())
         self.assertIn("was not visible immediately after", err.getvalue())
+
+
+class ProtocolErrorDisciplineTests(unittest.TestCase):
+    """Every ``error`` line the helper writes goes through ``_proto_error``.
+
+    Git reads the helper's stdout one line at a time, so an exception message
+    carrying a newline becomes a second, invented protocol line.  Six call sites
+    used to open-code the flattening and the delete path wrote the raw exception,
+    which made the property a convention rather than a guarantee.
+
+    This is a source-level check on purpose: a runtime test can only cover the
+    sites someone remembered to write a case for, and a *missed* site is exactly
+    the failure being guarded against.
+    """
+
+    HELPER = (
+        Path(__file__).resolve().parent.parent
+        / "git_remote_seafile"
+        / "helper.py"
+    )
+
+    @staticmethod
+    def _is_stdout_write(node: ast.AST) -> bool:
+        func = getattr(node, "func", None)
+        return (
+            isinstance(func, ast.Attribute)
+            and func.attr == "write"
+            and isinstance(func.value, ast.Attribute)
+            and func.value.attr == "stdout"
+            and isinstance(func.value.value, ast.Name)
+            and func.value.value.id == "sys"
+        )
+
+    @staticmethod
+    def _literal_prefix(node: ast.AST) -> str | None:
+        """The leading constant of the first argument, for ``f"error {dst} ..."``."""
+        args = getattr(node, "args", None)
+        if not args:
+            return None
+        first = args[0]
+        if isinstance(first, ast.Constant) and isinstance(first.value, str):
+            return first.value
+        if (
+            isinstance(first, ast.JoinedStr)
+            and first.values
+            and isinstance(first.values[0], ast.Constant)
+            and isinstance(first.values[0].value, str)
+        ):
+            return first.values[0].value
+        return None
+
+    def _error_writers(self) -> dict[str, list[int]]:
+        """``{function name: [lines]}`` for every direct ``error ...`` write."""
+        tree = ast.parse(self.HELPER.read_text(encoding="utf-8", errors="replace"))
+        writers: dict[str, list[int]] = {}
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            for sub in ast.walk(node):
+                if not isinstance(sub, ast.Call) or not self._is_stdout_write(sub):
+                    continue
+                prefix = self._literal_prefix(sub)
+                if prefix and prefix.startswith("error "):
+                    writers.setdefault(node.name, []).append(sub.lineno)
+        return writers
+
+    def test_the_only_function_writing_error_lines_is_proto_error(self):
+        writers = self._error_writers()
+        self.assertIn(
+            "_proto_error", writers,
+            "expected _proto_error to be the writer of 'error' lines; found "
+            f"{sorted(writers)}",
+        )
+        bypassing = {name: lines for name, lines in writers.items() if name != "_proto_error"}
+        self.assertEqual(
+            bypassing, {},
+            "these functions write an 'error' line directly instead of going "
+            f"through _proto_error: {bypassing}",
+        )
+
+    def test_the_helper_actually_uses_proto_error(self):
+        # A guard on the guard: if _proto_error were dead code the test above
+        # would still pass, so pin that the call sites exist.
+        source = self.HELPER.read_text(encoding="utf-8", errors="replace")
+        self.assertGreater(source.count("_proto_error("), 10)
 
 
 if __name__ == "__main__":

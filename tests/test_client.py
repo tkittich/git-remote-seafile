@@ -233,6 +233,58 @@ class TestClientCredentials(unittest.TestCase):
             client = SeafileClient(server_url="https://seafile.example.com")
             self.assertEqual(client.token, "norm-tok")
 
+    def test_a_token_without_a_server_is_not_sent_to_whatever_host_the_url_names(self):
+        """REVIEW.sonnet.md A2: a bare SEAFILE_TOKEN followed the URL anywhere.
+
+        The URL is usually someone else's -- `git clone seafile://host/lib/path`
+        is a command a user is handed rather than one they write -- so adopting
+        the environment's token for it is a confused deputy: the attacker picks
+        the host, the user supplies the credential.
+        """
+        with tempfile.TemporaryDirectory() as td, \
+             patch.dict("os.environ", {"SEAFILE_TOKEN": "secret"}, clear=True), \
+             patch("git_remote_seafile.client.get_candidate_db_paths", return_value=[]), \
+             patch("pathlib.Path.home", return_value=Path(td)):
+            with self.assertRaises(SeafileAuthError) as ctx:
+                SeafileClient(server_url="https://evil.example.org")
+        message = str(ctx.exception)
+        self.assertIn("SEAFILE_SERVER", message)
+        self.assertIn("not used", message)
+
+    def test_a_config_token_without_a_server_is_not_sent_anywhere(self):
+        with tempfile.TemporaryDirectory() as td:
+            Path(td, ".git-seafile.json").write_text(
+                json.dumps({"token": "cfg-tok"}), encoding="utf-8"
+            )
+            with patch.dict("os.environ", {}, clear=True), \
+                 patch("git_remote_seafile.client.get_candidate_db_paths", return_value=[]), \
+                 patch("pathlib.Path.home", return_value=Path(td)):
+                with self.assertRaises(SeafileAuthError) as ctx:
+                    SeafileClient(server_url="https://evil.example.org")
+        self.assertIn('no "server"', str(ctx.exception))
+
+    def test_a_token_over_plain_http_is_warned_about(self):
+        with tempfile.TemporaryDirectory() as td, \
+             patch.dict("os.environ", {"SEAFILE_SERVER": "http://plain.example.org",
+                                       "SEAFILE_TOKEN": "t"}, clear=True), \
+             patch("git_remote_seafile.client.get_candidate_db_paths", return_value=[]), \
+             patch("pathlib.Path.home", return_value=Path(td)), \
+             patch("sys.stderr", new_callable=io.StringIO) as err:
+            SeafileClient(server_url="http://plain.example.org")
+        self.assertIn("plain HTTP", err.getvalue())
+
+    def test_a_token_over_loopback_http_is_not_warned_about(self):
+        """A local Seafile is not on a network path, so warning would just train
+        the user to ignore the message."""
+        with tempfile.TemporaryDirectory() as td, \
+             patch.dict("os.environ", {"SEAFILE_SERVER": "http://localhost:8000",
+                                       "SEAFILE_TOKEN": "t"}, clear=True), \
+             patch("git_remote_seafile.client.get_candidate_db_paths", return_value=[]), \
+             patch("pathlib.Path.home", return_value=Path(td)), \
+             patch("sys.stderr", new_callable=io.StringIO) as err:
+            SeafileClient(server_url="http://localhost:8000")
+        self.assertEqual(err.getvalue(), "")
+
 
 class TestClientAPI(unittest.TestCase):
     """Test Seafile REST API methods with mocked requests."""

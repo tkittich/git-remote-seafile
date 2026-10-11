@@ -28,6 +28,7 @@ import argparse
 import contextlib
 import datetime as dt
 import io
+import os
 import pathlib
 import shutil
 import sqlite3
@@ -396,6 +397,36 @@ class TestCliSurface(unittest.TestCase):
         for name in ("libs", "identity", "where", "errors", "conflicts", "churn", "report"):
             with self.subTest(command=name):
                 self.assertIn(name, proc.stdout)
+
+    def test_a_client_without_a_seafile_ini_is_not_a_verified_negative(self):
+        """REVIEW.sonnet.md B1: `where` exited 1 -- "not inside" -- from a crash.
+
+        ``main()`` guards ``ccnet_dir()`` but not ``load_libs`` ->
+        ``seafile_data``, which raises when ``.ccnet`` exists without a
+        ``seafile.ini`` inside it.  The traceback that escaped exited 1 as well,
+        and 1 is the *verified* negative scripts gate on, so a crash was
+        indistinguishable from a check that had actually run.  It has to be
+        exit 2 -- "could not check" -- with no traceback.
+        """
+        import subprocess
+
+        home = pathlib.Path(tempfile.mkdtemp(prefix="grs-doctor-home-"))
+        self.addCleanup(shutil.rmtree, home, ignore_errors=True)
+        # The directory the client would use is present, so `ccnet_dir()`
+        # succeeds; the file that says where its data lives is not.
+        (home / ".ccnet").mkdir()
+
+        env = dict(os.environ)
+        env["HOME"] = str(home)
+        env["USERPROFILE"] = str(home)
+        proc = subprocess.run(
+            [sys.executable, str(pathlib.Path(__file__).resolve().parent.parent
+                                 / "tools" / "seafile_doctor.py"), "where", "."],
+            capture_output=True, text=True, timeout=60, env=env,
+        )
+        self.assertEqual(proc.returncode, 2, proc.stdout + proc.stderr)
+        self.assertNotIn("Traceback", proc.stderr)
+        self.assertIn("could not be resolved", proc.stderr)
 
 
 class TestDoctorReadsLiveDatabases(unittest.TestCase):

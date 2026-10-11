@@ -321,7 +321,7 @@ def ensure_vault(vault: Path, branch: str) -> Path:
 
     vault.mkdir(parents=True, exist_ok=True)
     proc = subprocess.run(
-        ["git", "init", "-q", "-b", branch, str(vault)],
+        ["git", "init", "-q", str(vault)],
         text=True,
         encoding="utf-8",
         errors="replace",
@@ -332,6 +332,25 @@ def ensure_vault(vault: Path, branch: str) -> Path:
         raise SnapshotError(
             f"git init failed in {vault} (rc={proc.returncode})\n"
             f"{(proc.stderr or proc.stdout).strip()}"
+        )
+    # Name the branch with `symbolic-ref`, not `git init -b`.  `-b` is Git 2.28
+    # and this tool is documented to run on Git 2.20 (USER_GUIDE section 5); the
+    # initial branch is only an unborn-HEAD symref, so pointing it is the same
+    # operation on every version, and it keeps the documented floor honest
+    # instead of raising it to match an implementation detail.  For the same
+    # reason `init.defaultBranch` (also 2.28) cannot be the mechanism here.
+    proc = subprocess.run(
+        ["git", "-C", str(vault), "symbolic-ref", "HEAD", f"refs/heads/{branch}"],
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if proc.returncode != 0:
+        raise SnapshotError(
+            f"could not name the vault's initial branch {branch!r} "
+            f"(rc={proc.returncode})\n{(proc.stderr or proc.stdout).strip()}"
         )
     return git_dir
 

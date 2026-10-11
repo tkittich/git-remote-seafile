@@ -25,6 +25,14 @@ So these tests build a private directory holding a ``dirname`` and nothing else.
 it really runs.  Both are needed: a symlink to the real binary looked right, was
 not executable through Git Bash, and left every other test passing with the
 launcher exporting ``PYTHONPATH=/``.
+
+That test used to read ``PYTHONPATH`` to check that ``dirname`` had run.  The
+launcher no longer sets it: it passes its own directory as an argument and asks
+for an isolated interpreter (``-I``), because ``python -m`` put the *working
+directory* on ``sys.path`` -- and the working directory is the repository git is
+operating on, which may be a tree the user has just cloned and not read.
+``test_the_launcher_does_not_import_from_the_working_directory`` is the test for
+that, and it fails against the old launcher.
 """
 
 from __future__ import annotations
@@ -33,6 +41,7 @@ import os
 import pathlib
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -137,7 +146,6 @@ class TestSourceCheckoutLauncher(unittest.TestCase):
         )
         env = dict(os.environ)
         env["PATH"] = path
-        env["PYTHONPATH"] = ""
         if self.real_dirname is not None:
             env["GRS_REAL_DIRNAME"] = pathlib.Path(self.real_dirname).as_posix()
         return subprocess.run(
@@ -190,31 +198,108 @@ class TestSourceCheckoutLauncher(unittest.TestCase):
         )
 
     def test_the_launcher_resolves_its_own_directory(self):
-        """`dirname` has to really run, or DIR and PYTHONPATH come out wrong.
+        """`dirname` has to really run, or the directory argument comes out wrong.
 
-        The launcher starts ``DIR="$(cd "$(dirname "$0")/.." && pwd)"``.  When
-        the shim was a symlink to the real binary, Git Bash could not execute
-        it, so ``dirname`` produced nothing, ``cd`` landed on ``/`` and the
-        launcher exported ``PYTHONPATH=/`` -- and every other test in this file
-        still passed, because a stub does not care what PYTHONPATH is.
+        The launcher starts ``DIR="$(cd "$(dirname "$0")/.." && pwd)"`` and then
+        hands ``$DIR`` to the interpreter's bootstrap, which is what puts this
+        checkout on ``sys.path``.  When the ``dirname`` shim was a symlink to the
+        real binary, Git Bash could not execute it, so ``dirname`` produced
+        nothing, ``cd`` landed on ``/`` and the launcher handed the interpreter
+        ``/`` -- and every other test in this file still passed, because a stub
+        does not care what it is handed.
         """
         self._stub(
             "python3",
             body=(
-                'dir="${PYTHONPATH%%:*}"\n'
-                'if [ -f "$dir/pyproject.toml" ]; then\n'
-                '  echo "GRS-ROOT-OK"\n'
-                "else\n"
-                '  echo "GRS-ROOT-BAD:$PYTHONPATH"\n'
-                "fi"
+                'for a in "$@"; do\n'
+                '  if [ -f "$a/pyproject.toml" ]; then\n'
+                '    echo "GRS-ROOT-OK"\n'
+                "    exit 0\n"
+                "  fi\n"
+                "done\n"
+                'echo "GRS-ROOT-BAD:$*"\n'
             ),
         )
         proc = self._run()
         self.assertIn(
             "GRS-ROOT-OK", proc.stdout + proc.stderr,
-            "the launcher did not put its own directory on PYTHONPATH, so "
-            "`dirname` did not run",
+            "the launcher did not hand the interpreter its own checkout "
+            "directory, so `dirname` did not run",
         )
+
+    def test_the_launcher_asks_for_an_isolated_interpreter(self):
+        """`-I` is what keeps the working directory off sys.path.
+
+        `python -m package` prepends the cwd, and a remote helper runs with the
+        cwd set to the repository git is operating on.  The bootstrap is passed
+        with `-c` instead, so there is no cwd on sys.path for a file in that tree
+        to shadow a real module with.
+        """
+        self._stub(
+            "python3",
+            body=(
+                'case "$1" in\n'
+                '  -I) echo "GRS-ISOLATED" ;;\n'
+                '  *)  echo "GRS-NOT-ISOLATED:$1" ;;\n'
+                "esac\n"
+            ),
+        )
+        proc = self._run()
+        output = proc.stdout + proc.stderr
+        self.assertIn("GRS-ISOLATED", output)
+        self.assertNotIn("GRS-NOT-ISOLATED", output)
+
+    def test_the_launcher_does_not_import_from_the_working_directory(self):
+        """The regression this file exists for: a repo-root `requests.py` ran.
+
+        `python -m git_remote_seafile.cli` put the *working directory* first on
+        sys.path, and a remote helper's working directory is the repository git
+        is operating on -- possibly a tree the user has just cloned and has not
+        read.  `git clone seafile://host/lib/path` inside a tree holding a
+        `requests.py` therefore executed that file, as the user.
+
+        The stub here is the interpreter running the suite, which can import the
+        package, so the launcher genuinely starts; the marker file is what says
+        whether the hostile module was imported.
+        """
+        if subprocess.run(
+            [sys.executable, "-c", "import requests"], capture_output=True
+        ).returncode != 0:
+            self.skipTest("the test interpreter cannot import requests")
+        self._stub("python3", body=f'exec "{pathlib.Path(sys.executable).as_posix()}" "$@"')
+
+        hostile = self.tmp / "hostile"
+        hostile.mkdir()
+        marker = hostile / "HIJACKED"
+        (hostile / "requests.py").write_text(
+            "import pathlib\n"
+            f"pathlib.Path({str(marker)!r}).write_text('ran')\n"
+            "raise SystemExit(7)\n",
+            encoding="utf-8",
+        )
+
+        path = self._path()
+        self.assertEqual(
+            _leaked_interpreters(path, self.stub_dir), [],
+            "the stripped PATH reaches a real interpreter",
+        )
+        env = dict(os.environ)
+        env["PATH"] = path
+        if self.real_dirname is not None:
+            env["GRS_REAL_DIRNAME"] = pathlib.Path(self.real_dirname).as_posix()
+        proc = subprocess.run(
+            [self.bash, str(LAUNCHER), "version"],
+            cwd=str(hostile),
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        self.assertFalse(
+            marker.exists(),
+            "the launcher imported requests.py from the working directory",
+        )
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
 
     def test_the_leak_check_would_notice_a_real_interpreter(self):
         """A guard that cannot fail is not a guard.
