@@ -246,19 +246,41 @@ def git(
     """Run git against an explicit --git-dir/--work-tree pair.
 
     Passing both explicitly is what keeps this out of the source repository's
-    own ``.git``: git never consults it, and never writes to it.
+    own ``.git``: git never consults it, and never writes to it -- but
+    ``--git-dir`` alone does not guarantee that.  A run launched from a git
+    hook, alias, or CI step inherits ``GIT_INDEX_FILE``/``GIT_DIR`` in the
+    environment, and ``GIT_INDEX_FILE`` has *no* command-line override: index
+    operations would go to the caller's index, writing the whole tree
+    (ignored files included) into whatever repository launched us.  The
+    library's own ``clean_git_env`` exists for exactly this and gc.py uses
+    it; the snapshot tool does the same scrubbing here (REVIEW.glm.md T-17,
+    archive/REVIEW.snap-tool-antigravity.md SNAP-01).
+
+    ``GIT_TERMINAL_PROMPT=0`` plus a detached stdin turn a credential prompt
+    under a scheduler into a fast, clean failure instead of a hang holding
+    the vault lock (archive/.../SNAP-05).
     """
     cmd = ["git", f"--git-dir={git_dir}"]
     if work_tree is not None:
         cmd.append(f"--work-tree={work_tree}")
     cmd.extend(args)
+    env = dict(os.environ)
+    for var in (
+        "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_COMMON_DIR", "GIT_NAMESPACE",
+        "GIT_PREFIX", "GIT_CEILING_DIRECTORIES",
+    ):
+        env.pop(var, None)
+    env["GIT_TERMINAL_PROMPT"] = "0"
     proc = subprocess.run(
         cmd,
         cwd=str(cwd),
+        env=env,
         text=True,
         encoding="utf-8",
         errors="replace",
         input=stdin,
+        stdin=subprocess.DEVNULL if stdin is None else None,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     )
@@ -328,7 +350,10 @@ def _config(path: Path, key: str) -> str:
 
 
 def ensure_identity(
-    vault: Path, source: Path, vault_config: dict[str, list[str]] | None = None
+    vault: Path,
+    source: Path,
+    vault_config: dict[str, list[str]] | None = None,
+    write_identity: bool = True,
 ) -> None:
     """Give the vault a committer identity, inheriting the source repo's.
 
@@ -368,6 +393,11 @@ def ensure_identity(
                 f"  git -C \"{vault}\" config user.name  \"Your Name\"\n"
                 f"  git -C \"{vault}\" config user.email \"you@example.com\""
             )
+        if not write_identity:
+            # A --dry-run validates the identity is resolvable without
+            # writing any: a preview must not mutate the vault, but
+            # surfacing a missing identity early is part of the preview.
+            continue
         proc = subprocess.run(
             ["git", "-C", str(vault), "config", key, inherited],
             text=True,
@@ -442,6 +472,30 @@ def ensure_byte_exact(
         attributes.write_text(existing + BYTE_EXACT_ATTRIBUTES, encoding="utf-8")
 
 
+_KERNEL32: "object | None" = None
+
+
+def _win_kernel32():
+    """Build (once) a properly prototyped kernel32 for the pid probe."""
+    global _KERNEL32
+    if _KERNEL32 is None:
+        import ctypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.OpenProcess.restype = ctypes.c_void_p
+        kernel32.OpenProcess.argtypes = (
+            ctypes.c_ulong, ctypes.c_int, ctypes.c_ulong,
+        )
+        kernel32.GetExitCodeProcess.restype = ctypes.c_int
+        kernel32.GetExitCodeProcess.argtypes = (
+            ctypes.c_void_p, ctypes.POINTER(ctypes.c_ulong),
+        )
+        kernel32.CloseHandle.restype = ctypes.c_int
+        kernel32.CloseHandle.argtypes = (ctypes.c_void_p,)
+        _KERNEL32 = kernel32
+    return _KERNEL32
+
+
 def pid_is_alive(pid: int) -> bool:
     """Whether ``pid`` is a running process *on this machine*.
 
@@ -456,28 +510,18 @@ def pid_is_alive(pid: int) -> bool:
     if os.name == "nt":
         import ctypes
 
-        process_query_limited_information = 0x1000
-        still_active = 259
-        error_invalid_parameter = 87
         # Same prototype discipline as git_remote_seafile.lock._is_pid_alive:
         # ctypes.windll.kernel32.GetLastError() can return a stale value
         # (ctypes' own foreign calls may clobber the thread's last error
         # between OpenProcess failing and this read), and without restype the
         # 64-bit HANDLE truncates to c_int -- either defect can read a *live*
-        # lock holder as dead and let a concurrent run steal its lock.  A
-        # dedicated WinDLL with use_last_error=True plus explicit
-        # argtypes/restype is the documented pattern.
-        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-        kernel32.OpenProcess.restype = ctypes.c_void_p
-        kernel32.OpenProcess.argtypes = (
-            ctypes.c_ulong, ctypes.c_int, ctypes.c_ulong,
-        )
-        kernel32.GetExitCodeProcess.restype = ctypes.c_int
-        kernel32.GetExitCodeProcess.argtypes = (
-            ctypes.c_void_p, ctypes.POINTER(ctypes.c_ulong),
-        )
-        kernel32.CloseHandle.restype = ctypes.c_int
-        kernel32.CloseHandle.argtypes = (ctypes.c_void_p,)
+        # lock holder as dead and let a concurrent run steal its lock.  Built
+        # and prototyped once at import, not per call (SNAP-10): every probe
+        # was paying the four function-pointer reconfigurations.
+        kernel32 = _win_kernel32()
+        process_query_limited_information = 0x1000
+        still_active = 259
+        error_invalid_parameter = 87
         handle = kernel32.OpenProcess(
             process_query_limited_information, False, pid
         )
@@ -550,8 +594,12 @@ class VaultLock:
                 return False
             try:
                 self.path.unlink()
-            except FileNotFoundError:
-                pass
+            except OSError:
+                # Not just FileNotFoundError: a Windows scanner holding a
+                # transient read lock raises PermissionError, and crashing the
+                # reclaim over it would defeat the point of reclaiming.  Leave
+                # the file; the next run tries again.
+                return False
             print("reclaiming an unparseable lock file left behind earlier "
                   f"(that run is gone): {self.path}")
             return True
@@ -560,8 +608,10 @@ class VaultLock:
             return False
         try:
             self.path.unlink()
-        except FileNotFoundError:
-            pass
+        except OSError:
+            # Same breadth as __exit__'s retry loop: a sharing violation is a
+            # "not this time", not a crash.
+            return False
         print(
             f"reclaiming a stale lock left by pid {pid} on this machine "
             f"(that run is gone)"
@@ -800,17 +850,43 @@ def exclude_matches(path: str, pattern: str) -> bool:
 
     The rule used instead is the one people expect:
 
+    * the pattern as a path *prefix* -- ``--exclude packages/web/build``
+      excludes everything under it, and matches case-insensitively so one
+      command line excludes the same set on every platform;
     * ``fnmatch`` against the whole path, which is what makes a wildcard work
       (``*.pyc`` matches ``a/b/c.pyc``: fnmatch's ``*`` crosses ``/``); or
-    * any single path *component* equal to the pattern, which is what makes a
-      bare name mean "a directory by that name, at any depth".
+    * any single path *component* equal to the pattern (case-insensitively),
+      which is what makes a bare name mean "a directory by that name, at any
+      depth".
     """
-    pattern = pattern.strip().rstrip("/")
+    # The pattern travels the same road as the index: forward slashes, no
+    # trailing slash, and -- so one command line means one snapshot -- a case
+    # comparison that does not depend on the OS (T-11/SNAP-06; index paths are
+    # case-sensitive data, and fnmatch's normcase would make Windows behave
+    # differently from every other platform).
+    pattern = pattern.strip().replace("\\", "/").rstrip("/")
     if not pattern:
         return False
+    # A pattern naming a directory prefix (--exclude packages/web/build)
+    # excludes everything inside it -- the more-precise spelling must exclude
+    # at least as much as the bare name it refines (SNAP-03).
+    if path == pattern or path.startswith(pattern + "/"):
+        return True
     if fnmatch.fnmatch(path, pattern):
         return True
-    return pattern in path.split("/")
+    # Wildcard patterns keep their fnmatch shape, so match the prefix form of
+    # those too; the component check is exact (and case-sensitive both ways)
+    # so a bare name still means "a directory by that name, at any depth".
+    if any(ch in pattern for ch in "*?[") and fnmatch.fnmatch(path, pattern + "/*"):
+        return True
+    parts = [component.lower() for component in path.split("/")]
+    pattern_parts = [component.lower() for component in pattern.split("/")]
+    # Multi-segment patterns match the path's leading components (the
+    # prefix rule, case-insensitively); single-segment ones match any
+    # component.
+    if len(pattern_parts) > 1:
+        return parts[: len(pattern_parts)] == pattern_parts
+    return pattern_parts[0] in parts
 
 
 def apply_excludes(git_dir: Path, work_tree: Path, excludes: list[str]) -> list[str]:
@@ -1157,8 +1233,10 @@ def push_snapshot(
         ) from rollback_failure
     raise SnapshotError(
         f"push to {remote} failed.\n"
-        f"The local branch was rolled back to {rolled_back} so the vault still "
-        f"matches the remote; nothing was lost.  Re-run to retry."
+        f"The local branch was rolled back to {rolled_back} -- the snapshot "
+        f"this run attempted was discarded.  The remote may still be ahead "
+        f"of that point (it moved during the retry), so re-run to reconcile "
+        f"with its tip; the tree itself was never modified."
     )
 
 
@@ -1218,6 +1296,7 @@ def verify_restore(repo: Path, rev: str) -> list[str]:
         )
     paths: list[bytes] = []
     expected: list[bytes] = []
+    symlinks: list[str] = []
     for entry in listing.stdout.split(b"\0"):
         if not entry:
             continue
@@ -1225,9 +1304,21 @@ def verify_restore(repo: Path, rev: str) -> list[str]:
         fields = meta.split()
         if len(fields) < 3 or fields[1] != b"blob":
             continue
+        # A symlink is a blob (mode 120000) holding the link-target
+        # string, and the plain hash path cannot verify one: on Windows
+        # (core.symlinks=false) git checks it out as a TEXT FILE whose
+        # bytes equal the blob, so hash-object would "verify" a file
+        # where the source had a link; on POSIX hash-object FOLLOWS the
+        # link and hashes the target, so a correct restore would report
+        # a spurious mismatch.  Symlinks are verified separately (by
+        # reading the link) and never sent through hash-object.
+        # (archive/REVIEW.snap-tool-deep.md, finding C-1.)
+        if fields[0] == b"120000":
+            symlinks.append(path.decode("utf-8", errors="surrogateescape"))
+            continue
         paths.append(path)
         expected.append(fields[2])
-    if not paths:
+    if not paths and not symlinks:
         return []
     if any(b"\n" in path for path in paths):
         # --stdin-paths is newline-separated and cannot express a path that
@@ -1238,6 +1329,25 @@ def verify_restore(repo: Path, rev: str) -> list[str]:
             "restore"
         )
 
+    mismatched_symlinks: list[str] = []
+    for link in symlinks:
+        link_path = repo / link
+        try:
+            actual = os.readlink(str(link_path)).encode("utf-8", errors="surrogateescape")
+        except (OSError, ValueError):
+            # The entry did not come back as a link at all (the Windows
+            # text-file case): that is a difference worth naming.
+            mismatched_symlinks.append(link)
+            continue
+        blob = subprocess.run(
+            ["git", "-C", str(repo), "cat-file", "blob", expected[symlinks.index(link)]],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        if blob.returncode != 0 or blob.stdout != actual:
+            mismatched_symlinks.append(link)
+    if not paths:
+        return mismatched_symlinks
     proc = subprocess.run(
         ["git", "-C", str(repo), "hash-object", "--no-filters", "--stdin-paths"],
         input=b"\n".join(paths) + b"\n",
@@ -1253,15 +1363,19 @@ def verify_restore(repo: Path, rev: str) -> list[str]:
     if len(hashes) != len(expected):
         # git outputs one hash per input path, in order; a short output means
         # something ate a path, and guessing which would be worse than failing.
+        # The path it could not open is named on stderr -- append it, or the
+        # count mismatch is all the user gets (archive/.../SNAP-08).
+        detail = proc.stderr.decode("utf-8", errors="replace").strip()
         raise SnapshotError(
             f"hash-object returned {len(hashes)} hashes for {len(paths)} "
             f"paths in {repo}"
+            + (f"\n{detail}" if detail else "")
         )
     return [
         path.decode("utf-8", errors="surrogateescape")
         for path, expected_sha, actual_sha in zip(paths, expected, hashes, strict=True)
         if actual_sha != expected_sha
-    ]
+    ] + mismatched_symlinks
 
 
 def restore(
@@ -1342,6 +1456,26 @@ def restore(
         verified_rev = sha
     else:
         _checkout(into, branch)
+
+    # The snapshot-time warning about embedded repositories is years and
+    # machines away by the time someone restores; the restored revision is
+    # where the broken directory actually materialises, so repeat it here
+    # rather than let the certification below claim byte-exactness for a tree
+    # with holes in it (archive/REVIEW.snap-tool-deep.md, finding C-2).
+    restored_gitlinks = find_gitlinks(into / ".git", into, verified_rev)
+    if restored_gitlinks:
+        print(
+            "\nWARNING: these paths in the restored tree are embedded git "
+            "repositories.  Only\ntheir commit id was recorded at snapshot "
+            "time, NOT their contents -- these\ndirectories are empty on "
+            "purpose but incomplete as a backup:"
+        )
+        for path in restored_gitlinks:
+            print(f"  {path}")
+        print(
+            "  Back them up separately, or make them submodules with a "
+            "remote that survives."
+        )
 
     # A restore that differs from the snapshot is not a restore, and the
     # autocrlf class of bug is invisible to `git status` -- so check the bytes.
@@ -1622,7 +1756,11 @@ def remember_settings(
             False,
         ),
         ("snapshot.branch", [branch], False),
-        ("snapshot.exclude", list(exclude), False),
+        # Repeated --exclude flags would otherwise persist the same pattern
+        # twice; the stored list is what --default-excludes and the printed
+        # report read back, so keep it a set of unique values in first-seen
+        # order (SNAP-12).
+        ("snapshot.exclude", list(dict.fromkeys(exclude)), False),
     ]
     suppressed = {key for key, value in (("snapshot.remote", remote),
                                          ("snapshot.coderemote", code_remote))
@@ -2092,8 +2230,23 @@ def main(argv: list[str] | None = None) -> int:
         # the remembered settings below: none of them writes a key another one
         # compares against, so the map cannot go stale between the three.
         vault_config = _read_local_config_map(vault)
-        ensure_identity(vault, source, vault_config=vault_config)
-        ensure_byte_exact(vault, git_dir, vault_config=vault_config)
+        if not args.dry_run:
+            # A preview writes nothing -- not even the byte-exactness config
+            # and the inherited identity.  Those writes were safe-looking but
+            # a "pure preview" that pins identity and attributes is mutating
+            # state a later real run will commit under, without disclosure
+            # (archive/REVIEW.snap-tool-deep.md R3 / antigravity SNAP-07-nit).
+            # Reads are harmless and still happen, so a dry run reports the
+            # same settings a real run would apply.
+            ensure_identity(vault, source, vault_config=vault_config)
+            ensure_byte_exact(vault, git_dir, vault_config=vault_config)
+        else:
+            # The identity *check* still runs on a preview -- failing
+            # early with the actionable message beats a commit-tree
+            # traceback -- but read-only: a dry run writes nothing at all
+            # (archive/REVIEW.snap-tool-deep.md R3).
+            ensure_identity(vault, source, vault_config=vault_config,
+                            write_identity=False)
         # Remember *after* the vault exists, so the first run leaves the next one
         # with nothing to type.  Not on a dry run: a preview must not mutate.
         if not args.dry_run:

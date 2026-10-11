@@ -200,6 +200,37 @@ class BasicSnapshotTests(_SnapshotFixture):
             self.tree(), {".env", ".gitignore", "README.md", "app.log"}
         )
 
+    def test_multi_segment_exclude_matches_a_directory_prefix(self):
+        """--exclude packages/web/build must exclude MORE than a bare name, not nothing.
+
+        The old component-match test could never match a pattern containing a
+        slash, so the more-precise spelling silently excluded nothing and the
+        whole directory went to the remote (SNAP-03).
+        """
+        build = self.code / "packages" / "web" / "build"
+        build.mkdir(parents=True)
+        (build / "bundle.js").write_bytes(b"console.log(1)\n")
+        (self.code / "packages" / "keep.txt").write_bytes(b"keep\n")
+        rc, _, err = self.snapshot("--exclude", "packages/web/build")
+        self.assertEqual(rc, 0, err)
+        tree = self.tree()
+        self.assertNotIn("packages/web/build/bundle.js", tree)
+        self.assertIn("packages/keep.txt", tree)
+
+    def test_exclude_is_case_insensitive_and_takes_backslashes(self):
+        """One command line must exclude the same set on every platform.
+
+        Windows tab-completion hands the tool backslash separators, and the
+        bare-name match was case-sensitive while fnmatch was not -- so
+        `--exclude Build` behaved differently from `--exclude build` (SNAP-06,
+        T-11).
+        """
+        (self.code / "Build").mkdir()
+        (self.code / "Build" / "out.o").write_bytes(b"x\n")
+        rc, _, err = self.snapshot("--exclude", "build")
+        self.assertEqual(rc, 0, err)
+        self.assertNotIn("Build/out.o", self.tree())
+
     def test_unchanged_run_creates_no_commit(self):
         self.snapshot()
         before = self.commits()
@@ -901,6 +932,29 @@ class RestoreVerificationTests(_SnapshotFixture):
         rc, out, err = self.restore_to(self.restored)
         self.assertEqual(rc, 0, err)
         self.assertIn("verified byte-exact", out)
+
+    def test_a_gitlink_in_the_snapshot_warns_at_restore_time(self):
+        """The snapshot-time warning must be repeated where the hole opens.
+
+        A snapshot holding an embedded repository (a gitlink) restores as an
+        empty directory -- the commit id was recorded, not the contents.  The
+        only warning used to live at snapshot time, possibly years and
+        machines away, while the restore printed "verified byte-exact"
+        (archive/REVIEW.snap-tool-deep.md, finding C-2).
+        """
+        inner = self.code / "vendor-lib"
+        inner.mkdir()
+        _git(inner, "init", "-q", "-b", "main")
+        (inner / "lib.c").write_text("int f(void) { return 0; }\n", encoding="utf-8")
+        _git(inner, "add", "-A")
+        _git(inner, "-c", "user.email=e@x", "-c", "user.name=v",
+             "commit", "-q", "-m", "inner")
+
+        self.snapshot("--remote", str(self.remote))
+        rc, out, err = self.restore_to(self.restored)
+        self.assertEqual(rc, 0, err)
+        self.assertIn("embedded git repositories", out)
+        self.assertIn("vendor-lib", out)
 
     def test_verify_also_runs_fsck(self):
         self.snapshot("--remote", str(self.remote))

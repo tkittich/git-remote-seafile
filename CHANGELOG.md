@@ -11,7 +11,16 @@ The fix pass for the 2026-10-11 review cycle (REVIEW.glm.md — this repository'
 
 ### Fixed
 
+Snapshot tool (`tools/seafile_snapshot.py`):
+
+- **Symlinks no longer defeat the byte-exact certification.** `verify_restore` verifies symlink entries (mode 120000) by reading the link against the stored blob; on Windows a link checked out as a text file is now a reported mismatch instead of a false "verified", and on POSIX a *correct* restore no longer spuriously fails.
+- **A restore warns about embedded repositories (gitlinks) in the restored tree.** The snapshot-time warning used to be the only one; a restore years later printed "verified byte-exact" over empty directories.
+- **`git()` scrubs the ambient Git environment and detaches stdin.** `GIT_INDEX_FILE` has no command-line override, so a run launched from a git hook or alias could write the whole tree (ignored files included) into the launching repository's index; `GIT_TERMINAL_PROMPT=0` turns a scheduler credential prompt into a fast failure instead of a hang holding the vault lock.
+- **Multi-segment excludes work** (`--exclude packages/web/build` excludes everything under it — the precise spelling used to match nothing), patterns accept Windows backslashes, and bare-name matching is case-insensitive so one command line means one snapshot on every platform.
+- **Smaller hardening:** `delete_branch` honors its compare-and-swap (a silently-undeleted branch no longer masquerades as rolled back); the push-rollback message no longer claims the vault "matches the remote" when the remote moved during the retry; stale-lock reclaim survives Windows sharing violations; `verify_restore`'s mismatch error names the path git could not open; `--dry-run` writes nothing (identity is still validated, read-only); the Win32 pid-probe prototypes are built once; repeated `--exclude` flags persist once.
+
 Helper:
+
 
 - **Branch-deletion push errors can no longer corrupt the protocol stream.** Every `error <ref>` line now goes through one sanitizer that flattens ``/`
 `; the branch-deletion path was the one site still writing a raw exception message, whose second line git would have parsed as a helper command.
