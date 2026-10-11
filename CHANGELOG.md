@@ -5,6 +5,100 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.4] - 2026-10-12
+
+Two findings from `REVIEW.sonnet.md` that the v0.8.3 pass deferred, both of them
+cases where the code was trusted for something it had not checked: the lock
+believed a clock estimate about who owned it, and `gc` believed an upload
+returned `True`. Neither is a protocol change — the ticket gains one field and
+the pack verification adds no format — and both now fail closed.
+
+### Fixed
+
+- **A granted lock can no longer be preempted by a later arrival's clock.** The
+  ticket queue ordered on `order_ts`, a *client-side estimate* of server time
+  (the local clock plus the offset implied by the `Date:` header, whose
+  resolution is one second). That estimate is fine for deciding who *waits* —
+  approximate shared time is all an expiry check needs — but it was also
+  deciding who *holds*, and two estimates half a second apart are
+  indistinguishable from a genuinely earlier arrival. A newcomer whose estimate
+  came out behind an active holder's therefore sorted ahead of it and acquired
+  the lock while the holder was mid-push. Reproduced against a stateful store:
+  with the old ordering, both clients end up marked as holders of one
+  repository. A winning client now publishes `"holding": true` on its ticket,
+  and the queue sorts every granted ticket ahead of every ticket that has merely
+  asked, whatever the timestamps say; `order_ts` is demoted to the tie-break
+  among peers. The marker is written in a second pass, after the queue has
+  agreed the client won, so `holding` always means "granted" and never "asked" —
+  a marker written on the first upload would claim the lock before it was
+  awarded. Effective once every client pushing to the repository is on v0.8.4+:
+  a newer client will not preempt an older holder, but an older client ignores
+  the marker. The lock contract and its limits are now spelled out in
+  `USER_GUIDE.md` §12 and `DESIGN.md` §7.1.
+- **The ownership fence now looks at the queue, not only at our own ticket.**
+  `verify_ownership()` was `return self.renew()`, which proves the *lease* — the
+  ticket is gone or foreign once another client reaps it — and nothing else. It
+  could not see the failure above, because in that failure our own ticket is
+  still there, still ours, still unexpired: it reads back perfectly while the
+  queue has already given the lock away. The fence now also scans the queue and
+  fails when an active ticket sorts ahead of ours, reported as a third state,
+  `another client was granted the lock while this ticket was still held`, kept
+  distinct from a takeover because the two send an operator to different places.
+  The scan is read-only (a verification step that reaped tickets would be doing
+  acquisition's job) and rate-limited to one listing per second, so fencing once
+  per deleted ref does not list the queue once per ref; the lease is still
+  re-proven on every call.
+- **`gc` no longer deletes the old packfiles on the strength of an unverified
+  upload.** After `repack -a -d` the consolidated pack and index were uploaded
+  and *all* superseded packs were then deleted, with only two checks between: that
+  `upload_file` returned `True` and that the lease was still held. Nothing
+  confirmed the new pack was actually there and intact — a truncated write, a
+  quota error a proxy answered `2xx`, or an `.idx` that never landed would pass
+  and the old packs would be removed. For a tool whose product is "your
+  repository's only copy", that is the step that deserves the most paranoia. The
+  remote pack directory is now listed again and every new `.pack`/`.idx` must
+  appear at the size it has locally; anything else refuses, names what could not
+  be verified, and leaves every old packfile in place. The lock is also
+  re-validated before *each* deletion rather than once before the loop: the
+  result of `maybe_renew()` was being discarded there, and since its `False` also
+  means "the renewal interval has not elapsed" — which is what most of its calls
+  return — a lease lost mid-loop read as an ordinary no-op and the loop kept
+  deleting inside another client's push. Losing ownership part-way through now
+  stops the cleanup and says so, without failing the run: the consolidated
+  packfiles are verified by that point, so the leftovers are only clutter.
+
+### Documentation
+
+- `USER_GUIDE.md` §12 said ticket ordering "prevent[ed] write-write collision
+  races and client clock drift". It did not, for the reason above; the section
+  now separates what the ordering guarantees from what the `Date:` header can
+  support, and states the mixed-version limit of the marker. The fence
+  description gained the two-part check and the distinct failure messages.
+- `USER_GUIDE.md` §10 and `DESIGN.md` §7.2 now describe what actually gates the
+  pack deletions, and §10 records that compaction's scratch space comes from the
+  system temporary directory — worth knowing before compacting a large library
+  on a small `tmpfs`, where the run fails late and after the lock is taken.
+- `lock-status` prints a `Granted` line when the winning ticket carries no marker
+  — a pre-v0.8.4 client, or an abandoned queue `--force` would clear.
+
+### Tests & Tooling
+
+- `tests/test_lock.py` gains `TestHoldingMarkerOutranksTheServerTimeEstimate`:
+  the skew preemption above, the marker surviving a renewal (renewal rewrites
+  the whole ticket body, so a marker added to only some of the writers would be
+  dropped on the first refresh and the ticket would still look well-formed), the
+  `LEASE_PREEMPTED` state, the reaping of a crashed holder that the marker must
+  not turn into a permanent lock, the scan rate limit, and the sort key putting a
+  grant ahead of an earlier estimate. Verified to fail with the marker removed
+  from the ordering.
+- `tests/test_gc.py` gains
+  `TestGcVerifiesTheUploadBeforeDeletingAnything`: a truncated pack, a pack
+  absent from the listing, a listing failure during verification, and a lease
+  lost mid-cleanup. Each asserts that no packfile is deleted. The gc fixtures now
+  model a remote whose pack listing grows with what it was sent — a listing
+  frozen at its pre-upload state fails the new check, correctly, but for a reason
+  that has nothing to do with the test.
+
 ## [0.8.3] - 2026-10-11
 
 The Tier 1 pass from the verification of `REVIEW.sonnet.md`, archived with a
@@ -948,6 +1042,7 @@ Data-loss and silent-failure fixes, and the Python floor raised to 3.9.
   with zero-config desktop-client token discovery, distributed locking, remote
   packfile compaction, and a Git LFS custom transfer agent.
 
+[0.8.4]: https://github.com/tkittich/git-remote-seafile/compare/v0.8.3...v0.8.4
 [0.8.3]: https://github.com/tkittich/git-remote-seafile/compare/v0.8.2...v0.8.3
 [0.8.2]: https://github.com/tkittich/git-remote-seafile/compare/v0.8.1...v0.8.2
 [0.8.1]: https://github.com/tkittich/git-remote-seafile/compare/v0.8.0...v0.8.1

@@ -45,17 +45,18 @@ python tools/run_tests_parallel.py -k e2e   # only matching classes
 python tools/run_tests_parallel.py --list   # show the units of work
 ```
 
-Measured on a 12-core AMD 5900X, **630 tests across 121 targets**:
+Measured on a 12-core AMD 5900X, **640 tests across 123 targets**:
 
 | workers | wall time |
 | ------- | --------- |
 | 4 | 319.4 s |
 | 8 | 232.9 s |
-| 8, `--granularity test` | 293.8 s (630 targets instead of 121) |
+| 8, `--granularity test` | 293.8 s (640 targets instead of 123) |
 
 Treat the column as indicative rather than exact. On an idle machine repeated runs
 spread by about a tenth, and the machine's throughput drifts by much more between
-sessions — the same `-j 8` run measured 232.9 s and 328.9 s an hour apart. The
+sessions — the same `-j 8` run has measured 232.9 s, 243.3 s and 328.9 s across
+sessions. The
 shape is the point: eight workers are 1.4x four, not 2x, and beyond
 eight the wall time barely moves, because the heavy cases are themselves
 multi-process. The wall time is bounded by the slowest single unit of work, not
