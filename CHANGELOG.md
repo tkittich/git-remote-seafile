@@ -5,7 +5,9 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.8.1] - 2026-10-11
+
+The review-cycle fix pass. Two commits' worth of findings from the same-day full-tree review (REVIEW.glm.md, cross-checked against the gemini and qwen peer reviews) and the three snapshot-tool reviews (REVIEW.snap{,1,2}.md, archived): 41 findings closed, 594 tests across 113 targets, all green. No protocol changes; every fix is fail-loud or fail-closed. Only one entry is user-visible at the default settings on day one: a repository can no longer smuggle `[seafile] skipsafetychecks = true` past its own push.
 
 The fix pass for the 2026-10-11 review cycle (REVIEW.glm.md — this repository's own full-tree review, cross-checked against the gemini and qwen peer reviews). 591 tests / 113 targets, all green.
 

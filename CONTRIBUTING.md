@@ -46,7 +46,7 @@ python tools/run_tests_parallel.py --list   # show the units of work
 ```
 
 Measured on a 12-core AMD 5900X — 268 tests when this table was first taken,
-576 across 112 targets after v0.8.0 (539 at the original tag; the review fixes
+594 across 113 targets after v0.8.1 (539 at the v0.8.0 tag; the review fixes
 joined the release) — the shape of the curve is the point:
 
 | workers | wall time |
