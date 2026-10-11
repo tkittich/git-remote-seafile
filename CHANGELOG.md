@@ -5,11 +5,19 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.8.2] - 2026-10-11
+
+The symlink-restore fix, plus the two documentation gaps the same-day audit left open. One of
+those gaps turned out to hide a real defect: writing a note about how symlinks survive a
+restore showed that a snapshot containing one could not be restored at all. No protocol changes.
 
 ### Added
 
 - **Shallow and partial clones now work.** The fetch-skip optimisation reasons from tip-commit presence, which implies a complete object store only in a full clone: in a `--depth` or `--filter` clone the tip can be present while its trees and blobs are not, so the skip left `git checkout` reporting missing objects. The helper now withholds the skip when the repository is shallow (`git rev-parse --is-shallow-repository`) or carries a promisor remote (`remote.<name>.promisor`), and fetches the pack instead. The probe fails safe — if it cannot answer, the pack is fetched.
+
+### Changed
+
+- **The tools' acquisition is now documented, and the test runner's curve re-measured.** No wheel contains `tools/`, so the README's `pip install git+…` followed by `python tools/seafile_snapshot.py` asked the reader to run a file that was not there; the README's snapshot section and `USER_GUIDE` §15 now say the tools come with the source checkout and the sdist, and the README's diagnostics section says so for `seafile_doctor.py`. Separately, `tools/run_tests_parallel.py`'s docstring published a **52.7 s** headline measured against 268 tests — before the snapshot tool and its tests existed — which read as a sub-minute suite for one that takes about four minutes; it now carries a curve measured at 612 tests / 118 targets, names the critical path (`test_snapshot_tool.ByteExactnessTests`, 115.6 s against a 238.6 s wall at `-j 8`), and no longer quotes a single-threaded baseline at all rather than quote a stale one. `CONTRIBUTING.md` carried a second copy of the same curve and was corrected with it. Symlink behaviour also gained user-facing notes: `USER_GUIDE` §8.2 (the helper side) and §15.4 (the restore side), the README's snapshot warning, and a rewritten `SNAPSHOT.md` "File modes and symlinks" paragraph, whose old claim that a restore "may not reproduce permissions or symlinks" was wrong in the other direction — a link is captured faithfully even when the source has `core.symlinks=false`.
 
 ### Fixed
 
@@ -828,6 +836,7 @@ Data-loss and silent-failure fixes, and the Python floor raised to 3.9.
   with zero-config desktop-client token discovery, distributed locking, remote
   packfile compaction, and a Git LFS custom transfer agent.
 
+[0.8.2]: https://github.com/tkittich/git-remote-seafile/compare/v0.8.1...v0.8.2
 [0.8.1]: https://github.com/tkittich/git-remote-seafile/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/tkittich/git-remote-seafile/compare/v0.7.2...v0.8.0
 [0.7.2]: https://github.com/tkittich/git-remote-seafile/compare/v0.7.1...v0.7.2

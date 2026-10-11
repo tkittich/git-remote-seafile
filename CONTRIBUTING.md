@@ -32,9 +32,9 @@ Run the test suite using Python's standard `unittest`:
 python -m unittest discover tests
 ```
 
-That is the baseline command. It is also slow: the end-to-end module shells out
-to a real `git` for every case, and accounts for 117.8 s of the 204 s total —
-close to three fifths.
+That is the baseline command, and it is the slow path: the end-to-end and
+snapshot modules shell out to a real `git` for case after case, and the suite has
+grown well past what a serial run is pleasant for.
 
 For the edit/test loop — and in CI — run the same suite across processes
 instead:
@@ -45,29 +45,32 @@ python tools/run_tests_parallel.py -k e2e   # only matching classes
 python tools/run_tests_parallel.py --list   # show the units of work
 ```
 
-Measured on a 12-core AMD 5900X — 268 tests when this table was first taken,
-594 across 113 targets after v0.8.1 (539 at the v0.8.0 tag; the review fixes
-joined the release) — the shape of the curve is the point:
+Measured on a 12-core AMD 5900X, **612 tests across 118 targets**:
 
 | workers | wall time |
 | ------- | --------- |
-| serial (`python -m unittest discover tests`) | 204.4 s (268 tests) |
-| 2 | 141.2 s |
-| 4 | 84.6 s |
-| 6 | 66.1 s |
-| 12 (the default here) | 52.7 s |
+| 4 | 341.9 s |
+| 8 | 238.6 s |
+| 8, `--granularity test` | 298.5 s (612 targets instead of 118) |
 
-The 268-test rows are the original measurement, kept because the *shape* of the
-curve is the point; with the snapshot module the absolute numbers are larger
-(the module alone was 587 s serial before its fixture split), and the
-class-granularity argument only got stronger.
+Treat the column as indicative rather than exact — repeated runs spread by about
+a tenth. The shape is the point: eight workers are 1.4x four, not 2x, and beyond
+eight the wall time barely moves, because the heavy cases are themselves
+multi-process. The wall time is bounded by the slowest single unit of work, not
+by throughput, and that unit is now a snapshot class —
+`test_snapshot_tool.ByteExactnessTests`, 115.6 s against a 238.6 s wall at
+`-j 8`.
 
-The wall time is bounded by the slowest single unit of work (37.0 s), not by
-throughput, and the curve flattens early: twelve workers are 1.6x four, not 3x,
-because the heavy cases are themselves multi-process. Repeated twelve-worker
-runs land between 52.7 s and 56.5 s, so treat the column as indicative rather
-than exact. The unit of work is the test class — see the module docstring for
-why per-test scheduling is measurably *worse* here.
+The serial baseline is deliberately not listed. It was 204.4 s when this table
+was first taken at 268 tests, and the suite has since more than doubled, so that
+figure is exactly the kind of stale number this table was corrected to remove.
+Run `python -m unittest discover tests` if you want a current one, and budget
+for it: the snapshot module makes the serial path a long wait, which is the
+whole reason this runner exists.
+
+The unit of work is the test class — see the module docstring for why per-test
+scheduling is measurably *worse* here (298.5 s against 238.6 s, for five times
+the process start-ups).
 
 Because the unit of work is the class, a **class that defines `test_*` methods
 must not be subclassed**: `unittest` inherits tests, so every case would run

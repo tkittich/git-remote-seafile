@@ -1,8 +1,8 @@
 # Engineering Roadmap & Backlog
 
-**Baseline:** v0.8.1 (the 2026-10-11 review-cycle fix pass)  
+**Baseline:** v0.8.2 (the symlink-restore fix, the tool-acquisition notes and the re-measured runner curve)  
 **Scope:** What shipped in each release line, the active backlog, and the v1.0.0 horizon.  
-**Test Suite:** 607 tests across 116 targets, all green (`tools/run_tests_parallel.py`). **Python:** 3.10+ (3.9 EOL).
+**Test Suite:** 612 tests across 118 targets, all green (`tools/run_tests_parallel.py`). **Python:** 3.10+ (3.9 EOL).
 
 > [!NOTE]
 > All critical and high-severity findings from `archive/REVIEW.*.md` (including ticket-based distributed locking, abandoned ticket cleanup, post-lock ref verification, exception propagation, GC lock fencing, pack index validation, surrogateescape paths, container PID isolation, D/F ref pruning, multi-spec pack batching, Git LFS transfer progress, safety guardrails, parallel ref enumeration, smart pack fetch filtering, disk-staged streaming, and modular helper decoupling) have been completed. All findings from the October 2026 review cycle (REVIEW.glm/gemini/qwen/VERIFY/BACKLOG, now archived) were verified fixed or explicitly dispositioned, as was the earlier v0.7.0 cycle (REVIEW.deepseek/gemini/qwen), closed in v0.7.1. Minor or low-priority items remain tracked in the backlog below. See [CHANGELOG.md](CHANGELOG.md) for detailed release notes.
@@ -75,6 +75,11 @@ One line per capability — see [CHANGELOG.md](CHANGELOG.md) for the full detail
 
 **v0.8.1 (2026-10-11) — the review-cycle fix pass.**
 - The 2026-10-11 review cycle closed: 41 findings from the full-tree review (REVIEW.glm.md, cross-checked against the gemini and qwen peer reviews) and the three snapshot-tool reviews (REVIEW.snap{,1,2}.md, archived). Helper: single protocol-stream sanitizer, pack-before-index publish order, repo-local config can no longer disarm the safety guardrails, URL userinfo masking, non-force `unlock` deletes only the winner's ticket, `lock-status`/`unlock` distinguish "unlocked" from "could not inspect", unknown helper commands fail loudly, LFS unknown-event replies carry `event`. Snapshot tool: symlink-aware byte verification, restore-time gitlink warning, `git()` environment scrub + `GIT_TERMINAL_PROMPT=0`, multi-segment/backslash/case-insensitive excludes, CAS-honoring `delete_branch`, `--dry-run` writes nothing. Doctor: guarded date keys, real-date churn window, stderr diagnoses, `where` exit 2 for an unreadable repo.db. Docs: nonexistent `gc --aggressive` removed; v2 API links corrected. Suite: 576 → 595 tests / 113 targets.
+
+**v0.8.2 (2026-10-11) — the symlink-restore fix.**
+- **A snapshot holding a symlink could not be restored, and one holding nothing but symlinks crashed the restore.** `verify_restore` looked each link up by its *position* in a list that excludes links, so a correctly restored link was reported as a mismatch — and a mismatch aborts the restore — while an all-symlink tree raised `IndexError`. Links are now looked up by path, and each is still judged by reading the link against its own blob.
+- Docs: the tools' **acquisition** is now stated where it matters — they ship with the source checkout and the sdist, not the wheel, so `pip install git+…` followed by `python tools/seafile_snapshot.py` was a dead end. Symlinks also gained user-facing notes (`USER_GUIDE` §8.2/§15.4, the README snapshot warning, and a rewritten `SNAPSHOT.md` paragraph).
+- `tools/run_tests_parallel.py`'s curve re-measured: the published 52.7 s headline predated the snapshot module and read as a sub-minute suite. Suite: 607 → 612 tests / 118 targets.
 
 ---
 

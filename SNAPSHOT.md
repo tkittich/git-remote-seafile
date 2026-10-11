@@ -1,7 +1,7 @@
 # SNAPSHOT.md — full-tree backup to Seafile, `.gitignore`d files included
 
 > **Status: shipped in v0.8.0.** The implementation is `tools/seafile_snapshot.py`;
-> the tests are `tests/test_snapshot_tool.py` (92 cases across 22 classes), and
+> the tests are `tests/test_snapshot_tool.py` (101 cases across 24 classes), and
 > the tool is documented in `USER_GUIDE.md` §15, `DESIGN.md` §7.13 and
 > `CHANGELOG.md`'s 0.8.0 entry. Everything below describes the tool **as it
 > ships**; measurements were taken on this machine unless a claim says otherwise.
@@ -361,8 +361,16 @@ All three measured on one clone, in one run. A verification step that cannot
 fail is worse than no verification, because it gets believed. `--verify`
 additionally runs `git fsck`.
 
+**Symlink entries (mode `120000`) never go through `hash-object`**, because it
+cannot judge one: on POSIX it follows the link and hashes the *target*, so a
+correct restore would be reported as a mismatch, and on Windows a link checked
+out as a text file would hash equal to the blob, so a restore that lost the link
+would pass. Each link is read with `os.readlink` and compared to its own blob
+instead, and a path that does not come back as a link at all is a mismatch.
+
 Verified byte-identical after restore: LF text, CRLF text, a 256-byte binary
-blob, a file with no trailing newline, `.gitattributes`, `.gitignore`, and
+blob, a file with no trailing newline, a symlink (with `core.symlinks` enabled,
+which is the default on Linux and macOS), `.gitattributes`, `.gitignore`, and
 ignored files under `node_modules/`. The naive clone differed — which is what
 makes the contrast real rather than assumed.
 
