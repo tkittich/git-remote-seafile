@@ -52,11 +52,37 @@ def _server_url_from_bare_host(segment: str) -> str:
     with its port silently dropped (which redirected the request to :443).  Only
     a portless host falls back to the documented HTTPS default.
 
-    An unbracketed IPv6 address is refused with the spelling that works: its
-    colons make ``host:port`` splitting meaningless, and guessing would produce
-    a nonsense authority that fails far from where the URL was written.
+    A bracketed IPv6 literal (``[::1]``, ``[2001:db8::1]:8443``) is parsed as
+    one address: the brackets are what make its colons unambiguous.  An
+    *unbracketed* colon-bearing segment is refused with the spelling that
+    works -- guessing would produce a nonsense authority that fails far from
+    where the URL was written.
     """
     host = segment.split("@")[-1]
+    if host.startswith("["):
+        close = host.find("]")
+        if close == -1:
+            raise ValueError(
+                f"Invalid Seafile URL format: unterminated '[' in host '{segment}'"
+            )
+        v6 = host[1:close]
+        if not v6:
+            raise ValueError(f"Invalid Seafile URL format: empty IPv6 address in '{segment}'")
+        rest = host[close + 1 :]
+        if not rest:
+            return f"https://[{v6.lower()}]"
+        if not rest.startswith(":") or not rest[1:].isdigit() or not (
+            0 < int(rest[1:]) < 65536
+        ):
+            raise ValueError(
+                f"Invalid Seafile URL format: invalid port '{rest}' in host '{segment}'"
+            )
+        port = int(rest[1:])
+        scheme = "http" if port == 80 else "https"
+        if port == (80 if scheme == "http" else 443):
+            return f"{scheme}://[{v6.lower()}]"
+        return f"{scheme}://[{v6.lower()}]:{port}"
+
     if ":" not in host:
         return f"https://{host.lower()}"
 
@@ -66,7 +92,8 @@ def _server_url_from_bare_host(segment: str) -> str:
     if ":" in hostname:
         raise ValueError(
             f"Invalid Seafile URL format: '{segment}' looks like an unbracketed "
-            f"IPv6 address. Write it with the explicit scheme and brackets: "
+            f"IPv6 address. Write it with brackets -- "
+            f"seafile://[{host}]/<library>/<path> -- or with an explicit scheme: "
             f"seafile://https://[{host}]/<library>/<path>"
         )
     if not port_s.isdigit() or not (0 < int(port_s) < 65536):

@@ -889,7 +889,7 @@ Measured on real pushes, not estimated (`SNAPSHOT.md` §8):
 
 The last row is the one to watch: **`seafile.autogc` is off**, so a large file that changes daily grows the Seafile library by its own size every day. Run `git-remote-seafile gc` (§10) on the *vault's* remote periodically, or keep large build artefacts out with `--default-excludes` (§15.2.1).
 
-The full design — the alternatives that do not work, the nested-repository handling, the own-review findings, and a comparison with restic and Borg — is in [SNAPSHOT.md](SNAPSHOT.md).
+The full design — the alternatives that do not work, the nested-repository analysis (today the tool warns; the measured capture is future work), the own-review findings, and a comparison with restic and Borg — is in [SNAPSHOT.md](SNAPSHOT.md).
 
 ---
 

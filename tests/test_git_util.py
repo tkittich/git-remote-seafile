@@ -482,6 +482,16 @@ class TestGitConfig(unittest.TestCase):
         with patch("git_remote_seafile.git_util.get_git_config", return_value="35"):
             self.assertEqual(get_git_config_int("seafile.gcthreshold", default=20), 35)
 
+        # the documented truthy and falsy spellings, both ways
+        with patch("git_remote_seafile.git_util.get_git_config", return_value="on"):
+            self.assertTrue(get_git_config_bool("seafile.autogc"))
+        with patch("git_remote_seafile.git_util.get_git_config", return_value="no"):
+            self.assertFalse(get_git_config_bool("seafile.autogc"))
+        with patch("git_remote_seafile.git_util.get_git_config", return_value="0"):
+            self.assertFalse(get_git_config_bool("seafile.autogc"))
+        with patch("git_remote_seafile.git_util.get_git_config", return_value="yes"):
+            self.assertTrue(get_git_config_bool("seafile.autogc"))
+
         with patch("git_remote_seafile.git_util.get_git_config", return_value="abc"):
             # A non-numeric value must not silently read as the default --
             # a typo'd setting looks exactly like an honoured one otherwise.

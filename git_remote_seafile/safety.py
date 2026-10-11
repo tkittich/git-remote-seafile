@@ -205,6 +205,16 @@ def check_preflight_safety(
                 raise SafetyError(str(ex)) from ex
             if "multiple libraries" in err_msg:
                 raise SafetyError(f"Ambiguous library '{library_name}': {ex}") from ex
+            # Anything else is a transient failure, not an answer.  Silently
+            # degrading to folder-name matching (the old behavior) reads, on a
+            # renamed sync folder, exactly like "no collision possible" -- say
+            # the check could not run instead.
+            sys.stderr.write(
+                f"Warning: could not confirm the target library '{library_name}' "
+                f"against the server ({ex}); the collision checks fall back to "
+                "local folder names and may miss a renamed sync folder.\n"
+            )
+            sys.stderr.flush()
 
     # 3. Discover local synced libraries
     if synced_libs is None:

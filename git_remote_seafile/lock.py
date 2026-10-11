@@ -615,10 +615,15 @@ class RemoteLock:
         return {"locked": False}
 
     def unlock(self, force: bool = False) -> bool:
-        """Break or release the lock on the repository."""
+        """Break or release the lock on the repository.
+
+        Returns True when a lock actually existed and was cleared, False when
+        there was nothing to release -- so the CLI can say "nothing to
+        release" instead of reporting success for a no-op.
+        """
         status = self.get_status()
         if not status.get("locked"):
-            return True
+            return False
 
         if not force:
             owner = self._owner_id()

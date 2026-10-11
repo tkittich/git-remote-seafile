@@ -311,6 +311,32 @@ class TestSafetyGuardrails(unittest.TestCase):
 
         self.assertEqual(warnings, [])
 
+    def test_a_transient_library_check_error_warns_instead_of_degrading_silently(self):
+        """A network error is not an answer, and silence reads as "no collision".
+
+        Only "not found"/"404" and "multiple libraries" are answers this module
+        can act on.  Any other failure from get_repo_id used to be swallowed to
+        target_repo_id=None with no signal -- which, on a renamed sync folder,
+        looked exactly like "the trap checks do not apply".  It must warn.
+        """
+        client = MagicMock()
+        client.get_repo_id.side_effect = SeafileAPIError("Failed to list repos: HTTP 500")
+
+        stderr = io.StringIO()
+        with patch("sys.stderr", stderr):
+            warnings = check_preflight_safety(
+                client,
+                "Documents",
+                "/code/myproject",
+                local_worktree=None,
+                push_mode=True,
+                synced_libs=[],  # nothing local: the run proceeds either way
+            )
+
+        self.assertEqual(warnings, [])
+        self.assertIn("could not confirm the target library", stderr.getvalue())
+        self.assertIn("HTTP 500", stderr.getvalue())
+
     def test_safety_does_not_fallback_to_name_when_target_repo_id_resolved(self):
         # N-14: Server library is 'Documents' with repo_id 'server-id'.
         # Local synced library is also named 'Documents' but has repo_id 'local-id' (different library).
@@ -427,18 +453,24 @@ class TestWorkingTreeFallback(unittest.TestCase):
             original_cwd = os.getcwd()
             os.chdir(proj_dir)
             try:
-                with patch(
-                    "git_remote_seafile.safety.get_local_work_tree", return_value=None
-                ):
-                    with self.assertRaises(SafetyError) as ctx:
-                        check_preflight_safety(
-                            client,
-                            "Documents",
-                            "/code/myproject",
-                            local_worktree=None,
-                            push_mode=False,
-                            synced_libs=synced_libs,
-                        )
+                # GIT_DIR/GIT_WORK_TREE take precedence over the cwd fallback,
+                # so ambient values (an IDE or CI exports them) would silently
+                # route this test through a different branch.
+                with patch.dict(os.environ):
+                    os.environ.pop("GIT_DIR", None)
+                    os.environ.pop("GIT_WORK_TREE", None)
+                    with patch(
+                        "git_remote_seafile.safety.get_local_work_tree", return_value=None
+                    ):
+                        with self.assertRaises(SafetyError) as ctx:
+                            check_preflight_safety(
+                                client,
+                                "Documents",
+                                "/code/myproject",
+                                local_worktree=None,
+                                push_mode=False,
+                                synced_libs=synced_libs,
+                            )
             finally:
                 os.chdir(original_cwd)
 
@@ -568,7 +600,9 @@ class TestWorkingTreeFallback(unittest.TestCase):
         # The fallback must not override a work tree that was determined
         # properly.  Here cwd *is* inside the synced library and would collide,
         # while the explicit (correct) work tree is outside it -- so if the code
-        # preferred cwd, this would raise.
+        # preferred cwd, Trap 1 would raise.  The synced lib's repo_id matches
+        # the client's on purpose: with a mismatched id the library never
+        # resolved and Trap 1 was skipped, so this test passed vacuously.
         client = MagicMock()
         client.get_repo_id.return_value = "repo1"
 
@@ -580,7 +614,7 @@ class TestWorkingTreeFallback(unittest.TestCase):
             elsewhere.mkdir()
 
             synced_libs = [
-                {"repo_id": "r1", "name": "Documents", "worktree": doc_dir,
+                {"repo_id": "repo1", "name": "Documents", "worktree": doc_dir,
                  "server_url": "https://seafile.example.com"}
             ]
 
@@ -643,6 +677,10 @@ class TestDiscoverLocalSyncedLibraries(unittest.TestCase):
                 self.assertEqual(libs[0]["repo_id"], "repo-1")
                 self.assertEqual(libs[0]["worktree"], worktree.resolve())
                 self.assertEqual(libs[0]["username"], "alice")
+                # the name is the local FOLDER basename (the client does not
+                # store the library name) -- the name-based fallback match
+                # keys on this, so pin it
+                self.assertEqual(libs[0]["name"], "MyLibrary")
             finally:
                 con.close()
 

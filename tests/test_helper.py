@@ -909,6 +909,35 @@ class TestRemoteHelper(unittest.TestCase):
 
         self.assertIn("error refs/heads/main fetch first", out.getvalue())
 
+    @patch("git_remote_seafile.helper.rev_parse", return_value="local_sha")
+    @patch("git_remote_seafile.helper.is_ancestor", return_value=True)
+    @patch("git_remote_seafile.helper.get_objects_to_push", return_value=["obj1"])
+    @patch("git_remote_seafile.helper.create_packfile", return_value=("pack1", b"PACK", b"IDX"))
+    def test_cmd_push_cas_recheck_catches_a_moved_ref(self, mock_pack, mock_objs, mock_anc, mock_rev):
+        # N-1's second half: after the fast-forward decision, the ref is read
+        # again immediately before the write.  A concurrent push that landed
+        # between the two reads must be caught by this compare-and-swap and
+        # reported as "fetch first" -- not clobbered by the ref upload.
+        h = RemoteHelper.__new__(RemoteHelper)
+        h.client = MagicMock()
+        h.repo_id = "repo1"
+        h.repo_path = "/git-repo"
+        h._refs_cache = {}
+        # read 1: the fast-forward check; read 2: the CAS re-check
+        h.client.get_file_text.side_effect = ["remote_sha", "moved_sha"]
+
+        out = io.StringIO()
+        with patch("sys.stdout", out), patch("git_remote_seafile.helper.RemoteLock"):
+            h.cmd_push(["refs/heads/main:refs/heads/main"])
+
+        self.assertIn("error refs/heads/main fetch first", out.getvalue())
+        # no ref file was written: the only uploads were the pack artefacts
+        ref_writes = [
+            c for c in h.client.upload_file.call_args_list
+            if len(c.args) >= 3 and c.args[1].startswith("/git-repo/refs/heads")
+        ]
+        self.assertEqual(ref_writes, [])
+
     def test_cmd_push_branch_deletion(self):
         h = RemoteHelper.__new__(RemoteHelper)
         h.client = MagicMock()

@@ -403,7 +403,10 @@ def main() -> int:
         try:
             helper = RemoteHelper("unlock", url)
             lock = RemoteLock(helper.client, helper.repo_id, helper.repo_path)
-            lock.unlock(force=force)
+            was_locked = lock.unlock(force=force)
+            if not was_locked:
+                print(f"Repository at {url} is not locked; nothing to release.")
+                return 0
             if force:
                 print(f"Forcibly unlocked repository at {url}.")
             else:

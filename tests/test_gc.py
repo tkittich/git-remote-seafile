@@ -137,7 +137,7 @@ class TestRemoteGC(unittest.TestCase):
             return b"PACK-DATA"
 
         mock_client.get_file_bytes.side_effect = fake_get_file_bytes
-        del mock_client.download_file_to
+        mock_client.download_file_to = MagicMock(side_effect=OSError("streaming unavailable"))
         mock_client.get_file_text.return_value = "sha-main"
 
         def fake_subprocess(cmd, **kwargs):
@@ -164,7 +164,7 @@ class TestRemoteGC(unittest.TestCase):
         )
         # Server returns fewer bytes than reported in list_dir
         mock_client.get_file_bytes.return_value = b"TRUNCATED"
-        del mock_client.download_file_to
+        mock_client.download_file_to = MagicMock(side_effect=OSError("streaming unavailable"))
 
         res = compact_repository(mock_client, "repo1", "/path", min_packs=2, verbose=False)
         self.assertEqual(res["status"], "error")
@@ -180,7 +180,7 @@ class TestRemoteGC(unittest.TestCase):
             else [{"type": "file", "name": "main"}] if "refs/heads" in path
             else []
         )
-        del mock_client.download_file_to
+        mock_client.download_file_to = MagicMock(side_effect=OSError("streaming unavailable"))
 
         res = compact_repository(mock_client, "repo1", "/path", min_packs=2, verbose=False)
         self.assertEqual(res["status"], "error")
@@ -456,7 +456,10 @@ class TestGcRecoveryAndFencing(unittest.TestCase):
                 {"name": "pack-1.idx", "size": 20 * 1024 * 1024},
             ]
         )
-        del client.download_file_to  # streaming unavailable -> the in-memory path
+        # streaming unavailable -> the in-memory path.  A side_effect (not `del`):
+        # a spec-less MagicMock regenerates deleted attributes, so `del` never
+        # actually disabled streaming and these cases passed for the wrong reason.
+        client.download_file_to = MagicMock(side_effect=OSError("streaming unavailable"))
         mock_subprocess.return_value = MagicMock(returncode=0)
 
         res = compact_repository(client, "repo1", "/path", min_packs=2, verbose=False)

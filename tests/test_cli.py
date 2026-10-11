@@ -688,6 +688,22 @@ class TestCLILockManagement(unittest.TestCase):
 
     @patch("git_remote_seafile.cli.RemoteLock")
     @patch("git_remote_seafile.cli.RemoteHelper")
+    def test_unlock_when_nothing_is_locked_says_so(self, mock_helper_cls, mock_lock_cls):
+        # unlock() used to return True unconditionally, so the CLI reported a
+        # successful unlock for a repository that had no lock at all.
+        mock_lock = MagicMock()
+        mock_lock.unlock.return_value = False
+        mock_lock_cls.return_value = mock_lock
+
+        with patch.object(sys, "argv", ["git-remote-seafile", "unlock", "seafile://code/myrepo"]):
+            with patch("sys.stdout", new_callable=io.StringIO) as mock_out:
+                code = main()
+        self.assertEqual(code, 0)
+        self.assertIn("not locked; nothing to release", mock_out.getvalue())
+        self.assertNotIn("Unlocked repository", mock_out.getvalue())
+
+    @patch("git_remote_seafile.cli.RemoteLock")
+    @patch("git_remote_seafile.cli.RemoteHelper")
     def test_unlock_force(self, mock_helper_cls, mock_lock_cls):
         mock_lock = MagicMock()
         mock_lock_cls.return_value = mock_lock

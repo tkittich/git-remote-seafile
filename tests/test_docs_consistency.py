@@ -594,5 +594,41 @@ class TestDocumentationIndex(unittest.TestCase):
                 )
 
 
+class TestSnapshotNarrativeHasNotRegressed(unittest.TestCase):
+    """The shipped-tool claims this cycle had to correct, pinned as absent.
+
+    These are prose, not mechanical tokens, so they sit outside the guards'
+    usual scope -- but each one shipped as a doc/code contradiction that four
+    reviews had to find by hand.  A needle here is cheap regression cover.
+
+    * per-machine ``snapshot-<host>`` chains: the code ships ONE shared
+      ``refs/heads/snapshot`` chain; the hostname rides in the commit message.
+    * the synced-library guard: implemented in v0.8.0, refuses the run.
+    * nested repositories: detected and WARNED about; their contents are not
+      captured (the CHANGELOG/release notes once claimed otherwise).
+    * the shared-remote check: implemented, not "still to be written".
+    """
+
+    #: substrings that must never reappear in any shipped document
+    FORBIDDEN = (
+        "Per-machine chains are kept separate",
+        "Per-machine chains live under",
+        "the snapshot tool simply does not call it yet",
+        "(detectable, not yet detected)",
+        "the check that would make it an *error* is still to be written",
+        "Nested repositories are captured.",
+        "added with `--cacheinfo`, so a doubly-nested tree snapshots whole",
+    )
+
+    def test_no_shipped_doc_still_carries_the_corrected_claims(self):
+        offenders = []
+        for name in _DOC_NAMES:
+            text = _read(name)
+            for needle in self.FORBIDDEN:
+                if needle in text:
+                    offenders.append(f"{name}: {needle!r}")
+        self.assertEqual(offenders, [], chr(10).join(offenders))
+
+
 if __name__ == "__main__":
     unittest.main()

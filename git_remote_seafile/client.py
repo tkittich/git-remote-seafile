@@ -78,6 +78,7 @@ class StreamingMultipartFile:
         self.boundary = boundary or f"----GRSBoundary{uuid.uuid4().hex}"
         self.file_obj = file_obj
         self.file_size = file_size
+        self.filename = filename  # named in read()'s short-source error
         self.progress_callback = progress_callback
         self._uploaded_file_bytes = 0
         try:
@@ -138,6 +139,18 @@ class StreamingMultipartFile:
                 self.file_obj.seek(self._file_start_pos + rel_pos)
             take = min(needed, file_end - self._pos)
             chunk = self.file_obj.read(take)
+            if not chunk and needed > 0:
+                # The source ended before the size we measured from it (a file
+                # truncated mid-upload, or a mis-measured stream).  Returning
+                # b"" from here reads as EOF to urllib3, which sends the
+                # declared Content-Length with a *shorter* body and no error
+                # anywhere -- the server then hangs on the shortfall or
+                # rejects a corrupt multipart.  Fail the upload instead.
+                raise SeafileAPIError(
+                    f"upload source for '{self.filename}' ended after "
+                    f"{self._uploaded_file_bytes} of {self.file_size} bytes; "
+                    "the file changed size while it was being uploaded"
+                )
             chunks.append(chunk)
             self._pos += len(chunk)
             needed -= len(chunk)

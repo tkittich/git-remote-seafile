@@ -624,6 +624,9 @@ class TestConcurrencyAndLocking(unittest.TestCase):
             [k for k in store.files if ".git-lock.d" in k],
             [],
         )
+        # unlocking again is a no-op, and says so: the CLI uses this to print
+        # "nothing to release" instead of a success that did nothing
+        self.assertFalse(lock.unlock())
 
     def test_lock_status_flags_an_expired_queue_as_stale(self):
         """A dead lock must say so, not pose as one that expires in 0 seconds.

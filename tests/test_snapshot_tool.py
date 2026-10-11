@@ -460,8 +460,15 @@ class MultiMachineTests(_SnapshotFixture):
 
     def test_a_machine_that_is_behind_fast_forwards_first(self):
         self.snapshot("--remote", str(self.remote))
-        # machine B starts from the shared chain rather than its own genesis
-        _git(self.tmp, "clone", "-q", "-b", BRANCH, str(self.remote), str(self.vault))
+        # machine B starts from the shared chain rather than its own genesis: a
+        # fresh clone of the remote is exactly what a second machine's vault
+        # looks like.  It must NOT be self.vault -- that already holds machine
+        # A's repository, so the clone would fail (and _git does not check
+        # return codes): "machine B" was secretly machine A, and the reconcile
+        # path this test exists for never ran.
+        vault_b = self.tmp / "vault-b"
+        proc = _git(self.tmp, "clone", "-q", "-b", BRANCH, str(self.remote), str(vault_b))
+        self.assertEqual(proc.returncode, 0, proc.stderr)
 
         # machine A moves the chain on
         (self.code / "a2.txt").write_bytes(b"a2\n")
@@ -470,9 +477,16 @@ class MultiMachineTests(_SnapshotFixture):
 
         # machine B snapshots: it must extend A's newest commit, not its stale one
         (self.code / "b.txt").write_bytes(b"b\n")
-        rc, out, _ = self.snapshot("--remote", str(self.remote))
+        rc, out, _ = self.run_tool(
+            "--source", self.code, "--vault", vault_b, "--remote", str(self.remote)
+        )
         self.assertEqual(rc, 0)
         self.assertIn(a_tip[:12], out)
+        # B's stale vault fast-forwarded to A's tip before building on it --
+        # both locally and on the remote, B's commit's parent is A's tip.
+        self.assertEqual(
+            _git(vault_b, "rev-parse", f"{BRANCH}^").stdout.strip(), a_tip
+        )
         self.assertEqual(
             _git(self.remote, "rev-parse", f"{BRANCH}^").stdout.strip(), a_tip
         )

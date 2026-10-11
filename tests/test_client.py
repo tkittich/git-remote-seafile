@@ -11,7 +11,12 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from git_remote_seafile.client import SeafileAPIError, SeafileAuthError, SeafileClient
+from git_remote_seafile.client import (
+    SeafileAPIError,
+    SeafileAuthError,
+    SeafileClient,
+    StreamingMultipartFile,
+)
 
 
 class TestClientCredentials(unittest.TestCase):
@@ -1042,6 +1047,43 @@ class TestStreamingTransfers(unittest.TestCase):
             received["transfer_encoding"],
             "a seekable file object should give requests a Content-Length, not chunked encoding",
         )
+
+
+    def test_a_source_that_shrinks_fails_loudly_instead_of_sending_a_short_body(self):
+        # The regression: read() returned b"" once the source ran out, which
+        # urllib3 reads as EOF -- so requests sent the declared
+        # Content-Length with a *shorter* body and nothing raised anywhere.
+        # The server was left hanging on the shortfall or rejecting corrupt
+        # multipart, and the caller saw neither.
+        payload = io.BytesIO(b"short")
+        mp = StreamingMultipartFile(
+            fields={"parent_dir": "/x"},
+            file_field="file",
+            filename="f.pack",
+            file_obj=payload,
+            file_size=10_000,  # declared far more than the source holds
+        )
+        with self.assertRaises(SeafileAPIError) as ctx:
+            while True:
+                if mp.read(64 * 1024) == b"":
+                    break  # a well-formed stream ends; a short one must raise first
+        self.assertIn("ended after", str(ctx.exception))
+        self.assertIn("5 of 10000 bytes", str(ctx.exception))
+
+    def test_a_well_formed_stream_still_reads_to_exact_end(self):
+        # the control for the guard above: a source matching its declared
+        # size reads header+body+footer exactly, then a clean b""
+        payload = io.BytesIO(b"exactly-ten")
+        mp = StreamingMultipartFile(
+            fields={"parent_dir": "/x"},
+            file_field="file",
+            filename="f.pack",
+            file_obj=payload,
+            file_size=len(b"exactly-ten"),
+        )
+        delivered = mp.read(1024 * 1024)
+        self.assertEqual(len(delivered), mp.total_len)
+        self.assertEqual(mp.read(1024), b"")
 
 
 class TestTransferSession(unittest.TestCase):

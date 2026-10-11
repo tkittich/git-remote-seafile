@@ -146,6 +146,34 @@ class TestUrlParsingModule(unittest.TestCase):
         self.assertIn("IPv6", str(ctx.exception))
         self.assertIn("seafile://https://[2001:db8::1]/", str(ctx.exception))
 
+    def test_bracketed_ipv6_bare_host_is_parsed_as_one_address(self):
+        """The brackets are what make an IPv6 literal's colons unambiguous.
+
+        ``seafile://[::1]/lib/repo`` used to rpartition into the nonsense
+        authority ``https://[:]:1``; the bracketed form now parses like any
+        other host, with the optional port honoured like the non-IPv6 form.
+        """
+        res = parse_seafile_url("seafile://[::1]/lib/repo")
+        self.assertEqual(res.server_url, "https://[::1]")
+        self.assertEqual(res.library_name, "lib")
+        self.assertEqual(res.repo_path, "/repo")
+
+        # port honoured, scheme inferred, hex lowercased -- same rules as the
+        # non-IPv6 bare-host form
+        self.assertEqual(
+            parse_seafile_url("seafile://[2001:DB8::1]:8443/lib/repo").server_url,
+            "https://[2001:db8::1]:8443",
+        )
+        self.assertEqual(
+            parse_seafile_url("seafile://[::1]:80/lib/repo").server_url,
+            "http://[::1]",
+        )
+
+        # malformed brackets are refused, not half-parsed
+        with self.assertRaises(ValueError) as ctx:
+            parse_seafile_url("seafile://[::1/lib/repo")
+        self.assertIn("unterminated", str(ctx.exception))
+
     def test_empty_host_explicit_scheme_rejected(self):
         for url in ("seafile://https:///lib/repo", "seafile://http:///lib/repo"):
             with self.subTest(url=url):

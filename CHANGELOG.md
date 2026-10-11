@@ -22,6 +22,17 @@ Post-release fixes from the four-way review cycle (GLM, qwen, gemini, deepseek �
 - **`lock-status` flags an all-expired ticket queue as STALE** instead of presenting a dead lock as one that "expires in 0s"; gc's `check_remote_has_packs` propagates listing failures instead of failing open; `_prune_empty_ref_parents` deletes a parent only on a positively-confirmed empty listing; an LFS download whose size disagrees with the request fails with an explicit 502; a non-numeric `seafile.*` integer warns instead of silently using the default; an unbracketed IPv6 bare host is rejected with the spelling that works.
 - **Snapshot tool hardening:** config writes go through `-C` and fail loudly instead of discarding the return code; the vault config is read once per run (was four); `_same_config_value`'s backslash normalisation is scoped to `snapshot.source` (for every other key a backslash is data); `pid_is_alive`/`VaultLock` fsync, unlink-retry and stale-reclaim fixes; the byte-verification of a restore hashes every file in one process; `find_secrets`' location patterns (`.ssh/*`, `.aws/credentials`) match at any depth.
 
+### Fixed (second review pass — qwen's test-quality batch)
+
+- **A shrunken upload source now fails the upload instead of silently sending a short body.** `StreamingMultipartFile.read` returned `b""` at the source's premature end, which urllib3 reads as EOF — so `requests` sent the declared `Content-Length` with fewer bytes and nothing raised anywhere.
+- **`seafile://[::1]/lib/repo` parses.** The bracketed IPv6 bare-host form (with optional `:port`) is one address; only the unbracketed colon-bearing form is refused, with the bracketed spelling named.
+- **A transient error resolving the target library is warned about** during the safety checks instead of silently degrading Trap 1/2 to folder-name matching, which on a renamed sync folder read exactly like "no collision possible".
+- **`unlock` on an unlocked repository says "not locked; nothing to release"** instead of reporting a successful unlock that did nothing (`RemoteLock.unlock` now returns whether a lock existed).
+
+### Tests
+
+- **Suite grew 539 → 576 tests across 112 targets** (the v0.8.0 figures predate the post-release fixes): the gc streaming-fallback tests actually disable streaming now (`del` on a spec-less MagicMock regenerates the attribute, so they passed via `dest.is_file()==False`, not the fallback); the machine-behind fast-forward test's clone actually succeeds into its own vault (it used to fail silently into machine A's, so the reconcile path never ran); the explicit-worktree safety test's ids now match so Trap 1 really evaluates; the sqlite temp-copy test asserts its precondition; the suite-shape guard resolves base classes across modules; and the corrected v0.8.0 claims (per-machine chains, synced-guard, nested-repo warning, shared-remote check) are pinned as absent from every shipped doc.
+
 ### Changed
 
 - **SNAPSHOT.md re-anchored to the shipped tool** (status header, the synced-library guard, the shared-remote check, nested-repo status, next steps); USER_GUIDE §15.4's restore examples now use the real flag set (`--restore --remote --into`), and the per-machine `refs/heads/snapshot-<host>` claim is corrected — the default is one shared chain, with `--branch` for per-machine chains.

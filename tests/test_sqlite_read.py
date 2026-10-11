@@ -130,8 +130,17 @@ class TestOpenLiveSqliteReadOnly(unittest.TestCase):
                 scratch = Path(td) / "scratch"
                 scratch.mkdir()
                 with patch("tempfile.tempdir", str(scratch)):
+                    # The empty-after assertion below only means something if
+                    # the copy actually landed in *scratch* (tempfile.tempdir
+                    # is read by gettempdir() ahead of TEMP/TMP): assert the
+                    # precondition while the connection is open, or a test
+                    # whose copy went elsewhere passes vacuously.
                     with open_live_sqlite_ro(db) as con:
                         _read(con)
+                        copies = list(scratch.rglob("*"))
+                    self.assertTrue(
+                        copies, "the scratch dir saw no copy: this test proves nothing"
+                    )
                 self.assertEqual(
                     list(scratch.iterdir()), [],
                     "the temporary copy of the database was not cleaned up",
