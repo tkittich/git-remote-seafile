@@ -6,6 +6,23 @@ on:
   pull_request:
     branches: [ main ]
 
+# Least privilege.  Nothing in this workflow writes to the repository, and the
+# default token is read/write on older repository settings, so the scope is
+# stated rather than inherited.  `release.yml` has carried the same block since
+# it was written; this file was the one without it (D1).
+permissions:
+  contents: read
+
+# A push that supersedes an in-flight run cancels it.  The matrix is the
+# expensive part of this workflow -- fifteen jobs, each running the whole suite
+# -- and without this a series of pushes to one branch queues fifteen more jobs
+# per push behind the ones already running (D6).  The cancelled run's logs stay
+# available; what is lost is a verdict on a commit that has already been
+# replaced.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     runs-on: ${{ matrix.os }}
@@ -42,6 +59,12 @@ jobs:
       uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
       with:
         python-version: ${{ matrix.python-version }}
+        # Fifteen legs each resolve `requests` and its dependencies from the
+        # index.  The cache key is pyproject.toml, named explicitly rather than
+        # left to the action's file search, so the cache is invalidated exactly
+        # when the declared dependencies change (D6).
+        cache: 'pip'
+        cache-dependency-path: pyproject.toml
 
     - name: Install dependencies
       run: |
@@ -59,16 +82,19 @@ jobs:
     # quoted here was measured at 268 tests and had drifted for several releases
     # (B4), so it was deleted rather than re-measured in a third place.
     #
-    # -j 4 is explicit rather than 0/auto deliberately: os.cpu_count() reports
-    # the *host's* cores inside a container, and handing a 4-vCPU runner 50-odd
-    # workers is slower than handing it one.  Raise it if the runners grow.
+    # The worker count is the runner's own default -- one per CPU it can see --
+    # rather than a literal.  It used to be `-j 4`, justified by "the runner has
+    # four vCPUs": a number that is not the same on every OS in this matrix and
+    # changes whenever GitHub resizes a runner image (D7).  The default follows
+    # the machine, and the runner clamps the count to the number of targets, so
+    # a large self-hosted box cannot start more workers than there is work.
     #
     # The runner emits the same unittest prose, so the reporting step below
     # still finds its FAIL:/ERROR: blocks -- checked against both a passing and
     # a deliberately failing run before switching.
     - name: Run unit tests
       run: |
-        python tools/run_tests_parallel.py -j 4 > unittest-output.txt 2>&1
+        python tools/run_tests_parallel.py -j 0 > unittest-output.txt 2>&1
 
     # Runs even when the step above fails.  Workflow logs need admin rights to
     # download; annotations do not, so the failing test names stay visible.
@@ -108,7 +134,7 @@ jobs:
     # The doc guards used to run only inside the test suite, and the drift
     # scenarios that prove they *work* were wired into nothing at all -- so the
     # guards could have rotted into vacuous passes with every job still green
-    # (B4).  Both are cheap: the guards are a handful of regex checks over nine
+    # (B4).  Both are cheap: the guards are a handful of regex checks over ten
     # documents, and the scenarios are the same checks against deliberately
     # drifted text.  No install step is needed -- the guards import
     # `git_remote_seafile` from the checkout, which `python` puts on sys.path.
@@ -116,3 +142,47 @@ jobs:
       run: |
         python -m unittest tests.test_docs_consistency
         python tools/verify_docs_guards.py
+
+  # The dependency floor in pyproject.toml is a *security* floor -- it names the
+  # releases that fixed three CVEs in requests' own credential handling -- and
+  # every job above installs the *latest* requests instead.  A floor that has
+  # never been installed is a number in a metadata file rather than a tested
+  # claim (D5).
+  #
+  # One leg, Ubuntu only: the question is which library version works, not
+  # which platform, and the matrix above already covers the platforms.  The
+  # interpreter is the lowest supported one, where a version-resolution
+  # surprise is likeliest.
+  min-deps:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+
+    - name: Set up Python 3.10
+      uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+      with:
+        python-version: '3.10'
+
+    - name: Install the declared floor
+      run: |
+        python -m pip install --upgrade pip
+        # The exact version the floor names.  Bumping the floor in
+        # pyproject.toml means bumping it here too, or this job quietly stops
+        # testing what the package declares.
+        pip install "requests==2.32.4"
+        # --no-deps: without it the editable install is free to resolve a newer
+        # requests over the pin, and the job would pass having never run
+        # against the floor it exists to exercise.
+        pip install --no-deps -e .
+
+    # Fails rather than warns.  If resolution moved off the pin, every result
+    # below describes a version the floor does not name.
+    - name: Assert the pin survived the install
+      run: python -c "import sys, requests; print('requests', requests.__version__); sys.exit(0 if requests.__version__ == '2.32.4' else 1)"
+
+    - name: Run unit tests
+      run: python tools/run_tests_parallel.py -j 0 > unittest-output.txt 2>&1
+
+    - name: Report test results
+      if: always()
+      run: python .github/ci_report_failures.py unittest-output.txt

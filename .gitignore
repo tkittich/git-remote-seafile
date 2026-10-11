@@ -14,12 +14,21 @@ dist/
 env/
 venv/
 ENV/
+# A throwaway venv that review passes use to run a pinned ruff and pytest.  It
+# ships a .gitignore of its own, but depending on that means deleting one file
+# inside it turns `git status` into several thousand untracked entries (D10).
+.review-venv/
 
 # Testing & Coverage
 .pytest_cache/
 .coverage
 htmlcov/
 unittest-output.txt
+
+# Linter cache
+# Same reasoning as .review-venv/: ruff writes its own .gitignore, and relying
+# on it makes the ignore rule invisible from the repository's own .gitignore.
+.ruff_cache/
 
 # Logs & temp
 *.log

@@ -15,6 +15,7 @@ include RUNBOOK.md
 include CONTRIBUTING.md
 include ROADMAP.md
 include SNAPSHOT.md
+include CODE_OF_CONDUCT.md
 include pyproject.toml
 
 # The source-checkout launcher, so an sdist can be run without installing it.

@@ -56,6 +56,7 @@ _DOC_NAMES = (
     "CONTRIBUTING.md",
     "ROADMAP.md",
     "SNAPSHOT.md",
+    "CODE_OF_CONDUCT.md",
 )
 
 # Config keys are written in backticks throughout the docs.  Requiring the
@@ -590,7 +591,7 @@ class TestLintIsWired(unittest.TestCase):
 
         That made them invisible to a documentation-only change: a doc edit that
         contradicts the code was caught by whichever job happened to run the
-        tests, and by nothing else.  They are regex checks over nine documents,
+        tests, and by nothing else.  They are regex checks over ten documents,
         so they cost well under a second.
         """
         self.assertIn(

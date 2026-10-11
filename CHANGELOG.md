@@ -5,6 +5,103 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.6] - 2026-10-12
+
+Two tranches, and neither of them is code — which is the point. A workflow with no token scope, no
+concurrency group and a worker count copied from an assumption about the runner produces exactly the
+same green pipeline as one without those problems. A dependency floor nothing installs is a number in
+a metadata file. A release whose artifacts nothing attested looks identical to one whose artifacts
+were. None of it is visible from a passing test run, so each piece is pinned by a guard rather than
+left to a checklist.
+
+The dependency floor is the half with teeth. `requests>=2.25.0` predated three CVEs in requests' own
+credential handling, and that matters more here than in most projects: this helper holds a Seafile
+token and runs inside every `git` invocation, so the transport library's credential handling is part
+of its attack surface. The floor is now 2.32.4 — and, more to the point, a new CI job pins exactly
+that version and runs the whole suite against it. Every other leg installs the *latest* release, so
+until now the number this package declared was never exercised at all.
+
+### Added
+
+- **Release artifacts carry build provenance and a checksum (D4).** The build job generates a
+  build-provenance attestation signed against the workflow's own OIDC identity and writes a
+  `SHA256SUMS` file; both ride to the Release alongside the wheel and sdist. A checksum answers "is
+  this the file that was published" — and cannot answer more, since whoever can replace the file can
+  replace the checksum beside it. The attestation records the repository, workflow, commit and
+  digest, so it answers the question worth asking about a program you are about to hand a token to:
+  who built it, and from where. `SECURITY.md` documents both checks, `gh attestation verify` included.
+- **A `min-deps` CI job (D5)** that installs `requests` at exactly the version `pyproject.toml`
+  declares as its floor, with `--no-deps` so the editable install cannot quietly resolve past it,
+  asserts the pin survived, and runs the full suite against it.
+- **Dependabot for the pinned actions (D9).** Every `uses:` is pinned to a full commit SHA with the
+  release in a trailing comment, and the cost of that default is that the pins go stale silently.
+  The configuration covers `github-actions` only: a `pip` entry would open pull requests raising the
+  dependency floor, and a bot moving a security floor is not a security review.
+- **A bug-report issue form, a pull-request template and `CODEOWNERS` (D9).** The issue form asks for
+  the version, platform, interpreter and git version the maintainer would otherwise have to request,
+  routes a vulnerability to the private channel rather than into a public issue, and carries a
+  redaction checkbox — a Seafile token is a bearer credential for every library the account can see.
+  The pull-request template is the checklist a release actually runs.
+- **`CODE_OF_CONDUCT.md` (D9)**, adopting the Contributor Covenant 2.1 by reference rather than
+  restating it, so the text in force is the published text.
+
+### Changed
+
+- **`ci.yml` scopes its token (D1).** `permissions: contents: read` is now stated rather than
+  inherited. The repository default is read/write on older settings, and this workflow only reads.
+  `release.yml` has carried the equivalent block since it was written.
+- **A superseded run is cancelled (D6).** A `concurrency` group keyed on the workflow and ref, with
+  `cancel-in-progress: true`. The matrix is fifteen jobs per push; without this, a series of pushes
+  to one branch queues fifteen more behind each previous push instead of superseding them. The
+  cancelled run's logs stay available — what is lost is a verdict on a commit that has already been
+  replaced.
+- **The matrix caches pip (D6)**, keyed explicitly on `pyproject.toml` rather than left to the
+  action's file search, so the cache is invalidated exactly when the declared dependencies change.
+- **The worker count is derived, not pinned (D7).** Both workflows ran `tools/run_tests_parallel.py`
+  with a literal `-j 4`, justified by "the runner has four vCPUs" — a number that is not the same on
+  every OS in the matrix and changes whenever GitHub resizes a runner image. Both now pass `-j 0`,
+  which is one worker per CPU the runner reports; the runner already clamps the count to the number
+  of targets, so a large self-hosted box cannot start more workers than there is work to hand them.
+- **The dependency floor is a security floor (D5): `requests>=2.32.4`.** Each version in that line
+  closed a credential-handling leak: 2.31.0 fixed CVE-2023-32681 (the `Proxy-Authorization` header
+  followed a redirect to a different host), 2.32.0 fixed CVE-2024-35195 (`verify=False` set on a
+  `Session` persisted into later requests made through it), and 2.32.4 fixed CVE-2024-47081 (a crafted
+  URL could leak `.netrc` credentials to a third party). The previous floor was chosen for a feature
+  this code does not use.
+- **`.gitignore` names `.review-venv/` and `.ruff_cache/` (D10)** instead of relying on the
+  `.gitignore` files inside those directories, which are not rules this repository controls.
+- **`ROADMAP.md` §1.2 carries the archive backlog.** The Tier 3 list from the v0.8.2 verification and
+  the findings the `-r2` reviews left open now live in a tracked file rather than in `archive/`,
+  which is gitignored — and each row records whether it has been re-derived against this release
+  (**probed**) or is still only transcribed from the review that raised it.
+
+### Fixed
+
+- **`HEX_SHA_RE` is asked with `fullmatch` at both call sites (A12.2).** `$` also matches immediately
+  before a trailing newline, so `HEX_SHA_RE.match("a" * 40 + "\n")` was `True` while the same string is
+  not a SHA. A caller handing this a line read from a file would have produced a candidate that
+  `git cat-file` rejects, surfacing as a missing object rather than as bad input.
+- **`USER_GUIDE` §9 no longer promises that no `SFConflict` file is ever created (A11).** The
+  unconditional form was unproven: it is a claim about the paths this tool writes — the guardrails
+  keep them out of a synced folder — not about what the Seafile *server* would do with two
+  simultaneous writes to one path, which has never been exercised against a real instance. The step
+  now says exactly that, and points at `DESIGN.md` §3.3.
+- **The README's LFS memory figure is measured rather than asserted (C6).** "0.15 MB, not the
+  142.8 MB a buffered implementation needs" was a decimal with no reproduction. It is now 0.16 MB
+  against 128 MB on a 64 MB payload, with the method named (`tracemalloc` over 16 KiB reads) and the
+  test that pins the property cited.
+
+### Tests & Tooling
+
+- Ten new guards in `tests/test_release_workflow.py` covering the properties above: the token scope,
+  the concurrency group, the pip cache, the derived worker count, the `min-deps`/`pyproject` floor
+  agreement, the floor's own security floor, the build job's attestation permissions and step, the
+  checksum-after-attestation ordering, and the two `.gitignore` entries. The `-j 0` guard strips
+  comments before scanning, because the replacement is *explained* by a comment quoting the old value.
+- `CODE_OF_CONDUCT.md` joins the doc-guard set, which is now ten documents rather than nine; the
+  guards still catch 12/12 injected drifts.
+- Suite: 671 → 681 tests / 130 → 134 targets, all green; ruff clean.
+
 ## [0.8.5] - 2026-10-12
 
 Two halves, and neither changes the protocol — which is why this is a patch release rather than the
@@ -1180,6 +1277,7 @@ Data-loss and silent-failure fixes, and the Python floor raised to 3.9.
   with zero-config desktop-client token discovery, distributed locking, remote
   packfile compaction, and a Git LFS custom transfer agent.
 
+[0.8.6]: https://github.com/tkittich/git-remote-seafile/compare/v0.8.5...v0.8.6
 [0.8.5]: https://github.com/tkittich/git-remote-seafile/compare/v0.8.4...v0.8.5
 [0.8.4]: https://github.com/tkittich/git-remote-seafile/compare/v0.8.3...v0.8.4
 [0.8.3]: https://github.com/tkittich/git-remote-seafile/compare/v0.8.2...v0.8.3

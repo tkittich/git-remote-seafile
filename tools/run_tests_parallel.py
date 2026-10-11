@@ -3,11 +3,11 @@
 
 Why this exists: ``python -m unittest discover tests`` is single-threaded, and
 the end-to-end and snapshot modules dominate the run.  Measured on a 12-core /
-24-thread machine (AMD 5900X), 671 tests across 130 targets:
+24-thread machine (AMD 5900X), 681 tests across 134 targets:
 
-    this runner,  -j 4                      342.8 s
-    this runner,  -j 8                      245.9 s
-    this runner,  -j 8 --granularity test   380.4 s    <- worse; see below
+    this runner,  -j 4                      341.4 s
+    this runner,  -j 8                      243.4 s
+    this runner,  -j 8 --granularity test   389.6 s    <- worse; see below
 
 Read the column as indicative rather than exact.  On an idle machine repeated
 runs spread by around a tenth, and the box's throughput drifts by much more
@@ -22,7 +22,7 @@ is exactly the kind of stale number this docstring was rewritten to remove; run
 ``python -m unittest discover tests`` if you want a current one.
 
 **The critical path is the floor.**  ``test_snapshot_tool.ByteExactnessTests``
-is the longest single unit of work -- 114.7 s of the 245.9 s wall time at
+is the longest single unit of work -- 114.7 s of the 243.4 s wall time at
 ``-j 8`` -- and a class is the smallest thing the runner can schedule, so
 distributing the work takes the wall time down towards that, not towards zero.
 ``test_snapshot_tool`` and ``test_e2e`` are most of the suite because every case
@@ -31,13 +31,13 @@ work is I/O- and subprocess-bound rather than CPU-starved.
 
 ``-j 1`` is *slower* than the plain serial command, and that is the granularity
 argument in miniature: one process per class pays an interpreter start-up and a
-fresh ``import requests`` for each of the 130 targets.  Use ``python -m unittest
+fresh ``import requests`` for each of the 134 targets.  Use ``python -m unittest
 discover tests`` for a baseline; ``-j 1`` is not one.
 
 **Granularity is the test class.**  Not the module, and not the test:
 
-    class granularity, -j 8                 245.9 s    <- 130 targets
-    test  granularity, -j 8                 380.4 s    <- 671 targets
+    class granularity, -j 8                 243.4 s    <- 134 targets
+    test  granularity, -j 8                 389.6 s    <- 681 targets
 
 * Per module would leave the whole of ``test_snapshot_tool`` on one worker, and
   that module is the bulk of the suite's work -- more than the class-granularity
@@ -45,7 +45,7 @@ discover tests`` for a baseline; ``-j 1`` is not one.
 * Per test is *worse*, which is not obvious.  ``E2ETestCase`` does its expensive
   work in ``setUpClass`` (a temp directory, a stub HTTP server, a git
   environment); scheduling per test repeats all of that for every test in the
-  class.  The 541 extra interpreter start-ups cost less than the setup they
+  class.  The 547 extra interpreter start-ups cost less than the setup they
   duplicate.
 
 **The curve flattens early.**  Eight workers are 1.4x four, not 2x, and beyond

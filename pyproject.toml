@@ -31,7 +31,22 @@ classifiers = [
     "Topic :: Software Development :: Version Control :: Git",
 ]
 dependencies = [
-    "requests>=2.25.0"
+    # A *security* floor, not a feature one.  The helper holds a Seafile token
+    # and runs inside every `git` invocation, so the transport library's own
+    # credential handling is part of this tool's attack surface:
+    #
+    #   2.31.0  CVE-2023-32681 -- the Proxy-Authorization header followed a
+    #           redirect to a different host.
+    #   2.32.0  CVE-2024-35195 -- `verify=False` set on a Session persisted
+    #           into later requests made through that same Session.
+    #   2.32.4  CVE-2024-47081 -- a crafted URL could leak .netrc credentials
+    #           to a third party.
+    #
+    # The previous floor (2.25.0) predated all three and was chosen for a
+    # feature this code does not use (D5).  The `min-deps` job in ci.yml pins
+    # exactly this version and runs the suite against it, so the floor is a
+    # tested claim rather than a number in a metadata file.
+    "requests>=2.32.4"
 ]
 
 [project.urls]

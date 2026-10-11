@@ -1,0 +1,20 @@
+# Routing for the "New issue" chooser.
+#
+# Without this, the only way to reach the maintainer is the bug-report form, and
+# a security report arrives in public.  SECURITY.md asks for private reporting;
+# this puts that route one click away at the moment someone is about to open an
+# issue instead (D9).
+blank_issues_enabled: false
+
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/tkittich/git-remote-seafile/security/advisories/new
+    about: >
+      Report privately. Do not open a public issue for a security problem --
+      see SECURITY.md for what to include.
+
+  - name: Question or usage help
+    url: https://github.com/tkittich/git-remote-seafile/blob/main/USER_GUIDE.md
+    about: >
+      The user guide covers setup, configuration, locking, LFS and the
+      snapshot tool, and its troubleshooting section comes before an issue.

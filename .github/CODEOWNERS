@@ -1,0 +1,19 @@
+# Who is asked to review a change.
+#
+# A single-maintainer project does not need path-level routing, but it does need
+# the file to exist: without one, a pull request is assigned to nobody, and on a
+# repository whose release path is a pushed tag the maintainer has no signal
+# that something needs looking at (D9).
+#
+# Every path is claimed, deliberately.  A CODEOWNERS file that names only some
+# directories reads as "the rest is unowned".
+
+* @tkittich
+
+# The release path is the one place where a mistake is public and permanent --
+# a pushed tag is the entire release, and a mistyped version publishes a
+# mislabelled artifact.  Listed separately so the intent is on the record even
+# though the owner is the same.
+/.github/workflows/ @tkittich
+/.github/release-notes/ @tkittich
+/pyproject.toml @tkittich

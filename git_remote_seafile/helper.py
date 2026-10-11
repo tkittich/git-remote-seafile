@@ -721,7 +721,11 @@ class RemoteHelper:
             requested_shas: list[str] = []
             for spec in fetch_specs:
                 parts = spec.split()
-                if parts and HEX_SHA_RE.match(parts[0]):
+                # `fullmatch`, matching the validation in `filter_existing_objects`
+                # and in `cmd_list`.  `str.split()` already makes a trailing
+                # newline unreachable here, but a regex that means "the whole
+                # string" should be asked for the whole string (A12.2).
+                if parts and HEX_SHA_RE.fullmatch(parts[0]):
                     requested_shas.append(parts[0])
                 else:
                     requested_shas = []

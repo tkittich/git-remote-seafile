@@ -1,0 +1,111 @@
+name: Bug report
+description: Something in the helper, the snapshot tool or the doctor is wrong.
+title: "[bug] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report this.
+
+        **Do not paste a Seafile token, a token-bearing remote URL, or the
+        contents of `~/.git-seafile.json`.** A token is a bearer credential for
+        every library your account can reach. Redact anything that looks like a
+        credential before you submit, and treat the token as compromised if you
+        already pasted it — revoke it in the Seafile Web UI
+        (*Settings* → *API Token*).
+
+        A security *vulnerability* does not belong here. See
+        [SECURITY.md](https://github.com/tkittich/git-remote-seafile/blob/main/SECURITY.md)
+        for the private reporting route.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you expected, and what you got instead.
+      placeholder: |
+        I ran ... and expected ... . Instead, git printed ... .
+    validations:
+      required: true
+
+  - type: textarea
+    id: command
+    attributes:
+      label: The command and its output
+      description: The exact command, and the output with any credential redacted.
+      render: shell
+      placeholder: |
+        $ git clone seafile://...
+        ...
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: The output of `git-remote-seafile version`.
+      placeholder: git-remote-seafile 0.8.6
+    validations:
+      required: true
+
+  - type: input
+    id: platform
+    attributes:
+      label: Operating system
+      description: Name and version, including the distribution for Linux.
+      placeholder: Windows 11 23H2 / Ubuntu 24.04 / macOS 15.2
+    validations:
+      required: true
+
+  - type: input
+    id: python
+    attributes:
+      label: Python version
+      description: The output of `python --version` for the interpreter git invokes.
+      placeholder: Python 3.12.7
+    validations:
+      required: true
+
+  - type: input
+    id: git
+    attributes:
+      label: Git version
+      description: The output of `git --version`.
+      placeholder: git version 2.47.1
+    validations:
+      required: true
+
+  - type: dropdown
+    id: edition
+    attributes:
+      label: Seafile edition
+      description: Which server are you talking to?
+      options:
+        - Community Edition (CE)
+        - Professional Edition (Pro)
+        - Not sure
+    validations:
+      required: true
+
+  - type: textarea
+    id: doctor
+    attributes:
+      label: Doctor report (optional)
+      description: >
+        `python tools/seafile_doctor.py report` from a source checkout. It is
+        read-only and does not print the token. Include it if the problem
+        involves the sync client, a lock, or a library that will not resolve.
+      render: text
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I have redacted every token and credential from the output above.
+          required: true
+        - label: This is not a security vulnerability (those go through SECURITY.md).
+          required: true

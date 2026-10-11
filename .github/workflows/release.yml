@@ -88,8 +88,11 @@ jobs:
         python -m pip install --upgrade pip
         pip install -e .
 
+    # Same worker rule as ci.yml: the runner's own CPU count, not a literal.
+    # `-j 4` was justified by a four-vCPU assumption that is neither true on
+    # every OS in this matrix nor stable across runner-image resizes (D7).
     - name: Run unit tests
-      run: python tools/run_tests_parallel.py -j 4
+      run: python tools/run_tests_parallel.py -j 0
 
     - name: Run linter
       run: |
@@ -97,9 +100,18 @@ jobs:
         ruff check .
 
   # Build once.  The GitHub Release below attaches exactly this artifact.
+  #
+  # This job widens its own token, and only its own: attesting what it built
+  # needs the OIDC token the attestation is signed against and permission to
+  # store the resulting statement.  Every other job in both workflows stays at
+  # the workflow default of `contents: read`.
   build:
     needs: test
     runs-on: ubuntu-latest
+    permissions:
+      contents: read      # actions/checkout
+      id-token: write     # OIDC token the attestation is signed against
+      attestations: write # store the attestation in this repository
     steps:
     - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
@@ -126,6 +138,27 @@ jobs:
     - name: Smoke-install the built distributions
       run: bash .github/smoke_install_wheel.sh dist
 
+    # Provenance, which is a different claim from integrity.  A checksum says
+    # the file you have is the file that was published; it says nothing about
+    # who built it or from which commit.  This attestation is signed by the
+    # workflow's own identity and records the commit, so
+    # `gh attestation verify dist/<file> --repo <repo>` answers the question a
+    # user of a token-handling tool should be asking (D4).
+    #
+    # It runs *before* the checksum file is written, because the subject glob
+    # below would otherwise pick that file up as something to attest.
+    - name: Attest the build provenance of the artifacts
+      uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+      with:
+        subject-path: dist/*
+
+    # The same digests, in a file, for anyone verifying by hand or from a script
+    # without `gh`.  The two artifact patterns are named rather than globbed so
+    # that a re-run in a dirty workspace cannot fold the checksum file into
+    # itself.  Written after the attestation, for the reason above.
+    - name: Write SHA256SUMS
+      run: cd dist && sha256sum *.whl *.tar.gz > SHA256SUMS && cat SHA256SUMS
+
     # Artifact actions are a matched pair and are bumped together.  These are
     # the lowest majors declaring `runs.using: node24` -- upload@v5 and
     # download@v5/v6 still say node20 -- and both releases are runtime-only
@@ -133,6 +166,10 @@ jobs:
     # will run on Node.js 24"), so the artifact API is unchanged and they
     # interoperate exactly as their v4 predecessors did.  Do not bump one
     # without checking the other.
+    #
+    # The whole directory travels, so SHA256SUMS rides along with the two
+    # distributions and reaches the Release without a step of its own --
+    # create_github_release.sh attaches every file it finds in dist/.
     - name: Upload the built distributions
       uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
       with:

@@ -143,6 +143,65 @@ Two notes on why this is the right shape:
 
 ---
 
+## Supply Chain
+
+### The dependency floor
+
+`git-remote-seafile` has exactly one runtime dependency, and `pyproject.toml`
+requires **`requests>=2.32.4`**. That is a security floor, not a feature one. The
+helper holds a Seafile token and runs inside every `git` invocation, so the
+transport library's own credential handling is part of this tool's attack
+surface — and each of the versions below closed a leak in it:
+
+| Version | CVE | What it fixed |
+|---|---|---|
+| 2.31.0 | CVE-2023-32681 | The `Proxy-Authorization` header followed a redirect to a different host. |
+| 2.32.0 | CVE-2024-35195 | `verify=False` set on a `Session` persisted into later requests made through that same `Session`. |
+| 2.32.4 | CVE-2024-47081 | A crafted URL could leak `.netrc` credentials to a third party. |
+
+The floor is *tested* rather than merely declared: the `min-deps` job in
+`.github/workflows/ci.yml` pins exactly that version, installs it with
+`--no-deps` so the resolver cannot quietly upgrade past it, and runs the whole
+suite against it. Every other CI leg installs the latest release, so without
+that job nothing would exercise the number this package claims to support.
+
+Dependabot watches the workflow actions and deliberately does **not** raise this
+floor. A bot moving a security floor is not a security review.
+
+### Verifying a release artifact
+
+Releases are published as GitHub Release assets: a wheel, an sdist, and a
+`SHA256SUMS` file. Two checks are available, and they answer different
+questions.
+
+**Integrity — is this the file that was published?**
+
+```bash
+sha256sum --check SHA256SUMS     # macOS: shasum -a 256 -c SHA256SUMS
+```
+
+Run it in the directory holding both the checksum file and the downloads.
+
+**Provenance — who built it, and from which commit?**
+
+Each artifact also carries a build-provenance attestation, signed by the release
+workflow's own identity:
+
+```bash
+gh attestation verify git_remote_seafile-<version>-py3-none-any.whl \
+  --repo tkittich/git-remote-seafile
+```
+
+(`gh` needs to be recent enough to have the `attestation` command; a checksum is
+the fallback when it is not.)
+
+A checksum cannot answer the second question — anyone able to replace the file
+can replace the checksum sitting beside it. The attestation records the
+repository, the workflow, the commit and the digest, which is why it is the
+check worth running for a program you are about to hand a token to.
+
+---
+
 ## Threat Model
 
 ### What the helper protects against
@@ -156,6 +215,7 @@ Two notes on why this is the right shape:
 | A server answering success for an upload that failed | Compaction re-lists the remote and requires every new packfile at its expected size before deleting anything |
 | A stale lock holder writing inside a live holder's push | Ownership fencing before every destructive step, detecting both takeover and preemption |
 | Silent data omission in a snapshot | The snapshot tool's excludes are opt-in and named, never silent |
+| A substituted or mislabelled release download | Every release ships a `SHA256SUMS` file and a build-provenance attestation signed by the release workflow (above) |
 
 ### What it does not protect against
 

@@ -309,7 +309,11 @@ Before developing `git-remote-seafile`, extensive real-world testing and diagnos
 ### Requirements
 - Python 3.10+
 - Git 2.20+
-- `requests` library
+- [`requests`](https://pypi.org/project/requests/) **2.32.4 or newer** — a
+  security floor rather than a feature one. `pip install` resolves it for you;
+  the number matters if you are pinning dependencies by hand or packaging this
+  tool for a distribution. See [SECURITY.md](SECURITY.md#the-dependency-floor)
+  for the three credential-handling CVEs behind it.
 
 > [!NOTE]
 > **A SHA-256 repository needs Git 2.29+, not 2.20.** The floor above is the
@@ -585,7 +589,18 @@ git push origin main
    git pull --rebase origin main
    git push origin main
    ```
-5. **No conflict files** (`SFConflict`) are ever created. Git handles all line-level merging natively.
+5. **No conflict copies** (`SFConflict`). Every conflict file in the failures
+   described in §4 is produced by the Seafile *sync daemon*, and the guardrails
+   in §2.4 keep this tool's own writes out of a synced folder. With the library
+   that holds the remote left unsynced — the arrangement §2 asks for — nothing
+   touches those files but Git.
+
+   > [!NOTE]
+   > That is a claim about the paths this tool writes, not about the Seafile
+   > *server*. What the server would do with two simultaneous writes to one
+   > path has never been exercised against a real instance, which is why the
+   > design avoids the situation rather than depending on the answer
+   > (`DESIGN.md` §3.3).
 
 ---
 

@@ -101,7 +101,12 @@ def filter_existing_objects(shas: list[str] | str | None) -> list[str]:
         return []
     if isinstance(shas, str):
         shas = [shas]
-    candidates = [s for s in dict.fromkeys(shas) if s and HEX_SHA_RE.match(s)]
+    # `fullmatch`, not `match`: `$` also matches just before a trailing
+    # newline, so `HEX_SHA_RE.match("a"*40 + "\n")` is True while the same
+    # string is not a SHA.  A caller that hands this a line read out of a file
+    # would otherwise get a candidate that `git cat-file` rejects, and the
+    # rejection would surface as a missing object rather than as bad input.
+    candidates = [s for s in dict.fromkeys(shas) if s and HEX_SHA_RE.fullmatch(s)]
     if not candidates:
         return []
 

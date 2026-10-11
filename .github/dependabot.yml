@@ -1,0 +1,26 @@
+# Keeps the SHA-pinned actions in .github/workflows/ current.
+#
+# Every `uses:` in this repository is pinned to a full 40-character commit with
+# the release in a trailing comment, which is the right default: a moving tag
+# lets a compromised or merely careless upstream change what runs inside a
+# workflow that handles this project's release token.  The cost of that default
+# is that the pins go stale silently -- nothing here notices when a security
+# fix ships upstream (D9).  Dependabot rewrites both halves of the pin, SHA and
+# comment, which is the only mechanical way to keep them fresh.
+#
+# Only the `github-actions` ecosystem is configured.  A `pip` entry would open
+# pull requests raising the `requests` floor in pyproject.toml, and that floor
+# is a *security* decision with three CVEs written next to it -- a bot moving it
+# is not a security review.  Vulnerability alerts for the dependency do not
+# need an entry here; they are a separate repository setting.
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "ci"
+    labels:
+      - "dependencies"

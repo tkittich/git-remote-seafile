@@ -1,4 +1,5 @@
-"""Guards for the release-notes format and the Release-creation script.
+"""Guards for the release-notes format, the Release-creation script, and the
+workflows themselves.
 
 A GitHub Release is a *separate object* from its git tag.  Pushing a tag
 therefore left a bare tag behind and nothing else -- which is exactly how
@@ -18,6 +19,11 @@ The script is exercised against a stub ``gh`` on PATH that records its
 arguments -- and the notes file it was handed, read while the file still
 exists -- so the assertions cover the real execution path rather than a
 re-implementation of it.
+
+The last third of the module widens that to the workflows as configuration: a
+token scope, a concurrency group, a dependency cache, a worker count, an
+attestation, a dependency floor and an ignore rule.  None of those can be seen
+from a green test run, which is why they are pinned rather than reviewed.
 """
 
 from __future__ import annotations
@@ -712,6 +718,274 @@ class TestCreateGithubReleaseScript(unittest.TestCase):
         self.assertIn("--generate-notes", argv)
         self.assertNotIn("--notes-file", argv)
         self.assertEqual(argv[argv.index("--title") + 1], "v9.9.9")
+
+
+# -- the workflow-hardening tranche (D1/D4/D5/D6/D7/D10) -------------------
+#
+# Everything below guards a property of a *configuration file* rather than of
+# the code: a workflow with no token scope, no concurrency group and a worker
+# count copied from an assumption about the runner; a release that publishes
+# artifacts nothing attested; a dependency floor picked for a feature instead of
+# for a CVE; ignore rules that live in the directory they ignore.  None of them
+# can be seen from a green test run, which is exactly why each is pinned here.
+#
+# The readers are the same narrow ones the `on:`-block guards use.  They are
+# deliberately not a YAML parser: PyYAML is not a dependency of this project,
+# and the shapes read here are a handful of nested keys.
+
+
+_FLOOR_RE = re.compile(r'"requests>=([0-9][0-9.]*)"')
+_PIN_RE = re.compile(r'"requests==([0-9][0-9.]*)"')
+
+
+def _whole(text: str) -> list[str]:
+    """A workflow's lines, with trailing comments removed."""
+    return [_strip_comment(raw) for raw in text.splitlines()]
+
+
+def _top_level(text: str, key: str) -> list[str]:
+    """The lines nested under a workflow's top-level ``key:``."""
+    return _child_lines(_whole(text), key)
+
+
+def _runner_lines(text: str) -> list[str]:
+    """Every line that invokes the parallel runner, comments removed.
+
+    Comments have to go first: the replacement for the hard-coded worker count
+    is *explained* by a comment that quotes the old value, and a naive scan of
+    the raw text would find `-j 4` in that explanation.
+    """
+    return [
+        _strip_comment(line).strip()
+        for line in text.splitlines()
+        if "run_tests_parallel.py" in _strip_comment(line)
+    ]
+
+
+def _declared_requests_floor() -> str | None:
+    text = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    match = _FLOOR_RE.search(text)
+    return match.group(1) if match else None
+
+
+def _ci_pinned_requests() -> str | None:
+    text = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    match = _PIN_RE.search(text)
+    return match.group(1) if match else None
+
+
+class TestCiWorkflowHardening(unittest.TestCase):
+    """D1/D6/D7 — three absences in ci.yml that a green run cannot reveal.
+
+    A workflow with no token scope, no concurrency group and a worker count
+    copied from an assumption about the runner all produce exactly the same
+    green pipeline as one without those problems, until the day the assumption
+    is wrong or the minutes are billed.
+    """
+
+    def setUp(self):
+        self.path = REPO_ROOT / ".github" / "workflows" / "ci.yml"
+        self.assertTrue(self.path.is_file(), f"missing workflow: {self.path}")
+        self.text = self.path.read_text(encoding="utf-8")
+
+    def test_the_token_is_scoped(self):
+        """D1 — least privilege, stated rather than inherited."""
+        perms = _top_level(self.text, "permissions")
+        self.assertTrue(
+            perms,
+            "ci.yml has no top-level `permissions:` block, so every job runs "
+            "with whatever the repository's default token scope happens to be. "
+            "That default is read/write on older repository settings, and this "
+            "workflow only ever reads.",
+        )
+        self.assertIn(
+            "contents: read", "\n".join(perms),
+            "ci.yml scopes its token, but not to `contents: read`",
+        )
+
+    def test_a_superseded_run_is_cancelled(self):
+        """D6 — the matrix is fifteen jobs, and pushes arrive in series."""
+        block = _top_level(self.text, "concurrency")
+        self.assertTrue(
+            block,
+            "ci.yml has no `concurrency:` group, so a second push to a branch "
+            "queues fifteen more jobs behind the previous push's fifteen "
+            "instead of superseding them",
+        )
+        joined = "\n".join(block)
+        self.assertIn("group:", joined, "the concurrency block names no group")
+        self.assertRegex(
+            joined, r"cancel-in-progress:\s*true",
+            "the concurrency group is declared but does not cancel, so a "
+            "superseded run still holds a runner to completion",
+        )
+
+    def test_the_matrix_caches_pip(self):
+        """D6 — fifteen legs resolving the same dependency set from scratch."""
+        test_job = "\n".join(_job(self.text, "test"))
+        self.assertRegex(
+            test_job, r"cache:\s*'?pip'?",
+            "the test job installs its dependencies without a pip cache, so "
+            "each of the fifteen legs resolves the same set from the index",
+        )
+        self.assertIn(
+            "cache-dependency-path: pyproject.toml", test_job,
+            "the pip cache is enabled but its key is left to the action's file "
+            "search, so it is not tied to the file that declares the "
+            "dependencies",
+        )
+
+    def test_the_worker_count_is_not_a_literal(self):
+        """D7 — `-j 4` was justified by a claim about the runner's size."""
+        lines = _runner_lines(self.text)
+        self.assertTrue(
+            lines, "ci.yml no longer runs tools/run_tests_parallel.py at all"
+        )
+        for line in lines:
+            with self.subTest(invocation=line):
+                self.assertIn(
+                    "-j 0", line,
+                    "the worker count is pinned again. `-j 0` asks the runner "
+                    "for one worker per CPU it can see; a literal assumes a "
+                    "vCPU count that differs per OS in this matrix and changes "
+                    "whenever GitHub resizes a runner image.",
+                )
+
+    def test_the_declared_dependency_floor_is_the_one_that_is_tested(self):
+        """D5 — a floor nothing installs is a number, not a claim."""
+        job = "\n".join(_job(self.text, "min-deps"))
+        self.assertTrue(
+            job,
+            "ci.yml has no `min-deps` job.  Every other job installs the "
+            "*latest* requests, so nothing exercises the floor pyproject.toml "
+            "declares.",
+        )
+        declared = _declared_requests_floor()
+        pinned = _ci_pinned_requests()
+        self.assertIsNotNone(declared, "pyproject.toml declares no `requests>=` floor")
+        self.assertIsNotNone(
+            pinned,
+            "the `min-deps` job does not pin a `requests==` version, so it "
+            "tests whatever the resolver picks",
+        )
+        self.assertEqual(
+            pinned, declared,
+            "the version pinned in ci.yml's `min-deps` job is not the floor "
+            "pyproject.toml declares, so the job tests a version the package "
+            "does not claim to support",
+        )
+
+
+class TestDependencyFloorIsASecurityFloor(unittest.TestCase):
+    """D5 — `requests>=2.25.0` predated three CVEs in requests itself.
+
+    This helper holds a Seafile token and runs inside every `git` invocation, so
+    the transport library's credential handling is part of its attack surface.
+    A floor below the fixes below is a floor that permits a known leak.
+    """
+
+    def test_the_floor_includes_the_credential_fixes(self):
+        floor = _declared_requests_floor()
+        self.assertIsNotNone(floor, "pyproject.toml declares no `requests>=` floor")
+        parts = tuple(int(p) for p in floor.split("."))
+        self.assertGreaterEqual(
+            parts, (2, 32, 4),
+            f"the requests floor is {floor}, below 2.32.4.  That is where "
+            "CVE-2024-47081 was fixed -- a crafted URL could leak .netrc "
+            "credentials to a third party.  The two earlier credential fixes in "
+            "this line are CVE-2023-32681 (2.31.0, the Proxy-Authorization "
+            "header followed a redirect) and CVE-2024-35195 (2.32.0, "
+            "`verify=False` on a Session persisted into later requests).",
+        )
+
+
+class TestReleaseArtifactsAreAttested(unittest.TestCase):
+    """D4 — a checksum says what was published, not who built it or from where.
+
+    The Release page is the only distribution channel this project has, and the
+    artifact is a program that will be handed a Seafile token.  Until now the
+    workflow built a wheel, attached it, and offered no way to tell whether the
+    file a user downloads came from this repository's release workflow at all.
+    """
+
+    def setUp(self):
+        self.assertTrue(WORKFLOW.is_file(), f"missing workflow: {WORKFLOW}")
+        self.text = WORKFLOW.read_text(encoding="utf-8")
+        self.build = "\n".join(_job(self.text, "build"))
+        self.assertTrue(
+            self.build.strip(), "release.yml has no `build` job to inspect"
+        )
+
+    def test_the_build_job_can_attest(self):
+        """The two permissions an attestation needs, scoped to this job only."""
+        perms = "\n".join(_child_lines(_whole(self.build), "permissions"))
+        self.assertTrue(
+            perms,
+            "the `build` job declares no `permissions:` block, so it cannot "
+            "mint the OIDC token an attestation is signed against",
+        )
+        self.assertIn(
+            "id-token: write", perms,
+            "the `build` job cannot request the OIDC token the attestation is "
+            "signed against",
+        )
+        self.assertIn(
+            "attestations: write", perms,
+            "the `build` job cannot store the attestation it generates",
+        )
+
+    def test_the_build_job_attests_what_it_built(self):
+        self.assertIn(
+            "attest-build-provenance", self.build,
+            "the release publishes the wheel and sdist without attesting them, "
+            "so a user has no way to verify who built the file they installed",
+        )
+        self.assertRegex(
+            self.build, r"subject-path:\s*dist/",
+            "the attestation step names no subject, so it attests nothing",
+        )
+
+    def test_the_checksum_file_is_written_after_the_attestation(self):
+        """The order is the point, not an accident of editing.
+
+        The subject glob is `dist/*`, so a checksum file written *before* the
+        attestation would be swept up as an artifact to attest alongside the
+        wheel and the sdist.
+        """
+        self.assertIn(
+            "SHA256SUMS", self.build,
+            "release.yml writes no SHA256SUMS, so a user without `gh` has no "
+            "digest to check a download against",
+        )
+        self.assertLess(
+            self.build.index("attest-build-provenance"),
+            self.build.index("SHA256SUMS"),
+            "the checksum file is written before the attestation, so the "
+            "subject glob `dist/*` attests the checksum file too",
+        )
+
+
+class TestIgnoreRulesAreVisible(unittest.TestCase):
+    """D10 — the rule lived in the directory it was supposed to ignore.
+
+    `.review-venv/` and `.ruff_cache/` each ship a `.gitignore` of their own, so
+    the repository's own file could stay silent and `git status` would still be
+    clean.  That holds right up until something inside one of them is deleted --
+    at which point thousands of files appear as untracked and it turns out this
+    repository never had a rule covering them.
+    """
+
+    def test_local_caches_are_named_in_the_repository_gitignore(self):
+        text = (REPO_ROOT / ".gitignore").read_text(encoding="utf-8")
+        entries = {line.strip() for line in text.splitlines()}
+        for name in (".review-venv/", ".ruff_cache/"):
+            with self.subTest(entry=name):
+                self.assertIn(
+                    name, entries,
+                    f"{name} is not named in .gitignore.  It relies on a "
+                    ".gitignore inside the directory itself, which is not a "
+                    "rule this repository controls.",
+                )
 
 
 if __name__ == "__main__":

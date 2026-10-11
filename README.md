@@ -22,7 +22,7 @@ Instead of syncing the local `.git/` folder, `git-remote-seafile` communicates d
 - **Zero Daemon Churn**: The desktop sync client never scans or indexes your working repository.
 - **Automated Pre-Flight Safety**: Built-in guardrails detect and block path collisions (Trap 1) and download reflection loops (Trap 2) before any data is transferred.
 - **Fast & Efficient**: Commits are packed using Git packfiles (`.pack` and `.idx`). Pushing 100 commits uploads only **two files**, with disk-staged streaming avoiding memory spikes.
-- **Git LFS**: A custom transfer agent streams large assets straight into Seafile, so multi-GB models and datasets live in the library and quota you already pay for. Both directions stream — peak memory on a 64 MB transfer is **0.15 MB**, not the 142.8 MB a buffered implementation needs.
+- **Git LFS**: A custom transfer agent streams large assets straight into Seafile, so multi-GB models and datasets live in the library and quota you already pay for. Both directions stream — peak memory on a 64 MB transfer is **0.16 MB**, against **128 MB** for the same payload held in memory. (`tracemalloc` over 16 KiB reads; `tests/test_client.py::TestStreamingTransfers` pins the property, with a 16 MB payload required to stay under 1 MB.)
 - **Concurrent Ref Discovery**: Discovers remote branches and tags concurrently using a worker pool while strictly preserving deterministic alphabetical sort order.
 - **Smart Pack Filtering**: Bypasses redundant remote pack downloads during fetch when requested commits already exist locally.
 - **Fast-forward Protection**: Rejects non-fast-forward pushes unless force-pushed, preventing accidental clobbering.
@@ -182,6 +182,7 @@ git clone seafile://seafile.example.com/code/myproject
 - [Snapshot Tool Design (SNAPSHOT.md)](SNAPSHOT.md): The design of the whole-tree snapshot tool — the vault, byte-exactness, multi-machine semantics, and the measured cost model.
 - [Changelog (CHANGELOG.md)](CHANGELOG.md): What changed in each release.
 - [Contributing Guidelines (CONTRIBUTING.md)](CONTRIBUTING.md): How to contribute, run tests, and adhere to development standards.
+- [Code of Conduct (CODE_OF_CONDUCT.md)](CODE_OF_CONDUCT.md): The standard this project adopts, and how to report a problem.
 - [Engineering Roadmap (ROADMAP.md)](ROADMAP.md): Prioritized features, architectural backlog, and version milestones.
 
 ### Whole-tree snapshots: `tools/seafile_snapshot.py`
