@@ -5,40 +5,7 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
-
-Post-release fixes from the four-way review cycle (GLM, qwen, gemini, deepseek — findings in `REVIEW.*.md` at the repo root, gitignored).
-
-### Fixed
-
-- **`--no-push` no longer erases the vault's remembered remote.** It is a per-run override; it used to `--unset-all snapshot.remote`, so one local run silently degraded a scheduled job to local-only snapshots. A remembered `--code-remote` is suppressed for the run too, making "pushes nothing" literally true.
-- **The snapshot push rollback survives a failure in the retry itself.** A fetch dying mid-re-parent (exactly when the network is flaky) used to leave the vault branch advanced past a commit the server refused; the rollback now runs on every failure path, and "remote moved?" is decided by re-fetching the tip rather than matching words in git's (locale-dependent) output.
-- **`--restore` refuses a destination inside a Seafile-synced folder** — the desktop client would upload the restored tree (secrets included, by design) straight back into its original library — and refuses `--source`/positional `SOURCE` instead of silently ignoring them.
-- **gc refuses to compact when refs outside `refs/heads`/`refs/tags` exist** (or a ref name git could not honour): the mirror cannot carry them, so their objects would have been deleted permanently while the ref file survived, broken.
-- **Download-error messages no longer leak the transfer token.** The upload path already redacted it; `get_file_bytes` and `download_file_to` now name the origin and the repo-side path instead of the whole `seafhttp` link.
-- **`pid_is_alive` no longer reads ACCESS_DENIED as dead** on Windows: a live process owned by another (elevated) user is not a dead lock, so a concurrent run can no longer steal its vault lock.
-- **`_adjust_url` compares authorities case-insensitively** through `normalize_netloc`, so `SEAFILE_SERVER=https://MyServer.com` still gets the http→https upgrade whose absence turned every push into a redirected-POST "HTTP 400".
-- **`option object-format` accepts the documented algorithm form** (`{'true'|sha1|sha256}`) instead of answering "unsupported" to a legitimate pin.
-- **`lock-status` flags an all-expired ticket queue as STALE** instead of presenting a dead lock as one that "expires in 0s"; gc's `check_remote_has_packs` propagates listing failures instead of failing open; `_prune_empty_ref_parents` deletes a parent only on a positively-confirmed empty listing; an LFS download whose size disagrees with the request fails with an explicit 502; a non-numeric `seafile.*` integer warns instead of silently using the default; an unbracketed IPv6 bare host is rejected with the spelling that works.
-- **Snapshot tool hardening:** config writes go through `-C` and fail loudly instead of discarding the return code; the vault config is read once per run (was four); `_same_config_value`'s backslash normalisation is scoped to `snapshot.source` (for every other key a backslash is data); `pid_is_alive`/`VaultLock` fsync, unlink-retry and stale-reclaim fixes; the byte-verification of a restore hashes every file in one process; `find_secrets`' location patterns (`.ssh/*`, `.aws/credentials`) match at any depth.
-
-### Fixed (second review pass — qwen's test-quality batch)
-
-- **A shrunken upload source now fails the upload instead of silently sending a short body.** `StreamingMultipartFile.read` returned `b""` at the source's premature end, which urllib3 reads as EOF — so `requests` sent the declared `Content-Length` with fewer bytes and nothing raised anywhere.
-- **`seafile://[::1]/lib/repo` parses.** The bracketed IPv6 bare-host form (with optional `:port`) is one address; only the unbracketed colon-bearing form is refused, with the bracketed spelling named.
-- **A transient error resolving the target library is warned about** during the safety checks instead of silently degrading Trap 1/2 to folder-name matching, which on a renamed sync folder read exactly like "no collision possible".
-- **`unlock` on an unlocked repository says "not locked; nothing to release"** instead of reporting a successful unlock that did nothing (`RemoteLock.unlock` now returns whether a lock existed).
-
-### Tests
-
-- **Suite grew 539 → 576 tests across 112 targets** (the v0.8.0 figures predate the post-release fixes): the gc streaming-fallback tests actually disable streaming now (`del` on a spec-less MagicMock regenerates the attribute, so they passed via `dest.is_file()==False`, not the fallback); the machine-behind fast-forward test's clone actually succeeds into its own vault (it used to fail silently into machine A's, so the reconcile path never ran); the explicit-worktree safety test's ids now match so Trap 1 really evaluates; the sqlite temp-copy test asserts its precondition; the suite-shape guard resolves base classes across modules; and the corrected v0.8.0 claims (per-machine chains, synced-guard, nested-repo warning, shared-remote check) are pinned as absent from every shipped doc.
-
-### Changed
-
-- **SNAPSHOT.md re-anchored to the shipped tool** (status header, the synced-library guard, the shared-remote check, nested-repo status, next steps); USER_GUIDE §15.4's restore examples now use the real flag set (`--restore --remote --into`), and the per-machine `refs/heads/snapshot-<host>` claim is corrected — the default is one shared chain, with `--branch` for per-machine chains.
-- **A failing vault-config write is an error**, not a silent divergence between what the run believes it remembered and what the vault holds.
-
-## [0.8.0] - 2026-10-10
+## [0.8.0] - 2026-10-11
 
 The snapshot tool ships. `tools/seafile_snapshot.py` captures a working tree — **including the files `.gitignore` excludes** — into versioned, byte-exact snapshots stored in a Seafile library, using the same transport the helper already provides. It closes the one gap the helper structurally cannot: a `.gitignore`d file never enters a commit, so no remote helper can ever carry it.
 
@@ -61,11 +28,23 @@ The snapshot tool ships. `tools/seafile_snapshot.py` captures a working tree —
 - **`ensure_identity` read the wrong config scope.** It used `git config --get`, which reads through to the *global* config, so the source repository's own identity was never consulted — and the test for it was green for the wrong reason. Now `--local`.
 - **Stale locks are reclaimed.** A `seafile-snapshot.lock` left by a killed process is detected via `pid_is_alive` rather than blocking every future run.
 - **Nested repositories are detected and named.** A nested repo appears to Git as a submodule gitlink; the tool warns prominently on every run — recording only the gitlink, not the contents, so a restore would produce a broken directory — and says to back it up separately. (Capturing the contents via `update-index --cacheinfo` is measured and written up in SNAPSHOT.md §8 as future work.)
+- **A shrunken upload source now fails the upload instead of silently sending a short body.** `StreamingMultipartFile.read` returned `b""` at the source's premature end, which urllib3 reads as EOF — so `requests` sent the declared `Content-Length` with fewer bytes and nothing raised anywhere.
+- **`seafile://[::1]/lib/repo` parses.** The bracketed IPv6 bare-host form (with optional `:port`) is one address; only the unbracketed colon-bearing form is refused, with the bracketed spelling named.
+- **A transient error resolving the target library is warned about** during the safety checks instead of silently degrading Trap 1/2 to folder-name matching, which on a renamed sync folder read exactly like "no collision possible".
+- **`unlock` on an unlocked repository says "not locked; nothing to release"** instead of reporting a successful unlock that did nothing (`RemoteLock.unlock` now returns whether a lock existed).
+
+- **A shrunken upload source now fails the upload instead of silently sending a short body.** `StreamingMultipartFile.read` returned `b""` at the source's premature end, which urllib3 reads as EOF — so `requests` sent the declared `Content-Length` with fewer bytes and nothing raised anywhere.
+- **`seafile://[::1]/lib/repo` parses.** The bracketed IPv6 bare-host form (with optional `:port`) is one address; only the unbracketed colon-bearing form is refused, with the bracketed spelling named.
+- **A transient error resolving the target library is warned about** during the safety checks instead of silently degrading Trap 1/2 to folder-name matching, which on a renamed sync folder read exactly like "no collision possible".
+- **`unlock` on an unlocked repository says "not locked; nothing to release"** instead of reporting a successful unlock that did nothing (`RemoteLock.unlock` now returns whether a lock existed).
 
 ### Changed
 
 - **Every option now has a default, and the vault remembers the rest.** A bare `python tools/seafile_snapshot.py` is a complete run: the source is the current directory, the vault is `<source>-vault` beside it, and the destination, branch and exclusions are written into the vault's own config (`snapshot.*`) at the end of the first run, so a scheduled job needs no arguments. Defaults resolve most-specific-first — the flag you passed, then what the vault remembered, then the source repository (a single `seafile://` remote names the vault's destination: `seafile://code/app` → `seafile://code/app-vault`), then the current directory. A positional `SOURCE` argument is accepted as well as `--source`; `--no-push` overrides the remembered or derived remote *for that run* (and, fixed after release, no longer erases it from the vault's memory).
 - **The recommended exclusions became `--default-excludes`, and are never silent.** Previously they were printed as advice in `--help` only. They are still not applied by default: a snapshot is a backup, and the failure that cannot be forgiven is a backup that quietly omitted the file that mattered — `node_modules` is reproducible, `.env` is not, and the tool cannot tell them apart. It now captures everything and then **names the reproducible bulk it noticed**, with the exact `--exclude` flags to drop it. `--default-excludes` adds the set on top of any `--exclude`; `--no-default-excludes` is its explicit negation.
+
+- **SNAPSHOT.md re-anchored to the shipped tool** (status header, the synced-library guard, the shared-remote check, nested-repo status, next steps); USER_GUIDE §15.4's restore examples now use the real flag set (`--restore --remote --into`), and the per-machine `refs/heads/snapshot-<host>` claim is corrected — the default is one shared chain, with `--branch` for per-machine chains.
+- **A failing vault-config write is an error**, not a silent divergence between what the run believes it remembered and what the vault holds.
 
 ### Documentation
 
@@ -78,8 +57,9 @@ The snapshot tool ships. `tools/seafile_snapshot.py` captures a working tree —
 - **`tests/test_snapshot_tool.py`** — 75 cases across twenty classes, covering the byte-exactness traps, the exclude matcher, the restore verification, the multi-machine race, identity resolution, stale-lock reclamation, the shared-remote refusal, the new defaults and vault memory, and the argument validation.
 - **Test suite ran each snapshot case twice, until a fixture split: 587 s → 206 s.** The parallel runner schedules one unit of work per *class*, and `unittest` inherits test methods — so when a test-bearing class was used as a base, its cases ran once under the base's own name and once under the subclass's. In `test_snapshot_tool.py` that was 49 of 124 cases duplicated (the module alone took 525 s instead of 151 s). The fixture now carries no tests, the module is split into twenty single-responsibility classes, and `tests/test_suite_shape.py` guards the whole suite against ever reintroducing a test-bearing base class.
 - **The snapshot tool spent over half its subprocesses on config plumbing, now batched: a steady-state run is 28 → 16 git calls.** Every `git config` is a process, and on Windows each costs ~125 ms, almost all of it start-up. The remembered settings were read one key at a time and rewritten unconditionally on every run; they are now read in a single `--null --list` and written only when a value actually changed, and the byte-exactness pairs and the committer identity likewise. The parallel module time fell 167 s → 128 s on this alone.
-- Suite: 463 → 539 tests across 110 targets, all green; docs guards 9/9.
+- Suite: 463 → 576 tests across 112 targets, all green; docs guards 9/9. (539/110 was the state the tag originally pointed at; the release was cut after the four-way review's fixes joined — the release workflow had failed at the earlier commit and never published.)
 - **`tests/test_suite_shape.py`** — a suite-shape guard: no class that defines a test may be subclassed.
+- **Suite grew 539 → 576 tests across 112 targets** (the v0.8.0 figures predate the post-release fixes): the gc streaming-fallback tests actually disable streaming now (`del` on a spec-less MagicMock regenerates the attribute, so they passed via `dest.is_file()==False`, not the fallback); the machine-behind fast-forward test's clone actually succeeds into its own vault (it used to fail silently into machine A's, so the reconcile path never ran); the explicit-worktree safety test's ids now match so Trap 1 really evaluates; the sqlite temp-copy test asserts its precondition; the suite-shape guard resolves base classes across modules; and the corrected v0.8.0 claims (per-machine chains, synced-guard, nested-repo warning, shared-remote check) are pinned as absent from every shipped doc.
 
 ## [0.7.2] - 2026-10-10
 

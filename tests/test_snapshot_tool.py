@@ -1018,9 +1018,17 @@ class DefaultsTests(_SnapshotFixture):
 
     def test_the_remote_is_derived_from_the_source_seafile_remote(self):
         _git(self.code, "remote", "add", "origin", "seafile://code/myproject.git")
-        rc, out, err = self.run_tool(
-            "--source", self.code, "--vault", self.vault, "--dry-run"
-        )
+        # fetch_remote_tip is stubbed because a dry run still fetches the real
+        # base: with the derived seafile:// remote that means spawning the real
+        # helper with real (or absent) credentials -- on the dev machine this
+        # test was quietly talking to the actual Seafile server, and on CI the
+        # helper aborted with no credentials at all.  What is under test is the
+        # derivation, not the fetch; the fetch is covered by the multi-machine
+        # tests against a local remote.
+        with unittest.mock.patch.object(snap, "fetch_remote_tip", return_value=None):
+            rc, out, err = self.run_tool(
+                "--source", self.code, "--vault", self.vault, "--dry-run"
+            )
         self.assertEqual(rc, 0, err)
         self.assertIn("seafile://code/myproject.git-vault", out)
 

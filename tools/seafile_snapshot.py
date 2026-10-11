@@ -471,6 +471,13 @@ def pid_is_alive(pid: int) -> bool:
         return False
     except PermissionError:
         return True
+    except (OverflowError, ValueError):
+        # A pid too large for the OS's pid_t (the stale-lock fixture uses
+        # 2**32-1 to mean "certainly dead") cannot name a live process.  This
+        # killed every POSIX CI run at v0.8.0 with an OverflowError before the
+        # reclaim could happen; Windows masked it, because OpenProcess takes a
+        # DWORD and simply fails for such a pid.
+        return False
     return True
 
 
