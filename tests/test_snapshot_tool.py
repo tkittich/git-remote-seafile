@@ -1072,13 +1072,17 @@ class DefaultsTests(_SnapshotFixture):
         finally:
             os.chdir(previous)
         self.assertEqual(rc, 0, err)
-        self.assertIn(f"source : {self.code}", out)
+        # The tool resolves paths; CI temp dirs come back canonicalized
+        # (/var -> /private/var on macOS, RUNNER~1 -> the long name on
+        # Windows), so compare resolved forms rather than raw spellings.
+        self.assertIn(f"source : {self.code.resolve()}", out)
         self.assertIn("vault  :", out)
 
     def test_a_positional_source_works_like_the_flag(self):
         rc, out, err = self.run_tool(str(self.code), "--vault", self.vault, "--dry-run")
         self.assertEqual(rc, 0, err)
-        self.assertIn(f"source : {self.code}", out)
+        # Same canonicalization as above: resolve() on both sides.
+        self.assertIn(f"source : {self.code.resolve()}", out)
 
     def test_two_different_sources_are_refused(self):
         other = self.tmp / "other"
@@ -1388,9 +1392,12 @@ class ConfigPlumbingTests(_SnapshotFixture):
                 "--remote", str(self.remote), "--branch", "other"
             )
         self.assertEqual(rc, 0, err)
+        # Same canonicalization as the defaults tests: CI temp dirs alias
+        # (/private/var on macOS, RUNNER~1 on Windows), so compare resolved.
         self.assertEqual(
-            calls,
-            [["git", "-C", str(self.vault), "config", "--local",
+            [[c[0], c[1], *(x.resolve() if isinstance(x, pathlib.PurePath) else x
+                            for x in c[2:])] for c in calls],
+            [["git", "-C", str(self.vault.resolve()), "config", "--local",
               "snapshot.branch", "other"]],
         )
 
