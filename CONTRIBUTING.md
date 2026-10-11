@@ -45,20 +45,22 @@ python tools/run_tests_parallel.py -k e2e   # only matching classes
 python tools/run_tests_parallel.py --list   # show the units of work
 ```
 
-Measured on a 12-core AMD 5900X, **612 tests across 118 targets**:
+Measured on a 12-core AMD 5900X, **630 tests across 121 targets**:
 
 | workers | wall time |
 | ------- | --------- |
-| 4 | 341.9 s |
-| 8 | 238.6 s |
-| 8, `--granularity test` | 298.5 s (612 targets instead of 118) |
+| 4 | 319.4 s |
+| 8 | 232.9 s |
+| 8, `--granularity test` | 293.8 s (630 targets instead of 121) |
 
-Treat the column as indicative rather than exact — repeated runs spread by about
-a tenth. The shape is the point: eight workers are 1.4x four, not 2x, and beyond
+Treat the column as indicative rather than exact. On an idle machine repeated runs
+spread by about a tenth, and the machine's throughput drifts by much more between
+sessions — the same `-j 8` run measured 232.9 s and 328.9 s an hour apart. The
+shape is the point: eight workers are 1.4x four, not 2x, and beyond
 eight the wall time barely moves, because the heavy cases are themselves
 multi-process. The wall time is bounded by the slowest single unit of work, not
 by throughput, and that unit is now a snapshot class —
-`test_snapshot_tool.ByteExactnessTests`, 115.6 s against a 238.6 s wall at
+`test_snapshot_tool.ByteExactnessTests`, 110.7 s against a 232.9 s wall at
 `-j 8`.
 
 The serial baseline is deliberately not listed. It was 204.4 s when this table
@@ -69,7 +71,7 @@ for it: the snapshot module makes the serial path a long wait, which is the
 whole reason this runner exists.
 
 The unit of work is the test class — see the module docstring for why per-test
-scheduling is measurably *worse* here (298.5 s against 238.6 s, for five times
+scheduling is measurably *worse* here (293.8 s against 232.9 s, for five times
 the process start-ups).
 
 Because the unit of work is the class, a **class that defines `test_*` methods

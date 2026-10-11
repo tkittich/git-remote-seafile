@@ -1,8 +1,8 @@
 # Engineering Roadmap & Backlog
 
-**Baseline:** v0.8.2 (the symlink-restore fix, the tool-acquisition notes and the re-measured runner curve)  
+**Baseline:** v0.8.3 (the review-verification fix pass: credential scoping, validated push destinations, a fenced delete, launcher isolation, and the doctor's exit codes)  
 **Scope:** What shipped in each release line, the active backlog, and the v1.0.0 horizon.  
-**Test Suite:** 612 tests across 118 targets, all green (`tools/run_tests_parallel.py`). **Python:** 3.10+ (3.9 EOL).
+**Test Suite:** 630 tests across 121 targets, all green (`tools/run_tests_parallel.py`). **Python:** 3.10+ (3.9 EOL).
 
 > [!NOTE]
 > All critical and high-severity findings from `archive/REVIEW.*.md` (including ticket-based distributed locking, abandoned ticket cleanup, post-lock ref verification, exception propagation, GC lock fencing, pack index validation, surrogateescape paths, container PID isolation, D/F ref pruning, multi-spec pack batching, Git LFS transfer progress, safety guardrails, parallel ref enumeration, smart pack fetch filtering, disk-staged streaming, and modular helper decoupling) have been completed. All findings from the October 2026 review cycle (REVIEW.glm/gemini/qwen/VERIFY/BACKLOG, now archived) were verified fixed or explicitly dispositioned, as was the earlier v0.7.0 cycle (REVIEW.deepseek/gemini/qwen), closed in v0.7.1. Minor or low-priority items remain tracked in the backlog below. See [CHANGELOG.md](CHANGELOG.md) for detailed release notes.
@@ -80,6 +80,9 @@ One line per capability — see [CHANGELOG.md](CHANGELOG.md) for the full detail
 - **A snapshot holding a symlink could not be restored, and one holding nothing but symlinks crashed the restore.** `verify_restore` looked each link up by its *position* in a list that excludes links, so a correctly restored link was reported as a mismatch — and a mismatch aborts the restore — while an all-symlink tree raised `IndexError`. Links are now looked up by path, and each is still judged by reading the link against its own blob.
 - Docs: the tools' **acquisition** is now stated where it matters — they ship with the source checkout and the sdist, not the wheel, so `pip install git+…` followed by `python tools/seafile_snapshot.py` was a dead end. Symlinks also gained user-facing notes (`USER_GUIDE` §8.2/§15.4, the README snapshot warning, and a rewritten `SNAPSHOT.md` paragraph).
 - `tools/run_tests_parallel.py`'s curve re-measured: the published 52.7 s headline predated the snapshot module and read as a sub-minute suite. Suite: 607 → 612 tests / 118 targets.
+
+**v0.8.3 (2026-10-11) — the review-verification fix pass.**
+- The Tier 1 list from the verification of `REVIEW.sonnet.md` (archived as `archive/VERDICT.sonnet-v0.8.2.md`, with a per-finding table for all 35 items). Helper: a Seafile token is scoped to the server it names (a bare `SEAFILE_TOKEN` used to follow whatever host the URL named), push destinations are validated against git's own ref rule (`git push origin :refs/heads/` used to delete every branch), a ref deletion is read first and fenced by the lease, every `error` line goes through one sanitizer, and both launchers bootstrap with `-I` so a repository's `requests.py` is no longer executed. Tools: `seafile_doctor.py` reports exit 2 for "could not check" instead of crashing into exit 1, and the snapshot tool names the vault's initial branch with `symbolic-ref` so the documented Git 2.20+ floor is met rather than raised. Docs: `USER_GUIDE` §8.2 no longer claims `--depth`/`--filter` are supported (they are silently a full clone), §5 names the conditional SHA-256 floor, `DESIGN.md` §7.10/§7.11 record that the `get_repo_id` cache revalidation was removed in v0.7.1, and `README` documents `where`'s exit 2. Suite: 612 → 630 tests / 121 targets.
 
 ---
 

@@ -3,15 +3,17 @@
 
 Why this exists: ``python -m unittest discover tests`` is single-threaded, and
 the end-to-end and snapshot modules dominate the run.  Measured on a 12-core /
-24-thread machine (AMD 5900X), 612 tests across 118 targets:
+24-thread machine (AMD 5900X), 630 tests across 121 targets:
 
-    this runner,  -j 4                      341.9 s
-    this runner,  -j 8                      238.6 s
-    this runner,  -j 8 --granularity test   298.5 s    <- worse; see below
+    this runner,  -j 4                      319.4 s
+    this runner,  -j 8                      232.9 s
+    this runner,  -j 8 --granularity test   293.8 s    <- worse; see below
 
-Read the column as indicative rather than exact: repeated runs spread by around
-a tenth.  The ordering, and the shape of the curve, are what the numbers are
-here to show.
+Read the column as indicative rather than exact.  On an idle machine repeated
+runs spread by around a tenth, and the box's throughput drifts by much more
+between sessions -- the same ``-j 8`` run measured 232.9 s and 328.9 s an hour
+apart on this box -- so the ratios and the shape of the curve are what these
+numbers are here to show, not the seconds.
 
 The single-threaded baseline is not carried forward.  It was 204.4 s when the
 suite held 268 tests, and the suite has since more than doubled, so that figure
@@ -19,7 +21,7 @@ is exactly the kind of stale number this docstring was rewritten to remove; run
 ``python -m unittest discover tests`` if you want a current one.
 
 **The critical path is the floor.**  ``test_snapshot_tool.ByteExactnessTests``
-is the longest single unit of work -- 115.6 s of the 238.6 s wall time at
+is the longest single unit of work -- 110.7 s of the 232.9 s wall time at
 ``-j 8`` -- and a class is the smallest thing the runner can schedule, so
 distributing the work takes the wall time down towards that, not towards zero.
 ``test_snapshot_tool`` and ``test_e2e`` are most of the suite because every case
@@ -28,13 +30,13 @@ work is I/O- and subprocess-bound rather than CPU-starved.
 
 ``-j 1`` is *slower* than the plain serial command, and that is the granularity
 argument in miniature: one process per class pays an interpreter start-up and a
-fresh ``import requests`` for each of the 118 targets.  Use ``python -m unittest
+fresh ``import requests`` for each of the 121 targets.  Use ``python -m unittest
 discover tests`` for a baseline; ``-j 1`` is not one.
 
 **Granularity is the test class.**  Not the module, and not the test:
 
-    class granularity, -j 8                 238.6 s    <- 118 targets
-    test  granularity, -j 8                 298.5 s    <- 612 targets
+    class granularity, -j 8                 232.9 s    <- 121 targets
+    test  granularity, -j 8                 293.8 s    <- 630 targets
 
 * Per module would leave the whole of ``test_snapshot_tool`` on one worker, and
   that module is the bulk of the suite's work -- more than the class-granularity
@@ -42,14 +44,15 @@ discover tests`` for a baseline; ``-j 1`` is not one.
 * Per test is *worse*, which is not obvious.  ``E2ETestCase`` does its expensive
   work in ``setUpClass`` (a temp directory, a stub HTTP server, a git
   environment); scheduling per test repeats all of that for every test in the
-  class.  The 494 extra interpreter start-ups cost less than the setup they
+  class.  The 509 extra interpreter start-ups cost less than the setup they
   duplicate.
 
 **The curve flattens early.**  Eight workers are 1.4x four, not 2x, and beyond
-eight the wall time barely moves -- measured on this suite at 607 tests earlier
-the same day, ``-j 16`` was 215.5 s and ``-j 24`` 212.7 s against 257.7 s at
-``-j 8``.  The default is one worker per CPU, which on a wide machine is more
-than the suite can use.  The heavy targets are themselves multi-process -- each
+eight the wall time barely moves -- on this suite at 630 tests, ``-j 16`` was
+243.4 s and ``-j 24`` 227.9 s against 232.9 s at ``-j 8``, a spread inside the
+run-to-run noise the column above already disclaims, and not an ordering.  The
+default is one worker per CPU, which on a wide machine is more than the suite
+can use.  The heavy targets are themselves multi-process -- each
 E2E case runs ``git`` several times and serves HTTP -- so a dozen of them at
 once contend for the same cores.
 
