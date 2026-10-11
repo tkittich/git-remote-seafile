@@ -22,8 +22,11 @@ from git_remote_seafile.git_util import (
     get_git_config_int,
     get_git_dir,
     get_objects_to_push,
+    has_promisor_remote,
     install_packfile,
     is_ancestor,
+    is_shallow_repository,
+    objects_may_be_incomplete,
     rev_parse,
     run_git,
 )
@@ -500,6 +503,101 @@ class TestGitConfig(unittest.TestCase):
                 self.assertEqual(get_git_config_int("seafile.locklease", default=60), 60)
             self.assertIn("not an integer", stderr.getvalue())
             self.assertIn("seafile.locklease", stderr.getvalue())
+
+
+class TestCloneCompletenessProbes(unittest.TestCase):
+    """is_shallow_repository / has_promisor_remote / objects_may_be_incomplete.
+
+    These three gate the fetch-skip heuristic, which reasons from tip-commit
+    presence and is therefore sound only in a full clone.
+    """
+
+    def setUp(self):
+        self.td = tempfile.TemporaryDirectory()
+        self.root = Path(self.td.name)
+        self.orig_cwd = os.getcwd()
+
+    def tearDown(self):
+        os.chdir(self.orig_cwd)
+        self.td.cleanup()
+
+    def _init(self, path: Path) -> Path:
+        subprocess.run(["git", "init", str(path)], check=True, capture_output=True)
+        subprocess.run(["git", "-C", str(path), "config", "user.name", "Test User"], check=True)
+        subprocess.run(["git", "-C", str(path), "config", "user.email", "t@example.com"], check=True)
+        return path
+
+    def _commit(self, repo: Path, name: str, body: str) -> None:
+        (repo / name).write_text(body, encoding="utf-8")
+        subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True, capture_output=True)
+        subprocess.run(
+            ["git", "-C", str(repo), "commit", "-m", f"add {name}"],
+            check=True, capture_output=True,
+        )
+
+    def _two_commit_source(self) -> Path:
+        src = self._init(self.root / "src")
+        self._commit(src, "a.txt", "a")
+        self._commit(src, "b.txt", "b")
+        return src
+
+    def test_a_full_clone_is_not_reported_incomplete(self):
+        src = self._two_commit_source()
+        dst = self.root / "full"
+        subprocess.run(["git", "clone", str(src), str(dst)], check=True, capture_output=True)
+
+        os.chdir(str(dst))
+        self.assertFalse(is_shallow_repository())
+        self.assertFalse(has_promisor_remote())
+        self.assertFalse(objects_may_be_incomplete())
+
+    def test_a_shallow_clone_is_reported_incomplete(self):
+        """`--depth 1` has the tip but a truncated history."""
+        src = self._two_commit_source()
+        dst = self.root / "shallow"
+        subprocess.run(
+            ["git", "clone", "--depth", "1", src.as_uri(), str(dst)],
+            check=True, capture_output=True,
+        )
+
+        os.chdir(str(dst))
+        self.assertTrue(is_shallow_repository())
+        self.assertTrue(objects_may_be_incomplete())
+
+    def test_a_promisor_remote_is_reported_incomplete(self):
+        """The key `git clone --filter=blob:none` records on its remote."""
+        src = self._two_commit_source()
+        dst = self.root / "partial"
+        subprocess.run(["git", "clone", str(src), str(dst)], check=True, capture_output=True)
+        # Set the key directly: the probe is being tested for what it *reads*,
+        # not for git's own clone plumbing.
+        subprocess.run(
+            ["git", "-C", str(dst), "config", "remote.origin.promisor", "true"],
+            check=True, capture_output=True,
+        )
+
+        os.chdir(str(dst))
+        self.assertTrue(has_promisor_remote())
+        self.assertTrue(objects_may_be_incomplete())
+
+    def test_a_promisor_key_set_to_false_is_not_incomplete(self):
+        src = self._two_commit_source()
+        dst = self.root / "notpartial"
+        subprocess.run(["git", "clone", str(src), str(dst)], check=True, capture_output=True)
+        subprocess.run(
+            ["git", "-C", str(dst), "config", "remote.origin.promisor", "false"],
+            check=True, capture_output=True,
+        )
+
+        os.chdir(str(dst))
+        self.assertFalse(has_promisor_remote())
+        self.assertFalse(objects_may_be_incomplete())
+
+    def test_an_unanswerable_probe_fails_safe(self):
+        """No git, no answer -- and "no answer" must mean "fetch", not "skip"."""
+        os.chdir(str(self.root))  # not a repository
+        with patch("git_remote_seafile.git_util.run_git", side_effect=OSError("no git")):
+            self.assertTrue(objects_may_be_incomplete())
 
 
 if __name__ == "__main__":

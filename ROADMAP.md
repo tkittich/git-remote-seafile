@@ -2,7 +2,7 @@
 
 **Baseline:** v0.8.1 (the 2026-10-11 review-cycle fix pass)  
 **Scope:** What shipped in each release line, the active backlog, and the v1.0.0 horizon.  
-**Test Suite:** 596 tests across 114 targets, all green (`tools/run_tests_parallel.py`). **Python:** 3.10+ (3.9 EOL).
+**Test Suite:** 607 tests across 116 targets, all green (`tools/run_tests_parallel.py`). **Python:** 3.10+ (3.9 EOL).
 
 > [!NOTE]
 > All critical and high-severity findings from `archive/REVIEW.*.md` (including ticket-based distributed locking, abandoned ticket cleanup, post-lock ref verification, exception propagation, GC lock fencing, pack index validation, surrogateescape paths, container PID isolation, D/F ref pruning, multi-spec pack batching, Git LFS transfer progress, safety guardrails, parallel ref enumeration, smart pack fetch filtering, disk-staged streaming, and modular helper decoupling) have been completed. All findings from the October 2026 review cycle (REVIEW.glm/gemini/qwen/VERIFY/BACKLOG, now archived) were verified fixed or explicitly dispositioned, as was the earlier v0.7.0 cycle (REVIEW.deepseek/gemini/qwen), closed in v0.7.1. Minor or low-priority items remain tracked in the backlog below. See [CHANGELOG.md](CHANGELOG.md) for detailed release notes.
@@ -13,7 +13,7 @@
 
 | ID / Source | Component | Description & Impact | Effort | Risk | Planned Target |
 |---|---|---|:---:|:---:|:---:|
-| **Fault Injection** | `tests/` | Comprehensive End-to-End Fault Injection: Clustered Seafile tests and high-latency simulation. | L | Low | v1.0.0 |
+| **Fault Injection** | `tests/` | Comprehensive End-to-End Fault Injection: Clustered Seafile tests and high-latency simulation. Per-path `file_404_on` / `file_500_on` / `upload` injection already ships in `e2e_harness.py` (v0.5.4), so "comprehensive" is the load-bearing word — what is missing is clustering and latency simulation, not fault injection itself. | L | Low | v1.0.0 |
 | **Credential Store**| `client.py` | Enterprise Credential Store: Windows Credential Manager and macOS Keychain integration. | M | Medium | v1.0.0 |
 
 ### 1.1 Deferred polish (v0.8.0 review cycle — cosmetic, no behavioral stake)
@@ -22,7 +22,7 @@ Findings from `archive/REVIEW.*-v0.8.0.md` judged not worth their churn during t
 
 | ID / Source | Component | Description & Impact | Effort | Risk | Planned Target |
 |---|---|---|:---:|:---:|:---:|
-| **Helper test factory** | `tests/test_helper.py` | ~51 `RemoteHelper.__new__(RemoteHelper)` + hand-set-attribute sites already forced a source workaround (`dry_run` as a class attribute); a shared `make_helper()` factory would localise the next attribute addition. Mechanical, zero behavior change. | S | Low | v0.9.0 |
+| **Helper test factory** | `tests/test_helper.py` | ~52 `RemoteHelper.__new__(RemoteHelper)` + hand-set-attribute sites already forced a source workaround (`dry_run` as a class attribute); a shared `make_helper()` factory would localise the next attribute addition. Mechanical, zero behavior change. | S | Low | v0.9.0 |
 | **De-glob test_gc** | `tests/test_gc.py` | 12 sites patch `pathlib.Path.glob` process-wide; a shared `_lock_aware_client()`-style helper returning staged packs would stop masking unrelated glob users inside `compact_repository`. | S | Low | v0.9.0 |
 | **CLI stream/exit conventions** | `cli.py` | Errors from most subcommands go to stdout with exit 1; `unlock`/`lfs-transfer` use stderr; `test` exits 1 for a *non-blocking* SafetyWarning. Standardise (errors → stderr; decide the warning exit code). Touches many CLI test assertions. | M | Low | v0.9.0 |
 | **PROPOSALS.md numbers** | `PROPOSALS.md` | Still says "Seafile Web API v2.1" (×3) and "400+ automated tests". Gitignored local file, so it cannot drift into a release — fix opportunistically. | S | None | next touch |
@@ -74,11 +74,11 @@ One line per capability — see [CHANGELOG.md](CHANGELOG.md) for the full detail
 - All findings from the four-way post-release review (glm/qwen/gemini/deepseek — `archive/REVIEW.*-v0.8.0.md`) are folded into this release: gc refuses to compact when refs sit outside heads/tags, `--no-push` no longer erases the vault's memory, the push rollback survives a retry failure, restore refuses synced destinations, shrunken-upload guard, bracketed IPv6 host parsing, download-token redaction, safety transient errors warn instead of degrading silently. Suite: 463 → 576 tests / 112 targets.
 
 **v0.8.1 (2026-10-11) — the review-cycle fix pass.**
-- The 2026-10-11 review cycle closed: 41 findings from the full-tree review (REVIEW.glm.md, cross-checked against the gemini and qwen peer reviews) and the three snapshot-tool reviews (REVIEW.snap{,1,2}.md, archived). Helper: single protocol-stream sanitizer, pack-before-index publish order, repo-local config can no longer disarm the safety guardrails, URL userinfo masking, non-force `unlock` deletes only the winner's ticket, `lock-status`/`unlock` distinguish "unlocked" from "could not inspect", unknown helper commands fail loudly, LFS unknown-event replies carry `event`. Snapshot tool: symlink-aware byte verification, restore-time gitlink warning, `git()` environment scrub + `GIT_TERMINAL_PROMPT=0`, multi-segment/backslash/case-insensitive excludes, CAS-honoring `delete_branch`, `--dry-run` writes nothing. Doctor: guarded date keys, real-date churn window, stderr diagnoses, `where` exit 2 for an unreadable repo.db. Docs: nonexistent `gc --aggressive` removed; v2 API links corrected. Suite: 576 → 594 tests / 113 targets.
+- The 2026-10-11 review cycle closed: 41 findings from the full-tree review (REVIEW.glm.md, cross-checked against the gemini and qwen peer reviews) and the three snapshot-tool reviews (REVIEW.snap{,1,2}.md, archived). Helper: single protocol-stream sanitizer, pack-before-index publish order, repo-local config can no longer disarm the safety guardrails, URL userinfo masking, non-force `unlock` deletes only the winner's ticket, `lock-status`/`unlock` distinguish "unlocked" from "could not inspect", unknown helper commands fail loudly, LFS unknown-event replies carry `event`. Snapshot tool: symlink-aware byte verification, restore-time gitlink warning, `git()` environment scrub + `GIT_TERMINAL_PROMPT=0`, multi-segment/backslash/case-insensitive excludes, CAS-honoring `delete_branch`, `--dry-run` writes nothing. Doctor: guarded date keys, real-date churn window, stderr diagnoses, `where` exit 2 for an unreadable repo.db. Docs: nonexistent `gc --aggressive` removed; v2 API links corrected. Suite: 576 → 595 tests / 113 targets.
 
 ---
 
 ## 3. Future Milestones (v1.0.0 horizon; tracked in §1)
 
-* **Comprehensive End-to-End Fault Injection:** Clustered Seafile tests and high-latency simulation.
+* **Comprehensive End-to-End Fault Injection:** Clustered Seafile tests and high-latency simulation. (Per-path 404/500 injection already ships — see §1.)
 * **Enterprise Credential Store:** Windows Credential Manager / macOS Keychain integration.

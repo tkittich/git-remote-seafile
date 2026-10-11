@@ -1394,7 +1394,11 @@ class TestSmartPackFetchFiltering(unittest.TestCase):
         sha2 = "2222222222222222222222222222222222222222"
         out = io.StringIO()
 
-        with patch("git_remote_seafile.helper.filter_existing_objects", return_value=[sha1, sha2]):
+        # Pin the clone-completeness probe: it reads the *ambient* repository,
+        # and CI checks out with --depth 1, so leaving it real would make this
+        # test assert different things locally and on CI.
+        with patch("git_remote_seafile.helper.objects_may_be_incomplete", return_value=False), \
+                patch("git_remote_seafile.helper.filter_existing_objects", return_value=[sha1, sha2]):
             with patch("sys.stdout", out), patch("sys.stderr", new_callable=io.StringIO):
                 h.cmd_fetch([f"{sha1} refs/heads/main", f"{sha2} refs/heads/feature"])
 
@@ -1416,7 +1420,8 @@ class TestSmartPackFetchFiltering(unittest.TestCase):
             out = io.StringIO()
 
             # Only sha1 exists locally, sha2 is missing
-            with patch("git_remote_seafile.helper.filter_existing_objects", return_value=[sha1]):
+            with patch("git_remote_seafile.helper.objects_may_be_incomplete", return_value=False), \
+                    patch("git_remote_seafile.helper.filter_existing_objects", return_value=[sha1]):
                 with patch("git_remote_seafile.helper.get_git_dir", return_value=local_git):
                     with patch("git_remote_seafile.helper.install_packfile") as install:
                         with patch("sys.stdout", out), patch("sys.stderr", new_callable=io.StringIO):
@@ -1425,6 +1430,62 @@ class TestSmartPackFetchFiltering(unittest.TestCase):
             self.assertEqual(out.getvalue(), "\n")
             client.list_dir.assert_called_once()
             install.assert_called_once()
+
+    def test_fetch_does_not_skip_when_the_clone_may_be_incomplete(self):
+        """A shallow or partial clone must not take the tip-presence shortcut.
+
+        The tip commit can be present while its trees and blobs are not, so
+        skipping the download would leave `git checkout` reporting missing
+        objects -- the exact case DESIGN 7.5 documents as the heuristic's
+        limitation, now closed rather than merely described.
+        """
+        with tempfile.TemporaryDirectory() as td:
+            local_git = Path(td) / ".git"
+            (local_git / "objects" / "pack").mkdir(parents=True)
+
+            client = MagicMock()
+            client.list_dir.return_value = [{"name": "pack-1.pack"}]
+            client.get_file_bytes.return_value = b"PACKBYTES"
+            h = self._helper(client)
+            sha1 = "1111111111111111111111111111111111111111"
+            sha2 = "2222222222222222222222222222222222222222"
+            out = io.StringIO()
+
+            # Both objects "exist", so the old heuristic would have skipped --
+            # the guard is the only thing that can withhold the skip.
+            with patch("git_remote_seafile.helper.objects_may_be_incomplete", return_value=True), \
+                    patch("git_remote_seafile.helper.filter_existing_objects", return_value=[sha1, sha2]):
+                with patch("git_remote_seafile.helper.get_git_dir", return_value=local_git):
+                    with patch("git_remote_seafile.helper.install_packfile") as install:
+                        with patch("sys.stdout", out), patch("sys.stderr", new_callable=io.StringIO):
+                            h.cmd_fetch([f"{sha1} refs/heads/main", f"{sha2} refs/heads/feature"])
+
+            client.list_dir.assert_called_once()
+            install.assert_called_once()
+
+    def test_fetch_does_not_skip_when_completeness_cannot_be_determined(self):
+        """Fails safe: an unanswerable probe fetches rather than skips.
+
+        The cost of a redundant download is bandwidth; the cost of a wrong skip
+        is a checkout that cannot resolve its own objects.
+        """
+        with tempfile.TemporaryDirectory() as td:
+            local_git = Path(td) / ".git"
+            (local_git / "objects" / "pack").mkdir(parents=True)
+
+            client = MagicMock()
+            client.list_dir.return_value = []
+            h = self._helper(client)
+            sha1 = "1111111111111111111111111111111111111111"
+            out = io.StringIO()
+
+            with patch("git_remote_seafile.helper.objects_may_be_incomplete", return_value=True), \
+                    patch("git_remote_seafile.helper.filter_existing_objects", return_value=[sha1]):
+                with patch("git_remote_seafile.helper.get_git_dir", return_value=local_git):
+                    with patch("sys.stdout", out), patch("sys.stderr", new_callable=io.StringIO):
+                        h.cmd_fetch([f"{sha1} refs/heads/main"])
+
+            client.list_dir.assert_called_once()
 
 
 class TestPushStagingCleanup(unittest.TestCase):
@@ -1460,6 +1521,124 @@ class TestPushStagingCleanup(unittest.TestCase):
 
         self.assertEqual(len(created_staging_dir), 1)
         self.assertFalse(created_staging_dir[0].exists(), "Push staging directory must be cleaned up")
+
+
+class _FakeRemote:
+    """A Seafile-shaped remote for the push path: what you PUT is what you GET.
+
+    The push reads a ref, writes it, then reads it *again* to detect a lost
+    update, because Seafile exposes no atomic compare-and-swap.  A client whose
+    ``get_file_text`` returns one fixed value cannot model that sequence -- the
+    pre-write read and the post-write read have to be able to differ -- so the
+    earlier push tests could not express it.  This keeps a path -> content map,
+    and ``clobber`` lets a test inject a competing writer that lands
+    immediately after ours.
+    """
+
+    def __init__(self, clobber: dict[str, str] | None = None):
+        self.files: dict[str, str] = {}
+        self.clobber = dict(clobber or {})
+
+    def upload_file(self, repo_id, parent_dir, filename, content, **kwargs):
+        path = f"{parent_dir}/{filename}"
+        self.files[path] = content.decode("utf-8").strip()
+        if path in self.clobber:
+            self.files[path] = self.clobber[path]
+        return True
+
+    def get_file_text(self, repo_id, path):
+        return self.files.get(path)
+
+    def list_dir(self, repo_id, path):
+        return []
+
+
+class TestPushRefReadBack(unittest.TestCase):
+    """The push re-reads every ref it wrote (N-1, extended).
+
+    The CAS check and the write are separate round trips, so a peer that
+    ignores the advisory lock can land between them.  Reporting ``ok`` without
+    looking back would make that lost update silent: the push that lost would
+    simply vanish from the remote while the client believed it had succeeded.
+    """
+
+    @staticmethod
+    def _helper(remote):
+        h = RemoteHelper.__new__(RemoteHelper)
+        h.client = remote
+        h.repo_id = "repo1"
+        h.repo_path = "/git-repo"
+        h._refs_cache = {}
+        return h
+
+    def _push(self, remote, out, err):
+        h = self._helper(remote)
+        with patch("git_remote_seafile.helper.rev_parse", return_value="localsha1"), \
+                patch("git_remote_seafile.helper.is_ancestor", return_value=True), \
+                patch("git_remote_seafile.helper.get_objects_to_push", return_value=[]), \
+                patch("git_remote_seafile.helper.RemoteLock"):
+            with patch("sys.stdout", out), patch("sys.stderr", err):
+                h.cmd_push(["refs/heads/main:refs/heads/main"])
+
+    def test_a_verified_write_reports_ok(self):
+        remote = _FakeRemote()
+        out, err = io.StringIO(), io.StringIO()
+        self._push(remote, out, err)
+
+        self.assertIn("ok refs/heads/main", out.getvalue())
+        self.assertNotIn("error", out.getvalue())
+        self.assertNotIn("unverified", err.getvalue())
+        # And the ref really did land in the fake remote.
+        self.assertEqual(remote.files["/git-repo/refs/heads/main"], "localsha1")
+
+    def test_a_ref_clobbered_after_the_write_is_reported_as_an_error(self):
+        """The point of the read-back: a lost update must not read as ok."""
+        remote = _FakeRemote(clobber={"/git-repo/refs/heads/main": "rivalsha9"})
+        out, err = io.StringIO(), io.StringIO()
+        self._push(remote, out, err)
+
+        self.assertIn("error refs/heads/main fetch first", out.getvalue())
+        self.assertNotIn("ok refs/heads/main", out.getvalue())
+        self.assertIn("another client updated it concurrently", err.getvalue())
+
+    def test_an_unreadable_ref_is_a_warning_not_an_error(self):
+        """The upload already succeeded, so a read we cannot finish proves nothing.
+
+        Calling a good push failed is its own bug -- the same reasoning that
+        separates LEASE_LOST from LEASE_UNKNOWN in the lock.
+        """
+        remote = _FakeRemote()
+
+        def explode(repo_id, path):
+            # Only the post-write read-back fails; the earlier reads must work
+            # or the push never reaches the write at all.
+            if path.endswith("refs/heads/main") and path in remote.files:
+                raise SeafileAPIError("network blip")
+            return remote.files.get(path)
+
+        remote.get_file_text = explode
+        out, err = io.StringIO(), io.StringIO()
+        self._push(remote, out, err)
+
+        self.assertIn("ok refs/heads/main", out.getvalue())
+        self.assertNotIn("error", out.getvalue())
+        self.assertIn("unverified", err.getvalue())
+
+    def test_a_ref_not_visible_after_the_write_is_a_warning_not_an_error(self):
+        remote = _FakeRemote()
+
+        def vanish(repo_id, path):
+            if path.endswith("refs/heads/main") and path in remote.files:
+                return None
+            return remote.files.get(path)
+
+        remote.get_file_text = vanish
+        out, err = io.StringIO(), io.StringIO()
+        self._push(remote, out, err)
+
+        self.assertIn("ok refs/heads/main", out.getvalue())
+        self.assertNotIn("error", out.getvalue())
+        self.assertIn("was not visible immediately after", err.getvalue())
 
 
 if __name__ == "__main__":

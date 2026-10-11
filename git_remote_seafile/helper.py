@@ -26,6 +26,7 @@ from .git_util import (
     get_objects_to_push,
     install_packfile,
     is_ancestor,
+    objects_may_be_incomplete,
     GitError,
     rev_parse,
     get_git_dir,
@@ -486,6 +487,52 @@ class RemoteHelper:
                                 replace=True,
                             )
 
+                            # Read the ref back.  Seafile exposes no atomic
+                            # compare-and-swap, so the CAS check above and this
+                            # write are separate round trips, and a peer that
+                            # ignores the advisory lock can land between them:
+                            # the ref would then hold *its* commit while we
+                            # report ok, and the push that lost would be silent.
+                            # Re-reading turns that into a reported failure.
+                            #
+                            # Only a *string* that differs proves a lost update.
+                            # A read that cannot settle the question -- None (the
+                            # ref is not there), an exception, or a client that
+                            # returns something that is not a string at all -- is
+                            # a warning, never an error: the upload already
+                            # returned success, and telling the user a good push
+                            # failed is its own bug.  The same tri-state
+                            # reasoning as the lock's LEASE_HELD / LOST /
+                            # UNKNOWN, and for the same reason.
+                            try:
+                                landed = self.client.get_file_text(
+                                    self.repo_id, self._full_path(dst)
+                                )
+                            except Exception as ex:
+                                sys.stderr.write(
+                                    f"Warning: could not re-read {dst} after writing it "
+                                    f"({ex}); the write is unverified.\n"
+                                )
+                                sys.stderr.flush()
+                            else:
+                                if isinstance(landed, str) and landed != local_sha:
+                                    sys.stdout.write(f"error {dst} fetch first\n")
+                                    sys.stderr.write(
+                                        f"\nPush error for {dst}: the remote ref holds "
+                                        f"{landed} after this push wrote {local_sha} -- "
+                                        "another client updated it concurrently. "
+                                        "Fetch and retry.\n"
+                                    )
+                                    sys.stderr.flush()
+                                    reported_specs.add(dst)
+                                    continue
+                                if landed is None:
+                                    sys.stderr.write(
+                                        f"Warning: {dst} was not visible immediately after "
+                                        "writing it; the write is unverified.\n"
+                                    )
+                                    sys.stderr.flush()
+
                             # If HEAD does not exist, set default branch
                             # Only point HEAD to a branch in refs/heads/, never to a tag
                             if dst.startswith("refs/heads/"):
@@ -598,8 +645,10 @@ class RemoteHelper:
             # Smart Pack Fetch Filtering (M-9):
             # If all requested commit objects already exist in the local repository,
             # skip downloading redundant remote packfiles.
-            # Note: This is a tip-presence heuristic sound for full clones; in shallow
-            # or partial clones, tips may exist while trees/blobs are missing.
+            # The skip reasons from *tip-commit presence*, which only implies a
+            # complete object store in a full clone; the guard below withholds it
+            # in shallow and partial clones, where the tip can be present while
+            # its trees and blobs are not.
             requested_shas: list[str] = []
             for spec in fetch_specs:
                 parts = spec.split()
@@ -610,14 +659,15 @@ class RemoteHelper:
                     break
 
             if requested_shas and len(requested_shas) == len(fetch_specs):
-                try:
-                    existing = set(filter_existing_objects(requested_shas))
-                    if len(existing) == len(set(requested_shas)):
-                        sys.stdout.write("\n")
-                        sys.stdout.flush()
-                        return
-                except Exception:
-                    pass
+                if not objects_may_be_incomplete():
+                    try:
+                        existing = set(filter_existing_objects(requested_shas))
+                        if len(existing) == len(set(requested_shas)):
+                            sys.stdout.write("\n")
+                            sys.stdout.flush()
+                            return
+                    except Exception:
+                        pass
 
             git_dir = get_git_dir()
             local_pack_dir = git_dir / "objects" / "pack"

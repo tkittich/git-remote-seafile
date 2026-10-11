@@ -459,7 +459,7 @@ git clone seafile://seafile.example.com/code/myproject
 ```
 
 > [!NOTE]
-> **Clone the full history — avoid `--depth` and `--filter`.** The helper skips a redundant remote pack download when the requested tip commits already exist locally. In a shallow or partial clone that is true while deeper trees and blobs are still missing, so a later checkout can report missing objects. `--depth 1` and `--filter=blob:none` are not supported well.
+> **Shallow and partial clones are detected, so they work.** The helper skips a redundant remote pack download when the requested tip commits already exist locally. That inference is only sound in a full clone — in a `--depth` or `--filter` clone the tip can be present while deeper trees and blobs are not — so the helper withholds the skip there and fetches the pack instead. `--depth 1` and `--filter=blob:none` are supported; they simply cost the download a full clone would have skipped.
 
 ### 8.3 Normal Fetch, Pull, and Push
 All standard Git commands work transparently:

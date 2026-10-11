@@ -137,6 +137,82 @@ def filter_existing_objects(shas: list[str] | str | None) -> list[str]:
     return existing
 
 
+def _repo_git(*args: str) -> tuple[bytes, bytes, int]:
+    """Run a git command against the *caller's* repository.
+
+    A remote helper is launched by git with ``GIT_DIR`` set, and
+    ``filter_existing_objects`` already names the repository explicitly rather
+    than trusting the working directory.  These probes answer questions about
+    the local clone, so they must resolve the same repository the fetch is
+    populating -- not whichever one the current directory happens to be in.
+
+    ``run_git`` prepends the executable, so the arguments built here must not
+    repeat it.
+    """
+    argv: list[str] = []
+    try:
+        argv.extend(["--git-dir", str(get_git_dir())])
+    except Exception:
+        pass
+    argv.extend(args)
+    return run_git(argv)
+
+
+def is_shallow_repository() -> bool:
+    """True if the local clone is shallow (``--depth``), so history is grafted.
+
+    A non-zero exit -- "not a repository", or a git too old for
+    ``--is-shallow-repository`` -- is reported as False rather than raised: the
+    callers that matter are asking a question with a safe default, and
+    ``objects_may_be_incomplete()`` re-adds the fail-safe on top.
+    """
+    out, _, code = _repo_git("rev-parse", "--is-shallow-repository")
+    if code != 0:
+        return False
+    return out.decode("utf-8", errors="replace").strip().lower() == "true"
+
+
+def has_promisor_remote() -> bool:
+    """True if any remote is a promisor -- i.e. a partial or blobless clone.
+
+    ``git clone --filter=blob:none`` records the remote it may lazily fetch
+    from as ``remote.<name>.promisor = true``.  That is the durable marker of a
+    clone whose objects can be missing on purpose; a nonzero exit from the
+    config lookup just means no remote carries the key.
+    """
+    out, _, code = _repo_git("config", "--get-regexp", r"^remote\..*\.promisor$")
+    if code != 0:
+        return False
+    for line in out.decode("utf-8", errors="replace").splitlines():
+        parts = line.split(None, 1)
+        if len(parts) == 2 and parts[1].strip().lower() == "true":
+            return True
+    return False
+
+
+def objects_may_be_incomplete() -> bool:
+    """True when holding a commit does not imply holding its trees and blobs.
+
+    The fetch-skip heuristic concludes from *tip-commit presence* that the whole
+    remote pack can be skipped.  That inference holds only in a full clone: a
+    shallow clone has the tip but a truncated history, and a partial (promisor)
+    clone has the tip while its trees and blobs still live on the server.
+    Skipping the download in either case leaves ``git checkout`` reporting
+    missing objects.
+
+    Fails safe.  If the question cannot be answered at all -- no git on PATH, a
+    repository git cannot read -- the answer is True, because the cost of a
+    redundant download is bandwidth while the cost of a wrong skip is a broken
+    checkout.
+    """
+    try:
+        if is_shallow_repository():
+            return True
+        return has_promisor_remote()
+    except Exception:
+        return True
+
+
 def get_objects_to_push(local_sha: list[str] | str, exclude_shas: list[str] | str | None = None) -> list[str]:
     """Find all git object lines reachable from local_sha but not in exclude_shas.
 

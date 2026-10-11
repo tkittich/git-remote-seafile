@@ -5,6 +5,16 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Shallow and partial clones now work.** The fetch-skip optimisation reasons from tip-commit presence, which implies a complete object store only in a full clone: in a `--depth` or `--filter` clone the tip can be present while its trees and blobs are not, so the skip left `git checkout` reporting missing objects. The helper now withholds the skip when the repository is shallow (`git rev-parse --is-shallow-repository`) or carries a promisor remote (`remote.<name>.promisor`), and fetches the pack instead. The probe fails safe — if it cannot answer, the pack is fetched.
+
+### Fixed
+
+- **A push that lost a ref race is no longer reported as successful.** Seafile exposes no atomic server-side compare-and-swap, so the pre-write CAS check and the ref write are separate round trips, and a peer that ignores the advisory lock can land between them: the ref then holds the other client's commit while the first client is told `ok`, and that push vanishes silently. Each ref is now read back immediately after it is written, and a value differing from the SHA just written is reported as `error <dst> fetch first`. A read-back that cannot settle the question — the ref is absent, or the read fails — is reported as an unverified write (a warning), never as a failed push.
+
 ## [0.8.1] - 2026-10-11
 
 The review-cycle fix pass. Two commits' worth of findings from the same-day full-tree review (REVIEW.glm.md, cross-checked against the gemini and qwen peer reviews) and the three snapshot-tool reviews (REVIEW.snap{,1,2}.md, archived): 41 findings closed, 595 tests across 113 targets, all green. No protocol changes; every fix is fail-loud or fail-closed. Only one entry is user-visible at the default settings on day one: a repository can no longer smuggle `[seafile] skipsafetychecks = true` past its own push.
