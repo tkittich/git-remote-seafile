@@ -7,8 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.8.5] - 2026-10-12
 
-A documentation release. The helper's behaviour is unchanged: what moved is the documentation's
-*shape*, which had stopped doing its job.
+Two halves, and neither changes the protocol — which is why this is a patch release rather than the
+minor the documentation work was briefly planned as.
+
+The larger half is the documentation's *shape*, which had stopped doing its job. The smaller is the
+six items the v0.8.2 verification left in its Tier 2 list: a URL-parsing ambiguity, a snapshot-tool
+ordering defect that put excluded bytes into the object store, a repo-wide LFS setting that misroutes
+objects in a dual-remote setup, a release gate that tested one interpreter and checked its tag too
+late, a build with no install check, and three stale timings carried in CI. Every fix is fail-loud or
+fail-closed; none is a protocol change.
 
 `DESIGN.md` had become a changelog wearing a spec's clothes. Its second half was nine subsections
 titled `(v0.5.0)` through `(v0.8.0)`, each listing fixes under their review identifiers, with later
@@ -53,6 +60,12 @@ that changed in v0.8.3.
 - **Upgrade and compatibility notes** (`USER_GUIDE` §5): the v0.7.0 lock removal, the v0.8.4 grant
   marker's fleet-wide requirement, and the fact that no protocol marker file exists to make old and
   new clients refuse each other.
+- **The dual-remote LFS trap is documented** (`USER_GUIDE` §11.1, pointed at from §8.5 and
+  `DESIGN.md` §4.6). `lfs.standalonetransferagent` is *repo-wide*, so with it set to `seafile`, LFS
+  objects route to Seafile even when the remote being pushed is GitHub — leaving pointers on GitHub
+  with no objects behind them. The scoped `lfs.https://seafile.example.com/.standalonetransferagent`
+  form, the second-setting trap in `lfs.customtransfer.seafile.args` (which names the destination a
+  second time), and the `concurrent` default are all spelled out.
 
 ### Fixed
 
@@ -63,7 +76,45 @@ that changed in v0.8.3.
   a user actually sees. A prose contradiction the doc guards cannot see, found by re-reading the
   section while writing `SECURITY.md`.
 
-- **Two overclaims inherited from the old §7.x were caught while rebuilding, and are now corrected rather than carried forward.** The document asserted that a non-numeric port is "reported as an invalid Seafile URL rather than escaping as a raw `ValueError`" — true of `parse_seafile_url`, false of `normalize_netloc()`, which reads `urlparse(...).port` unguarded (review finding A7.4, still open). It also described ref-name validation as following measured `git check-ref-format` behaviour without saying that the rule judges *components* and not the separator, so `refs/heads/` satisfies it; the destination check that actually stops `git push origin :refs/heads/` deleting every branch is a second, separate check. Both statements were verified against the code rather than re-read, and `DESIGN.md` now states the port gap as a known limitation in its failure model.
+- **Two overclaims inherited from the old §7.x were caught while rebuilding, and are now corrected rather than carried forward.** The document asserted that a non-numeric port is "reported as an invalid Seafile URL rather than escaping as a raw `ValueError`" — true of `parse_seafile_url`, false of `normalize_netloc()`, which read `urlparse(...).port` unguarded. Rather than write that down as a limitation, the guard was added (A7.4, under *Fixed* below). It also described ref-name validation as following measured `git check-ref-format` behaviour without saying that the rule judges *components* and not the separator, so `refs/heads/` satisfies it; the destination check that actually stops `git push origin :refs/heads/` deleting every branch is a second, separate check. Both statements were verified against the code rather than re-read.
+
+- **A dotted library name with a nested path was parsed as a server (A7).** `seafile://notes.v2/team/repo`
+  has no marker between the library and the path, and the old rule read *any* dotted first segment as
+  a host — so `notes.v2` became the server and `team` the library. The test is now conservative: a
+  port or userinfo is honoured outright, and a bare dot counts only when the segment has the shape of
+  a real hostname, meaning dot-separated labels ending in an *alphabetic* label. `notes.v2` and
+  `proj.2026` end in a numeric label, which no hostname can have, so they stay libraries. A name that
+  is genuinely either way (`my.lib`, `files.local`) is still read as a server, and the explicit-scheme
+  form names the server outright; the ambiguity is stated in `DESIGN.md` §4.3 and `USER_GUIDE` §7
+  rather than left to be discovered.
+- **`%2F` could smuggle a path separator past the traversal refusal (A7).** Segments were
+  percent-decoded *after* being split, so `a%2F..%2F..%2Fb` remained the single component spelled
+  `a/../../b` and never met the `.`/`..` check. Decoding now happens before the split, so `%2F` is a
+  real separator and every component it produces is held to the same rule.
+- **A malformed port escaped as urllib's bare `ValueError` (A7.4).** `normalize_netloc()` read
+  `urlparse(...).port` unguarded, so `seafile://https://host:abc/lib` failed with a message naming
+  neither the URL nor the fact that the fault was a *URL* fault — which sends the reader to the
+  server. The read is guarded and re-raised as `Invalid Seafile URL format: invalid port in '<host>'`,
+  and `DESIGN.md`'s failure model records the guarantee in place of the gap it used to describe.
+- **The shipped context-menu patch generated a URL the helper misreads (A7).**
+  `contrib/seafile-client-context-menu.patch` emitted a bare-host URL with an unencoded library and
+  folder, so a library whose name contained a dot was read as a server and a folder containing a
+  space produced a remote the helper could not parse. It now builds an explicit-scheme URL and
+  percent-encodes each path component, and its header says why.
+- **An excluded path was read, hashed and written to the object store before being dropped (B2).**
+  `build_snapshot` staged the whole tree with `git add -A -f .` and removed the excluded paths from
+  the index afterwards. The index is a *cache*, so a path that never reaches it cannot be skipped by
+  it: every excluded byte was read from disk, hashed, and written as a loose object, then left
+  unreferenced — and it could not be caught earlier, because excluded paths are exactly the ones the
+  stat cache has nothing for. Excludes are now applied *before* staging (the post-filter stays as a
+  safety net), so a large excluded tree costs nothing, and a test asserts that an excluded file
+  produces no new object.
+- **A local `gc` made the helper re-download packs it already had (A9).** The skip test compared the
+  remote's pack *names* against the local pack directory, and a local `gc` repacks and renames them,
+  so the comparison silently stopped matching. The installed set is now recorded per repository id
+  and per destination in `.git/seafile/<repo-id>/packs.json`, written after each fetch, so the
+  decision survives a repack; an unreadable or unknown-version state file costs a re-download, never
+  a missing object.
 
 ### Tests & Tooling
 
@@ -76,7 +127,21 @@ that changed in v0.8.3.
 - `SECURITY.md` and `RUNBOOK.md` joined `_DOC_NAMES` and `MANIFEST.in`, so the existing guards cover
   them and they reach the sdist. Both were written to satisfy those guards, which is how the
   dotted-name counter-example in an early draft of the runbook was caught before it shipped.
-- Suite: 640 → 642 tests / 123 → 124 targets, all green; docs guards 12/12; ruff clean.
+- **The release gate now tests the matrix it claims, and checks the tag first.** It ran a single
+  `ubuntu-latest` / 3.11 combination, and the tag-versus-`__version__` assertion ran *after* the
+  suite, so a mis-tagged release did all the work before failing. A `verify-tag` job now runs first,
+  the `test` job `needs` it, and the gate carries the same `os` / `python-version` matrix with
+  `fail-fast: false` as `ci.yml`.
+- **The build now installs what it built.** `python -m build` was followed by an upload with no
+  `twine check`, no wheel install, and nothing asserting that `tools/` stayed out of the wheel.
+  `.github/smoke_install_wheel.sh` checks both artifacts with `twine check`, installs the wheel into
+  a fresh venv, runs `git-remote-seafile version`, asserts the wheel has no top-level `tools/`, and
+  asserts the sdist *does* ship `tools/seafile_snapshot.py`.
+- **The stale timing curve in `ci.yml` is gone, and the doc guards run in CI.** `ci.yml` still quoted
+  a curve measured at 268 tests, and `tools/verify_docs_guards.py` — which proves each guard catches
+  drift — had no caller under `.github/` or `tests/`, so the proof never ran. The lint job now runs
+  the guard tests and the drift scenarios, and the curve is a pointer to `CONTRIBUTING.md`.
+- Suite: 640 → 671 tests / 123 → 130 targets, all green; docs guards 12/12; ruff clean.
 
 ## [0.8.4] - 2026-10-12
 

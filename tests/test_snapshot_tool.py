@@ -832,6 +832,73 @@ class ExcludeDepthTests(_SnapshotFixture):
         self.assertEqual(rc, 0, err)
         self.assertIn("excluded: 1 path(s)", out)
 
+class ExcludeBeforeStagingTests(_SnapshotFixture):
+    """B2 — an excluded path must never be read, hashed or written.
+
+    ``git add -A -f .`` stages the whole tree and only then drops the excluded
+    entries from the index, so the excluded bytes were read, compressed and left
+    in the vault's object store as an unreferenced loose object -- on every run,
+    because the excluded paths never reach the index and so the stat cache never
+    helps.  Staging is now filtered before git sees the paths.
+    """
+
+    def _blob_of(self, path: pathlib.Path) -> str:
+        return _git(
+            self.vault, "hash-object", "--no-filters", str(path)
+        ).stdout.strip()
+
+    def test_an_excluded_file_never_reaches_the_object_store(self):
+        rc, _, err = self.snapshot("--exclude", ".env")
+        self.assertEqual(rc, 0, err)
+        self.assertNotIn(".env", self.tree())
+
+        blob = self._blob_of(self.code / ".env")
+        self.assertNotEqual(blob, "", "could not hash the fixture's .env")
+        self.assertNotEqual(
+            _git(self.vault, "cat-file", "-e", blob).returncode,
+            0,
+            "the excluded file's content was written into the vault's object "
+            "store, so the exclusion happened after staging",
+        )
+
+    def test_a_deleted_file_leaves_the_snapshot(self):
+        """A pathspec add stages no deletion, so the stale entry must be dropped.
+
+        Regression: switching staging to ``--pathspec-from-file`` would leave a
+        file deleted from the source sitting in the snapshot for ever, because
+        nothing in the pathspec names it and the index persists between runs.
+        """
+        self.assertEqual(self.snapshot("--exclude", "node_modules")[0], 0)
+        self.assertIn("dist/bundle.js", self.tree())
+
+        (self.code / "dist" / "bundle.js").unlink()
+        rc, _, err = self.snapshot("--exclude", "node_modules")
+        self.assertEqual(rc, 0, err)
+        self.assertNotIn("dist/bundle.js", self.tree())
+
+    def test_a_file_that_becomes_excluded_leaves_the_snapshot(self):
+        """An exclude added later must also drop what a previous run recorded."""
+        self.assertEqual(self.snapshot("--exclude", "node_modules")[0], 0)
+        self.assertIn("dist/bundle.js", self.tree())
+
+        rc, _, err = self.snapshot("--exclude", "node_modules", "--exclude", "dist")
+        self.assertEqual(rc, 0, err)
+        self.assertNotIn("dist/bundle.js", self.tree())
+
+    def test_ignored_files_are_still_captured_without_excludes(self):
+        """The enumeration must not quietly acquire `.gitignore` semantics.
+
+        ``ls-files -o`` *with* ``--exclude-standard`` would drop exactly the
+        ignored files ``-f`` exists to force in -- a silent, one-way data loss.
+        """
+        rc, _, err = self.snapshot()
+        self.assertEqual(rc, 0, err)
+        tree = self.tree()
+        self.assertIn(".env", tree)
+        self.assertIn("app.log", tree)
+        self.assertIn("node_modules/pkg/a.js", tree)
+
+
 class CodeRemoteRefusalTests(_SnapshotFixture):
     """A whole-tree backup must never land where the source repository pushes."""
 

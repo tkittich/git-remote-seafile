@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import io
+import os
 import sys
 from pathlib import Path
+from urllib.parse import quote
 from .helper import RemoteHelper
 from .client import SeafileAuthError, SeafileClient
 from .lock import RemoteLock, RepositoryLockedError
@@ -89,6 +91,47 @@ def print_command_help(command: str) -> None:
         print("Options:")
         for flag, description in options:
             print(f"  {flag:<{width}}{description}")
+
+
+def _relative_within(target: Path, root: Path) -> Path | None:
+    """*target* relative to *root*, or None when target is not inside root.
+
+    ``Path.relative_to`` compares case-sensitively on some platforms, so a
+    worktree spelled ``C:\\Users\\me\\Seafile`` and a target spelled
+    ``c:\\users\\me\\seafile\\proj`` do not match on Windows even though they
+    name the same directory -- and the command reported "no library matched".
+    Both sides are normcased for the containment test only; the returned path
+    keeps the target's own spelling, because that is what the user sees in
+    their file manager.  On POSIX ``normcase`` is the identity, so this changes
+    nothing there.
+    """
+    try:
+        return target.relative_to(root)
+    except ValueError:
+        pass
+    norm_target, norm_root = os.path.normcase(str(target)), os.path.normcase(str(root))
+    if norm_target == norm_root:
+        return Path(".")
+    prefix = norm_root.rstrip("\\/") + os.sep
+    if norm_target.startswith(prefix):
+        return Path(str(target)[len(prefix):])
+    return None
+
+
+def _url_path(rel: Path) -> str:
+    """The path segment of a generated URL, or "" when the library root is meant.
+
+    Two jobs.  The root: ``Path(".")`` renders as ``.``, which the URL grammar
+    refuses as a path component, so the root must produce *no* segment and let
+    the parser fall back to its ``git-repo`` default.  And encoding: a worktree
+    path can contain a space, ``#``, ``?`` or a literal ``%``, any of which
+    changes the meaning of the URL it is pasted into -- ``#`` would truncate it
+    to a fragment.  Each component is encoded separately and the separators are
+    re-joined, so encoding never invents one.
+    """
+    if rel == Path("."):
+        return ""
+    return "/" + "/".join(quote(part, safe="") for part in rel.parts)
 
 
 def _positional_args(args: list[str], *, value_options: tuple[str, ...] = ()) -> list[str]:
@@ -454,25 +497,29 @@ def main() -> int:
         try:
             synced_libs = discover_local_synced_libraries()
             for lib in synced_libs:
-                wt = lib["worktree"]
-                try:
-                    rel = target_path.relative_to(wt)
-                except ValueError:
+                rel = _relative_within(target_path, lib["worktree"])
+                if rel is None:
                     continue
-                lib_name = lib["name"]
-                server_url = lib.get("server_url") or client.server_url
-                # Scheme comparison is case-insensitive per RFC 3986: a mixed-case
-                # SEAFILE_SERVER (e.g. "HTTP://host") must classify as http, not https.
-                head = server_url[:8].lower()
-                if head.startswith("http://"):
-                    server_host = server_url[7:].rstrip("/")
-                    print(f"seafile://http://{server_host}/{lib_name}/{rel.as_posix()}")
-                elif head.startswith("https://"):
-                    server_host = server_url[8:].rstrip("/")
-                    print(f"seafile://{server_host}/{lib_name}/{rel.as_posix()}")
-                else:
-                    # No scheme at all (bare host[:port]): keep the legacy bare form.
-                    print(f"seafile://{server_url.rstrip('/')}/{lib_name}/{rel.as_posix()}")
+                # The *repo id*, not the worktree folder name: a synced folder
+                # is named by the user and need not match the library's name on
+                # the server (and two libraries can share one).  get_repo_id
+                # resolves an id before it tries any name, so the URL works
+                # whatever the folder is called.
+                server_url = (lib.get("server_url") or client.server_url or "").rstrip("/")
+                if not server_url:
+                    print(
+                        f"Matched '{target_path}' to library '{lib['repo_id']}', but no "
+                        f"server URL is known for it. Set SEAFILE_SERVER and retry."
+                    )
+                    return 1
+                # Always state the scheme.  A bare first segment is read as a
+                # *library* unless it happens to look like a host, so the
+                # scheme-less spelling the command used to emit was the one form
+                # the URL grammar could misread.
+                scheme, sep, rest = server_url.partition("://")
+                if not sep:
+                    scheme, rest = "https", server_url
+                print(f"seafile://{scheme.lower()}://{rest}/{quote(lib['repo_id'], safe='')}{_url_path(rel)}")
                 return 0
             print(f"Could not match '{target_path}' to any local Seafile library worktree.")
             return 1

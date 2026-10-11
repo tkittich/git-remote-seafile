@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import io
+import json
 import os
 import tempfile
 import unittest
@@ -1469,6 +1470,128 @@ class TestFetchFailureIsLoud(unittest.TestCase):
             client.download_file_to.assert_called()
             install.assert_called_once()
             self.assertEqual(out.getvalue(), "\n")
+
+
+class TestInstalledPackState(unittest.TestCase):
+    """A9 — a local repack must not make the next fetch re-download everything.
+
+    The skip that keeps a fetch from downloading every remote pack was keyed on
+    the *local* pack filenames under ``objects/pack``.  A local ``git gc``
+    repacks and renames them, so the names stopped matching while the objects
+    were still present, and the whole remote was fetched again.
+    """
+
+    @staticmethod
+    def _helper(client):
+        h = RemoteHelper.__new__(RemoteHelper)
+        h.client = client
+        h.repo_id = "repo1"
+        h.repo_path = "/git-repo"
+        return h
+
+    @staticmethod
+    def _client(pack_name="pack-1.pack", size=9):
+        client = MagicMock()
+        client.list_dir.return_value = [{"name": pack_name, "size": size}]
+        client.get_file_bytes.return_value = b"PACKBYTES"
+        return client
+
+    def _fetch(self, local_git, client, install_side_effect=None):
+        h = self._helper(client)
+        with patch("git_remote_seafile.helper.get_git_dir", return_value=local_git):
+            with patch("git_remote_seafile.helper.install_packfile") as install:
+                if install_side_effect is not None:
+                    install.side_effect = install_side_effect
+                with patch("sys.stdout", new_callable=io.StringIO):
+                    with patch("sys.stderr", new_callable=io.StringIO):
+                        h.cmd_fetch(["refs/heads/main"])
+        return install
+
+    def _state(self, local_git):
+        path = local_git / "seafile" / "repo1" / "packs.json"
+        return json.loads(path.read_text(encoding="utf-8"))
+
+    def test_a_fetch_records_what_it_installed(self):
+        with tempfile.TemporaryDirectory() as td:
+            local_git = Path(td) / ".git"
+            (local_git / "objects" / "pack").mkdir(parents=True)
+
+            self._fetch(local_git, self._client()).assert_called_once()
+            self.assertEqual(self._state(local_git)["remotes"]["/git-repo"]["pack-1.pack"], 9)
+
+    def test_a_repack_does_not_cause_a_second_download(self):
+        with tempfile.TemporaryDirectory() as td:
+            local_git = Path(td) / ".git"
+            pack_dir = local_git / "objects" / "pack"
+            pack_dir.mkdir(parents=True)
+
+            def install_writes(name, pack, idx=None, **kwargs):
+                (pack_dir / name).write_bytes(b"INSTALLED")
+
+            self._fetch(
+                local_git, self._client(), install_side_effect=install_writes
+            ).assert_called_once()
+            self.assertTrue((pack_dir / "pack-1.pack").exists())
+
+            # A local `git gc`: the object store is repacked under new names, so
+            # the pack this clone downloaded is no longer a file of that name.
+            # The objects are still there, which is why a second fetch must not
+            # download them again.
+            (pack_dir / "pack-1.pack").unlink()
+            (pack_dir / "pack-repacked.pack").write_bytes(b"REPACKED")
+
+            self._fetch(
+                local_git, self._client(), install_side_effect=install_writes
+            ).assert_not_called()
+
+    def test_a_destination_with_no_state_still_downloads(self):
+        with tempfile.TemporaryDirectory() as td:
+            local_git = Path(td) / ".git"
+            (local_git / "objects" / "pack").mkdir(parents=True)
+
+            self._fetch(local_git, self._client()).assert_called_once()
+
+    def test_state_recorded_for_another_destination_is_not_used(self):
+        """The same library holds a different set of packs per destination."""
+        with tempfile.TemporaryDirectory() as td:
+            local_git = Path(td) / ".git"
+            (local_git / "objects" / "pack").mkdir(parents=True)
+            state_dir = local_git / "seafile" / "repo1"
+            state_dir.mkdir(parents=True)
+            (state_dir / "packs.json").write_text(
+                json.dumps({"version": 1, "remotes": {"/other": {"pack-1.pack": 9}}}),
+                encoding="utf-8",
+            )
+
+            self._fetch(local_git, self._client()).assert_called_once()
+
+    def test_a_truncated_state_file_costs_a_download_not_a_failure(self):
+        """The one way this file could cause work to be skipped is reading a
+        half-written one as valid, so a damaged file must read as 'nothing'."""
+        with tempfile.TemporaryDirectory() as td:
+            local_git = Path(td) / ".git"
+            (local_git / "objects" / "pack").mkdir(parents=True)
+            state_dir = local_git / "seafile" / "repo1"
+            state_dir.mkdir(parents=True)
+            (state_dir / "packs.json").write_text(
+                '{"version": 1, "remotes": {"/git-repo": {"pack-1.pack": ',
+                encoding="utf-8",
+            )
+
+            self._fetch(local_git, self._client()).assert_called_once()
+
+    def test_an_unknown_state_version_is_ignored(self):
+        with tempfile.TemporaryDirectory() as td:
+            local_git = Path(td) / ".git"
+            (local_git / "objects" / "pack").mkdir(parents=True)
+            state_dir = local_git / "seafile" / "repo1"
+            state_dir.mkdir(parents=True)
+            (state_dir / "packs.json").write_text(
+                json.dumps({"version": 99, "remotes": {"/git-repo": {"pack-1.pack": 9}}}),
+                encoding="utf-8",
+            )
+
+            self._fetch(local_git, self._client()).assert_called_once()
 
 
 class TestSmartPackFetchFiltering(unittest.TestCase):

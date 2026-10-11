@@ -493,6 +493,100 @@ class TestReleaseWorkflowTriggers(unittest.TestCase):
         )
 
 
+def _flow_sequence(lines: list[str], key: str) -> list[str]:
+    """The items of a ``key: [a, b]`` flow sequence."""
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith(f"{key}:") and "[" in stripped:
+            inner = stripped.split("[", 1)[1].rsplit("]", 1)[0]
+            return [item.strip().strip("'\"") for item in inner.split(",") if item.strip()]
+    return []
+
+
+def _job(text: str, job: str) -> list[str]:
+    """The lines of one top-level job in a workflow, comments removed."""
+    lines = [_strip_comment(raw) for raw in text.splitlines()]
+    return _child_lines(_child_lines(lines, "jobs"), job)
+
+
+def _matrix_of(text: str) -> dict[str, list[str]]:
+    """The ``test`` job's matrix, as ``{dimension: values}``."""
+    matrix = _child_lines(_job(text, "test"), "matrix")
+    return {key: _flow_sequence(matrix, key) for key in ("os", "python-version")}
+
+
+class TestReleaseGateShape(unittest.TestCase):
+    """D2/D3 — what the gate has to check before it publishes anything.
+
+    The gate ran a single interpreter on a single platform and never opened the
+    artifact it was about to attach, so neither the platform claim a release
+    makes nor the wheel itself was exercised.
+    """
+
+    def _workflow(self) -> str:
+        return WORKFLOW.read_text(encoding="utf-8")
+
+    def test_the_gate_covers_the_supported_matrix(self):
+        matrix = _matrix_of(self._workflow())
+        self.assertTrue(
+            matrix["os"],
+            "the release gate's `test` job names no operating systems: one "
+            "platform proves the suite passes there, which is not what a "
+            "release claims",
+        )
+        self.assertTrue(
+            matrix["python-version"],
+            "the release gate's `test` job names no Python versions",
+        )
+
+    def test_the_gate_matches_the_matrix_ci_runs(self):
+        """A gate narrower than CI would wave through what CI fails."""
+        ci = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+        self.assertEqual(
+            _matrix_of(self._workflow()),
+            _matrix_of(ci),
+            "the release gate's matrix and CI's have diverged; a release would "
+            "then be gated on a narrower set of platforms than the project "
+            "claims to support",
+        )
+
+    def test_the_tag_check_runs_before_the_suite(self):
+        """A mistyped tag should fail in seconds, not after the whole matrix."""
+        workflow = self._workflow()
+        self.assertNotIn(
+            "Verify git tag",
+            "\n".join(_job(workflow, "test")),
+            "the tag/version check is back inside the test job, where it ran "
+            "*after* the suite",
+        )
+        verify = "\n".join(_job(workflow, "verify-tag"))
+        self.assertIn(
+            "Verify git tag", verify,
+            "release.yml has no `verify-tag` job to check the tag against "
+            "__version__",
+        )
+        self.assertIn(
+            "needs: verify-tag",
+            "\n".join(_job(workflow, "test")),
+            "the test job does not depend on the tag check, so it can run "
+            "before the tag has been validated",
+        )
+
+    def test_the_build_job_smoke_installs_the_artifact(self):
+        """D3 — the artifact is what users install, so something must open it."""
+        build = "\n".join(_job(self._workflow(), "build"))
+        self.assertIn(
+            "smoke_install_wheel.sh", build,
+            "the build job uploads the wheel and sdist without ever installing "
+            "them, so a broken wheel is published unchecked",
+        )
+
+    def test_the_smoke_install_script_exists_and_is_runnable(self):
+        script = REPO_ROOT / ".github" / "smoke_install_wheel.sh"
+        self.assertTrue(script.is_file(), "smoke_install_wheel.sh is missing")
+        self.assertIn("twine check", script.read_text(encoding="utf-8"))
+
+
 class TestCreateGithubReleaseScript(unittest.TestCase):
     """Drive the real script with a stub `gh` and inspect the arguments."""
 

@@ -170,7 +170,7 @@ Trap 1 therefore blocks clone and fetch as well. Trap 2 stays push-only **by des
 
 #### 🛡️ Library Root Pollution Protection
 - A remote destination that resolves to the library root itself is refused with `Cannot use the library root '/' as a Git remote destination.` — bare objects and refs at the top level would clutter the library.
-- Note what *is* allowed: a URL with no path is not the root. `seafile://Documents` and `seafile://Documents/` both default to the `git-repo` subfolder (see §7), which is a normal destination. The refusal only fires when the path reduces to nothing, e.g. `seafile://Documents/%2F`.
+- Note what *is* allowed: a URL with no path is not the root. `seafile://Documents` and `seafile://Documents/` both default to the `git-repo` subfolder (see §7), which is a normal destination. No URL reaches the bare root: a path that normalises away, such as `seafile://Documents/%2F`, falls back to `git-repo` rather than to `/`.
 
 #### 🛡️ Library Typo Detection & Suggestions
 - If you misspell a library name in the remote URL (e.g. `seafile://docment/myproject`), the helper queries available libraries on the server and provides fuzzy-matched suggestions (`Did you mean: Documents?`).
@@ -474,10 +474,12 @@ Remotes use the `seafile://` URL scheme:
 | **Short URL** | `seafile://code/myproject` | Uses server from default configured account |
 | **IPv6** | `seafile://[2001:db8::1]:8443/code/myproject` | IPv6 literal in brackets; the port is optional (`:80` → http, other ports → https) |
 | **No path** | `seafile://code` | Library with no path defaults to the `git-repo` subfolder — the same as `seafile://code/git-repo` |
+| **Ambiguous name** | `seafile://https://seafile.example.com/my.lib/team/repo` | A library named like a hostname (`my.lib`, `files.local`): the explicit server is what makes it a library |
 
 - **Library**: Name of the Seafile library (e.g. `code` or `Documents`) or the library UUID. **The library must exist on your Seafile server before pushing.** (Create it via the Seafile Web UI if you haven't already).
-- **Path**: Path inside the library where bare repository objects will reside. Omitting it is allowed and means `git-repo`, so `seafile://code` and `seafile://code/` are the same remote as `seafile://code/git-repo`; only a URL whose path reduces to nothing at all (the library root itself) is refused.
-- **Scheme and port**: When the host carries a port, the scheme follows it — `:80` means `http`, `:443` means `https`, and **any other port keeps its number and uses `https`**. So `seafile://seafile.example.com:8080/code/repo` talks to `https://seafile.example.com:8080`, and a plain-HTTP server on a non-standard port needs the explicit form: `seafile://http://seafile.example.com:8080/code/repo`. A port that is not a number is refused with `Invalid Seafile URL format`, naming the host it could not parse. An IPv6 literal must be bracketed — `seafile://[::1]/code/repo` works (scheme inferred: https, or http on `:80`) — while an unbracketed colon-bearing host is refused, with the bracketed spelling named.
+- **A library name that contains a dot**: in the bare form the first segment is read as a *server* only when it has the shape of a hostname — dot-separated labels ending in an alphabetic one. So `seafile://notes.v2/team/repo` and `seafile://proj.2026/team/repo` are libraries (a numeric final label is not something a hostname can have), while `seafile://my.lib/team/repo` is read as the server `my.lib`. When a name could read either way, say which with the explicit form: `seafile://https://my.lib/team/repo` reads `my.lib` as the **server**, and `seafile://https://seafile.example.com/my.lib/team/repo` reads it as the **library**.
+- **Path**: Path inside the library where bare repository objects will reside. Omitting it is allowed and means `git-repo`, so `seafile://code` and `seafile://code/` are the same remote as `seafile://code/git-repo`. No `seafile://` URL reduces to the bare library root: a path that normalises away — `seafile://code/%2F`, `seafile://code//` — falls back to `git-repo`. The root refusal is a backstop for a destination that arrives empty by some other route, not something a URL can reach. A percent-encoded separator is decoded **before** the path is split, so `%2F` acts as a separator and a `..` hiding behind one is refused like any other.
+- **Scheme and port**: When the host carries a port, the scheme follows it — `:80` means `http`, `:443` means `https`, and **any other port keeps its number and uses `https`**. So `seafile://seafile.example.com:8080/code/repo` talks to `https://seafile.example.com:8080`, and a plain-HTTP server on a non-standard port needs the explicit form: `seafile://http://seafile.example.com:8080/code/repo`. A port that is not a number is refused with `Invalid Seafile URL format`, naming the host it could not parse — in the bare *and* the explicit form (`seafile://https://seafile.example.com:abc/code/repo`). An IPv6 literal must be bracketed — `seafile://[::1]/code/repo` works (scheme inferred: https, or http on `:80`) — while an unbracketed colon-bearing host is refused, with the bracketed spelling named.
 
 ---
 
@@ -560,6 +562,9 @@ git remote set-url --add --push origin seafile://code/myproject
 # Now this updates both destinations:
 git push origin main
 ```
+
+> [!WARNING]
+> **If you also use Git LFS, a dual remote splits your objects.** `lfs.standalonetransferagent` is not scoped to a remote, so large files keep going to Seafile while the commits go wherever you push — leaving LFS pointers on GitHub with no objects behind them. See §11.1 for the scoped form that fixes it.
 
 ---
 
@@ -670,6 +675,18 @@ git lfs track "*.bin" "*.weights" "*.mp4"
 git add .gitattributes
 git commit -m "chore: configure Git LFS for Seafile"
 ```
+
+> [!WARNING]
+> **`lfs.standalonetransferagent` applies to *every* remote, and the destination library is a second setting.** That one line tells Git LFS to use `seafile://code/myproject` for all LFS transfers in this repository, regardless of which Git remote you are pushing to. In a dual-remote setup (§3.3, §8.5), `git push github main` sends the commits to GitHub and the **large files to Seafile** — so the GitHub side holds LFS pointers whose objects it does not have, and a clone from GitHub cannot resolve them.
+>
+> If this repository has more than one remote, scope the agent to the Seafile server rather than applying it unconditionally:
+> ```bash
+> # Use the Seafile agent only when the LFS API URL matches; other remotes keep their own LFS.
+> git config lfs.https://seafile.example.com/.standalonetransferagent seafile
+> ```
+> The URL is matched with `git config --get-urlmatch`, so it is the **LFS API server URL**, not the remote's name. Leave the `lfs.customtransfer.seafile.*` settings in place — they define the agent this scoped key selects.
+>
+> Two things the snippet above does not say. First, `lfs.customtransfer.seafile.args` names the destination library a **second** time, so changing the push remote does not update it; a stale library name there surfaces only when a large file is actually transferred. Second, `lfs.customtransfer.seafile.concurrent` defaults to `true`, so Git LFS runs several agent processes at once — safe here, because each process gets its own scratch directory and transfers a disjoint set of objects, and the LFS path takes no repository lock.
 
 ### 11.2 Push and Pull Normally
 ```bash

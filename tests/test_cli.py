@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import os
 import sys
 import unittest
 from pathlib import Path
@@ -545,12 +546,14 @@ class TestCLIDesktopUrl(unittest.TestCase):
             con.close()
 
             with patch("pathlib.Path.home", return_value=fake_home):
-                # Matched
+                # Matched.  The library segment is the *repo id* ('r1'), not the
+                # worktree folder name ('myrepo'): the folder is user-named and
+                # need not match the library on the server.
                 with patch.object(sys, "argv", ["git-remote-seafile", "desktop-url", str(worktree_dir / "subdir")]):
                     with patch("sys.stdout", new_callable=io.StringIO) as mock_out:
                         code = main()
                         self.assertEqual(code, 0)
-                        self.assertIn("seafile://seafile.example.com/myrepo/subdir", mock_out.getvalue())
+                        self.assertIn("seafile://https://seafile.example.com/r1/subdir", mock_out.getvalue())
 
                 # Matched with plain HTTP server
                 mock_client.server_url = "http://seafile.local:8000"
@@ -558,23 +561,27 @@ class TestCLIDesktopUrl(unittest.TestCase):
                     with patch("sys.stdout", new_callable=io.StringIO) as mock_out:
                         code = main()
                         self.assertEqual(code, 0)
-                        self.assertIn("seafile://http://seafile.local:8000/myrepo/subdir", mock_out.getvalue())
+                        self.assertIn("seafile://http://seafile.local:8000/r1/subdir", mock_out.getvalue())
 
-                # Matched with mixed-case scheme (RFC 3986: schemes are caseless)
+                # Matched with mixed-case scheme (RFC 3986: schemes are caseless).
+                # The scheme is emitted lowercased; the host keeps its spelling.
                 mock_client.server_url = "HTTP://Seafile.Local:8000"
                 with patch.object(sys, "argv", ["git-remote-seafile", "desktop-url", str(worktree_dir / "subdir")]):
                     with patch("sys.stdout", new_callable=io.StringIO) as mock_out:
                         code = main()
                         self.assertEqual(code, 0)
-                        self.assertIn("seafile://http://Seafile.Local:8000/myrepo/subdir", mock_out.getvalue())
+                        self.assertIn("seafile://http://Seafile.Local:8000/r1/subdir", mock_out.getvalue())
 
-                # Matched with bare host (no scheme at all): legacy bare form preserved
+                # Matched with a bare host (no scheme at all).  The scheme is
+                # supplied rather than emitted bare: a scheme-less first segment
+                # is read as a *library* unless it looks like a host, so the old
+                # bare spelling was the one form the grammar could misread.
                 mock_client.server_url = "barehost.local"
                 with patch.object(sys, "argv", ["git-remote-seafile", "desktop-url", str(worktree_dir / "subdir")]):
                     with patch("sys.stdout", new_callable=io.StringIO) as mock_out:
                         code = main()
                         self.assertEqual(code, 0)
-                        self.assertIn("seafile://barehost.local/myrepo/subdir", mock_out.getvalue())
+                        self.assertIn("seafile://https://barehost.local/r1/subdir", mock_out.getvalue())
 
                 # Unmatched
                 outside_path = fake_home / "outside" / "dir"
@@ -584,6 +591,79 @@ class TestCLIDesktopUrl(unittest.TestCase):
                         code = main()
                         self.assertEqual(code, 1)
                         self.assertIn("Could not match", mock_out.getvalue())
+
+    @patch("git_remote_seafile.cli.SeafileClient")
+    def test_desktop_url_emits_a_url_the_parser_reads_back(self, mock_client_cls):
+        """The generated URL must round-trip: repo id, quoting, and the root.
+
+        A12.16: the command emitted the *folder* name, left spaces and '#' in a
+        path unencoded, and rendered the library root as a '.' path component --
+        which the URL grammar refuses outright, so the URL it printed could not
+        be pasted back into a remote.
+        """
+        import sqlite3
+        import tempfile
+
+        from git_remote_seafile.url import parse_seafile_url
+
+        mock_client = MagicMock()
+        mock_client_cls.return_value = mock_client
+        mock_client.server_url = "https://seafile.example.com"
+
+        with tempfile.TemporaryDirectory() as td:
+            fake_home = Path(td)
+            ccnet_dir = fake_home / "ccnet"
+            ccnet_dir.mkdir()
+            rdb = ccnet_dir / "repo.db"
+            con = sqlite3.connect(str(rdb))
+            con.execute("CREATE TABLE RepoProperty (repo_id TEXT, key TEXT, value TEXT)")
+            # A worktree whose *folder* name differs from the library name, and a
+            # subfolder carrying a space and a '#' -- both meaningful in a URL.
+            worktree_dir = fake_home / "Documents" / "Not The Library Name"
+            (worktree_dir / "sub dir#1").mkdir(parents=True)
+            con.execute(
+                "INSERT INTO RepoProperty VALUES ('repo-uuid-42', 'worktree', ?)",
+                (str(worktree_dir),),
+            )
+            con.commit()
+            con.close()
+
+            def run(path):
+                with patch("pathlib.Path.home", return_value=fake_home):
+                    with patch.object(
+                        sys, "argv", ["git-remote-seafile", "desktop-url", str(path)]
+                    ):
+                        with patch("sys.stdout", new_callable=io.StringIO) as out:
+                            code = main()
+                return code, out.getvalue().strip()
+
+            # 1. The library root: no path segment at all, and the URL still parses
+            #    (a '.' component would have been refused).
+            code, text = run(worktree_dir)
+            self.assertEqual(code, 0)
+            self.assertEqual(text, "seafile://https://seafile.example.com/repo-uuid-42")
+            root = parse_seafile_url(text)
+            self.assertEqual(root.library_name, "repo-uuid-42")
+            self.assertEqual(root.repo_path, "/git-repo")
+
+            # 2. A path with a space and a '#': encoded, so it survives the URL and
+            #    reads back unchanged (a bare '#' would truncate it to a fragment).
+            code, text = run(worktree_dir / "sub dir#1")
+            self.assertEqual(code, 0)
+            self.assertNotIn(" ", text)
+            self.assertNotIn("#", text)
+            nested = parse_seafile_url(text)
+            self.assertEqual(nested.library_name, "repo-uuid-42")
+            self.assertEqual(nested.repo_path, "/sub dir#1")
+
+            # 3. Containment ignores case on Windows, where the filesystem does.
+            #    Older Pythons compare `relative_to` case-sensitively there, so a
+            #    differently-cased spelling of the same directory must still match
+            #    rather than reporting "no library matched".
+            if os.name == "nt":
+                code, text = run(Path(str(worktree_dir).upper()))
+                self.assertEqual(code, 0)
+                self.assertIn("repo-uuid-42", text)
 
     @patch("git_remote_seafile.cli.SeafileClient")
     def test_desktop_url_builds_the_client_without_requiring_credentials(self, mock_client_cls):

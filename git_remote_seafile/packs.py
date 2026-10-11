@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import inspect
+import json
 import re
 import shutil
 import sys
@@ -39,6 +40,107 @@ def check_remote_has_packs(client: SeafileClient, repo_id: str, remote_pack_dir:
     if not isinstance(entries, list):
         return False
     return any(e.get("name", "").endswith(".pack") for e in entries if isinstance(e, dict))
+
+
+#: Bumped if the on-disk shape changes; an unrecognised version is ignored
+#: rather than guessed at, which costs one re-download.
+_PACK_STATE_VERSION = 1
+
+
+def _pack_state_path(git_dir: Path, repo_id: str) -> Path:
+    """Where the record of installed remote packs lives for one library.
+
+    ``.git/seafile/<repo id>/packs.json``.  Keyed on the *repo id* rather than
+    the remote's name: the same library is routinely called ``origin`` in one
+    clone and ``seafile`` in the next, and a remote can be renamed at any time,
+    while the id names the same set of packs everywhere.  The id is sanitised
+    defensively -- it is a UUID in practice, and a stray character must not
+    escape the directory.
+    """
+    safe = re.sub(r"[^A-Za-z0-9._-]", "_", repo_id) or "unknown"
+    return git_dir / "seafile" / safe / "packs.json"
+
+
+def _read_pack_state(path: Path) -> dict:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(data, dict) or data.get("version") != _PACK_STATE_VERSION:
+        return {}
+    return data
+
+
+def load_installed_packs(git_dir: Path | None, repo_id: str, repo_path: str) -> dict[str, int]:
+    """Remote packs this clone has already fetched, as ``{pack name: size}``.
+
+    Why this exists: the skip that keeps a fetch from re-downloading everything
+    used to be keyed on the *local* pack filenames under ``objects/pack``, and a
+    local ``git gc`` changes those.  Repacking leaves the objects in place but
+    renames them, so the next fetch matched nothing and downloaded every remote
+    pack again -- the whole point of the guard, undone by an unrelated command.
+    The fact worth remembering is not "a local file of this name exists" but
+    "this clone has already fetched this remote pack", and a local repack cannot
+    invalidate it: the objects a downloaded pack provides are reachable from the
+    refs, so repacking preserves them.
+
+    Returns ``{}`` when there is no state file, when it is unreadable or
+    truncated, or when the recorded entry is for a different ``repo_path`` --
+    the same library holds a different set of packs per destination.  Every one
+    of those answers costs a re-download and never a missing object.
+    """
+    if git_dir is None:
+        return {}
+    data = _read_pack_state(_pack_state_path(git_dir, repo_id))
+    entry = data.get("remotes", {}).get(repo_path) if isinstance(data.get("remotes"), dict) else None
+    if not isinstance(entry, dict):
+        return {}
+    return {
+        name: size
+        for name, size in entry.items()
+        if isinstance(name, str) and isinstance(size, int)
+    }
+
+
+def record_installed_packs(
+    git_dir: Path | None,
+    repo_id: str,
+    repo_path: str,
+    packs: dict[str, int | None],
+) -> None:
+    """Record *packs* as fetched from *repo_path*, merging with what is there.
+
+    Best-effort on purpose.  A state file that cannot be written costs one
+    re-download on the next fetch -- exactly the behaviour before this file
+    existed -- so a failure is reported and swallowed rather than failing a
+    fetch that has already succeeded.  The write goes through a temporary file
+    and ``os.replace``: a half-written JSON file would read as "nothing
+    installed", and a truncated one could read as valid JSON that is missing
+    entries, which is the one way this file could cause work to be skipped.
+    """
+    if git_dir is None or not packs:
+        return
+    path = _pack_state_path(git_dir, repo_id)
+    try:
+        data = _read_pack_state(path) or {"version": _PACK_STATE_VERSION}
+        remotes = data.get("remotes")
+        if not isinstance(remotes, dict):
+            remotes = data["remotes"] = {}
+        entry = remotes.get(repo_path)
+        if not isinstance(entry, dict):
+            entry = remotes[repo_path] = {}
+        for name, size in packs.items():
+            entry[name] = size if isinstance(size, int) else 0
+        path.parent.mkdir(parents=True, exist_ok=True)
+        scratch = path.with_name("packs.json.tmp")
+        scratch.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        scratch.replace(path)
+    except OSError as ex:
+        sys.stderr.write(
+            f"Warning: could not record the fetched packfiles in {path} ({ex}); "
+            f"a later fetch may download them again.\n"
+        )
+        sys.stderr.flush()
 
 
 def fetch_pack_artifact(

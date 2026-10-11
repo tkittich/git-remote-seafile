@@ -31,18 +31,57 @@ permissions:
   contents: read
 
 jobs:
-  # Gate release packaging and distribution on passing the unit test suite.
-  test:
+  # Cheapest check first, and its own job so it runs once rather than once per
+  # matrix entry: a tag that does not match __version__ should fail in seconds,
+  # not after the whole suite has run.  It used to be the *last* step of the
+  # test job, so a mistyped tag was discovered only once everything else passed.
+  #
+  # `import git_remote_seafile` works from the checkout without installing: the
+  # package directory is the working directory, which `python -c` puts on
+  # sys.path, and `__init__.py` imports nothing outside the standard library.
+  verify-tag:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
-      with:
-        fetch-depth: 0
 
     - name: Set up Python
       uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
       with:
         python-version: '3.11'
+
+    - name: Verify git tag matches package version
+      run: |
+        TAG="${{ github.ref_name }}"
+        VERSION="v$(python -c 'import git_remote_seafile; print(git_remote_seafile.__version__)')"
+        if [ "$TAG" != "$VERSION" ]; then
+          echo "ERROR: Tag '$TAG' does not match package __version__ '$VERSION'" >&2
+          exit 1
+        fi
+
+  # The same matrix CI runs, on purpose.  A release gate exercising one
+  # interpreter proves the suite passes on *that* interpreter, which is not the
+  # claim a release makes: the tag names a commit, not a platform, and nothing
+  # else re-checks the other fourteen combinations between the last push to main
+  # and the release.
+  test:
+    needs: verify-tag
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # One failing combination must not cancel the rest: the useful output of a
+      # red release gate is the list of combinations that fail.
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
+    steps:
+    - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      with:
+        fetch-depth: 0
+
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+      with:
+        python-version: ${{ matrix.python-version }}
 
     - name: Install dependencies
       run: |
@@ -56,15 +95,6 @@ jobs:
       run: |
         pip install ruff==0.16.10
         ruff check .
-
-    - name: Verify git tag matches package version
-      run: |
-        TAG="${{ github.ref_name }}"
-        VERSION="v$(python -c 'import git_remote_seafile; print(git_remote_seafile.__version__)')"
-        if [ "$TAG" != "$VERSION" ]; then
-          echo "ERROR: Tag '$TAG' does not match package __version__ '$VERSION'" >&2
-          exit 1
-        fi
 
   # Build once.  The GitHub Release below attaches exactly this artifact.
   build:
@@ -85,6 +115,16 @@ jobs:
 
     - name: Build sdist and wheel
       run: python -m build
+
+    # The artifact is what users install, and until now nothing in this workflow
+    # ever opened it: a wheel that cannot be installed, whose metadata renders
+    # wrong on the Release page, or that grew a `tools/` directory would have
+    # been published unchecked (D3).  The script also asserts the wheel and the
+    # sdist disagree about `tools/` on purpose -- USER_GUIDE section 15 sends
+    # users to the sdist for it.  Run it by hand with
+    # `bash .github/smoke_install_wheel.sh dist` after a local build.
+    - name: Smoke-install the built distributions
+      run: bash .github/smoke_install_wheel.sh dist
 
     # Artifact actions are a matched pair and are bumped together.  These are
     # the lowest majors declaring `runs.using: node24` -- upload@v5 and

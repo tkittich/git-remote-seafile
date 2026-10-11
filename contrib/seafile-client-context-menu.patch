@@ -7,6 +7,17 @@ and copies the `seafile://<server>/<library>/<path>` URL to the system clipboard
 allowing developers to immediately use `git clone` or `git remote add` with
 `git-remote-seafile`.
 
+The URL is built in the *explicit-server* form, `seafile://https://<host>/<library>/<path>`,
+with every path component percent-encoded.  Both are deliberate: the bare
+`seafile://<host>/<library>` spelling is read as `<library>/<path>` unless the
+first segment happens to look like a hostname, so it is the one spelling
+`git-remote-seafile` can misread -- and a library or folder name containing a
+space, `#` or `%` changes the meaning of the URL it is pasted into.
+
+Note that the blob ids and hunk headers below are placeholders: this is
+documentation of the intended change, not a patch that applies to a real
+checkout (see `DESIGN.md` §8, item 3).
+
 ---
  src/ui/repo-tree-view.cpp | 24 ++++++++++++++++++++++++
  src/ui/repo-tree-view.h   |  1 +
@@ -43,11 +54,30 @@ index 7a1bc34..8d2ef91 100644
 +    const ServerRepo repo = getRepoFromIndex(index);
 +    if (!repo.isValid()) return;
 +    
-+    QUrl serverUrl = repo.account.serverUrl;
-+    QString host = serverUrl.host();
-+    QString libName = repo.name;
++    const QUrl serverUrl = repo.account.serverUrl;
++    const QString libName = repo.name;
 +    
-+    QString gitUrl = QString("seafile://%1/%2").arg(host, libName);
++    // Spell the server out with its scheme (and port, when non-default).  The
++    // scheme-less form is read as <library>/<path> unless the first segment
++    // looks like a hostname, so it is the one spelling the helper can misread.
++    QString server = serverUrl.scheme() + QStringLiteral("://") + serverUrl.host();
++    if (serverUrl.port() != -1) {
++        server += QStringLiteral(":") + QString::number(serverUrl.port());
++    }
++    
++    // Percent-encode each component: a name containing a space, '#' or '%'
++    // would otherwise change the meaning of the URL it is pasted into.
++    QString gitUrl = QStringLiteral("seafile://%1/%2")
++                         .arg(server,
++                              QString::fromUtf8(QUrl::toPercentEncoding(libName)));
++    
++    // When a folder is selected, append its path inside the library.
++    const QString folder = folderPathForIndex(index);
++    if (!folder.isEmpty()) {
++        gitUrl += QStringLiteral("/")
++                  + QString::fromUtf8(QUrl::toPercentEncoding(folder));
++    }
++    
 +    QApplication::clipboard()->setText(gitUrl);
 +}
 -- 

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import unittest
 
-from git_remote_seafile.url import mask_url, parse_seafile_url
+from git_remote_seafile.url import mask_url, normalize_netloc, parse_seafile_url
 
 
 class TestUrlParsingModule(unittest.TestCase):
@@ -180,6 +180,108 @@ class TestUrlParsingModule(unittest.TestCase):
                 with self.assertRaises(ValueError) as ctx:
                     parse_seafile_url(url)
                 self.assertIn("invalid host", str(ctx.exception))
+
+
+class TestHostAndLibraryDisambiguation(unittest.TestCase):
+    """A7 — a dotted library name must not be read as a server.
+
+    The old rule called any dot a host signal, so `seafile://my.lib/team/repo`
+    became server `my.lib`, library `team` -- and the `_looks_like_host`
+    docstring claimed the opposite.
+    """
+
+    def test_version_suffixed_library_is_not_a_host(self):
+        # A numeric final label is not something a hostname can have, so a
+        # library named after a release stays a library even with a sub-path.
+        for name in ("notes.v2", "proj.2026", "docs.v1.2"):
+            with self.subTest(name=name):
+                res = parse_seafile_url(f"seafile://{name}/team/repo")
+                self.assertIsNone(res.server_url)
+                self.assertEqual(res.library_name, name)
+                self.assertEqual(res.repo_path, "/team/repo")
+
+    def test_hostname_shaped_library_is_read_as_a_server(self):
+        # `my.lib` and `seafile.local` are genuinely ambiguous -- both are valid
+        # hostnames -- so the bare form reads them as servers.  Pinned so the
+        # choice is deliberate rather than accidental, and so a future change
+        # has to argue with a test.
+        res = parse_seafile_url("seafile://my.lib/team/repo")
+        self.assertEqual(res.server_url, "https://my.lib")
+        self.assertEqual(res.library_name, "team")
+        self.assertEqual(res.repo_path, "/repo")
+
+    def test_explicit_server_makes_a_hostname_shaped_name_a_library(self):
+        # The documented escape hatch for the ambiguous case.
+        res = parse_seafile_url("seafile://https://server.example/my.lib/team/repo")
+        self.assertEqual(res.server_url, "https://server.example")
+        self.assertEqual(res.library_name, "my.lib")
+        self.assertEqual(res.repo_path, "/team/repo")
+
+    def test_userinfo_makes_a_bare_segment_a_host(self):
+        # A single-label host is not hostname-shaped on its own; `user@` is an
+        # explicit instruction, like a port.
+        res = parse_seafile_url("seafile://user@localhost/lib/repo")
+        self.assertEqual(res.server_url, "https://localhost")
+        self.assertEqual(res.library_name, "lib")
+
+
+class TestPercentEncodedSeparators(unittest.TestCase):
+    """A7 — an encoded separator must not smuggle a traversal past the checks.
+
+    Splitting before unquoting left `a%2F..%2F..%2Fb` as one component,
+    `a/../../b`, which is not `..` and so passed both checks.
+    """
+
+    def test_encoded_separator_is_decoded_before_splitting(self):
+        res = parse_seafile_url("seafile://code/a%2Fb")
+        self.assertEqual(res.library_name, "code")
+        self.assertEqual(res.repo_path, "/a/b")
+
+    def test_encoded_traversal_is_refused(self):
+        for url in (
+            "seafile://code/a%2F..%2F..%2Fb",
+            "seafile://https://seafile.example.com/code/a%2F..%2F..%2Fb",
+            "seafile://code%2F..%2F..",
+        ):
+            with self.subTest(url=url):
+                with self.assertRaises(ValueError) as ctx:
+                    parse_seafile_url(url)
+                self.assertIn("'.' or '..'", str(ctx.exception))
+
+    def test_nul_byte_in_a_segment_is_refused(self):
+        with self.assertRaises(ValueError) as ctx:
+            parse_seafile_url("seafile://code/a%00b/c")
+        self.assertIn("NUL", str(ctx.exception))
+
+
+class TestPortParsingIsGuarded(unittest.TestCase):
+    """A7.4 — a malformed port is this tool's error, not urllib's.
+
+    `urlparse().port` raises a bare `ValueError` naming no URL, which escaped
+    from `normalize_netloc` and from the explicit-scheme branch.
+    """
+
+    def test_explicit_scheme_non_numeric_port_is_refused(self):
+        with self.assertRaises(ValueError) as ctx:
+            parse_seafile_url("seafile://https://seafile.example.com:abc/code/repo")
+        self.assertIn("Invalid Seafile URL format", str(ctx.exception))
+        self.assertIn("invalid port", str(ctx.exception))
+
+    def test_out_of_range_port_is_refused(self):
+        with self.assertRaises(ValueError) as ctx:
+            parse_seafile_url("seafile://https://seafile.example.com:99999/code/repo")
+        self.assertIn("Invalid Seafile URL format", str(ctx.exception))
+
+    def test_normalize_netloc_reports_the_port_rather_than_raising_raw(self):
+        with self.assertRaises(ValueError) as ctx:
+            normalize_netloc("https://host:abc")
+        self.assertIn("Invalid Seafile URL format", str(ctx.exception))
+        self.assertIn("host:abc", str(ctx.exception))
+
+    def test_normalize_netloc_still_normalises_good_input(self):
+        self.assertEqual(normalize_netloc("HTTPS://Host:443"), "host")
+        self.assertEqual(normalize_netloc("https://host:8443"), "host:8443")
+        self.assertEqual(normalize_netloc(""), "")
 
 
 class TestMaskUrl(unittest.TestCase):

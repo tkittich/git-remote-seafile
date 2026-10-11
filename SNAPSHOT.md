@@ -178,6 +178,13 @@ backing up.  Leave it out next time with --default-excludes, or explicitly:
 > direction: it also matches `distance.txt`. Prefer the bare name, or `*dist/*`
 > if a wildcard is genuinely wanted.
 
+Excludes are applied **before** the tree is staged, not by deleting paths from
+the index afterwards. The order is the point: the index is a stat cache, and a
+path it was never told about has no entry to skip, so an excluded path that is
+staged and then removed has already been read from disk, hashed, and written
+into the object store. Filtering first means an excluded directory is never
+opened at all — see §5 for what that is worth.
+
 ### Refusals, not guesses
 
 The failures this tool can cause are quiet ones, so wherever a guess would be
@@ -225,6 +232,14 @@ The vault's index keeps a stat cache, so unchanged files are not re-hashed
 either. Because the vault is ordinary Git history, "roll back to last Tuesday"
 is `git show`, `git diff`, or a checkout of an older commit — not a restore
 from a proprietary archive format.
+
+**An excluded path costs nothing, and that follows from *when* the filter
+runs.** Excludes are applied before staging rather than by dropping paths from
+the index afterwards, so an excluded directory is never opened: no read, no
+hash, no loose object. Staging first and filtering second paid all three and
+then discarded the result, leaving the excluded bytes unreferenced in the
+object store until a `gc`. The exclusion list is therefore a lever on the
+*run's* cost, not only on the snapshot's size.
 
 ### Subprocesses
 

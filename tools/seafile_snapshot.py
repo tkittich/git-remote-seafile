@@ -908,12 +908,34 @@ def exclude_matches(path: str, pattern: str) -> bool:
     return pattern_parts[0] in parts
 
 
-def apply_excludes(git_dir: Path, work_tree: Path, excludes: list[str]) -> list[str]:
-    """Drop excluded paths from the vault index; return what was dropped.
+def drop_from_index(git_dir: Path, work_tree: Path, paths: list[str]) -> None:
+    """Remove *paths* from the vault index, in batches.
 
     ``update-index --force-remove`` with NUL-separated paths on stdin, rather
-    than one ``git rm`` per pattern: the matching is ours (see
-    :func:`exclude_matches`), and batching keeps the argument list short.
+    than one ``git rm`` per path: the matching is ours (see
+    :func:`exclude_matches`), and batching keeps the argument list short -- a
+    tree with a large ``node_modules`` holds far more paths than one command
+    line can carry, and Windows' limit is the smallest of the platforms this
+    runs on.
+    """
+    for start in range(0, len(paths), _INDEX_BATCH):
+        batch = paths[start : start + _INDEX_BATCH]
+        git(
+            git_dir,
+            work_tree,
+            ["update-index", "--force-remove", "-z", "--stdin"],
+            cwd=work_tree,
+            stdin="\0".join(batch) + "\0",
+        )
+
+
+def apply_excludes(git_dir: Path, work_tree: Path, excludes: list[str]) -> list[str]:
+    """Drop index paths matching *excludes*; return what was dropped.
+
+    This is the post-staging **safety net**, not the mechanism: staging already
+    skips excluded paths (see :func:`stageable_paths`), so a non-empty return
+    means a path reached the index that the pre-filter did not account for --
+    worth knowing about, and worth not letting into a snapshot.
     """
     if not excludes:
         return []
@@ -923,16 +945,39 @@ def apply_excludes(git_dir: Path, work_tree: Path, excludes: list[str]) -> list[
         for path in listing.split("\0")
         if path and any(exclude_matches(path, pat) for pat in excludes)
     ]
-    for start in range(0, len(dropped), _INDEX_BATCH):
-        batch = dropped[start : start + _INDEX_BATCH]
-        git(
-            git_dir,
-            work_tree,
-            ["update-index", "--force-remove", "-z", "--stdin"],
-            cwd=work_tree,
-            stdin="\0".join(batch) + "\0",
-        )
+    if dropped:
+        drop_from_index(git_dir, work_tree, dropped)
     return dropped
+
+
+def stageable_paths(git_dir: Path, work_tree: Path) -> list[str]:
+    """Every path ``git add -A -f .`` would consider, as the index spells it.
+
+    ``ls-files -c -o`` *without* ``--exclude-standard``: ``-c`` is what is
+    already staged and ``-o`` everything untracked **including ignored files**,
+    which is exactly the set ``-f`` forces in -- adding ``--exclude-standard``
+    would silently drop the ignored files that ``-f`` exists to capture.
+
+    Two adjustments make the list safe to hand back as pathspecs.  A nested
+    repository is reported as ``nested/`` while the index records it as
+    ``nested``, so the trailing slash goes.  And ``--deleted`` entries are
+    dropped: they are in the index but gone from disk, and a pathspec naming a
+    missing file makes ``git add`` fail outright ("did not match any files")
+    rather than staging the deletion.
+    """
+    listing = git(git_dir, work_tree, ["ls-files", "-z", "-c", "-o"], cwd=work_tree).stdout
+    deleted = {
+        path.rstrip("/")
+        for path in git(
+            git_dir, work_tree, ["ls-files", "-z", "--deleted"], cwd=work_tree
+        ).stdout.split("\0")
+        if path
+    }
+    return [
+        path
+        for path in (entry.rstrip("/") for entry in listing.split("\0") if entry)
+        if path not in deleted
+    ]
 
 
 def build_snapshot(
@@ -943,7 +988,17 @@ def build_snapshot(
     message: str,
     make_commit: bool = True,
 ) -> tuple[str, str | None, list[str]]:
-    """Stage the whole tree into the vault index and write a commit object.
+    """Stage the tree into the vault index and write a commit object.
+
+    Excluded paths are filtered out **before** staging.  ``git add -A -f .``
+    reads, hashes and writes a loose object for every file in the tree and only
+    then lets :func:`apply_excludes` drop the matching entries, so excluded bulk
+    -- a 2 GB ``node_modules``, say -- is read, compressed and left in the
+    object store on every run; and because the excluded paths never reach the
+    index, the stat cache cannot help, so each run re-reads them (B2).  The file
+    list is enumerated instead and the survivors handed to git, so an excluded
+    path is never opened.  With no exclusions there is nothing to filter and the
+    plain ``add`` is used unchanged.
 
     Returns ``(tree, commit, excluded)``, where ``commit`` is ``None`` when the
     tree is identical to ``parent`` -- an unchanged run should not pile up empty
@@ -954,8 +1009,40 @@ def build_snapshot(
     the caller may have just re-based on the remote tip.  The branch is *not*
     moved here: that is the caller's job, so a dry run can stop one step short.
     """
-    git(git_dir, work_tree, ["add", "-A", "-f", "."], cwd=work_tree)
-    excluded = apply_excludes(git_dir, work_tree, excludes)
+    if excludes:
+        candidates = stageable_paths(git_dir, work_tree)
+        excluded = [
+            path
+            for path in candidates
+            if any(exclude_matches(path, pat) for pat in excludes)
+        ]
+        kept = [path for path in candidates if path not in set(excluded)]
+        if kept:
+            git(
+                git_dir,
+                work_tree,
+                ["add", "-A", "-f", "--pathspec-from-file=-", "--pathspec-file-nul"],
+                cwd=work_tree,
+                stdin="\0".join(kept) + "\0",
+            )
+        # `git add` stages no deletion through a pathspec, and this index
+        # persists between runs, so anything it still holds that is not in
+        # `kept` -- a file deleted from the source, or one an exclude now
+        # covers -- has to be dropped explicitly.
+        indexed = git(git_dir, work_tree, ["ls-files", "-z"], cwd=work_tree).stdout
+        stale = [
+            path for path in indexed.split("\0") if path and path not in set(kept)
+        ]
+        if stale:
+            drop_from_index(git_dir, work_tree, stale)
+        # The pre-filter above is the mechanism; this is the net under it, so a
+        # path that reached the index anyway is reported rather than shipped.
+        missed = apply_excludes(git_dir, work_tree, excludes)
+        if missed:
+            excluded = sorted(set(excluded) | set(missed))
+    else:
+        git(git_dir, work_tree, ["add", "-A", "-f", "."], cwd=work_tree)
+        excluded = []
 
     tree = git(git_dir, work_tree, ["write-tree"], cwd=work_tree).stdout.strip()
 

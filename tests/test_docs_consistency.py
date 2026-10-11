@@ -585,6 +585,32 @@ class TestLintIsWired(unittest.TestCase):
             "defaults rather than the intended rule set",
         )
 
+    def test_the_lint_job_runs_the_doc_guards(self):
+        """B4 — the guards ran only inside the test suite.
+
+        That made them invisible to a documentation-only change: a doc edit that
+        contradicts the code was caught by whichever job happened to run the
+        tests, and by nothing else.  They are regex checks over nine documents,
+        so they cost well under a second.
+        """
+        self.assertIn(
+            "tests.test_docs_consistency", _read(self._CI),
+            "no CI job runs the doc guards, so a documentation edit that "
+            "contradicts the code is only caught by a full test run",
+        )
+
+    def test_the_lint_job_runs_the_guard_drift_scenarios(self):
+        """A guard that passes vacuously is worse than no guard.
+
+        ``tools/verify_docs_guards.py`` injects each kind of drift and asserts
+        the guard catches it.  It was wired into nothing at all, so the guards
+        could have decayed into vacuous passes with every job still green.
+        """
+        self.assertIn(
+            "tools/verify_docs_guards.py", _read(self._CI),
+            "the drift scenarios that prove the guards work are not run by CI",
+        )
+
 
 class TestDocumentationIndex(unittest.TestCase):
     def test_linked_documents_exist(self):

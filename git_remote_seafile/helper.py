@@ -15,6 +15,8 @@ from .packs import (
     check_remote_has_packs,
     fetch_and_install_pack,
     is_valid_pack_name,
+    load_installed_packs,
+    record_installed_packs,
 )
 from .refs import REF_NAMESPACES, iter_refs, is_valid_ref_name
 from .safety import check_preflight_safety, SafetyError
@@ -739,6 +741,12 @@ class RemoteHelper:
             git_dir = get_git_dir()
             local_pack_dir = git_dir / "objects" / "pack"
             local_packs = {p.name for p in local_pack_dir.glob("pack-*.pack")} if local_pack_dir.is_dir() else set()
+            # What this clone has already fetched from this destination.  The
+            # local-name check below is not enough on its own: a local `git gc`
+            # repacks and renames, so the names stop matching while the objects
+            # are still there, and every remote pack was downloaded again (A9).
+            installed = load_installed_packs(git_dir, self.repo_id, self.repo_path)
+            fetched: dict[str, int | None] = {}
 
             remote_pack_dir = self._full_path("objects/pack")
             remote_entries = self.client.list_dir(self.repo_id, remote_pack_dir)
@@ -749,8 +757,16 @@ class RemoteHelper:
                 if not is_valid_pack_name(pack_name):
                     sys.stderr.write(f"Warning: ignoring invalid remote packfile name: {pack_name}\n")
                     continue
+                size = entries_by_name[pack_name].get("size")
+                # Both are recorded, not just the downloads: a pack found under
+                # its own local name is proof this clone has it, and recording
+                # that is what lets the state file heal itself after the first
+                # fetch that follows a repack.
+                fetched[pack_name] = size
                 if pack_name in local_packs:
-                    continue  # already downloaded
+                    continue  # already downloaded, still under its own name
+                if pack_name in installed:
+                    continue  # already downloaded; a local repack renamed it
 
                 idx_name = pack_name.removesuffix(".pack") + ".idx"
                 expected_size = entries_by_name[pack_name].get("size")
@@ -765,6 +781,8 @@ class RemoteHelper:
                     expected_idx_size=expected_idx_size,
                     installer=install_packfile,
                 )
+
+            record_installed_packs(git_dir, self.repo_id, self.repo_path, fetched)
 
             sys.stdout.write("\n")
             sys.stdout.flush()

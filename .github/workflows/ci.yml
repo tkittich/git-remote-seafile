@@ -52,12 +52,12 @@ jobs:
     # `python -m unittest discover tests` is the fallback if this ever misbehaves
     # on a platform -- it is what the runner reproduces.
     #
-    # Measured on a 12-core machine at 268 tests: 204 s serial, 141 s at two
-    # workers, 85 s at four, 53 s at twelve.  v0.8.0 added the snapshot module,
-    # so the absolute numbers are larger now -- the shape of the curve is the
-    # point.  This job runs 15 times over (3 OS x 5 versions) and the whole
-    # pipeline takes as long as its slowest job, so the per-job saving is the
-    # pipeline saving.
+    # The parallel runner is what makes the 15-way matrix affordable: this job
+    # runs 15 times over (3 OS x 5 versions) and the whole pipeline takes as long
+    # as its slowest job, so the per-job saving is the pipeline saving.  Timings
+    # for the current suite live in CONTRIBUTING.md.  The curve that used to be
+    # quoted here was measured at 268 tests and had drifted for several releases
+    # (B4), so it was deleted rather than re-measured in a third place.
     #
     # -j 4 is explicit rather than 0/auto deliberately: os.cpu_count() reports
     # the *host's* cores inside a container, and handing a 4-vCPU runner 50-odd
@@ -104,3 +104,15 @@ jobs:
     # download, annotations do not.
     - name: Lint
       run: ruff check --output-format github .
+
+    # The doc guards used to run only inside the test suite, and the drift
+    # scenarios that prove they *work* were wired into nothing at all -- so the
+    # guards could have rotted into vacuous passes with every job still green
+    # (B4).  Both are cheap: the guards are a handful of regex checks over nine
+    # documents, and the scenarios are the same checks against deliberately
+    # drifted text.  No install step is needed -- the guards import
+    # `git_remote_seafile` from the checkout, which `python` puts on sys.path.
+    - name: Doc guards and their drift scenarios
+      run: |
+        python -m unittest tests.test_docs_consistency
+        python tools/verify_docs_guards.py

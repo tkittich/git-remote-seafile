@@ -45,24 +45,22 @@ python tools/run_tests_parallel.py -k e2e   # only matching classes
 python tools/run_tests_parallel.py --list   # show the units of work
 ```
 
-Measured on a 12-core AMD 5900X, **642 tests across 124 targets**:
+Measured on a 12-core AMD 5900X, **671 tests across 130 targets**:
 
 | workers | wall time |
 | ------- | --------- |
-| 4 | 319.4 s |
-| 8 | 232.9 s |
-| 8, `--granularity test` | 293.8 s (642 targets instead of 124) |
+| 4 | 342.8 s |
+| 8 | 245.9 s |
+| 8, `--granularity test` | 380.4 s (671 targets instead of 130) |
 
 Treat the column as indicative rather than exact. On an idle machine repeated runs
 spread by about a tenth, and the machine's throughput drifts by much more between
-sessions — the same `-j 8` run has measured 232.9 s, 243.3 s, 250.6 s and 328.9 s across
-sessions. The
-shape is the point: eight workers are 1.4x four, not 2x, and beyond
-eight the wall time barely moves, because the heavy cases are themselves
-multi-process. The wall time is bounded by the slowest single unit of work, not
-by throughput, and that unit is now a snapshot class —
-`test_snapshot_tool.ByteExactnessTests`, 110.7 s against a 232.9 s wall at
-`-j 8`.
+sessions — the same `-j 8` run has measured 232.9 s, 243.3 s, 245.9 s, 250.6 s and
+328.9 s across sessions and suite sizes. The shape is the point: eight workers are
+1.4x four, not 2x, and beyond eight the wall time barely moves, because the heavy
+cases are themselves multi-process. The wall time is bounded by the slowest single
+unit of work, not by throughput, and that unit is now a snapshot class —
+`test_snapshot_tool.ByteExactnessTests`, 114.7 s against a 245.9 s wall at `-j 8`.
 
 The serial baseline is deliberately not listed. It was 204.4 s when this table
 was first taken at 268 tests, and the suite has since more than doubled, so that
@@ -72,7 +70,7 @@ for it: the snapshot module makes the serial path a long wait, which is the
 whole reason this runner exists.
 
 The unit of work is the test class — see the module docstring for why per-test
-scheduling is measurably *worse* here (293.8 s against 232.9 s, for five times
+scheduling is measurably *worse* here (380.4 s against 245.9 s, for five times
 the process start-ups).
 
 Because the unit of work is the class, a **class that defines `test_*` methods
