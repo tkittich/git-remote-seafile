@@ -1,7 +1,7 @@
 # SNAPSHOT.md — full-tree backup to Seafile, `.gitignore`d files included
 
 > **Status: shipped in v0.8.0.** The implementation is `tools/seafile_snapshot.py`;
-> the tests are `tests/test_snapshot_tool.py` (75 cases across twenty classes), and
+> the tests are `tests/test_snapshot_tool.py` (92 cases across 22 classes), and
 > the tool is documented in `USER_GUIDE.md` §15, `DESIGN.md` §7.13 and
 > `CHANGELOG.md`'s 0.8.0 entry. Sections written *before* the ship are kept as
 > design history — where one has been overtaken by the shipped tool, a note says
@@ -124,8 +124,11 @@ Resolved most specific first:
 4. **the current directory** for the source, `'<source>-vault'` for the vault.
 
 So a scheduled job is the bare command, and an explicit flag is written back for
-next time. `--no-push` overrides any remembered or derived remote; `--dry-run`
-previews without writing anything, including the remembered settings.
+next time. `--no-push` overrides the remembered or derived remote *for that
+run* — it pushes nothing (the vault and the code repo alike) and leaves the
+vault's memory alone, so a one-off local run does not unhook a scheduled job;
+`--dry-run` previews the run without moving the branch, pushing, or touching
+the remembered settings.
 
 The vault is the bottom of the chain *and* the place the chain is stored, which is
 what makes the second run argument-free. It also means the vault remembers which
@@ -208,23 +211,25 @@ Every `git` invocation is a separate process, and on Windows that is about
 with `git --version` in a loop. The count therefore matters more than the work.
 A settled vault (the second and later runs) used to make **28** calls, of which
 **16 were config plumbing**: five remembered keys read one at a time, five keys
-rewritten unconditionally, the two byte-exactness pairs reset every run.
+rewritten unconditionally, the two byte-exactness pairs reset every run — and
+the vault's config was re-read four times over by different functions.
 
-All of that is now both batched and idempotent:
+All of that is now batched, idempotent, and read once:
 
 | | Before | After |
 | :--- | ---: | ---: |
-| Remembered settings read | 5 calls | **1** (`config --local --null --list`) |
+| Config reads (remembered + identity + byte-exactness) | 5 | **3** (2 vault + 1 source) |
 | Remembered settings written | 5 keys, ~8 calls | **0 when nothing changed** |
 | Byte-exactness (`autocrlf`, `safecrlf`) | 2 calls, always | **0 when already set** |
-| Identity (`user.name`, `user.email`) | 6 calls | **2 reads, 0 writes** once inherited |
-| **Whole run, unchanged tree** | **28 calls** | **16 calls** |
+| Identity (`user.name`, `user.email`) | 6 calls | **1 read, 0 writes** once inherited |
+| **Whole run, unchanged tree (then pushed)** | **28 calls** | **14 calls** |
+| Whole run, unchanged tree, `--no-push` | 25 calls | **12 calls** |
 
 The saving is why the test module's parallel time fell from 167 s to 128 s:
 nearly half of what the suite spent was process start-up, not Git. There is a
 floor here — a snapshot inherently needs `fetch`, `add`, `write-tree`,
 `rev-parse`, `ls-tree`, `ls-files` and the push, and none of those can be
-avoided without re-implementing Git's index. Sixteen calls is close to it.
+avoided without re-implementing Git's index. Fourteen calls is close to it.
 
 > **Watch the remote's packfile count.** The helper warns on every push and
 > `seafile.autogc` is off by default, so a frequent snapshot regime needs

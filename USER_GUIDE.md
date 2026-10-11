@@ -423,11 +423,12 @@ Remotes use the `seafile://` URL scheme:
 | **HTTPS scheme** | `seafile://https://seafile.example.com/code/myproject` | Fully qualified URL |
 | **Port** | `seafile://seafile.example.com:8080/code/myproject` | Server on a non-default port |
 | **Short URL** | `seafile://code/myproject` | Uses server from default configured account |
+| **IPv6** | `seafile://[2001:db8::1]:8443/code/myproject` | IPv6 literal in brackets; the port is optional (`:80` → http, other ports → https) |
 | **No path** | `seafile://code` | Library with no path defaults to the `git-repo` subfolder — the same as `seafile://code/git-repo` |
 
 - **Library**: Name of the Seafile library (e.g. `code` or `Documents`) or the library UUID. **The library must exist on your Seafile server before pushing.** (Create it via the Seafile Web UI if you haven't already).
 - **Path**: Path inside the library where bare repository objects will reside. Omitting it is allowed and means `git-repo`, so `seafile://code` and `seafile://code/` are the same remote as `seafile://code/git-repo`; only a URL whose path reduces to nothing at all (the library root itself) is refused.
-- **Scheme and port**: When the host carries a port, the scheme follows it — `:80` means `http`, `:443` means `https`, and **any other port keeps its number and uses `https`**. So `seafile://seafile.example.com:8080/code/repo` talks to `https://seafile.example.com:8080`, and a plain-HTTP server on a non-standard port needs the explicit form: `seafile://http://seafile.example.com:8080/code/repo`. A port that is not a number is refused with `Invalid Seafile URL format`, naming the host it could not parse.
+- **Scheme and port**: When the host carries a port, the scheme follows it — `:80` means `http`, `:443` means `https`, and **any other port keeps its number and uses `https`**. So `seafile://seafile.example.com:8080/code/repo` talks to `https://seafile.example.com:8080`, and a plain-HTTP server on a non-standard port needs the explicit form: `seafile://http://seafile.example.com:8080/code/repo`. A port that is not a number is refused with `Invalid Seafile URL format`, naming the host it could not parse. An IPv6 literal must be bracketed — `seafile://[::1]/code/repo` works (scheme inferred: https, or http on `:80`) — while an unbracketed colon-bearing host is refused, with the bracketed spelling named.
 
 ---
 
@@ -542,6 +543,7 @@ git-remote-seafile gc seafile://code/myproject
 - **Options**: `--min-packs N` (default: 2) — only repack if at least $N$ packfiles exist.
 - Automatically locks the remote repository during compaction to prevent push conflicts; the lock lease is refreshed during pack downloads, and before any obsolete pack is deleted the tool re-validates that it still owns the lock.
 - **Exit codes**: `0` on success and on a benign skip (fewer than `--min-packs` packfiles), `1` on a failed compaction (download error, size mismatch, invalid pack name) — safe to gate a scheduled CI job on.
+- **Off-namespace refs are refused.** The compaction mirror carries only `refs/heads` and `refs/tags`; if the library holds refs anywhere else under `refs/` (hand-created `refs/notes/...`, another tool's refs) — or a ref name git could not honour — gc refuses *before downloading anything*, naming the offending refs: their objects would otherwise be deleted from the consolidated pack while the ref file survived, broken. Move such refs into `refs/heads` or `refs/tags` first.
 - Deletes obsolete superseded packfiles from Seafile once the consolidated packfile is confirmed uploaded; deletions that fail are named on stderr and in the result summary, and simply remain for a later `gc` run.
 
 ### 10.2 Automatic Detection & Notification (Default)
@@ -665,6 +667,19 @@ Repository at seafile://code/myproject is LOCKED:
   Expires  : in 42s
 ```
 (The owner is the first 8 hex digits of a SHA-256 hash of the account token — a stable identifier that never reveals the token itself.)
+If every ticket in the queue has expired (its holder crashed and the lease ran
+out), the holder is still shown but flagged as stale — a plain push would reap
+it and take the lock without any intervention:
+```text
+Repository at seafile://code/myproject is LOCKED:
+  State    : STALE -- the ticket's lease has expired, so a plain push would reclaim it
+  Owner    : 1a2b3c4d
+  Machine  : workstation-1
+  PID      : 12345
+  Nonce    : e6b1f24d78a945b0
+  Protocol : ticket
+  Expires  : in 0s
+```
 or when idle:
 ```text
 Repository at seafile://code/myproject is UNLOCKED.
@@ -680,6 +695,9 @@ git-remote-seafile unlock seafile://code/myproject
 # Forcibly break any active lock (emergency recovery)
 git-remote-seafile unlock seafile://code/myproject --force
 # Output: Forcibly unlocked repository at seafile://code/myproject.
+
+# When there is no lock at all, it says so rather than claiming success:
+# Output: Repository at seafile://code/myproject is not locked; nothing to release.
 ```
 
 Both forms accept the flag before or after the URL, and `--help` prints the syntax.

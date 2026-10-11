@@ -25,6 +25,8 @@ Instead of syncing the local `.git/` folder, `git-remote-seafile` communicates d
 - **Concurrent Ref Discovery**: Discovers remote branches and tags concurrently using a worker pool while strictly preserving deterministic alphabetical sort order.
 - **Smart Pack Filtering**: Bypasses redundant remote pack downloads during fetch when requested commits already exist locally.
 - **Fast-forward Protection**: Rejects non-fast-forward pushes unless force-pushed, preventing accidental clobbering.
+- **Honest Dry Runs**: `git push --dry-run` answers exactly as a real push would—same namespace and fast-forward decisions—while taking no lock, building no packfile, and writing no ref.
+- **SHA-1 and SHA-256 Repositories**: The helper negotiates the remote's object format during ref listing (`option object-format` / `:object-format`), so SHA-256 repositories clone and push natively instead of producing corrupted packs.
 - **Ticket-Based Distributed Locking**: Prevents push collisions with server-timestamped lock tickets (`.git-lock.d/<nonce>.json`), dead PID fast-reclaim, in-transfer lease renewal, and ownership fencing that detects a lapsed-and-taken-over lock before any destructive step.
 - **Lock Management CLI**: Built-in `lock-status` and `unlock [--force]` subcommands for operator inspection and emergency recovery.
 
@@ -158,7 +160,8 @@ git clone seafile://seafile.example.com/code/myproject
 | `git-remote-seafile check-safety <url>` | Test pre-flight safety guardrails (Trap 1 & 2 path collisions). |
 | `git-remote-seafile lock-status <url>` | Inspect remote repository lock status and lease holder details. |
 | `git-remote-seafile unlock <url> [--force]` | Release a held lock or forcibly break an abandoned lock. |
-| `git-remote-seafile gc <url> [--min-packs N]` | Consolidate and delta-compress remote packfiles. |
+| `git-remote-seafile gc <url> [--min-packs N]` | Consolidate and delta-compress remote packfiles—also runs automatically after a push. Fail-closed: refuses to compact if any pack fails to download or verify, or if refs sit outside heads/tags. |
+| `git-remote-seafile lfs-transfer <url>` | Git LFS Custom Transfer Agent—invoked by Git LFS itself once you point it here (`git config lfs.customtransfer.seafile.*`, see [USER_GUIDE.md](USER_GUIDE.md)). No manual invocation needed. |
 | `git-remote-seafile set-head <url> <branch>` | Set default branch (`HEAD`) pointer after verifying branch exists. |
 | `git-remote-seafile test <url>` | Discover refs and verify connectivity without cloning. |
 | `git-remote-seafile desktop-url <path>` | Convert a local synced directory path to a `seafile://` remote URL. |
@@ -187,7 +190,8 @@ cd C:/code/myproject
 # destination from the source repo's own seafile:// remote
 python tools/seafile_snapshot.py
 
-# Preview it without writing anything
+# Preview it: the vault is initialised if missing and the snapshot staged into
+# its index, so the diff you see is real -- nothing is pushed and no setting changes
 python tools/seafile_snapshot.py --dry-run
 
 # Restore into a fresh directory, verifying byte-exactness on the way

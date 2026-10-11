@@ -207,7 +207,7 @@ To prevent data loss and filesystem thrashing, `git-remote-seafile` enforces pre
   - **`helper.py`**: Lean protocol handler focused strictly on Git remote helper commands (`capabilities`, `list`, `push`, `fetch`).
 
 ### 7.9 Protocol Compliance & Fail-Closed Hardening (v0.6.1)
-- **Wire Object-Format Negotiation (N-1)**: Advertises `option` and `object-format` capabilities to Git core, replies `ok` to `option object-format true`, and emits `:object-format <alg>` during `list` by inspecting remote ref hash lengths, enabling native Git push and clone of SHA-256 repositories.
+- **Wire Object-Format Negotiation (N-1)**: Advertises `option` and `object-format` capabilities to Git core, replies `ok` to `option object-format` in its documented forms (`true`, or an algorithm pin the helper advertises against rather than enforces), and emits `:object-format <alg>` during `list` by inspecting remote ref hash lengths, enabling native Git push and clone of SHA-256 repositories.
 - **Fail-Closed Remote GC Compaction (N-2, N-3)**: Remote compaction aborts immediately if any remote pack fails to download or verify size against directory listings; Step 7 deletes only successfully compacted packs, preventing remote data loss.
 - **Git LFS Incremental Delta Reporting (N-4)**: Sends incremental `bytesSinceLast` in LFS progress events instead of total file size, ensuring accurate throughput rates and ETAs in Git LFS.
 - **Cross-Subcommand Stdio Discipline (N-5)**: Normalizes UTF-8 encoding and LF line discipline at the CLI entry point for all subcommands.
