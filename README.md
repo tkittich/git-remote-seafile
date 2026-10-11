@@ -22,6 +22,7 @@ Instead of syncing the local `.git/` folder, `git-remote-seafile` communicates d
 - **Zero Daemon Churn**: The desktop sync client never scans or indexes your working repository.
 - **Automated Pre-Flight Safety**: Built-in guardrails detect and block path collisions (Trap 1) and download reflection loops (Trap 2) before any data is transferred.
 - **Fast & Efficient**: Commits are packed using Git packfiles (`.pack` and `.idx`). Pushing 100 commits uploads only **two files**, with disk-staged streaming avoiding memory spikes.
+- **Git LFS**: A custom transfer agent streams large assets straight into Seafile, so multi-GB models and datasets live in the library and quota you already pay for. Both directions stream — peak memory on a 64 MB transfer is **0.15 MB**, not the 142.8 MB a buffered implementation needs.
 - **Concurrent Ref Discovery**: Discovers remote branches and tags concurrently using a worker pool while strictly preserving deterministic alphabetical sort order.
 - **Smart Pack Filtering**: Bypasses redundant remote pack downloads during fetch when requested commits already exist locally.
 - **Fast-forward Protection**: Rejects non-fast-forward pushes unless force-pushed, preventing accidental clobbering.
@@ -29,6 +30,9 @@ Instead of syncing the local `.git/` folder, `git-remote-seafile` communicates d
 - **SHA-1 and SHA-256 Repositories**: The helper negotiates the remote's object format during ref listing (`option object-format` / `:object-format`), so SHA-256 repositories clone and push natively instead of producing corrupted packs.
 - **Ticket-Based Distributed Locking**: Prevents push collisions with server-timestamped lock tickets (`.git-lock.d/<nonce>.json`), dead PID fast-reclaim, in-transfer lease renewal, and ownership fencing that detects a lapsed-and-taken-over lock before any destructive step.
 - **Lock Management CLI**: Built-in `lock-status` and `unlock [--force]` subcommands for operator inspection and emergency recovery.
+
+> [!NOTE]
+> **Packfiles accumulate, and compaction is opt-in.** Every push adds one small packfile pair, and automatic compaction (`seafile.autogc`) is **off** by default. Run `git-remote-seafile gc <url>` periodically — or turn auto-compaction on — or a long-lived remote grows without bound.
 
 ---
 
@@ -181,6 +185,9 @@ git clone seafile://seafile.example.com/code/myproject
 ### Whole-tree snapshots: `tools/seafile_snapshot.py`
 
 A `.gitignore`d file never enters a commit, so **no remote helper can carry it** — `.env`, a local database, build output. `tools/seafile_snapshot.py` closes that gap: it captures the working tree **as it lies on disk**, ignored files and all, into versioned, byte-exact snapshots in a Seafile library, over the same transport the helper uses.
+
+> [!WARNING]
+> **A snapshot copies the whole tree, so it holds what you would never commit.** The vault will contain `.env`, keys and local databases — that is the point — so push it to a library whose access matches the secrets it carries. Nested Git repositories are recorded only as gitlinks: a restore rebuilds the directory but not its contents.
 
 Every option has a default, so the first run is the only one that needs an argument — and later runs can be a bare command:
 

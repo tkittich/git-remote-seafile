@@ -2,7 +2,7 @@
 
 **Baseline:** v0.8.1 (the 2026-10-11 review-cycle fix pass)  
 **Scope:** What shipped in each release line, the active backlog, and the v1.0.0 horizon.  
-**Test Suite:** 594 tests across 113 targets, all green (`tools/run_tests_parallel.py`). **Python:** 3.10+ (3.9 EOL).
+**Test Suite:** 596 tests across 114 targets, all green (`tools/run_tests_parallel.py`). **Python:** 3.10+ (3.9 EOL).
 
 > [!NOTE]
 > All critical and high-severity findings from `archive/REVIEW.*.md` (including ticket-based distributed locking, abandoned ticket cleanup, post-lock ref verification, exception propagation, GC lock fencing, pack index validation, surrogateescape paths, container PID isolation, D/F ref pruning, multi-spec pack batching, Git LFS transfer progress, safety guardrails, parallel ref enumeration, smart pack fetch filtering, disk-staged streaming, and modular helper decoupling) have been completed. All findings from the October 2026 review cycle (REVIEW.glm/gemini/qwen/VERIFY/BACKLOG, now archived) were verified fixed or explicitly dispositioned, as was the earlier v0.7.0 cycle (REVIEW.deepseek/gemini/qwen), closed in v0.7.1. Minor or low-priority items remain tracked in the backlog below. See [CHANGELOG.md](CHANGELOG.md) for detailed release notes.
@@ -22,8 +22,8 @@ Findings from `archive/REVIEW.*-v0.8.0.md` judged not worth their churn during t
 
 | ID / Source | Component | Description & Impact | Effort | Risk | Planned Target |
 |---|---|---|:---:|:---:|:---:|
-| **Helper test factory** | `tests/test_helper.py` | ~25 `RemoteHelper.__new__(RemoteHelper)` + hand-set-attribute sites already forced a source workaround (`dry_run` as a class attribute); a shared `make_helper()` factory would localise the next attribute addition. Mechanical, zero behavior change. | S | Low | v0.9.0 |
-| **De-glob test_gc** | `tests/test_gc.py` | 8 sites patch `pathlib.Path.glob` process-wide; a shared `_lock_aware_client()`-style helper returning staged packs would stop masking unrelated glob users inside `compact_repository`. | S | Low | v0.9.0 |
+| **Helper test factory** | `tests/test_helper.py` | ~51 `RemoteHelper.__new__(RemoteHelper)` + hand-set-attribute sites already forced a source workaround (`dry_run` as a class attribute); a shared `make_helper()` factory would localise the next attribute addition. Mechanical, zero behavior change. | S | Low | v0.9.0 |
+| **De-glob test_gc** | `tests/test_gc.py` | 12 sites patch `pathlib.Path.glob` process-wide; a shared `_lock_aware_client()`-style helper returning staged packs would stop masking unrelated glob users inside `compact_repository`. | S | Low | v0.9.0 |
 | **CLI stream/exit conventions** | `cli.py` | Errors from most subcommands go to stdout with exit 1; `unlock`/`lfs-transfer` use stderr; `test` exits 1 for a *non-blocking* SafetyWarning. Standardise (errors → stderr; decide the warning exit code). Touches many CLI test assertions. | M | Low | v0.9.0 |
 | **PROPOSALS.md numbers** | `PROPOSALS.md` | Still says "Seafile Web API v2.1" (×3) and "400+ automated tests". Gitignored local file, so it cannot drift into a release — fix opportunistically. | S | None | next touch |
 | **Fixture hostname robustness** | `tests/test_lock.py` | `_ticket` defaults to `machine="nodeA"`/`pid=1234`; a CI host literally named `nodeA` with pid 1234 alive would flip the foreign-host premise. Use a name no host can have (e.g. read the hostname and negate it). | S | Low | v0.9.0 |

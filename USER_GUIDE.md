@@ -458,6 +458,9 @@ On your laptop or secondary computer (with `git-remote-seafile` installed):
 git clone seafile://seafile.example.com/code/myproject
 ```
 
+> [!NOTE]
+> **Clone the full history — avoid `--depth` and `--filter`.** The helper skips a redundant remote pack download when the requested tip commits already exist locally. In a shallow or partial clone that is true while deeper trees and blobs are still missing, so a later checkout can report missing objects. `--depth 1` and `--filter=blob:none` are not supported well.
+
 ### 8.3 Normal Fetch, Pull, and Push
 All standard Git commands work transparently:
 ```bash
@@ -643,6 +646,9 @@ A multi-gigabyte repository transfer or model therefore does not need multi-giga
 
 For teams where multiple developers or automated CI/CD runners push simultaneously, `git-remote-seafile` includes an automatic **distributed lease lock**:
 
+> [!IMPORTANT]
+> **The lock is cooperative and advisory, not enforced.** Seafile exposes no atomic server-side mutex, so nothing prevents a client that ignores the protocol — or two clients racing on an eventually-consistent directory listing — from both concluding they hold the lock. What actually keeps a push safe is what happens *around* the lock: while it is held the remote refs are re-read, the fast-forward check runs against those fresh tips, and each ref is re-read once more immediately before it is written. Treat the lock as coordination that makes the ordinary case orderly, not as a guarantee the server enforces.
+
 - **Ticket-Based Protocol**: During every `git push`, the helper writes a unique lock ticket (`.git-lock.d/<nonce>.json`) at the remote repository root on Seafile. Tickets are ordered deterministically using server timestamps and HTTP `Date:` response headers, preventing write-write collision races and client clock drift.
 - **Settlement Window**: A win is confirmed by reading the queue a *second* time, one second later (`seafile.locksettle`). A single read is not enough to claim the lock: a peer that started before you but is still uploading is invisible to it, so you would both read the queue, both find yourselves first, and both push. The wait gives any in-flight peer time to land, after which both clients compare the same set of tickets and the same one wins. This is the one cost the lock adds to a push; set `seafile.locksettle 0` to skip it if you know only one client ever pushes (or your server's listings are strongly consistent and you accept the residual race).
 - **Legacy Note**: The v0.1–v0.3 single-file `.git-lock.json` mirror was removed in v0.7.0. The ticket queue in `.git-lock.d/` is the only lock protocol; a stale mirror found on the remote is deleted automatically on the next push. Do not mix this version with a v0.1–v0.3 helper on the same repository.
@@ -801,12 +807,19 @@ Defaults are resolved most-specific-first:
 | `SOURCE` (positional) or `--source <dir>` | The tree to snapshot. Default: the current directory. |
 | `--vault <dir>` | Where the vault repository lives. Default: `<source>-vault` beside the source. |
 | `--remote <url>` | The Seafile destination. Default: remembered, else derived from the source's own `seafile://` remote. |
-| `--no-push` | This run pushes nothing and changes no remembered setting. |
+| `--branch <branch>` | The vault branch holding the snapshots. Default: `snapshot` — one shared chain across machines (§15.6). `--branch snapshot-<host>` gives per-machine chains instead. |
 | `--exclude <glob>` | Repeatable. Skip matching paths, e.g. `--exclude node_modules`. |
-| `--default-excludes` | Add the recommended junk exclusions (§15.2.1). |
+| `--default-excludes` / `--no-default-excludes` | Add the recommended junk exclusions (§15.2.1), or explicitly not. |
+| `--message <text>` | Override the snapshot commit message. |
 | `--code-remote <name>` | Also `git push <name>` in the source repo first; the name is validated up front. |
+| `--no-push` | This run pushes nothing and changes no remembered setting. |
 | `--dry-run` | Report what would be committed and pushed, and do neither. |
+| `--reset-to-remote` | Adopt the remote chain when the vault has diverged and the two have no common tip, dropping the local-only snapshots (§15.6). Never taken implicitly — this is the one way a snapshot can be lost. |
 | `--allow-shared-remote` | Override the shared-remote guard (§15.5) deliberately. |
+| `--restore` | Restore a snapshot instead of taking one; requires `--remote` and `--into` (§15.4). |
+| `--into <dir>` | Destination directory for `--restore`. |
+| `--ref <rev>` | Which snapshot to restore. Default: the vault branch tip. Only meaningful with `--restore` — passing it without one is an error, not a no-op. |
+| `--verify` | With `--restore`, also run `git fsck` over the clone. |
 
 **An unchanged tree commits nothing.** The tool compares the new tree against the previous snapshot and stops if they match, so a scheduled job — hourly, say — costs a directory walk and a push that transfers nothing. This is what makes it safe to run far more often than you would run a backup.
 

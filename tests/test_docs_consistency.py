@@ -597,6 +597,40 @@ class TestDocumentationIndex(unittest.TestCase):
                 )
 
 
+class TestChangelogLinks(unittest.TestCase):
+    """Every released section needs its reference link, or the heading is dead text.
+
+    v0.8.1 shipped with 29 sections and 28 links: the ``[0.8.1]:`` definition was
+    never added, so the newest version heading rendered as a literal ``[0.8.1]``
+    in square brackets instead of a compare link.  The release process already
+    requires the section *and* its link -- nothing checked the second half, and
+    the failure is invisible in a terminal, where the heading looks fine either
+    way.
+
+    Deliberately one-directional.  A section with no link is always a defect; a
+    link with no section is not (the ``[0.1.0]`` link points at a tag whose
+    section predates nothing, and a link may legitimately outlive a section
+    merge).  Only the direction that breaks a reader is asserted.
+    """
+
+    _SECTION = re.compile(r"(?m)^##\s+\[([0-9]+\.[0-9]+\.[0-9]+)\]\s+-\s+")
+    _LINK = re.compile(r"(?m)^\[([0-9]+\.[0-9]+\.[0-9]+)\]:\s+\S+")
+
+    def test_every_section_has_a_reference_link(self):
+        text = _read("CHANGELOG.md")
+        sections = self._SECTION.findall(text)
+        self.assertTrue(sections, "no version sections parsed from CHANGELOG.md")
+
+        linked = set(self._LINK.findall(text))
+        missing = [version for version in sections if version not in linked]
+        self.assertEqual(
+            missing,
+            [],
+            "a CHANGELOG section has no matching `[x.y.z]:` reference link, so "
+            "its heading renders as literal bracket text rather than a link",
+        )
+
+
 class TestSnapshotNarrativeHasNotRegressed(unittest.TestCase):
     """The shipped-tool claims this cycle had to correct, pinned as absent.
 

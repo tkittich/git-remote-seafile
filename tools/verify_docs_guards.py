@@ -91,6 +91,13 @@ scenario(
     # leave the set unchanged and prove nothing.
     source_override=[("seafile-ignore.txt", ".seafile-ignore.txt")],
 )
+scenario(
+    "a CHANGELOG section loses its reference link",
+    "TestChangelogLinks.test_every_section_has_a_reference_link",
+    # Drops the colon that makes the line a Markdown link definition.  The
+    # heading `## [0.8.1]` still parses, so only the new link guard notices.
+    {"CHANGELOG.md": [("[0.8.1]: ", "[0.8.1] ")]},
+)
 
 
 def run_one(test_name):

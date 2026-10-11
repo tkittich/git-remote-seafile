@@ -7,9 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.8.1] - 2026-10-11
 
-The review-cycle fix pass. Two commits' worth of findings from the same-day full-tree review (REVIEW.glm.md, cross-checked against the gemini and qwen peer reviews) and the three snapshot-tool reviews (REVIEW.snap{,1,2}.md, archived): 41 findings closed, 594 tests across 113 targets, all green. No protocol changes; every fix is fail-loud or fail-closed. Only one entry is user-visible at the default settings on day one: a repository can no longer smuggle `[seafile] skipsafetychecks = true` past its own push.
-
-The fix pass for the 2026-10-11 review cycle (REVIEW.glm.md — this repository's own full-tree review, cross-checked against the gemini and qwen peer reviews). 591 tests / 113 targets, all green.
+The review-cycle fix pass. Two commits' worth of findings from the same-day full-tree review (REVIEW.glm.md, cross-checked against the gemini and qwen peer reviews) and the three snapshot-tool reviews (REVIEW.snap{,1,2}.md, archived): 41 findings closed, 595 tests across 113 targets, all green. No protocol changes; every fix is fail-loud or fail-closed. Only one entry is user-visible at the default settings on day one: a repository can no longer smuggle `[seafile] skipsafetychecks = true` past its own push.
 
 ### Fixed
 
@@ -24,8 +22,7 @@ Snapshot tool (`tools/seafile_snapshot.py`):
 Helper:
 
 
-- **Branch-deletion push errors can no longer corrupt the protocol stream.** Every `error <ref>` line now goes through one sanitizer that flattens ``/`
-`; the branch-deletion path was the one site still writing a raw exception message, whose second line git would have parsed as a helper command.
+- **Branch-deletion push errors can no longer corrupt the protocol stream.** Every `error <ref>` line now goes through one sanitizer that flattens `\r`/`\n`; the branch-deletion path was the one site still writing a raw exception message, whose second line git would have parsed as a helper command.
 - **Packfiles are published pack-first, index-second.** Git discovers packs by scanning for `*.idx` and assumes the sibling `.pack` exists; installing the index first exposed a window in which a concurrent `git status` could hit "cannot open packfile". A pack without its index is simply ignored, so the new order has no observable broken state.
 - **Repo-local git config can no longer disarm the safety guardrails.** `seafile.skipsafetychecks` is read through a system/global-scoped reader: a repository shipping `[seafile] skipsafetychecks = true` in its own `.git/config` silently disabled Trap 1/Trap 2 for every operation launched from that checkout.
 - **Credentials in a user-typed URL no longer reach the terminal.** A new `mask_url()` strips `user:password@` before the gc tip and every CLI status line interpolates a URL.
@@ -43,7 +40,7 @@ Tools:
 
 Docs:
 
-- Three places advertised a `gc --aggressive` flag that does not exist; they now reference `git-remote-seafile gc`. The acknowledgment links say "Seafile Web API v2" like the body text and v0.5.4 changelog entry already did. `SNAPSHOT.md`'s gc-notice wording matches the actual threshold behavior; the README command table lists `version`.
+- Three places advertised a `gc --aggressive` flag that does not exist; they now reference `git-remote-seafile gc`. The acknowledgment links say "Seafile Web API v2" like the body text and v0.5.3 changelog entry already did. `SNAPSHOT.md`'s gc-notice wording matches the actual threshold behavior; the README command table lists `version`.
 
 ## [0.8.0] - 2026-10-11
 
@@ -55,6 +52,7 @@ The snapshot tool ships. `tools/seafile_snapshot.py` captures a working tree —
 - **Byte-exactness is enforced, not assumed.** Git for Windows sets `core.autocrlf=true` in its *system* config, so a fresh `git init` inherits it while `git config --global core.autocrlf` reports nothing. The vault pins `core.autocrlf=false` **and** writes `* -text -filter -ident` into the vault's own `info/attributes`, which outranks any `.gitattributes` copied from the source. An attributes override must name **every** attribute class it neutralises: `* -text` alone does not disable `filter`, and a source `filter=lfs` attribute silently stored a 130-byte LFS *pointer* with the real bytes uploaded nowhere. A plain `git clone` of the vault is lossy for the same reason — `info/attributes` is not transferred by a clone — so `--restore` clones `--no-checkout` and re-applies the settings before checking out.
 - **`--restore` and `--verify`.** `--restore` rebuilds the tree into a target directory and verifies byte-exactness on **every** run using `git hash-object --no-filters`, the one hash check that reads the bytes on disk rather than the bytes a filter would produce. `--verify` additionally runs `git fsck` over the vault.
 - **`--exclude <glob>` (repeatable), `--dry-run`, `--code-remote <name>`.** Excludes use an fnmatch matcher, so `*/node_modules` and `*dist*` mean what they look like rather than being root-anchored pathspecs that match nothing below the root.
+- **`--message <text>` and `--reset-to-remote`.** `--message` overrides the snapshot commit message. `--reset-to-remote` is the recovery path for a vault whose local and remote chains have diverged with no common tip: the run stops and explains, and this flag adopts the remote chain deliberately, dropping the local-only snapshots. That is the one case in which a snapshot can be lost, so it is never taken implicitly — the tool names the flag and the cost, and waits to be asked.
 - **`--allow-shared-remote`.** Pushing the vault to one of the *source's own* code remotes is refused by default: mixing a whole-tree backup (which legitimately contains `.env`, keys and build artefacts) into a shared code library is almost never intended. The refusal names the colliding remote; the flag overrides it deliberately.
 - **Credential-shaped paths are reported at the end of every run.** Not a refusal — a full backup *should* capture `.env` — but a warning, so the first push is not the moment you find out.
 - **A vault belongs to one source tree.** It records the source directory it first saw and refuses a run pointing a *different* tree at it: one vault is one linear chain of snapshots of one tree, and mixing two is not something a later reader could undo.
@@ -819,6 +817,7 @@ Data-loss and silent-failure fixes, and the Python floor raised to 3.9.
   with zero-config desktop-client token discovery, distributed locking, remote
   packfile compaction, and a Git LFS custom transfer agent.
 
+[0.8.1]: https://github.com/tkittich/git-remote-seafile/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/tkittich/git-remote-seafile/compare/v0.7.2...v0.8.0
 [0.7.2]: https://github.com/tkittich/git-remote-seafile/compare/v0.7.1...v0.7.2
 [0.7.1]: https://github.com/tkittich/git-remote-seafile/compare/v0.7.0...v0.7.1
