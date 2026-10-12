@@ -15,6 +15,43 @@ from git_remote_seafile.lock import RepositoryLockedError
 from git_remote_seafile.safety import SafetyError
 
 
+class TestDoctor(unittest.TestCase):
+    def _run(self, url=None, landed=b"git-seafile doctor", **overrides):
+        client = MagicMock()
+        client.server_url = "https://s.example"
+        client.session.get.return_value = MagicMock(status_code=200, json=lambda: {"email": "me@x"})
+        client.get_file_bytes.return_value = landed
+        client.delete_entry.return_value = True
+        helper = MagicMock(client=client, library_name="lib", repo_path="/git-repo",
+                           repo_id="rid", path_defaulted=True)
+        for k, v in overrides.items():
+            setattr(helper, k, v)
+        argv = ["git-remote-seafile", "doctor"] + ([url] if url else [])
+        out = io.StringIO()
+        with patch.object(sys, "argv", argv), patch("sys.stdout", out),              patch("git_remote_seafile.cli.SeafileClient", return_value=client),              patch("git_remote_seafile.cli.RemoteHelper", return_value=helper),              patch("git_remote_seafile.cli.get_local_work_tree", return_value=None),              patch("git_remote_seafile.cli.discover_local_synced_libraries", return_value=[]),              patch("git_remote_seafile.cli.check_preflight_safety", return_value=[]):
+            code = main()
+        return code, out.getvalue(), client
+
+    def test_login_only(self):
+        code, out, _ = self._run()
+        self.assertEqual(code, 0)
+        self.assertIn("logged in to https://s.example as me@x", out)
+
+    def test_full_run_interprets_the_url_and_probes_a_write(self):
+        code, out, client = self._run("seafile://lib")
+        self.assertEqual(code, 0, out)
+        self.assertIn("library 'lib', path '/git-repo'", out)
+        self.assertIn("no path was given", out)
+        self.assertIn("can write and delete", out)
+        client.upload_file.assert_called_once()
+        client.delete_entry.assert_called_once()
+
+    def test_a_probe_that_does_not_round_trip_fails(self):
+        code, out, _ = self._run("seafile://lib/x", landed=b"something else")
+        self.assertEqual(code, 1)
+        self.assertIn("[FAIL] write probe", out)
+
+
 class TestCLIBasics(unittest.TestCase):
     def test_help(self):
         with patch.object(sys, "argv", ["git-remote-seafile"]):

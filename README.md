@@ -162,6 +162,7 @@ git clone seafile://seafile.example.com/code/myproject
 | :--- | :--- |
 | `git-remote-seafile check-auth` | Verify authentication credentials against the Seafile server. |
 | `git-remote-seafile check-safety <url>` | Test pre-flight safety guardrails (Trap 1 & 2 path collisions). |
+| `git-remote-seafile doctor [url]` | One-shot first-use check: login, how the URL is interpreted, safety guards, and a write/delete probe. |
 | `git-remote-seafile lock-status <url>` | Inspect remote repository lock status and lease holder details. |
 | `git-remote-seafile unlock <url> [--force]` | Release a held lock or forcibly break an abandoned lock. |
 | `git-remote-seafile gc <url> [--min-packs N]` | Consolidate and delta-compress remote packfiles. Fail-closed: refuses to compact if any pack fails to download or verify, or if refs sit outside heads/tags. An opt-in automatic version exists too (`git config seafile.autogc true`): after a qualifying push it tail-merges only the small packs (below `seafile.gcmaxpackmib`) inline, within a bounded download budget — large packs are frozen and never count toward the threshold. Off by default; until then the helper only warns. |

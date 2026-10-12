@@ -26,6 +26,8 @@ from .url import mask_url
 # nowhere -- `--min-packs` and `--force` appeared only in the strings that
 # happened to print when the command was called wrongly.
 _COMMANDS: tuple[tuple[str, str, str, tuple[tuple[str, str], ...]], ...] = (
+    ("doctor", "git-remote-seafile doctor [<seafile://url>]",
+     "Check login, library, safety and write access in one go", ()),
     ("test", "git-remote-seafile test <seafile://url>",
      "Test connection and discover refs", ()),
     ("check-safety", "git-remote-seafile check-safety <seafile://url>",
@@ -180,6 +182,73 @@ def _parse_min_packs(args: list[str], default: int = 2) -> int:
     return value
 
 
+def _doctor(url: str | None) -> int:
+    """Run every first-use check in order and say what to do next.
+
+    Stops at the first failing step: each step needs the one before it.  With no
+    URL only the login is checked.  The write probe creates and removes one
+    small file inside the repository path (creating the path, which the first
+    push would do anyway), so a green run means a push can write there.
+    """
+    def ok(msg: str) -> None:
+        print(f"[ ok ] {msg}")
+
+    def fail(msg: str) -> int:
+        print(f"[FAIL] {msg}")
+        return 1
+
+    try:
+        client = SeafileClient()
+        resp = client.session.get(f"{client.server_url}/api2/account/info/", timeout=client.timeout)
+    except Exception as ex:
+        return fail(f"no usable login: {ex}")
+    if resp.status_code != 200:
+        return fail(f"{client.server_url} rejected the token (HTTP {resp.status_code}); log in again")
+    ok(f"logged in to {client.server_url} as {resp.json().get('email')}")
+    if not url:
+        print("Next: git-remote-seafile doctor <seafile://library/path> to check a destination.")
+        return 0
+
+    try:
+        helper = RemoteHelper("doctor", url)
+    except Exception as ex:
+        return fail(f"cannot resolve {mask_url(url)}: {ex}")
+    ok(
+        f"{mask_url(url)} is read as: server {helper.client.server_url}, "
+        f"library '{helper.library_name}', path '{helper.repo_path}'"
+    )
+    if helper.path_defaulted:
+        print(f"       (no path was given; '{helper.repo_path}' is the default)")
+
+    try:
+        wt = get_local_work_tree()
+        check_preflight_safety(
+            helper.client, helper.library_name, helper.repo_path,
+            local_worktree=wt, push_mode=True, synced_libs=discover_local_synced_libraries(),
+        )
+    except SafetyError as safe_err:
+        return fail("safety check blocked this destination:" + chr(10) + f"{safe_err}")
+    except Exception as ex:
+        return fail(f"safety check could not run: {ex}")
+    ok("safety checks passed")
+
+    import uuid
+
+    PROBE_BYTES = b"git-seafile doctor"
+    probe = f".git-seafile-doctor-{uuid.uuid4().hex[:8]}"
+    try:
+        helper.client.upload_file(helper.repo_id, helper.repo_path, probe, PROBE_BYTES, replace=True)
+        landed = helper.client.get_file_bytes(helper.repo_id, f"{helper.repo_path}/{probe}")
+        removed = helper.client.delete_entry(helper.repo_id, f"{helper.repo_path}/{probe}")
+    except Exception as ex:
+        return fail(f"cannot write to {helper.repo_path}: {ex}")
+    if landed != PROBE_BYTES or not removed:
+        return fail(f"write probe did not round-trip cleanly in {helper.repo_path}")
+    ok(f"can write and delete in {helper.repo_path}")
+    print(f"Next: git remote add origin {url} && git push -u origin <branch>")
+    return 0
+
+
 def main() -> int:
     if hasattr(sys.stdout, "reconfigure"):
         try:
@@ -209,6 +278,9 @@ def main() -> int:
         from . import __version__
         print(f"git-remote-seafile v{__version__}")
         return 0
+
+    if args[0] == "doctor":
+        return _doctor(args[1] if len(args) > 1 else None)
 
     if args[0] == "check-auth":
         try:
