@@ -709,6 +709,7 @@ class TestRemoteHelper(unittest.TestCase):
         err = io.StringIO()
         with patch("sys.stderr", err), \
              patch("git_remote_seafile.helper.RemoteLock"), \
+             patch("git_remote_seafile.helper._notice_due", return_value=True), \
              patch("git_remote_seafile.helper.RemoteConfig.load", return_value=cfg):
             h.cmd_push(["refs/heads/main:refs/heads/main"])
 
