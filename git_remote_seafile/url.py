@@ -236,6 +236,8 @@ class SeafileURL:
     library_name: str
     repo_path: str
     raw_url: str
+    #: True when the URL named only a library and the path fell back to ``git-repo``.
+    path_defaulted: bool = False
 
 
 def parse_seafile_url(url: str) -> SeafileURL:
@@ -304,10 +306,12 @@ def parse_seafile_url(url: str) -> SeafileURL:
         )
 
     library_name = path_parts[0]
-    repo_path = "/" + "/".join(path_parts[1:]) if len(path_parts) > 1 else "/git-repo"
+    path_defaulted = len(path_parts) == 1
+    repo_path = "/" + "/".join(path_parts[1:]) if not path_defaulted else "/git-repo"
     return SeafileURL(
         server_url=server_url,
         library_name=library_name,
         repo_path=repo_path,
         raw_url=url,
+        path_defaulted=path_defaulted,
     )

@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 from .client import SeafileClient, SeafileAPIError
@@ -94,6 +96,37 @@ def _destination_error(dst: str) -> str | None:
     return None
 
 
+
+_NOTICE_INTERVAL_SECONDS = 24 * 60 * 60
+
+
+def _notice_due(key: str, now: float | None = None) -> bool:
+    """True at most once a day per *key*; records the time it said yes.
+
+    A notice that appears on every push gets filtered out by the reader, so the
+    advisory about unmerged packs is shown once a day per remote.  The state is
+    a small JSON file in the user's home; any problem reading or writing it
+    means "show it", never "stay silent about a real condition".
+    """
+    path = Path.home() / ".git-seafile-notices.json"
+    stamp = time.time() if now is None else now
+    try:
+        state = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(state, dict):
+            state = {}
+    except Exception:
+        state = {}
+    last = state.get(key)
+    if isinstance(last, (int, float)) and 0 <= stamp - last < _NOTICE_INTERVAL_SECONDS:
+        return False
+    state[key] = stamp
+    try:
+        path.write_text(json.dumps(state), encoding="utf-8")
+    except Exception:
+        pass
+    return True
+
+
 class RemoteHelper:
     """Implements Git remote-helper protocol over Seafile Web API."""
     remote_name: str = ""
@@ -102,6 +135,7 @@ class RemoteHelper:
     library_name: str = ""
     repo_path: str = ""
     repo_id: str = ""
+    path_defaulted: bool = False
     #: Set from ``option dry-run true``, which git sends for ``git push
     #: --dry-run``.
     dry_run: bool
@@ -113,6 +147,7 @@ class RemoteHelper:
         self.server_url = parsed_url.server_url
         self.library_name = parsed_url.library_name
         self.repo_path = parsed_url.repo_path
+        self.path_defaulted = parsed_url.path_defaulted
         self.client = client if client is not None else SeafileClient(server_url=self.server_url)
         self.repo_id = self.client.get_repo_id(self.library_name)
         self.dry_run = False
@@ -374,6 +409,18 @@ class RemoteHelper:
             sys.stdout.write("\n")
             sys.stdout.flush()
             return
+
+        if self.path_defaulted and not self._refs_cache:
+            # First push into an empty location with no path in the URL: say
+            # where it is going, once, because "seafile://code" quietly meaning
+            # "code/git-repo" is the kind of default people only learn by
+            # looking in the library.
+            sys.stderr.write(
+                f"Note: {self.raw_url} names no path, so this repository lives at "
+                f"'{self.repo_path}' in library '{self.library_name}'. Use "
+                f"seafile://{self.library_name}{self.repo_path} to say so explicitly.\n"
+            )
+            sys.stderr.flush()
 
         # A dry run answers the same question a push does -- what would change --
         # and must change nothing to answer it.  Handled before the lock is
@@ -700,7 +747,7 @@ class RemoteHelper:
                             sys.stderr.flush()
                         elif auto_gc:
                             auto_gc_movable_count = movable_count
-                        else:
+                        elif _notice_due(self.raw_url):
                             sys.stderr.write(
                                 f"\nNotice: Remote repository has {movable_count} small packfiles (threshold: {threshold}), "
                                 f"totaling {movable_bytes / (1024**3):.1f} GiB.\n"

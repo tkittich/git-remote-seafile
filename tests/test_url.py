@@ -314,5 +314,31 @@ class TestMaskUrl(unittest.TestCase):
         self.assertEqual(mask_url("https://user:pass@host/lib"), "https://host/lib")
 
 
+class TestDefaultedPath(unittest.TestCase):
+    def test_a_url_with_only_a_library_is_flagged_as_defaulted(self):
+        parsed = parse_seafile_url("seafile://code")
+        self.assertEqual(parsed.repo_path, "/git-repo")
+        self.assertTrue(parsed.path_defaulted)
+
+    def test_an_explicit_path_is_not_flagged(self):
+        self.assertFalse(parse_seafile_url("seafile://code/git-repo").path_defaulted)
+        self.assertFalse(parse_seafile_url("seafile://code/a/b").path_defaulted)
+
+
+class TestNoticeRateLimit(unittest.TestCase):
+    def test_a_notice_is_shown_once_per_day_per_key(self):
+        import tempfile
+        from pathlib import Path
+        from unittest import mock
+
+        from git_remote_seafile import helper
+
+        with tempfile.TemporaryDirectory() as home, mock.patch.object(Path, "home", return_value=Path(home)):
+            self.assertTrue(helper._notice_due("u", now=1000.0))
+            self.assertFalse(helper._notice_due("u", now=1000.0 + 60))
+            self.assertTrue(helper._notice_due("other", now=1000.0 + 60))
+            self.assertTrue(helper._notice_due("u", now=1000.0 + 86401))
+
+
 if __name__ == "__main__":
     unittest.main()
