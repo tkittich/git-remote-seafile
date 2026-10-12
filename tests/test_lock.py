@@ -1449,3 +1449,121 @@ class TestLockAcquireFailurePaths(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class _FakeClock:
+    """A monotonic clock and a sleep that advance together, with hooks.
+
+    ``on_sleep`` runs after each advance so a test can change the remote at a
+    chosen moment -- a holder finishing, a new contender arriving -- without
+    the test taking real seconds.
+    """
+
+    def __init__(self, on_sleep=None):
+        self.now = 1000.0
+        self.on_sleep = on_sleep
+        self.sleeps = 0
+
+    def monotonic(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.sleeps += 1
+        self.now += seconds
+        if self.on_sleep is not None:
+            self.on_sleep(self)
+
+
+class TestWaitingIsBoundedByProgressNotByTheClockAlone(unittest.TestCase):
+    """The lock timeout restarts whenever the queue moves.
+
+    Measured against a real Seafile server, six clients pushing at once each
+    waited for those ahead: the sixth took 13.4 s of a 15 s budget, so a seventh
+    would have been told "locked" while the queue was draining normally.
+    """
+
+    def _holder(self, store, name, age):
+        store.put_ticket(
+            f"/path/.git-lock.d/{name}.json",
+            json.loads(_ticket(name, owner=name, machine="nodeA", lease=600,
+                               timestamp=time.time() - age, order_ts=time.time() - age)),
+        )
+
+    def _run(self, store, clock, timeout=5):
+        lock = RemoteLock(store.client("tok"), "repo1", "/path", timeout=timeout, lease=600, settle=0)
+        with patch("git_remote_seafile.lock.time.monotonic", clock.monotonic),                 patch("git_remote_seafile.lock.time.sleep", clock.sleep):
+            lock.acquire()
+        return lock
+
+    def test_a_queue_that_keeps_moving_outlasts_the_flat_timeout(self):
+        store = _SharedLockStore()
+        self._holder(store, "h1", 30)
+        self._holder(store, "h2", 20)
+
+        def advance(clock):
+            # h1 finishes at ~4 s, h2 at ~8 s: each is past the 5 s budget
+            # measured from the start, neither is past it from the last move.
+            if clock.now - 1000.0 >= 4:
+                store.files.pop("/path/.git-lock.d/h1.json", None)
+            if clock.now - 1000.0 >= 8:
+                store.files.pop("/path/.git-lock.d/h2.json", None)
+
+        clock = _FakeClock(advance)
+        lock = self._run(store, clock, timeout=5)
+        self.assertTrue(lock.acquired)
+        self.assertGreaterEqual(clock.now - 1000.0, 8, "the wait must really have exceeded the flat timeout")
+
+    def test_a_queue_stuck_behind_one_holder_still_times_out(self):
+        store = _SharedLockStore()
+        self._holder(store, "h1", 30)
+        clock = _FakeClock()
+        with self.assertRaises(RepositoryLockedError):
+            self._run(store, clock, timeout=5)
+        self.assertLess(clock.now - 1000.0, 5 + 4, "a stuck queue must not be waited on past the timeout")
+
+    def test_progress_cannot_hold_a_push_forever(self):
+        store = _SharedLockStore()
+        self._holder(store, "h0", 500)
+        counter = {"n": 0}
+
+        def churn(clock):
+            # A new, earlier holder replaces the previous one every poll, so the
+            # queue "moves" forever.  The absolute cap has to end it.
+            counter["n"] += 1
+            store.files.clear()
+            self._holder(store, f"h{counter['n']}", 500 + counter["n"])
+
+        clock = _FakeClock(churn)
+        with self.assertRaises(RepositoryLockedError):
+            self._run(store, clock, timeout=5)
+        self.assertGreaterEqual(clock.now - 1000.0, 50)
+        self.assertLess(clock.now - 1000.0, 130)
+
+    def test_a_waiting_ticket_is_uploaded_once_not_on_every_poll(self):
+        store = _SharedLockStore()
+        self._holder(store, "h1", 30)
+        client = store.client("tok")
+        own_uploads: list[str] = []
+        real_upload = store.upload
+
+        def counting_upload(repo_id, parent, filename, content, **kw):
+            if lock._nonce and filename == f"{lock._nonce}.json":
+                own_uploads.append(filename)
+            return real_upload(repo_id, parent, filename, content, **kw)
+
+        client.upload_file.side_effect = counting_upload
+
+        def release_at_30s(clock):
+            if clock.now - 1000.0 >= 30:
+                store.files.pop("/path/.git-lock.d/h1.json", None)
+
+        clock = _FakeClock(release_at_30s)
+        lock = RemoteLock(client, "repo1", "/path", timeout=60, lease=60, settle=0)
+        with patch("git_remote_seafile.lock.time.monotonic", clock.monotonic),                 patch("git_remote_seafile.lock.time.sleep", clock.sleep):
+            lock.acquire()
+        self.assertTrue(lock.acquired)
+        # ~15 polls over 30 s.  One initial upload, one lease refresh at 20 s,
+        # and the grant marker: a handful, where it used to be one per poll.
+        self.assertLessEqual(len(own_uploads), 4, own_uploads)
+        self.assertGreaterEqual(len(own_uploads), 2, own_uploads)
+

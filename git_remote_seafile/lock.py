@@ -48,6 +48,11 @@ def describe_ownership_failure(state: str) -> str:
     return "lock ownership could not be verified"
 
 
+#: How often a *waiting* client re-sends its ticket to keep the lease fresh.
+#: Bounded by a third of the lease, so a queue that is slow to drain cannot let
+#: a waiter's own ticket expire out from under it.
+_TICKET_REFRESH_SECONDS = 20.0
+
 #: How long a queue scan stays good for the fence in verify_ownership().
 #:
 #: The fence runs before *every* destructive step, and the delete path calls it
@@ -414,6 +419,27 @@ class RemoteLock:
         self._nonce = nonce
         self._order_ts = self._get_server_time()
 
+        # The wait is bounded by `timeout` *since the queue last moved*, not
+        # since this call began.  Measured against a real server, six clients
+        # pushing at once each wait for the ones ahead of them: the sixth waited
+        # 13.4 s of a 15 s budget, and a seventh would have been told "locked"
+        # while the queue was draining normally.  A holder changing, or this
+        # ticket moving up, is progress and restarts the clock; a queue that is
+        # stuck behind one holder still times out after `timeout`.  An absolute
+        # cap keeps a pathological queue from holding a push forever.
+        anchor = start_time
+        last_winner: str | None = None
+        last_position: int | None = None
+        hard_cap = max(self.timeout * 10, 120.0) if self.timeout > 0 else 0.0
+        last_upload: float | None = None
+        refresh = min(_TICKET_REFRESH_SECONDS, max(1.0, self.lease / 3.0))
+
+        def timed_out() -> bool:
+            mono = time.monotonic()
+            if mono - anchor >= self.timeout:
+                return True
+            return bool(hard_cap) and mono - start_time >= hard_cap
+
         try:
             while True:
                 now = self._get_server_time()
@@ -423,22 +449,28 @@ class RemoteLock:
                 # "holding" always means "granted" and never "asked".
                 self._holding = False
                 lock_payload = self._ticket_payload(now, holding=False)
-                payload_bytes = json.dumps(lock_payload).encode("utf-8")
-                try:
-                    self.client.upload_file(
-                        self.repo_id,
-                        self.lock_dir,
-                        f"{nonce}.json",
-                        payload_bytes,
-                        replace=True,
-                    )
-                except Exception as ex:
-                    if isinstance(ex, RepositoryLockedError):
-                        raise
-                    if time.monotonic() - start_time >= self.timeout:
-                        raise RepositoryLockedError(f"Failed to acquire lock: {ex}") from ex
-                    time.sleep(2)
-                    continue
+                # Uploaded once, and again only to keep the lease from lapsing
+                # while queued.  Every upload is a commit in the library's
+                # history, so re-sending an unchanged ticket on every poll made a
+                # waiting client the loudest thing in the queue.
+                if last_upload is None or time.monotonic() - last_upload >= refresh:
+                    payload_bytes = json.dumps(lock_payload).encode("utf-8")
+                    try:
+                        self.client.upload_file(
+                            self.repo_id,
+                            self.lock_dir,
+                            f"{nonce}.json",
+                            payload_bytes,
+                            replace=True,
+                        )
+                    except Exception as ex:
+                        if isinstance(ex, RepositoryLockedError):
+                            raise
+                        if timed_out():
+                            raise RepositoryLockedError(f"Failed to acquire lock: {ex}") from ex
+                        time.sleep(2)
+                        continue
+                    last_upload = time.monotonic()
 
                 # 3. Check candidate tickets in .git-lock.d
                 try:
@@ -446,14 +478,15 @@ class RemoteLock:
                 except Exception as ex:
                     if isinstance(ex, RepositoryLockedError):
                         raise
-                    if time.monotonic() - start_time >= self.timeout:
+                    if timed_out():
                         raise RepositoryLockedError(f"Failed to scan lock tickets: {ex}") from ex
                     sys.stderr.write(f"Transient error scanning lock tickets ({ex}); retrying...\n")
                     sys.stderr.flush()
                     time.sleep(2)
                     continue
 
-                winner = self._candidates(tickets, lock_payload, nonce, now)[0]
+                queue = self._candidates(tickets, lock_payload, nonce, now)
+                winner = queue[0]
 
                 if winner.get("nonce") == nonce and self.settle > 0:
                     # D21 settlement window.  A single scan cannot be trusted:
@@ -470,7 +503,7 @@ class RemoteLock:
                     try:
                         settled = self._scan_tickets(self._get_server_time())
                     except Exception as ex:
-                        if time.monotonic() - start_time >= self.timeout:
+                        if timed_out():
                             raise RepositoryLockedError(
                                 f"Failed to confirm lock ownership: {ex}"
                             ) from ex
@@ -479,7 +512,8 @@ class RemoteLock:
                         )
                         sys.stderr.flush()
                         continue
-                    winner = self._candidates(settled, lock_payload, nonce, now)[0]
+                    queue = self._candidates(settled, lock_payload, nonce, now)
+                    winner = queue[0]
 
                 if winner.get("nonce") == nonce:
                     # Publish the holding marker before claiming anything.  This
@@ -500,7 +534,7 @@ class RemoteLock:
                     except Exception as ex:
                         if isinstance(ex, RepositoryLockedError):
                             raise
-                        if time.monotonic() - start_time >= self.timeout:
+                        if timed_out():
                             raise RepositoryLockedError(
                                 f"Failed to publish lock ownership marker: {ex}"
                             ) from ex
@@ -542,7 +576,16 @@ class RemoteLock:
                         w_time = 0.0
                         w_lease = 0.0
                     winner_exp = w_time + w_lease
-                    if time.monotonic() - start_time >= self.timeout:
+                    position = next(
+                        (i for i, t in enumerate(queue) if t.get("nonce") == nonce), len(queue)
+                    )
+                    winner_nonce = winner.get("nonce")
+                    if (last_winner is not None and winner_nonce != last_winner) or (
+                        last_position is not None and position < last_position
+                    ):
+                        anchor = time.monotonic()
+                    last_winner, last_position = winner_nonce, position
+                    if timed_out():
                         raise RepositoryLockedError(
                             f"Repository is locked by '{winner_owner}' on '{winner_mach}'. "
                             f"Lock expires in {max(0, int(winner_exp - now))}s."
