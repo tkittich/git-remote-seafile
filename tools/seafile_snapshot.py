@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# GENERATED FILE -- do not edit.  The source is tools/_snapshot/*.py;
+# run `python tools/build_snapshot.py` after changing it.
 """Snapshot a working tree -- including gitignored files -- into a Seafile remote.
 
 Why this exists
@@ -196,10 +198,11 @@ import fnmatch
 import os
 import shutil
 import socket
+import stat
 import subprocess
 import sys
-import threading
 import time
+import zlib
 from datetime import datetime
 from pathlib import Path
 from typing import Any, TypedDict
@@ -257,19 +260,42 @@ GIT_TIMEOUT = 600
 #: step is alive and how far it has got without chattering on short runs.
 STATUS_INTERVAL = 60
 
-#: A status-marked step is killed when it shows no measurable progress for
-#: this long: bytes written into its ``measure_dir``, or output streamed from
-#: its stderr via ``stream_stderr``.  That replaces a flat wall-clock timeout,
-#: which cannot tell "hashing a 130 GB tree" (fine) from "dead disk" (not):
-#: the first keeps making objects appear for an hour, the second makes none.
-#: The one blind spot is the helper's Seafile upload phase during a push,
-#: which is silent while it runs -- raise this in the source if your uplink
-#: is slow enough that 30 quiet minutes are normal there.
+#: A status-marked step is killed when it shows no measurable progress for this
+#: long: bytes newly present under its ``measure_dir``.  That replaces a flat
+#: wall-clock timeout, which cannot tell "hashing a 130 GB tree" (fine) from "dead
+#: disk" (not): the first keeps making objects appear for an hour, the second
+#: makes none.  The limit is a *sliding* one -- every observed growth restarts it.
+#:
+#: Steps with no measurable progress -- above all the push, whose upload phase
+#: is silent while it runs -- are passed ``stall_limit=None`` and are never
+#: killed: they get the heartbeat only, and a dead link fails on its own through
+#: the helper's per-request HTTP timeout.
+#:
+#: Overridable with ``SEAFILE_SNAPSHOT_STALL_LIMIT`` (seconds) for a machine whose
+#: disks are slow enough that half an hour without a new object is normal.
 STALL_LIMIT = 1800
 
 
+def _stall_limit_from_env() -> float:
+    raw = os.environ.get("SEAFILE_SNAPSHOT_STALL_LIMIT", "").strip()
+    if not raw:
+        return STALL_LIMIT
+    try:
+        value = float(raw)
+    except ValueError:
+        value = 0.0
+    if value <= 0:
+        print(
+            f"Warning: SEAFILE_SNAPSHOT_STALL_LIMIT={raw!r} is not a positive number "
+            f"of seconds; using {STALL_LIMIT}.",
+            file=sys.stderr,
+        )
+        return STALL_LIMIT
+    return value
+
+
 class _UnsetStall:
-    """Sentinel meaning "use :data:`STALL_LIMIT`" (distinct from ``None``)."""
+    """Sentinel meaning "use the stall limit" (distinct from ``None``, which is "never kill")."""
 
     __slots__ = ()
 
@@ -307,39 +333,57 @@ def _fmt_elapsed(seconds: float) -> str:
     return f"{seconds:.1f}s"
 
 
+def _kill_tree(proc: "subprocess.Popen[Any]") -> None:
+    """Kill *proc* and, where the platform lets us, what it started.
+
+    ``git push`` spawns the remote helper, which holds the pipes open; killing
+    only the parent would leave ``communicate`` waiting on a child nobody can
+    see.  Windows has ``taskkill /T``; elsewhere the parent is killed and the
+    pipe drain below is bounded.
+    """
+    if os.name == "nt":
+        try:
+            subprocess.run(
+                ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                capture_output=True,
+                timeout=15,
+            )
+        except (OSError, subprocess.SubprocessError):
+            pass
+    try:
+        proc.kill()
+    except OSError:
+        pass
+
+
 def _run(
     cmd: list[str],
     *,
     status: str | None = None,
     measure_dir: Path | None = None,
-    stream_stderr: bool = False,
     stall_limit: "float | None | _UnsetStall" = _UNSET_STALL,
     **kwargs: Any,
 ) -> subprocess.CompletedProcess[Any]:
-    """``subprocess.run`` bounded by ``GIT_TIMEOUT``, failing as a ``SnapshotError``.
+    """``subprocess.run`` for git, failing as a ``SnapshotError`` when it hangs.
 
-    ``subprocess.run`` already kills the child when the timeout fires; this only
-    converts the bare ``TimeoutExpired`` into the tool's own error type, so the
-    message names the command that hung instead of arriving as a traceback.
+    Without ``status`` this is a plain run bounded by ``GIT_TIMEOUT``.
 
-    When ``status`` is given the child runs under ``Popen`` with a watchdog
-    thread that prints one line to stderr every :data:`STATUS_INTERVAL` seconds
-    until it exits -- "still staging the tree ... 4m12s (9 GiB written to
-    objects)" -- because nothing else speaks during such a step.  Instead of a
-    flat wall-clock deadline, the watchdog kills only when *progress* stops for
-    :data:`STALL_LIMIT` seconds: progress is bytes newly present under
-    ``measure_dir`` plus output relayed by ``stream_stderr``, so a slow-but-real
-    hour-long stage survives while a dead disk dies after 30 quiet minutes.
-    ``stall_limit=None`` selects heartbeat-only mode for steps with no signal
-    at all (the restore verification re-reads every file and writes nothing):
-    the lines keep coming, but nothing is ever killed.
+    With ``status`` the child runs under a *no-progress* watchdog instead of a
+    wall-clock one, driven from this thread by retrying
+    ``communicate(timeout=STATUS_INTERVAL)`` -- which keeps stdin, stdout and
+    stderr intact across the timeouts, so no helper threads are needed.  Each
+    time the interval passes without the child exiting:
 
-    With ``stream_stderr`` the child's stderr is a pipe this function drains to
-    our own stderr line by line as it arrives -- a live push then shows git's
-    "Writing objects" output and the remote helper's notices (including the
-    post-push auto-compaction) immediately, and every relayed byte also counts
-    as progress for the watchdog.  ``CompletedProcess.stderr`` is ``None`` in
-    that mode; callers must tolerate it.
+    * one line goes to stderr ("still staging the tree ... 4m12s (9 GiB written
+      to objects)"), because nothing else speaks during such a step;
+    * bytes newly present under ``measure_dir`` count as progress and restart the
+      stall clock;
+    * if nothing has grown for ``STALL_LIMIT`` seconds the child (and, on
+      Windows, its process tree) is killed and a ``SnapshotError`` raised.
+
+    ``stall_limit=None`` is heartbeat-only mode, for steps with no measurable
+    progress (a push's silent upload, a verification that re-reads every file
+    and writes nothing): the lines keep coming and nothing is ever killed.
     """
     if status is None:
         kwargs.setdefault("timeout", GIT_TIMEOUT)
@@ -352,7 +396,7 @@ def _run(
 
     # isinstance, not ``is``: mypy narrows the union on the former, and the
     # sentinel's type is as good a discriminator as its identity.
-    limit = STALL_LIMIT if isinstance(stall_limit, _UnsetStall) else stall_limit
+    limit = _stall_limit_from_env() if isinstance(stall_limit, _UnsetStall) else stall_limit
 
     stdin_data = kwargs.pop("input", None)
     if stdin_data is not None and kwargs.get("stdin") != subprocess.PIPE:
@@ -360,84 +404,38 @@ def _run(
         kwargs["stdin"] = subprocess.PIPE
     kwargs.pop("timeout", None)
     proc = subprocess.Popen(cmd, **kwargs)
-    stop = threading.Event()
-    state = {"killed": False, "streamed_bytes": 0}
+
     baseline = _dir_size(measure_dir) if measure_dir is not None else 0
-
-    def dir_growth() -> int:
-        if measure_dir is None:
-            return 0
-        return max(0, _dir_size(measure_dir) - baseline)
-
-    def watch() -> None:
-        start = time.monotonic()
-        last_seen = 0
-        last_progress = start
-        while not stop.wait(STATUS_INTERVAL):
-            now = time.monotonic()
-            seen = dir_growth() + state["streamed_bytes"]
-            if seen > last_seen:
-                last_seen, last_progress = seen, now
-            line = f"still {status} ... {_fmt_elapsed(now - start)}"
-            if measure_dir is not None and dir_growth() > 0:
-                line += f" ({_fmt_bytes(dir_growth())} written to {measure_dir.name})"
-            sys.stderr.write(line + "\n")
-            sys.stderr.flush()
-            if limit is not None and now - last_progress >= limit:
-                state["killed"] = True
-                proc.kill()
-                break
-
-    threads: list[threading.Thread] = [threading.Thread(target=watch, daemon=True)]
-    if stream_stderr:
-        # communicate() would also read a stderr pipe it sees, so in this mode
-        # every pipe has exactly one reader: the pump takes stderr, the main
-        # thread takes stdout, and a feeder writes stdin.
-        def pump() -> None:
-            assert proc.stderr is not None
-            for raw in proc.stderr:
-                # Bytes when the caller did not open a text pipe; count first,
-                # because the decoded form no longer has the true byte length.
-                state["streamed_bytes"] += len(raw)
-                if isinstance(raw, bytes):
-                    raw = raw.decode("utf-8", errors="replace")
-                sys.stderr.write(raw)
-                sys.stderr.flush()
-
-        threads.append(threading.Thread(target=pump, daemon=True))
-
-    feeder = None
-    if stdin_data is not None and stream_stderr:
-        def feed() -> None:
-            assert proc.stdin is not None
+    start = last_progress = time.monotonic()
+    last_seen = 0
+    first = True
+    while True:
+        try:
+            out, err = proc.communicate(
+                input=stdin_data if first else None, timeout=STATUS_INTERVAL
+            )
+            break
+        except subprocess.TimeoutExpired:
+            first = False
+        now = time.monotonic()
+        growth = max(0, _dir_size(measure_dir) - baseline) if measure_dir is not None else 0
+        if growth > last_seen:
+            last_seen, last_progress = growth, now
+        line = f"still {status} ... {_fmt_elapsed(now - start)}"
+        if measure_dir is not None and growth > 0:
+            line += f" ({_fmt_bytes(growth)} written to {measure_dir.name})"
+        sys.stderr.write(line + "\n")
+        sys.stderr.flush()
+        if limit is not None and now - last_progress >= limit:
+            _kill_tree(proc)
             try:
-                proc.stdin.write(stdin_data)
-                proc.stdin.close()
-            except (BrokenPipeError, ValueError):
-                pass  # the child died before reading its input; we error out below
-
-        feeder = threading.Thread(target=feed, daemon=True)
-
-    for thread in threads:
-        thread.start()
-    if feeder is not None:
-        feeder.start()
-    try:
-        if stream_stderr:
-            err = None
-            out = proc.stdout.read() if proc.stdout is not None else None
-            proc.wait()
-        else:
-            out, err = proc.communicate(stdin_data)
-    finally:
-        stop.set()
-        for thread in [*threads, feeder] if feeder is not None else threads:
-            thread.join(timeout=5)
-    if state["killed"]:
-        raise SnapshotError(
-            f"git {' '.join(cmd[1:])} made no measurable progress for "
-            f"{limit:g}s and was killed (stalled?)"
-        ) from None
+                proc.communicate(timeout=5)
+            except (subprocess.TimeoutExpired, OSError, ValueError):
+                pass
+            raise SnapshotError(
+                f"git {' '.join(cmd[1:])} made no measurable progress for "
+                f"{limit:g}s and was killed (stalled?)"
+            ) from None
     return subprocess.CompletedProcess(cmd, proc.returncode, out, err)
 
 
@@ -452,6 +450,7 @@ def git(
     status: str | None = None,
     measure_dir: Path | None = None,
     live_stderr: bool = False,
+    stall_limit: "float | None | _UnsetStall" = _UNSET_STALL,
 ) -> subprocess.CompletedProcess[str]:
     """Run git against an explicit --git-dir/--work-tree pair.
 
@@ -469,16 +468,12 @@ def git(
     under a scheduler into a fast, clean failure instead of a hang holding
     the vault lock.
 
-    ``status``/``measure_dir`` are passed to :func:`_run` for steps that run
-    long enough to look dead (staging, pushing, restoring).  With
-    ``live_stderr`` the child's stderr is shown as it happens instead of being
-    captured until the command returns: a push then shows git's and the remote
-    helper's own output immediately -- including the post-push auto-compaction
-    notice.  When a ``status`` watchdog is active too, the stream is piped so
-    every relayed byte also counts as progress against the stall limit; with no
-    watchdog there is nothing to count it for, and plain inheritance is used.
-    In either live mode callers must tolerate ``proc.stderr`` being ``None`` on
-    failure (the text already reached the user directly).
+    ``status``/``measure_dir``/``stall_limit`` are passed to :func:`_run` for
+    steps that run long enough to look dead (staging, pushing, restoring).  With
+    ``live_stderr`` the child's stderr is inherited, so a push shows git's and
+    the remote helper's own output as it happens -- including the helper's
+    notices.  Callers must tolerate ``proc.stderr`` being ``None`` on failure
+    (the text already reached the user directly).
     """
     cmd = ["git", f"--git-dir={git_dir}"]
     if work_tree is not None:
@@ -501,7 +496,12 @@ def git(
     # mistakes -- and a mistake here means an excluded file's bytes reaching the
     # vault, which is the one thing the pre-filter exists to prevent.
     env["GIT_LITERAL_PATHSPECS"] = "1"
-    stream = bool(live_stderr and status is not None)
+    # A child that runs the remote helper (push, fetch, clone) inherits the
+    # helper's own per-command ceiling, which defaults to 300 s and is meant for
+    # an interactive `git push`.  This tool's no-progress watchdog is the guard
+    # for long steps, so the helper's wall-clock ceiling is lifted to the same
+    # horizon -- unless the user set one, which always wins.
+    env.setdefault("SEAFILE_GIT_TIMEOUT", str(int(STALL_LIMIT)))
     proc = _run(
         cmd,
         cwd=str(cwd),
@@ -512,10 +512,10 @@ def git(
         input=stdin,
         stdin=subprocess.DEVNULL if stdin is None else None,
         stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE if (not live_stderr or stream) else None,
+        stderr=None if live_stderr else subprocess.PIPE,
         status=status,
         measure_dir=measure_dir,
-        stream_stderr=stream,
+        stall_limit=stall_limit,
     )
     if check and proc.returncode != 0:
         detail = (proc.stderr or proc.stdout).strip()
@@ -754,13 +754,14 @@ def _object_store_stats(git_dir: Path, work_tree: Path) -> dict[str, int]:
     return stats
 
 
-# The automatic incremental repack gates itself with these two numbers: below
-# them the loose tier is too small for a pass over the object directory to be
-# worth it, above them packing it is cheap next to the push that follows.  A
-# small-delta repo therefore repacks rarely and a heavy one on most runs --
-# frequency self-regulates without any setting.
+# The automatic incremental repack gates itself on the size of the loose tier:
+# below it, a pass over the object directory is not worth it; above it, packing
+# is cheap next to the push that follows.  Only *bytes* are gated.  An object
+# *count* trigger already exists in git itself -- `git fetch`, which this tool
+# runs every time a remote is configured, launches `gc --auto` once roughly
+# 6,700 loose objects exist -- whereas nothing in git looks at size, and a vault
+# of a few dozen huge files never trips a count.
 _REPACK_MIN_LOOSE_BYTES = 256 * 1024 * 1024
-_REPACK_MIN_LOOSE_OBJECTS = 50_000
 
 
 def auto_incremental_repack(git_dir: Path, work_tree: Path) -> None:
@@ -775,8 +776,7 @@ def auto_incremental_repack(git_dir: Path, work_tree: Path) -> None:
     stats = _object_store_stats(git_dir, work_tree)
     loose_bytes = stats.get("size", 0) * 1024
     count = stats.get("count", 0)
-    if (loose_bytes < _REPACK_MIN_LOOSE_BYTES
-            and count < _REPACK_MIN_LOOSE_OBJECTS):
+    if loose_bytes < _REPACK_MIN_LOOSE_BYTES:
         return
     print(f"consolidating {count} loose object(s), {_fmt_bytes(loose_bytes)}, "
           f"before the push ...")
@@ -789,118 +789,189 @@ def auto_incremental_repack(git_dir: Path, work_tree: Path) -> None:
               f"the snapshot itself succeeded", file=sys.stderr)
 
 
-# -- Object compression advisory ------------------------------------------------
+# -- Large-payload profile --------------------------------------------------------
 #
-# core.compression is read at write time only, so this can never be wrong in a
-# data sense: it measures how much of each run's raw bytes actually end up
-# stored, keeps a rolling aggregate in the vault's own config, and recommends
-# a level per band.  Hysteresis (three consecutive runs inside a band) means
-# one notice per sustained mix shift, not one per snapshot.
+# Two git costs scale with *raw* bytes and buy nothing on data that does not
+# compress or deltify, and both showed up on a 20 GB+ tree that timed out:
+#
+#   * staging (`git add`) deflates every blob: 42 MB/s on incompressible data,
+#     131 MB/s at core.compression=0;
+#   * `pack-objects` -- the helper's push, and the vault's own background
+#     `gc --auto` -- runs a delta search over every blob below
+#     core.bigFileThreshold (default 512 MiB): 8-10 MB/s regardless of the
+#     compression level, against 320 MB/s when the big blobs are streamed.
+#
+# The profile is decided once, from a small sample taken before the first
+# staging, and then remembered in the vault's config (`snapshot.profile`).
+# Nothing here changes content: object *storage encoding* and *packing
+# strategy* only, both of which are safe to flip at any time.
+
+#: Below this much raw data neither cost is worth a decision.
+_PROFILE_MIN_TREE_BYTES = 2 * 1024 ** 3
+#: A file this big is "payload"; smaller ones (source, config) stay as they are.
+_PROFILE_BIG_FILE_BYTES = 1024 ** 2
+#: How many of the largest files are sampled, and how much of each.
+_PROFILE_SAMPLE_FILES = 32
+_PROFILE_SAMPLE_CHUNK = 256 * 1024
+#: Sampled data that keeps at least this fraction of its size under a fast
+#: deflate is treated as incompressible.
+_PROFILE_INCOMPRESSIBLE_RATIO = 0.9
+#: What to set for a raw payload.  The threshold is the one measured in
+#: git_remote_seafile.git_util.PACK_BIG_FILE_THRESHOLD (kept as a literal so
+#: this file does not need the package just to name a string).
+_PROFILE_BIG_FILE_THRESHOLD = "50m"
 
 
-_ADVISORY_EMA_ALPHA = 0.3
-_ADVISORY_HYSTERESIS_RUNS = 3
+def apply_large_payload_profile(vault: Path, git_dir: Path) -> None:
+    """Store new objects uncompressed and stream big blobs past delta search.
 
-_BAND_ADVICE = {
-    2: "the payload looks incompressible (already-compressed archives, media): "
-       "consider core.compression=1 -- or 0 / --no-object-compression -- for future snapshots",
-    1: "the payload is mixed: compression level 1-2 keeps real deflation where it helps while cutting most of the CPU cost",
-    0: "the payload compresses well: keep the default full compression",
-}
-
-
-def _ratio_band(ratio: float) -> int:
-    """2: essentially incompressible; 1: mixed; 0: compressible."""
-    if ratio >= 0.95:
-        return 2
-    if ratio >= 0.7:
-        return 1
-    return 0
-
-
-def _changed_raw_bytes(git_dir: Path, source: Path, base: str, commit: str) -> int:
-    """Raw bytes fed to this snapshot's object writes, as far as is knowable.
-
-    The current sizes of the files added or modified against the previous
-    commit; deletions contribute nothing new.  A path that vanished from the
-    source since staging is skipped rather than failing the measurement --
-    this feeds an advisory, not a guarantee.
+    Idempotent.  Both settings are repo-local, so they travel with the vault and
+    are read by every git process that touches it -- the helper's push-time
+    ``pack-objects`` and the vault's own background ``gc --auto`` included, which
+    is why the profile is applied here and not only on the helper's command
+    line.
     """
-    proc = git(git_dir, None, ["diff-tree", "-r", "--name-status", base, commit], cwd=source)
-    total = 0
-    for line in proc.stdout.splitlines():
-        parts = line.split("\t", 1)
-        if len(parts) != 2 or parts[0][0] not in "AMT":
-            continue
+    disable_object_compression(vault, git_dir)
+    if _read_local_config_map(vault).get("core.bigfilethreshold") != [_PROFILE_BIG_FILE_THRESHOLD]:
+        git(git_dir, vault, ["config", "core.bigFileThreshold", _PROFILE_BIG_FILE_THRESHOLD], cwd=vault)
+    git(git_dir, vault, ["config", "snapshot.profile", "raw"], cwd=vault)
+
+
+def _walk_sizes(source: Path, excludes: list[str]) -> list[tuple[int, str]]:
+    """``(size, relative posix path)`` for every regular file under *source*.
+
+    Stat only -- no content is read.  ``.git`` directories are skipped (a source
+    that is itself a repository), and excluded paths are skipped, so the
+    decision describes what will actually be staged.
+    """
+    found: list[tuple[int, str]] = []
+    root = str(source)
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if d != ".git"]
+        for name in filenames:
+            full = os.path.join(dirpath, name)
+            rel = os.path.relpath(full, root).replace(os.sep, "/")
+            if excludes and any(exclude_matches(rel, pat) for pat in excludes):
+                continue
+            try:
+                st = os.lstat(full)
+            except OSError:
+                continue
+            if stat.S_ISREG(st.st_mode):
+                found.append((st.st_size, rel))
+    return found
+
+
+def sample_payload(source: Path, excludes: list[str]) -> dict[str, float]:
+    """Measure what staging this tree will cost, from a small sample.
+
+    Returns ``total`` (bytes of all files), ``payload`` (bytes in files of at
+    least ``_PROFILE_BIG_FILE_BYTES``), ``sampled`` (bytes actually read) and
+    ``ratio`` (compressed / raw over the sample; 0.0 when nothing was sampled).
+    At most ``_PROFILE_SAMPLE_FILES`` of the largest files are read, three
+    chunks of ``_PROFILE_SAMPLE_CHUNK`` each (start, middle, end), so the cost
+    is bounded by ~24 MiB of reads however large the tree is.
+    """
+    files = _walk_sizes(source, excludes)
+    total = sum(size for size, _ in files)
+    big = sorted(((s_, r) for s_, r in files if s_ >= _PROFILE_BIG_FILE_BYTES), reverse=True)
+    payload = sum(size for size, _ in big)
+    raw = comp = 0
+    for size, rel in big[:_PROFILE_SAMPLE_FILES]:
         try:
-            total += (source / parts[1]).stat().st_size
+            with open(source / rel, "rb") as fh:
+                for offset in sorted({0, max(0, size // 2 - _PROFILE_SAMPLE_CHUNK // 2),
+                                       max(0, size - _PROFILE_SAMPLE_CHUNK)}):
+                    fh.seek(offset)
+                    chunk = fh.read(_PROFILE_SAMPLE_CHUNK)
+                    if chunk:
+                        raw += len(chunk)
+                        comp += len(zlib.compress(chunk, 1))
         except OSError:
-            pass
-    return total
+            continue
+    return {
+        "total": float(total),
+        "payload": float(payload),
+        "sampled": float(raw),
+        "ratio": (comp / raw) if raw else 0.0,
+    }
 
 
-def _record_ratio(git_dir: Path, vault: Path, ratio: float) -> str | None:
-    """Fold one run's measured store/raw ratio into the rolling aggregate.
+def decide_profile(measure: dict[str, float]) -> str:
+    """``"raw"`` or ``"default"`` from :func:`sample_payload`'s numbers.
 
-    Returns the advisory text when a sustained mix shift crosses into a band
-    that has not been announced yet; ``None`` in steady state.  The aggregate
-    and its bookkeeping live in the vault's own (local) config, so several
-    machines sharing a vault each keep their own measurement.
+    A raw-data profile needs all three: a tree big enough for the costs to
+    matter, a payload that dominates it (so small source files are not being
+    deprived of delta compression for the sake of a few large ones), and a
+    sample that really does not compress.
     """
-    ema_raw = _read_config_key(git_dir, "snapshot.rawratio")
-    try:
-        prev = float(ema_raw) if ema_raw else None
-    except ValueError:
-        prev = None
-    ema = ratio if prev is None else (
-        _ADVISORY_EMA_ALPHA * ratio + (1 - _ADVISORY_EMA_ALPHA) * prev
-    )
-    band = _ratio_band(ema)
-    seen = int(_read_config_key(git_dir, "snapshot.ratioseens") or 0) + 1
-    streak_band = _read_config_key(git_dir, "snapshot.streakband")
-    streak = (int(_read_config_key(git_dir, "snapshot.streakruns") or 0) + 1
-              if streak_band == str(band) else 1)
-    last_emitted = _read_config_key(git_dir, "snapshot.ratioband")
-    for key, value in (
-        ("snapshot.rawratio", f"{ema:.4f}"),
-        ("snapshot.ratioseens", str(seen)),
-        ("snapshot.streakband", str(band)),
-        ("snapshot.streakruns", str(streak)),
-    ):
-        git(git_dir, None, ["config", key, value], cwd=vault)
-    if streak >= _ADVISORY_HYSTERESIS_RUNS and last_emitted != str(band):
-        git(git_dir, None, ["config", "snapshot.ratioband", str(band)], cwd=vault)
-        return (f"advisory: over {seen} snapshot(s), new objects store {ema:.2f} of their "
-                f"raw size; {_BAND_ADVICE[band]}")
-    return None
+    if measure["total"] < _PROFILE_MIN_TREE_BYTES:
+        return "default"
+    if measure["payload"] < 0.5 * measure["total"]:
+        return "default"
+    if measure["sampled"] <= 0 or measure["ratio"] < _PROFILE_INCOMPRESSIBLE_RATIO:
+        return "default"
+    return "raw"
 
 
-def _compression_advisory_after_commit(
-    git_dir: Path, vault: Path, source: Path, base: str | None, commit: str,
-    tree: str, store_before_total: int,
+def choose_profile(
+    vault: Path, git_dir: Path, source: Path, excludes: list[str],
+    vault_config: dict[str, list[str]], *, write: bool, recheck: bool = False,
 ) -> None:
-    """Measure this run's compression ratio and fold it into the aggregate.
+    """Decide the vault's storage profile on the first run that needs it.
 
-    Best-effort by contract: any failure here is swallowed, because an
-    advisory that can fail a snapshot would be worse than none.  The ratio is
-    object-store growth against the raw bytes changed; v1 deliberately
-    conflates delta savings with deflation savings, and its error direction is
-    safe -- it keeps compression on longer than strictly needed.
+    Skipped when the profile is already ``raw``, or when the user pinned
+    ``core.compression`` themselves -- a vault someone tuned by hand is not
+    second-guessed.  A ``default`` verdict is final unless *recheck* is set,
+    which :func:`main` does when the tree has since grown past the point where
+    the decision matters (a vault that began small and became a 20 GB payload
+    would otherwise stay on the slow settings forever).  Under ``--dry-run``
+    (``write=False``) the sample is still taken and reported, but nothing is
+    written.
     """
-    try:
-        if base is None:
-            raw = describe_tree(git_dir, source, tree)[1]
+    profile = (vault_config.get("snapshot.profile") or [""])[0]
+    if profile == "raw" or vault_config.get("core.compression"):
+        return
+    if profile and not recheck:
+        return
+    measure = sample_payload(source, excludes)
+    verdict = decide_profile(measure)
+    if verdict == "raw":
+        what = (
+            f"large raw payload detected ({_fmt_bytes(measure['payload'])} in big files of "
+            f"{_fmt_bytes(measure['total'])}; the sample keeps {measure['ratio']:.0%} of its "
+            f"size under deflate)"
+        )
+        if write:
+            apply_large_payload_profile(vault, git_dir)
+            print(f"{what}: storing objects uncompressed and skipping delta search for big "
+                  f"blobs (core.compression=0, core.bigFileThreshold={_PROFILE_BIG_FILE_THRESHOLD}). "
+                  f"Undo with `git -C {vault} config --unset core.compression` and "
+                  f"`--unset core.bigFileThreshold`.")
         else:
-            raw = _changed_raw_bytes(git_dir, source, base, commit)
-        stats = _object_store_stats(git_dir, source)
-        growth = (stats.get("size", 0) + stats.get("size-pack", 0)) * 1024 - store_before_total
-        if raw <= 0 or growth <= 0:
-            return
-        notice = _record_ratio(git_dir, vault, min(growth / raw, 1.0))
-        if notice:
-            print(notice)
-    except (SnapshotError, ValueError, OSError):
-        pass
+            print(f"dry run -- {what}: a real run would store objects uncompressed and "
+                  f"skip delta search for big blobs.")
+    elif write:
+        git(git_dir, vault, ["config", "snapshot.profile", "default"], cwd=vault)
+        git(git_dir, vault, ["config", "snapshot.profilebytes", str(int(measure["total"]))], cwd=vault)
+
+
+def profile_recheck_due(vault_config: dict[str, list[str]], tree_bytes: int) -> bool:
+    """Whether a ``default`` vault has grown enough to be worth sampling again.
+
+    True only for a vault decided ``default`` whose tree is now past the size
+    where the profile matters and at least twice what it was when last sampled,
+    so a large-but-compressible tree is sampled once per doubling, not per run.
+    """
+    if (vault_config.get("snapshot.profile") or [""])[0] != "default":
+        return False
+    if tree_bytes < _PROFILE_MIN_TREE_BYTES:
+        return False
+    try:
+        last = int((vault_config.get("snapshot.profilebytes") or ["0"])[0])
+    except ValueError:
+        last = 0
+    return tree_bytes >= 2 * last
 
 
 def maintain_vault(vault: Path, *, full_repack: bool = False) -> int:
@@ -935,15 +1006,11 @@ def maintain_vault(vault: Path, *, full_repack: bool = False) -> int:
         print(f"note: git reports {stats['garbage']} unreachable object(s); "
               "a repack + prune run removes them")
 
-    ema_raw = _read_config_key(git_dir, "snapshot.rawratio")
-    try:
-        ema = float(ema_raw) if ema_raw else None
-    except ValueError:
-        ema = None
-    if ema is not None:
-        seen = _read_config_key(git_dir, "snapshot.ratioseens") or "?"
-        print(f"measured compression over {seen} run(s): new objects store {ema:.2f} of raw "
-              f"size -> {_BAND_ADVICE[_ratio_band(ema)]}")
+    profile = _read_config_key(git_dir, "snapshot.profile")
+    if profile:
+        print(f"storage profile: {profile}"
+              + (" (core.compression=0, core.bigFileThreshold="
+                 f"{_PROFILE_BIG_FILE_THRESHOLD})" if profile == "raw" else ""))
 
     if not full_repack:
         need = _fmt_bytes(store_bytes)
@@ -1795,6 +1862,7 @@ def push_snapshot(
                 check=False,
                 status=f"pushing to {remote}",
                 live_stderr=True,
+                stall_limit=None,
             )
             if proc.returncode == 0:
                 print("push complete")
@@ -3040,13 +3108,17 @@ def main(argv: list[str] | None = None) -> int:
             ensure_identity(vault, source, vault_config=vault_config)
             ensure_byte_exact(vault, git_dir, vault_config=vault_config)
             if args.no_object_compression:
-                disable_object_compression(vault, git_dir)
+                apply_large_payload_profile(vault, git_dir)
+            else:
+                choose_profile(vault, git_dir, source, exclude, vault_config, write=True)
         else:
             # The identity *check* still runs on a preview -- failing
             # early with the actionable message beats a commit-tree
             # traceback -- but read-only: a dry run writes nothing at all
             ensure_identity(vault, source, vault_config=vault_config,
                             write_identity=False)
+            if not args.no_object_compression:
+                choose_profile(vault, git_dir, source, exclude, vault_config, write=False)
         # Remember *after* the vault exists, so the first run leaves the next one
         # with nothing to type.  Not on a dry run: a preview must not mutate.
         if not args.dry_run:
@@ -3092,17 +3164,20 @@ def main(argv: list[str] | None = None) -> int:
             # writes nothing).  CI runners have
             # no global identity, which is why passing locally did not mean
             # passing there.  write-tree alone answers every question a
-            # The store size before this commit is the baseline the compression
-            # advisory measures growth against.
-            pre_stats = _object_store_stats(git_dir, source)
-            store_before_total = (pre_stats.get("size", 0) + pre_stats.get("size-pack", 0)) * 1024
-
             # preview prints (file count, size, diffstat, secrets, gitlinks).
             tree, commit, excluded = build_snapshot(
                 git_dir, source, base, exclude, message,
                 make_commit=not args.dry_run,
             )
             count, size = describe_tree(git_dir, source, tree)
+            # The profile was decided from a sample taken before the first
+            # staging.  A vault that began small and has since become a large
+            # payload gets one more look -- for the *next* run, since this one
+            # has already staged -- once per doubling of the tree.
+            if (not args.dry_run and not args.no_object_compression
+                    and profile_recheck_due(vault_config, size)):
+                choose_profile(vault, git_dir, source, exclude, vault_config,
+                               write=True, recheck=True)
 
             print(f"source : {source}")
             print(f"vault  : {vault}")
@@ -3166,9 +3241,6 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 set_branch(git_dir, source, branch, commit, base)
                 print(f"\nmoved refs/heads/{branch} -> {commit[:12]}")
-                _compression_advisory_after_commit(
-                    git_dir, vault, source, base, commit, tree, store_before_total
-                )
 
             if not remote:
                 print("no --remote; snapshot kept locally (pass --remote, or set "

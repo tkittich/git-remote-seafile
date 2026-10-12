@@ -98,6 +98,17 @@ _IGNORE_NAME = re.compile(r"[\w.-]*seafile-ignore\.txt")
 # the misspelling -- being unshipped is why nothing noticed.
 _OPTIONAL_DRAFTS = ("PROPOSALS.md",)
 
+# Keys that used to be settings and are documented *as retired* (so someone who
+# still has one in their config learns what happened).  They are deliberately
+# not read as settings by the code, which is what the "documented but never
+# read" direction would otherwise reject.
+_RETIRED_KEYS = frozenset({"seafile.locksettle", "seafile.gcmaxmib"})
+
+# Read by the code for the test suite's benefit only (the settlement window is
+# fixed at one second for users).  Documenting it would advertise a way to
+# switch off a race guard, which is the thing this variable exists *not* to be.
+_TEST_ONLY_ENV = frozenset({"SEAFILE_TEST_LOCK_SETTLE"})
+
 _CODE_SUBCOMMAND_EQ = re.compile(r'args\[0\]\s*==\s*"([^"]+)"')
 _CODE_SUBCOMMAND_IN = re.compile(r"args\[0\]\s+in\s+\(([^)]+)\)")
 # The separator must be spaces or tabs, not `\s`: several docs end a line with
@@ -144,6 +155,22 @@ def _source_text() -> str:
     return "\n".join(
         path.read_text(encoding="utf-8") for path in sorted(_SOURCE.glob("*.py"))
     )
+
+
+def _env_source_text() -> str:
+    """Source that may read a documented environment variable.
+
+    The package, plus the snapshot tool's parts: ``SEAFILE_SNAPSHOT_STALL_LIMIT``
+    is read there, and a variable the *tools* read is as much a documented
+    setting as one the helper reads.  (Config keys and subcommands stay
+    package-only: the tools define neither.)
+    """
+    tool_paths = sorted((_ROOT / "tools" / "_snapshot").glob("*.py"))
+    tool_paths.append(_ROOT / "tools" / "seafile_doctor.py")
+    tool_text = "\n".join(
+        path.read_text(encoding="utf-8") for path in tool_paths if path.is_file()
+    )
+    return _source_text() + "\n" + tool_text
 
 
 def _config_keys_read_by_code() -> dict[str, str]:
@@ -203,7 +230,7 @@ class TestConfigKeys(unittest.TestCase):
         for text in _all_docs().values():
             documented |= set(_DOC_CONFIG_KEY.findall(text))
 
-        read = set(_config_keys_read_by_code())
+        read = set(_config_keys_read_by_code()) | _RETIRED_KEYS
         self.assertEqual(
             sorted(documented - read),
             [],
@@ -246,12 +273,12 @@ class TestEnvironmentVariables(unittest.TestCase):
         for text in _all_docs().values():
             documented |= set(_DOC_ENV.findall(text))
 
-        read = set(_CODE_ENV_READ.findall(_source_text()))
+        read = set(_CODE_ENV_READ.findall(_env_source_text()))
 
         with self.subTest(direction="documented but not read"):
             self.assertEqual(sorted(documented - read), [])
         with self.subTest(direction="read but not documented"):
-            self.assertEqual(sorted(read - documented), [])
+            self.assertEqual(sorted(read - documented - _TEST_ONLY_ENV), [])
 
 
 class TestSubcommands(unittest.TestCase):
@@ -539,9 +566,13 @@ class TestManifestTargetsAreReal(unittest.TestCase):
         if not (_ROOT / ".git").exists():
             self.skipTest("not a git checkout (built from an sdist)")
 
+        # Tracked files *and* new files that are not ignored: the question is
+        # "would a clean checkout have it", and a file created this minute and
+        # not yet `git add`ed will be there once committed.  A gitignored one
+        # never will, which is what this exists to catch.
         listed = subprocess.run(
-            ["git", "ls-files"], cwd=str(_ROOT),
-            capture_output=True, text=True,
+            ["git", "ls-files", "--cached", "--others", "--exclude-standard"],
+            cwd=str(_ROOT), capture_output=True, text=True,
         ).stdout.split()
         tracked = set(listed)
         for rel in self._included_paths():

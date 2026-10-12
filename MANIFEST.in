@@ -35,6 +35,8 @@ include tools/run_tests_parallel.py
 include tools/verify_docs_guards.py
 include tools/seafile_doctor.py
 include tools/seafile_snapshot.py
+include tools/build_snapshot.py
+recursive-include tools/_snapshot *.py
 
 # CHANGELOG.md and ROADMAP.md link the desktop-client patch; an sdist that
 # ships the links should ship what they point at.

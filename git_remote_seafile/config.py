@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 from dataclasses import dataclass
 from typing import Any
@@ -10,7 +11,54 @@ from .git_util import (
     get_git_config,
     get_git_config_bool,
     get_git_config_int,
+    run_git,
 )
+
+#: Keys that used to be settings and are not any more.  A value still present in
+#: someone's git config is reported once per load rather than silently ignored,
+#: so nobody's configuration changes meaning without a word.
+RETIRED_KEYS = ("seafile.locksettle", "seafile.gcmaxmib")
+
+#: The automatic tail merge's download budget, as a multiple of the per-pack
+#: freeze threshold: 8 GiB at the default 1 GiB.  It used to be a second key
+#: (`seafile.gcmaxmib`) that had to be reasoned about together with the first.
+GC_BUDGET_FACTOR = 8
+
+#: The settlement window in seconds.  Not a user setting: it is a race guard,
+#: and switching it off trades a correctness property for a second per push.
+#: The single exception is the test suite, which runs one in-process server with
+#: no concurrent writers and sets ``SEAFILE_TEST_LOCK_SETTLE=0`` so it does not
+#: pay the second 600 times.
+DEFAULT_LOCK_SETTLE = 1
+
+
+def default_lock_settle() -> int:
+    """The settlement window: :data:`DEFAULT_LOCK_SETTLE`, or the test override."""
+    raw = os.environ.get("SEAFILE_TEST_LOCK_SETTLE", "").strip()
+    if not raw:
+        return DEFAULT_LOCK_SETTLE
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return DEFAULT_LOCK_SETTLE
+
+
+def _warn_about_retired_keys() -> None:
+    """Say so, once, when a key that no longer does anything is set."""
+    out, _, code = run_git(["config", "--get-regexp", r"^seafile\.(locksettle|gcmaxmib)$"])
+    if code != 0 or not out:
+        return
+    for line in out.decode("utf-8", errors="replace").splitlines():
+        key = line.split(None, 1)[0] if line.strip() else ""
+        if key in RETIRED_KEYS:
+            sys.stderr.write(
+                f"Warning: {key} is no longer a setting and is ignored"
+                + (" (the settlement window is fixed at 1 s)." if key.endswith("locksettle")
+                   else f" (the budget is {GC_BUDGET_FACTOR} x seafile.gcmaxpackmib).")
+                + "\n"
+            )
+    sys.stderr.flush()
+
 
 __all__ = [
     "RemoteConfig",
@@ -31,7 +79,10 @@ class RemoteConfig:
     gc_threshold: int
     # Defaults at the dataclass level too, so constructing a config directly
     # (tests, embedded callers) never needs to know every knob.
-    gc_max_mib: int = 8192
+    # The budget is *derived* from gc_max_pack_mib by load(); the field
+    # stays so a config can still be constructed directly (tests, embedded
+    # callers) with an explicit value.
+    gc_max_mib: int = GC_BUDGET_FACTOR * 1024
     gc_max_pack_mib: int = 1024
 
     @classmethod
@@ -56,14 +107,9 @@ class RemoteConfig:
         values: dict[str, Any] = {
             "lock_timeout": get_git_config_int("seafile.locktimeout", 15),
             "lock_lease": get_git_config_int("seafile.locklease", 60),
-            "lock_settle": get_git_config_int("seafile.locksettle", 1),
+            "lock_settle": default_lock_settle(),
             "auto_gc": get_git_config_bool("seafile.autogc", False),
             "gc_threshold": get_git_config_int("seafile.gcthreshold", 20),
-            # Download budget for the automatic tail merge: when the movable
-            # packs (those below gc_max_pack_mib) total more than this, auto-GC
-            # defers to a manual off-hours run instead of round-tripping that
-            # much mid-push.
-            "gc_max_mib": get_git_config_int("seafile.gcmaxmib", 8192),
             # Per-pack freeze threshold for the tail merge: packs at or above
             # this size are left where they stand, so each cycle moves only the
             # small new packs and cost stays bounded regardless of history.
@@ -77,21 +123,16 @@ class RemoteConfig:
         if values["lock_lease"] <= 0:
             fallbacks.append(f"seafile.locklease={values['lock_lease']} -> 60")
             values["lock_lease"] = 60
-        if values["lock_settle"] < 0:
-            fallbacks.append(f"seafile.locksettle={values['lock_settle']} -> 1")
-            values["lock_settle"] = 1
         if values["gc_threshold"] < 1:
             fallbacks.append(f"seafile.gcthreshold={values['gc_threshold']} -> 20")
             values["gc_threshold"] = 20
-        # A sub-1 MiB budget would defer every tail merge, defeating the setting.
-        if values["gc_max_mib"] < 1:
-            fallbacks.append(f"seafile.gcmaxmib={values['gc_max_mib']} -> 8192")
-            values["gc_max_mib"] = 8192
         # A sub-1 MiB freeze threshold would make every pack -- including old,
         # large consolidated ones -- movable, defeating the bounded-cost design.
         if values["gc_max_pack_mib"] < 1:
             fallbacks.append(f"seafile.gcmaxpackmib={values['gc_max_pack_mib']} -> 1024")
             values["gc_max_pack_mib"] = 1024
+        values["gc_max_mib"] = GC_BUDGET_FACTOR * values["gc_max_pack_mib"]
+        _warn_about_retired_keys()
         if fallbacks:
             sys.stderr.write(
                 "Warning: implausible seafile.* config ignored ("

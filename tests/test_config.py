@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import os
 import unittest
 from unittest.mock import patch
 
@@ -25,7 +26,7 @@ class TestConfigModule(unittest.TestCase):
             self.assertEqual(cfg.lock_settle, 1)
             self.assertFalse(cfg.auto_gc)
             self.assertEqual(cfg.gc_threshold, 20)
-            self.assertEqual(cfg.gc_max_mib, 8192)
+            self.assertEqual(cfg.gc_max_mib, 8192)  # 8 x the 1024 MiB freeze threshold
             self.assertEqual(cfg.gc_max_pack_mib, 1024)
 
     def test_remote_config_load_custom(self):
@@ -33,10 +34,8 @@ class TestConfigModule(unittest.TestCase):
             mapping = {
                 "seafile.locktimeout": "30",
                 "seafile.locklease": "120",
-                "seafile.locksettle": "0",
                 "seafile.autogc": "true",
                 "seafile.gcthreshold": "50",
-                "seafile.gcmaxmib": "4096",
                 "seafile.gcmaxpackmib": "256",
             }
             return mapping.get(key, default)
@@ -45,29 +44,45 @@ class TestConfigModule(unittest.TestCase):
             cfg = RemoteConfig.load()
             self.assertEqual(cfg.lock_timeout, 30)
             self.assertEqual(cfg.lock_lease, 120)
-            self.assertEqual(cfg.lock_settle, 0)
+            self.assertEqual(cfg.lock_settle, 1)
             self.assertTrue(cfg.auto_gc)
             self.assertEqual(cfg.gc_threshold, 50)
-            self.assertEqual(cfg.gc_max_mib, 4096)
+            self.assertEqual(cfg.gc_max_mib, 8 * 256)  # derived, not a second key
             self.assertEqual(cfg.gc_max_pack_mib, 256)
 
-    def test_a_zero_settlement_window_is_honoured(self):
-        """0 switches the re-scan off, which is a legitimate choice.
+    def test_the_settlement_window_is_not_a_git_config_setting(self):
+        """It is a race guard, fixed at one second; only the test suite moves it.
 
-        The settlement window is a race guard, not the lock itself: with one
-        writer, or on a server whose listings are strongly consistent, the
-        extra second per acquisition buys nothing.  Only a *negative* window
-        -- one that would elapse before it started -- is refused.
+        ``seafile.locksettle`` used to be a documented key whose only
+        legitimate use was ``0`` in tests, and a user setting it traded a
+        correctness property for a second.  A value still present is reported
+        and ignored.
         """
         def mock_get(key: str, default: str | None = None) -> str | None:
             return {"seafile.locksettle": "0"}.get(key, default)
 
-        with patch("git_remote_seafile.git_util.get_git_config", side_effect=mock_get):
-            with patch("sys.stderr", new_callable=io.StringIO) as mock_err:
+        with patch.dict("os.environ", {}, clear=False):
+            os.environ.pop("SEAFILE_TEST_LOCK_SETTLE", None)
+            with patch("git_remote_seafile.git_util.get_git_config", side_effect=mock_get):
                 cfg = RemoteConfig.load()
+        self.assertEqual(cfg.lock_settle, 1)
 
-        self.assertEqual(cfg.lock_settle, 0)
-        self.assertEqual(mock_err.getvalue(), "")
+    def test_the_test_override_moves_the_window(self):
+        with patch.dict("os.environ", {"SEAFILE_TEST_LOCK_SETTLE": "0"}):
+            self.assertEqual(RemoteConfig.load().lock_settle, 0)
+        with patch.dict("os.environ", {"SEAFILE_TEST_LOCK_SETTLE": "not-a-number"}):
+            self.assertEqual(RemoteConfig.load().lock_settle, 1)
+
+    def test_retired_keys_are_reported_not_silently_ignored(self):
+        out = b"seafile.locksettle 0\nseafile.gcmaxmib 4096\n"
+        with patch("git_remote_seafile.config.run_git", return_value=(out, b"", 0)):
+            with patch("sys.stderr", new_callable=io.StringIO) as err:
+                cfg = RemoteConfig.load()
+        text = err.getvalue()
+        self.assertIn("seafile.locksettle is no longer a setting", text)
+        self.assertIn("seafile.gcmaxmib is no longer a setting", text)
+        self.assertEqual(cfg.lock_settle, 1)
+        self.assertEqual(cfg.gc_max_mib, 8 * cfg.gc_max_pack_mib)
 
     def test_implausible_config_falls_back_to_documented_defaults(self):
         """A zero lease would expire every lock immediately; refuse to honor it.
@@ -79,9 +94,7 @@ class TestConfigModule(unittest.TestCase):
             mapping = {
                 "seafile.locktimeout": "-5",
                 "seafile.locklease": "0",
-                "seafile.locksettle": "-2",
                 "seafile.gcthreshold": "0",
-                "seafile.gcmaxmib": "-7",
                 "seafile.gcmaxpackmib": "0",
             }
             return mapping.get(key, default)
@@ -97,9 +110,7 @@ class TestConfigModule(unittest.TestCase):
         self.assertEqual(cfg.gc_max_mib, 8192)
         self.assertEqual(cfg.gc_max_pack_mib, 1024)
         self.assertIn("seafile.locklease=0 -> 60", mock_err.getvalue())
-        self.assertIn("seafile.locksettle=-2 -> 1", mock_err.getvalue())
         self.assertIn("seafile.gcthreshold=0 -> 20", mock_err.getvalue())
-        self.assertIn("seafile.gcmaxmib=-7 -> 8192", mock_err.getvalue())
         self.assertIn("seafile.gcmaxpackmib=0 -> 1024", mock_err.getvalue())
 
     def test_get_git_config_helpers(self):

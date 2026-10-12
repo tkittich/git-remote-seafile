@@ -64,7 +64,7 @@ scenario(
 scenario(
     "the documented default no longer matches the code",
     "TestConfigKeys.test_documented_defaults_match_the_code",
-    {"USER_GUIDE.md": [("| `20` | Packfile count", "| `25` | Packfile count")]},
+    {"USER_GUIDE.md": [("| `20` | Count of *small* packfiles", "| `25` | Count of *small* packfiles")]},
 )
 scenario(
     "an env var is dropped from the docs",

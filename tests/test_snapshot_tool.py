@@ -1610,8 +1610,9 @@ class AutoRepackTests(_SnapshotFixture):
         git_dir = self.vault / ".git"
         before = snap._object_store_stats(git_dir, self.code)
         self.assertGreater(before["count"], 0)
-        with unittest.mock.patch.object(snap, "_REPACK_MIN_LOOSE_BYTES", 1), \
-             unittest.mock.patch.object(snap, "_REPACK_MIN_LOOSE_OBJECTS", 1):
+        # A tiny test repo's loose tier is under 1 KiB, which `count-objects`
+        # reports as 0, so the gate has to be lowered to zero to open it.
+        with unittest.mock.patch.object(snap, "_REPACK_MIN_LOOSE_BYTES", 0):
             snap.auto_incremental_repack(git_dir, self.code)
         after = snap._object_store_stats(git_dir, self.code)
         self.assertEqual(after["count"], 0)
@@ -1622,58 +1623,140 @@ class AutoRepackTests(_SnapshotFixture):
         self.assertEqual(rc, 0)
         git_dir = self.vault / ".git"
         before = snap._object_store_stats(git_dir, self.code)
-        with unittest.mock.patch.object(snap, "_REPACK_MIN_LOOSE_BYTES", 1 << 60), \
-             unittest.mock.patch.object(snap, "_REPACK_MIN_LOOSE_OBJECTS", 1 << 30):
+        with unittest.mock.patch.object(snap, "_REPACK_MIN_LOOSE_BYTES", 1 << 60):
             snap.auto_incremental_repack(git_dir, self.code)
         after = snap._object_store_stats(git_dir, self.code)
         self.assertEqual(after["count"], before["count"])
 
 
-class CompressionAdvisoryTests(unittest.TestCase):
-    """The rolling compression advisory: bands, hysteresis, steady-state silence."""
+class LargePayloadProfileTests(unittest.TestCase):
+    """A first-run sample decides once whether the vault should skip deflate and
+    delta search -- the two costs that made a 20 GB+ raw-data tree time out."""
 
-    def test_ratio_bands(self):
-        self.assertEqual(snap._ratio_band(0.95), 2)
-        self.assertEqual(snap._ratio_band(0.9499), 1)
-        self.assertEqual(snap._ratio_band(0.7), 1)
-        self.assertEqual(snap._ratio_band(0.6999), 0)
+    def _tree(self, td, big_files=0, big_size=0, text_files=0, random_data=True):
+        src = pathlib.Path(td) / "src"
+        src.mkdir()
+        for i in range(big_files):
+            data = os.urandom(big_size) if random_data else b"\x00" * big_size
+            (src / f"raw{i}.bin").write_bytes(data)
+        for i in range(text_files):
+            (src / f"t{i}.txt").write_text("line\n" * 200)
+        return src
 
-    def _fresh_vault(self):
-        td = tempfile.TemporaryDirectory()
-        self.addCleanup(td.cleanup)
-        vault = pathlib.Path(td.name) / "v"
-        git_dir = snap.ensure_vault(vault, "main")
-        return git_dir, vault
+    def test_decision_needs_a_big_tree_a_dominant_payload_and_incompressible_data(self):
+        gib = 1024 ** 3
+        base = {"total": 4.0 * gib, "payload": 4.0 * gib, "sampled": 1e6, "ratio": 0.99}
+        self.assertEqual(snap.decide_profile(base), "raw")
+        self.assertEqual(snap.decide_profile({**base, "total": 1.0 * gib, "payload": 1.0 * gib}), "default")
+        self.assertEqual(snap.decide_profile({**base, "payload": 1.0 * gib}), "default")
+        self.assertEqual(snap.decide_profile({**base, "ratio": 0.4}), "default")
+        self.assertEqual(snap.decide_profile({**base, "sampled": 0.0, "ratio": 0.0}), "default")
 
-    def test_notices_once_per_sustained_band_change(self):
-        git_dir, vault = self._fresh_vault()
-        notices = [snap._record_ratio(git_dir, vault, 0.97) for _ in range(4)]
-        # Two runs are not yet a sustained mix; the third announces it ...
-        self.assertIsNone(notices[0])
-        self.assertIsNone(notices[1])
-        self.assertIsNotNone(notices[2])
-        self.assertIn("incompressible", notices[2])
-        # ... and steady state stays quiet.
-        self.assertIsNone(notices[3])
+    def test_the_sample_sees_incompressible_and_compressible_payloads(self):
+        with tempfile.TemporaryDirectory() as td:
+            src = self._tree(td, big_files=3, big_size=2 * 1024 * 1024, text_files=5)
+            m = snap.sample_payload(src, [])
+        self.assertGreater(m["ratio"], 0.95)
+        self.assertEqual(m["payload"], 3 * 2 * 1024 * 1024)
+        with tempfile.TemporaryDirectory() as td:
+            src = self._tree(td, big_files=3, big_size=2 * 1024 * 1024, random_data=False)
+            m = snap.sample_payload(src, [])
+        self.assertLess(m["ratio"], 0.1)
 
-    def test_each_sustained_shift_announces_exactly_once(self):
-        git_dir, vault = self._fresh_vault()
-        # Settle into the incompressible band: announced once, on run three.
-        first = [snap._record_ratio(git_dir, vault, 0.97) for _ in range(3)]
-        self.assertEqual(sum(n is not None for n in first), 1)
-        # A sustained shift to a compressible payload announces exactly once
-        # too -- the EMA drifts across both middle bands on the way without
-        # re-announcing, because neither band holds three runs.
-        second = [snap._record_ratio(git_dir, vault, 0.5) for _ in range(6)]
-        self.assertEqual(sum(n is not None for n in second), 1)
-        self.assertIn("compresses well", next(n for n in second if n))
+    def test_excluded_paths_are_not_sampled_and_git_dirs_are_skipped(self):
+        with tempfile.TemporaryDirectory() as td:
+            src = self._tree(td, big_files=2, big_size=2 * 1024 * 1024)
+            (src / ".git").mkdir()
+            (src / ".git" / "pack.bin").write_bytes(os.urandom(2 * 1024 * 1024))
+            m = snap.sample_payload(src, ["raw0.bin"])
+        self.assertEqual(m["payload"], 1 * 2 * 1024 * 1024)
 
-    def test_flapping_raw_input_announces_at_most_once(self):
-        # Raw ratios that alternate run-to-run settle, through the EMA, into a
-        # single sustained band -- so they may announce once and must not spam.
-        git_dir, vault = self._fresh_vault()
-        notices = [snap._record_ratio(git_dir, vault, r) for r in (0.97, 0.5) * 8]
-        self.assertLessEqual(sum(n is not None for n in notices), 1)
+    def test_applying_the_profile_sets_both_settings_and_is_idempotent(self):
+        with tempfile.TemporaryDirectory() as td:
+            vault = pathlib.Path(td) / "v"
+            git_dir = snap.ensure_vault(vault, "main")
+            snap.apply_large_payload_profile(vault, git_dir)
+            snap.apply_large_payload_profile(vault, git_dir)
+            self.assertEqual(snap._config(vault, "core.compression"), "0")
+            self.assertEqual(snap._config(vault, "core.bigFileThreshold"), "50m")
+            self.assertEqual(snap._config(vault, "snapshot.profile"), "raw")
+
+    def test_choose_profile_is_decided_once_and_respects_a_hand_tuned_vault(self):
+        with tempfile.TemporaryDirectory() as td:
+            vault = pathlib.Path(td) / "v"
+            git_dir = snap.ensure_vault(vault, "main")
+            src = self._tree(td, big_files=1, big_size=2 * 1024 * 1024)
+            gib = 1024 ** 3
+            forced = {"total": 5.0 * gib, "payload": 5.0 * gib, "sampled": 1e6, "ratio": 0.99}
+            with unittest.mock.patch.object(snap, "sample_payload", return_value=forced) as sampler, \
+                    contextlib.redirect_stdout(io.StringIO()) as out:
+                snap.choose_profile(vault, git_dir, src, [], snap._read_local_config_map(vault), write=True)
+                self.assertIn("large raw payload detected", out.getvalue())
+                self.assertEqual(snap._config(vault, "core.compression"), "0")
+                # Second run: decided already, so no new sample.
+                snap.choose_profile(vault, git_dir, src, [], snap._read_local_config_map(vault), write=True)
+                self.assertEqual(sampler.call_count, 1)
+
+        with tempfile.TemporaryDirectory() as td:
+            vault = pathlib.Path(td) / "v"
+            git_dir = snap.ensure_vault(vault, "main")
+            subprocess.run(["git", "-C", str(vault), "config", "core.compression", "6"], check=True)
+            src = self._tree(td)
+            with unittest.mock.patch.object(snap, "sample_payload") as sampler:
+                snap.choose_profile(vault, git_dir, src, [], snap._read_local_config_map(vault), write=True)
+            sampler.assert_not_called()
+            self.assertEqual(snap._config(vault, "core.compression"), "6")
+
+    def test_a_dry_run_reports_but_writes_nothing(self):
+        with tempfile.TemporaryDirectory() as td:
+            vault = pathlib.Path(td) / "v"
+            git_dir = snap.ensure_vault(vault, "main")
+            src = self._tree(td)
+            gib = 1024 ** 3
+            forced = {"total": 5.0 * gib, "payload": 5.0 * gib, "sampled": 1e6, "ratio": 0.99}
+            with unittest.mock.patch.object(snap, "sample_payload", return_value=forced), \
+                    contextlib.redirect_stdout(io.StringIO()) as out:
+                snap.choose_profile(vault, git_dir, src, [], snap._read_local_config_map(vault), write=False)
+            self.assertIn("dry run", out.getvalue())
+            self.assertEqual(snap._config(vault, "core.compression"), "")
+            self.assertEqual(snap._config(vault, "snapshot.profile"), "")
+
+    def test_a_vault_that_grew_is_sampled_again_once_per_doubling(self):
+        gib = 1024 ** 3
+        cfg = {"snapshot.profile": ["default"], "snapshot.profilebytes": [str(1 * gib)]}
+        self.assertFalse(snap.profile_recheck_due(cfg, int(1.5 * gib)))   # below the floor
+        cfg = {"snapshot.profile": ["default"], "snapshot.profilebytes": [str(3 * gib)]}
+        self.assertFalse(snap.profile_recheck_due(cfg, 5 * gib))          # not yet doubled
+        self.assertTrue(snap.profile_recheck_due(cfg, 6 * gib))           # doubled
+        # raw is final, and an undecided vault is the first-run path's business
+        self.assertFalse(snap.profile_recheck_due({"snapshot.profile": ["raw"]}, 50 * gib))
+        self.assertFalse(snap.profile_recheck_due({}, 50 * gib))
+
+    def test_recheck_replaces_a_default_verdict_with_raw_when_the_sample_says_so(self):
+        gib = 1024 ** 3
+        with tempfile.TemporaryDirectory() as td:
+            vault = pathlib.Path(td) / "v"
+            git_dir = snap.ensure_vault(vault, "main")
+            subprocess.run(["git", "-C", str(vault), "config", "snapshot.profile", "default"], check=True)
+            src = self._tree(td)
+            forced = {"total": 6.0 * gib, "payload": 6.0 * gib, "sampled": 1e6, "ratio": 0.99}
+            cfg = snap._read_local_config_map(vault)
+            with unittest.mock.patch.object(snap, "sample_payload", return_value=forced), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                snap.choose_profile(vault, git_dir, src, [], cfg, write=True)             # final
+                self.assertEqual(snap._config(vault, "core.compression"), "")
+                snap.choose_profile(vault, git_dir, src, [], cfg, write=True, recheck=True)
+            self.assertEqual(snap._config(vault, "core.compression"), "0")
+            self.assertEqual(snap._config(vault, "snapshot.profile"), "raw")
+
+    def test_no_object_compression_flag_applies_the_whole_profile(self):
+        # The explicit override must give the same result as a detected payload,
+        # not just the compression half.
+        with tempfile.TemporaryDirectory() as td:
+            vault = pathlib.Path(td) / "v"
+            git_dir = snap.ensure_vault(vault, "main")
+            snap.apply_large_payload_profile(vault, git_dir)
+            self.assertEqual(snap._config(vault, "core.bigFileThreshold"), "50m")
 
 
 class ObjectCompressionTests(unittest.TestCase):
@@ -2089,31 +2172,96 @@ class StatusLineTests(unittest.TestCase):
         self.assertEqual(proc.returncode, 0)
         self.assertIn("still verifying restored files ...", err.getvalue())
 
-    def test_streamed_stderr_is_relayed_and_counts_as_progress(self):
-        # The push mode: child output must reach our stderr line by line (not
-        # after the command returns), and relayed bytes are what keep a quiet
-        # helper phase alive against the stall limit.
+    def test_stdin_and_output_survive_the_poll_timeouts(self):
+        # The watchdog polls with communicate(timeout=...) from the calling
+        # thread.  Input handed over once must still reach the child, and the
+        # output of a child that outlives several intervals must come back whole.
+        payload = "x" * 2_000_000
         code = (
             "import sys, time\n"
-            "for i in range(4):\n"
-            "    print(f'helper line {i}', file=sys.stderr)\n"
-            "    time.sleep(0.2)\n"
+            "data = sys.stdin.read()\n"
+            "time.sleep(0.7)\n"
+            "sys.stderr.write('diag')\n"
+            "print(len(data))\n"
         )
         err = io.StringIO()
-        with unittest.mock.patch.object(snap, "STATUS_INTERVAL", 0.1), \
+        with unittest.mock.patch.object(snap, "STATUS_INTERVAL", 0.15), \
                 contextlib.redirect_stderr(err):
             proc = snap._run(
                 [sys.executable, "-c", code],
-                status="pushing to seafile://code/x-vault",
-                stream_stderr=True,
+                status="feeding a child",
+                input=payload,
+                text=True,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
             )
-        text = err.getvalue()
+        self.assertEqual(proc.returncode, 0)
+        self.assertEqual(proc.stdout.strip(), str(len(payload)))
+        self.assertEqual(proc.stderr, "diag")
+        self.assertIn("still feeding a child ...", err.getvalue())
+
+    def test_inherited_stderr_reaches_the_terminal_and_is_not_captured(self):
+        # The push mode: stderr is inherited (live_stderr), so there is nothing
+        # for the watchdog to capture and CompletedProcess.stderr is None.
+        proc = snap._run(
+            [sys.executable, "-c", "pass"],
+            status="pushing to seafile://code/x-vault",
+            stall_limit=None,
+            stdout=subprocess.PIPE,
+            stderr=None,
+        )
         self.assertEqual(proc.returncode, 0)
         self.assertIsNone(proc.stderr)
-        for i in range(4):
-            self.assertIn(f"helper line {i}", text)
+
+    def test_the_push_step_is_never_stall_killed(self):
+        # A push's upload is silent by construction; killing it for silence would
+        # kill every slow-but-healthy upload.  push_snapshot must therefore ask
+        # for heartbeat-only mode.
+        seen = {}
+
+        def fake_git(git_dir, work_tree, args, **kwargs):
+            if args and args[0] == "push":
+                seen.update(kwargs)
+            return subprocess.CompletedProcess(args, 0, "", "")
+
+        with unittest.mock.patch.object(snap, "git", fake_git), \
+                contextlib.redirect_stdout(io.StringIO()):
+            snap.push_snapshot(
+                pathlib.Path("v"), pathlib.Path("s"), "seafile://code/x", "snapshot",
+                "a" * 40, "b" * 40, None, "msg",
+            )
+        self.assertIn("stall_limit", seen)
+        self.assertIsNone(seen["stall_limit"])
+        self.assertTrue(seen.get("live_stderr"))
+
+    def test_stall_limit_can_be_raised_from_the_environment(self):
+        with unittest.mock.patch.dict(os.environ, {"SEAFILE_SNAPSHOT_STALL_LIMIT": "7200"}):
+            self.assertEqual(snap._stall_limit_from_env(), 7200.0)
+        for junk in ("abc", "0", "-5"):
+            with unittest.mock.patch.dict(os.environ, {"SEAFILE_SNAPSHOT_STALL_LIMIT": junk}):
+                err = io.StringIO()
+                with contextlib.redirect_stderr(err):
+                    self.assertEqual(snap._stall_limit_from_env(), snap.STALL_LIMIT)
+                self.assertIn("SEAFILE_SNAPSHOT_STALL_LIMIT", err.getvalue())
+
+    def test_children_inherit_a_helper_timeout_sized_to_the_watchdog(self):
+        # The helper's own 300 s wall-clock ceiling is meant for an interactive
+        # push; under this tool the no-progress watchdog is the guard, so the
+        # ceiling is lifted -- unless the user already chose one.
+        captured = {}
+
+        def fake_run(cmd, **kwargs):
+            captured["env"] = kwargs.get("env", {})
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+
+        with unittest.mock.patch.object(snap, "_run", fake_run):
+            with unittest.mock.patch.dict(os.environ, {}, clear=False):
+                os.environ.pop("SEAFILE_GIT_TIMEOUT", None)
+                snap.git(pathlib.Path("v"), None, ["status"], cwd=pathlib.Path("."))
+            self.assertEqual(captured["env"]["SEAFILE_GIT_TIMEOUT"], str(int(snap.STALL_LIMIT)))
+            with unittest.mock.patch.dict(os.environ, {"SEAFILE_GIT_TIMEOUT": "42"}):
+                snap.git(pathlib.Path("v"), None, ["status"], cwd=pathlib.Path("."))
+            self.assertEqual(captured["env"]["SEAFILE_GIT_TIMEOUT"], "42")
 
 
 if __name__ == "__main__":

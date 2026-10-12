@@ -354,7 +354,7 @@ pip install -e .
 
 Two compatibility facts are worth knowing before upgrading a fleet:
 
-- **v0.7.0 removed the legacy lock protocol outright.** The `.git-lock.json` single-file lock was replaced by the `.git-lock.d/` ticket queue, and an old mirror is deleted when found so existing repositories self-clean. Do not run a v0.1–v0.3 helper against the same repository as a v0.7.0+ one: those clients predate the ticket protocol and cannot see its locks.
+- **v0.7.0 removed the legacy lock protocol outright.** The `.git-lock.json` single-file lock was replaced by the `.git-lock.d/` ticket queue, and the helper no longer looks for, or deletes, an old mirror — a leftover `.git-lock.json` is harmless clutter you can delete by hand. Do not run a v0.1–v0.3 helper against the same repository as a v0.7.0+ one: those clients predate the ticket protocol and cannot see its locks.
 - **v0.8.4's lock grant marker is a fleet property.** The marker stops a later arrival from preempting a live holder, but only once **every** client pushing to that repository is on v0.8.4 or later. A newer client will not preempt an older holder; an older client ignores the marker and can still preempt a newer one. Upgrading one machine is not the same as being protected.
 
 There is no `protocol: 2` marker file in a repository to make old and new clients refuse each other, so a mixed fleet is a matter of discipline rather than enforcement.
@@ -420,12 +420,10 @@ Authenticated successfully with https://seafile.example.com as user@example.com
 | `seafile.gittimeout` | `SEAFILE_GIT_TIMEOUT` | `300` | Seconds one git subprocess may run before it is killed. Raise it when a multi-GB push, fetch or `gc` times out (system/global scope or environment only). |
 | `seafile.autogc` | — | `false` | Automatically tail-merge the remote's small packfiles after a push, once their threshold is reached. |
 | `seafile.gcthreshold` | — | `20` | Count of *small* packfiles at which the `gc` tip appears (or auto-GC triggers). Large packs never count toward it. |
-| `seafile.gcmaxmib` | — | `8192` | MiB download budget for automatic tail merge; when the small packs total more than this, auto-GC defers to a manual run. |
-| `seafile.gcmaxpackmib` | — | `1024` | Per-pack freeze threshold in MiB: packs at or above it are left where they stand and never moved by tail merge. |
+| `seafile.gcmaxpackmib` | — | `1024` | Per-pack freeze threshold in MiB: packs at or above it are left where they stand and never moved by tail merge. The automatic run's download budget is 8 × this (8 GiB at the default); above it the run defers to a manual `gc`. |
 | `seafile.forcefilehost` | `SEAFILE_FORCE_FILE_HOST` | `false` | Force download/upload links onto your server's **host** (a wrong scheme on the same host is always corrected). |
 | `seafile.locktimeout` | — | `15` | Maximum seconds to wait when acquiring the remote lock during push. |
 | `seafile.locklease` | — | `60` | Duration in seconds before an inactive lock lease is considered expired. |
-| `seafile.locksettle` | — | `1` | Seconds to wait before re-reading the lock queue to confirm a win. `0` disables the confirming re-scan. |
 
 ```bash
 # Examples
@@ -434,14 +432,15 @@ git config seafile.gcthreshold 25
 git config seafile.forcefilehost true
 git config seafile.locktimeout 30
 git config seafile.locklease 120
-git config seafile.locksettle 0
 
 # The two trusted-scope keys are set globally, not per repository:
 git config --global seafile.skipsafetychecks true
 git config --global seafile.gittimeout 1800
 ```
 
-> Values that would defeat the mechanism outright are refused with a stderr warning and the documented default is used instead: a negative `seafile.locktimeout`, a zero or negative `seafile.locklease` (which would expire every lock immediately), a negative `seafile.locksettle`, a `seafile.gcthreshold` below 1 (which would compact on every push), a `seafile.gcmaxmib` or `seafile.gcmaxpackmib` below 1 (which would defer every automatic run, or make even the large consolidated packs movable), and a `seafile.gittimeout` that is not a positive number of seconds (which would kill every git command outright). `seafile.locksettle 0` is *not* refused: it switches off a race guard rather than the lock, so it is a trade you are allowed to make — see §12.
+> Values that would defeat the mechanism outright are refused with a stderr warning and the documented default is used instead: a negative `seafile.locktimeout`, a zero or negative `seafile.locklease` (which would expire every lock immediately), a `seafile.gcthreshold` below 1 (which would compact on every push), a `seafile.gcmaxpackmib` below 1 (which would make even the large consolidated packs movable), and a `seafile.gittimeout` that is not a positive number of seconds (which would kill every git command outright).
+>
+> **Retired keys.** `seafile.locksettle` (the settlement window is fixed at one second — it is a race guard, and the only thing switching it off bought was a second per push) and `seafile.gcmaxmib` (the download budget is now 8 × `seafile.gcmaxpackmib`) are no longer settings. A value still present in your git config is reported once per push and ignored.
 
 **`seafile.skipsafetychecks` and `seafile.gittimeout` are read from the trusted scope only** — the environment, or the system and global git config. A repository shipping either key in its own `.git/config` is ignored, because a repository that could disarm a guardrail or raise a safety ceiling is a repository that has taken away the protection those settings exist to provide. See [RUNBOOK.md](RUNBOOK.md) §7 for what the timeout bounds and when to raise it.
 
@@ -655,7 +654,7 @@ git config seafile.autogc true
 git config seafile.gcthreshold 25
 ```
 
-Unlike a full compaction, an automatic run never touches large packs: every pack at or above `seafile.gcmaxpackmib` (default 1 GiB) is frozen where it stands, and only the smaller ones are downloaded, merged into one self-contained pack, re-uploaded and removed. Cost per cycle therefore tracks the small tail — a few megabytes in a typical repository — not the size of your history. If even the movable packs total more than `seafile.gcmaxmib` (default 8 GiB), the run is deferred with a notice so a push never round-trips that much; manual `gc` (§10.1) remains available for those cases and is the only tier that re-deltas across the entire history.
+Unlike a full compaction, an automatic run never touches large packs: every pack at or above `seafile.gcmaxpackmib` (default 1 GiB) is frozen where it stands, and only the smaller ones are downloaded, merged into one self-contained pack, re-uploaded and removed. Cost per cycle therefore tracks the small tail — a few megabytes in a typical repository — not the size of your history. If even the movable packs total more than 8 × `seafile.gcmaxpackmib` (8 GiB at the default), the run is deferred with a notice so a push never round-trips that much; manual `gc` (§10.1) remains available for those cases and is the only tier that re-deltas across the entire history.
 
 ### 10.4 Multiple Commits, Rollbacks, Branching & Performance Impact
 
@@ -664,7 +663,7 @@ Understanding how `git-remote-seafile` handles complex Git workflows and remote 
 #### 1. Batch Commits (Pushing 1 vs. 100 Commits)
 - **$O(1)$ Network Overhead**: Whether you push 1 commit or 100 commits at once, Git discovers all reachable new objects and bundles them into **a single `.pack` and `.idx` pair**.
 - **Bandwidth Efficiency**: Git applies delta compression across commits locally before upload, minimizing upload size.
-- **Latency**: the upload is a fixed 1–2 files regardless of commit batch size, so push time does not grow with the number of commits. A push does carry one fixed cost: the distributed lock's settlement window (§12, `seafile.locksettle`, default 1s), which is paid before the transfer starts.
+- **Latency**: the upload is a fixed 1–2 files regardless of commit batch size, so push time does not grow with the number of commits. A push does carry one fixed cost: the distributed lock's settlement window (§12, one second), which is paid before the transfer starts.
 
 #### 2. Rollbacks & Force Pushes (`git reset --hard`, `git push --force`)
 - **Fast & Safe**: A force-push (`+refs/heads/main`) updates the remote branch ref to the older commit SHA without uploading any unnecessary packfiles.
@@ -679,7 +678,7 @@ Understanding how `git-remote-seafile` handles complex Git workflows and remote 
 | Mode | Trigger | Push Latency | Concurrency Behavior | Best Use Case |
 | :--- | :--- | :--- | :--- | :--- |
 | **Notification Mode (Default)** | Remote reaches 20 packfiles | **No added delay** | Terminal tip displayed; push never pauses | Daily development, interactive CLI usage |
-| **Opt-in Auto-GC (`autogc true`)** | 20 *small* packfiles accumulate | **A bounded tail merge, inline** — only packs below `seafile.gcmaxpackmib` move, so duration tracks the small tail rather than the repository; deferred with a notice if that tail exceeds `seafile.gcmaxmib` | Repositories locked via `.git-lock.d/` ticket queue during repack | Fully automated maintenance, solo developers |
+| **Opt-in Auto-GC (`autogc true`)** | 20 *small* packfiles accumulate | **A bounded tail merge, inline** — only packs below `seafile.gcmaxpackmib` move, so duration tracks the small tail rather than the repository; deferred with a notice if that tail exceeds 8 × `seafile.gcmaxpackmib` | Repositories locked via `.git-lock.d/` ticket queue during repack | Fully automated maintenance, solo developers |
 
 > [!TIP]
 > **Recommendation**: Leave `seafile.autogc` disabled (the default) so your everyday push stays interactive — no compaction pause on top of the lock's settlement window. Run compaction manually (`git-remote-seafile gc seafile://...`) or as part of a scheduled CI job when convenient.
@@ -751,8 +750,8 @@ For teams where multiple developers or automated CI/CD runners push simultaneous
 - **Ticket-Based Protocol**: During every `git push`, the helper writes a unique lock ticket (`.git-lock.d/<nonce>.json`) at the remote repository root on Seafile. A ticket that has been *granted* the lock records that fact (`"holding": true`), and the queue orders granted tickets ahead of every ticket that has merely asked for it.
 - **Time decides who waits, never who holds**: among tickets at the same rank the queue falls back to acquisition time — each client's *estimate* of server time, taken from its own clock plus the offset implied by the HTTP `Date:` response header. That estimate is good enough to order a queue and far too coarse to decide ownership: `Date:` has one-second resolution, so two clients routinely disagree by a fraction of a second, and an estimate half a second behind an active holder's is indistinguishable from a genuinely earlier arrival. Before v0.8.4 it was the ordering key, and a newcomer could therefore acquire a lock an active holder was still pushing under. It is no longer the key; it is only the tie-break.
 - **Mixed-version fleets**: the grant marker is honoured by v0.8.4 and later, so it takes effect only once every client pushing to the repository is on v0.8.4+. A newer client will not preempt an older holder, but an older client ignores the marker and can still preempt a newer holder. Finish the upgrade across the fleet to get the guarantee.
-- **Settlement Window**: A win is confirmed by reading the queue a *second* time, one second later (`seafile.locksettle`). A single read is not enough to claim the lock: a peer that started before you but is still uploading is invisible to it, so you would both read the queue, both find yourselves first, and both push. The wait gives any in-flight peer time to land, after which both clients compare the same set of tickets and the same one wins. This is the one cost the lock adds to a push; set `seafile.locksettle 0` to skip it if you know only one client ever pushes (or your server's listings are strongly consistent and you accept the residual race).
-- **Legacy Note**: The v0.1–v0.3 single-file `.git-lock.json` mirror was removed in v0.7.0. The ticket queue in `.git-lock.d/` is the only lock protocol; a stale mirror found on the remote is deleted automatically on the next push. Do not mix this version with a v0.1–v0.3 helper on the same repository.
+- **Settlement Window**: A win is confirmed by reading the queue a *second* time, one second later. A single read is not enough to claim the lock: a peer that started before you but is still uploading is invisible to it, so you would both read the queue, both find yourselves first, and both push. The wait gives any in-flight peer time to land, after which both clients compare the same set of tickets and the same one wins. This is the one cost the lock adds to a push, and it is fixed: skipping the re-scan is a trade of a correctness property for a second, so it is not offered as a setting.
+- **Legacy Note**: The v0.1–v0.3 single-file `.git-lock.json` mirror was removed in v0.7.0. The ticket queue in `.git-lock.d/` is the only lock protocol; a leftover mirror on the remote is ignored (delete it by hand if you like). Do not mix this version with a v0.1–v0.3 helper on the same repository.
 - **Dead Local PID Fast-Reclaim**: If an active lock belongs to the current machine (verified via hostname and machine hardware/container network identifier) and the holding process has crashed or exited, the helper detects the dead PID and immediately reclaims the lock without waiting for the timeout. (The machine identifier derives from the hardware MAC: in VMs or containers that randomize it per boot, a rebooted holder is no longer recognized as local, so reclaim falls back to normal lease expiry — safe, just slower.)
 - **In-Transfer Lease Renewal**: During active multi-gigabyte packfile uploads, packfile downloads, and remote compaction, `git-remote-seafile` automatically refreshes the lock lease every 20 seconds of sustained transfer progress without spawning background daemon threads. Purely local compute phases (pack generation and `git repack`) renew before and after rather than during; before any destructive step (ref writes, ref deletion, obsolete pack deletion) the client re-validates its hold two ways — that its lock ticket is still its own, and that no other active ticket has been granted the lock ahead of it. A lease that lapsed and was taken over is refused as `another client took over the lock`; a ticket that was overtaken while still alive is refused as `another client was granted the lock while this ticket was still held`.
 - If another developer is pushing, subsequent pushes wait and retry for up to 15 seconds (configurable via `seafile.locktimeout`).
@@ -1050,11 +1049,20 @@ The last row is the one to watch: **`seafile.autogc` is off**, so a large file t
 
 Every snapshot commit writes new objects into the vault's local object store, and like any repository they accumulate in tiers: loose objects (one file per object — what a fresh clone or first commits produce), incremental packs, and full packs after consolidation. The tool maintains the first two tiers itself; the remote tier is the helper's job (§10).
 
-- **Automatic incremental repack.** Before each push that has a destination, the tool measures its own loose tier, and once it passes 256 MiB or 50,000 objects it runs `git repack -d` + prune — consolidating *loose objects only*, never touching existing packs. It is best-effort: a failure is reported and the push proceeds anyway. `--no-repack` skips it for one run.
+- **Automatic incremental repack.** Before each push that has a destination, the tool measures its own loose tier, and once it passes 256 MiB it runs `git repack -d` + prune — consolidating *loose objects only*, never touching existing packs. (An object-*count* trigger already exists in git itself: the `git fetch` this tool runs launches `gc --auto` once about 6,700 loose objects exist.) It is best-effort: a failure is reported and the push proceeds anyway. `--no-repack` skips it for one run.
 - **Manual full reset.** `--full-repack` runs `git repack -ad` + prune over the whole store, collapsing everything into one pack. Use it after large deletions or when the local pack count has grown high; nothing runs it automatically.
-- **Report.** `--maintain` changes nothing: loose/object/pack counts, object-store size against free disk space, and — once measured — the rolling compression figure below.
+- **Report.** `--maintain` changes nothing: loose/object/pack counts, object-store size against free disk space, and the storage profile (below).
 
-**Compression is a write-time policy with a measured advisory.** Object compression (`core.compression`) is read at write time only, so it can be flipped freely; existing objects keep their encoding until some repack rewrites them. The tool never changes it for you (though `--no-object-compression` runs with the repo-local level 0). Instead each committing run measures how much of its raw staged bytes actually end up stored, folds that into a rolling aggregate kept in the vault's own config, and — only when the mix has *sustainedly* shifted (three consecutive runs inside a band) — recommends a level: essentially incompressible payloads → `core.compression=1` (or 0 / `--no-object-compression`) for future snapshots; mixed → 1–2; compresses well → keep the default. Steady state stays silent, and `--maintain` shows the current figure on demand.
+**Large raw payloads get a storage profile, decided once from a sample.** Two git costs scale with raw bytes and buy nothing on data that neither compresses nor deltifies: staging deflates every blob (42 MB/s on incompressible data, 131 MB/s with `core.compression=0`), and `pack-objects` — the helper's push and the vault's own background `gc --auto` — runs a delta search over every blob below `core.bigFileThreshold` (default 512 MiB), which measured 8–10 MB/s regardless of the compression level. On a 20 GB+ tree that is the difference between minutes and a timeout.
+
+Before the first staging the tool samples the tree (a few chunks from each of up to 32 of the largest files — about 24 MiB of reads however large the tree is). When the tree is at least 2 GiB, big files (≥ 1 MiB) hold at least half of it, and the sample keeps ≥ 90 % of its size under a fast deflate, the vault is switched to the **raw profile**: `core.compression=0` and `core.bigFileThreshold=50m` in the vault's own config, with one line saying so and how to undo it. Nothing about the *content* changes — only storage encoding and packing strategy, which are safe to flip at any time.
+
+- The decision is remembered (`snapshot.profile`) and not repeated. A vault that began small and grew past 2 GiB is sampled again once per doubling of the tree.
+- A vault where you have set `core.compression` yourself is never second-guessed.
+- `--no-object-compression` applies the raw profile unconditionally.
+- `--dry-run` takes the sample and reports what a real run would do, without writing it.
+
+**Long steps show a heartbeat and are killed only when nothing is happening.** Staging, repacking and cloning print "still staging the tree ... 4m12s (9 GiB written to objects)" once a minute. A step is killed only if its object directory stops growing for 30 minutes (`SEAFILE_SNAPSHOT_STALL_LIMIT` raises that, in seconds) — a *sliding* limit, so a slow-but-real run survives and a dead disk does not. The push step is never killed for silence (its upload is silent by construction, and a dead link fails on the helper's own HTTP timeout), and children inherit `SEAFILE_GIT_TIMEOUT` = the same horizon unless you set one.
 
 **The vault's remote is a remote.** Every push adds one small packfile there, so the §10 threshold warning and tail merge apply to it exactly as to any other — and SNAPSHOT.md §8's large-files caveat is the reason to watch it.
 

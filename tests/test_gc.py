@@ -11,7 +11,12 @@ from unittest.mock import MagicMock, patch
 
 from git_remote_seafile import gc as gc_module
 from git_remote_seafile.config import RemoteConfig
-from git_remote_seafile.gc import compact_repository, describe_size_delta, tail_merge
+from git_remote_seafile.gc import (
+    compact_repository,
+    describe_size_delta,
+    detect_object_format,
+    tail_merge,
+)
 from git_remote_seafile.lock import LEASE_LOST
 
 
@@ -365,13 +370,8 @@ class TestRemoteGC(unittest.TestCase):
             mock_client.delete_entry.assert_not_called()
 
 
-class _RenewOnlyLock:
-    """The lock interface as it was before ownership fencing: renew() and no more.
-
-    ``compact_repository`` prefers ``verify_ownership`` and falls back to
-    ``renew``, so a caller holding a lock object from before the fencing was
-    added must still be able to compact rather than crash on a missing method.
-    """
+class _StubLock:
+    """A minimal stand-in for ``RemoteLock`` that always proves ownership."""
 
     def __init__(self, *args, **kwargs):
         pass
@@ -385,29 +385,11 @@ class _RenewOnlyLock:
     def maybe_renew(self, _interval):
         pass
 
-    def renew(self):
+    def verify_ownership(self):
         return True
 
-
-class _UnfencedLock:
-    """A lock object offering no ownership check at all.
-
-    gc treats "cannot ask" as "do not block": the fence exists to stop a *known*
-    loss of ownership, and a caller that never supplied a fenced lock is not
-    evidence of one.
-    """
-
-    def __init__(self, *args, **kwargs):
-        pass
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *exc):
-        return False
-
-    def maybe_renew(self, _interval):
-        pass
+    def ownership_state(self):
+        return "held"
 
 
 class TestGcRecoveryAndFencing(unittest.TestCase):
@@ -577,36 +559,6 @@ class TestGcRecoveryAndFencing(unittest.TestCase):
         self.assertIn("exceeds in-memory buffer limit", res["message"])
         self.assertFalse([p for p in self._deleted_paths(client) if p.endswith(".pack")])
 
-    # --- lock objects gc did not construct -------------------------------
-
-    @patch("subprocess.run")
-    def test_gc_compacts_with_a_lock_that_can_only_renew(self, mock_subprocess):
-        client = self._client([{"name": "pack-1.pack"}, {"name": "pack-2.pack"}])
-        mock_subprocess.side_effect = self._subprocess_fake()
-
-        with patch("pathlib.Path.glob") as mock_glob, patch(
-            "git_remote_seafile.gc.RemoteLock", _RenewOnlyLock
-        ):
-            self._one_new_pack(mock_glob)
-            res = compact_repository(client, "repo1", "/path", min_packs=2, verbose=False)
-
-        self.assertEqual(res["status"], "ok")
-        self.assertTrue([p for p in self._deleted_paths(client) if p.endswith(".pack")])
-
-    @patch("subprocess.run")
-    def test_gc_compacts_with_a_lock_that_has_no_fence(self, mock_subprocess):
-        client = self._client([{"name": "pack-1.pack"}, {"name": "pack-2.pack"}])
-        mock_subprocess.side_effect = self._subprocess_fake()
-
-        with patch("pathlib.Path.glob") as mock_glob, patch(
-            "git_remote_seafile.gc.RemoteLock", _UnfencedLock
-        ):
-            self._one_new_pack(mock_glob)
-            res = compact_repository(client, "repo1", "/path", min_packs=2, verbose=False)
-
-        self.assertEqual(res["status"], "ok")
-        self.assertTrue([p for p in self._deleted_paths(client) if p.endswith(".pack")])
-
     # --- reporting -------------------------------------------------------
 
     @patch("subprocess.run")
@@ -659,7 +611,7 @@ class TestGcRecoveryAndFencing(unittest.TestCase):
         client = self._client([{"name": "pack-1.pack"}, {"name": "pack-2.pack"}])
         renewals: list[float] = []
 
-        class _CountingLock(_UnfencedLock):
+        class _CountingLock(_StubLock):
             def maybe_renew(self, interval):
                 renewals.append(interval)
 
@@ -1449,5 +1401,43 @@ class TestTailMerge(unittest.TestCase):
         self.assertEqual(self._deleted_pack_paths(client), [])
 
 
+class TestObjectFormatDetection(unittest.TestCase):
+    """The scratch repository's format comes from the pack *names*.
 
+    Tail merge writes ``pack-tail-<hash>.pack``; a detector that measured what
+    was left after stripping ``pack-`` saw ``tail-<64 hex>`` (69 characters) and
+    answered SHA-1, so a manual ``gc`` of a SHA-256 remote failed once tail merge
+    had been the only writer.
+    """
+
+    def test_a_plain_pack_name_decides_by_hash_length(self):
+        self.assertEqual(detect_object_format(["pack-" + "a" * 40 + ".pack"]), "sha1")
+        self.assertEqual(detect_object_format(["pack-" + "a" * 64 + ".pack"]), "sha256")
+
+    def test_a_tail_merge_pack_name_is_read_from_its_end(self):
+        self.assertEqual(detect_object_format(["pack-tail-" + "b" * 64 + ".pack"]), "sha256")
+        self.assertEqual(detect_object_format(["pack-tail-" + "b" * 40 + ".pack"]), "sha1")
+
+    def test_any_sha256_name_in_a_mixed_listing_decides(self):
+        names = ["pack-" + "c" * 40 + ".pack", "pack-tail-" + "d" * 64 + ".pack"]
+        self.assertEqual(detect_object_format(names), "sha256")
+
+    def test_no_recognisable_name_defaults_to_sha1(self):
+        self.assertEqual(detect_object_format([]), "sha1")
+        self.assertEqual(detect_object_format(["pack-oddname.pack", "readme.txt"]), "sha1")
+
+
+class TestGitFailuresNameTheCause(unittest.TestCase):
+    """A failed scratch-repo command reports git's words, not its command line."""
+
+    def test_check_true_failure_carries_stderr(self):
+        with self.assertRaises(RuntimeError) as ctx:
+            gc_module._run_git(
+                ["config", "--get", "--bogus-flag"],
+                env={}, check=True, capture_output=True,
+            )
+        text = str(ctx.exception)
+        self.assertIn("failed (exit", text)
+        self.assertNotIn("CalledProcessError", text)
+        self.assertNotIn("returned non-zero exit status", text)
 

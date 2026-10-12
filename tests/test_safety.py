@@ -2,12 +2,18 @@
 
 import io
 import os
+import sys
 import sqlite3
 import subprocess
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
+
+try:
+    from _helpers import make_helper
+except ImportError:
+    from tests._helpers import make_helper
 
 from git_remote_seafile.safety import (
     SafetyError,
@@ -119,8 +125,8 @@ class TestSafetyGuardrails(unittest.TestCase):
         base = Path("/home/user/Seafile")
         target = Path("/home/user/seafile/Proj")
 
-        if os.path.normcase("A") == "A":
-            # POSIX: two directories, and they must stay two.
+        if os.path.normcase("A") == "A" and sys.platform != "darwin":
+            # Linux: two directories, and they must stay two.
             self.assertIsNone(safe_relative_to(target, base))
         else:
             rel = safe_relative_to(target, base)
@@ -131,6 +137,32 @@ class TestSafetyGuardrails(unittest.TestCase):
             folded = safe_relative_to(target, base)
         self.assertIsNotNone(folded)
         self.assertEqual(folded.as_posix(), "Proj")
+
+    def test_safe_relative_to_errs_toward_the_guard_on_macos(self):
+        """A case-insensitive POSIX filesystem must not let a path escape the guard.
+
+        ``normcase`` is the identity on POSIX, so on macOS -- whose default
+        filesystem is case-insensitive -- ``~/seafile/Docs`` and ``~/Seafile/docs``
+        are one directory that a ``normcase`` comparison called two.  For a
+        guard that decides whether the sync client will churn ``.git/``, the
+        wrong answer is "not inside", so darwin folds case.  Linux does not: two
+        directories can genuinely differ only by case there.
+        """
+        base = Path("/home/user/Seafile")
+        target = Path("/home/user/seafile/Proj")
+        with patch("git_remote_seafile.safety.sys.platform", "darwin"), \
+                patch("os.path.normcase", side_effect=lambda s: s):
+            rel = safe_relative_to(target, base)
+        self.assertIsNotNone(rel, "a case-differing prefix on macOS must count as inside")
+        self.assertEqual(rel.as_posix(), "Proj")
+
+        if os.name != "nt":
+            # On Windows ``Path`` is a WindowsPath and compares case-insensitively
+            # whatever ``sys.platform`` is patched to; the Linux half of the rule
+            # is only observable where paths are POSIX paths.
+            with patch("git_remote_seafile.safety.sys.platform", "linux"), \
+                    patch("os.path.normcase", side_effect=lambda s: s):
+                self.assertIsNone(safe_relative_to(target, base))
 
     def test_read_seafile_ignore_rules(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -489,7 +521,7 @@ class TestSafetyGuardrails(unittest.TestCase):
         self.assertIn("Ambiguous library 'code'", str(ctx.exception))
 
     def test_cmd_push_blocked_when_safety_error(self):
-        h = RemoteHelper.__new__(RemoteHelper)
+        h = make_helper()
         h.client = MagicMock()
         h.library_name = "Documents"
         h.repo_id = "repo1"

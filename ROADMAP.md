@@ -27,7 +27,7 @@ Findings from `archive/REVIEW.*-v0.8.0.md` judged not worth their churn during t
 | **CLI stream/exit conventions** | `cli.py` | Errors from most subcommands go to stdout with exit 1; `unlock`/`lfs-transfer` use stderr; `test` exits 1 for a *non-blocking* SafetyWarning. Standardise (errors → stderr; decide the warning exit code). Touches many CLI test assertions. | M | Low | v0.9.0 |
 | **PROPOSALS.md numbers** | `PROPOSALS.md` | Still says "Seafile Web API v2.1" (×3) and "400+ automated tests". Gitignored local file, so it cannot drift into a release — fix opportunistically. | S | None | next touch |
 | **Fixture hostname robustness** | `tests/test_lock.py` | `_ticket` defaults to `machine="nodeA"`/`pid=1234`; a CI host literally named `nodeA` with pid 1234 alive would flip the foreign-host premise. Use a name no host can have (e.g. read the hostname and negate it). | S | Low | v0.9.0 |
-| **Settlement-window coverage** | `tests/e2e_harness.py` | `init_repo` sets `seafile.locksettle 0` for every e2e repo, so the shipped 1 s default is exercised by exactly one e2e test. Either add a guard that fails if that test disappears, or run one class with the default. | S | Low | v0.9.0 |
+| **Settlement-window coverage** | `tests/e2e_harness.py` | The harness sets `SEAFILE_TEST_LOCK_SETTLE=0` for every e2e run, so the shipped 1 s default is exercised by exactly one e2e test (`TestDefaultSettlementWindow`). Either add a guard that fails if that test disappears, or run one class with the default. | S | Low | v0.9.0 |
 
 ### 1.2 Backlog from the v0.8.2 verification and the r2 reviews
 

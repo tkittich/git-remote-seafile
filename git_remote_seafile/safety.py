@@ -47,29 +47,37 @@ def get_local_work_tree() -> Path | None:
     return None
 
 
+def _fold_part(part: str) -> str:
+    """One path component, folded the way the *platform's filesystem* compares.
+
+    ``os.path.normcase`` folds case on Windows and is the identity on POSIX, so
+    on its own it leaves the macOS default (case-insensitive APFS/HFS+) treated
+    as case-sensitive: ``~/seafile/Docs`` and ``~/Seafile/docs`` are one
+    directory there and two strings here.  Darwin is folded explicitly.  Linux
+    stays case-sensitive -- two directories can genuinely differ only by case
+    there -- which is the one place folding would claim a collision that is not.
+    """
+    part = os.path.normcase(part)
+    if sys.platform == "darwin":
+        part = part.casefold()
+    return part
+
+
 def safe_relative_to(target: Path, base: Path) -> Path | None:
     """*target* relative to *base*, or ``None`` when target is not inside base.
 
-    ``Path.relative_to`` is **already** case-insensitive on Windows --
-    ``PureWindowsPath`` casefolds its parts before comparing -- so the fallback
-    below is not what makes a synced-folder guard hold there.  It exists to keep
-    the comparison aligned with the platform's *own* rule instead of a guess:
-    ``os.path.normcase`` folds case where the platform does and is the identity
-    where it does not.
+    The two ways of being wrong are not symmetric for a guard.  Refusing a path
+    that is not really inside a synced library costs the user a message and an
+    override; allowing one that is lets the sync client churn ``.git/`` -- the
+    failure the guard exists to prevent.  So where the platform's case rule
+    cannot be known from the path alone (macOS), this folds case and errs
+    toward refusing.
 
-    That distinction is the point, and the unconditional ``.lower()`` this
-    helper used to carry got it wrong in the one direction that produces a
-    false answer: on Linux ``~/Seafile`` and ``~/seafile`` are two directories,
-    and folding them reports a path as inside a synced library when it is not.
-
-    Known limit: a case-insensitive *POSIX* filesystem (macOS's default APFS)
-    cannot be detected from a path, and ``normcase`` does not fold there, so
-    this comparison stays case-sensitive on macOS.  Closing that needs a
-    filesystem probe (``os.path.samefile`` up the ancestry), which is a
-    different design -- the guard is a defence, not a proof.
-
-    The returned path keeps the target's own spelling, because that is what the
-    user sees in their file manager.
+    ``Path.relative_to`` is already case-insensitive on Windows
+    (``PureWindowsPath`` casefolds its parts); the component comparison below
+    handles the platforms where it is not.  The returned path keeps the
+    target's own spelling, because that is what the user sees in their file
+    manager.
     """
     resolved_target, resolved_base = target.resolve(), base.resolve()
     try:
@@ -82,7 +90,7 @@ def safe_relative_to(target: Path, base: Path) -> Path | None:
     # ``strict=False`` is the point, not a default: the comparison is a prefix
     # test, so it must stop at the shorter (base) sequence.
     for target_part, base_part in zip(target_parts, base_parts, strict=False):
-        if os.path.normcase(target_part) != os.path.normcase(base_part):
+        if _fold_part(target_part) != _fold_part(base_part):
             return None
     remainder = target_parts[len(base_parts):]
     return Path(*remainder) if remainder else Path(".")

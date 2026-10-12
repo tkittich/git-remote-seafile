@@ -22,7 +22,6 @@ from git_remote_seafile.lock import (
     _queue_key,
 )
 
-LEGACY_LOCK = "/path/.git-lock.json"
 
 # Every RemoteLock below passes `settle=0`: the settlement window is exercised
 # on its own in TestLockSettlementWindow, and everywhere else it would only add
@@ -143,20 +142,6 @@ class TestConcurrencyAndLocking(unittest.TestCase):
             "repo1", f"/path/.git-lock.d/{lock._nonce}.json"
         )
 
-    def test_orphaned_legacy_mirror_is_cleaned_up_on_acquire(self):
-        """acquire() deletes a relic .git-lock.json so repositories self-clean."""
-        store = _SharedLockStore()
-        store.files[LEGACY_LOCK] = json.dumps({
-            "owner": "long-gone", "machine": "ancient",
-            "timestamp": time.time(), "lease": 60,
-        }).encode("utf-8")
-
-        lock = RemoteLock(store.client("token123"), "repo1", "/path", timeout=5, lease=60, settle=0)
-        lock.acquire()
-
-        self.assertTrue(lock.acquired)
-        self.assertNotIn(LEGACY_LOCK, store.files)
-
     def test_active_foreign_ticket_blocks(self):
         store = _SharedLockStore()
         store.put_ticket("/path/.git-lock.d/alice-nonce.json", json.loads(_ticket("alice-nonce")))
@@ -270,13 +255,12 @@ class TestConcurrencyAndLocking(unittest.TestCase):
         mock_get_cfg.side_effect = lambda key, default: {
             "seafile.locktimeout": 30,
             "seafile.locklease": 90,
-            "seafile.locksettle": 4,
         }.get(key, default)
         mock_client = MagicMock()
         lock = RemoteLock(mock_client, "repo1", "/path")
         self.assertEqual(lock.timeout, 30)
         self.assertEqual(lock.lease, 90)
-        self.assertEqual(lock.settle, 4)
+        self.assertEqual(lock.settle, 1)  # fixed: not a git config key
 
     def test_the_settlement_window_comes_from_the_session_config(self):
         """RemoteConfig is the one place these three values are resolved."""
@@ -933,51 +917,42 @@ class TestConcurrencyAndLocking(unittest.TestCase):
         self.assertIsNone(status["locked"])
         self.assertIn("transient server error", status.get("error", ""))
 
-    def test_mixed_ticket_formats_fall_back_to_mtime_ordering(self):
-        """One legacy ticket forces the whole queue onto mtime ordering.
+    def test_a_ticket_without_order_ts_is_ordered_by_its_own_timestamp(self):
+        """There is one ordering key, applied per ticket.
 
-        _scan_tickets' fallback: when any visible ticket lacks ``order_ts``,
-        every ticket is ordered by (mtime, 0, nonce) -- comparing an order_ts
-        against an mtime across formats is not a FIFO comparison at all.  A
-        regression that compared order_ts floats against mtime ints across
-        formats would pass the all-modern test above; this pins the
-        cross-format case: the legacy ticket wins on mtime even though the
-        modern ticket's order_ts is earlier.
+        A ticket from a client older than v0.6.3 has no ``order_ts``.  It used
+        to flip the *whole queue* onto mtime ordering; now only that ticket
+        falls back (to its own timestamp, then its mtime), so a queue never
+        changes mode depending on who happens to be in it.
         """
         store = _SharedLockStore()
         now = int(time.time())
-        # Legacy (v0.4-era) ticket: no order_ts field, newer mtime.
         legacy_payload = json.loads(_ticket("legacy", owner="alice", machine="nodeA",
                          timestamp=now - 60, lease=600, pid=999999))
         del legacy_payload["order_ts"]
-        # The modern ticket was acquired earlier but rewrote its file later.
         modern = _ticket("modern", owner="bob", machine="nodeB",
                          timestamp=now - 120, order_ts=now - 120,
                          lease=600, pid=999999)
         store.put_ticket("/path/.git-lock.d/legacy.json", legacy_payload)
         store.put_ticket("/path/.git-lock.d/modern.json", json.loads(modern))
-        # mtimes: modern's file is older on disk than legacy's.
-        store.mtime_override["/path/.git-lock.d/legacy.json"] = now - 30
-        store.mtime_override["/path/.git-lock.d/modern.json"] = now - 300
+        # mtimes are irrelevant now: both tickets order on their own stamps
+        # (legacy: timestamp now-60; modern: order_ts now-120).
+        store.mtime_override["/path/.git-lock.d/legacy.json"] = now - 300
+        store.mtime_override["/path/.git-lock.d/modern.json"] = now - 30
 
         lock = RemoteLock(store.client("token123"), "repo1", "/path", timeout=0, lease=60, settle=0)
         with self.assertRaises(RepositoryLockedError) as ctx:
             lock.acquire()
-        # The mixed-format queue must order on mtime for BOTH tickets: the
-        # earliest mtime (modern's file, now-300) holds the lock.  If the
-        # code compared cross-format -- order_ts against mtime -- the modern
-        # ticket's earlier order_ts would still win here, so assert the
-        # *losing* side too: swap the mtimes and the legacy ticket must win.
         self.assertIn("locked by 'bob'", str(ctx.exception))
 
-        # Mirror image: legacy's file oldest -> legacy wins.  Under a broken
-        # cross-format comparison the modern order_ts would win regardless.
-        store.mtime_override["/path/.git-lock.d/legacy.json"] = now - 300
-        store.mtime_override["/path/.git-lock.d/modern.json"] = now - 30
-        lock2 = RemoteLock(store.client("token123"), "repo1", "/path", timeout=0, lease=60, settle=0)
-        with self.assertRaises(RepositoryLockedError) as ctx2:
-            lock2.acquire()
-        self.assertIn("locked by 'alice'", str(ctx2.exception))
+    def test_acquire_does_not_probe_for_the_legacy_mirror(self):
+        """The v0.1-v0.3 mirror is gone; acquire() must not spend a request on it."""
+        store = _SharedLockStore()
+        client = store.client("token123")
+        lock = RemoteLock(client, "repo1", "/path", timeout=5, lease=60, settle=0)
+        lock.acquire()
+        probed = [c.args[1] for c in client.get_file_text.call_args_list if len(c.args) > 1]
+        self.assertFalse(any(str(p).endswith(".git-lock.json") for p in probed), probed)
 
     def test_lock_status_flags_an_expired_queue_as_stale(self):
         """A dead lock must say so, not pose as one that expires in 0 seconds.

@@ -767,3 +767,52 @@ class TestGitTimeoutCeiling(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestPushPackSkipsDeltaSearchForBigBlobs(unittest.TestCase):
+    """Push-time ``pack-objects`` must not delta-search raw-data blobs.
+
+    Measured: 1 GiB of 256 MiB random files plus 300 similar text files took
+    50 s with the default window and 5.1 s with ``core.bigFileThreshold=50m``,
+    at an identical pack size.  The default threshold (512 MiB) sends every
+    50-500 MB raw file through a window of neighbours it will never deltify
+    against, which is what made a 20 GB push exceed its timeout at any
+    compression level.
+    """
+
+    def test_the_threshold_is_on_the_pack_objects_command_line(self):
+        from git_remote_seafile import git_util
+
+        seen: list[list[str]] = []
+        real = git_util.run_git
+
+        def spy(args, *a, **kw):
+            seen.append(list(args))
+            return real(args, *a, **kw)
+
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            (repo / "a.txt").write_text("hello\n")
+            subprocess.run(["git", "-C", str(repo), "add", "a.txt"], check=True)
+            sha = subprocess.run(
+                ["git", "-C", str(repo), "ls-files", "-s"], capture_output=True, text=True, check=True
+            ).stdout.split()[1]
+            old = os.getcwd()
+            os.chdir(repo)
+            try:
+                with patch.object(git_util, "run_git", spy):
+                    pack_sha, pack, idx = git_util.create_packfile(
+                        [sha], staged_dir=repo / "stage"
+                    )
+            finally:
+                os.chdir(old)
+            self.assertTrue(Path(pack).is_file())
+            self.assertTrue(Path(idx).is_file())
+
+        packs = [a for a in seen if "pack-objects" in a]
+        self.assertEqual(len(packs), 1, seen)
+        argv = packs[0]
+        self.assertLess(argv.index("-c"), argv.index("pack-objects"))
+        self.assertIn(f"core.bigFileThreshold={git_util.PACK_BIG_FILE_THRESHOLD}", argv)
+

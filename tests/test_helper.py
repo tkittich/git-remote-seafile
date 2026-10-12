@@ -11,16 +11,21 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+try:
+    # top-level import under `unittest discover tests` and the parallel runner
+    from _helpers import make_helper
+except ImportError:  # package-style: python -m unittest tests.test_helper
+    from tests._helpers import make_helper
+
 from git_remote_seafile.client import SeafileAPIError
 from git_remote_seafile.config import RemoteConfig
 from git_remote_seafile.safety import SafetyError, check_preflight_safety
 from git_remote_seafile.git_util import GitError
-from git_remote_seafile.helper import RemoteHelper
 from git_remote_seafile.lock import LEASE_LOST, LEASE_UNKNOWN, RepositoryLockedError
 
 class TestRemoteHelper(unittest.TestCase):
     def test_capabilities(self):
-        h = RemoteHelper.__new__(RemoteHelper)
+        h = make_helper()
         out = io.StringIO()
         with patch("sys.stdout", out):
             h.cmd_capabilities()
@@ -31,7 +36,7 @@ class TestRemoteHelper(unittest.TestCase):
         self.assertIn("object-format", lines)
 
     def test_object_format_negotiation(self):
-        h = RemoteHelper.__new__(RemoteHelper)
+        h = make_helper()
         # Git sends 'option object-format true'
         out = io.StringIO()
         with patch("sys.stdin", io.StringIO("option object-format true\n")), patch("sys.stdout", out):
@@ -66,7 +71,7 @@ class TestRemoteHelper(unittest.TestCase):
         a single push command, so a helper that refuses this option cannot be
         dry-run at all.
         """
-        h = RemoteHelper.__new__(RemoteHelper)
+        h = make_helper()
         out = io.StringIO()
         with patch("sys.stdin", io.StringIO("option dry-run true\n")), patch("sys.stdout", out):
             h.run()
@@ -75,7 +80,7 @@ class TestRemoteHelper(unittest.TestCase):
 
     def test_dry_run_option_false_clears_the_flag(self):
         """The value is honoured rather than assumed, so the flag cannot latch."""
-        h = RemoteHelper.__new__(RemoteHelper)
+        h = make_helper()
         h.dry_run = True
         out = io.StringIO()
         with patch("sys.stdin", io.StringIO("option dry-run false\n")), patch("sys.stdout", out):
@@ -92,7 +97,7 @@ class TestRemoteHelper(unittest.TestCase):
         left the protocol in an undefined state.  GitError propagating out
         of run() is what makes the helper exit non-zero.
         """
-        h = RemoteHelper.__new__(RemoteHelper)
+        h = make_helper()
         out = io.StringIO()
         err = io.StringIO()
         with patch("sys.stdin", io.StringIO("frobnicate\n")), \
@@ -105,7 +110,7 @@ class TestRemoteHelper(unittest.TestCase):
         self.assertEqual(out.getvalue(), "")
 
     def test_cmd_list_detects_sha256_format(self):
-        h = RemoteHelper.__new__(RemoteHelper)
+        h = make_helper()
         h.client = MagicMock()
         h.repo_id = "repo1"
         h.repo_path = "/git-repo"
@@ -132,7 +137,7 @@ class TestRemoteHelper(unittest.TestCase):
         unreachable from the only call site (refs are always 40 or 64 hex), so
         they were removed rather than left to read as a live safety net.
         """
-        h = RemoteHelper.__new__(RemoteHelper)
+        h = make_helper()
         h.client = MagicMock()
         h.repo_id = "repo1"
         h.repo_path = "/git-repo"
@@ -142,7 +147,7 @@ class TestRemoteHelper(unittest.TestCase):
         h.client.list_dir.assert_not_called()
 
     def test_cmd_list_refs(self):
-        h = RemoteHelper.__new__(RemoteHelper)
+        h = make_helper()
         h.client = MagicMock()
         h.repo_id = "repo1"
         h.repo_path = "/git-repo"
@@ -187,7 +192,7 @@ class TestRemoteHelper(unittest.TestCase):
         now, and a malformed HEAD is skipped -- which leaves the remote with no
         default branch, exactly what an unparseable HEAD means.
         """
-        h = RemoteHelper.__new__(RemoteHelper)
+        h = make_helper()
         h.client = MagicMock()
         h.repo_id = "repo1"
         h.repo_path = "/git-repo"
@@ -216,7 +221,7 @@ class TestRemoteHelper(unittest.TestCase):
         self.assertIn("malformed HEAD target", err.getvalue())
 
     def test_cmd_list_skips_invalid_sha(self):
-        h = RemoteHelper.__new__(RemoteHelper)
+        h = make_helper()
         h.client = MagicMock()
         h.repo_id = "repo1"
         h.repo_path = "/git-repo"
@@ -246,7 +251,7 @@ class TestRemoteHelper(unittest.TestCase):
         self.assertIn("Warning: ignoring invalid SHA", err.getvalue())
 
     def test_cmd_list_for_push_allows_empty_refs_with_packs(self):
-        h = RemoteHelper.__new__(RemoteHelper)
+        h = make_helper()
         h.client = MagicMock()
         h.repo_id = "repo1"
         h.repo_path = "/git-repo"
@@ -267,7 +272,7 @@ class TestRemoteHelper(unittest.TestCase):
         self.assertEqual(out.getvalue(), "\n")
 
     def test_cmd_push_rejects_disallowed_namespaces(self):
-        h = RemoteHelper.__new__(RemoteHelper)
+        h = make_helper()
         h.client = MagicMock()
         h.repo_id = "repo1"
         h.repo_path = "/git-repo"
@@ -282,7 +287,7 @@ class TestRemoteHelper(unittest.TestCase):
         self.assertIn("error refs/stash refusing to push outside refs/heads and refs/tags", output)
 
     def test_cmd_push_does_not_duplicate_error_for_successful_ref(self):
-        h = RemoteHelper.__new__(RemoteHelper)
+        h = make_helper()
         h.client = MagicMock()
         h.repo_id = "repo1"
         h.repo_path = "/git-repo"
@@ -310,7 +315,7 @@ class TestRemoteHelper(unittest.TestCase):
         self.assertNotIn("error refs/heads/ok-branch", output)
 
     def test_cmd_push_delete_branch(self):
-        h = RemoteHelper.__new__(RemoteHelper)
+        h = make_helper()
         h.client = MagicMock()
         h.repo_id = "repo1"
         h.repo_path = "/git-repo"
@@ -331,7 +336,7 @@ class TestRemoteHelper(unittest.TestCase):
 
     def test_a_failed_delete_keeps_the_cached_sha(self):
         """Nothing was deleted, so the cache is still an accurate picture."""
-        h = RemoteHelper.__new__(RemoteHelper)
+        h = make_helper()
         h.client = MagicMock()
         h.client.delete_entry.return_value = False
         h.repo_id = "repo1"
@@ -347,14 +352,14 @@ class TestRemoteHelper(unittest.TestCase):
 
     def test_a_helper_that_never_saw_the_option_is_not_a_dry_run(self):
         """The flag defaults off.  If it did not, every push would be a preview."""
-        h = RemoteHelper.__new__(RemoteHelper)
+        h = make_helper()
         self.assertFalse(h.dry_run)
 
     @patch("git_remote_seafile.helper.rev_parse", return_value="newsha123")
     @patch("git_remote_seafile.helper.is_ancestor", return_value=True)
     def test_dry_run_reports_an_update_and_writes_nothing(self, mock_ancestor, mock_rev):
         """`git push --dry-run`: the answer of a push, the footprint of a read."""
-        h = RemoteHelper.__new__(RemoteHelper)
+        h = make_helper()
         h.client = MagicMock()
         h.repo_id = "repo1"
         h.repo_path = "/git-repo"
@@ -379,7 +384,7 @@ class TestRemoteHelper(unittest.TestCase):
     @patch("git_remote_seafile.helper.is_ancestor", return_value=False)
     def test_dry_run_reports_a_non_fast_forward(self, mock_ancestor, mock_rev):
         """A rejected update must preview as rejected, not as ok."""
-        h = RemoteHelper.__new__(RemoteHelper)
+        h = make_helper()
         h.client = MagicMock()
         h.repo_id = "repo1"
         h.repo_path = "/git-repo"
@@ -396,7 +401,7 @@ class TestRemoteHelper(unittest.TestCase):
 
     def test_dry_run_reports_a_deletion_without_deleting(self):
         """The deletion preview deletes nothing, and does not rewrite the cache."""
-        h = RemoteHelper.__new__(RemoteHelper)
+        h = make_helper()
         h.client = MagicMock()
         h.repo_id = "repo1"
         h.repo_path = "/git-repo"
@@ -415,7 +420,7 @@ class TestRemoteHelper(unittest.TestCase):
 
     def test_dry_run_still_refuses_a_disallowed_namespace(self):
         """It previews a push, so it refuses exactly what a push would refuse."""
-        h = RemoteHelper.__new__(RemoteHelper)
+        h = make_helper()
         h.client = MagicMock()
         h.repo_id = "repo1"
         h.repo_path = "/git-repo"
@@ -431,7 +436,7 @@ class TestRemoteHelper(unittest.TestCase):
 
     @patch("git_remote_seafile.helper.rev_parse", return_value=None)
     def test_dry_run_reports_a_missing_local_ref(self, mock_rev):
-        h = RemoteHelper.__new__(RemoteHelper)
+        h = make_helper()
         h.client = MagicMock()
         h.repo_id = "repo1"
         h.repo_path = "/git-repo"
@@ -448,7 +453,7 @@ class TestRemoteHelper(unittest.TestCase):
     @patch("git_remote_seafile.helper.is_ancestor", return_value=False)
     @patch("git_remote_seafile.helper.get_objects_to_push", return_value=[])
     def test_cmd_push_force_push_allowed(self, mock_objs, mock_ancestor, mock_rev):
-        h = RemoteHelper.__new__(RemoteHelper)
+        h = make_helper()
         h.client = MagicMock()
         h.repo_id = "repo1"
         h.repo_path = "/git-repo"
@@ -476,7 +481,7 @@ class TestRemoteHelper(unittest.TestCase):
         call would let a slow push hold a lapsed lease, and the fence would
         then refuse the very ref write the uploaded pack was for.
         """
-        h = RemoteHelper.__new__(RemoteHelper)
+        h = make_helper()
         h.client = MagicMock()
         h.repo_id = "repo1"
         h.repo_path = "/git-repo"
@@ -509,7 +514,7 @@ class TestRemoteHelper(unittest.TestCase):
     @patch("git_remote_seafile.helper.create_packfile", return_value=("packsha123", b"PACKBYTES50COMMITS", b"IDXBYTES"))
     @patch("git_remote_seafile.helper.get_objects_to_push", return_value=["obj1", "obj2", "obj3", "obj4"])
     def test_cmd_push_batch_multiple_commits(self, mock_objs, mock_pack, mock_ancestor, mock_rev):
-        h = RemoteHelper.__new__(RemoteHelper)
+        h = make_helper()
         h.client = MagicMock()
         h.repo_id = "repo1"
         h.repo_path = "/git-repo"
@@ -530,7 +535,7 @@ class TestRemoteHelper(unittest.TestCase):
     @patch("git_remote_seafile.helper.is_ancestor", return_value=False)
     @patch("git_remote_seafile.helper.get_objects_to_push", return_value=[])
     def test_cmd_push_rollback_force_push(self, mock_objs, mock_ancestor, mock_rev):
-        h = RemoteHelper.__new__(RemoteHelper)
+        h = make_helper()
         h.client = MagicMock()
         h.repo_id = "repo1"
         h.repo_path = "/git-repo"
@@ -553,7 +558,7 @@ class TestRemoteHelper(unittest.TestCase):
     @patch("git_remote_seafile.helper.is_ancestor", return_value=True)
     @patch("git_remote_seafile.helper.get_objects_to_push", return_value=[])
     def test_cmd_push_multiple_branches(self, mock_objs, mock_ancestor, mock_rev):
-        h = RemoteHelper.__new__(RemoteHelper)
+        h = make_helper()
         h.client = MagicMock()
         h.repo_id = "repo1"
         h.repo_path = "/git-repo"
@@ -578,7 +583,7 @@ class TestRemoteHelper(unittest.TestCase):
     @patch("git_remote_seafile.helper.create_packfile", return_value=("batch1234", b"BATCH_PACK", b"BATCH_IDX"))
     @patch("git_remote_seafile.helper.get_objects_to_push", return_value=["objA", "objB"])
     def test_cmd_push_multiple_branches_batches_single_pack(self, mock_objs, mock_pack, mock_ancestor, mock_rev):
-        h = RemoteHelper.__new__(RemoteHelper)
+        h = make_helper()
         h.client = MagicMock()
         h.client.get_file_text.return_value = None
         h.repo_id = "repo1"
@@ -609,7 +614,7 @@ class TestRemoteHelper(unittest.TestCase):
     @patch("git_remote_seafile.helper.is_ancestor", return_value=True)
     @patch("git_remote_seafile.helper.get_objects_to_push", return_value=[])
     def test_cmd_push_excludes_all_known_remote_refs(self, mock_objs, mock_ancestor, mock_rev):
-        h = RemoteHelper.__new__(RemoteHelper)
+        h = make_helper()
         h.client = MagicMock()
         h.repo_id = "repo1"
         h.repo_path = "/git-repo"
@@ -630,7 +635,7 @@ class TestRemoteHelper(unittest.TestCase):
     @patch("git_remote_seafile.helper.is_ancestor", return_value=True)
     @patch("git_remote_seafile.helper.get_objects_to_push", return_value=[])
     def test_cmd_push_aborts_ref_updates_if_lock_ownership_lost(self, mock_objs, mock_ancestor, mock_rev):
-        h = RemoteHelper.__new__(RemoteHelper)
+        h = make_helper()
         h.client = MagicMock()
         h.repo_id = "repo1"
         h.repo_path = "/git-repo"
@@ -664,7 +669,7 @@ class TestRemoteHelper(unittest.TestCase):
         took over the lock" when the real cause was an unreadable ticket sends
         them hunting for a competing push that never happened (D7).
         """
-        h = RemoteHelper.__new__(RemoteHelper)
+        h = make_helper()
         h.client = MagicMock()
         h.repo_id = "repo1"
         h.repo_path = "/git-repo"
@@ -690,7 +695,7 @@ class TestRemoteHelper(unittest.TestCase):
     @patch("git_remote_seafile.helper.is_ancestor", return_value=True)
     @patch("git_remote_seafile.helper.get_objects_to_push", return_value=[])
     def test_auto_gc_notification_when_disabled(self, mock_objs, mock_ancestor, mock_rev):
-        h = RemoteHelper.__new__(RemoteHelper)
+        h = make_helper()
         h.client = MagicMock()
         h.repo_id = "repo1"
         h.repo_path = "/git-repo"
@@ -715,7 +720,7 @@ class TestRemoteHelper(unittest.TestCase):
     @patch("git_remote_seafile.helper.get_objects_to_push", return_value=[])
     @patch("git_remote_seafile.gc.tail_merge")
     def test_auto_gc_triggered_when_enabled(self, mock_merge, mock_objs, mock_ancestor, mock_rev):
-        h = RemoteHelper.__new__(RemoteHelper)
+        h = make_helper()
         h.client = MagicMock()
         h.repo_id = "repo1"
         h.repo_path = "/git-repo"
@@ -741,7 +746,7 @@ class TestRemoteHelper(unittest.TestCase):
     def test_auto_gc_counts_only_small_packs_toward_the_threshold(self, mock_merge, mock_objs, mock_ancestor, mock_rev):
         # Frozen packs (at or above seafile.gcmaxpackmib) are part of the
         # bounded floor: they must not re-arm the threshold on their own.
-        h = RemoteHelper.__new__(RemoteHelper)
+        h = make_helper()
         h.client = MagicMock()
         h.repo_id = "repo1"
         h.repo_path = "/git-repo"
@@ -775,7 +780,7 @@ class TestRemoteHelper(unittest.TestCase):
         # Enough *small* packs to cross the threshold, but their total exceeds
         # the download budget: auto-gc must notice and defer instead of
         # round-tripping that much mid-push.
-        h = RemoteHelper.__new__(RemoteHelper)
+        h = make_helper()
         h.client = MagicMock()
         h.repo_id = "repo1"
         h.repo_path = "/git-repo"
@@ -798,13 +803,13 @@ class TestRemoteHelper(unittest.TestCase):
             h.cmd_push(["refs/heads/main:refs/heads/main"])
 
         self.assertIn("Auto tail-merge was deferred", err.getvalue())
-        self.assertIn("seafile.gcmaxmib", err.getvalue())
+        self.assertIn("seafile.gcmaxpackmib", err.getvalue())
         mock_merge.assert_not_called()
 
     @patch("git_remote_seafile.helper.install_packfile")
     @patch("git_remote_seafile.helper.get_git_dir")
     def test_cmd_fetch(self, mock_get_git_dir, mock_install_pack):
-        h = RemoteHelper.__new__(RemoteHelper)
+        h = make_helper()
         h.client = MagicMock()
         h.repo_id = "repo1"
         h.repo_path = "/git-repo"
@@ -829,7 +834,7 @@ class TestRemoteHelper(unittest.TestCase):
             self.assertEqual(mock_install_pack.call_count, 2)
 
     def test_cmd_list_empty_repository(self):
-        h = RemoteHelper.__new__(RemoteHelper)
+        h = make_helper()
         h.client = MagicMock()
         h.repo_id = "repo1"
         h.repo_path = "/empty-repo"
@@ -850,7 +855,7 @@ class TestRemoteHelper(unittest.TestCase):
     @patch("git_remote_seafile.helper.rev_parse", return_value="tag_sha_123")
     @patch("git_remote_seafile.helper.get_objects_to_push", return_value=[])
     def test_cmd_push_tag_creation_and_deletion(self, mock_objs, mock_rev):
-        h = RemoteHelper.__new__(RemoteHelper)
+        h = make_helper()
         h.client = MagicMock()
         # The deletion path reads the ref before removing it, and that read is
         # load-bearing: it is what proves the target is a *file* rather than the
@@ -891,7 +896,7 @@ class TestRemoteHelper(unittest.TestCase):
         h.client.delete_entry.assert_called_with("repo1", "/git-repo/refs/tags/v1.0.0")
 
     def test_cmd_push_delete_failure(self):
-        h = RemoteHelper.__new__(RemoteHelper)
+        h = make_helper()
         h.client = MagicMock()
         h.repo_id = "repo1"
         h.repo_path = "/git-repo"
@@ -906,7 +911,7 @@ class TestRemoteHelper(unittest.TestCase):
         self.assertIn("error refs/heads/protected-branch failed to delete ref on remote", output)
 
     def test_cmd_push_delete_prunes_empty_nested_directories(self):
-        h = RemoteHelper.__new__(RemoteHelper)
+        h = make_helper()
         h.client = MagicMock()
         h.repo_id = "repo1"
         h.repo_path = "/git-repo"
@@ -934,7 +939,7 @@ class TestRemoteHelper(unittest.TestCase):
         # transient failure used to read as "prune it" -- a destructive call
         # keyed on an answer the server never actually gave.  dir_exists()
         # re-asks and only an explicit 200 confirms.
-        h = RemoteHelper.__new__(RemoteHelper)
+        h = make_helper()
         h.client = MagicMock()
         h.repo_id = "repo1"
         h.repo_path = "/git-repo"
@@ -960,7 +965,7 @@ class TestRemoteHelper(unittest.TestCase):
         # git never sends a spec without the src:dst colon, but a hand-driven
         # protocol can; the split used to raise ValueError and kill the helper
         # mid-protocol with no error line for git to read.
-        h = RemoteHelper.__new__(RemoteHelper)
+        h = make_helper()
         h.client = MagicMock()
         h.repo_id = "repo1"
         h.repo_path = "/git-repo"
@@ -977,7 +982,7 @@ class TestRemoteHelper(unittest.TestCase):
     @patch("git_remote_seafile.helper.get_objects_to_push", return_value=["obj1"])
     @patch("git_remote_seafile.helper.create_packfile", return_value=("pack1", b"PACK", b"IDX"))
     def test_cmd_push_upload_failure_reports_error(self, mock_pack, mock_objs, mock_rev):
-        h = RemoteHelper.__new__(RemoteHelper)
+        h = make_helper()
         h.client = MagicMock()
         h.client.get_file_text.return_value = None
         h.repo_id = "repo1"
@@ -993,7 +998,7 @@ class TestRemoteHelper(unittest.TestCase):
         self.assertIn("error refs/heads/main HTTP 500 Seafile server error", output)
 
     def test_cmd_push_lock_timeout_aborts_all_specs(self):
-        h = RemoteHelper.__new__(RemoteHelper)
+        h = make_helper()
         h.client = MagicMock()
         h.repo_id = "repo1"
         h.repo_path = "/git-repo"
@@ -1013,7 +1018,7 @@ class TestRemoteHelper(unittest.TestCase):
         self.assertIn("error refs/heads/dev locked by user@otherhost", output)
 
     def test_helper_run_protocol_loop(self):
-        h = RemoteHelper.__new__(RemoteHelper)
+        h = make_helper()
         h.cmd_capabilities = MagicMock()
         h.cmd_list = MagicMock()
         h.cmd_push = MagicMock()
@@ -1050,7 +1055,7 @@ class TestRemoteHelper(unittest.TestCase):
 
     @patch("git_remote_seafile.helper.rev_parse", return_value=None)
     def test_cmd_push_local_ref_not_found(self, mock_rev):
-        h = RemoteHelper.__new__(RemoteHelper)
+        h = make_helper()
         h.client = MagicMock()
         h.repo_id = "repo1"
         h.repo_path = "/git-repo"
@@ -1065,7 +1070,7 @@ class TestRemoteHelper(unittest.TestCase):
     @patch("git_remote_seafile.helper.rev_parse", return_value="local_sha")
     @patch("git_remote_seafile.helper.is_ancestor", return_value=False)
     def test_cmd_push_non_fast_forward_rejected(self, mock_ancestor, mock_rev):
-        h = RemoteHelper.__new__(RemoteHelper)
+        h = make_helper()
         h.client = MagicMock()
         h.repo_id = "repo1"
         h.repo_path = "/git-repo"
@@ -1080,7 +1085,7 @@ class TestRemoteHelper(unittest.TestCase):
     @patch("git_remote_seafile.helper.rev_parse", return_value="local_sha")
     @patch("git_remote_seafile.helper.is_ancestor", side_effect=GitError("fatal: Not a valid object name remote_sha"))
     def test_cmd_push_unknown_remote_tip_reports_fetch_first(self, mock_ancestor, mock_rev):
-        h = RemoteHelper.__new__(RemoteHelper)
+        h = make_helper()
         h.client = MagicMock()
         h.repo_id = "repo1"
         h.repo_path = "/git-repo"
@@ -1101,7 +1106,7 @@ class TestRemoteHelper(unittest.TestCase):
         # again immediately before the write.  A concurrent push that landed
         # between the two reads must be caught by this compare-and-swap and
         # reported as "fetch first" -- not clobbered by the ref upload.
-        h = RemoteHelper.__new__(RemoteHelper)
+        h = make_helper()
         h.client = MagicMock()
         h.repo_id = "repo1"
         h.repo_path = "/git-repo"
@@ -1122,7 +1127,7 @@ class TestRemoteHelper(unittest.TestCase):
         self.assertEqual(ref_writes, [])
 
     def test_cmd_push_branch_deletion(self):
-        h = RemoteHelper.__new__(RemoteHelper)
+        h = make_helper()
         h.client = MagicMock()
         h.repo_id = "repo1"
         h.repo_path = "/git-repo"
@@ -1144,7 +1149,7 @@ class TestRemoteHelper(unittest.TestCase):
 
 
     def test_cmd_push_multiline_error_sanitized(self):
-        h = RemoteHelper.__new__(RemoteHelper)
+        h = make_helper()
         h.client = MagicMock()
         h.repo_id = "repo1"
         h.repo_path = "/git-repo"
@@ -1186,7 +1191,7 @@ class TestPushDestinationValidation(unittest.TestCase):
     """
 
     def _helper(self, refs_cache=None):
-        h = RemoteHelper.__new__(RemoteHelper)
+        h = make_helper()
         h.client = MagicMock()
         h.repo_id = "repo1"
         h.repo_path = "/git-repo"
@@ -1274,7 +1279,7 @@ class TestFetchSafety(unittest.TestCase):
 
     @staticmethod
     def _helper(library_name="Documents", repo_path="/code/myproject", repo_id="r1"):
-        h = RemoteHelper.__new__(RemoteHelper)
+        h = make_helper()
         h.client = MagicMock()
         h.client.get_repo_id.return_value = repo_id
         h.repo_id = repo_id
@@ -1428,7 +1433,7 @@ class TestFetchFailureIsLoud(unittest.TestCase):
 
     @staticmethod
     def _helper(client):
-        h = RemoteHelper.__new__(RemoteHelper)
+        h = make_helper()
         h.client = client
         h.repo_id = "repo1"
         h.repo_path = "/git-repo"
@@ -1590,7 +1595,7 @@ class TestInstalledPackState(unittest.TestCase):
 
     @staticmethod
     def _helper(client):
-        h = RemoteHelper.__new__(RemoteHelper)
+        h = make_helper()
         h.client = client
         h.repo_id = "repo1"
         h.repo_path = "/git-repo"
@@ -1757,7 +1762,7 @@ class TestSmartPackFetchFiltering(unittest.TestCase):
 
     @staticmethod
     def _helper(client):
-        h = RemoteHelper.__new__(RemoteHelper)
+        h = make_helper()
         h.client = client
         h.repo_id = "repo1"
         h.repo_path = "/git-repo"
@@ -1871,7 +1876,7 @@ class TestPushStagingCleanup(unittest.TestCase):
     """
 
     def test_cmd_push_cleans_up_staging_directory(self):
-        h = RemoteHelper.__new__(RemoteHelper)
+        h = make_helper()
         h.client = MagicMock()
         h.client.get_file_text.return_value = None
         h.repo_id = "repo1"
@@ -1940,7 +1945,7 @@ class TestPushRefReadBack(unittest.TestCase):
 
     @staticmethod
     def _helper(remote):
-        h = RemoteHelper.__new__(RemoteHelper)
+        h = make_helper()
         h.client = remote
         h.repo_id = "repo1"
         h.repo_path = "/git-repo"

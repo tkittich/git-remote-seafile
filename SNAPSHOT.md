@@ -277,11 +277,11 @@ There is a floor here — a snapshot inherently needs `fetch`, `add`,
 can be avoided without re-implementing Git's index. Fourteen calls is close to
 it.
 
-The maintenance pass adds on top of that floor, and only when it fires: every
-full or preview run takes one `count-objects` (the compression baseline); a
-committing run also takes its `diff-tree` plus the config write-backs for its
-measured ratio; and a push whose loose tier has passed 256 MiB or 50,000
-objects takes an incremental `repack -d` + prune pair.
+The maintenance pass adds on top of that floor, and only when it fires: the
+first run that has not yet decided the storage profile samples the tree (stat
+calls plus about 24 MiB of reads, no git processes) and, for a large raw
+payload, writes two config values; and a push whose loose tier has passed
+256 MiB takes an incremental `repack -d` + prune pair.
 
 > **Watch the remote's packfile count.** The helper counts only *small* packs (below seafile.gcmaxpackmib, default 1 GiB) and warns once their number reaches the threshold (seafile.gcthreshold, default 20). With `seafile.autogc` on, a bounded tail merge consolidates them inline after each qualifying push — large packs are frozen where they stand; without it (the default), run `git-remote-seafile gc <url>` deliberately. A remote that is never compacted grows in bytes without bound — see the
 > large-files section below for how fast that can be.

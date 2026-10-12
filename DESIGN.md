@@ -228,7 +228,7 @@ A cooperative, ticket-based distributed lock at `/.git-lock.d/<nonce>.json`. It 
 
 **The ticket.** Each client deposits one file containing an owner hash, machine identifier, holding PID, nonce, expiry, an ordering stamp (`order_ts`), and a grant marker (`holding`). Only its creator writes it, and the nonce names the file.
 
-**Acquisition.** A client uploads its ticket, waits one settlement window (`seafile.locksettle`, default 1s), and re-scans — so a peer still uploading during the first read cannot be overlooked and two clients cannot both conclude they are first. The cost is one fixed interval per push, which the user guide states rather than rounds away.
+**Acquisition.** A client uploads its ticket, waits one settlement window (one second, fixed), and re-scans — so a peer still uploading during the first read cannot be overlooked and two clients cannot both conclude they are first. The cost is one fixed interval per push, which the user guide states rather than rounds away.
 
 **Ordering — the grant is the primary key.** A ticket the queue has granted the lock (`"holding": true`) outranks every ticket that has merely asked for it, whatever their timestamps say. Among peers at the same rank, the key is `order_ts`, captured once at acquisition and preserved across renewals, with the directory `mtime` and the nonce as tie-breakers.
 
@@ -260,7 +260,7 @@ The queue scan is read-only — a verification step that reaped tickets would be
 
 **Management.** Lock status is inspectable read-only via `lock-status`, which never reaps or mutates tickets, and a lock can be released or broken via `unlock` (with `--force` for emergency recovery). `lock-status` reports whether the winning ticket carries a grant marker; its absence is not an error, but it does mean the marker-based protection is not in force for that lock.
 
-**Version note.** The v0.1–v0.3 single-file lock (`.git-lock.json`) was removed in v0.7.0; the ticket queue is the only protocol, and an orphaned mirror is deleted when found so existing repositories self-clean. Do not mix a v0.7.0+ helper with a v0.1–v0.3 helper on one repository: those clients predate the ticket protocol and cannot see its locks.
+**Version note.** The v0.1–v0.3 single-file lock (`.git-lock.json`) was removed in v0.7.0; the ticket queue is the only protocol, and a leftover mirror is ignored, never read and never deleted. Do not mix a v0.7.0+ helper with a v0.1–v0.3 helper on one repository: those clients predate the ticket protocol and cannot see its locks.
 
 ### 4.5 Compaction 
 
@@ -321,11 +321,9 @@ All behavioural settings resolve through one `RemoteConfig.load()` passed to bot
 | -------------------------- | ------- | ----------------------------------------------------------------- |
 | `seafile.locktimeout`      | `15`    | Seconds to wait for the lock before giving up                     |
 | `seafile.locklease`        | `60`    | Lease duration in seconds                                         |
-| `seafile.locksettle`       | `1`     | Settlement window in seconds, per acquisition                     |
 | `seafile.autogc`           | `false` | Tail-merge the small packs automatically after a push once their threshold is exceeded |
 | `seafile.gcthreshold`      | `20`    | Movable-pack count at which auto-GC triggers (§4.5) |
-| `seafile.gcmaxmib`         | `8192`  | MiB download budget for automatic tail merge (≈ 8 GiB); when the movable packs total more than this, auto-GC defers to a manual run (§4.5) |
-| `seafile.gcmaxpackmib`     | `1024`  | Per-pack freeze threshold in MiB (≈ 1 GiB): packs at or above it are never moved by tail merge (§4.5) |
+| `seafile.gcmaxpackmib`     | `1024`  | Per-pack freeze threshold in MiB (≈ 1 GiB): packs at or above it are never moved by tail merge; the automatic download budget is 8 × this, above which auto-GC defers to a manual run (§4.5) |
 | `seafile.forcefilehost`    | `false` | Force the file-host header on uploads                             |
 | `seafile.skipsafetychecks` | `false` | Disable pre-flight checks (system/global scope only)              |
 | `seafile.gittimeout`       | `300`   | Seconds one git subprocess may run (system/global scope or environment only) |
@@ -360,10 +358,10 @@ Its invariants are stated in §3.4; the full design — the vault, byte-exactnes
 The vault's object store is maintained on the same tiered principle as §4.5, but locally Git performs the mechanics natively:
 
 - **Report only (`--maintain`)**: loose vs packed bytes, free space, whether a repack would fit. No changes.
-- **Automatic incremental**: after each snapshot commit (before push), best-effort — it may fail without failing the snapshot — `git repack -d` + `git prune` packs only the loose tier once accumulated loose data passes ~256 MiB or 50k objects; existing packs are untouched but serve as delta bases. Unreachable objects stay loose, so prune can still delete them: dead space is never sealed into a pack. Frequency self-regulates (a small-delta repo repacks rarely), and the free-space check scales with the loose size, not the store.
+- **Automatic incremental**: after each snapshot commit (before push), best-effort — it may fail without failing the snapshot — `git repack -d` + `git prune` packs only the loose tier once accumulated loose data passes ~256 MiB (an object-count trigger is git's own `gc --auto`, which the tool's `git fetch` launches); existing packs are untouched but serve as delta bases. Unreachable objects stay loose, so prune can still delete them: dead space is never sealed into a pack. Frequency self-regulates (a small-delta repo repacks rarely), and the free-space check scales with the loose size, not the store.
 - **Manual full (`--full-repack`)**: `git repack -ad` + prune → one consolidated pack. Only after large deletions or ref rewrites (to reclaim space) or when local pack count has grown high.
 
-Object compression is a per-repository write-time policy, orthogonal to both tiers: `core.compression` is read at write time only, so it can be flipped freely and existing objects keep their encoding until some tier rewrites them. Deflate already stores incompressible 64 KiB blocks verbatim (stored-block fallback), so bytes are never wasted — the knob's real cost is CPU spent *trying*. The knob is therefore a level, not a boolean: `0` = pure stored blocks; `1–2` = cheap match search that still deflates when content compresses (the recommended steady state for an already-compressed payload mix); default = full. An advisory measures each run's compressed/raw ratio from numbers the tool already tracks (object-store growth vs raw staged bytes), folds it into a rolling aggregate in the vault's local config, and recommends a level per band (~≥0.95 → 0/1; ~0.7–0.95 → 1–2; <~0.7 → keep default) only when a sustained mix shift crosses a band (hysteresis); `--maintain` shows the current aggregate on demand.
+Object *storage* is a per-repository write-time policy, orthogonal to both tiers. Two costs scale with raw bytes and buy nothing on data that neither compresses nor deltifies: deflate during staging, and the delta search in `pack-objects` (the helper's push, and the vault's own `gc --auto`) over every blob below `core.bigFileThreshold`. The tool therefore samples the tree once before the first staging and, for a large incompressible payload, sets `core.compression=0` and `core.bigFileThreshold=50m` in the vault's own config (the *raw profile*; `snapshot.profile` remembers the decision, a vault that grew past 2 GiB is sampled again per doubling). Both settings are encoding/packing strategy, never content, so they can be flipped at any time.
 
 ---
 

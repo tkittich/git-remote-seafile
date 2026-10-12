@@ -90,6 +90,30 @@ sdist, for someone building from source.
 
 ---
 
+## The snapshot tool is one file to users and several parts to maintainers
+
+`tools/seafile_snapshot.py` is **generated**. Its source is a handful of cohesive
+parts in `tools/_snapshot/` (`10_setup.py`, `20_gitrun.py`, ...), concatenated in
+name order by `tools/build_snapshot.py` -- no import rewriting, no bundler. Users
+still get a single file they can `curl` and run; maintainers get units a reader can
+hold.
+
+```bash
+# edit tools/_snapshot/<part>.py, then:
+python tools/build_snapshot.py           # rewrite tools/seafile_snapshot.py
+python tools/build_snapshot.py --check   # exit 1 if it is stale (the test suite does this too)
+```
+
+Rules for the parts: they are *fragments of one module* sharing a flat namespace
+(no `from ._x import y`); all imports live in `10_setup.py`; a top-level name is
+defined in exactly one part; anything evaluated at import time must come from an
+earlier part; no part grows past 700 lines. `tests/test_snapshot_build.py`
+enforces each of these. Ruff and mypy check the generated file (the parts cannot
+be linted alone -- each uses names another defines). **Never edit
+`tools/seafile_snapshot.py` directly**: the next build overwrites it.
+
+---
+
 ## Linting
 
 CI runs [ruff](https://docs.astral.sh/ruff/) as its own job, alongside the test

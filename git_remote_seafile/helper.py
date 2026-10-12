@@ -103,10 +103,8 @@ class RemoteHelper:
     repo_path: str = ""
     repo_id: str = ""
     #: Set from ``option dry-run true``, which git sends for ``git push
-    #: --dry-run``.  Declared on the class, not only in __init__, so the
-    #: ``__new__``-built instances the tests use read as False instead of
-    #: raising AttributeError.
-    dry_run: bool = False
+    #: --dry-run``.
+    dry_run: bool
 
     def __init__(self, remote_name: str, url: str, client: SeafileClient | None = None):
         self.remote_name = remote_name
@@ -117,6 +115,7 @@ class RemoteHelper:
         self.repo_path = parsed_url.repo_path
         self.client = client if client is not None else SeafileClient(server_url=self.server_url)
         self.repo_id = self.client.get_repo_id(self.library_name)
+        self.dry_run = False
         self._refs_cache: dict[str, str] = {}  # refname -> sha1
 
     def _full_path(self, rel_path: str) -> str:
@@ -186,8 +185,6 @@ class RemoteHelper:
 
     def cmd_list(self, for_push: bool = False) -> None:
         """List references on the remote Seafile repository."""
-        if not hasattr(self, "_refs_cache"):
-            self._refs_cache = {}
         self._refs_cache.clear()
 
         # 1. Discover branches and tags.  iter_refs walks recursively, so refs
@@ -430,7 +427,7 @@ class RemoteHelper:
                             if not existing:
                                 _proto_error(dst, "remote ref does not exist")
                             elif not lock.verify_ownership():
-                                state = lock.ownership_state() if hasattr(lock, "ownership_state") else ""
+                                state = lock.ownership_state()
                                 _proto_error(
                                     dst,
                                     "could not confirm lock ownership before deleting a ref "
@@ -543,7 +540,7 @@ class RemoteHelper:
 
                     # Update remote ref files and report ok for each updated target
                     if pending_updates and not lock.verify_ownership():
-                        state = lock.ownership_state() if hasattr(lock, "ownership_state") else ""
+                        state = lock.ownership_state()
                         reason = (
                             "could not confirm lock ownership before updating refs "
                             f"({describe_ownership_failure(state)})"
@@ -664,13 +661,13 @@ class RemoteHelper:
 
                     if movable_count >= threshold:
                         # Tail merge downloads only the small packs and re-uploads
-                        # their union, so above seafile.gcmaxmib it defers to a
+                        # their union, so above the download budget it defers to a
                         # manual off-hours run no matter how many pile up.
                         if auto_gc and movable_bytes > session_config.gc_max_mib * 1024 * 1024:
                             sys.stderr.write(
                                 f"\nNotice: Movable packs total {movable_bytes / (1024**3):.1f} GiB across "
                                 f"{movable_count} packfile(s), above the automatic download budget "
-                                f"(seafile.gcmaxmib = {session_config.gc_max_mib} MiB).\n"
+                                f"({session_config.gc_max_mib} MiB, 8 x seafile.gcmaxpackmib).\n"
                                 f"Auto tail-merge was deferred: it downloads and re-uploads those packs.\n"
                                 f"Run 'git-remote-seafile gc {self.raw_url}' manually when the time cost suits.\n\n"
                             )
@@ -683,7 +680,7 @@ class RemoteHelper:
                                 f"totaling {movable_bytes / (1024**3):.1f} GiB.\n"
                                 f"Tip: Run 'git-remote-seafile gc {self.raw_url}' to optimize remote storage,\n"
                                 f"     or run 'git config seafile.autogc true' to enable automatic tail merge\n"
-                                f"     (automatic runs defer while the movable packs exceed seafile.gcmaxmib).\n\n"
+                                f"     (automatic runs defer while the movable packs exceed 8 x seafile.gcmaxpackmib).\n\n"
                             )
                             sys.stderr.flush()
                 except Exception:

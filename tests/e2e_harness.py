@@ -341,6 +341,11 @@ def make_helper_env(bin_dir: Path, stub_url: str, repo_root: Path) -> dict:
     # Transport-level tests: safety guardrails have their own unit tests, and
     # this keeps the run deterministic regardless of the host's Seafile client.
     env["SEAFILE_SKIP_SAFETY_CHECKS"] = "1"
+    # One in-process server, no concurrent writers: the settlement re-scan has
+    # nothing to settle and would add a second to each of the ~600 pushes.  It
+    # is exercised for real in tests/test_lock.py and, with the default, by
+    # TestDefaultSettlementWindow.
+    env["SEAFILE_TEST_LOCK_SETTLE"] = "0"
     env["GIT_TERMINAL_PROMPT"] = "0"
     env["PYTHONIOENCODING"] = "utf-8"
     return env
@@ -420,7 +425,6 @@ def init_repo(path: Path, env: dict) -> Path:
     # only add a second to each of the ~25 pushes here.  It is exercised for
     # real in tests/test_lock.py, and once end-to-end in
     # TestGcSha256Repositories.test_the_default_settlement_window_does_not_block.
-    run_git(["config", "seafile.locksettle", "0"], path, env)
     return path
 
 

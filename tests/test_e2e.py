@@ -314,6 +314,41 @@ class TestGcSha256Repositories(E2ETestCase):
         self.assertIn("c2", run_git(["log", "--oneline"], dst, self.env).stdout)
 
 
+class TestGcAfterTailMergeOnSha256(E2ETestCase):
+    """Tail merge writes ``pack-tail-<hash>.pack``; a later manual gc must cope.
+
+    The object-format detector counted what remained after stripping ``pack-``
+    and read ``tail-<64 hex>`` as a 69-character hash, so a SHA-256 remote
+    whose only packs were tail-merge packs was compacted with a SHA-1 scratch
+    repository and ``index-pack`` rejected them.
+    """
+
+    def test_manual_gc_after_a_tail_merge(self):
+        src = self.work / "src_tail_gc_sha256"
+        run_git(["init", "--object-format=sha256", "-b", "main", str(src)], self.work, self.env)
+        run_git(["config", "seafile.autogc", "true"], src, self.env)
+        run_git(["config", "seafile.gcthreshold", "3"], src, self.env)
+        run_git(["remote", "add", "origin", self.url("tail_gc_sha256")], src, self.env)
+        for n in range(3):
+            commit_file(src, f"f{n}.txt", f"{n}\n" * 20, f"c{n}", self.env)
+            run_git(["push", "-q", "origin", "main"], src, self.env)
+
+        packs = sorted(p for p in self.stub.packs("/tail_gc_sha256") if p.endswith(".pack"))
+        self.assertTrue(
+            packs and all(p.startswith("pack-tail-") for p in packs),
+            f"expected the third push to leave only a tail-merge pack, got {packs}",
+        )
+
+        res = run_helper(
+            ["gc", self.url("tail_gc_sha256"), "--min-packs", "1"], self.work, self.env, check=False
+        )
+        self.assertEqual(res.returncode, 0, f"gc failed after a tail merge:\n{res.stdout}\n{res.stderr}")
+
+        dst = self.work / "clone_tail_gc_sha256"
+        run_git(["clone", self.url("tail_gc_sha256"), str(dst)], self.work, self.env)
+        self.assertIn("c2", run_git(["log", "--oneline"], dst, self.env).stdout)
+
+
 class TestRefsListingFailureIsNotSilent(E2ETestCase):
     """A failed refs listing must not be reported as an empty repository.
 
@@ -528,8 +563,8 @@ class TestConcurrentPushRaceCondition(E2ETestCase):
 class TestDefaultSettlementWindow(E2ETestCase):
     """The shipped settlement window must not block an ordinary push.
 
-    Every other repo here sets `seafile.locksettle 0` so the suite does not pay
-    a second per push (see e2e_harness.init_repo).  That leaves the *default*
+    Every other repo here runs with ``SEAFILE_TEST_LOCK_SETTLE=0`` so the suite
+    does not pay a second per push (see e2e_harness.make_helper_env).  That leaves the *default*
     -- one second plus a second read of the queue -- untested end to end, and a
     lock-acquisition change that only works with the window switched off would
     otherwise reach users.
@@ -537,7 +572,8 @@ class TestDefaultSettlementWindow(E2ETestCase):
 
     def test_a_push_succeeds_with_the_default_window(self):
         src = init_repo(self.work / "src_settle", self.env)
-        run_git(["config", "seafile.locksettle", "1"], src, self.env)
+        # The default window: drop the suite-wide override for this one run.
+        self.env = {k: v for k, v in self.env.items() if k != "SEAFILE_TEST_LOCK_SETTLE"}
         commit_file(src, "a.txt", "hello\n", "initial commit", self.env)
         run_git(["remote", "add", "origin", self.url("repo_settle")], src, self.env)
 

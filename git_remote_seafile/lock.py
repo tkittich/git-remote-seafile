@@ -11,7 +11,7 @@ import time
 import uuid
 from typing import Any
 from .client import SeafileClient
-from .config import RemoteConfig, get_git_config_int
+from .config import RemoteConfig, default_lock_settle, get_git_config_int
 
 
 class RepositoryLockedError(Exception):
@@ -170,16 +170,13 @@ class RemoteLock:
     dead local processes.
 
     A win is confirmed by a second read of the queue one settlement window
-    later (`seafile.locksettle`, default 1s), so a peer that is still
+    later (one second; not a user setting), so a peer that is still
     uploading during the first read cannot win a lock this client also
-    claims. Set it to 0 to skip that re-scan.
+    claims.
 
-    The v0.1–v0.3 single-file mirror (.git-lock.json) was removed in v0.7.0:
-    this protocol coordinates exclusively through the ticket queue, and
-    acquire() deletes an orphaned mirror when it finds one so existing
-    repositories self-clean. Do not mix this version with a v0.1–v0.3
-    helper on the same repository — those clients predate the ticket
-    protocol and cannot see its locks at all.
+    This protocol coordinates exclusively through the ticket queue.  The
+    v0.1–v0.3 single-file mirror (.git-lock.json) is gone, and a helper that
+    old cannot see these tickets at all: do not mix versions on one repository.
     """
 
     def __init__(
@@ -208,10 +205,7 @@ class RemoteLock:
         if lease is None:
             lease = get_git_config_int("seafile.locklease", 60)
         if settle is None:
-            # Literal, not a named constant: the doc-consistency guard reads
-            # this call to check the documented default (see
-            # tests/test_docs_consistency.py).
-            settle = get_git_config_int("seafile.locksettle", 1)
+            settle = default_lock_settle()
         self.timeout = timeout
         self.lease = lease
         #: Settlement window in seconds; 0 disables the confirming re-scan.
@@ -360,16 +354,13 @@ class RemoteLock:
             t_info["_path"] = ticket_path
             active_tickets.append(t_info)
 
-        # FIFO ordering.  When every ticket records its acquisition time
-        # (``order_ts``), order by that: renew() rewrites the ticket file, so
-        # an mtime-ordered queue would move a healthy holder to the back of
-        # the queue on every refresh, letting the next waiter win the scan
-        # while the holder is still active.  A scan that mixes ticket formats
-        # falls back to mtime for all of them -- mtime is the one field every
-        # format shares, and comparing an order_ts against an mtime across
-        # formats is not a FIFO comparison at all.  (Differently-formatted
-        # ticket clients contend through the scan itself; the old single-file
-        # mirror that used to gate this is gone as of v0.7.0.)
+        # FIFO ordering: each ticket's own acquisition time (``order_ts``).
+        # renew() rewrites the ticket file, so an mtime-ordered queue would move
+        # a healthy holder to the back of the queue on every refresh.  A ticket
+        # with no ``order_ts`` (written by a client older than v0.6.3, which the
+        # docs say must not be mixed with this one) falls back, *for that
+        # ticket*, to its own timestamp and then its mtime -- there is no
+        # queue-wide mode switch to reason about.
         #
         # The nonce is the final tie-break, and for our own ticket it is a
         # random uuid4.  That is safe -- the key is total, and once both
@@ -382,14 +373,10 @@ class RemoteLock:
         # resolution is not on offer, so the tie-break stays; what must not
         # change is the determinism, because that is what stops a tie from
         # producing two winners.
-        all_modern = bool(active_tickets) and all(_f(t.get("order_ts")) > 0 for t in active_tickets)
         for t in active_tickets:
-            if all_modern:
-                t["_order_key"] = (_f(t.get("order_ts")), _f(t.get("_mtime")), t["nonce"])
-            elif t.get("_mtime"):
-                t["_order_key"] = (_f(t.get("_mtime")), 0.0, t["nonce"])
-            else:
-                t["_order_key"] = (_f(t.get("timestamp")), 0.0, t["nonce"])
+            mtime = _f(t.get("_mtime"))
+            stamp = _f(t.get("order_ts")) or _f(t.get("timestamp")) or mtime
+            t["_order_key"] = (stamp, mtime, t["nonce"])
 
         return active_tickets
 
@@ -412,13 +399,7 @@ class RemoteLock:
         if not any(t.get("nonce") == nonce for t in tickets):
             my_ticket = dict(lock_payload)
             my_ticket["_mtime"] = 0.0
-            # Match the scheme _scan_tickets chose for the tickets it saw, so
-            # the appended candidate compares against them.
-            others_modern = bool(tickets) and all(_f(t.get("order_ts")) > 0 for t in tickets)
-            if others_modern:
-                my_ticket["_order_key"] = (self._order_ts, 0.0, nonce)
-            else:
-                my_ticket["_order_key"] = (int(now), 0.0, nonce)
+            my_ticket["_order_key"] = (self._order_ts, 0.0, nonce)
             my_ticket["_path"] = f"{self.lock_dir}/{nonce}.json"
             tickets.append(my_ticket)
         tickets.sort(key=_queue_key)
@@ -432,18 +413,6 @@ class RemoteLock:
         self._identity = (owner, hostname)
         self._nonce = nonce
         self._order_ts = self._get_server_time()
-
-        # One-time cleanup: an orphaned .git-lock.json is a relic of the
-        # v0.1–v0.3 single-file protocol (removed in v0.7.0).  This protocol
-        # never reads it, so rather than leave the clutter in every repository
-        # forever, delete it when found.  Best-effort: a failure here must not
-        # block the push -- the acquire loop below fails loudly on its own.
-        legacy_path = f"{self.repo_path}/.git-lock.json"
-        try:
-            if self.client.get_file_text(self.repo_id, legacy_path):
-                self.client.delete_entry(self.repo_id, legacy_path)
-        except Exception:
-            pass
 
         try:
             while True:
@@ -670,14 +639,14 @@ class RemoteLock:
         One of LEASE_HELD / LEASE_LOST / LEASE_UNKNOWN; LEASE_UNKNOWN before any
         check has run.
         """
-        return getattr(self, "_last_ownership_state", LEASE_UNKNOWN)
+        return self._last_ownership_state
 
     def maybe_renew(self, interval: float = 20.0) -> bool:
         """Renew the held lock lease if at least `interval` seconds have elapsed."""
         if not self.acquired or not self._nonce:
             return False
         now_mono = time.monotonic()
-        if now_mono - getattr(self, "_last_renewed", 0.0) >= interval:
+        if now_mono - self._last_renewed >= interval:
             return self.renew()
         return False
 

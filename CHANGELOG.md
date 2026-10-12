@@ -7,9 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Everything here follows from the 2026-10-12 review (`REVIEW.sonnet.md`) and the decisions taken on it.
+The theme is **less machinery, and the machinery that remains fails loudly**.
+
 ### Added
-- **Automatic tail merge** (`seafile.autogc true`): after a qualifying push the helper downloads and merges only the remote's *small* packs (below `seafile.gcmaxpackmib`, default 1 GiB) once their count reaches `seafile.gcthreshold`, within a bounded download budget (`seafile.gcmaxmib`, default 8 GiB). Large packs are frozen in place and never counted; the merged pack is verified on the remote before its originals are deleted. Manual full `gc` is unchanged.
-- **Snapshot tool maintenance tiers**: automatic incremental repack of the local vault (loose tier only) once it passes 256 MiB / 50,000 objects (`--no-repack` opts out), a manual whole-store reset (`--full-repack`), a report-only mode (`--maintain`), and a measured compression advisory that recommends a `core.compression` level only when the payload mix has sustainedly shifted.
+- **Automatic tail merge** (`seafile.autogc true`): after a qualifying push the helper downloads and merges only the remote's *small* packs (below `seafile.gcmaxpackmib`, default 1 GiB) once their count reaches `seafile.gcthreshold`, within a bounded download budget (8 × `seafile.gcmaxpackmib`, 8 GiB by default). Large packs are frozen in place and never counted; the merged pack is verified on the remote before its originals are deleted. Manual full `gc` is unchanged.
+- **Snapshot tool maintenance**: automatic incremental repack of the local vault's loose tier once it passes 256 MiB (`--no-repack` opts out), a manual whole-store reset (`--full-repack`), and a report-only mode (`--maintain`) that also checks free disk space.
+- **Snapshot large-payload profile.** A first-run sample of the tree decides once whether the payload is large and incompressible; if so the vault gets `core.compression=0` and `core.bigFileThreshold=50m` (remembered as `snapshot.profile`; re-sampled once per doubling of a vault that began small). It replaces the earlier rolling compression advisory, which needed three runs before it spoke and fixed only half the problem.
+- **`tools/build_snapshot.py` and `tools/_snapshot/`.** The snapshot tool's source is now cohesive parts, concatenated into the single `tools/seafile_snapshot.py` users run; `--check` (and `tests/test_snapshot_build.py`) fail when the generated file drifts. See CONTRIBUTING.
+- **`seafile.gittimeout` / `SEAFILE_GIT_TIMEOUT`**, readable only from the system/global git config or the environment, raises the per-command git ceiling for large repositories. `SEAFILE_SNAPSHOT_STALL_LIMIT` does the same for the snapshot tool's no-progress limit.
+
+### Changed
+- **Push-time `pack-objects` no longer delta-searches big blobs.** The helper's per-push pack and the tail merge pass `-c core.bigFileThreshold=50m`. Measured on 1 GiB of 256 MiB random files plus 300 similar text files: 50.0 s → 5.1 s with an identical pack size (the text is still deltified). Compression level was never the bottleneck of a push (8-10 MB/s at every level); the delta search was.
+- **The snapshot tool's watchdog is thread-free.** The no-progress kill is driven from the calling thread by retrying `communicate(timeout=...)`, which keeps stdin, stdout and stderr intact across timeouts: no monitor, pump or feeder threads. The push step is heartbeat-only (never killed for silence), and children inherit a helper ceiling sized to the watchdog's horizon.
+- **The automatic repack is gated on bytes only.** An object-count trigger already exists in git (`git fetch` launches `gc --auto` at ~6,700 loose objects).
+- **`seafile.locksettle` and `seafile.gcmaxmib` are no longer settings** (ten public keys become eight). The settlement window is a fixed one second (a race guard, not a tuning knob); the auto tail merge's budget is 8 × `seafile.gcmaxpackmib`. A value still set is reported once and ignored. The test suite moves the window with `SEAFILE_TEST_LOCK_SETTLE`.
+- **`gc` errors carry git's words, not the command line.** A failed scratch-repo command used to surface as `CalledProcessError`'s repr.
+- **Case folding in the synced-folder guard errs toward refusing on macOS.** The shared containment check now folds case on Darwin (and Windows, as before); Linux stays case-sensitive.
+- **`acquire()` no longer probes for the long-gone `.git-lock.json`** (one request fewer per push), and ticket ordering is one key `(order_ts or timestamp or mtime, mtime, nonce)` applied per ticket instead of a queue-wide mode switch.
+- **`RemoteHelper` carries no test-shaped defaults**: `dry_run` is set in `__init__`, `cmd_list` no longer `hasattr`-checks `_refs_cache`, and `RemoteLock` reads its own attributes directly. Tests build helpers with `tests/_helpers.make_helper()`.
+
+### Fixed
+- **Manual `gc` on a SHA-256 remote failed once the tail merge had written its packs.** The format detector measured what remained after stripping `pack-`, so `pack-tail-<64 hex>` read as a 69-character hash and the scratch repository came out SHA-1. The detector now reads the hash from the *end* of the name, in one function both paths use.
+- **A fetch could fail after a local `gc`** (`did not send all necessary objects`): the "already fetched" hint is now discarded when the requested tips are not actually present.
+- **`gc` no longer passes a fence it cannot check.** The `hasattr(lock, "verify_ownership")` fallbacks, including the final `return True`, are gone.
+- **`unlock --force` no longer reports success when nothing was deleted**, and a malformed `HEAD` on the remote is skipped with a warning instead of being echoed to git.
+- **`verify_docs_guards.py` exited 1** because its drift scenario targeted prose that had been reworded.
 
 ## [0.8.7] - 2026-10-12
 

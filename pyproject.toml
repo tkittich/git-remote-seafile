@@ -67,6 +67,11 @@ include = ["git_remote_seafile*"]
 version = {attr = "git_remote_seafile.__version__"}
 
 [tool.ruff]
+# tools/_snapshot/*.py are *fragments* of tools/seafile_snapshot.py (see
+# tools/build_snapshot.py): each one uses names defined in another, so linted
+# alone they are a wall of F821.  The generated file is linted instead -- it is
+# the same text, and it is what ships.
+extend-exclude = ["tools/_snapshot"]
 # Read by the `lint` job in .github/workflows/ci.yml.
 #
 # Correctness rules only.  Pyflakes (F) catches unused imports and undefined
@@ -93,6 +98,9 @@ select = ["F", "E9", "B"]
 # describe.  A check that has to exclude a third of what it sees is not one
 # people trust.
 files = ["git_remote_seafile", "tools"]
+# The snapshot tool's parts are fragments of one module; the generated file is
+# what is checked (see [tool.ruff]).
+exclude = ["tools/_snapshot/"]
 # The floor, not the interpreter -- the same reasoning as [tool.ruff] above:
 # this decides which syntax and which stdlib signatures are legal, so it has to
 # track requires-python.

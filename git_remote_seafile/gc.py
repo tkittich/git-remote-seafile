@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import subprocess
 import sys
 import tempfile
@@ -10,7 +11,7 @@ from typing import Any
 
 from .client import SeafileAPIError, SeafileClient
 from .config import RemoteConfig
-from .git_util import clean_git_env, get_git_timeout
+from .git_util import PACK_BIG_FILE_THRESHOLD, clean_git_env, get_git_timeout
 from .lock import RemoteLock, describe_ownership_failure
 from .packs import fetch_pack_artifact, is_valid_pack_name
 from .refs import REF_NAMESPACES, is_valid_ref_name, iter_refs
@@ -19,6 +20,31 @@ from .refs import REF_NAMESPACES, is_valid_ref_name, iter_refs
 #: scratch repository -- the only namespaces whose objects ``repack -a -d`` is
 #: told are reachable.
 _MIRRORED_PREFIXES = tuple(f"{ns}/" for ns in REF_NAMESPACES)
+
+
+#: The object-name hash of a pack, taken from the *end* of its filename.  A name
+#: is ``pack-<hash>.pack`` for packs written by git and ``pack-tail-<hash>.pack``
+#: for the ones tail merge writes; the hash is the only part whose length says
+#: which object format the pack is in.
+_PACK_HASH_RE = re.compile(r"([0-9a-f]{64}|[0-9a-f]{40})\.pack$")
+
+
+def detect_object_format(pack_names: list[str]) -> str:
+    """``"sha256"`` or ``"sha1"``, from the names of a remote's packfiles.
+
+    The pack *names* are the only format signal available before any pack is
+    downloaded: a SHA-256 pack ends in a 64-hex hash, a SHA-1 pack in a 40-hex
+    one.  Measured from the end of the name rather than by stripping a fixed
+    ``pack-`` prefix, because tail merge writes ``pack-tail-<hash>.pack`` -- and
+    a detector that counted what was left after the prefix saw ``tail-<64 hex>``
+    (69 characters), answered SHA-1, and made every manual ``gc`` of a SHA-256
+    remote fail once tail merge had been its only writer.
+    """
+    for name in pack_names:
+        m = _PACK_HASH_RE.search(name)
+        if m and len(m.group(1)) == 64:
+            return "sha256"
+    return "sha1"
 
 
 def _run_git(
@@ -38,8 +64,20 @@ def _run_git(
     scope -- see :func:`get_git_timeout`.
     """
     limit = get_git_timeout()
+    check = kwargs.pop("check", False)
     try:
-        return subprocess.run(["git", *args], env=env, timeout=limit, **kwargs)
+        return subprocess.run(["git", *args], env=env, timeout=limit, check=check, **kwargs)
+    except subprocess.CalledProcessError as exc:
+        # CalledProcessError's repr is the command line and the exit status and
+        # *not* git's own words, which are the one line that says what was wrong
+        # ("pack is corrupted (SHA1 mismatch)").  Name them.
+        detail = exc.stderr
+        if isinstance(detail, bytes):
+            detail = detail.decode("utf-8", errors="replace")
+        detail = (detail or "").strip() or "(no output)"
+        raise RuntimeError(
+            f"git {' '.join(args[:4])} failed (exit {exc.returncode}): {detail}"
+        ) from None
     except subprocess.TimeoutExpired:
         raise RuntimeError(
             f"git {' '.join(args)} did not finish within {limit:g}s; aborting compaction. "
@@ -217,7 +255,7 @@ def tail_merge(
         unreferenced clutter a later run removes.
     ``"skipped"``
         Nothing to do: fewer than ``config.gc_threshold`` movable packfiles --
-        or their total exceeds the ``config.gc_max_mib`` download budget, when
+        or their total exceeds the download budget (``config.gc_max_mib``, 8 x ``gc_max_pack_mib``), when
         auto-GC defers to a manual off-hours run instead of round-tripping that
         much mid-push.  The message says which case applied.
     ``"error"``
@@ -234,15 +272,10 @@ def tail_merge(
             lock.maybe_renew(20.0)
 
         def lock_still_ours() -> bool:
-            if hasattr(lock, "verify_ownership"):
-                return bool(lock.verify_ownership())
-            if hasattr(lock, "renew"):
-                return bool(lock.renew())
-            return True
+            return bool(lock.verify_ownership())
 
         def ownership_reason() -> str:
-            state = lock.ownership_state() if hasattr(lock, "ownership_state") else ""
-            return describe_ownership_failure(state)
+            return describe_ownership_failure(lock.ownership_state())
 
         def on_upload_progress(transferred: int, total: int) -> None:
             maybe_renew()
@@ -324,12 +357,7 @@ def tail_merge(
             # this.  The object format must match the remote's: a SHA-256 pack
             # is named pack-<64 hex>.pack and is the only pre-download signal.
             scratch_env = clean_git_env()
-            obj_format = "sha1"
-            for p_name, _ in movable:
-                hex_part = p_name.removeprefix("pack-").removesuffix(".pack")
-                if len(hex_part) == 64:
-                    obj_format = "sha256"
-                    break
+            obj_format = detect_object_format([name for name, _ in movable])
             init_cmd = ["init", "--bare"]
             if obj_format == "sha256":
                 init_cmd.append("--object-format=sha256")
@@ -390,7 +418,8 @@ def tail_merge(
             # every other pack in /objects/pack.
             before = {p.name for p in local_pack_dir.glob("pack-*.pack")}
             res = _run_git(
-                ["-C", str(bare_repo), "pack-objects", "-q", str(local_pack_dir / "pack-tail")],
+                ["-C", str(bare_repo), "-c", f"core.bigFileThreshold={PACK_BIG_FILE_THRESHOLD}",
+                 "pack-objects", "-q", str(local_pack_dir / "pack-tail")],
                 scratch_env,
                 input="\n".join(shas) + "\n",
                 text=True,
@@ -591,21 +620,16 @@ def compact_repository(
         def lock_still_ours() -> bool:
             """Whether we can still prove we hold the lock.
 
-            gc prefers verify_ownership() and falls back to renew() for a lock
-            object supplied by a caller that predates ownership fencing.  A lock
-            that offers no way to ask at all is treated as "do not block": the
-            fence exists to stop a *known* loss of ownership, and a caller that
-            never supplied a fenced lock is not evidence of one.
+            ``verify_ownership()`` re-reads the ticket *and* scans the queue, so
+            a lapsed lease and a preemption both answer False.  There is no
+            fallback for a lock object that cannot be asked: this module always
+            constructs a ``RemoteLock``, and a fence that passes when the check
+            is missing is the opposite of fail-closed.
             """
-            if hasattr(lock, "verify_ownership"):
-                return bool(lock.verify_ownership())
-            if hasattr(lock, "renew"):
-                return bool(lock.renew())
-            return True
+            return bool(lock.verify_ownership())
 
         def ownership_reason() -> str:
-            state = lock.ownership_state() if hasattr(lock, "ownership_state") else ""
-            return describe_ownership_failure(state)
+            return describe_ownership_failure(lock.ownership_state())
 
         def on_upload_progress(transferred: int, total: int) -> None:
             maybe_renew()
@@ -684,12 +708,7 @@ def compact_repository(
             # "bad object refs/heads/main" on the mirrored 64-hex refs.  The
             # pack *names* are the only format signal available before any pack
             # is read -- a SHA-256 pack is named pack-<64 hex>.pack.
-            obj_format = "sha1"
-            for p_name in old_packs:
-                hex_part = p_name.removeprefix("pack-").removesuffix(".pack")
-                if len(hex_part) == 64:
-                    obj_format = "sha256"
-                    break
+            obj_format = detect_object_format(old_packs)
             init_cmd = ["git", "init", "--bare"]
             if obj_format == "sha256":
                 init_cmd.append("--object-format=sha256")
