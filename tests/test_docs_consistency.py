@@ -107,7 +107,7 @@ _RETIRED_KEYS = frozenset({"seafile.locksettle", "seafile.gcmaxmib"})
 # Read by the code for the test suite's benefit only (the settlement window is
 # fixed at one second for users).  Documenting it would advertise a way to
 # switch off a race guard, which is the thing this variable exists *not* to be.
-_TEST_ONLY_ENV = frozenset({"SEAFILE_TEST_LOCK_SETTLE"})
+_TEST_ONLY_ENV = frozenset({"SEAFILE_TEST_LOCK_SETTLE", "SEAFILE_TEST_LIBRARY"})
 
 _CODE_SUBCOMMAND_EQ = re.compile(r'args\[0\]\s*==\s*"([^"]+)"')
 _CODE_SUBCOMMAND_IN = re.compile(r"args\[0\]\s+in\s+\(([^)]+)\)")
@@ -276,7 +276,9 @@ class TestEnvironmentVariables(unittest.TestCase):
         read = set(_CODE_ENV_READ.findall(_env_source_text()))
 
         with self.subTest(direction="documented but not read"):
-            self.assertEqual(sorted(documented - read), [])
+            # SEAFILE_TEST_LIBRARY is documented (CONTRIBUTING) and read only by
+            # the opt-in real-server tests, not by the package.
+            self.assertEqual(sorted(documented - read - _TEST_ONLY_ENV), [])
         with self.subTest(direction="read but not documented"):
             self.assertEqual(sorted(read - documented - _TEST_ONLY_ENV), [])
 
