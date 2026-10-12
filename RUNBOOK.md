@@ -222,13 +222,73 @@ git-remote-seafile gc seafile://code/myproject
 Common causes: insufficient scratch space (§4), the lease being lost mid-run (the run stops
 cleanly and reports the deletions it did not perform), or a remote listing that could not be read.
 
-**If it stops part-way through cleanup**, the result says how many deletions were skipped. That is
-clutter, not damage: the new packfiles are verified by that point. Re-running compaction later will
-remove the leftovers.
+**If it stops part-way through cleanup**, the command says so and exits non-zero, naming the reason —
+normally that ownership of the lock was lost to another client mid-run. That is clutter, not damage:
+the new packfiles are verified by that point, so nothing was lost, and a later compaction removes the
+leftovers. The non-zero exit is deliberate. A scheduled job that reads only the exit code has to be
+able to tell a finished compaction from one that left orphans behind, so this reports
+`status: "incomplete"` rather than `"ok"`. Treat it as "run `gc` again later", not as "the repository
+is broken".
 
 ---
 
-## 7. A Repository Health Command (Proposed, Not Implemented)
+## 7. A git Command Timed Out (`seafile.gittimeout`)
+
+**Symptom.** The push, fetch or `gc` fails with a message naming the command and a number of seconds:
+
+```text
+git: pack-objects ... did not finish within 300s and was killed.
+git: repack -a -d ... did not finish within 300s; aborting compaction.
+```
+
+A cut-short `cat-file --batch-check` is not fatal and shows up as a warning instead:
+
+```text
+Warning: git cat-file --batch-check did not finish within 300s; assuming no objects are present.
+```
+
+**Cause.** Every git subprocess the helper starts is bounded by a wall-clock ceiling, 300 seconds by
+default. The bound exists because a git child can hang in two ways that never resolve on their own: a
+wedged `index-pack` or `repack` — which during `gc` holds the remote lock open until its lease
+expires and another client lawfully takes over — and a credential-helper prompt on a machine with
+nobody at the keyboard.
+
+Five minutes is generous for an ordinary repository and too short for a large one. A first push of a
+few GB, an `index-pack` of one large downloaded pack, and a `repack -a -d` of a big remote all
+routinely exceed it. The failure is deterministic — the same repository stops at the same point every
+time — and with `seafile.autogc` enabled the failing compaction is retried on every push.
+
+**Fix: raise the ceiling.** It is deliberately *not* a per-repository setting, because a repository
+that could raise the ceiling could remove the protection it provides. Set it from a scope the
+repository cannot reach — the environment, for a single command:
+
+```bash
+SEAFILE_GIT_TIMEOUT=1800 git push seafile://code/myproject
+```
+
+or the system or global git config, to make it stick for the machine:
+
+```bash
+git config --global seafile.gittimeout 1800
+```
+
+A repository-local `git config seafile.gittimeout …` is ignored on purpose, and a value that is not a
+positive number is refused with a warning, so the default is kept rather than silently becoming a
+zero-second ceiling. To see what is in effect:
+
+```bash
+echo "$SEAFILE_GIT_TIMEOUT"                  # empty when unset
+git config --global --get seafile.gittimeout # exits 1 when unset
+```
+
+**If it still times out.** Raise it again before suspecting corruption: the operation is not failing,
+it is being cut short. But a run that outlasts even a raised ceiling twice in a row is more likely to
+be a wedged child than a slow one — stop retrying, capture the evidence listed under *Escalating*,
+and open an issue rather than raising the number a third time.
+
+---
+
+## 8. A Repository Health Command (Proposed, Not Implemented)
 
 The manual procedures above — listing refs, spotting an orphaned pack, finding a stale ticket — are
 exactly what a health command should automate. A `fsck`-style subcommand that reports stray refs,
@@ -239,7 +299,7 @@ Until it exists, §0's three diagnostics plus a Web UI listing cover the same gr
 
 ---
 
-## 8. Escalating
+## 9. Escalating
 
 If a repository is unreadable and the procedures above did not identify the cause, capture the
 following before opening an issue — it is the difference between a diagnosis and a guess:

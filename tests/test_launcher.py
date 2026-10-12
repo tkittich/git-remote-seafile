@@ -27,12 +27,19 @@ not executable through Git Bash, and left every other test passing with the
 launcher exporting ``PYTHONPATH=/``.
 
 That test used to read ``PYTHONPATH`` to check that ``dirname`` had run.  The
-launcher no longer sets it: it passes its own directory as an argument and asks
-for an isolated interpreter (``-I``), because ``python -m`` put the *working
-directory* on ``sys.path`` -- and the working directory is the repository git is
-operating on, which may be a tree the user has just cloned and not read.
-``test_the_launcher_does_not_import_from_the_working_directory`` is the test for
-that, and it fails against the old launcher.
+launcher no longer sets it: it passes its own directory as an argument and
+filters the *working directory* out of ``sys.path`` itself, because ``python -m``
+put the working directory on ``sys.path`` -- and the working directory is the
+repository git is operating on, which may be a tree the user has just cloned and
+not read.  ``test_the_launcher_does_not_import_from_the_working_directory`` is
+the test for that, and it fails against the old launcher.
+
+The filter is applied under ``-E`` rather than ``-I``.  ``-I`` implies ``-s``,
+which switches off the per-user site directory, so a user whose ``requests`` came
+from ``pip install --user`` cannot run the helper at all -- and the test above
+does not catch that on a CI box, where the dependency is in the venv.
+``test_the_launcher_keeps_the_user_site_reachable`` is the test for it, and it
+fails against a launcher that uses ``-I``.
 """
 
 from __future__ import annotations
@@ -227,27 +234,43 @@ class TestSourceCheckoutLauncher(unittest.TestCase):
             "directory, so `dirname` did not run",
         )
 
-    def test_the_launcher_asks_for_an_isolated_interpreter(self):
-        """`-I` is what keeps the working directory off sys.path.
+    def test_the_launcher_keeps_the_user_site_reachable(self):
+        """`-I` would keep the cwd off sys.path and take the user site with it.
 
-        `python -m package` prepends the cwd, and a remote helper runs with the
-        cwd set to the repository git is operating on.  The bootstrap is passed
-        with `-c` instead, so there is no cwd on sys.path for a file in that tree
-        to shadow a real module with.
+        `-I` implies `-s`, which disables the per-user site directory.  A user
+        who ran `pip install --user requests` -- the usual answer when the
+        system interpreter is not writable -- then gets
+        `ModuleNotFoundError: requests` from inside a git command.  The launcher
+        has to keep the cwd out without switching the user's own packages off,
+        so it asks for `-E` and filters sys.path itself.
+
+        Asserted on the flags the launcher passes, because that is the part the
+        suite can control: whether *this* interpreter happens to have a user
+        site is an accident of how the test environment was installed, which is
+        why the behavioural test above passes on CI while the launcher was
+        broken for real users.
         """
         self._stub(
             "python3",
             body=(
-                'case "$1" in\n'
-                '  -I) echo "GRS-ISOLATED" ;;\n'
-                '  *)  echo "GRS-NOT-ISOLATED:$1" ;;\n'
-                "esac\n"
+                'for a in "$@"; do\n'
+                '  case "$a" in\n'
+                '    -I|-s|--isolated) echo "GRS-USER-SITE-OFF:$a" ;;\n'
+                '    -E) echo "GRS-ENV-IGNORED" ;;\n'
+                "  esac\n"
+                "done\n"
+                'echo "GRS-USER-SITE-ON"\n'
             ),
         )
         proc = self._run()
         output = proc.stdout + proc.stderr
-        self.assertIn("GRS-ISOLATED", output)
-        self.assertNotIn("GRS-NOT-ISOLATED", output)
+        self.assertNotIn(
+            "GRS-USER-SITE-OFF", output,
+            "the launcher asks for an interpreter that cannot see the user's "
+            "own site-packages, so `pip install --user` dependencies vanish",
+        )
+        self.assertIn("GRS-USER-SITE-ON", output)
+        self.assertIn("GRS-ENV-IGNORED", output)
 
     def test_the_launcher_does_not_import_from_the_working_directory(self):
         """The regression this file exists for: a repo-root `requests.py` ran.

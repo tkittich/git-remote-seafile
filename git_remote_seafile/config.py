@@ -29,6 +29,9 @@ class RemoteConfig:
     lock_settle: int
     auto_gc: bool
     gc_threshold: int
+    # Defaults at the dataclass level too, so constructing a config directly
+    # (tests, embedded callers) never needs to know every knob.
+    gc_max_mib: int = 20 * 1024
 
     @classmethod
     def load(cls) -> RemoteConfig:
@@ -55,6 +58,10 @@ class RemoteConfig:
             "lock_settle": get_git_config_int("seafile.locksettle", 1),
             "auto_gc": get_git_config_bool("seafile.autogc", False),
             "gc_threshold": get_git_config_int("seafile.gcthreshold", 20),
+            # Above this total size of remote .pack files, automatic compaction
+            # defers to a manual off-hours run: the work is proportional to the
+            # whole history (download it all, repack -a, upload it all back).
+            "gc_max_mib": get_git_config_int("seafile.gcmaxmib", 20 * 1024),
         }
 
         fallbacks: list[str] = []
@@ -70,6 +77,10 @@ class RemoteConfig:
         if values["gc_threshold"] < 1:
             fallbacks.append(f"seafile.gcthreshold={values['gc_threshold']} -> 20")
             values["gc_threshold"] = 20
+        # A sub-1 MiB cap would defer every compaction, defeating the setting.
+        if values["gc_max_mib"] < 1:
+            fallbacks.append(f"seafile.gcmaxmib={values['gc_max_mib']} -> {20 * 1024}")
+            values["gc_max_mib"] = 20 * 1024
         if fallbacks:
             sys.stderr.write(
                 "Warning: implausible seafile.* config ignored ("

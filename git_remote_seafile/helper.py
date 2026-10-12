@@ -235,12 +235,26 @@ class RemoteHelper:
                 "server error. Retry, or run 'git-remote-seafile test <url>' to diagnose."
             )
 
-        # 2. Read HEAD symbolic ref
+        # 2. Read HEAD symbolic ref.  The target is validated before it is
+        # echoed because this line goes straight to git's stdout: a HEAD file
+        # carrying a newline (or any other control character) would append a
+        # second, invented line to the ref listing.  That is the same injection
+        # the ``_proto_error`` discipline exists to stop, on the one line that
+        # discipline does not cover -- it guards ``error`` lines only.  A
+        # malformed HEAD is skipped rather than fatal: git then treats the
+        # remote as having no default branch, which is exactly what a HEAD we
+        # cannot parse means.
         head_path = self._full_path("HEAD")
         head_content = self.client.get_file_text(self.repo_id, head_path)
         if head_content and head_content.startswith("ref:"):
             target_ref = head_content.split(":", 1)[1].strip()
-            sys.stdout.write(f"@{target_ref} HEAD\n")
+            if is_valid_ref_name(target_ref):
+                sys.stdout.write(f"@{target_ref} HEAD\n")
+            else:
+                # ``!r`` so a target carrying control characters is shown
+                # escaped rather than replayed into the log.
+                sys.stderr.write(f"Warning: ignoring malformed HEAD target {target_ref!r}\n")
+                sys.stderr.flush()
 
         # Empty line ends the ref listing
         sys.stdout.write("\n")
@@ -637,18 +651,33 @@ class RemoteHelper:
                 try:
                     pack_entries = self.client.list_dir(self.repo_id, self._full_path("objects/pack"))
                     remote_packs = [e["name"] for e in pack_entries if e["name"].endswith(".pack")]
+                    pack_total = sum(int(e.get("size") or 0) for e in pack_entries if e["name"].endswith(".pack"))
                     threshold = session_config.gc_threshold
                     auto_gc = session_config.auto_gc
 
                     if len(remote_packs) >= threshold:
-                        if auto_gc:
+                        # Compaction costs one full download + re-upload of the
+                        # whole history, so above seafile.gcmaxmib it defers to a
+                        # manual off-hours run no matter how many packs pile up.
+                        if auto_gc and pack_total > session_config.gc_max_mib * 1024 * 1024:
+                            sys.stderr.write(
+                                f"\nNotice: Remote packs total {pack_total / (1024**3):.1f} GiB across "
+                                f"{len(remote_packs)} packfile(s), above the automatic cap "
+                                f"(seafile.gcmaxmib = {session_config.gc_max_mib} MiB).\n"
+                                f"Auto-compaction was deferred: it downloads and re-uploads that whole history.\n"
+                                f"Run 'git-remote-seafile gc {self.raw_url}' manually when the time cost suits.\n\n"
+                            )
+                            sys.stderr.flush()
+                        elif auto_gc:
                             auto_gc_min_packs = threshold
                             auto_gc_pack_count = len(remote_packs)
                         else:
                             sys.stderr.write(
-                                f"\nNotice: Remote repository has {len(remote_packs)} packfiles (threshold: {threshold}).\n"
+                                f"\nNotice: Remote repository has {len(remote_packs)} packfiles (threshold: {threshold}), "
+                                f"totaling {pack_total / (1024**3):.1f} GiB.\n"
                                 f"Tip: Run 'git-remote-seafile gc {self.raw_url}' to optimize remote storage,\n"
-                                f"     or run 'git config seafile.autogc true' to enable automatic compaction.\n\n"
+                                f"     or run 'git config seafile.autogc true' to enable automatic compaction\n"
+                                f"     (automatic runs defer while the packs exceed seafile.gcmaxmib).\n\n"
                             )
                             sys.stderr.flush()
                 except Exception:
@@ -681,6 +710,9 @@ class RemoteHelper:
                     self.repo_path,
                     config=session_config,
                     min_packs=auto_gc_min_packs,
+                    # The decision above already checked the cap; re-checking at
+                    # the gate costs one listing and covers growth in between.
+                    max_total_bytes=session_config.gc_max_mib * 1024 * 1024,
                     verbose=True,
                 )
             except Exception as ex:
@@ -689,6 +721,21 @@ class RemoteHelper:
 
         sys.stdout.write("\n")
         sys.stdout.flush()
+
+    @staticmethod
+    def _objects_present(shas: list[str]) -> bool:
+        """True when every one of *shas* resolves in the local object store.
+
+        "Cannot tell" answers False on purpose.  The only caller uses this to
+        decide whether to trust the record of packs fetched on earlier runs, and
+        a redundant download is a far better outcome than a skip that leaves git
+        without the objects it asked for.
+        """
+        try:
+            existing = set(filter_existing_objects(shas))
+        except Exception:
+            return False
+        return len(existing) == len(set(shas))
 
     def cmd_fetch(self, fetch_specs: list[str]) -> None:
         """Download remote packfiles to local .git/objects/pack/.
@@ -752,41 +799,70 @@ class RemoteHelper:
             # repacks and renames, so the names stop matching while the objects
             # are still there, and every remote pack was downloaded again (A9).
             installed = load_installed_packs(git_dir, self.repo_id, self.repo_path)
-            fetched: dict[str, int | None] = {}
 
             remote_pack_dir = self._full_path("objects/pack")
             remote_entries = self.client.list_dir(self.repo_id, remote_pack_dir)
             entries_by_name = {e["name"]: e for e in remote_entries if isinstance(e, dict) and "name" in e}
             pack_files = [name for name in entries_by_name if name.endswith(".pack")]
 
-            for pack_name in pack_files:
-                if not is_valid_pack_name(pack_name):
-                    sys.stderr.write(f"Warning: ignoring invalid remote packfile name: {pack_name}\n")
-                    continue
-                size = entries_by_name[pack_name].get("size")
-                # Both are recorded, not just the downloads: a pack found under
-                # its own local name is proof this clone has it, and recording
-                # that is what lets the state file heal itself after the first
-                # fetch that follows a repack.
-                fetched[pack_name] = size
-                if pack_name in local_packs:
-                    continue  # already downloaded, still under its own name
-                if pack_name in installed:
-                    continue  # already downloaded; a local repack renamed it
+            def download_missing(already_fetched: dict[str, int]) -> dict[str, int | None]:
+                """Install every remote pack this clone does not already hold.
 
-                idx_name = pack_name.removesuffix(".pack") + ".idx"
-                expected_size = entries_by_name[pack_name].get("size")
-                expected_idx_size = entries_by_name.get(idx_name, {}).get("size")
-                fetch_and_install_pack(
-                    self.client,
-                    self.repo_id,
-                    remote_pack_dir,
-                    pack_name,
-                    git_dir,
-                    expected_size=expected_size,
-                    expected_idx_size=expected_idx_size,
-                    installer=install_packfile,
+                ``already_fetched`` is the hint from earlier runs.  It is a
+                parameter rather than a closed-over name so the retry below can
+                pass an empty one.
+                """
+                fetched: dict[str, int | None] = {}
+                for pack_name in pack_files:
+                    if not is_valid_pack_name(pack_name):
+                        sys.stderr.write(f"Warning: ignoring invalid remote packfile name: {pack_name}\n")
+                        continue
+                    size = entries_by_name[pack_name].get("size")
+                    # Both are recorded, not just the downloads: a pack found
+                    # under its own local name is proof this clone has it, and
+                    # recording that is what lets the state file heal itself
+                    # after the first fetch that follows a repack.
+                    fetched[pack_name] = size
+                    if pack_name in local_packs:
+                        continue  # already downloaded, still under its own name
+                    if pack_name in already_fetched:
+                        continue  # already downloaded; a local repack renamed it
+
+                    idx_name = pack_name.removesuffix(".pack") + ".idx"
+                    expected_idx_size = entries_by_name.get(idx_name, {}).get("size")
+                    fetch_and_install_pack(
+                        self.client,
+                        self.repo_id,
+                        remote_pack_dir,
+                        pack_name,
+                        git_dir,
+                        expected_size=size,
+                        expected_idx_size=expected_idx_size,
+                        installer=install_packfile,
+                    )
+                return fetched
+
+            fetched = download_missing(installed)
+
+            # The recorded list is a *hint*, and a hint must never outrank
+            # evidence.  It says "this clone fetched that pack", which implies
+            # the objects are still here only if something still reaches them:
+            # the helper installs every remote pack, whatever git asked for, so
+            # a single-branch clone holds objects no local ref reaches, and a
+            # later `git gc --prune` drops them legitimately.  The hint would
+            # then suppress exactly the download that is needed, and git would
+            # die with "did not send all necessary objects" and nothing in the
+            # output to explain it.  So ask the object store directly, and when
+            # the tips git asked for are not all present, discard the hint and
+            # go round once more.
+            if requested_shas and installed and not self._objects_present(requested_shas):
+                sys.stderr.write(
+                    "Warning: packfiles recorded as already fetched do not provide "
+                    "every requested object -- a local repack or prune drops objects "
+                    "no ref reaches. Downloading them again.\n"
                 )
+                sys.stderr.flush()
+                fetched.update(download_missing({}))
 
             record_installed_packs(git_dir, self.repo_id, self.repo_path, fetched)
 

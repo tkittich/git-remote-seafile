@@ -355,6 +355,38 @@ class TestCLITestsAndGC(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("could not be downloaded", mock_out.getvalue())
 
+    @patch("git_remote_seafile.cli.RemoteHelper")
+    @patch("git_remote_seafile.gc.compact_repository")
+    def test_cli_gc_incomplete_status_exits_nonzero(self, mock_gc, mock_helper_cls):
+        """N6 -- a compaction that stopped short is not a success.
+
+        The consolidation is verified and nothing was lost, so this is not an
+        error either.  It is a third outcome, and a scheduled job that reads only
+        the exit code has to be able to tell it from a finished compaction.
+        """
+        mock_helper = MagicMock()
+        mock_helper_cls.return_value = mock_helper
+        mock_helper.client = MagicMock()
+        mock_helper.repo_id = "repo1"
+        mock_helper.repo_path = "repo"
+
+        mock_gc.return_value = {
+            "status": "incomplete",
+            "old_packs": 3,
+            "new_packs": 1,
+            "saved_kb": 40,
+            "cleanup_stopped": "stopped deleting obsolete packfiles: lease lost.",
+        }
+        with patch.object(sys, "argv", ["git-remote-seafile", "gc", "seafile://code/repo"]):
+            with patch("sys.stdout", new_callable=io.StringIO) as mock_out:
+                code = main()
+
+        output = mock_out.getvalue()
+        self.assertEqual(code, 1)
+        self.assertIn("Compacted 3 packfiles into 1", output)
+        self.assertIn("did not finish removing the superseded ones", output)
+        self.assertIn("stopped deleting obsolete packfiles", output)
+
 
 class TestCLISetHeadAndLFSTransfer(unittest.TestCase):
     @patch("git_remote_seafile.cli.RemoteHelper")

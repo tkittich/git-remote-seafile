@@ -285,7 +285,7 @@ class TestPortParsingIsGuarded(unittest.TestCase):
 
 
 class TestMaskUrl(unittest.TestCase):
-    """REVIEW.glm.md H-21: userinfo in a user-typed URL must not reach output."""
+    """Userinfo in a user-typed URL must not reach output."""
 
     def test_userinfo_is_redacted(self):
         self.assertEqual(mask_url("seafile://user:pass@host/lib/repo"),

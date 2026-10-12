@@ -71,6 +71,48 @@ class TestRemoteGC(unittest.TestCase):
         self.assertEqual(res["status"], "skipped")
         self.assertEqual(res["count"], 1)
 
+    def test_gc_defers_when_the_remote_store_exceeds_the_size_cap(self):
+        """Compaction costs one full download + re-upload of the history.
+
+        Above ``max_total_bytes`` that cost is no longer an in-band side task,
+        so compaction must defer to a manual off-hours run even when the pack
+        count alone says "go".  The deferral happens before any transfer:
+        nothing may be downloaded or deleted on its way out.
+        """
+        mock_client = MagicMock()
+        # Three packs of ~10 GiB each: past the cap although the count is fine.
+        mock_client.list_dir.return_value = [
+            {"name": f"pack-{i}.pack", "size": 10 * 1024**3} for i in range(3)
+        ]
+
+        res = compact_repository(
+            mock_client, "repo1", "/path", min_packs=2, max_total_bytes=20 * 1024**3,
+        )
+
+        self.assertEqual(res["status"], "skipped")
+        self.assertIn("deferred", res["message"])
+        self.assertEqual(res["count"], 3)
+        mock_client.download_file.assert_not_called()
+        mock_client.delete_file.assert_not_called()
+
+    def test_gc_without_a_size_cap_is_not_blocked_by_size(self):
+        # ``max_total_bytes=None`` (the manual CLI path) must add no size
+        # friction: with the cap absent, an oversized store still gets past
+        # the gate and into the transfer machinery.  The gate's only other
+        # skip reason is pack count, so below that threshold it skips -- which
+        # proves the *size* check did not fire (it would skip regardless of
+        # count).
+        mock_client = MagicMock()
+        mock_client.list_dir.return_value = [
+            {"name": f"pack-{i}.pack", "size": 10 * 1024**3} for i in range(5)
+        ]
+
+        with patch("subprocess.run"):
+            res = compact_repository(mock_client, "repo1", "/path", min_packs=9)
+
+        self.assertEqual(res["status"], "skipped")  # skipped on count...
+        self.assertNotIn("deferred", res.get("message", ""))  # ...not on size.
+
     @patch("subprocess.run")
     def test_gc_compaction_flow(self, mock_subprocess):
         mock_client = MagicMock()
@@ -1090,7 +1132,10 @@ class TestGcVerifiesTheUploadBeforeDeletingAnything(unittest.TestCase):
         interval has not elapsed", so a lost lease read as an ordinary no-op and
         the loop kept deleting.  The consolidated packfiles are already verified
         by this point, so the run stops short of finishing its cleanup rather
-        than failing: nothing is lost, and the leftovers are just clutter.
+        than failing: nothing is lost, and the leftovers are just clutter.  It
+        still must not report plain success -- a scheduled job reading only
+        ``status`` (or the exit code) cannot tell a finished compaction from one
+        that left orphans behind.
         """
         client = self._client_with_listing([
             {"name": "pack-1.pack"}, {"name": "pack-2.pack"}, {"name": "pack-3.pack"},
@@ -1104,7 +1149,11 @@ class TestGcVerifiesTheUploadBeforeDeletingAnything(unittest.TestCase):
             self._staged_pack(mock_glob)
             res = compact_repository(client, "repo1", "/path", min_packs=2, verbose=False)
 
-        self.assertEqual(res["status"], "ok")
+        self.assertEqual(
+            res["status"],
+            "incomplete",
+            "a run that could not finish its cleanup must not report success",
+        )
         self.assertEqual(res["deleted_packs"], 0, "the lease was lost, so no pack may be deleted")
         self.assertTrue(res["cleanup_stopped"])
         self.assertIn("another client took over the lock", err.getvalue())

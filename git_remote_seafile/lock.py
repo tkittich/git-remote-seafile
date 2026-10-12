@@ -293,9 +293,11 @@ class RemoteLock:
         except (ValueError, TypeError):
             lock_pid_int = 0
 
-        # Sonnet H-5 / L-2: Dead local PID fast-reclaim
-        # Verify both hostname and machine_id (when available) to prevent false reclaim
-        # in container environments or fleets sharing default hostnames.
+        # Reclaim a lock whose owner is provably gone: same machine, and a PID
+        # that is no longer alive.  Both the hostname *and* machine_id (when
+        # available) are checked, so a container, or a fleet of machines sharing
+        # a default hostname, cannot make another host's live lock look dead
+        # here.
         same_machine = (lock_machine == socket.gethostname())
         if same_machine and lock_machine_id is not None:
             same_machine = (str(lock_machine_id) == _LOCAL_MACHINE_ID)
@@ -769,6 +771,12 @@ class RemoteLock:
         Only the ticket named by our nonce is ever deleted, so if the lease
         lapsed and another client reaped it, this is a no-op and their lock
         state is untouched.
+
+        Unlike ``unlock()`` this stays best-effort and silent on failure, and
+        deliberately so: it runs at the end of a push that has already
+        succeeded, and a lock artifact we failed to delete expires on its own.
+        Raising here would turn a completed push into a reported failure, which
+        trades a real result for a tidier queue.
         """
         if not self.acquired:
             return
@@ -847,6 +855,13 @@ class RemoteLock:
         there was nothing to release -- so the CLI can say "nothing to
         release" instead of reporting success for a no-op.
 
+        A release that was *attempted and failed* is neither of those, and
+        raises ``RepositoryLockedError``.  ``delete_entry`` answers a refused
+        delete with ``False`` rather than an exception, so checking only for
+        exceptions is not enough; both are checked.  The failure this guards
+        against is an operator being told "Forcibly unlocked" over a queue
+        that is still there, whose next move is to push.
+
         What is deleted depends on ``force``.  Without it, the caller has
         proven ownership of the winning ticket, and only that ticket is
         deleted: the rest of the queue belongs to other clients -- a waiter
@@ -879,26 +894,98 @@ class RemoteLock:
                 )
             # Owner proven: delete only the winning ticket, not the queue.
             winner_nonce = status.get("nonce")
-            if winner_nonce:
-                try:
-                    self.client.delete_entry(self.repo_id, f"{self.lock_dir}/{winner_nonce}.json")
-                except Exception:
-                    pass
+            if not winner_nonce:
+                # The queue reports a holder but names no ticket to delete.
+                # Saying "unlocked" here would be a claim with nothing behind
+                # it, which is the whole point of this method's contract.
+                raise RepositoryLockedError(
+                    "The lock queue reports a holder but names no ticket, so there is "
+                    "nothing to delete. Use --force to clear the queue."
+                )
+            self._delete_tickets([f"{winner_nonce}.json"])
             self.acquired = False
             return True
 
-        # Force: sweep every ticket in the directory.
+        # Force: sweep every ticket in the directory.  The listing gets its
+        # own error handling so that a queue we could not read is reported as
+        # that, rather than as "nothing to release".
         try:
             entries = self.client.list_dir(self.repo_id, self.lock_dir)
-            if isinstance(entries, list):
-                for entry in entries:
-                    if entry.get("name", "").endswith(".json"):
-                        self.client.delete_entry(self.repo_id, f"{self.lock_dir}/{entry['name']}")
-        except Exception:
-            pass
+        except Exception as ex:
+            raise RepositoryLockedError(
+                f"Could not list the lock queue to force-unlock ({ex}); nothing was deleted."
+            ) from ex
+        if not isinstance(entries, list):
+            raise RepositoryLockedError(
+                "Could not list the lock queue to force-unlock (unexpected response); "
+                "nothing was deleted."
+            )
 
+        names = [
+            str(entry.get("name", ""))
+            for entry in entries
+            if isinstance(entry, dict) and str(entry.get("name", "")).endswith(".json")
+        ]
+        if not names:
+            # The status check saw a holder but the queue is now empty: another
+            # client released it in between.  "Nothing to release" is the
+            # honest answer, and the CLI prints exactly that.
+            return False
+
+        self._delete_tickets(names)
         self.acquired = False
         return True
+
+    def _delete_tickets(self, names: list[str]) -> None:
+        """Delete lock tickets by name, raising if any of them survives.
+
+        ``delete_entry`` reports a refused delete by returning ``False``
+        instead of raising, so a bare ``try/except`` around it is not enough:
+        the return value has to be checked too.  Every failure is collected
+        rather than raised on the first one, because a *partial* sweep is the
+        state an operator most needs described -- some tickets gone, others
+        still holding the lock.
+        """
+        failed: list[tuple[str, str]] = []
+        for name in names:
+            try:
+                deleted = self.client.delete_entry(self.repo_id, f"{self.lock_dir}/{name}")
+            except Exception as ex:
+                failed.append((name, str(ex)))
+                continue
+            if not deleted:
+                failed.append((name, "the server refused the delete"))
+
+        still_failed: list[str] = []
+        for name, reason in failed:
+            # A refused delete and a ticket another client already removed are
+            # indistinguishable from ``delete_entry``'s answer -- both are
+            # False.  Ask the queue instead of guessing: if the ticket is gone
+            # the lock really is released, and reporting a failure there would
+            # send the operator to ``--force`` on a repository that is already
+            # free.
+            if self._ticket_is_gone(name):
+                continue
+            still_failed.append(f"{name} ({reason})")
+
+        if still_failed:
+            raise RepositoryLockedError(
+                f"Unlock removed {len(names) - len(still_failed)} of {len(names)} lock "
+                f"ticket(s); {len(still_failed)} could not be deleted: "
+                + "; ".join(still_failed)
+            )
+
+    def _ticket_is_gone(self, name: str) -> bool:
+        """True when the ticket is no longer in the queue.
+
+        An unreadable queue is *not* evidence that the ticket is gone, so a
+        failure to read keeps the caller's failure: this method only ever
+        turns a reported failure into a success, never the other way round.
+        """
+        try:
+            return self.client.get_file_text(self.repo_id, f"{self.lock_dir}/{name}") is None
+        except Exception:
+            return False
 
     def __enter__(self) -> RemoteLock:
         self.acquire()

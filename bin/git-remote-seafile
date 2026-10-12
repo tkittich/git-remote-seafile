@@ -8,16 +8,21 @@
 # Python 2 -- only `python3` is guaranteed.  Naming it wrong made every git
 # operation fail with "python: command not found" from inside the helper.
 #
-# `-I` and an explicit bootstrap, rather than `-m`.  `python -m package`
-# prepends the *current working directory* to sys.path, and a remote helper runs
-# with the cwd set to the repository git is operating on -- which may be a tree
-# the user has just cloned and has not read.  A `requests.py` sitting in it
-# shadowed the real module, so `git clone seafile://host/lib/path` in such a tree
-# ran whatever that file contained, as the user.  `-I` (isolated: no cwd on
-# sys.path, no user site-packages, PYTHONPATH ignored) closes that; the bootstrap
-# then puts *this checkout* on sys.path explicitly.  That is also why the
-# launcher no longer exports PYTHONPATH -- `-I` would ignore it, and a variable
-# that is set but has no effect is worse than one that is absent.
+# An explicit bootstrap, rather than `-m`.  `python -m package` prepends the
+# *current working directory* to sys.path, and a remote helper runs with the cwd
+# set to the repository git is operating on -- which may be a tree the user has
+# just cloned and has not read.  A `requests.py` sitting in it shadowed the real
+# module, so `git clone seafile://host/lib/path` in such a tree ran whatever that
+# file contained, as the user.  The bootstrap below closes that by filtering the
+# cwd out of sys.path itself and then putting *this checkout* on it explicitly.
+#
+# `-E`, deliberately not `-I`.  `-I` is `-E -s` and more, and `-s` disables the
+# per-user site directory: a user who ran `pip install --user requests` -- the
+# usual answer when the system interpreter is not writable -- then gets
+# `ModuleNotFoundError: requests` from inside a git command.  `-E` ignores
+# PYTHONPATH (which is why this file no longer exports it) without switching the
+# user's own packages off, and the filter below is what keeps the cwd out.
+# Replacing this with `-I` reintroduces that bug; see tests/test_launcher.py.
 DIR="$(cd "$(dirname "$0")/.." && pwd)"
 
 if command -v python3 >/dev/null 2>&1; then
@@ -33,8 +38,13 @@ fi
 # bootstrap takes its own directory from argv[1] and hands the rest to the CLI
 # unchanged.  argv[0] is set to the program's name so argparse's usage lines
 # read `git-remote-seafile ...` rather than `-c ...`.
-exec "$PY" -I -c '
+#
+# `python -c` puts `''` (the cwd) at sys.path[0], so that is what the filter
+# removes.  It runs before the checkout is inserted, so the checkout is always
+# the first entry and a file in the working directory can never shadow it.
+exec "$PY" -E -c '
 import sys
+sys.path = [p for p in sys.path if p not in ("", ".")]
 sys.path.insert(0, sys.argv[1])
 sys.argv = ["git-remote-seafile"] + sys.argv[2:]
 from git_remote_seafile.cli import main

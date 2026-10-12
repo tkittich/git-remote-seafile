@@ -575,7 +575,7 @@ class TestConcurrencyAndLocking(unittest.TestCase):
         self.assertEqual(lock.ownership_state(), LEASE_HELD)
 
     def test_renew_write_failure_is_unknown_not_held(self):
-        """A renew that cannot REWRITE the ticket is LEASE_UNKNOWN (REVIEW.glm.md G-1).
+        """A renew that cannot REWRITE the ticket is LEASE_UNKNOWN.
 
         The read side distinguishing takeover from unreadable ticket is
         tested above; this is the third state: the ticket is readable and
@@ -682,9 +682,9 @@ class TestConcurrencyAndLocking(unittest.TestCase):
 
         unlock() used to sweep every .json in .git-lock.d even without --force,
         destroying a *waiter's* active ticket: the waiter's next renew_state()
-        would then report LEASE_LOST and abort a push that was never contested
-        (REVIEW.glm.md H-3).  The ownership check authorizes deleting the
-        winning ticket only; --force remains the queue sweep.
+        would then report LEASE_LOST and abort a push that was never contested.
+        The ownership check authorizes deleting the winning ticket only;
+        --force remains the queue sweep.
         """
         import socket
         store = _SharedLockStore()
@@ -735,8 +735,163 @@ class TestConcurrencyAndLocking(unittest.TestCase):
         self.assertTrue(lock.unlock(force=True))
         self.assertEqual([k for k in store.files if ".git-lock.d" in k], [])
 
+    def test_force_unlock_reports_a_refused_delete(self):
+        """A delete the server refuses must not be reported as a successful unlock.
+
+        ``delete_entry`` answers a refused delete with ``False`` rather than an
+        exception, and ``unlock()`` used to ignore its return value entirely --
+        so ``unlock --force`` printed "Forcibly unlocked" over a queue that was
+        still there, and the operator's next move is to push.
+        """
+        store = _SharedLockStore()
+        store.put_ticket("/path/.git-lock.d/a.json",
+                         json.loads(_ticket("a", owner="alice", machine="nodeA")))
+        lock = RemoteLock(store.client("token123"), "repo1", "/path", timeout=5, lease=60, settle=0)
+
+        with patch.object(lock.client, "delete_entry", return_value=False):
+            with self.assertRaises(RepositoryLockedError) as ctx:
+                lock.unlock(force=True)
+
+        message = str(ctx.exception)
+        self.assertIn("0 of 1", message)
+        self.assertIn("a.json", message)
+        self.assertEqual(
+            [k for k in store.files if ".git-lock.d" in k],
+            ["/path/.git-lock.d/a.json"],
+            "the ticket survived, so the unlock must not have claimed it went",
+        )
+
+    def test_force_unlock_reports_a_partial_sweep(self):
+        """A sweep that removed one ticket and not the other says exactly that.
+
+        The partial state is the one an operator most needs described: some
+        tickets gone, others still holding the lock.  Collapsing it to "ok"
+        (or to a bare failure) loses the half that matters.
+        """
+        store = _SharedLockStore()
+        store.put_ticket("/path/.git-lock.d/a.json",
+                         json.loads(_ticket("a", owner="alice", machine="nodeA")))
+        store.put_ticket("/path/.git-lock.d/b.json",
+                         json.loads(_ticket("b", owner="bob", machine="nodeB")))
+        lock = RemoteLock(store.client("token123"), "repo1", "/path", timeout=5, lease=60, settle=0)
+        real_delete = store.delete
+
+        def refuse_b(repo_id, path):
+            if path.endswith("b.json"):
+                return False
+            return real_delete(repo_id, path)
+
+        with patch.object(lock.client, "delete_entry", side_effect=refuse_b):
+            with self.assertRaises(RepositoryLockedError) as ctx:
+                lock.unlock(force=True)
+
+        message = str(ctx.exception)
+        self.assertIn("1 of 2", message)
+        self.assertIn("b.json", message)
+        self.assertNotIn("a.json", message, "only the survivor belongs in the failure list")
+        self.assertEqual([k for k in store.files if ".git-lock.d" in k],
+                         ["/path/.git-lock.d/b.json"])
+
+    def test_force_unlock_succeeds_when_the_ticket_is_already_gone(self):
+        """A ticket another client removed is not a failure.
+
+        ``delete_entry`` reports a refused delete and an already-absent ticket
+        the same way -- ``False`` -- so the sweep re-reads the queue instead of
+        guessing.  This test has no teeth against the *original* code (which
+        returned True regardless); its job is to stop the fix overcorrecting
+        into a failure that would send the operator to ``--force`` on a
+        repository that is already free.
+        """
+        store = _SharedLockStore()
+        lock = RemoteLock(store.client("token123"), "repo1", "/path", timeout=5, lease=60, settle=0)
+        locked = {"locked": True, "owner": "alice", "machine": "nodeA", "nonce": "a"}
+        entry = [{"type": "file", "name": "a.json", "mtime": int(time.time())}]
+
+        with patch.object(RemoteLock, "get_status", return_value=locked), \
+                patch.object(lock.client, "list_dir", return_value=entry), \
+                patch.object(lock.client, "delete_entry", return_value=False), \
+                patch.object(lock.client, "get_file_text", return_value=None):
+            self.assertTrue(lock.unlock(force=True))
+
+    def test_force_unlock_raises_when_the_queue_cannot_be_listed(self):
+        """A queue we could not read is 'nothing was deleted', not a success.
+
+        The listing needs its own error handling: without it a failed list
+        falls straight through to the ``return True`` that follows the sweep,
+        which is the shape the original code had.
+        """
+        store = _SharedLockStore()
+        lock = RemoteLock(store.client("token123"), "repo1", "/path", timeout=5, lease=60, settle=0)
+        locked = {"locked": True, "owner": "alice", "machine": "nodeA", "nonce": "a"}
+
+        with patch.object(RemoteLock, "get_status", return_value=locked), \
+                patch.object(lock.client, "list_dir", side_effect=RuntimeError("listing blew up")):
+            with self.assertRaises(RepositoryLockedError) as ctx:
+                lock.unlock(force=True)
+
+        message = str(ctx.exception)
+        self.assertIn("listing blew up", message)
+        self.assertIn("nothing was deleted", message)
+
+    def test_force_unlock_says_nothing_to_release_when_the_queue_is_empty(self):
+        """An empty queue is 'nothing to release', not a successful sweep.
+
+        The status check saw a holder, but another client released it in
+        between; the CLI prints "nothing to release" and exits 0, which is
+        true of the queue as the sweep found it.
+        """
+        store = _SharedLockStore()
+        lock = RemoteLock(store.client("token123"), "repo1", "/path", timeout=5, lease=60, settle=0)
+        locked = {"locked": True, "owner": "alice", "machine": "nodeA", "nonce": "a"}
+
+        with patch.object(RemoteLock, "get_status", return_value=locked), \
+                patch.object(lock.client, "list_dir", return_value=[]):
+            self.assertFalse(lock.unlock(force=True))
+
+    def test_non_force_unlock_reports_a_refused_delete(self):
+        """The owner's own release must not claim success on a refused delete.
+
+        The non-force path swallowed every exception and returned True, so the
+        CLI printed "Unlocked repository" while our own ticket was still in the
+        queue holding the lock.
+        """
+        store = _SharedLockStore()
+        owner_id = hashlib.sha256(b"token123").hexdigest()[:8]
+        winner = _ticket("winner-nonce", owner=owner_id, machine=socket.gethostname(),
+                         timestamp=time.time() - 10, order_ts=time.time() - 10,
+                         lease=60, pid=os.getpid())
+        store.put_ticket("/path/.git-lock.d/winner-nonce.json", json.loads(winner))
+        lock = RemoteLock(store.client("token123"), "repo1", "/path", timeout=5, lease=60, settle=0)
+
+        with patch.object(lock.client, "delete_entry", return_value=False):
+            with self.assertRaises(RepositoryLockedError) as ctx:
+                lock.unlock(force=False)
+
+        self.assertIn("winner-nonce.json", str(ctx.exception))
+        self.assertEqual([k for k in store.files if ".git-lock.d" in k],
+                         ["/path/.git-lock.d/winner-nonce.json"])
+
+    def test_non_force_unlock_raises_when_the_winner_names_no_ticket(self):
+        """A holder with no ticket to delete is not a release.
+
+        The queue said locked, but the winner carried no nonce, so there was
+        nothing to delete; answering "unlocked" would be a claim with nothing
+        behind it.
+        """
+        store = _SharedLockStore()
+        lock = RemoteLock(store.client("token123"), "repo1", "/path", timeout=5, lease=60, settle=0)
+        owner_id = hashlib.sha256(b"token123").hexdigest()[:8]
+        locked = {"locked": True, "owner": owner_id, "machine": socket.gethostname(),
+                  "nonce": None}
+
+        with patch.object(RemoteLock, "get_status", return_value=locked):
+            with self.assertRaises(RepositoryLockedError) as ctx:
+                lock.unlock(force=False)
+
+        self.assertIn("names no ticket", str(ctx.exception))
+
     def test_unlock_refuses_to_act_on_an_unverifiable_queue(self):
-        """A listing failure must not read as 'nothing to release' (REVIEW.glm.md H-3/G-13).
+        """A listing failure must not read as 'nothing to release'.
 
         The old behavior returned False for a get_status() that swallowed a
         listing error, so the CLI printed 'not locked; nothing to release'
@@ -760,7 +915,7 @@ class TestConcurrencyAndLocking(unittest.TestCase):
         self.assertIn("unverifiable", str(ctx.exception))
 
     def test_get_status_reports_a_listing_failure_as_unknown_not_unlocked(self):
-        """get_status must distinguish 'cannot tell' from 'unlocked' (REVIEW.glm.md H-4/G-3).
+        """get_status must distinguish 'cannot tell' from 'unlocked'.
 
         A transient server error during lock-status used to print 'UNLOCKED'
         and exit 0 -- exactly the false confidence 'unlock --force' feeds on.
@@ -779,7 +934,7 @@ class TestConcurrencyAndLocking(unittest.TestCase):
         self.assertIn("transient server error", status.get("error", ""))
 
     def test_mixed_ticket_formats_fall_back_to_mtime_ordering(self):
-        """One legacy ticket forces the whole queue onto mtime ordering (REVIEW.glm.md G-12).
+        """One legacy ticket forces the whole queue onto mtime ordering.
 
         _scan_tickets' fallback: when any visible ticket lacks ``order_ts``,
         every ticket is ordered by (mtime, 0, nonce) -- comparing an order_ts
@@ -879,8 +1034,8 @@ class TestConcurrencyAndLocking(unittest.TestCase):
             mock_ctypes = MagicMock()
             # _is_pid_alive builds its own WinDLL("kernel32",
             # use_last_error=True) and reads the failure through
-            # ctypes.get_last_error() -- the documented pattern (REVIEW.glm.md
-            # H-2): reading GetLastError() through ctypes.windll can return a
+            # ctypes.get_last_error() -- the documented pattern: reading
+            # GetLastError() through ctypes.windll can return a
             # stale value.  The mock therefore answers get_last_error().
             mock_ctypes.get_last_error.return_value = 5  # ERROR_ACCESS_DENIED
             mock_ctypes.WinDLL.return_value = mock_kernel32

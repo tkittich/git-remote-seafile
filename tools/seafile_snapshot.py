@@ -177,7 +177,10 @@ guesses wherever a guess would be silent:
 * **Neither the source nor the vault may live in a Seafile-synced folder** --
   the sync client rewrites files underneath it and competes with git for every
   path, which is the exact problem this tool exists to avoid.  Checked at
-  startup, before anything is written.
+  startup, before anything is written.  Two states make a containing library
+  harmless and are let through with an explanatory note: its auto sync is
+  disabled in the client, or the path is covered by that library's
+  seafile-ignore.txt.  ``--allow-synced`` overrides every remaining refusal.
 * **``--code-remote`` must name a real remote** of the source, so a typo fails
   before the snapshot instead of after it.
 * **Flags that would be ignored are errors, not no-ops.**  ``--ref`` without
@@ -191,9 +194,11 @@ from __future__ import annotations
 import argparse
 import fnmatch
 import os
+import shutil
 import socket
 import subprocess
 import sys
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
@@ -244,21 +249,196 @@ class SnapshotError(RuntimeError):
 #: ``GIT_TIMEOUT`` is not one.
 GIT_TIMEOUT = 600
 
+#: Long-running steps (staging a large tree, the first push of a large vault,
+#: cloning it for a restore) would otherwise be silent for tens of minutes and
+#: read as a hang: git prints progress only to a terminal, and this tool runs
+#: under schedulers.  While a child marked with ``status=`` is still running,
+#: one line per this many seconds goes to stderr instead -- enough to show the
+#: step is alive and how far it has got without chattering on short runs.
+STATUS_INTERVAL = 60
 
-def _run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[Any]:
+#: A status-marked step is killed when it shows no measurable progress for
+#: this long: bytes written into its ``measure_dir``, or output streamed from
+#: its stderr via ``stream_stderr``.  That replaces a flat wall-clock timeout,
+#: which cannot tell "hashing a 130 GB tree" (fine) from "dead disk" (not):
+#: the first keeps making objects appear for an hour, the second makes none.
+#: The one blind spot is the helper's Seafile upload phase during a push,
+#: which is silent while it runs -- raise this in the source if your uplink
+#: is slow enough that 30 quiet minutes are normal there.
+STALL_LIMIT = 1800
+
+
+class _UnsetStall:
+    """Sentinel meaning "use :data:`STALL_LIMIT`" (distinct from ``None``)."""
+
+    __slots__ = ()
+
+
+_UNSET_STALL = _UnsetStall()
+
+
+def _dir_size(path: Path) -> int:
+    """Total bytes of regular files under *path*; unreadable entries count as zero."""
+    total = 0
+    for dirpath, _dirnames, filenames in os.walk(path):
+        for name in filenames:
+            try:
+                total += os.stat(os.path.join(dirpath, name)).st_size
+            except OSError:
+                pass
+    return total
+
+
+def _fmt_bytes(num: float) -> str:
+    if num >= 1073741824:
+        return f"{num / 1073741824:.1f} GiB"
+    if num >= 1048576:
+        return f"{num / 1048576:.0f} MiB"
+    return f"{int(num)} B"
+
+
+def _fmt_elapsed(seconds: float) -> str:
+    if seconds >= 3600:
+        hours, rem = divmod(int(seconds), 3600)
+        return f"{hours}h{rem // 60:02d}m"
+    if seconds >= 60:
+        minutes, secs = divmod(int(seconds), 60)
+        return f"{minutes}m{secs:02d}s"
+    return f"{seconds:.1f}s"
+
+
+def _run(
+    cmd: list[str],
+    *,
+    status: str | None = None,
+    measure_dir: Path | None = None,
+    stream_stderr: bool = False,
+    stall_limit: "float | None | _UnsetStall" = _UNSET_STALL,
+    **kwargs: Any,
+) -> subprocess.CompletedProcess[Any]:
     """``subprocess.run`` bounded by ``GIT_TIMEOUT``, failing as a ``SnapshotError``.
 
     ``subprocess.run`` already kills the child when the timeout fires; this only
     converts the bare ``TimeoutExpired`` into the tool's own error type, so the
     message names the command that hung instead of arriving as a traceback.
+
+    When ``status`` is given the child runs under ``Popen`` with a watchdog
+    thread that prints one line to stderr every :data:`STATUS_INTERVAL` seconds
+    until it exits -- "still staging the tree ... 4m12s (9 GiB written to
+    objects)" -- because nothing else speaks during such a step.  Instead of a
+    flat wall-clock deadline, the watchdog kills only when *progress* stops for
+    :data:`STALL_LIMIT` seconds: progress is bytes newly present under
+    ``measure_dir`` plus output relayed by ``stream_stderr``, so a slow-but-real
+    hour-long stage survives while a dead disk dies after 30 quiet minutes.
+    ``stall_limit=None`` selects heartbeat-only mode for steps with no signal
+    at all (the restore verification re-reads every file and writes nothing):
+    the lines keep coming, but nothing is ever killed.
+
+    With ``stream_stderr`` the child's stderr is a pipe this function drains to
+    our own stderr line by line as it arrives -- a live push then shows git's
+    "Writing objects" output and the remote helper's notices (including the
+    post-push auto-compaction) immediately, and every relayed byte also counts
+    as progress for the watchdog.  ``CompletedProcess.stderr`` is ``None`` in
+    that mode; callers must tolerate it.
     """
-    kwargs.setdefault("timeout", GIT_TIMEOUT)
+    if status is None:
+        kwargs.setdefault("timeout", GIT_TIMEOUT)
+        try:
+            return subprocess.run(cmd, **kwargs)
+        except subprocess.TimeoutExpired:
+            raise SnapshotError(
+                f"git {' '.join(cmd[1:])} did not finish within {GIT_TIMEOUT:g}s and was killed"
+            ) from None
+
+    # isinstance, not ``is``: mypy narrows the union on the former, and the
+    # sentinel's type is as good a discriminator as its identity.
+    limit = STALL_LIMIT if isinstance(stall_limit, _UnsetStall) else stall_limit
+
+    stdin_data = kwargs.pop("input", None)
+    if stdin_data is not None and kwargs.get("stdin") != subprocess.PIPE:
+        # communicate() can only feed a pipe we opened ourselves.
+        kwargs["stdin"] = subprocess.PIPE
+    kwargs.pop("timeout", None)
+    proc = subprocess.Popen(cmd, **kwargs)
+    stop = threading.Event()
+    state = {"killed": False, "streamed_bytes": 0}
+    baseline = _dir_size(measure_dir) if measure_dir is not None else 0
+
+    def dir_growth() -> int:
+        if measure_dir is None:
+            return 0
+        return max(0, _dir_size(measure_dir) - baseline)
+
+    def watch() -> None:
+        start = time.monotonic()
+        last_seen = 0
+        last_progress = start
+        while not stop.wait(STATUS_INTERVAL):
+            now = time.monotonic()
+            seen = dir_growth() + state["streamed_bytes"]
+            if seen > last_seen:
+                last_seen, last_progress = seen, now
+            line = f"still {status} ... {_fmt_elapsed(now - start)}"
+            if measure_dir is not None and dir_growth() > 0:
+                line += f" ({_fmt_bytes(dir_growth())} written to {measure_dir.name})"
+            sys.stderr.write(line + "\n")
+            sys.stderr.flush()
+            if limit is not None and now - last_progress >= limit:
+                state["killed"] = True
+                proc.kill()
+                break
+
+    threads: list[threading.Thread] = [threading.Thread(target=watch, daemon=True)]
+    if stream_stderr:
+        # communicate() would also read a stderr pipe it sees, so in this mode
+        # every pipe has exactly one reader: the pump takes stderr, the main
+        # thread takes stdout, and a feeder writes stdin.
+        def pump() -> None:
+            assert proc.stderr is not None
+            for raw in proc.stderr:
+                # Bytes when the caller did not open a text pipe; count first,
+                # because the decoded form no longer has the true byte length.
+                state["streamed_bytes"] += len(raw)
+                if isinstance(raw, bytes):
+                    raw = raw.decode("utf-8", errors="replace")
+                sys.stderr.write(raw)
+                sys.stderr.flush()
+
+        threads.append(threading.Thread(target=pump, daemon=True))
+
+    feeder = None
+    if stdin_data is not None and stream_stderr:
+        def feed() -> None:
+            assert proc.stdin is not None
+            try:
+                proc.stdin.write(stdin_data)
+                proc.stdin.close()
+            except (BrokenPipeError, ValueError):
+                pass  # the child died before reading its input; we error out below
+
+        feeder = threading.Thread(target=feed, daemon=True)
+
+    for thread in threads:
+        thread.start()
+    if feeder is not None:
+        feeder.start()
     try:
-        return subprocess.run(cmd, **kwargs)
-    except subprocess.TimeoutExpired:
+        if stream_stderr:
+            err = None
+            out = proc.stdout.read() if proc.stdout is not None else None
+            proc.wait()
+        else:
+            out, err = proc.communicate(stdin_data)
+    finally:
+        stop.set()
+        for thread in [*threads, feeder] if feeder is not None else threads:
+            thread.join(timeout=5)
+    if state["killed"]:
         raise SnapshotError(
-            f"git {' '.join(cmd[1:])} did not finish within {GIT_TIMEOUT:g}s and was killed"
+            f"git {' '.join(cmd[1:])} made no measurable progress for "
+            f"{limit:g}s and was killed (stalled?)"
         ) from None
+    return subprocess.CompletedProcess(cmd, proc.returncode, out, err)
 
 
 def git(
@@ -269,6 +449,9 @@ def git(
     cwd: Path,
     check: bool = True,
     stdin: str | None = None,
+    status: str | None = None,
+    measure_dir: Path | None = None,
+    live_stderr: bool = False,
 ) -> subprocess.CompletedProcess[str]:
     """Run git against an explicit --git-dir/--work-tree pair.
 
@@ -285,6 +468,17 @@ def git(
     ``GIT_TERMINAL_PROMPT=0`` plus a detached stdin turn a credential prompt
     under a scheduler into a fast, clean failure instead of a hang holding
     the vault lock.
+
+    ``status``/``measure_dir`` are passed to :func:`_run` for steps that run
+    long enough to look dead (staging, pushing, restoring).  With
+    ``live_stderr`` the child's stderr is shown as it happens instead of being
+    captured until the command returns: a push then shows git's and the remote
+    helper's own output immediately -- including the post-push auto-compaction
+    notice.  When a ``status`` watchdog is active too, the stream is piped so
+    every relayed byte also counts as progress against the stall limit; with no
+    watchdog there is nothing to count it for, and plain inheritance is used.
+    In either live mode callers must tolerate ``proc.stderr`` being ``None`` on
+    failure (the text already reached the user directly).
     """
     cmd = ["git", f"--git-dir={git_dir}"]
     if work_tree is not None:
@@ -298,6 +492,16 @@ def git(
     ):
         env.pop(var, None)
     env["GIT_TERMINAL_PROMPT"] = "0"
+    # Every path this tool hands git is meant literally.  Without this, the
+    # entries fed through `--pathspec-from-file` are *pathspecs*: a file named
+    # `a[b].txt` also matches an unrelated `ab.txt` and both get staged, and a
+    # name that reads as magic (`*.log`, `:x`) can make `git add` fail outright
+    # rather than stage the file.  The exclude pre-filter has already decided
+    # exactly which paths may be staged, so glob semantics can only add
+    # mistakes -- and a mistake here means an excluded file's bytes reaching the
+    # vault, which is the one thing the pre-filter exists to prevent.
+    env["GIT_LITERAL_PATHSPECS"] = "1"
+    stream = bool(live_stderr and status is not None)
     proc = _run(
         cmd,
         cwd=str(cwd),
@@ -308,7 +512,10 @@ def git(
         input=stdin,
         stdin=subprocess.DEVNULL if stdin is None else None,
         stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        stderr=subprocess.PIPE if (not live_stderr or stream) else None,
+        status=status,
+        measure_dir=measure_dir,
+        stream_stderr=stream,
     )
     if check and proc.returncode != 0:
         detail = (proc.stderr or proc.stdout).strip()
@@ -515,6 +722,95 @@ def ensure_byte_exact(
     # overrides an earlier one within the same attributes file.
     if BYTE_EXACT_MARKER not in existing:
         attributes.write_text(existing + BYTE_EXACT_ATTRIBUTES, encoding="utf-8")
+
+
+def disable_object_compression(vault: Path, git_dir: Path) -> None:
+    """Set ``core.compression=0`` so new objects skip real deflation.
+
+    Level 0 keeps zlib's wrapper but stores the content in uncompressed blocks:
+    nothing shrinks, yet git reads it back byte-identical.  Measured on a tree
+    dominated by already-compressed archives, that traded zero bytes for 3x the
+    staging speed (41 -> 126 MiB/s).  Existing objects keep the form they were
+    written in -- a blob SHA covers content, not storage encoding -- so flipping
+    this either way is safe at any point.
+    """
+    if _read_local_config_map(vault).get("core.compression") == ["0"]:
+        return
+    git(git_dir, vault, ["config", "core.compression", "0"], cwd=vault)
+
+
+def _object_store_stats(git_dir: Path, work_tree: Path) -> dict[str, int]:
+    """The numbers from ``git count-objects -v``, as ints."""
+    proc = git(git_dir, None, ["count-objects", "-v"], cwd=work_tree)
+    stats: dict[str, int] = {}
+    for line in proc.stdout.splitlines():
+        if ":" not in line:
+            continue
+        key, _, value = line.partition(":")
+        try:
+            stats[key.strip()] = int(value.strip())
+        except ValueError:
+            pass  # newer git versions add non-numeric lines; the ones we print are ints
+    return stats
+
+
+def maintain_vault(vault: Path, *, repack: bool = False) -> int:
+    """Housekeep the vault's object store locally.
+
+    Everything here works on ``.git/objects`` alone -- the worktree and the
+    source tree are never read for content or written at all, which is what
+    makes this safe beside a live snapshot job (the two only contend for git's
+    lock).  A repack of a large vault reads every object once and writes the
+    new packfile(s) next to the old ones until they are swapped in, so the
+    free-space check below uses the whole store size as the headroom it needs.
+
+    Without *repack* this is pure reporting: what is loose vs packed, how much
+    that is, and whether a repack would fit on this volume.
+    """
+    git_dir = vault / ".git"
+    if not git_dir.is_dir():
+        raise SnapshotError(f"no vault repository at {vault} -- nothing to maintain")
+
+    stats = _object_store_stats(git_dir, vault)
+    loose_kb = stats.get("size", 0)
+    packed_kb = stats.get("size-pack", 0)
+    store_bytes = (loose_kb + packed_kb) * 1024
+    free = shutil.disk_usage(vault).free
+
+    print(f"vault object store: {stats.get('count', 0)} loose object(s), "
+          f"{_fmt_bytes(loose_kb * 1024)} loose, {_fmt_bytes(packed_kb * 1024)} "
+          f"in {stats.get('packs', 0)} packfile(s)")
+    if stats.get("garbage", 0):
+        print(f"note: git reports {stats['garbage']} unreachable object(s); "
+              "--repack will prune them")
+
+    if not repack:
+        need = _fmt_bytes(store_bytes)
+        have = _fmt_bytes(free)
+        verdict = "fits" if free >= store_bytes else "does NOT fit -- free space first"
+        print(f"a repack would need roughly {need} of headroom; this volume has {have} ({verdict}).")
+        print("re-run with --maintain --repack to consolidate.")
+        return 0
+
+    if free < store_bytes:
+        raise SnapshotError(
+            f"refusing to repack: the object store is {_fmt_bytes(store_bytes)} but only "
+            f"{_fmt_bytes(free)} is free on this volume; a repack keeps the old packfiles "
+            "until the new ones are complete, so it needs roughly that much headroom"
+        )
+
+    print("repacking (this reads every object once; large vaults take a while) ...")
+    git(
+        git_dir, None, ["repack", "-a", "-d"], cwd=vault,
+        status="repacking the vault's object store", measure_dir=git_dir / "objects",
+    )
+    git(git_dir, None, ["prune"], cwd=vault)
+
+    after = _object_store_stats(git_dir, vault)
+    print(f"done: {after.get('count', 0)} loose object(s), "
+          f"{_fmt_bytes(after.get('size-pack', 0) * 1024)} in "
+          f"{after.get('packs', 0)} packfile(s).")
+    return 0
 
 
 _KERNEL32: "object | None" = None
@@ -984,12 +1280,13 @@ def stageable_paths(git_dir: Path, work_tree: Path) -> list[str]:
     which is exactly the set ``-f`` forces in -- adding ``--exclude-standard``
     would silently drop the ignored files that ``-f`` exists to capture.
 
-    Two adjustments make the list safe to hand back as pathspecs.  A nested
-    repository is reported as ``nested/`` while the index records it as
-    ``nested``, so the trailing slash goes.  And ``--deleted`` entries are
-    dropped: they are in the index but gone from disk, and a pathspec naming a
-    missing file makes ``git add`` fail outright ("did not match any files")
-    rather than staging the deletion.
+    Two adjustments make the list safe to hand back as literal pathspecs (the
+    git environment sets ``GIT_LITERAL_PATHSPECS=1``, so these names are never
+    read as globs).  A nested repository is reported as ``nested/`` while the
+    index records it as ``nested``, so the trailing slash goes.  And
+    ``--deleted`` entries are dropped: they are in the index but gone from disk,
+    and a pathspec naming a missing file makes ``git add`` fail outright ("did
+    not match any files") rather than staging the deletion.
     """
     listing = git(git_dir, work_tree, ["ls-files", "-z", "-c", "-o"], cwd=work_tree).stdout
     deleted = {
@@ -1050,6 +1347,8 @@ def build_snapshot(
                 ["add", "-A", "-f", "--pathspec-from-file=-", "--pathspec-file-nul"],
                 cwd=work_tree,
                 stdin="\0".join(kept) + "\0",
+                status="staging the tree",
+                measure_dir=git_dir / "objects",
             )
         # `git add` stages no deletion through a pathspec, and this index
         # persists between runs, so anything it still holds that is not in
@@ -1067,7 +1366,14 @@ def build_snapshot(
         if missed:
             excluded = sorted(set(excluded) | set(missed))
     else:
-        git(git_dir, work_tree, ["add", "-A", "-f", "."], cwd=work_tree)
+        git(
+            git_dir,
+            work_tree,
+            ["add", "-A", "-f", "."],
+            cwd=work_tree,
+            status="staging the tree",
+            measure_dir=git_dir / "objects",
+        )
         excluded = []
 
     tree = git(git_dir, work_tree, ["write-tree"], cwd=work_tree).stdout.strip()
@@ -1316,15 +1622,26 @@ def push_snapshot(
     try:
         for attempt in (1, 2):
             print(f"pushing to {remote} ...")
+            # live_stderr: the first push of a large vault runs for hours, and
+            # after it succeeds the helper auto-compacts the repository -- its
+            # notice goes to stderr, which we stream instead of buffering so a
+            # second long silence does not read as a dead run.
             proc = git(
-                git_dir, work_tree, ["push", remote, spec], cwd=work_tree, check=False
+                git_dir,
+                work_tree,
+                ["push", remote, spec],
+                cwd=work_tree,
+                check=False,
+                status=f"pushing to {remote}",
+                live_stderr=True,
             )
             if proc.returncode == 0:
                 print("push complete")
                 return
 
             sys.stdout.write(proc.stdout or "")
-            sys.stderr.write(proc.stderr or "")
+            if proc.stderr is not None and proc.stderr:
+                sys.stderr.write(proc.stderr)
 
             if attempt == 1:
                 try:
@@ -1391,6 +1708,8 @@ def _checkout(repo: Path, rev: str, *, detach: bool = False) -> None:
         errors="replace",
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
+        status=f"restoring files into {repo}",
+        measure_dir=repo,
     )
     if proc.returncode != 0:
         raise SnapshotError(
@@ -1501,6 +1820,10 @@ def verify_restore(repo: Path, rev: str) -> list[str]:
         input=b"\n".join(paths) + b"\n",
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
+        status="verifying restored files (re-hashing every path)",
+        # heartbeat-only: this step reads every file and writes nothing, so a
+        # stall limit would have no signal to watch.
+        stall_limit=None,
     )
     if proc.returncode != 0:
         raise SnapshotError(
@@ -1549,13 +1872,17 @@ def restore(
 
     into.parent.mkdir(parents=True, exist_ok=True)
     print(f"cloning {remote} -> {into} (no checkout) ...")
+    # stderr is inherited, not captured: a clone of a large vault transfers for
+    # hours, and git's "Receiving objects" progress goes to the terminal only
+    # when it is not being piped.  The watchdog adds one line per minute on top.
     proc = _run(
         ["git", "clone", "--no-checkout", remote, str(into)],
         text=True,
         encoding="utf-8",
         errors="replace",
         stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
+        status=f"cloning {remote}",
+        measure_dir=into / ".git",
     )
     if proc.returncode != 0:
         raise SnapshotError(
@@ -1673,26 +2000,28 @@ def default_vault_for(source: Path) -> Path:
     return source.with_name(source.name + "-vault")
 
 
-def directory_is_seafile_synced(path: Path) -> bool:
-    """Whether ``path`` is inside one of the desktop client's synced libraries.
+def matched_synced_libraries(path: Path) -> list[dict]:
+    """The desktop client's synced libraries whose worktree contains ``path``.
 
-    Only meaningful where the Seafile client is installed; on a machine without
-    it there are no synced libraries and this is simply ``False``.  Read
-    failures (a corrupt repo.db, an import problem) also return ``False`` --
-    the caller treats that as "not synced", so the failure is announced on
-    stderr first: silently answering "safe" for a state nobody verified is the
-    one thing a fail-closed tool must not do.
+    One dict per containing library, carrying the facts a safety decision needs:
+    its name and worktree, whether auto sync is enabled for it (a disable is
+    persisted in repo.db as RepoProperty 'auto-sync' = 'false', so this survives
+    client restarts -- unlike the global pause, which lives only in the daemon's
+    memory), and which seafile-ignore.txt rule covers ``path`` relative to that
+    worktree, if any.
+
+    An empty list means "not under a synced folder" -- including when the check
+    itself could not run.  Read failures (a corrupt repo.db, an import problem)
+    mean "cannot tell", and callers treat empty as safe, so the failure is
+    announced on stderr first: silently answering "safe" for a state nobody
+    verified is the one thing a fail-closed tool must not do -- the same
+    reasoning as safety.check_preflight_safety's transient-failure warning.
     """
     target = path.resolve()
     try:
         import git_remote_seafile.safety as _safety  # sys.path set above
         libraries = _safety.discover_local_synced_libraries()
     except Exception as ex:
-        # Fail LOUD, not open: a corrupt repo.db or an import problem means
-        # "cannot tell", and the caller treats False as "safe to write here".
-        # The docstring's contract ("cannot tell, not safe") is only honest if
-        # the failure is announced -- the same reasoning as
-        # safety.check_preflight_safety's transient-failure warning.
         print(
             f"Warning: could not check for Seafile-synced folders ({ex}); "
             "treating the destination as not synced, so the guard could not run. "
@@ -1700,20 +2029,34 @@ def directory_is_seafile_synced(path: Path) -> bool:
             file=sys.stderr,
         )
         sys.stderr.flush()
-        return False
+        return []
+    matched: list[dict] = []
     for lib in libraries:
         worktree = lib.get("worktree")
         if worktree is None:
             continue
-        try:
-            target.relative_to(Path(worktree).resolve())
-            return True
-        except ValueError:
+        # Case-insensitive on Windows, identity on POSIX: a library synced to
+        # C:\Users\me\Seafile and a vault path spelled c:\users\me\seafile\vault
+        # are one directory, and a literal comparison would let the vault
+        # escape the guard -- which for the vault is the only guard there is.
+        rel = _safety.safe_relative_to(target, Path(worktree))
+        if rel is None:
             continue
-    return False
+        # read_seafile_ignore_rules announces an unreadable file on stderr and
+        # returns [] for it, so a missing *or* broken ignore file yields no rule:
+        # when in doubt the path counts as one the client would touch, and the
+        # refusal stands.
+        rules = _safety.read_seafile_ignore_rules(Path(worktree))
+        matched.append({
+            "name": lib.get("name", worktree),
+            "worktree": Path(worktree),
+            "auto_sync": lib.get("auto_sync", True),
+            "ignore_rule": _safety.covering_ignore_rule(rel.as_posix(), rules),
+        })
+    return matched
 
 
-def check_paths_are_unsynced(*paths: tuple[str, Path]) -> None:
+def check_paths_are_unsynced(*paths: tuple[str, Path], allow_synced: bool = False) -> None:
     """Refuse to snapshot a source, or write a vault, inside a synced library.
 
     This is the tool's own version of the helper's Trap 1/Trap 2 guard, and the
@@ -1722,17 +2065,56 @@ def check_paths_are_unsynced(*paths: tuple[str, Path]) -> None:
     path Git touches.  The helper cannot see the vault (it is told about the
     *source* via ``GIT_WORK_TREE`` and nothing else), so for the vault this check
     is the only line of defence.
+
+    A containing library is harmless -- and let through with a note on stderr
+    saying exactly why -- when its auto sync is disabled (the daemon then
+    un-watches that worktree) or the path is covered by that library's
+    seafile-ignore.txt (the client never touches it).  Re-enabling auto sync or
+    removing the rule makes this guard refuse again.  ``allow_synced`` skips the
+    refusal outright; it is the escape hatch for everything else and puts the
+    risk on the person passing it, like --allow-shared-remote does.
     """
     for label, path in paths:
-        if directory_is_seafile_synced(path):
-            raise SnapshotError(
-                f"{label} is inside a Seafile-synced library:\n  {path}\n"
-                f"The sync client rewrites files underneath it and competes with "
-                f"Git for every path, which is the exact problem this tool "
-                f"exists to avoid.\n"
-                f"Move it outside the synced folder -- e.g. under C:/code/ -- "
-                f"or sync that library with 'auto sync' disabled."
+        matched = matched_synced_libraries(path)
+        if not matched:
+            continue
+
+        live = [m for m in matched
+                if m["auto_sync"] and m["ignore_rule"] is None]
+        names = ", ".join(str(m["name"]) for m in matched)
+
+        if allow_synced:
+            print(
+                f"warning: --allow-synced overrides the synced-folder guard for "
+                f"{label} ({path}); library {names} can still rewrite files under it",
+                file=sys.stderr,
             )
+            sys.stderr.flush()
+            continue
+
+        if not live:
+            for m in matched:
+                reason = (f"covered by seafile-ignore.txt rule {m['ignore_rule']!r}"
+                          if m["auto_sync"] else "its auto sync is disabled")
+                print(
+                    f"note: {label} ({path}) is inside synced library "
+                    f"{m['name']} ({m['worktree']}), but the client will not touch it: "
+                    f"{reason}. Re-enabling auto sync, or removing that ignore rule, "
+                    f"makes this guard refuse again.",
+                    file=sys.stderr,
+                )
+            sys.stderr.flush()
+            continue
+
+        raise SnapshotError(
+            f"{label} is inside a Seafile-synced library ({names}):\n  {path}\n"
+            f"The sync client rewrites files underneath it and competes with "
+            f"Git for every path, which is the exact problem this tool "
+            f"exists to avoid.\n"
+            f"Move it outside the synced folder -- e.g. under C:/code/ -- or "
+            f"sync that library with 'auto sync' disabled; pass --allow-synced "
+            f"to take responsibility for the risk instead."
+        )
 
 
 def _read_config_key(git_dir: Path, key: str) -> str:
@@ -2043,6 +2425,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "\nnote: neither the source nor the vault may live inside a\n"
             "Seafile-synced folder -- the sync client rewrites files underneath\n"
             "it and competes with git for every path. Checked at startup.\n"
+            "The guard lets a synced path through when that library's auto sync\n"
+            "is disabled or seafile-ignore.txt covers it; --allow-synced\n"
+            "overrides the refusal entirely.\n"
+            "\nlong steps (staging large trees, first pushes of large vaults,\n"
+            "restores) print one status line to stderr every minute while they\n"
+            "run; push and clone also stream git's own progress live.  A step\n"
+            "with no measurable progress for 30 minutes is killed as stalled.\n"
+            "The remote helper auto-compacts a busy vault after each push --\n"
+            "that runs inside the push step and shows up under its status lines.\n"
         ),
     )
     parser.add_argument(
@@ -2152,10 +2543,43 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "repository, so this publishes them; refused by default",
     )
     parser.add_argument(
+        "--allow-synced",
+        action="store_true",
+        help="proceed even when the source or vault (or a restore destination) "
+        "is inside a Seafile-synced library. The guard already lets this through "
+        "when that library's auto sync is disabled or the path is covered by its "
+        "seafile-ignore.txt; this overrides every remaining refusal and puts the "
+        "risk of the client rewriting files under Git on you",
+    )
+    parser.add_argument(
         "--verify",
         action="store_true",
         help="with --restore, also run 'git fsck' on the clone. Byte-exactness "
         "is checked on every restore regardless",
+    )
+    parser.add_argument(
+        "--no-object-compression",
+        action="store_true",
+        help=        "disable deflation for newly written vault objects "
+        "(repo-local core.compression=0, stored at full size). For trees "
+        "dominated by already-"
+        "compressed payloads -- zip/SAFE archives, images, video -- deflation "
+        "saves nothing and costs 2-3x the staging time; this flag removes it. "
+        "For compressible text-heavy trees it trades some vault size for speed",
+    )
+    parser.add_argument(
+        "--maintain",
+        action="store_true",
+        help="local vault housekeeping instead of a snapshot: by default just "
+        "reports on the object store; with --repack it consolidates loose "
+        "objects into packfiles and prunes unreachable ones. Never touches the "
+        "source tree or any remote",
+    )
+    parser.add_argument(
+        "--repack",
+        action="store_true",
+        help="with --maintain, actually repack + prune the local vault's object "
+        "store (without it, --maintain only reports)",
     )
     return parser.parse_args(argv)
 
@@ -2170,7 +2594,27 @@ def validate_args(args: argparse.Namespace) -> None:
     """
     problems: list[str] = []
 
-    if not args.restore:
+    if args.maintain and args.restore:
+        problems.append("--maintain and --restore are different modes")
+    if args.maintain:
+        # Housekeeping works on the vault's object store alone, so every flag
+        # that exists for taking or restoring a snapshot is dead weight here.
+        for flag, value in (
+            ("--dry-run", args.dry_run),
+            ("--message", args.message),
+            ("--code-remote", args.code_remote),
+            ("--exclude", args.exclude),
+            ("--default-excludes", args.default_excludes),
+            ("--reset-to-remote", args.reset_to_remote),
+            ("--allow-shared-remote", args.allow_shared_remote),
+            ("--no-push", args.no_push),
+            ("--verify", args.verify),
+            ("--into", args.into),
+            ("--ref", args.ref),
+        ):
+            if value:
+                problems.append(f"{flag} does not apply to --maintain")
+    elif not args.restore:
         for flag, value in (("--verify", args.verify), ("--into", args.into),
                             ("--ref", args.ref)):
             if value:
@@ -2186,6 +2630,9 @@ def validate_args(args: argparse.Namespace) -> None:
             ("--reset-to-remote", args.reset_to_remote),
             ("--allow-shared-remote", args.allow_shared_remote),
             ("--no-push", args.no_push),
+            # A restore fetches and checks out; it writes no new objects, so a
+            # compression preference here would be silently ignored.
+            ("--no-object-compression", args.no_object_compression),
             # The source is meaningless on a restore -- the tree comes from the
             # remote -- and would otherwise be silently ignored.
             ("--source", args.source),
@@ -2271,7 +2718,9 @@ def resolve_snapshot_settings(
         )
     if code_remote:
         check_code_remote_is_git_remote(source, code_remote)
-    check_paths_are_unsynced(("source", source), ("vault", vault))
+    check_paths_are_unsynced(
+        ("source", source), ("vault", vault), allow_synced=args.allow_synced
+    )
 
     return source, vault, remote, code_remote, exclude, branch
 
@@ -2349,7 +2798,9 @@ def main(argv: list[str] | None = None) -> int:
             # restore writes one too, and a restored tree -- secrets included,
             # by design -- inside a synced library would be uploaded straight
             # back into its original library by the desktop client.
-            check_paths_are_unsynced(("restore destination", into))
+            check_paths_are_unsynced(
+                ("restore destination", into), allow_synced=args.allow_synced
+            )
             restore(
                 args.remote,
                 into,
@@ -2362,6 +2813,12 @@ def main(argv: list[str] | None = None) -> int:
         source, vault, remote, code_remote, exclude, branch = (
             resolve_snapshot_settings(args)
         )
+
+        # Housekeeping diverges here on purpose: it must not push the code
+        # repo, initialise identity settings or remember anything -- only read
+        # and tidy the vault's own object store.
+        if args.maintain:
+            return maintain_vault(vault, repack=args.repack)
 
         if args.dry_run and remote:
             print(f"dry run -- would push the vault to {remote}")
@@ -2403,6 +2860,8 @@ def main(argv: list[str] | None = None) -> int:
             # same settings a real run would apply.
             ensure_identity(vault, source, vault_config=vault_config)
             ensure_byte_exact(vault, git_dir, vault_config=vault_config)
+            if args.no_object_compression:
+                disable_object_compression(vault, git_dir)
         else:
             # The identity *check* still runs on a preview -- failing
             # early with the actionable message beats a commit-tree

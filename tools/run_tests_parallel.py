@@ -96,6 +96,23 @@ _TESTS = _ROOT / "tests"
 _PATTERN = "test*.py"
 
 
+def _ensure_importable() -> None:
+    """Put the repository root and the test directory on ``sys.path``.
+
+    The driver is run as ``python tools/run_tests_parallel.py``, so ``sys.path[0]``
+    is ``tools/`` -- *not* the repository root -- and ``git_remote_seafile`` is
+    therefore not importable from a checkout that was never ``pip install``ed.
+    Discovery then fails module by module and ``unittest`` collapses every one of
+    those failures into a single ``unittest.loader._FailedTest`` target, so the
+    suite reports *73 of 138* targets and a green-looking exit rather than
+    saying it did not load.  The workers need the same two entries, which is why
+    this is called from both.
+    """
+    for entry in (str(_ROOT), str(_TESTS)):
+        if entry not in sys.path:
+            sys.path.insert(0, entry)
+
+
 def _iter_tests(suite):
     """Yield every leaf test in a (possibly nested) suite."""
     for item in suite:
@@ -150,6 +167,7 @@ def _worker(target: str, out_path: str) -> int:
     rather than stdout so that the driver never has to parse unittest's prose,
     and stdout/stderr stay a plain log for a human to read on failure.
     """
+    _ensure_importable()
     summary = {
         "target": target,
         "tests": 0,
@@ -191,10 +209,16 @@ def _start_worker(target: str, log_dir: Path, job_index: int) -> tuple:
 
     # `unittest discover tests` puts the start directory on sys.path so the test
     # modules import as top-level names.  Reproduce that for the worker, which
-    # imports the target by name.
+    # imports the target by name -- and add the repository root, or the worker
+    # cannot import `git_remote_seafile` from a checkout that was never
+    # installed.  Prepend rather than replace: anything the caller already had
+    # on PYTHONPATH (a sandbox hook, a virtualenv helper) must survive.
     env = dict(os.environ)
     existing = env.get("PYTHONPATH", "")
-    env["PYTHONPATH"] = str(_TESTS) + (os.pathsep + existing if existing else "")
+    entries = [str(_TESTS), str(_ROOT)]
+    if existing:
+        entries.append(existing)
+    env["PYTHONPATH"] = os.pathsep.join(entries)
 
     proc = subprocess.Popen(
         [
@@ -264,6 +288,7 @@ def main(argv: list[str] | None = None) -> int:
     # directory, so the driver must behave like the serial command: run from the
     # repository root regardless of where it was invoked from.
     os.chdir(_ROOT)
+    _ensure_importable()
 
     targets = _collect_targets(args.filter, args.granularity)
     if not targets:

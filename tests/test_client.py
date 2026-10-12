@@ -234,7 +234,7 @@ class TestClientCredentials(unittest.TestCase):
             self.assertEqual(client.token, "norm-tok")
 
     def test_a_token_without_a_server_is_not_sent_to_whatever_host_the_url_names(self):
-        """REVIEW.sonnet.md A2: a bare SEAFILE_TOKEN followed the URL anywhere.
+        """A bare SEAFILE_TOKEN used to follow the URL anywhere.
 
         The URL is usually someone else's -- `git clone seafile://host/lib/path`
         is a command a user is handed rather than one they write -- so adopting

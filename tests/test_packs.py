@@ -26,7 +26,7 @@ class TestPacksModule(unittest.TestCase):
         for name in valid:
             with self.subTest(name=name):
                 self.assertTrue(is_valid_pack_name(name))
-                self.assertIsNotNone(PACK_NAME_RE.match(name))
+                self.assertIsNotNone(PACK_NAME_RE.fullmatch(name))
 
     def test_invalid_pack_names(self):
         invalid = [
@@ -37,6 +37,10 @@ class TestPacksModule(unittest.TestCase):
             "pack-123.pack/something",
             "pack-123\\traversal.pack",
             "",
+            # `$` matches just before a trailing newline, so an anchored pattern
+            # used with `.match` accepted this -- and this function is the only
+            # check between a remote listing and a packfile name.
+            "pack-1234567890abcdef.pack\n",
         ]
         for name in invalid:
             with self.subTest(name=name):

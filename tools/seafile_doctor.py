@@ -44,6 +44,7 @@ from git_remote_seafile.seafile_paths import (
     seafile_data,
 )
 from git_remote_seafile.sqlite_read import open_live_sqlite_ro
+from git_remote_seafile.safety import safe_relative_to
 
 # --------------------------------------------------------------------------
 # Sync error ids.  Authoritative source: haiwen/seafile include/seafile-error.h
@@ -188,9 +189,12 @@ def cmd_where(args, ccnet):
               "whether %s is inside a synced library" % target)
         return 2
     for lib in libs:
-        try:
-            rel = target.relative_to(lib["worktree"].resolve())
-        except ValueError:
+        # Case-insensitive on Windows: a library synced to C:\Users\me\Seafile
+        # and a path spelled c:\users\me\seafile\proj are the same directory,
+        # and a literal comparison answers "not inside any synced library" for
+        # a path the sync client is actively rewriting.
+        rel = safe_relative_to(target, lib["worktree"])
+        if rel is None:
             continue
         print("INSIDE SYNCED LIBRARY")
         print("  path     : %s" % target)

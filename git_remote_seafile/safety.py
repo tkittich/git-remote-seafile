@@ -47,29 +47,54 @@ def get_local_work_tree() -> Path | None:
     return None
 
 
-def _safe_relative_to(target: Path, base: Path) -> Path | None:
-    """Safely compute relative path, handling Windows case differences."""
+def safe_relative_to(target: Path, base: Path) -> Path | None:
+    """*target* relative to *base*, or ``None`` when target is not inside base.
+
+    ``Path.relative_to`` is **already** case-insensitive on Windows --
+    ``PureWindowsPath`` casefolds its parts before comparing -- so the fallback
+    below is not what makes a synced-folder guard hold there.  It exists to keep
+    the comparison aligned with the platform's *own* rule instead of a guess:
+    ``os.path.normcase`` folds case where the platform does and is the identity
+    where it does not.
+
+    That distinction is the point, and the unconditional ``.lower()`` this
+    helper used to carry got it wrong in the one direction that produces a
+    false answer: on Linux ``~/Seafile`` and ``~/seafile`` are two directories,
+    and folding them reports a path as inside a synced library when it is not.
+
+    Known limit: a case-insensitive *POSIX* filesystem (macOS's default APFS)
+    cannot be detected from a path, and ``normcase`` does not fold there, so
+    this comparison stays case-sensitive on macOS.  Closing that needs a
+    filesystem probe (``os.path.samefile`` up the ancestry), which is a
+    different design -- the guard is a defence, not a proof.
+
+    The returned path keeps the target's own spelling, because that is what the
+    user sees in their file manager.
+    """
+    resolved_target, resolved_base = target.resolve(), base.resolve()
     try:
-        return target.resolve().relative_to(base.resolve())
+        return resolved_target.relative_to(resolved_base)
     except ValueError:
-        try:
-            target_str = target.resolve().as_posix().lower()
-            base_str = base.resolve().as_posix().lower().rstrip("/")
-            if target_str == base_str:
-                return Path(".")
-            if target_str.startswith(base_str + "/"):
-                rel_str = target_str[len(base_str) + 1 :]
-                return Path(rel_str)
-        except Exception:
-            pass
+        pass
+    target_parts, base_parts = resolved_target.parts, resolved_base.parts
+    if len(target_parts) < len(base_parts):
         return None
+    # ``strict=False`` is the point, not a default: the comparison is a prefix
+    # test, so it must stop at the shorter (base) sequence.
+    for target_part, base_part in zip(target_parts, base_parts, strict=False):
+        if os.path.normcase(target_part) != os.path.normcase(base_part):
+            return None
+    remainder = target_parts[len(base_parts):]
+    return Path(*remainder) if remainder else Path(".")
 
 
 def discover_local_synced_libraries() -> list[dict]:
     """Find all libraries actively synced by the local Seafile desktop client.
     
     Reads repo.db from local Seafile client configuration.
-    Returns list of dicts: [{'repo_id': str, 'worktree': Path, 'name': str, 'server_url': str}]
+    Returns list of dicts:
+    [{'repo_id', 'name', 'worktree' (Path), 'server_url', 'username',
+      'auto_sync' (bool)}]
     """
     candidates = get_candidate_db_paths("repo.db")
 
@@ -97,10 +122,18 @@ def discover_local_synced_libraries() -> list[dict]:
                     seen_ids.add(rid)
                     results.append({
                         "repo_id": rid,
+                        "name": wt_path.name,  # Folder basename as local name
                         "worktree": wt_path,
-                        "name": wt_path.name,
                         "server_url": kv.get("server-url", ""),
                         "username": kv.get("username", ""),
+                        # The daemon persists a per-library "auto sync" disable as
+                        # RepoProperty('auto-sync', 'false') (seaf-daemon's
+                        # repo-mgr.c, key REPO_AUTO_SYNC); an absent or other
+                        # value means auto sync is on.  When it is off the client
+                        # un-watches the worktree and will not rewrite files under
+                        # it in the background -- a fact the snapshot tool's guard
+                        # relies on before letting such a path through.
+                        "auto_sync": kv.get("auto-sync", "").strip().lower() != "false",
                     })
 
     return results
@@ -130,15 +163,15 @@ def read_seafile_ignore_rules(worktree: Path) -> list[str]:
         return []
 
 
-def is_path_ignored(rel_path: str, rules: list[str]) -> bool:
-    """Check if rel_path (e.g. 'code/myproject' or 'seafile-git/myproject') matches ignore rules.
+def covering_ignore_rule(rel_path: str, rules: list[str]) -> str | None:
+    """Return the first ignore rule covering rel_path (e.g. 'code/myproject'), or None.
 
     Seafile ignore rules are anchored at the library root.
     A rule 'code/' matches 'code', 'code/', and 'code/anything'.
     A rule 'code' matches 'code', 'code/', and 'code/anything'.
 
     Two deliberate leniencies, and they cut in the permissive direction: both
-    make this return True more often than the desktop client's own matcher
+    make this return a rule more often than the desktop client's own matcher
     would, so a Trap-2 block can be suppressed for a rule the client would
     not honor (e.g. a rule written 'Code/' while the synced folder is 'code/'
     on a case-sensitive POSIX client), and fnmatch wildcards match across
@@ -158,14 +191,19 @@ def is_path_ignored(rel_path: str, rules: list[str]) -> bool:
 
         # 1. Glob / wildcard match
         if fnmatch.fnmatch(clean_path, clean_rule) or fnmatch.fnmatch(clean_path, f"{clean_rule}/*"):
-            return True
+            return r
 
         # 2. Directory prefix match
         rule_parts = [p for p in clean_rule.split("/") if p]
         if path_parts[:len(rule_parts)] == rule_parts:
-            return True
+            return r
 
-    return False
+    return None
+
+
+def is_path_ignored(rel_path: str, rules: list[str]) -> bool:
+    """True if rel_path matches any of the library's ignore rules."""
+    return covering_ignore_rule(rel_path, rules) is not None
 
 
 def check_preflight_safety(
@@ -276,7 +314,7 @@ def check_preflight_safety(
     # 4. Check Trap 1: Working Tree & Remote Path Collision
     if local_worktree and target_synced_lib:
         worktree_path = target_synced_lib["worktree"].resolve()
-        rel_local = _safe_relative_to(local_worktree, worktree_path)
+        rel_local = safe_relative_to(local_worktree, worktree_path)
         if rel_local is not None:
             rel_posix = rel_local.as_posix().lower()
             clean_repo = clean_repo_path.lower()
@@ -328,7 +366,7 @@ def check_preflight_safety(
     if local_worktree:
         for lib in synced_libs:
             wt_path = lib["worktree"].resolve()
-            rel_local = _safe_relative_to(local_worktree, wt_path)
+            rel_local = safe_relative_to(local_worktree, wt_path)
             if rel_local is not None:
                 ignore_rules = read_seafile_ignore_rules(wt_path)
                 rel_posix = rel_local.as_posix()

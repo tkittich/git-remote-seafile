@@ -726,8 +726,8 @@ class CommitterIdentityTests(_SnapshotFixture):
     def test_a_fresh_dry_run_needs_no_identity_at_all(self):
         """A preview must work on a machine with no git identity anywhere.
 
-        CI runners have none: the dry run writes nothing (REVIEW.snap-tool-deep
-        R3), so it cannot inherit-and-pin identity either, and building the
+        CI runners have none: the dry run writes nothing, so it cannot
+        inherit-and-pin identity either, and building the
         preview commit used to die in commit-tree with "empty ident name".
         The preview stops at the tree, which answers everything it prints.
         """
@@ -859,6 +859,34 @@ class ExcludeBeforeStagingTests(_SnapshotFixture):
             0,
             "the excluded file's content was written into the vault's object "
             "store, so the exclusion happened after staging",
+        )
+
+    def test_a_glob_shaped_name_does_not_stage_its_neighbours(self):
+        """N4 -- a kept name must be staged as itself, never as a pattern.
+
+        ``a[b].txt`` is a valid pathspec *glob*: it matches ``ab.txt`` as well as
+        itself.  Handing the surviving paths to git as patterns therefore stages
+        files the exclude pre-filter had already decided against -- and the
+        safety net only removes them from the *index* afterwards, once their
+        bytes have been read, hashed and written into the object store, which is
+        the whole of B2.  ``GIT_LITERAL_PATHSPECS=1`` in the tool's git
+        environment is what stops the expansion.
+        """
+        (self.code / "a[b].txt").write_bytes(b"kept\n")
+        (self.code / "ab.txt").write_bytes(b"excluded\n")
+
+        rc, _, err = self.snapshot("--exclude", "ab.txt")
+        self.assertEqual(rc, 0, err)
+        self.assertIn("a[b].txt", self.tree())
+        self.assertNotIn("ab.txt", self.tree())
+
+        blob = self._blob_of(self.code / "ab.txt")
+        self.assertNotEqual(blob, "", "could not hash the fixture's ab.txt")
+        self.assertNotEqual(
+            _git(self.vault, "cat-file", "-e", blob).returncode,
+            0,
+            "the pathspec `a[b].txt` also matched `ab.txt`, so the excluded "
+            "file was staged and hashed before the net dropped it",
         )
 
     def test_a_deleted_file_leaves_the_snapshot(self):
@@ -1031,7 +1059,7 @@ class StaleLockTests(_SnapshotFixture):
         #
         # pid_is_alive builds its own WinDLL("kernel32", use_last_error=True)
         # and reads the failure through ctypes.get_last_error() -- the
-        # documented pattern (REVIEW.glm.md T-2/T-22): reading GetLastError()
+        # documented pattern: reading GetLastError()
         # through ctypes.windll can return a stale value.  The real module's
         # get_last_error is patched so both outcomes below exercise the
         # dispatch logic against a controlled error code.
@@ -1064,8 +1092,7 @@ class RestoreVerificationTests(_SnapshotFixture):
         A snapshot holding an embedded repository (a gitlink) restores as an
         empty directory -- the commit id was recorded, not the contents.  The
         only warning used to live at snapshot time, possibly years and
-        machines away, while the restore printed "verified byte-exact"
-        (archive/REVIEW.snap-tool-deep.md, finding C-2).
+        machines away, while the restore printed "verified byte-exact".
         """
         inner = self.code / "vendor-lib"
         inner.mkdir()
@@ -1536,6 +1563,81 @@ class ArgumentValidationTests(unittest.TestCase):
         self.assertEqual(rc, 1)
         self.assertIn("--source does not apply to --restore", err)
 
+    def test_no_object_compression_with_restore_is_refused(self):
+        # A restore writes no new objects, so the flag would be silently
+        # ignored there.
+        rc, _, err = self.run_tool(
+            "--restore", "--remote", "seafile://code/x", "--into", "C:/tmp/x",
+            "--no-object-compression",
+        )
+        self.assertEqual(rc, 1)
+        self.assertIn("--no-object-compression does not apply to --restore", err)
+
+    def test_maintain_rejects_snapshot_only_flags(self):
+        # Housekeeping works on the object store alone; a snapshot flag here
+        # would be silently ignored.
+        rc, _, err = self.run_tool("--maintain", "--message", "m")
+        self.assertEqual(rc, 1)
+        self.assertIn("--message does not apply to --maintain", err)
+
+    def test_maintain_and_restore_are_mutually_exclusive(self):
+        rc, _, err = self.run_tool(
+            "--maintain", "--restore", "--remote", "seafile://code/x",
+        )
+        self.assertEqual(rc, 1)
+        self.assertIn("--maintain and --restore are different modes", err)
+
+
+class ObjectCompressionTests(unittest.TestCase):
+    """--no-object-compression skips deflation for new objects, losslessly."""
+
+    def test_flag_sets_repo_local_config_and_is_idempotent(self):
+        with tempfile.TemporaryDirectory() as td:
+            vault = pathlib.Path(td) / "v"
+            git_dir = snap.ensure_vault(vault, "main")
+            snap.disable_object_compression(vault, git_dir)
+            self.assertEqual(snap._config(vault, "core.compression"), "0")
+            # Second call: a no-op that must not error or change the value.
+            snap.disable_object_compression(vault, git_dir)
+            self.assertEqual(snap._config(vault, "core.compression"), "0")
+
+    def test_new_objects_are_stored_uncompressed(self):
+        with tempfile.TemporaryDirectory() as td:
+            vault = pathlib.Path(td) / "v"
+            git_dir = snap.ensure_vault(vault, "main")
+            blob = pathlib.Path(td) / "zeros.bin"
+            data = b"\x00" * (256 * 1024)  # maximally compressible on purpose
+            for compressed in (True, False):
+                if compressed:
+                    subprocess.run(
+                        ["git", "-C", str(vault), "config", "core.compression", "-1"],
+                        check=True, capture_output=True,
+                    )
+                    payload = data + b"y"  # unique content -> a fresh SHA each pass
+                else:
+                    snap.disable_object_compression(vault, git_dir)
+                    payload = data + b"x"
+                blob.write_bytes(payload)
+                proc = subprocess.run(
+                    ["git", "hash-object", "-w", str(blob)],
+                    cwd=str(vault), capture_output=True, text=True, check=True,
+                )
+                sha = proc.stdout.strip()
+                obj_size = (git_dir / "objects" / sha[:2] / sha[2:]).stat().st_size
+                if compressed:
+                    # Deflated: 256 KiB of zeros collapse to almost nothing.
+                    self.assertLess(obj_size, len(data) // 10)
+                else:
+                    # Level 0 keeps the zlib wrapper around *stored* blocks: no
+                    # shrinking (a real compression would be far smaller), and a
+                    # round-trip through git must come back byte-identical.
+                    self.assertGreater(obj_size, len(payload))
+                    got = subprocess.run(
+                        ["git", "cat-file", "blob", sha],
+                        cwd=str(vault), capture_output=True, check=True,
+                    ).stdout
+                    self.assertEqual(got, payload)
+
 
 class SyncedFolderGuardTests(_SnapshotFixture):
     """The tool's own synced-library guard, for source, vault and restore."""
@@ -1546,16 +1648,26 @@ class SyncedFolderGuardTests(_SnapshotFixture):
             rc = snap.main([str(a) for a in argv])
         return rc, out.getvalue(), err.getvalue()
 
+    @staticmethod
+    def _lib(auto_sync: bool = True, rule: str | None = None) -> dict:
+        """One containing synced library as matched_synced_libraries reports it."""
+        return {
+            "name": "Documents",
+            "worktree": pathlib.Path("C:/synced/Documents"),
+            "auto_sync": auto_sync,
+            "ignore_rule": rule,
+        }
+
     def test_both_the_source_and_the_vault_are_checked(self):
         checked: list[pathlib.Path] = []
-        real = snap.directory_is_seafile_synced
+        real = snap.matched_synced_libraries
 
-        def recording(path: pathlib.Path) -> bool:
+        def recording(path: pathlib.Path) -> list[dict]:
             checked.append(path)
             return real(path)
 
         with unittest.mock.patch.object(
-            snap, "directory_is_seafile_synced", side_effect=recording
+            snap, "matched_synced_libraries", side_effect=recording
         ):
             rc, _, err = self.snapshot()
         self.assertEqual(rc, 0, err)
@@ -1565,43 +1677,80 @@ class SyncedFolderGuardTests(_SnapshotFixture):
     def test_a_synced_vault_is_refused(self):
         with unittest.mock.patch.object(
             snap,
-            "directory_is_seafile_synced",
-            side_effect=lambda p: p == self.vault.resolve(),
+            "matched_synced_libraries",
+            side_effect=lambda p: [self._lib()] if p == self.vault.resolve() else [],
         ):
             rc, _, err = self.snapshot()
         self.assertEqual(rc, 1)
         self.assertIn("vault is inside a Seafile-synced library", err)
+        self.assertIn("--allow-synced", err)
 
     def test_a_synced_source_is_refused(self):
         with unittest.mock.patch.object(
             snap,
-            "directory_is_seafile_synced",
-            side_effect=lambda p: p == self.code.resolve(),
+            "matched_synced_libraries",
+            side_effect=lambda p: [self._lib()] if p == self.code.resolve() else [],
         ):
             rc, _, err = self.snapshot()
         self.assertEqual(rc, 1)
         self.assertIn("source is inside a Seafile-synced library", err)
 
+    def test_a_source_covered_by_the_library_ignore_file_passes_with_a_note(self):
+        # The client never touches a path its own seafile-ignore.txt covers, so
+        # the guard lets it through -- but says so on stderr, because removing
+        # the rule (or re-enabling auto sync) makes this refuse again.
+        with unittest.mock.patch.object(
+            snap,
+            "matched_synced_libraries",
+            side_effect=lambda p: [self._lib(rule="code/")] if p == self.code.resolve() else [],
+        ):
+            rc, _, err = self.snapshot()
+        self.assertEqual(rc, 0, err)
+        self.assertIn("will not touch it", err)
+        self.assertIn("'code/'", err)
+
+    def test_a_source_in_a_library_with_auto_sync_off_passes_with_a_note(self):
+        # A per-library auto-sync disable is persisted in repo.db, so the daemon
+        # un-watches that worktree and will not rewrite files under it.
+        with unittest.mock.patch.object(
+            snap,
+            "matched_synced_libraries",
+            side_effect=lambda p: [self._lib(auto_sync=False)] if p == self.code.resolve() else [],
+        ):
+            rc, _, err = self.snapshot()
+        self.assertEqual(rc, 0, err)
+        self.assertIn("auto sync is disabled", err)
+
+    def test_allow_synced_overrides_the_refusal(self):
+        with unittest.mock.patch.object(
+            snap,
+            "matched_synced_libraries",
+            side_effect=lambda p: [self._lib()] if p == self.code.resolve() else [],
+        ):
+            rc, _, err = self.snapshot("--allow-synced")
+        self.assertEqual(rc, 0, err)
+        self.assertIn("--allow-synced overrides the synced-folder guard", err)
+
     def test_a_missing_seafile_client_leaves_the_guard_off_but_the_run_working(self):
-        # A "cannot tell" answer must not read as a verified "safe" (REVIEW.glm.md
-        # T-9/T-18): an unimportable package or an unreadable repo.db returns
-        # False so the run still works, but announces the degradation on
-        # stderr -- the same reasoning as safety.py's transient-failure
-        # warning.  The sys.path insertion the tool does at startup makes the
-        # package importable from a bare checkout, so the import branch below
-        # is defense in depth, pinned so it cannot silently regress.
+        # A "cannot tell" answer must not read as a verified "safe": an
+        # unimportable package or an unreadable repo.db returns no libraries so
+        # the run still works, but announces the degradation on stderr -- the
+        # same reasoning as safety.py's transient-failure warning.  The sys.path
+        # insertion the tool does at startup makes the package importable from a
+        # bare checkout, so the import branch below is defense in depth, pinned
+        # so it cannot silently regress.
         with unittest.mock.patch.dict(
             sys.modules,
             {"git_remote_seafile": None, "git_remote_seafile.safety": None},
         ):
             err = io.StringIO()
             with unittest.mock.patch.object(sys, "stderr", err):
-                self.assertFalse(snap.directory_is_seafile_synced(self.code))
+                self.assertEqual(snap.matched_synced_libraries(self.code), [])
             self.assertIn(
                 "could not check for Seafile-synced folders", err.getvalue()
             )
         with unittest.mock.patch.object(
-            snap, "directory_is_seafile_synced", return_value=False
+            snap, "matched_synced_libraries", return_value=[]
         ):
             rc, _, err = self.snapshot()
         self.assertEqual(rc, 0, err)
@@ -1609,12 +1758,21 @@ class SyncedFolderGuardTests(_SnapshotFixture):
     def test_a_synced_restore_destination_is_refused(self):
         self.snapshot("--remote", str(self.remote))
         with unittest.mock.patch.object(
-            snap, "directory_is_seafile_synced", return_value=True
+            snap, "matched_synced_libraries", return_value=[self._lib()]
         ):
             rc, _, err = self.restore_to(self.restored)
         self.assertEqual(rc, 1)
         self.assertIn("restore destination is inside a Seafile-synced library", err)
         self.assertFalse(self.restored.exists() and any(self.restored.iterdir()))
+
+    def test_allow_synced_overrides_the_restore_destination_refusal(self):
+        self.snapshot("--remote", str(self.remote))
+        with unittest.mock.patch.object(
+            snap, "matched_synced_libraries", return_value=[self._lib()]
+        ):
+            rc, _, err = self.restore_to(self.restored, "--allow-synced")
+        self.assertEqual(rc, 0, err)
+        self.assertIn("--allow-synced overrides the synced-folder guard", err)
 
 
 class ConfigPlumbingTests(_SnapshotFixture):
@@ -1734,6 +1892,140 @@ class SubprocessTimeoutTests(unittest.TestCase):
                 snap._run(["git", "push", "seafile://code/app"])
         self.assertIn("did not finish within", str(ctx.exception))
         self.assertIn("push", str(ctx.exception))
+
+
+class StatusLineTests(unittest.TestCase):
+    """Long steps must not read as a hang: while a child marked with ``status=``
+    is still running, one line per STATUS_INTERVAL goes to stderr.  The watchdog
+    kills on *stalled progress* (no bytes written / streamed for STALL_LIMIT),
+    not on wall clock -- a slow-but-real run must survive, a dead disk must not."""
+
+    def test_watchdog_prints_a_status_line_for_slow_commands(self):
+        with unittest.mock.patch.object(snap, "STATUS_INTERVAL", 0.15):
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                proc = snap._run(
+                    [sys.executable, "-c", "print('hello'); import time; time.sleep(0.8)"],
+                    status="staging the tree",
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                )
+        self.assertEqual(proc.returncode, 0)
+        self.assertIn(b"hello", proc.stdout)
+        text = err.getvalue()
+        self.assertIn("still staging the tree ...", text)
+
+    def test_watchdog_reports_growth_of_the_measured_directory(self):
+        # The child writes the data itself while running: measure_dir reports
+        # growth since the child *started*, so a pre-existing file would read
+        # as zero and prove nothing.
+        with tempfile.TemporaryDirectory() as td:
+            objects = pathlib.Path(td) / "objects"
+            objects.mkdir()
+            target = str(objects / "late.bin")
+            code = (
+                "import time, pathlib; "
+                f"pathlib.Path(r'{target}').write_bytes(b'x' * 3000000); "
+                "time.sleep(0.6)"
+            )
+            err = io.StringIO()
+            with unittest.mock.patch.object(snap, "STATUS_INTERVAL", 0.12), \
+                    contextlib.redirect_stderr(err):
+                snap._run(
+                    [sys.executable, "-c", code],
+                    status="staging the tree",
+                    measure_dir=objects,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                )
+            text = err.getvalue()
+        self.assertIn("MiB written to objects", text)
+
+    def test_watchdog_kills_a_child_that_makes_no_progress(self):
+        with unittest.mock.patch.object(snap, "STATUS_INTERVAL", 0.1), \
+                unittest.mock.patch.object(snap, "STALL_LIMIT", 0.35):
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                with self.assertRaises(snap.SnapshotError) as ctx:
+                    snap._run(
+                        [sys.executable, "-c", "import time; time.sleep(10)"],
+                        status="pushing to seafile://code/x-vault",
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                    )
+        self.assertIn("made no measurable progress for", str(ctx.exception))
+        self.assertIn("was killed (stalled?)", str(ctx.exception))
+        self.assertIn("still pushing to seafile://code/x-vault ...", err.getvalue())
+
+    def test_watchdog_survives_while_progress_is_measurable(self):
+        # The child keeps writing into the measured directory: with a stall
+        # limit far below its total runtime, only progress-awareness lets it
+        # finish.  A wall-clock timeout of the old shape would have killed it
+        # at ~0.4s; here it runs for well over a second.
+        with tempfile.TemporaryDirectory() as td:
+            objects = pathlib.Path(td) / "objects"
+            objects.mkdir()
+            target = str(objects / "stream.bin")
+            code = (
+                "import time, pathlib\n"
+                f"p = pathlib.Path(r'{target}')\n"
+                "for i in range(6):\n"
+                "    p.write_bytes(b'x' * 1000 * (i + 1))\n"
+                "    time.sleep(0.25)\n"
+            )
+            with unittest.mock.patch.object(snap, "STATUS_INTERVAL", 0.1), \
+                    unittest.mock.patch.object(snap, "STALL_LIMIT", 0.4):
+                proc = snap._run(
+                    [sys.executable, "-c", code],
+                    status="staging the tree",
+                    measure_dir=objects,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                )
+        self.assertEqual(proc.returncode, 0)
+
+    def test_heartbeat_only_mode_never_kills(self):
+        # stall_limit=None is for steps with no progress signal (the restore
+        # verification re-reads every file and writes nothing): the lines keep
+        # coming, but however long the step takes it must not be killed.
+        err = io.StringIO()
+        with unittest.mock.patch.object(snap, "STATUS_INTERVAL", 0.15), \
+                contextlib.redirect_stderr(err):
+            proc = snap._run(
+                [sys.executable, "-c", "import time; time.sleep(0.8)"],
+                status="verifying restored files",
+                stall_limit=None,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+        self.assertEqual(proc.returncode, 0)
+        self.assertIn("still verifying restored files ...", err.getvalue())
+
+    def test_streamed_stderr_is_relayed_and_counts_as_progress(self):
+        # The push mode: child output must reach our stderr line by line (not
+        # after the command returns), and relayed bytes are what keep a quiet
+        # helper phase alive against the stall limit.
+        code = (
+            "import sys, time\n"
+            "for i in range(4):\n"
+            "    print(f'helper line {i}', file=sys.stderr)\n"
+            "    time.sleep(0.2)\n"
+        )
+        err = io.StringIO()
+        with unittest.mock.patch.object(snap, "STATUS_INTERVAL", 0.1), \
+                contextlib.redirect_stderr(err):
+            proc = snap._run(
+                [sys.executable, "-c", code],
+                status="pushing to seafile://code/x-vault",
+                stream_stderr=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+        text = err.getvalue()
+        self.assertEqual(proc.returncode, 0)
+        self.assertIsNone(proc.stderr)
+        for i in range(4):
+            self.assertIn(f"helper line {i}", text)
 
 
 if __name__ == "__main__":

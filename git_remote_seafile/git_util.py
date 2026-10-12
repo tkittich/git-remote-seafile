@@ -15,30 +15,114 @@ class GitError(Exception):
     pass
 
 
-#: How long one git subprocess may run before it is killed.  Generous enough for
-#: any legitimate local operation -- a `pack-objects` over a large repository is
+#: Default ceiling, in seconds, for one git subprocess.  Generous enough for any
+#: legitimate local operation -- a `pack-objects` over a large repository is
 #: minutes, not hours -- while still bounding the two ways a git child can hang
 #: forever: a wedged `index-pack`/`repack`, which in `gc` holds the remote lease
 #: open until it expires and another client lawfully takes over, and a
 #: credential-helper prompt on a machine with nobody at the keyboard.
 #:
-#: Deliberately **not** a config key.  A timeout the repository being operated on
-#: could raise is a timeout a hostile repository could remove, and this one
-#: exists to protect the user from a hang, not to be tuned per checkout.
+#: Raisable, but only from a **trusted** scope: ``SEAFILE_GIT_TIMEOUT`` in the
+#: environment, or `seafile.gittimeout` in the system or global git config --
+#: both read by :func:`get_git_timeout`.  Deliberately not a repository-local
+#: key: a timeout the repository being operated on could raise is a timeout a
+#: hostile repository could remove, and this one exists to protect the user from
+#: a hang, not to be tuned per checkout.  The default is simply too short for the
+#: repositories the README advertises: a first push of a few GB, an `index-pack`
+#: of one large downloaded pack, or a `repack -a -d` of a big remote all
+#: routinely exceed five minutes.  The machine owner gets to say so; the
+#: repository does not.
 GIT_TIMEOUT = 300
+
+
+class _TimeoutUnset:
+    """Type of :data:`_UNSET`, the sentinel for :func:`run_git`'s ``timeout``.
+
+    A sentinel rather than ``None`` because ``None`` already means "no timeout
+    at all".  The two must stay distinguishable so the configured ceiling is
+    resolved when a command runs rather than when this module is imported.
+    """
+
+    __slots__ = ()
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid
+        return "_UNSET"
+
+
+_UNSET = _TimeoutUnset()
+
+#: The resolved ceiling, filled in once per process by :func:`get_git_timeout`.
+_GIT_TIMEOUT: int | None = None
+
+
+def _env_git_timeout() -> int | None:
+    """``SEAFILE_GIT_TIMEOUT`` as an integer, or ``None`` when it is unset.
+
+    The environment is trusted for the same reason the system and global git
+    scopes are: the repository being operated on cannot set it.  A value that is
+    not an integer is reported and ignored, so a typo cannot silently become the
+    default.
+    """
+    raw = os.environ.get("SEAFILE_GIT_TIMEOUT", "").strip()
+    if not raw:
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        sys.stderr.write(
+            f"Warning: SEAFILE_GIT_TIMEOUT='{raw}' is not an integer; ignoring it.\n"
+        )
+        sys.stderr.flush()
+        return None
+
+
+def get_git_timeout() -> int:
+    """The effective ceiling for one git subprocess, in seconds.
+
+    ``SEAFILE_GIT_TIMEOUT`` if it is set, otherwise ``seafile.gittimeout`` from
+    the system or global git config, otherwise :data:`GIT_TIMEOUT`.  Both
+    sources are *trusted* scopes -- the repository being operated on cannot raise
+    its own ceiling, which is the whole point of the constant.
+
+    Remembered after the first call.  Every ``run_git`` consults this, so
+    re-reading git config each time would spawn a ``git config`` for every git
+    command and roughly double the process count of every operation.  A value
+    that is not a positive number is refused out loud, because a silent fallback
+    to a zero-second ceiling would look exactly like a hang.
+    """
+    global _GIT_TIMEOUT
+    if _GIT_TIMEOUT is None:
+        # Seeded before the read so the `git config` this spawns cannot recurse
+        # back into here, and so a failure leaves the default in place.
+        _GIT_TIMEOUT = GIT_TIMEOUT
+        value = _env_git_timeout()
+        if value is None:
+            value = get_trusted_git_config_int("seafile.gittimeout", GIT_TIMEOUT)
+        if value > 0:
+            _GIT_TIMEOUT = value
+        else:
+            sys.stderr.write(
+                f"Warning: a git timeout of {value}s is not positive; "
+                f"keeping {GIT_TIMEOUT}.\n"
+            )
+            sys.stderr.flush()
+    return _GIT_TIMEOUT
 
 
 def run_git(
     args: list[str],
     input_bytes: bytes | None = None,
-    timeout: float | None = GIT_TIMEOUT,
+    timeout: float | None | _TimeoutUnset = _UNSET,
 ) -> tuple[bytes, bytes, int]:
     """Execute a git command and return (stdout, stderr, returncode).
 
-    ``timeout`` bounds the wait (``None`` disables it).  A child that overruns is
-    killed and the call raises ``GitError``: "the command hung" is a failure to
-    report, not a state to wait out.
+    ``timeout`` bounds the wait.  Left unset it resolves to
+    :func:`get_git_timeout`, the configured ceiling; ``None`` disables the bound
+    entirely.  A child that overruns is killed and the call raises ``GitError``:
+    "the command hung" is a failure to report, not a state to wait out.
     """
+    if isinstance(timeout, _TimeoutUnset):
+        timeout = get_git_timeout()
     proc = subprocess.Popen(
         ["git"] + args,
         stdin=subprocess.PIPE if input_bytes is not None else None,
@@ -54,7 +138,9 @@ def run_git(
         except Exception:
             pass
         raise GitError(
-            f"git {' '.join(args)} did not finish within {timeout:g}s and was killed"
+            f"git {' '.join(args)} did not finish within {timeout:g}s and was killed. "
+            f"If this repository legitimately needs longer, raise seafile.gittimeout "
+            f"in the system or global git config."
         ) from None
     return out, err, proc.returncode
 
@@ -152,6 +238,10 @@ def filter_existing_objects(shas: list[str] | str | None) -> list[str]:
         cmd.extend(["--git-dir", str(git_dir)])
     cmd.extend(["cat-file", "--batch-check"])
 
+    # Resolved outside the try: a failure to read the config is not the child's
+    # fault and must not be swallowed by the broad handler below.
+    limit = get_git_timeout()
+
     try:
         proc = subprocess.Popen(
             cmd,
@@ -160,7 +250,7 @@ def filter_existing_objects(shas: list[str] | str | None) -> list[str]:
             stderr=subprocess.PIPE,
         )
         out, _ = proc.communicate(
-            ("\n".join(candidates) + "\n").encode("utf-8"), timeout=GIT_TIMEOUT
+            ("\n".join(candidates) + "\n").encode("utf-8"), timeout=limit
         )
         if proc.returncode != 0:
             return []
@@ -178,7 +268,7 @@ def filter_existing_objects(shas: list[str] | str | None) -> list[str]:
         # nothing in the output explains.
         sys.stderr.write(
             f"Warning: git cat-file --batch-check did not finish within "
-            f"{GIT_TIMEOUT:g}s; assuming no objects are present.\n"
+            f"{limit:g}s; assuming no objects are present.\n"
         )
         sys.stderr.flush()
         return []
@@ -502,6 +592,29 @@ def get_trusted_git_config_bool(key: str, default: bool = False) -> bool:
     if code != 0 or not out:
         return default
     return out.decode("utf-8").strip().lower() in ("true", "1", "yes", "on")
+
+
+def get_trusted_git_config_int(key: str, default: int) -> int:
+    """Read an integer *security-relevant* git config value, ignoring repo-local config.
+
+    The integer counterpart of :func:`get_trusted_git_config_bool`, and trusted
+    for the same reason: ``seafile.gittimeout`` bounds how long a wedged git
+    child may hold a remote lease, so the repository being operated on must not
+    be the scope that answers.  A value that is not an integer is reported and
+    ignored rather than silently becoming the default.
+    """
+    out, _, code = run_git(["config", "--system", "--get", key])
+    if code != 0 or not out:
+        out, _, code = run_git(["config", "--global", "--get", key])
+    if code != 0 or not out:
+        return default
+    raw = out.decode("utf-8").strip()
+    try:
+        return int(raw)
+    except ValueError:
+        sys.stderr.write(f"Warning: {key}='{raw}' is not an integer; using {default}.\n")
+        sys.stderr.flush()
+        return default
 
 
 def get_git_config_bool(key: str, default: bool = False) -> bool:

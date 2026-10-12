@@ -86,8 +86,8 @@ class TestRemoteHelper(unittest.TestCase):
     def test_unknown_command_fails_loudly_on_stderr_and_stops(self):
         """An unrecognized top-level command must fail loudly, not reply with an empty no-op line.
 
-        The failure belongs on stderr and must end the loop (REVIEW.glm.md
-        H-15): "error unsupported" on stdout is not a line git's helper
+        The failure belongs on stderr and must end the loop:
+        "error unsupported" on stdout is not a line git's helper
         reader recognizes, so writing it and continuing to read commands
         left the protocol in an undefined state.  GitError propagating out
         of run() is what makes the helper exit non-zero.
@@ -176,6 +176,44 @@ class TestRemoteHelper(unittest.TestCase):
         self.assertIn(f"{sha_feat} refs/heads/feature", output)
         self.assertIn(f"{sha_tag} refs/tags/v1.0", output)
         self.assertIn("@refs/heads/main HEAD", output)
+
+    def test_cmd_list_ignores_a_head_target_that_would_inject_a_protocol_line(self):
+        """A HEAD target carrying a newline must not become a second ref line.
+
+        The symref line is written straight to git's stdout and git reads the
+        listing one line at a time, so a HEAD file holding
+        ``ref: refs/heads/main\\nrefs/heads/evil`` used to append an invented
+        ref to the advert.  The target is validated like every other ref name
+        now, and a malformed HEAD is skipped -- which leaves the remote with no
+        default branch, exactly what an unparseable HEAD means.
+        """
+        h = RemoteHelper.__new__(RemoteHelper)
+        h.client = MagicMock()
+        h.repo_id = "repo1"
+        h.repo_path = "/git-repo"
+        h.library_name = "lib"
+        h._refs_cache = {}
+        h._repository_has_objects = MagicMock(return_value=False)
+
+        sha_main = "a" * 40
+        h.client.list_dir.side_effect = lambda repo_id, path: (
+            [{"type": "file", "name": "main"}] if "heads" in path else []
+        )
+        h.client.get_file_text.side_effect = lambda repo_id, path: (
+            sha_main if "heads/main" in path
+            else "ref: refs/heads/main\nrefs/heads/evil" if path.endswith("HEAD")
+            else None
+        )
+
+        out, err = io.StringIO(), io.StringIO()
+        with patch("sys.stdout", out), patch("sys.stderr", err):
+            h.cmd_list()
+
+        output = out.getvalue()
+        self.assertIn(f"{sha_main} refs/heads/main", output)
+        self.assertNotIn("@", output, "no symref line may be emitted for a malformed HEAD")
+        self.assertNotIn("evil", output, "the injected second line must not reach git")
+        self.assertIn("malformed HEAD target", err.getvalue())
 
     def test_cmd_list_skips_invalid_sha(self):
         h = RemoteHelper.__new__(RemoteHelper)
@@ -428,7 +466,7 @@ class TestRemoteHelper(unittest.TestCase):
     @patch("git_remote_seafile.helper.get_objects_to_push", return_value=["obj1"])
     @patch("git_remote_seafile.helper.create_packfile", return_value=("packsha9", b"PACK", b"IDX"))
     def test_pack_upload_progress_callback_renews_the_lock(self, mock_pack, mock_objs, mock_rev, mock_ancestor):
-        """The pack upload must renew the lease while it streams (REVIEW.glm.md G-4).
+        """The pack upload must renew the lease while it streams.
 
         on_upload_progress -> lock.maybe_renew(20.0) is what keeps a long push
         from outliving its lease while the bytes are still streaming; gc's
@@ -686,13 +724,48 @@ class TestRemoteHelper(unittest.TestCase):
 
         # 22 remote packfiles -> threshold is 20, auto-gc enabled
         h.client.list_dir.return_value = [{"name": f"pack-{i}.pack"} for i in range(22)]
-        cfg = RemoteConfig(lock_timeout=15, lock_lease=60, lock_settle=0, auto_gc=True, gc_threshold=20)
+        cfg = RemoteConfig(lock_timeout=15, lock_lease=60, lock_settle=0, auto_gc=True, gc_threshold=20,
+                           gc_max_mib=20)
 
         with patch("git_remote_seafile.helper.RemoteLock"), \
              patch("git_remote_seafile.helper.RemoteConfig.load", return_value=cfg):
             h.cmd_push(["refs/heads/main:refs/heads/main"])
 
-        mock_compact.assert_called_once_with(h.client, "repo1", "/git-repo", config=cfg, min_packs=20, verbose=True)
+        mock_compact.assert_called_once_with(
+            h.client, "repo1", "/git-repo", config=cfg, min_packs=20,
+            max_total_bytes=20 * 1024 * 1024, verbose=True,
+        )
+
+    @patch("git_remote_seafile.helper.rev_parse", return_value="sha123")
+    @patch("git_remote_seafile.helper.is_ancestor", return_value=True)
+    @patch("git_remote_seafile.helper.get_objects_to_push", return_value=[])
+    @patch("git_remote_seafile.gc.compact_repository")
+    def test_auto_gc_defers_when_the_store_exceeds_the_size_cap(self, mock_compact, mock_objs, mock_ancestor, mock_rev):
+        # Enough packs to cross the threshold, but a store too big for an
+        # in-band compaction: auto-gc must notice and defer instead of
+        # downloading 22 GiB mid-push.
+        h = RemoteHelper.__new__(RemoteHelper)
+        h.client = MagicMock()
+        h.repo_id = "repo1"
+        h.repo_path = "/git-repo"
+        h.raw_url = "seafile://repo/path"
+        h._refs_cache = {}
+
+        # 22 packs of ~1 GiB each = 22 GiB > the default 20 GiB cap.
+        h.client.list_dir.return_value = [
+            {"name": f"pack-{i}.pack", "size": 1024**3} for i in range(22)
+        ]
+        cfg = RemoteConfig(lock_timeout=15, lock_lease=60, lock_settle=0, auto_gc=True, gc_threshold=20)
+
+        err = io.StringIO()
+        with patch("sys.stderr", err), \
+             patch("git_remote_seafile.helper.RemoteLock"), \
+             patch("git_remote_seafile.helper.RemoteConfig.load", return_value=cfg):
+            h.cmd_push(["refs/heads/main:refs/heads/main"])
+
+        self.assertIn("Auto-compaction was deferred", err.getvalue())
+        self.assertIn("seafile.gcmaxmib", err.getvalue())
+        mock_compact.assert_not_called()
 
     @patch("git_remote_seafile.helper.install_packfile")
     @patch("git_remote_seafile.helper.get_git_dir")
@@ -925,7 +998,7 @@ class TestRemoteHelper(unittest.TestCase):
             "\n"
             "unknown-cmd\n"
         )
-        # The unknown command ends the run loudly now (REVIEW.glm.md H-15):
+        # The unknown command ends the run loudly now:
         # the helper must not go on reading an undefined protocol state.
         with patch("sys.stdin", io.StringIO(commands)), patch("sys.stdout", io.StringIO()):
             with self.assertRaises(GitError):
@@ -1068,7 +1141,7 @@ class TestRemoteHelper(unittest.TestCase):
 
 
 class TestPushDestinationValidation(unittest.TestCase):
-    """REVIEW.sonnet.md A3: a push destination is validated, not assumed.
+    """A push destination is validated, not assumed.
 
     The helper applied ``is_valid_ref_name`` to every ref it *listed* but never
     to the destination of a push, so only a prefix test stood in the way.  That
@@ -1496,7 +1569,7 @@ class TestInstalledPackState(unittest.TestCase):
         client.get_file_bytes.return_value = b"PACKBYTES"
         return client
 
-    def _fetch(self, local_git, client, install_side_effect=None):
+    def _fetch(self, local_git, client, install_side_effect=None, spec=None):
         h = self._helper(client)
         with patch("git_remote_seafile.helper.get_git_dir", return_value=local_git):
             with patch("git_remote_seafile.helper.install_packfile") as install:
@@ -1504,7 +1577,7 @@ class TestInstalledPackState(unittest.TestCase):
                     install.side_effect = install_side_effect
                 with patch("sys.stdout", new_callable=io.StringIO):
                     with patch("sys.stderr", new_callable=io.StringIO):
-                        h.cmd_fetch(["refs/heads/main"])
+                        h.cmd_fetch(spec if spec is not None else ["refs/heads/main"])
         return install
 
     def _state(self, local_git):
@@ -1592,6 +1665,52 @@ class TestInstalledPackState(unittest.TestCase):
             )
 
             self._fetch(local_git, self._client()).assert_called_once()
+
+    def test_a_pruned_pack_is_not_skipped_on_the_strength_of_the_state_file(self):
+        """The recorded list is a hint, and a hint must not outrank evidence.
+
+        The helper installs *every* remote pack, whatever git asked for, so a
+        single-branch clone holds objects no local ref reaches -- and a later
+        ``git gc --prune`` drops them legitimately.  The state file still says
+        "fetched", so trusting it skips the one download that is needed and git
+        dies with "did not send all necessary objects" and no explanation.
+        """
+        with tempfile.TemporaryDirectory() as td:
+            local_git = Path(td) / ".git"
+            (local_git / "objects" / "pack").mkdir(parents=True)
+            state_dir = local_git / "seafile" / "repo1"
+            state_dir.mkdir(parents=True)
+            (state_dir / "packs.json").write_text(
+                json.dumps({"version": 1, "remotes": {"/git-repo": {"pack-1.pack": 9}}}),
+                encoding="utf-8",
+            )
+            sha = "a" * 40
+            with patch("git_remote_seafile.helper.objects_may_be_incomplete", return_value=True):
+                with patch("git_remote_seafile.helper.filter_existing_objects", return_value=[]):
+                    install = self._fetch(local_git, self._client(), spec=[sha])
+
+            install.assert_called_once()
+
+    def test_a_healthy_object_store_still_honours_the_recorded_list(self):
+        """The retry is a fallback, not the new default: when the objects are
+        present the recorded list keeps its A9 saving."""
+        with tempfile.TemporaryDirectory() as td:
+            local_git = Path(td) / ".git"
+            (local_git / "objects" / "pack").mkdir(parents=True)
+            state_dir = local_git / "seafile" / "repo1"
+            state_dir.mkdir(parents=True)
+            (state_dir / "packs.json").write_text(
+                json.dumps({"version": 1, "remotes": {"/git-repo": {"pack-1.pack": 9}}}),
+                encoding="utf-8",
+            )
+            sha = "b" * 40
+            with patch("git_remote_seafile.helper.objects_may_be_incomplete", return_value=True):
+                with patch(
+                    "git_remote_seafile.helper.filter_existing_objects", return_value=[sha]
+                ):
+                    install = self._fetch(local_git, self._client(), spec=[sha])
+
+            install.assert_not_called()
 
 
 class TestSmartPackFetchFiltering(unittest.TestCase):

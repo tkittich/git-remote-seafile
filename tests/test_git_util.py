@@ -12,6 +12,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from git_remote_seafile.git_util import (
+    GIT_TIMEOUT,
     HEX_SHA_RE,
     GitError,
     clean_git_env,
@@ -21,6 +22,7 @@ from git_remote_seafile.git_util import (
     get_git_config_bool,
     get_git_config_int,
     get_git_dir,
+    get_git_timeout,
     get_objects_to_push,
     has_promisor_remote,
     install_packfile,
@@ -626,6 +628,10 @@ class TestSubprocessTimeouts(unittest.TestCase):
         stderr = io.StringIO()
         with (
             patch("git_remote_seafile.git_util.get_git_dir", return_value=None),
+            # The ceiling is resolved before the child is spawned, and resolving
+            # it is itself a git call.  Pin it, or the Popen mock below is spent
+            # on the config read instead of the cat-file this test is about.
+            patch("git_remote_seafile.git_util.get_git_timeout", return_value=300),
             patch("subprocess.Popen") as popen,
             patch("sys.stderr", stderr),
         ):
@@ -636,6 +642,127 @@ class TestSubprocessTimeouts(unittest.TestCase):
             self.assertEqual(filter_existing_objects(["a" * 40]), [])
         popen.return_value.kill.assert_called_once()
         self.assertIn("cat-file", stderr.getvalue())
+
+
+class TestGitTimeoutCeiling(unittest.TestCase):
+    """N2 -- the ceiling is raisable, but only by the machine owner.
+
+    A hard cap protects the user from a wedged git child; a repository that could
+    raise it could remove that protection, so it answers only to the environment
+    and to the system and global git scopes.  That trust boundary is the point of
+    this class, and the same reason ``get_trusted_git_config_bool`` exists.
+    """
+
+    @staticmethod
+    def _empty_env():
+        """Pin ``SEAFILE_GIT_TIMEOUT`` empty, so the config scope is the one asked."""
+        return patch.dict(os.environ, {"SEAFILE_GIT_TIMEOUT": ""})
+
+    def test_the_trusted_scope_sets_the_ceiling(self):
+        with (
+            patch("git_remote_seafile.git_util._GIT_TIMEOUT", None),
+            self._empty_env(),
+            patch(
+                "git_remote_seafile.git_util.get_trusted_git_config_int",
+                return_value=900,
+            ),
+        ):
+            self.assertEqual(get_git_timeout(), 900)
+
+    def test_the_environment_sets_the_ceiling(self):
+        with (
+            patch("git_remote_seafile.git_util._GIT_TIMEOUT", None),
+            patch.dict(os.environ, {"SEAFILE_GIT_TIMEOUT": "900"}),
+            patch(
+                "git_remote_seafile.git_util.get_trusted_git_config_int",
+                return_value=600,
+            ) as reader,
+        ):
+            self.assertEqual(get_git_timeout(), 900)
+        reader.assert_not_called()
+
+    def test_a_non_integer_environment_value_is_ignored(self):
+        stderr = io.StringIO()
+        with (
+            patch("git_remote_seafile.git_util._GIT_TIMEOUT", None),
+            patch.dict(os.environ, {"SEAFILE_GIT_TIMEOUT": "soon"}),
+            patch(
+                "git_remote_seafile.git_util.get_trusted_git_config_int",
+                return_value=GIT_TIMEOUT,
+            ),
+            patch("sys.stderr", stderr),
+        ):
+            self.assertEqual(get_git_timeout(), GIT_TIMEOUT)
+        self.assertIn("not an integer", stderr.getvalue())
+
+    def test_the_default_stands_when_nothing_is_configured(self):
+        with (
+            patch("git_remote_seafile.git_util._GIT_TIMEOUT", None),
+            self._empty_env(),
+            patch(
+                "git_remote_seafile.git_util.get_trusted_git_config_int",
+                return_value=GIT_TIMEOUT,
+            ),
+        ):
+            self.assertEqual(get_git_timeout(), GIT_TIMEOUT)
+
+    def test_a_non_positive_value_is_refused_out_loud(self):
+        stderr = io.StringIO()
+        with (
+            patch("git_remote_seafile.git_util._GIT_TIMEOUT", None),
+            self._empty_env(),
+            patch(
+                "git_remote_seafile.git_util.get_trusted_git_config_int",
+                return_value=0,
+            ),
+            patch("sys.stderr", stderr),
+        ):
+            self.assertEqual(get_git_timeout(), GIT_TIMEOUT)
+        self.assertIn("is not positive", stderr.getvalue())
+
+    def test_a_repository_cannot_raise_its_own_ceiling(self):
+        # The real reader against a real repository-local setting: if the
+        # ceiling ever grew a `--local` fallback, this is what would catch it.
+        with tempfile.TemporaryDirectory() as tmp:
+            subprocess.run(["git", "init", "-q", tmp], check=True)
+            subprocess.run(
+                ["git", "-C", tmp, "config", "seafile.gittimeout", "99999"],
+                check=True,
+            )
+            previous = os.getcwd()
+            os.chdir(tmp)
+            try:
+                with (
+                    patch("git_remote_seafile.git_util._GIT_TIMEOUT", None),
+                    self._empty_env(),
+                ):
+                    self.assertNotEqual(get_git_timeout(), 99999)
+            finally:
+                os.chdir(previous)
+
+    def test_run_git_resolves_the_ceiling_when_none_is_given(self):
+        with (
+            patch(
+                "git_remote_seafile.git_util.get_git_timeout", return_value=42
+            ) as ceiling,
+            patch("subprocess.Popen") as popen,
+        ):
+            popen.return_value.communicate.return_value = (b"", b"")
+            run_git(["--version"])
+        ceiling.assert_called_once()
+
+    def test_the_config_is_read_once_per_process(self):
+        with (
+            patch("git_remote_seafile.git_util._GIT_TIMEOUT", None),
+            self._empty_env(),
+            patch(
+                "git_remote_seafile.git_util.get_trusted_git_config_int",
+                return_value=600,
+            ) as reader,
+        ):
+            get_git_timeout()
+            get_git_timeout()
+        self.assertEqual(reader.call_count, 1)
 
 
 if __name__ == "__main__":

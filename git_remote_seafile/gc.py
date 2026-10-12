@@ -10,7 +10,7 @@ from typing import Any
 
 from .client import SeafileAPIError, SeafileClient
 from .config import RemoteConfig
-from .git_util import GIT_TIMEOUT, clean_git_env
+from .git_util import clean_git_env, get_git_timeout
 from .lock import RemoteLock, describe_ownership_failure
 from .packs import fetch_pack_artifact, is_valid_pack_name
 from .refs import REF_NAMESPACES, is_valid_ref_name, iter_refs
@@ -24,7 +24,7 @@ _MIRRORED_PREFIXES = tuple(f"{ns}/" for ns in REF_NAMESPACES)
 def _run_git(
     args: list[str], env: dict[str, str], **kwargs: Any
 ) -> subprocess.CompletedProcess[Any]:
-    """Run git against the scratch repository, bounded by ``GIT_TIMEOUT``.
+    """Run git against the scratch repository, bounded by :func:`get_git_timeout`.
 
     Compaction holds the remote lease for the whole operation, so a git child
     that never returns is not merely a stuck command -- it is a stuck *lease*,
@@ -32,12 +32,19 @@ def _run_git(
     process still believes it owns it.  A timeout is therefore converted into a
     RuntimeError so the caller's ordinary failure path (which releases the
     lease) runs, rather than the process blocking until someone kills it.
+
+    ``repack -a -d`` over a large remote is the step most likely to outlast the
+    default ceiling, which is why that ceiling is raisable from the trusted
+    scope -- see :func:`get_git_timeout`.
     """
+    limit = get_git_timeout()
     try:
-        return subprocess.run(["git", *args], env=env, timeout=GIT_TIMEOUT, **kwargs)
+        return subprocess.run(["git", *args], env=env, timeout=limit, **kwargs)
     except subprocess.TimeoutExpired:
         raise RuntimeError(
-            f"git {' '.join(args)} did not finish within {GIT_TIMEOUT:g}s; aborting compaction."
+            f"git {' '.join(args)} did not finish within {limit:g}s; aborting compaction. "
+            f"If this repository legitimately needs longer, raise seafile.gittimeout "
+            f"in the system or global git config."
         ) from None
 
 
@@ -101,8 +108,31 @@ def compact_repository(
     min_packs: int = 2,
     verbose: bool = True,
     config: RemoteConfig | None = None,
+    max_total_bytes: int | None = None,
 ) -> dict[str, Any]:
-    """Consolidate multiple small packfiles on Seafile into a single optimized packfile."""
+    """Consolidate multiple small packfiles on Seafile into a single optimized packfile.
+
+    Returns a dict whose ``status`` is one of:
+
+    ``"ok"``
+        Consolidated, and every superseded packfile removed.
+    ``"incomplete"``
+        Consolidated and verified, but the cleanup stopped short: ownership of
+        the remote lock was lost while deleting, so the deletions after that
+        point were skipped.  Nothing is lost -- the new packs are verified and in
+        place, and the leftovers are unreferenced clutter a later gc removes --
+        but it is a distinct status, because "did everything asked" and "did
+        most of it" are not the same answer to a scheduled job.
+    ``"skipped"``
+        Fewer than *min_packs* packfiles, so there was nothing worth doing --
+        or the remote packs total more than *max_total_bytes*, when given: a
+        compaction costs one full download and re-upload of that history, so
+        above a cap it is deferred to a manual off-hours run instead of
+        blocking whatever triggered it.  The message says which case applied.
+    ``"error"``
+        Aborted: a download failed, a verification failed, or a pack name was
+        not valid.
+    """
     clean_repo = repo_path.rstrip("/")
     pack_dir = f"{clean_repo}/objects/pack"
 
@@ -141,6 +171,21 @@ def compact_repository(
         # 1. Discover all remote packfiles
         entries = client.list_dir(repo_id, pack_dir)
         old_packs = [e["name"] for e in entries if e["name"].endswith(".pack")]
+
+        if max_total_bytes is not None:
+            total = sum(int(e.get("size") or 0) for e in entries if e["name"].endswith(".pack"))
+            if total > max_total_bytes:
+                return {
+                    "status": "skipped",
+                    "count": len(old_packs),
+                    "total_bytes": total,
+                    "message": (
+                        f"Remote packs total {total} bytes across {len(old_packs)} packfile(s); "
+                        f"the automatic cap is {max_total_bytes}. Compaction of a history this size "
+                        "downloads and re-uploads it in full, so it was deferred -- run 'git-remote-seafile gc' "
+                        "manually when the time cost suits."
+                    ),
+                }
 
         if len(old_packs) < min_packs:
             if verbose:
@@ -495,7 +540,11 @@ def compact_repository(
                 sys.stderr.flush()
 
             return {
-                "status": "ok",
+                # Not "ok" when the cleanup stopped short: the run did not do
+                # everything it was asked to, and a scheduled job that sees only
+                # "ok" cannot tell a complete compaction from one that left
+                # orphans behind.  The packs are verified either way.
+                "status": "incomplete" if cleanup_stopped else "ok",
                 "old_packs": len(old_packs),
                 "new_packs": len(new_packs),
                 "saved_kb": saved_kb,

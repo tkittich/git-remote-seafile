@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import io
-import os
 import sys
 from pathlib import Path
 from urllib.parse import quote
@@ -15,6 +14,7 @@ from .safety import (
     check_preflight_safety,
     discover_local_synced_libraries,
     get_local_work_tree,
+    safe_relative_to,
 )
 from .url import mask_url
 
@@ -96,26 +96,13 @@ def print_command_help(command: str) -> None:
 def _relative_within(target: Path, root: Path) -> Path | None:
     """*target* relative to *root*, or None when target is not inside root.
 
-    ``Path.relative_to`` compares case-sensitively on some platforms, so a
-    worktree spelled ``C:\\Users\\me\\Seafile`` and a target spelled
-    ``c:\\users\\me\\seafile\\proj`` do not match on Windows even though they
-    name the same directory -- and the command reported "no library matched".
-    Both sides are normcased for the containment test only; the returned path
-    keeps the target's own spelling, because that is what the user sees in
-    their file manager.  On POSIX ``normcase`` is the identity, so this changes
-    nothing there.
+    Kept as a named alias because the call sites read better with it; the
+    comparison itself lives in ``safety.safe_relative_to`` so that this guard,
+    the doctor's ``where`` and the snapshot tool's synced-folder check all
+    decide containment the same way.  Two implementations of one guard is how
+    one of them ends up stale.
     """
-    try:
-        return target.relative_to(root)
-    except ValueError:
-        pass
-    norm_target, norm_root = os.path.normcase(str(target)), os.path.normcase(str(root))
-    if norm_target == norm_root:
-        return Path(".")
-    prefix = norm_root.rstrip("\\/") + os.sep
-    if norm_target.startswith(prefix):
-        return Path(str(target)[len(prefix):])
-    return None
+    return safe_relative_to(target, root)
 
 
 def _url_path(rel: Path) -> str:
@@ -335,13 +322,29 @@ def main() -> int:
                 min_packs=min_packs,
                 config=RemoteConfig.load(),
             )
-            if res.get("status") == "ok":
+            status = res.get("status")
+            if status == "ok":
                 print(
                     f"Compacted {res['old_packs']} packfiles into {res['new_packs']} "
                     f"({describe_size_delta(res['saved_kb'])})."
                 )
                 return 0
-            if res.get("status") == "error":
+            if status == "incomplete":
+                # The consolidation succeeded and was verified; the *cleanup*
+                # stopped short because ownership of the lock was lost.  Nothing
+                # was lost, so this is not an error -- but it is not "ok" either,
+                # and a scheduled job that reads only the exit code has to be
+                # able to tell a finished compaction from one that left orphans.
+                print(
+                    f"Compacted {res['old_packs']} packfiles into {res['new_packs']} "
+                    f"({describe_size_delta(res['saved_kb'])}) but did not finish "
+                    f"removing the superseded ones."
+                )
+                stopped = str(res.get("cleanup_stopped", "")).strip()
+                if stopped:
+                    print(stopped)
+                return 1
+            if status == "error":
                 # An aborted compaction is a real failure (download error,
                 # size mismatch, invalid pack name); scripts must see it.
                 print(res.get("message", "Compaction failed."))

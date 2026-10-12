@@ -91,7 +91,7 @@ These hold on every code path, and each is the reason some check below exists. T
 - **Time decides who waits, never who holds.** A ticket's grant marker ranks it; a clock estimate may only break ties among peers (§4.4).
 - **Every destructive step re-proves ownership immediately before it acts** — before a ref is written, and before each individual packfile is deleted.
 - **A lost race is loud.** Where a check and a write cannot be made atomic, the write is followed by a read-back, and a mismatch is reported as a failure rather than assumed to be success.
-- **No external command runs unbounded.** Every `git` invocation is bounded by a hard-coded timeout, and a timeout is a failure rather than a silent truncation. The bound protects the lease as much as the run: a wedged `git repack` or `index-pack` inside `gc` would otherwise hold the remote lock open past its expiry, at which point another client lawfully takes over (§4.4). It is deliberately **not** a configuration key — a repository must not be able to raise the ceiling that protects its own concurrency guarantee.
+- **No external command runs unbounded.** Every `git` invocation is bounded by a wall-clock ceiling, and a timeout is a failure rather than a silent truncation. The bound protects the lease as much as the run: a wedged `git repack` or `index-pack` inside `gc` would otherwise hold the remote lock open past its expiry, at which point another client lawfully takes over (§4.4). The ceiling is raisable, but only from a scope the repository cannot reach — `SEAFILE_GIT_TIMEOUT`, or `seafile.gittimeout` in the system or global git config (§4.8) — because a repository must not be able to raise the ceiling that protects its own concurrency guarantee. The default is deliberately short of what a multi-GB repository needs; the machine owner, not the repository, is who raises it.
 
 ### 3.4 Data safety
 
@@ -262,11 +262,17 @@ The queue scan is read-only — a verification step that reaped tickets would be
 
 **Version note.** The v0.1–v0.3 single-file lock (`.git-lock.json`) was removed in v0.7.0; the ticket queue is the only protocol, and an orphaned mirror is deleted when found so existing repositories self-clean. Do not mix a v0.7.0+ helper with a v0.1–v0.3 helper on one repository: those clients predate the ticket protocol and cannot see its locks.
 
-### 4.5 Compaction
+### 4.5 Compaction 
 
-Over time, pushes accumulate packfiles in `/objects/pack/`. The `gc` subcommand downloads them, runs `git repack -ad -l` to consolidate and delta-compress, uploads the result, and removes the obsolete packs.
+Pushes accumulate packfiles in `/objects/pack/` — one per push, each already delta-compressed against existing remote content at send time. Consolidation therefore buys little in bytes; its job is **packfile-count hygiene**. Every tier follows the same principle: *freeze what is big or old, consolidate only what is small or new*; cost scales with the movable set, never the whole store; and a full rewrite of the history exists as a rare manual reset.
 
-**Deletion is gated three times over:**
+**Tiers:**
+
+- **Automatic tail merge (post-push).** The *movable* set is every remote pack below a size threshold (~1 GiB); larger packs are frozen where they stand — size alone decides, so no state records what was last touched. When the movable-pack count reaches `seafile.gcthreshold` and the movable total fits a download budget (~8 GiB), the helper downloads only those packs, enumerates every object in them from their indexes, and feeds that SHA list straight into `git pack-objects`: a pure bag union with **no reachability semantics**, which is what makes it safe — objects whose branches were deleted cannot be filtered out. The merged pack (self-contained; delta bases living in frozen packs are duplicated rather than referenced away) is verified on the remote at its local size, and only then are the originals removed. File count stays bounded at *frozen packs + a small constant*; cost per cycle is 2×tail bytes, not 2×store.
+- **Manual full compaction (`gc` subcommand).** Downloads everything, mirrors refs into a scratch bare repository initialised with the remote's object format, runs `git repack -ad -l`, uploads the consolidated pack, and removes the obsolete packs. No size cap by design — it is an off-hours decision. It is also the only tier that re-deltas across the entire history, which matters if a payload ever becomes delta-friendly.
+- **Current behaviour until tail merge ships.** Automatic compaction runs full compaction once `seafile.autogc` is on and the pack count crosses the threshold — but only while total remote pack bytes stay below `seafile.gcmaxmib` (default 20480 MiB ≈ 20 GiB); above it the helper defers with a notice instead of round-tripping a history that large mid-push.
+
+The following invariants apply to every tier. **Deletion is gated three times over:**
 
 1. **Ownership** is re-validated before any deletion begins.
 2. **The upload is proven, not assumed.** The remote pack directory is listed again and every new `.pack`/`.idx` must appear at the size it has locally. A truncated write, a proxy that answered `2xx` for a failed upload, and an `.idx` that never landed all look identical to a successful upload otherwise. An unverifiable upload is a **refusal, not a warning** — until the new packfiles are proven present, the old ones are the repository's only complete copy.
@@ -274,7 +280,7 @@ Over time, pushes accumulate packfiles in `/objects/pack/`. The `gc` subcommand 
 
 Order matters between gates 1 and 2: the ownership check runs first so that a lost lease is reported *as* a lost lease rather than as "the bytes are not there".
 
-Losing the lease part-way through cleanup stops the remaining deletions and says so, rather than failing the run: the consolidated packfiles are verified by that point, so the leftovers are only clutter. The result distinguishes "deleted nothing" from "deleted some, stopped". The operation exits non-zero on a failed compaction.
+Losing the lease part-way through cleanup stops the remaining deletions and says so, rather than failing the run: the consolidated packfiles are verified by that point, so the leftovers are only clutter. The result distinguishes "deleted nothing" from "deleted some, stopped", and reports `status: "incomplete"` — never `"ok"` — when it stopped short, exiting non-zero. The operation also exits non-zero on a failed compaction.
 
 Related details:
 
@@ -317,12 +323,14 @@ All behavioural settings resolve through one `RemoteConfig.load()` passed to bot
 | `seafile.locklease`        | `60`    | Lease duration in seconds                                         |
 | `seafile.locksettle`       | `1`     | Settlement window in seconds, per acquisition                     |
 | `seafile.autogc`           | `false` | Compact automatically after a push once the threshold is exceeded |
-| `seafile.gcthreshold`      | `20`    | Packfile count at which auto-GC triggers                          |
+| `seafile.gcthreshold`      | `20`    | Packfile count at which auto-GC triggers (movable-pack count under tail merge, §4.5) |
+| `seafile.gcmaxmib`         | `20480` | MiB cap on total remote pack bytes for automatic compaction (≈ 20 GiB); above it auto-GC defers to a manual run (§4.5) |
 | `seafile.forcefilehost`    | `false` | Force the file-host header on uploads                             |
 | `seafile.skipsafetychecks` | `false` | Disable pre-flight checks (system/global scope only)              |
+| `seafile.gittimeout`       | `300`   | Seconds one git subprocess may run (system/global scope or environment only) |
 
 
-Implausible values — a negative timeout, a non-positive lease, a sub-1 threshold — fall back to the documented defaults **with a warning**, rather than defeating the mechanism silently.
+Implausible values — a negative timeout, a non-positive lease, a sub-1 threshold, a non-positive git ceiling — fall back to the documented defaults **with a warning**, rather than defeating the mechanism silently.
 
 ### 4.9 Module Map
 
@@ -348,6 +356,14 @@ A commit carries only what `.gitignore` permits, so `tools/seafile_snapshot.py` 
 
 Its invariants are stated in §3.4; the full design — the vault, byte-exactness enforcement, restore verification, the cost model, and the options it refuses — is in [SNAPSHOT.md](SNAPSHOT.md), which is the authoritative write-up. Today a nested repository is detected and warned about loudly; its contents are not captured.
 
+The vault's object store is maintained on the same tiered principle as §4.5, but locally Git performs the mechanics natively:
+
+- **Report only (`--maintain`)**: loose vs packed bytes, free space, whether a repack would fit. No changes.
+- **Automatic incremental**: after each snapshot commit (before push), best-effort — it may fail without failing the snapshot — `git repack -d` + `git prune` packs only the loose tier once accumulated loose data passes ~256 MiB or 50k objects; existing packs are untouched but serve as delta bases. Unreachable objects stay loose, so prune can still delete them: dead space is never sealed into a pack. Frequency self-regulates (a small-delta repo repacks rarely), and the free-space check scales with the loose size, not the store.
+- **Manual full (`--full-repack`)**: `git repack -ad` + prune → one consolidated pack. Only after large deletions or ref rewrites (to reclaim space) or when local pack count has grown high.
+
+Object compression is a per-repository write-time policy, orthogonal to both tiers: `core.compression` is read at write time only, so it can be flipped freely and existing objects keep their encoding until some tier rewrites them. Deflate already stores incompressible 64 KiB blocks verbatim (stored-block fallback), so bytes are never wasted — the knob's real cost is CPU spent *trying*. The knob is therefore a level, not a boolean: `0` = pure stored blocks; `1–2` = cheap match search that still deflates when content compresses (the recommended steady state for an already-compressed payload mix); default = full. An advisory measures each run's compressed/raw ratio from numbers the tool already tracks (object-store growth vs raw staged bytes), folds it into a rolling aggregate in the vault's local config, and recommends a level per band (~≥0.95 → 0/1; ~0.7–0.95 → 1–2; <~0.7 → keep default) only when a sustained mix shift crosses a band (hysteresis); `--maintain` shows the current aggregate on demand.
+
 ---
 
 ## 5. Failure Model
@@ -365,7 +381,7 @@ Specific mappings worth stating:
 - **Deleting a ref that does not exist** is a no-op, not an error.
 - **Errors propagate as exceptions, never as process exits.** The library raises a typed error — `SeafileClientNotFoundError` and friends — and `cli.py` is the only layer that turns one into an exit code and a message. A library that called `sys.exit` directly would terminate before the message was chosen, which is how a subcommand ends up reporting `UnboundLocalError` instead of the failure that actually happened.
 - **A push destination that would delete a directory** is refused; only file refs are deletable. A bare `push :refs/heads/` is refused rather than deleting every branch.
-- **Losing the lock during gc cleanup** stops the remaining deletions and reports them; it does not fail the run, because the new packfiles are already verified.
+- **Losing the lock during gc cleanup** stops the remaining deletions and reports them; it does not fail the run, because the new packfiles are already verified — but it reports `status: "incomplete"` and exits non-zero, so a scheduled job can tell it from a compaction that finished.
 - **A failed auto-GC after a push** does not fail the push. The push succeeded; compaction is housekeeping.
 - **A stale cached library id is not detected** (`SeafileClient.get_repo_id`). A cache hit is served without a request, so a library deleted server-side since the last lookup fails later, at the point of use, with the server's error rather than a clean not-found. This is a known limitation (§7), not an oversight: the revalidation that existed briefly cost a listing fetch on every lookup.
 - **A malformed port is an invalid URL, on every path.** `parse_seafile_url` and `normalize_netloc()` both report `invalid port '<value>'` and name the URL, rather than letting urllib's bare `ValueError` escape — that message mentions neither the URL nor the fact that the fault is a *URL* fault, which sends the reader looking at the server. The guarded read is on the credential, transfer-session and URL-adjustment paths.

@@ -316,11 +316,14 @@ Before developing `git-remote-seafile`, extensive real-world testing and diagnos
   for the three credential-handling CVEs behind it.
 
 > [!NOTE]
-> **A SHA-256 repository needs Git 2.29+, not 2.20.** The floor above is the
-> ordinary SHA-1 case. SHA-256 support arrives with `object-format` negotiation
-> (Git 2.29), which the helper needs before it can name the format of the refs it
-> lists, and `gc` on a SHA-256 remote initialises its scratch repository with
-> `--object-format=sha256` for the same reason.
+> **Two features raise the floor above 2.20.** The number above is the ordinary
+> SHA-1 case. A **SHA-256 repository needs Git 2.29+**: `object-format`
+> negotiation is what lets the helper name the format of the refs it lists, and
+> `gc` on such a remote initialises its scratch repository with
+> `--object-format=sha256` for the same reason. And the **snapshot tool's
+> `--exclude` / `--default-excludes` need Git 2.25+** (see §15), because it
+> stages through `--pathspec-from-file`; without exclusions it stages with a
+> plain `git add`, where 2.20 is enough.
 
 ### Windows Installation
 1. Clone or download `git-remote-seafile`:
@@ -414,6 +417,7 @@ Authenticated successfully with https://seafile.example.com as user@example.com
 | Git config key | Environment variable | Default | Purpose |
 | :--- | :--- | :--- | :--- |
 | `seafile.skipsafetychecks` | `SEAFILE_SKIP_SAFETY_CHECKS` | `false` | Bypass the pre-flight guardrails (Trap 1, Trap 2, root pollution). |
+| `seafile.gittimeout` | `SEAFILE_GIT_TIMEOUT` | `300` | Seconds one git subprocess may run before it is killed. Raise it when a multi-GB push, fetch or `gc` times out (system/global scope or environment only). |
 | `seafile.autogc` | — | `false` | Compact the remote automatically once the packfile threshold is reached. |
 | `seafile.gcthreshold` | — | `20` | Packfile count at which the `gc` tip appears (or auto-GC triggers). |
 | `seafile.forcefilehost` | `SEAFILE_FORCE_FILE_HOST` | `false` | Force download/upload links onto your server's **host** (a wrong scheme on the same host is always corrected). |
@@ -429,9 +433,15 @@ git config seafile.forcefilehost true
 git config seafile.locktimeout 30
 git config seafile.locklease 120
 git config seafile.locksettle 0
+
+# The two trusted-scope keys are set globally, not per repository:
+git config --global seafile.skipsafetychecks true
+git config --global seafile.gittimeout 1800
 ```
 
-> Values that would defeat the mechanism outright are refused with a stderr warning and the documented default is used instead: a negative `seafile.locktimeout`, a zero or negative `seafile.locklease` (which would expire every lock immediately), a negative `seafile.locksettle`, and a `seafile.gcthreshold` below 1 (which would compact on every push). `seafile.locksettle 0` is *not* refused: it switches off a race guard rather than the lock, so it is a trade you are allowed to make — see §12.
+> Values that would defeat the mechanism outright are refused with a stderr warning and the documented default is used instead: a negative `seafile.locktimeout`, a zero or negative `seafile.locklease` (which would expire every lock immediately), a negative `seafile.locksettle`, a `seafile.gcthreshold` below 1 (which would compact on every push), and a `seafile.gittimeout` that is not a positive number of seconds (which would kill every git command outright). `seafile.locksettle 0` is *not* refused: it switches off a race guard rather than the lock, so it is a trade you are allowed to make — see §12.
+
+**`seafile.skipsafetychecks` and `seafile.gittimeout` are read from the trusted scope only** — the environment, or the system and global git config. A repository shipping either key in its own `.git/config` is ignored, because a repository that could disarm a guardrail or raise a safety ceiling is a repository that has taken away the protection those settings exist to provide. See [RUNBOOK.md](RUNBOOK.md) §7 for what the timeout bounds and when to raise it.
 
 **`seafile.forcefilehost`** deserves a note. Seafile returns a short-lived URL for every file transfer, and there are three cases to tell apart:
 
@@ -619,7 +629,7 @@ git-remote-seafile gc seafile://code/myproject
 - Automatically locks the remote repository during compaction to prevent push conflicts; the lock lease is refreshed during pack downloads, and ownership is re-validated before the deletions begin *and again before each obsolete pack is removed*.
 - **Exit codes**: `0` on success and on a benign skip (fewer than `--min-packs` packfiles), `1` on a failed compaction (download error, size mismatch, invalid pack name) — safe to gate a scheduled CI job on.
 - **Off-namespace refs are refused.** The compaction mirror carries only `refs/heads` and `refs/tags`; if the library holds refs anywhere else under `refs/` (hand-created `refs/notes/...`, another tool's refs) — or a ref name git could not honour — gc refuses *before downloading anything*, naming the offending refs: their objects would otherwise be deleted from the consolidated pack while the ref file survived, broken. Move such refs into `refs/heads` or `refs/tags` first.
-- **Obsolete packs are deleted only after the consolidated packfile is verified.** The remote pack directory is listed again and every new `.pack`/`.idx` must be present at the size it has locally. An upload that returned success is not evidence that the bytes are there — a truncated write, a quota error a proxy answered `2xx`, and an `.idx` that never landed all look identical from the client — and what gc deletes are the packfiles the repository is *currently* served from. When the check cannot be satisfied (a file missing, a size that disagrees, or a listing that fails) gc refuses, names what it could not verify, and leaves every old packfile in place: until the new ones are proven present, they are still the only complete copy. Deletions that fail individually are named on stderr and in the result summary and simply remain for a later `gc` run. If ownership is lost part-way through the deletions, the run stops there, reports it, and leaves the rest — the consolidated packfiles are already verified by that point, so nothing is lost.
+- **Obsolete packs are deleted only after the consolidated packfile is verified.** The remote pack directory is listed again and every new `.pack`/`.idx` must be present at the size it has locally. An upload that returned success is not evidence that the bytes are there — a truncated write, a quota error a proxy answered `2xx`, and an `.idx` that never landed all look identical from the client — and what gc deletes are the packfiles the repository is *currently* served from. When the check cannot be satisfied (a file missing, a size that disagrees, or a listing that fails) gc refuses, names what it could not verify, and leaves every old packfile in place: until the new ones are proven present, they are still the only complete copy. Deletions that fail individually are named on stderr and in the result summary and simply remain for a later `gc` run. If ownership is lost part-way through the deletions, the run stops there, reports it, and leaves the rest — the consolidated packfiles are already verified by that point, so nothing is lost. That outcome is reported as `status: "incomplete"` and the command exits non-zero rather than printing a plain success, so a scheduled job can tell it from a compaction that finished; the leftovers are unreferenced and a later `gc` removes them.
 - **Scratch space**: compaction downloads the remote's packfiles, repacks them, and re-uploads the result, all under the system temporary directory. Point `TMPDIR` (Linux/macOS) or `TEMP`/`TMP` (Windows) at a volume with room for roughly 2–3× the repository's packed size before compacting a large library; otherwise the run fails late, after it has already taken the lock.
 
 ### 10.2 Automatic Detection & Notification (Default)
@@ -665,7 +675,7 @@ Understanding how `git-remote-seafile` handles complex Git workflows and remote 
 | Mode | Trigger | Push Latency | Concurrency Behavior | Best Use Case |
 | :--- | :--- | :--- | :--- | :--- |
 | **Notification Mode (Default)** | Remote reaches 20 packfiles | **No added delay** | Terminal tip displayed; push never pauses | Daily development, interactive CLI usage |
-| **Opt-in Auto-GC (`autogc true`)** | Remote reaches 20 packfiles | **3–7s on 20th push** | Repositories locked via `.git-lock.d/` ticket queue during repack | Fully automated maintenance, solo developers |
+| **Opt-in Auto-GC (`autogc true`)** | Remote reaches 20 packfiles | **A full compaction, inline** — duration tracks the size of the repository, so there is no fixed figure to quote | Repositories locked via `.git-lock.d/` ticket queue during repack | Fully automated maintenance, solo developers |
 
 > [!TIP]
 > **Recommendation**: Leave `seafile.autogc` disabled (the default) so your everyday push stays interactive — no compaction pause on top of the lock's settlement window. Run compaction manually (`git-remote-seafile gc seafile://...`) or as part of a scheduled CI job when convenient.
@@ -851,6 +861,15 @@ Everything above moves *commits*. That leaves one gap the helper cannot close by
 
 > [!NOTE]
 > **Getting the tool: it comes with the source, not the wheel.** `pip install git-remote-seafile` installs the *helper* only — `tools/` is not part of the installed package, and no wheel contains it, so the `python tools/seafile_snapshot.py` commands below would fail on a plain `pip install git+…`. Clone the repository, or unpack the sdist attached to a [GitHub Release](https://github.com/tkittich/git-remote-seafile/releases); the sdist ships `tools/`, and the script locates the package itself, so it runs from any directory inside that checkout with nothing installed. `pip install -e .` from a clone gives you both at once. The same applies to `tools/seafile_doctor.py` (README, *Diagnostics for the Seafile desktop client*).
+
+> [!NOTE]
+> **Git 2.25+ if you use exclusions.** The tool stages the surviving paths through
+> `--pathspec-from-file`, which arrived in Git 2.25. Without `--exclude` or
+> `--default-excludes` it stages with a plain `git add`, where the package's
+> documented Git 2.20 floor (§5) is enough; with them you need 2.25. It does
+> **not** fall back to a plain `add` on older Git, and that is deliberate:
+> staging first and dropping the excluded paths from the index afterwards would
+> read exactly the files the exclude list exists to keep out of the vault.
 
 > [!IMPORTANT]
 > **Keep the Golden Rule (§2).** A snapshot's *source* may be anywhere — including inside a synced library — because the tool never writes to it. The snapshot's *destination* is a Seafile library, and like every other remote in this guide it should be an unsynced one.

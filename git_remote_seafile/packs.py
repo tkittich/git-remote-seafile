@@ -19,8 +19,15 @@ MAX_IN_MEMORY_PACK_BYTES = 16 * 1024 * 1024
 
 
 def is_valid_pack_name(pack_name: str) -> bool:
-    """Validate remote packfile name against pattern and directory traversal."""
-    if not PACK_NAME_RE.match(pack_name):
+    """Validate remote packfile name against pattern and directory traversal.
+
+    ``fullmatch``, not ``match``: ``$`` also matches just before a trailing
+    newline, so ``PACK_NAME_RE.match("pack-a.pack\\n")`` is truthy and a remote
+    listing could smuggle a line break into a name this function is the only
+    thing standing in front of.  The same reason ``HEX_SHA_RE`` is used with
+    ``fullmatch``.
+    """
+    if not PACK_NAME_RE.fullmatch(pack_name):
         return False
     if ".." in pack_name or "/" in pack_name or "\\" in pack_name:
         return False

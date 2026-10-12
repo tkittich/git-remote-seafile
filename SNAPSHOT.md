@@ -185,6 +185,16 @@ staged and then removed has already been read from disk, hashed, and written
 into the object store. Filtering first means an excluded directory is never
 opened at all — see §5 for what that is worth.
 
+That mechanism stages the survivors through `git add --pathspec-from-file`,
+which arrived in **Git 2.25**. Without `--exclude`/`--default-excludes` the tool
+stages with a plain `git add`, where the package's documented Git 2.20 floor is
+enough; with them, 2.25 is the floor. There is deliberately **no fallback** to a
+plain `add` on older Git: staging first and dropping the excluded paths
+afterwards is exactly the read-then-discard order the paragraph above exists to
+avoid, so the fallback would quietly undo the guarantee rather than degrade it.
+The paths are handed to git as **literal** pathspecs (`GIT_LITERAL_PATHSPECS=1`),
+so a name like `a[b].txt` or `*.log` is staged as itself and never as a glob.
+
 ### Refusals, not guesses
 
 The failures this tool can cause are quiet ones, so wherever a guess would be

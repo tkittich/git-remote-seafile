@@ -399,7 +399,7 @@ class TestCliSurface(unittest.TestCase):
                 self.assertIn(name, proc.stdout)
 
     def test_a_client_without_a_seafile_ini_is_not_a_verified_negative(self):
-        """REVIEW.sonnet.md B1: `where` exited 1 -- "not inside" -- from a crash.
+        """`where` exited 1 -- "not inside" -- from a crash.
 
         ``main()`` guards ``ccnet_dir()`` but not ``load_libs`` ->
         ``seafile_data``, which raises when ``.ccnet`` exists without a

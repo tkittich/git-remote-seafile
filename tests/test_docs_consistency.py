@@ -65,10 +65,11 @@ _DOC_NAMES = (
 _DOC_CONFIG_KEY = re.compile(r"`(seafile\.[a-z][a-z0-9]*)`")
 
 # A *read* of a config key.  Only literal calls are seen (see the module
-# docstring).  `get_trusted_git_config_bool` counts too -- it is the
-# system/global-scoped reader safety.py uses for `seafile.skipsafetychecks`
-# (REVIEW.glm.md H-12); the key is as documented a setting as any other, it
-# just refuses to answer to repo-local config.
+# docstring).  The trusted readers count too: `get_trusted_git_config_bool` is
+# the system/global-scoped reader safety.py uses for `seafile.skipsafetychecks`,
+# and `get_trusted_git_config_int` is the same pattern for
+# `seafile.gittimeout`.  Both are documented settings like any other; they just
+# refuse to answer to repo-local config.
 _CODE_CONFIG_READ = re.compile(r'get_(?:trusted_)?git_config_[a-z]+\("([^"]+)"\s*,\s*([^)]+)\)')
 
 # An environment variable the code actually consults -- not merely one it
@@ -153,6 +154,13 @@ def _config_keys_read_by_code() -> dict[str, str]:
     return found
 
 
+# A module-level integer constant, e.g. `GIT_TIMEOUT = 300`.  A default passed
+# to a config reader by *name* still has to be documented as a value, so the
+# name is resolved here rather than demanded in the guide -- the guide should
+# say 300, not GIT_TIMEOUT.
+_INT_CONSTANT = re.compile(r"^([A-Z][A-Z0-9_]*) = (\d+)$", re.MULTILINE)
+
+
 def _normalise_default(raw: str) -> str:
     """Reduce a Python default literal to the form the docs use."""
     raw = raw.strip()
@@ -162,6 +170,10 @@ def _normalise_default(raw: str) -> str:
         return "false"
     if raw == "None":
         return "none"
+    if raw.isidentifier() and raw.isupper():
+        resolved = dict(_INT_CONSTANT.findall(_source_text())).get(raw)
+        if resolved is not None:
+            return resolved
     return raw.strip("\"'").strip()
 
 
@@ -274,7 +286,7 @@ class TestIgnoreFileName(unittest.TestCase):
     that does not exist.
 
     `.seafile-ignore.txt` was the misspelling, and it is not hypothetical: the
-    audit in `archive/REVIEW.md` found one on this machine --
+    audit found one on this machine --
     `Documents/code/fiction/.seafile-ignore.txt` -- carrying a header claiming
     to be "Seafile sync exclusions for this library".  It was a complete no-op,
     for two independent reasons: the leading dot, and a location in a subfolder

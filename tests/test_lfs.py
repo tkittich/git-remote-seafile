@@ -327,7 +327,7 @@ class TestLFSTransferAgent(unittest.TestCase):
             self.assertEqual(output_lines[0], {})
             # Line 2: unknown event -> 400 error.  The reply must carry the
             # "event" key -- git-lfs dispatches on it, and a bare {"error": ...}
-            # matches no state of its wait loop (REVIEW.glm.md H-16).
+            # matches no state of its wait loop.
             self.assertEqual(output_lines[1]["event"], "complete")
             self.assertEqual(output_lines[1]["error"]["code"], 400)
             self.assertIn("Unknown event: unknown_event_type", output_lines[1]["error"]["message"])

@@ -16,7 +16,7 @@ from git_remote_seafile.safety import (
     is_path_ignored,
     is_safety_checks_enabled,
     read_seafile_ignore_rules,
-    _safe_relative_to,
+    safe_relative_to,
 )
 from git_remote_seafile.client import SeafileAPIError, SeafileClient
 from git_remote_seafile.helper import RemoteHelper
@@ -42,7 +42,7 @@ class TestSafetyGuardrails(unittest.TestCase):
 
     def test_repo_local_config_cannot_disarm_safety_checks(self):
         """A repository shipping `[seafile] skipsafetychecks = true` in its own
-        .git/config must not disarm the guardrails (REVIEW.glm.md H-12).
+        .git/config must not disarm the guardrails.
 
         The trusted reader consults only the system and global scopes, so the
         repo-local setting is invisible to it.  Runs against real git: the
@@ -96,13 +96,41 @@ class TestSafetyGuardrails(unittest.TestCase):
     def test_safe_relative_to(self):
         base = Path("/home/user/Documents")
         target = Path("/home/user/Documents/code/myproject")
-        rel = _safe_relative_to(target, base)
+        rel = safe_relative_to(target, base)
         self.assertIsNotNone(rel)
         self.assertEqual(rel.as_posix(), "code/myproject")
 
         # Outside base
         outside = Path("/home/user/Downloads/file.txt")
-        self.assertIsNone(_safe_relative_to(outside, base))
+        self.assertIsNone(safe_relative_to(outside, base))
+
+    def test_safe_relative_to_folds_case_exactly_as_normcase_does(self):
+        """The fallback follows ``os.path.normcase``, in both directions.
+
+        ``normcase`` folds case on Windows and is the identity on POSIX, and
+        this guard is used to decide whether a path is inside a Seafile-synced
+        library -- so folding too much is as wrong as folding too little.  An
+        unconditional ``.lower()`` (what this helper used to do) reports
+        ``~/Seafile`` and ``~/seafile`` as one directory on Linux, where they
+        are two, and refuses a vault it should accept.  ``normcase`` is patched
+        rather than the platform assumed, so the test pins the rule instead of
+        the machine it happens to run on.
+        """
+        base = Path("/home/user/Seafile")
+        target = Path("/home/user/seafile/Proj")
+
+        if os.path.normcase("A") == "A":
+            # POSIX: two directories, and they must stay two.
+            self.assertIsNone(safe_relative_to(target, base))
+        else:
+            rel = safe_relative_to(target, base)
+            self.assertIsNotNone(rel)
+            self.assertEqual(rel.as_posix(), "Proj", "the target's own spelling is kept")
+
+        with patch("os.path.normcase", side_effect=lambda s: s.lower()):
+            folded = safe_relative_to(target, base)
+        self.assertIsNotNone(folded)
+        self.assertEqual(folded.as_posix(), "Proj")
 
     def test_read_seafile_ignore_rules(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -539,7 +567,7 @@ class TestWorkingTreeFallback(unittest.TestCase):
         wherever the user was.  The fallback must therefore resolve the
         destination from GIT_DIR and Trap 1 must fire on it -- this is the
         clone-from-outside-the-synced-library case that previously went
-        undetected (REVIEW.glm.md P3 #4 spike).
+        undetected.
         """
         client = MagicMock()
         client.get_repo_id.return_value = "repo1"
@@ -698,21 +726,23 @@ class TestDiscoverLocalSyncedLibraries(unittest.TestCase):
     inside a synced library -- which is the situation the check exists to catch.
     """
 
-    def _seed(self, home: Path, worktree: Path, journal: str) -> sqlite3.Connection:
+    def _seed(
+        self, home: Path, worktree: Path, journal: str, auto_sync: str | None = None
+    ) -> sqlite3.Connection:
         ccnet = home / "ccnet"
         ccnet.mkdir(parents=True, exist_ok=True)
         worktree.mkdir(parents=True, exist_ok=True)
         con = sqlite3.connect(str(ccnet / "repo.db"))
         con.execute(f"PRAGMA journal_mode={journal}")
         con.execute("CREATE TABLE RepoProperty (repo_id TEXT, key TEXT, value TEXT)")
-        con.executemany(
-            "INSERT INTO RepoProperty VALUES (?,?,?)",
-            [
-                ("repo-1", "worktree", str(worktree)),
-                ("repo-1", "server-url", "https://seafile.example"),
-                ("repo-1", "username", "alice"),
-            ],
-        )
+        rows = [
+            ("repo-1", "worktree", str(worktree)),
+            ("repo-1", "server-url", "https://seafile.example"),
+            ("repo-1", "username", "alice"),
+        ]
+        if auto_sync is not None:
+            rows.append(("repo-1", "auto-sync", auto_sync))
+        con.executemany("INSERT INTO RepoProperty VALUES (?,?,?)", rows)
         con.commit()
         return con  # left open: stands in for the running desktop client
 
@@ -736,6 +766,9 @@ class TestDiscoverLocalSyncedLibraries(unittest.TestCase):
                 # store the library name) -- the name-based fallback match
                 # keys on this, so pin it
                 self.assertEqual(libs[0]["name"], "MyLibrary")
+                # an absent 'auto-sync' property means auto sync is ON: the
+                # daemon only writes a row when a user disables it
+                self.assertTrue(libs[0]["auto_sync"])
             finally:
                 con.close()
 
@@ -748,6 +781,38 @@ class TestDiscoverLocalSyncedLibraries(unittest.TestCase):
                 with patch("pathlib.Path.home", return_value=home):
                     libs = discover_local_synced_libraries()
                 self.assertEqual([lib["repo_id"] for lib in libs], ["repo-1"])
+            finally:
+                con.close()
+
+    def test_a_library_with_auto_sync_disabled_is_reported_as_such(self):
+        # The desktop client persists a per-library "auto sync" disable as
+        # RepoProperty('auto-sync', 'false') (seaf-daemon repo-mgr.c, key
+        # REPO_AUTO_SYNC).  With auto sync off the daemon un-watches that
+        # worktree and will not rewrite files under it in the background --
+        # a fact the snapshot tool's guard relies on before letting such a
+        # path through, so the value must survive discovery intact.
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td) / "home"
+            worktree = Path(td) / "InertLibrary"
+            con = self._seed(home, worktree, "wal", auto_sync="false")
+            try:
+                with patch("pathlib.Path.home", return_value=home):
+                    libs = discover_local_synced_libraries()
+                self.assertEqual(len(libs), 1)
+                self.assertFalse(libs[0]["auto_sync"])
+            finally:
+                con.close()
+
+    def test_an_explicit_auto_sync_enable_is_reported_as_on(self):
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td) / "home"
+            worktree = Path(td) / "ActiveLibrary"
+            con = self._seed(home, worktree, "wal", auto_sync="true")
+            try:
+                with patch("pathlib.Path.home", return_value=home):
+                    libs = discover_local_synced_libraries()
+                self.assertEqual(len(libs), 1)
+                self.assertTrue(libs[0]["auto_sync"])
             finally:
                 con.close()
 
