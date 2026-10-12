@@ -25,6 +25,8 @@ class TestConfigModule(unittest.TestCase):
             self.assertEqual(cfg.lock_settle, 1)
             self.assertFalse(cfg.auto_gc)
             self.assertEqual(cfg.gc_threshold, 20)
+            self.assertEqual(cfg.gc_max_mib, 8192)
+            self.assertEqual(cfg.gc_max_pack_mib, 1024)
 
     def test_remote_config_load_custom(self):
         def mock_get(key: str, default: str | None = None) -> str | None:
@@ -34,6 +36,8 @@ class TestConfigModule(unittest.TestCase):
                 "seafile.locksettle": "0",
                 "seafile.autogc": "true",
                 "seafile.gcthreshold": "50",
+                "seafile.gcmaxmib": "4096",
+                "seafile.gcmaxpackmib": "256",
             }
             return mapping.get(key, default)
 
@@ -44,6 +48,8 @@ class TestConfigModule(unittest.TestCase):
             self.assertEqual(cfg.lock_settle, 0)
             self.assertTrue(cfg.auto_gc)
             self.assertEqual(cfg.gc_threshold, 50)
+            self.assertEqual(cfg.gc_max_mib, 4096)
+            self.assertEqual(cfg.gc_max_pack_mib, 256)
 
     def test_a_zero_settlement_window_is_honoured(self):
         """0 switches the re-scan off, which is a legitimate choice.
@@ -75,6 +81,8 @@ class TestConfigModule(unittest.TestCase):
                 "seafile.locklease": "0",
                 "seafile.locksettle": "-2",
                 "seafile.gcthreshold": "0",
+                "seafile.gcmaxmib": "-7",
+                "seafile.gcmaxpackmib": "0",
             }
             return mapping.get(key, default)
 
@@ -86,9 +94,13 @@ class TestConfigModule(unittest.TestCase):
         self.assertEqual(cfg.lock_lease, 60)
         self.assertEqual(cfg.lock_settle, 1)
         self.assertEqual(cfg.gc_threshold, 20)
+        self.assertEqual(cfg.gc_max_mib, 8192)
+        self.assertEqual(cfg.gc_max_pack_mib, 1024)
         self.assertIn("seafile.locklease=0 -> 60", mock_err.getvalue())
         self.assertIn("seafile.locksettle=-2 -> 1", mock_err.getvalue())
         self.assertIn("seafile.gcthreshold=0 -> 20", mock_err.getvalue())
+        self.assertIn("seafile.gcmaxmib=-7 -> 8192", mock_err.getvalue())
+        self.assertIn("seafile.gcmaxpackmib=0 -> 1024", mock_err.getvalue())
 
     def test_get_git_config_helpers(self):
         with patch("git_remote_seafile.git_util.run_git", return_value=(b"hello\n", b"", 0)):

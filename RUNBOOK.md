@@ -254,9 +254,11 @@ expires and another client lawfully takes over — and a credential-helper promp
 nobody at the keyboard.
 
 Five minutes is generous for an ordinary repository and too short for a large one. A first push of a
-few GB, an `index-pack` of one large downloaded pack, and a `repack -a -d` of a big remote all
-routinely exceed it. The failure is deterministic — the same repository stops at the same point every
-time — and with `seafile.autogc` enabled the failing compaction is retried on every push.
+few GB, an `index-pack` of one large downloaded pack, and a full `repack -a -d` during manual `gc` all
+routinely exceed it. The automatic tail merge is bounded by design — only packs below
+`seafile.gcmaxpackmib`, within the `seafile.gcmaxmib` download budget — so it rarely reaches the
+ceiling; when any of these does, the failure is deterministic (the same repository stops at the same point every
+time), and with `seafile.autogc` enabled the failing run defers and is retried on the next push.
 
 **Fix: raise the ceiling.** It is deliberately *not* a per-repository setting, because a repository
 that could raise the ceiling could remove the protection it provides. Set it from a scope the

@@ -380,8 +380,7 @@ class RemoteHelper:
             return
 
         # Set while the push lock is held, acted on after it is released.
-        auto_gc_min_packs = 0
-        auto_gc_pack_count = 0
+        auto_gc_movable_count = 0
         reported_specs: set[str] = set()
 
         # Load session config once and reuse it for the push lock below and the
@@ -643,41 +642,48 @@ class RemoteHelper:
                             sys.stderr.flush()
                             reported_specs.add(dst)
 
-                # Decide whether compaction is due -- but only *decide* here.
-                # Running it inside this block self-deadlocks: compact_repository
-                # acquires the same lock, RemoteLock is not reentrant, so the
-                # inner acquire would read back our own unexpired lease, wait out
-                # the timeout and fail.
+                # Decide whether tail merge is due -- but only *decide* here.
+                # Running it inside this block self-deadlocks: tail_merge acquires
+                # the same lock, RemoteLock is not reentrant, so the inner acquire
+                # would read back our own unexpired lease, wait out the timeout and
+                # fail.
                 try:
                     pack_entries = self.client.list_dir(self.repo_id, self._full_path("objects/pack"))
-                    remote_packs = [e["name"] for e in pack_entries if e["name"].endswith(".pack")]
-                    pack_total = sum(int(e.get("size") or 0) for e in pack_entries if e["name"].endswith(".pack"))
+                    freeze_at = session_config.gc_max_pack_mib * 1024 * 1024
+                    # Movable vs frozen is decided by size alone -- the same split
+                    # tail_merge makes under the lock, so this decision cannot drift
+                    # from what the merge itself will do.
+                    pack_info = [
+                        (e["name"], int(e.get("size") or 0))
+                        for e in pack_entries if e["name"].endswith(".pack")
+                    ]
+                    movable_count = sum(1 for _, size in pack_info if size < freeze_at)
+                    movable_bytes = sum(size for _, size in pack_info if size < freeze_at)
                     threshold = session_config.gc_threshold
                     auto_gc = session_config.auto_gc
 
-                    if len(remote_packs) >= threshold:
-                        # Compaction costs one full download + re-upload of the
-                        # whole history, so above seafile.gcmaxmib it defers to a
-                        # manual off-hours run no matter how many packs pile up.
-                        if auto_gc and pack_total > session_config.gc_max_mib * 1024 * 1024:
+                    if movable_count >= threshold:
+                        # Tail merge downloads only the small packs and re-uploads
+                        # their union, so above seafile.gcmaxmib it defers to a
+                        # manual off-hours run no matter how many pile up.
+                        if auto_gc and movable_bytes > session_config.gc_max_mib * 1024 * 1024:
                             sys.stderr.write(
-                                f"\nNotice: Remote packs total {pack_total / (1024**3):.1f} GiB across "
-                                f"{len(remote_packs)} packfile(s), above the automatic cap "
+                                f"\nNotice: Movable packs total {movable_bytes / (1024**3):.1f} GiB across "
+                                f"{movable_count} packfile(s), above the automatic download budget "
                                 f"(seafile.gcmaxmib = {session_config.gc_max_mib} MiB).\n"
-                                f"Auto-compaction was deferred: it downloads and re-uploads that whole history.\n"
+                                f"Auto tail-merge was deferred: it downloads and re-uploads those packs.\n"
                                 f"Run 'git-remote-seafile gc {self.raw_url}' manually when the time cost suits.\n\n"
                             )
                             sys.stderr.flush()
                         elif auto_gc:
-                            auto_gc_min_packs = threshold
-                            auto_gc_pack_count = len(remote_packs)
+                            auto_gc_movable_count = movable_count
                         else:
                             sys.stderr.write(
-                                f"\nNotice: Remote repository has {len(remote_packs)} packfiles (threshold: {threshold}), "
-                                f"totaling {pack_total / (1024**3):.1f} GiB.\n"
+                                f"\nNotice: Remote repository has {movable_count} small packfiles (threshold: {threshold}), "
+                                f"totaling {movable_bytes / (1024**3):.1f} GiB.\n"
                                 f"Tip: Run 'git-remote-seafile gc {self.raw_url}' to optimize remote storage,\n"
-                                f"     or run 'git config seafile.autogc true' to enable automatic compaction\n"
-                                f"     (automatic runs defer while the packs exceed seafile.gcmaxmib).\n\n"
+                                f"     or run 'git config seafile.autogc true' to enable automatic tail merge\n"
+                                f"     (automatic runs defer while the movable packs exceed seafile.gcmaxmib).\n\n"
                             )
                             sys.stderr.flush()
                 except Exception:
@@ -690,33 +696,31 @@ class RemoteHelper:
             sys.stderr.write(f"\nPush failed: {lock_err}\n")
             sys.stderr.flush()
 
-        # Compaction runs here, after the push lock is released, so that it can
+        # Tail merge runs here, after the push lock is released, so that it can
         # take the lock for itself.  It must never disturb the per-ref ok/error
-        # lines written above: the push already succeeded, and a compaction
+        # lines written above: the push already succeeded, and a tail-merge
         # problem is a separate, recoverable event (gc can always be run by
         # hand).  Under genuine contention with another machine this may still
         # time out, which is correct -- it just must not self-inflict it.
-        if auto_gc_min_packs:
+        if auto_gc_movable_count:
             try:
                 sys.stderr.write(
-                    f"Auto-compacting remote repository ({auto_gc_pack_count} packfiles detected)...\n"
+                    f"Auto-merging remote repository tail ({auto_gc_movable_count} small packfiles detected)...\n"
                 )
                 sys.stderr.flush()
-                from .gc import compact_repository
+                from .gc import tail_merge
 
-                compact_repository(
+                # The threshold and budget are re-checked inside, under the lock,
+                # so growth between this decision and the merge is covered.
+                tail_merge(
                     self.client,
                     self.repo_id,
                     self.repo_path,
                     config=session_config,
-                    min_packs=auto_gc_min_packs,
-                    # The decision above already checked the cap; re-checking at
-                    # the gate costs one listing and covers growth in between.
-                    max_total_bytes=session_config.gc_max_mib * 1024 * 1024,
                     verbose=True,
                 )
             except Exception as ex:
-                sys.stderr.write(f"Auto-compaction skipped: {_flatten(ex)}\n")
+                sys.stderr.write(f"Auto tail-merge skipped: {_flatten(ex)}\n")
                 sys.stderr.flush()
 
         sys.stdout.write("\n")

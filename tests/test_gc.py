@@ -10,7 +10,8 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from git_remote_seafile import gc as gc_module
-from git_remote_seafile.gc import compact_repository, describe_size_delta
+from git_remote_seafile.config import RemoteConfig
+from git_remote_seafile.gc import compact_repository, describe_size_delta, tail_merge
 from git_remote_seafile.lock import LEASE_LOST
 
 
@@ -1175,6 +1176,277 @@ class TestGcSubprocessTimeout(unittest.TestCase):
                 gc_module._run_git(["-C", "scratch", "repack", "-a", "-d", "-l"], {})
         self.assertIn("did not finish within", str(ctx.exception))
         self.assertIn("repack", str(ctx.exception))
+
+
+class _FencedOnceTailLock:
+    """A lock whose pre-delete fence passes and every per-deletion fence fails.
+
+    tail_merge asks twice in a row: once before the deletion loop, then before
+    each individual deletion.  Answering True exactly once models a lease that
+    lapses between those two moments -- the merge is already uploaded and
+    verified, so the correct outcome is "incomplete", not success and not an
+    exception thrown mid-loop.
+    """
+
+    def __init__(self, *args, **kwargs):
+        self._checks = 0
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def maybe_renew(self, _interval):
+        pass
+
+    def verify_ownership(self):
+        self._checks += 1
+        return self._checks == 1
+
+    def ownership_state(self):
+        return LEASE_LOST
+
+
+class TestTailMerge(unittest.TestCase):
+    """DESIGN.md §4.5 -- the automatic tier: bounded, frozen-aware consolidation.
+
+    The invariants worth pinning are the ones that separate tail merge from a
+    full compaction run: big packs never count toward the threshold, never get
+    downloaded and never get deleted; an empty or unverifiable merge deletes
+    nothing; and a lease lost mid-cleanup reports "incomplete" rather than
+    success.  The pack-objects fake writes a *real* file so the before/after
+    glob diff that names the merged packfile runs against actual paths.
+    """
+
+    @staticmethod
+    def _cfg(threshold=3, max_mib=8192, max_pack_mib=1024):
+        return RemoteConfig(
+            lock_timeout=15, lock_lease=60, lock_settle=0, auto_gc=True,
+            gc_threshold=threshold, gc_max_mib=max_mib, gc_max_pack_mib=max_pack_mib,
+        )
+
+    @staticmethod
+    def _client(entries, *, body=b"PACK-DATA", drop_uploads=False):
+        """A remote whose pack listing is honest about what was really sent.
+
+        Mirrors the compact_repository fixtures: lock tickets uploaded through
+        upload_file are replayable via get_file_text, and non-lock uploads show
+        up in later listings at their true size -- unless ``drop_uploads``
+        models a server that accepted nothing, which is exactly the case the
+        pre-deletion verification exists to catch.
+        """
+        client = MagicMock()
+        client.get_file_bytes.return_value = body
+        client.delete_entry.return_value = True
+
+        lock_payloads: list[str] = []
+        uploaded_sizes: dict[str, int] = {}
+        hidden = {"v": False}
+
+        def fake_upload(repo_id, parent, filename, content, replace=True, progress_callback=None):
+            if ".git-lock" in filename or ".git-lock.d" in parent:
+                lock_payloads.append(content.decode("utf-8"))
+            else:
+                uploaded_sizes[filename] = _uploaded_size(content)
+                if drop_uploads:
+                    hidden["v"] = True
+            return True
+
+        client.upload_file.side_effect = fake_upload
+
+        def fake_get_text(repo_id, path):
+            if ".git-lock" in path:
+                return lock_payloads[-1] if lock_payloads else None
+            return "sha-main"
+
+        client.get_file_text.side_effect = fake_get_text
+
+        def listing(repo_id, path):
+            if "objects/pack" not in path:
+                return []
+            return _pack_listing(entries, uploaded_sizes) if not hidden["v"] else list(entries)
+
+        client.list_dir.side_effect = listing
+        client.uploaded_sizes = uploaded_sizes
+        return client
+
+    @staticmethod
+    def _subprocess_fake(*, objects=b"aa11 commit 120\nbb22 blob 5\n"):
+        def fake(cmd, **kwargs):
+            if "cat-file" in cmd:
+                return MagicMock(returncode=0, stdout=objects.decode())
+            if "pack-objects" in cmd:
+                base = Path(cmd[-1])
+                merged = base.parent / (base.name + "-" * 1 + "ab" * 20 + ".pack")
+                merged.write_bytes(b"M" * 40)
+                merged.with_suffix(".idx").write_bytes(b"I" * 7)
+                return MagicMock(returncode=0)
+            if "verify-pack" in cmd:
+                return MagicMock(returncode=0, stderr=b"")
+            return MagicMock(returncode=0)
+
+        return fake
+
+    @staticmethod
+    def _deleted_pack_paths(client):
+        """Everything deleted that is not the holder's own lock ticket."""
+        return [c.args[1] for c in client.delete_entry.call_args_list if ".git-lock.d" not in c.args[1]]
+
+    # --- the gates: count and budget are both about movable packs only -----
+
+    def test_tail_merge_skips_below_the_movable_threshold(self):
+        client = self._client([{"name": "pack-1.pack", "size": len(b"PACK-DATA")}, {"name": "pack-2.pack", "size": len(b"PACK-DATA")}])
+
+        res = tail_merge(client, "repo1", "/path", config=self._cfg(threshold=3), verbose=False)
+
+        self.assertEqual(res["status"], "skipped")
+        self.assertEqual(res["movable_packs"], 2)
+        self.assertEqual(res["frozen_packs"], 0)
+        client.get_file_bytes.assert_not_called()
+        self.assertEqual(self._deleted_pack_paths(client), [])
+
+    def test_tail_merge_frozen_packs_never_count_toward_the_threshold(self):
+        """Eight packs exist but only three are movable: the threshold must not fire.
+
+        Counting frozen packs would re-arm the trigger on every push in a
+        repository with a big consolidated floor, which is the exact churn the
+        freeze exists to end.
+        """
+        small = [{"name": f"pack-{i}.pack", "size": len(b"PACK-DATA")} for i in range(3)]
+        frozen = [{"name": f"pack-big{i}.pack", "size": 4 * 1024**3} for i in range(5)]
+        client = self._client(small + frozen)
+
+        res = tail_merge(client, "repo1", "/path", config=self._cfg(threshold=4), verbose=False)
+
+        self.assertEqual(res["status"], "skipped")
+        self.assertEqual(res["movable_packs"], 3)
+        self.assertEqual(res["frozen_packs"], 5)
+        client.get_file_bytes.assert_not_called()
+        self.assertEqual(self._deleted_pack_paths(client), [])
+
+    def test_tail_merge_defers_when_the_movable_set_exceeds_the_budget(self):
+        """Five 1 MiB packs against a 2 MiB budget: defer, transferring nothing.
+
+        The budget is a download cap on the *movable* set only; frozen bytes
+        never enter it because they would never be downloaded anyway.
+        """
+        client = self._client([{"name": f"pack-{i}.pack", "size": 1024**2} for i in range(5)])
+
+        res = tail_merge(client, "repo1", "/path", config=self._cfg(threshold=3, max_mib=2), verbose=False)
+
+        self.assertEqual(res["status"], "skipped")
+        self.assertIn("deferred", res["message"])
+        client.get_file_bytes.assert_not_called()
+        self.assertEqual(self._deleted_pack_paths(client), [])
+
+    def test_tail_merge_refuses_an_untrusted_pack_name(self):
+        """A name that could not be a real packfile aborts before any transfer.
+
+        is_valid_pack_name is the only thing standing between a hostile listing
+        and a path join; an error here costs nothing, so it must fire first.
+        """
+        client = self._client([
+            {"name": "pack-1.pack", "size": len(b"PACK-DATA")},
+            {"name": "pack-../../evil.pack", "size": len(b"PACK-DATA")},
+        ])
+
+        res = tail_merge(client, "repo1", "/path", config=self._cfg(threshold=1), verbose=False)
+
+        self.assertEqual(res["status"], "error")
+        self.assertIn("Invalid packfile name", res["message"])
+        client.get_file_bytes.assert_not_called()
+        self.assertEqual(self._deleted_pack_paths(client), [])
+
+    # --- the merge itself ---------------------------------------------------
+
+    @patch("subprocess.run")
+    def test_tail_merge_consolidates_only_the_movable_packs(self, mock_subprocess):
+        small = [{"name": "pack-1.pack", "size": len(b"PACK-DATA")}, {"name": "pack-2.pack", "size": len(b"PACK-DATA")}]
+        frozen = {"name": "pack-frozen.pack", "size": 5 * 1024**3}
+        client = self._client(small + [frozen])
+        mock_subprocess.side_effect = self._subprocess_fake()
+
+        res = tail_merge(client, "repo1", "/path", config=self._cfg(threshold=2), verbose=False)
+
+        self.assertEqual(res["status"], "ok")
+        self.assertEqual(res["merged_packs"], 2)
+        self.assertEqual(res["frozen_packs"], 1)
+        # deleted_packs counts .pack files; each had its .idx removed as well.
+        self.assertEqual(res["deleted_packs"], 2)
+        self.assertEqual(
+            sorted(self._deleted_pack_paths(client)),
+            [
+                "/path/objects/pack/pack-1.idx",
+                "/path/objects/pack/pack-1.pack",
+                "/path/objects/pack/pack-2.idx",
+                "/path/objects/pack/pack-2.pack",
+            ],
+            "exactly the two movable pairs -- the frozen pack was never touched",
+        )
+        self.assertFalse(
+            any("pack-frozen" in str(c.args) for c in client.get_file_bytes.call_args_list),
+            "a frozen pack must never be downloaded",
+        )
+        merged = [n for n in client.uploaded_sizes if "tail" in n]
+        self.assertEqual(len(merged), 2, "the merged .pack and its .idx were uploaded")
+
+    @patch("subprocess.run")
+    def test_tail_merge_deletes_nothing_when_the_tail_holds_no_objects(self, mock_subprocess):
+        """An empty bag union has nothing to merge -- so nothing may be deleted.
+
+        The old packfiles are the only copy of their (zero) objects; deleting
+        them on a vacuous merge would trade clutter for data loss.
+        """
+        client = self._client([{"name": "pack-1.pack", "size": len(b"PACK-DATA")}, {"name": "pack-2.pack", "size": len(b"PACK-DATA")}])
+        mock_subprocess.side_effect = self._subprocess_fake(objects=b"")
+
+        res = tail_merge(client, "repo1", "/path", config=self._cfg(threshold=2), verbose=False)
+
+        self.assertEqual(res["status"], "skipped")
+        self.assertIn("no objects", res["message"])
+        self.assertEqual(self._deleted_pack_paths(client), [])
+
+    @patch("subprocess.run")
+    def test_tail_merge_keeps_the_old_packs_when_the_upload_cannot_be_proven(self, mock_subprocess):
+        """Upload success is not evidence the bytes are there; the check fails closed.
+
+        The server accepted nothing, so the merged packfile cannot be listed at
+        its local size -- and until it can be proven present, the old packs are
+        still the repository's only complete copy.  Nothing may be deleted.
+        """
+        client = self._client(
+            [{"name": "pack-1.pack", "size": len(b"PACK-DATA")}, {"name": "pack-2.pack", "size": len(b"PACK-DATA")}],
+            drop_uploads=True,
+        )
+        mock_subprocess.side_effect = self._subprocess_fake()
+
+        with self.assertRaises(RuntimeError) as ctx:
+            tail_merge(client, "repo1", "/path", config=self._cfg(threshold=2), verbose=False)
+
+        self.assertIn("refusing to delete", str(ctx.exception))
+        self.assertEqual(self._deleted_pack_paths(client), [])
+        # The attempt itself did happen: the merge was built and sent.
+        self.assertTrue(any("tail" in n for n in client.uploaded_sizes))
+
+    @patch("subprocess.run")
+    def test_tail_merge_reports_incomplete_when_the_lease_is_lost_mid_cleanup(self, mock_subprocess):
+        """A lost lease after verification stops cleanup; it is not a success.
+
+        The merged packfile is already uploaded and verified, so nothing was
+        lost -- but a scheduled job reading only ``status`` must be able to tell
+        this run from one that finished its deletions.
+        """
+        client = self._client([{"name": "pack-1.pack", "size": len(b"PACK-DATA")}, {"name": "pack-2.pack", "size": len(b"PACK-DATA")}])
+        mock_subprocess.side_effect = self._subprocess_fake()
+
+        with patch("git_remote_seafile.gc.RemoteLock", _FencedOnceTailLock):
+            res = tail_merge(client, "repo1", "/path", config=self._cfg(threshold=2), verbose=False)
+
+        self.assertEqual(res["status"], "incomplete")
+        self.assertEqual(res["deleted_packs"], 0, "the lease was lost, so no pack may be deleted")
+        self.assertTrue(res["cleanup_stopped"])
+        self.assertEqual(self._deleted_pack_paths(client), [])
 
 
 

@@ -754,18 +754,169 @@ def _object_store_stats(git_dir: Path, work_tree: Path) -> dict[str, int]:
     return stats
 
 
-def maintain_vault(vault: Path, *, repack: bool = False) -> int:
+# The automatic incremental repack gates itself with these two numbers: below
+# them the loose tier is too small for a pass over the object directory to be
+# worth it, above them packing it is cheap next to the push that follows.  A
+# small-delta repo therefore repacks rarely and a heavy one on most runs --
+# frequency self-regulates without any setting.
+_REPACK_MIN_LOOSE_BYTES = 256 * 1024 * 1024
+_REPACK_MIN_LOOSE_OBJECTS = 50_000
+
+
+def auto_incremental_repack(git_dir: Path, work_tree: Path) -> None:
+    """Pack the loose tier after a snapshot commit; never fail the snapshot.
+
+    ``repack -d`` moves reachable loose objects into packs (existing packs are
+    untouched and serve as delta bases); unreachable ones stay loose so the
+    following ``prune`` can delete them -- dead space is never sealed into a
+    pack.  Git swaps in packfiles atomically, so even an interrupted run leaves
+    the repository intact; that is what entitles this step to be best-effort.
+    """
+    stats = _object_store_stats(git_dir, work_tree)
+    loose_bytes = stats.get("size", 0) * 1024
+    count = stats.get("count", 0)
+    if (loose_bytes < _REPACK_MIN_LOOSE_BYTES
+            and count < _REPACK_MIN_LOOSE_OBJECTS):
+        return
+    print(f"consolidating {count} loose object(s), {_fmt_bytes(loose_bytes)}, "
+          f"before the push ...")
+    try:
+        git(git_dir, None, ["repack", "-d"], cwd=work_tree,
+            status="packing the vault's loose objects", measure_dir=git_dir / "objects")
+        git(git_dir, None, ["prune"], cwd=work_tree)
+    except SnapshotError as exc:
+        print(f"note: incremental repack failed ({str(exc).splitlines()[0]}); "
+              f"the snapshot itself succeeded", file=sys.stderr)
+
+
+# -- Object compression advisory ------------------------------------------------
+#
+# core.compression is read at write time only, so this can never be wrong in a
+# data sense: it measures how much of each run's raw bytes actually end up
+# stored, keeps a rolling aggregate in the vault's own config, and recommends
+# a level per band.  Hysteresis (three consecutive runs inside a band) means
+# one notice per sustained mix shift, not one per snapshot.
+
+
+_ADVISORY_EMA_ALPHA = 0.3
+_ADVISORY_HYSTERESIS_RUNS = 3
+
+_BAND_ADVICE = {
+    2: "the payload looks incompressible (already-compressed archives, media): "
+       "consider core.compression=1 -- or 0 / --no-object-compression -- for future snapshots",
+    1: "the payload is mixed: compression level 1-2 keeps real deflation where it helps while cutting most of the CPU cost",
+    0: "the payload compresses well: keep the default full compression",
+}
+
+
+def _ratio_band(ratio: float) -> int:
+    """2: essentially incompressible; 1: mixed; 0: compressible."""
+    if ratio >= 0.95:
+        return 2
+    if ratio >= 0.7:
+        return 1
+    return 0
+
+
+def _changed_raw_bytes(git_dir: Path, source: Path, base: str, commit: str) -> int:
+    """Raw bytes fed to this snapshot's object writes, as far as is knowable.
+
+    The current sizes of the files added or modified against the previous
+    commit; deletions contribute nothing new.  A path that vanished from the
+    source since staging is skipped rather than failing the measurement --
+    this feeds an advisory, not a guarantee.
+    """
+    proc = git(git_dir, None, ["diff-tree", "-r", "--name-status", base, commit], cwd=source)
+    total = 0
+    for line in proc.stdout.splitlines():
+        parts = line.split("\t", 1)
+        if len(parts) != 2 or parts[0][0] not in "AMT":
+            continue
+        try:
+            total += (source / parts[1]).stat().st_size
+        except OSError:
+            pass
+    return total
+
+
+def _record_ratio(git_dir: Path, vault: Path, ratio: float) -> str | None:
+    """Fold one run's measured store/raw ratio into the rolling aggregate.
+
+    Returns the advisory text when a sustained mix shift crosses into a band
+    that has not been announced yet; ``None`` in steady state.  The aggregate
+    and its bookkeeping live in the vault's own (local) config, so several
+    machines sharing a vault each keep their own measurement.
+    """
+    ema_raw = _read_config_key(git_dir, "snapshot.rawratio")
+    try:
+        prev = float(ema_raw) if ema_raw else None
+    except ValueError:
+        prev = None
+    ema = ratio if prev is None else (
+        _ADVISORY_EMA_ALPHA * ratio + (1 - _ADVISORY_EMA_ALPHA) * prev
+    )
+    band = _ratio_band(ema)
+    seen = int(_read_config_key(git_dir, "snapshot.ratioseens") or 0) + 1
+    streak_band = _read_config_key(git_dir, "snapshot.streakband")
+    streak = (int(_read_config_key(git_dir, "snapshot.streakruns") or 0) + 1
+              if streak_band == str(band) else 1)
+    last_emitted = _read_config_key(git_dir, "snapshot.ratioband")
+    for key, value in (
+        ("snapshot.rawratio", f"{ema:.4f}"),
+        ("snapshot.ratioseens", str(seen)),
+        ("snapshot.streakband", str(band)),
+        ("snapshot.streakruns", str(streak)),
+    ):
+        git(git_dir, None, ["config", key, value], cwd=vault)
+    if streak >= _ADVISORY_HYSTERESIS_RUNS and last_emitted != str(band):
+        git(git_dir, None, ["config", "snapshot.ratioband", str(band)], cwd=vault)
+        return (f"advisory: over {seen} snapshot(s), new objects store {ema:.2f} of their "
+                f"raw size; {_BAND_ADVICE[band]}")
+    return None
+
+
+def _compression_advisory_after_commit(
+    git_dir: Path, vault: Path, source: Path, base: str | None, commit: str,
+    tree: str, store_before_total: int,
+) -> None:
+    """Measure this run's compression ratio and fold it into the aggregate.
+
+    Best-effort by contract: any failure here is swallowed, because an
+    advisory that can fail a snapshot would be worse than none.  The ratio is
+    object-store growth against the raw bytes changed; v1 deliberately
+    conflates delta savings with deflation savings, and its error direction is
+    safe -- it keeps compression on longer than strictly needed.
+    """
+    try:
+        if base is None:
+            raw = describe_tree(git_dir, source, tree)[1]
+        else:
+            raw = _changed_raw_bytes(git_dir, source, base, commit)
+        stats = _object_store_stats(git_dir, source)
+        growth = (stats.get("size", 0) + stats.get("size-pack", 0)) * 1024 - store_before_total
+        if raw <= 0 or growth <= 0:
+            return
+        notice = _record_ratio(git_dir, vault, min(growth / raw, 1.0))
+        if notice:
+            print(notice)
+    except (SnapshotError, ValueError, OSError):
+        pass
+
+
+def maintain_vault(vault: Path, *, full_repack: bool = False) -> int:
     """Housekeep the vault's object store locally.
 
     Everything here works on ``.git/objects`` alone -- the worktree and the
     source tree are never read for content or written at all, which is what
     makes this safe beside a live snapshot job (the two only contend for git's
-    lock).  A repack of a large vault reads every object once and writes the
-    new packfile(s) next to the old ones until they are swapped in, so the
-    free-space check below uses the whole store size as the headroom it needs.
+    lock).  A full repack reads every object once and writes the new packfile
+    next to the old one until it is swapped in, so the free-space check below
+    uses the whole store size as the headroom it needs.
 
-    Without *repack* this is pure reporting: what is loose vs packed, how much
-    that is, and whether a repack would fit on this volume.
+    Without *full_repack* this is pure reporting: what is loose vs packed, how
+    much that is, and whether a full repack would fit on this volume.  Snapshot
+    runs maintain the same store incrementally (loose tier only) before each
+    push; this command's ``--full-repack`` is the one-shot reset of it.
     """
     git_dir = vault / ".git"
     if not git_dir.is_dir():
@@ -782,14 +933,24 @@ def maintain_vault(vault: Path, *, repack: bool = False) -> int:
           f"in {stats.get('packs', 0)} packfile(s)")
     if stats.get("garbage", 0):
         print(f"note: git reports {stats['garbage']} unreachable object(s); "
-              "--repack will prune them")
+              "a repack + prune run removes them")
 
-    if not repack:
+    ema_raw = _read_config_key(git_dir, "snapshot.rawratio")
+    try:
+        ema = float(ema_raw) if ema_raw else None
+    except ValueError:
+        ema = None
+    if ema is not None:
+        seen = _read_config_key(git_dir, "snapshot.ratioseens") or "?"
+        print(f"measured compression over {seen} run(s): new objects store {ema:.2f} of raw "
+              f"size -> {_BAND_ADVICE[_ratio_band(ema)]}")
+
+    if not full_repack:
         need = _fmt_bytes(store_bytes)
         have = _fmt_bytes(free)
         verdict = "fits" if free >= store_bytes else "does NOT fit -- free space first"
-        print(f"a repack would need roughly {need} of headroom; this volume has {have} ({verdict}).")
-        print("re-run with --maintain --repack to consolidate.")
+        print(f"a full repack would need roughly {need} of headroom; this volume has {have} ({verdict}).")
+        print("re-run with --maintain --full-repack to consolidate the whole store.")
         return 0
 
     if free < store_bytes:
@@ -2571,15 +2732,22 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--maintain",
         action="store_true",
         help="local vault housekeeping instead of a snapshot: by default just "
-        "reports on the object store; with --repack it consolidates loose "
-        "objects into packfiles and prunes unreachable ones. Never touches the "
-        "source tree or any remote",
+        "reports on the object store; with --full-repack it consolidates the "
+        "whole store into one packfile and prunes unreachable objects. Never "
+        "touches the source tree or any remote",
     )
     parser.add_argument(
-        "--repack",
+        "--full-repack",
         action="store_true",
-        help="with --maintain, actually repack + prune the local vault's object "
-        "store (without it, --maintain only reports)",
+        help="with --maintain, run a one-shot full repack + prune of the entire "
+        "object store. Ordinary snapshot runs already pack the loose tier "
+        "incrementally before each push (once it passes roughly 256 MiB or "
+        "50k objects); use this after large deletions to reclaim space",
+    )
+    parser.add_argument(
+        "--no-repack",
+        action="store_true",
+        help="skip the automatic incremental repack that runs before a push",
     )
     return parser.parse_args(argv)
 
@@ -2611,6 +2779,9 @@ def validate_args(args: argparse.Namespace) -> None:
             ("--verify", args.verify),
             ("--into", args.into),
             ("--ref", args.ref),
+            # Housekeeping performs the repack itself; skipping it is a
+            # snapshot-run concern.
+            ("--no-repack", args.no_repack),
         ):
             if value:
                 problems.append(f"{flag} does not apply to --maintain")
@@ -2630,6 +2801,9 @@ def validate_args(args: argparse.Namespace) -> None:
             ("--reset-to-remote", args.reset_to_remote),
             ("--allow-shared-remote", args.allow_shared_remote),
             ("--no-push", args.no_push),
+            # A restore fetches and checks out; it packs nothing, so skipping
+            # the push-time repack would be silently ignored.
+            ("--no-repack", args.no_repack),
             # A restore fetches and checks out; it writes no new objects, so a
             # compression preference here would be silently ignored.
             ("--no-object-compression", args.no_object_compression),
@@ -2640,6 +2814,11 @@ def validate_args(args: argparse.Namespace) -> None:
         ):
             if value:
                 problems.append(f"{flag} does not apply to --restore")
+
+    # Outside --maintain there is no repack to run, so the switch that selects
+    # one cannot mean anything (it would otherwise be silently ignored).
+    if not args.maintain and args.full_repack:
+        problems.append("--full-repack only applies to --maintain")
 
     if args.no_push and args.remote:
         problems.append("--no-push and --remote contradict each other")
@@ -2818,7 +2997,7 @@ def main(argv: list[str] | None = None) -> int:
         # repo, initialise identity settings or remember anything -- only read
         # and tidy the vault's own object store.
         if args.maintain:
-            return maintain_vault(vault, repack=args.repack)
+            return maintain_vault(vault, full_repack=args.full_repack)
 
         if args.dry_run and remote:
             print(f"dry run -- would push the vault to {remote}")
@@ -2913,6 +3092,11 @@ def main(argv: list[str] | None = None) -> int:
             # writes nothing).  CI runners have
             # no global identity, which is why passing locally did not mean
             # passing there.  write-tree alone answers every question a
+            # The store size before this commit is the baseline the compression
+            # advisory measures growth against.
+            pre_stats = _object_store_stats(git_dir, source)
+            store_before_total = (pre_stats.get("size", 0) + pre_stats.get("size-pack", 0)) * 1024
+
             # preview prints (file count, size, diffstat, secrets, gitlinks).
             tree, commit, excluded = build_snapshot(
                 git_dir, source, base, exclude, message,
@@ -2982,6 +3166,9 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 set_branch(git_dir, source, branch, commit, base)
                 print(f"\nmoved refs/heads/{branch} -> {commit[:12]}")
+                _compression_advisory_after_commit(
+                    git_dir, vault, source, base, commit, tree, store_before_total
+                )
 
             if not remote:
                 print("no --remote; snapshot kept locally (pass --remote, or set "
@@ -2989,6 +3176,8 @@ def main(argv: list[str] | None = None) -> int:
             elif commit is None and base == remote_tip:
                 print("the remote already has this snapshot; nothing to push")
             else:
+                if not args.no_repack:
+                    auto_incremental_repack(git_dir, source)
                 # `commit or base`: when the tree is unchanged but this machine
                 # holds snapshots the remote has never seen (taken offline),
                 # there is no *new* commit to send -- the existing branch is the

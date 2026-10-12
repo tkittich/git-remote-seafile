@@ -277,10 +277,13 @@ There is a floor here — a snapshot inherently needs `fetch`, `add`,
 can be avoided without re-implementing Git's index. Fourteen calls is close to
 it.
 
-> **Watch the remote's packfile count.** The helper warns once the remote reaches the packfile threshold (seafile.gcthreshold, default 20) and
-> `seafile.autogc` is off by default, so a frequent snapshot regime needs
-> `git-remote-seafile gc <url>` run deliberately (or `seafile.autogc` turned
-> on). A remote that is never compacted grows without bound — see the
+The maintenance pass adds on top of that floor, and only when it fires: every
+full or preview run takes one `count-objects` (the compression baseline); a
+committing run also takes its `diff-tree` plus the config write-backs for its
+measured ratio; and a push whose loose tier has passed 256 MiB or 50,000
+objects takes an incremental `repack -d` + prune pair.
+
+> **Watch the remote's packfile count.** The helper counts only *small* packs (below seafile.gcmaxpackmib, default 1 GiB) and warns once their number reaches the threshold (seafile.gcthreshold, default 20). With `seafile.autogc` on, a bounded tail merge consolidates them inline after each qualifying push — large packs are frozen where they stand; without it (the default), run `git-remote-seafile gc <url>` deliberately. A remote that is never compacted grows in bytes without bound — see the
 > large-files section below for how fast that can be.
 
 ## 6. Several machines, one vault
@@ -432,9 +435,11 @@ Measured with a 32 MB incompressible file, 1 KB changed per snapshot:
 | after `gc` | **33 MB** |
 
 The three near-identical revisions *do* delta-compress to essentially one copy —
-but only once something runs `gc`. Since `seafile.autogc` is off by default and
-the helper does not compact on push, a 32 MB file snapshotted daily grows the
-remote by 32 MB **per day** until someone runs `git-remote-seafile gc`. This is
+but only once something consolidates them. With `seafile.autogc` on that happens
+automatically: each qualifying push tail-merges the small packs (re-delta included),
+so a 32 MB file snapshotted daily settles back toward one copy at a bounded download
+cost per cycle. Without it — the default, where the helper does not compact on push —
+the same file grows the remote by 32 MB **per day** until someone runs `git-remote-seafile gc`. This is
 the most important operational caveat for large files, and it is a compaction
 problem, not a Git one.
 
@@ -636,7 +641,7 @@ The jobs to give to restic/Borg rather than build here:
 | Deduplication across *different* files, compression | restic / Borg | Git dedups blobs, not content; a copied file is stored twice. |
 | Encryption at rest | restic / Borg, or a Seafile **encrypted library** | `git-crypt` works on the vault but encrypts per-repo, not per-file-set. |
 | **Retention and expiry** | restic / Borg | The clearest gap: the vault keeps everything and cannot prune without rewriting history. |
-| Efficient large, volatile binaries | restic / Borg via rclone, or keep them out of the vault | See the large-files section — the cost is real and compaction is manual. |
+| Efficient large, volatile binaries | restic / Borg via rclone, or keep them out of the vault | See the large-files section — the cost is real; a bounded automatic tail merge now exists (§5), but full delta-compaction remains a manual `gc`. |
 
 The honest summary: **if you want a backup system, use restic pointed at a
 Seafile-backed rclone target. If you want your ignored files to travel with the

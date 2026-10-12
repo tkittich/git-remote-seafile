@@ -697,7 +697,7 @@ class TestRemoteHelper(unittest.TestCase):
         h.raw_url = "seafile://repo/path"
         h._refs_cache = {}
 
-        # 22 remote packfiles -> threshold is 20, auto-gc disabled
+        # 22 small remote packfiles -> threshold is 20, auto-gc disabled
         h.client.list_dir.return_value = [{"name": f"pack-{i}.pack"} for i in range(22)]
         cfg = RemoteConfig(lock_timeout=15, lock_lease=60, lock_settle=0, auto_gc=False, gc_threshold=20)
 
@@ -707,14 +707,14 @@ class TestRemoteHelper(unittest.TestCase):
              patch("git_remote_seafile.helper.RemoteConfig.load", return_value=cfg):
             h.cmd_push(["refs/heads/main:refs/heads/main"])
 
-        self.assertIn("Notice: Remote repository has 22 packfiles", err.getvalue())
+        self.assertIn("Notice: Remote repository has 22 small packfiles", err.getvalue())
         self.assertIn("Tip: Run 'git-remote-seafile gc", err.getvalue())
 
     @patch("git_remote_seafile.helper.rev_parse", return_value="sha123")
     @patch("git_remote_seafile.helper.is_ancestor", return_value=True)
     @patch("git_remote_seafile.helper.get_objects_to_push", return_value=[])
-    @patch("git_remote_seafile.gc.compact_repository")
-    def test_auto_gc_triggered_when_enabled(self, mock_compact, mock_objs, mock_ancestor, mock_rev):
+    @patch("git_remote_seafile.gc.tail_merge")
+    def test_auto_gc_triggered_when_enabled(self, mock_merge, mock_objs, mock_ancestor, mock_rev):
         h = RemoteHelper.__new__(RemoteHelper)
         h.client = MagicMock()
         h.repo_id = "repo1"
@@ -722,28 +722,25 @@ class TestRemoteHelper(unittest.TestCase):
         h.raw_url = "seafile://repo/path"
         h._refs_cache = {}
 
-        # 22 remote packfiles -> threshold is 20, auto-gc enabled
+        # 22 small remote packfiles -> threshold is 20, auto-gc enabled
         h.client.list_dir.return_value = [{"name": f"pack-{i}.pack"} for i in range(22)]
-        cfg = RemoteConfig(lock_timeout=15, lock_lease=60, lock_settle=0, auto_gc=True, gc_threshold=20,
-                           gc_max_mib=20)
+        cfg = RemoteConfig(lock_timeout=15, lock_lease=60, lock_settle=0, auto_gc=True, gc_threshold=20)
 
         with patch("git_remote_seafile.helper.RemoteLock"), \
              patch("git_remote_seafile.helper.RemoteConfig.load", return_value=cfg):
             h.cmd_push(["refs/heads/main:refs/heads/main"])
 
-        mock_compact.assert_called_once_with(
-            h.client, "repo1", "/git-repo", config=cfg, min_packs=20,
-            max_total_bytes=20 * 1024 * 1024, verbose=True,
+        mock_merge.assert_called_once_with(
+            h.client, "repo1", "/git-repo", config=cfg, verbose=True,
         )
 
     @patch("git_remote_seafile.helper.rev_parse", return_value="sha123")
     @patch("git_remote_seafile.helper.is_ancestor", return_value=True)
     @patch("git_remote_seafile.helper.get_objects_to_push", return_value=[])
-    @patch("git_remote_seafile.gc.compact_repository")
-    def test_auto_gc_defers_when_the_store_exceeds_the_size_cap(self, mock_compact, mock_objs, mock_ancestor, mock_rev):
-        # Enough packs to cross the threshold, but a store too big for an
-        # in-band compaction: auto-gc must notice and defer instead of
-        # downloading 22 GiB mid-push.
+    @patch("git_remote_seafile.gc.tail_merge")
+    def test_auto_gc_counts_only_small_packs_toward_the_threshold(self, mock_merge, mock_objs, mock_ancestor, mock_rev):
+        # Frozen packs (at or above seafile.gcmaxpackmib) are part of the
+        # bounded floor: they must not re-arm the threshold on their own.
         h = RemoteHelper.__new__(RemoteHelper)
         h.client = MagicMock()
         h.repo_id = "repo1"
@@ -751,11 +748,15 @@ class TestRemoteHelper(unittest.TestCase):
         h.raw_url = "seafile://repo/path"
         h._refs_cache = {}
 
-        # 22 packs of ~1 GiB each = 22 GiB > the default 20 GiB cap.
-        h.client.list_dir.return_value = [
-            {"name": f"pack-{i}.pack", "size": 1024**3} for i in range(22)
-        ]
-        cfg = RemoteConfig(lock_timeout=15, lock_lease=60, lock_settle=0, auto_gc=True, gc_threshold=20)
+        # 2 small packs plus 30 frozen ones: the total count crosses the
+        # threshold, but the *movable* count does not.
+        mi_b = 1024**2
+        h.client.list_dir.return_value = (
+            [{"name": f"pack-small-{i}.pack", "size": mi_b // 2} for i in range(2)]
+            + [{"name": f"pack-big-{i}.pack", "size": 2 * mi_b} for i in range(30)]
+        )
+        cfg = RemoteConfig(lock_timeout=15, lock_lease=60, lock_settle=0, auto_gc=True, gc_threshold=20,
+                           gc_max_pack_mib=1)
 
         err = io.StringIO()
         with patch("sys.stderr", err), \
@@ -763,9 +764,42 @@ class TestRemoteHelper(unittest.TestCase):
              patch("git_remote_seafile.helper.RemoteConfig.load", return_value=cfg):
             h.cmd_push(["refs/heads/main:refs/heads/main"])
 
-        self.assertIn("Auto-compaction was deferred", err.getvalue())
+        self.assertEqual(err.getvalue(), "")
+        mock_merge.assert_not_called()
+
+    @patch("git_remote_seafile.helper.rev_parse", return_value="sha123")
+    @patch("git_remote_seafile.helper.is_ancestor", return_value=True)
+    @patch("git_remote_seafile.helper.get_objects_to_push", return_value=[])
+    @patch("git_remote_seafile.gc.tail_merge")
+    def test_auto_gc_defers_when_the_movable_set_exceeds_the_budget(self, mock_merge, mock_objs, mock_ancestor, mock_rev):
+        # Enough *small* packs to cross the threshold, but their total exceeds
+        # the download budget: auto-gc must notice and defer instead of
+        # round-tripping that much mid-push.
+        h = RemoteHelper.__new__(RemoteHelper)
+        h.client = MagicMock()
+        h.repo_id = "repo1"
+        h.repo_path = "/git-repo"
+        h.raw_url = "seafile://repo/path"
+        h._refs_cache = {}
+
+        # 9 packs of ~1 MiB each: every one is movable (under the 2 MiB freeze
+        # threshold) and together they exceed the 8 MiB budget.
+        mi_b = 1024**2
+        h.client.list_dir.return_value = [
+            {"name": f"pack-{i}.pack", "size": mi_b} for i in range(9)
+        ]
+        cfg = RemoteConfig(lock_timeout=15, lock_lease=60, lock_settle=0, auto_gc=True, gc_threshold=3,
+                           gc_max_mib=8, gc_max_pack_mib=2)
+
+        err = io.StringIO()
+        with patch("sys.stderr", err), \
+             patch("git_remote_seafile.helper.RemoteLock"), \
+             patch("git_remote_seafile.helper.RemoteConfig.load", return_value=cfg):
+            h.cmd_push(["refs/heads/main:refs/heads/main"])
+
+        self.assertIn("Auto tail-merge was deferred", err.getvalue())
         self.assertIn("seafile.gcmaxmib", err.getvalue())
-        mock_compact.assert_not_called()
+        mock_merge.assert_not_called()
 
     @patch("git_remote_seafile.helper.install_packfile")
     @patch("git_remote_seafile.helper.get_git_dir")

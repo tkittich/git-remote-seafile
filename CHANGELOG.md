@@ -5,6 +5,12 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **Automatic tail merge** (`seafile.autogc true`): after a qualifying push the helper downloads and merges only the remote's *small* packs (below `seafile.gcmaxpackmib`, default 1 GiB) once their count reaches `seafile.gcthreshold`, within a bounded download budget (`seafile.gcmaxmib`, default 8 GiB). Large packs are frozen in place and never counted; the merged pack is verified on the remote before its originals are deleted. Manual full `gc` is unchanged.
+- **Snapshot tool maintenance tiers**: automatic incremental repack of the local vault (loose tier only) once it passes 256 MiB / 50,000 objects (`--no-repack` opts out), a manual whole-store reset (`--full-repack`), a report-only mode (`--maintain`), and a measured compression advisory that recommends a `core.compression` level only when the payload mix has sustainedly shifted.
+
 ## [0.8.7] - 2026-10-12
 
 A patch release: every change in it is a defect rather than a capability. The theme is the one the

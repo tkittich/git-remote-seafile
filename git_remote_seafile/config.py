@@ -31,7 +31,8 @@ class RemoteConfig:
     gc_threshold: int
     # Defaults at the dataclass level too, so constructing a config directly
     # (tests, embedded callers) never needs to know every knob.
-    gc_max_mib: int = 20 * 1024
+    gc_max_mib: int = 8192
+    gc_max_pack_mib: int = 1024
 
     @classmethod
     def load(cls) -> RemoteConfig:
@@ -58,10 +59,15 @@ class RemoteConfig:
             "lock_settle": get_git_config_int("seafile.locksettle", 1),
             "auto_gc": get_git_config_bool("seafile.autogc", False),
             "gc_threshold": get_git_config_int("seafile.gcthreshold", 20),
-            # Above this total size of remote .pack files, automatic compaction
-            # defers to a manual off-hours run: the work is proportional to the
-            # whole history (download it all, repack -a, upload it all back).
-            "gc_max_mib": get_git_config_int("seafile.gcmaxmib", 20 * 1024),
+            # Download budget for the automatic tail merge: when the movable
+            # packs (those below gc_max_pack_mib) total more than this, auto-GC
+            # defers to a manual off-hours run instead of round-tripping that
+            # much mid-push.
+            "gc_max_mib": get_git_config_int("seafile.gcmaxmib", 8192),
+            # Per-pack freeze threshold for the tail merge: packs at or above
+            # this size are left where they stand, so each cycle moves only the
+            # small new packs and cost stays bounded regardless of history.
+            "gc_max_pack_mib": get_git_config_int("seafile.gcmaxpackmib", 1024),
         }
 
         fallbacks: list[str] = []
@@ -77,10 +83,15 @@ class RemoteConfig:
         if values["gc_threshold"] < 1:
             fallbacks.append(f"seafile.gcthreshold={values['gc_threshold']} -> 20")
             values["gc_threshold"] = 20
-        # A sub-1 MiB cap would defer every compaction, defeating the setting.
+        # A sub-1 MiB budget would defer every tail merge, defeating the setting.
         if values["gc_max_mib"] < 1:
-            fallbacks.append(f"seafile.gcmaxmib={values['gc_max_mib']} -> {20 * 1024}")
-            values["gc_max_mib"] = 20 * 1024
+            fallbacks.append(f"seafile.gcmaxmib={values['gc_max_mib']} -> 8192")
+            values["gc_max_mib"] = 8192
+        # A sub-1 MiB freeze threshold would make every pack -- including old,
+        # large consolidated ones -- movable, defeating the bounded-cost design.
+        if values["gc_max_pack_mib"] < 1:
+            fallbacks.append(f"seafile.gcmaxpackmib={values['gc_max_pack_mib']} -> 1024")
+            values["gc_max_pack_mib"] = 1024
         if fallbacks:
             sys.stderr.write(
                 "Warning: implausible seafile.* config ignored ("

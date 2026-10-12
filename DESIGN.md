@@ -270,7 +270,7 @@ Pushes accumulate packfiles in `/objects/pack/` — one per push, each already d
 
 - **Automatic tail merge (post-push).** The *movable* set is every remote pack below a size threshold (~1 GiB); larger packs are frozen where they stand — size alone decides, so no state records what was last touched. When the movable-pack count reaches `seafile.gcthreshold` and the movable total fits a download budget (~8 GiB), the helper downloads only those packs, enumerates every object in them from their indexes, and feeds that SHA list straight into `git pack-objects`: a pure bag union with **no reachability semantics**, which is what makes it safe — objects whose branches were deleted cannot be filtered out. The merged pack (self-contained; delta bases living in frozen packs are duplicated rather than referenced away) is verified on the remote at its local size, and only then are the originals removed. File count stays bounded at *frozen packs + a small constant*; cost per cycle is 2×tail bytes, not 2×store.
 - **Manual full compaction (`gc` subcommand).** Downloads everything, mirrors refs into a scratch bare repository initialised with the remote's object format, runs `git repack -ad -l`, uploads the consolidated pack, and removes the obsolete packs. No size cap by design — it is an off-hours decision. It is also the only tier that re-deltas across the entire history, which matters if a payload ever becomes delta-friendly.
-- **Current behaviour until tail merge ships.** Automatic compaction runs full compaction once `seafile.autogc` is on and the pack count crosses the threshold — but only while total remote pack bytes stay below `seafile.gcmaxmib` (default 20480 MiB ≈ 20 GiB); above it the helper defers with a notice instead of round-tripping a history that large mid-push.
+- **Mechanics of the tail merge.** The merged packfile is produced with `git pack-objects` fed the plain object-id list read from the movable indexes (`cat-file --batch-all-objects` over the scratch store): no refs are mirrored and no reachability is computed, so an object's fate never depends on what points at it. Deltas are recomputed within the merged set alone; a delta base that lives in a frozen pack is duplicated into the merged pack rather than referenced away, which is why the originals may be removed afterwards. The push-side decision (which packs count as movable) is made from the same listing `tail_merge` re-reads under its own lock, so what triggers it and what it merges cannot drift apart.
 
 The following invariants apply to every tier. **Deletion is gated three times over:**
 
@@ -322,9 +322,10 @@ All behavioural settings resolve through one `RemoteConfig.load()` passed to bot
 | `seafile.locktimeout`      | `15`    | Seconds to wait for the lock before giving up                     |
 | `seafile.locklease`        | `60`    | Lease duration in seconds                                         |
 | `seafile.locksettle`       | `1`     | Settlement window in seconds, per acquisition                     |
-| `seafile.autogc`           | `false` | Compact automatically after a push once the threshold is exceeded |
-| `seafile.gcthreshold`      | `20`    | Packfile count at which auto-GC triggers (movable-pack count under tail merge, §4.5) |
-| `seafile.gcmaxmib`         | `20480` | MiB cap on total remote pack bytes for automatic compaction (≈ 20 GiB); above it auto-GC defers to a manual run (§4.5) |
+| `seafile.autogc`           | `false` | Tail-merge the small packs automatically after a push once their threshold is exceeded |
+| `seafile.gcthreshold`      | `20`    | Movable-pack count at which auto-GC triggers (§4.5) |
+| `seafile.gcmaxmib`         | `8192`  | MiB download budget for automatic tail merge (≈ 8 GiB); when the movable packs total more than this, auto-GC defers to a manual run (§4.5) |
+| `seafile.gcmaxpackmib`     | `1024`  | Per-pack freeze threshold in MiB (≈ 1 GiB): packs at or above it are never moved by tail merge (§4.5) |
 | `seafile.forcefilehost`    | `false` | Force the file-host header on uploads                             |
 | `seafile.skipsafetychecks` | `false` | Disable pre-flight checks (system/global scope only)              |
 | `seafile.gittimeout`       | `300`   | Seconds one git subprocess may run (system/global scope or environment only) |
@@ -342,7 +343,7 @@ Implausible values — a negative timeout, a non-positive lease, a sub-1 thresho
 | `refs.py`                            | Ref namespace advertisement, concurrent ref enumeration, mirror ref handling                                                                                          |
 | `packs.py`                           | Remote packfile discovery, streaming download, integrity verification, atomic installation (`fetch_and_install_pack`, `check_remote_has_packs`, `is_valid_pack_name`) |
 | `lock.py`                            | Distributed ticket-based lease (`RemoteLock`), ownership fencing                                                                                                      |
-| `gc.py`                              | Remote packfile compaction and verified deletion                                                                                                                      |
+| `gc.py`                              | Remote packfile compaction — full `gc` and the automatic tail merge (§4.5) — and verified deletion                                                                                                                      |
 | `lfs.py`                             | Git LFS custom transfer agent                                                                                                                                         |
 | `safety.py`                          | Pre-flight guardrails and synced-library discovery                                                                                                                    |
 | `git_util.py`                        | Git plumbing wrappers, shallow/promisor probing, `merge-base` ancestry                                                                                                |

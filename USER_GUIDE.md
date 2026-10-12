@@ -418,8 +418,10 @@ Authenticated successfully with https://seafile.example.com as user@example.com
 | :--- | :--- | :--- | :--- |
 | `seafile.skipsafetychecks` | `SEAFILE_SKIP_SAFETY_CHECKS` | `false` | Bypass the pre-flight guardrails (Trap 1, Trap 2, root pollution). |
 | `seafile.gittimeout` | `SEAFILE_GIT_TIMEOUT` | `300` | Seconds one git subprocess may run before it is killed. Raise it when a multi-GB push, fetch or `gc` times out (system/global scope or environment only). |
-| `seafile.autogc` | — | `false` | Compact the remote automatically once the packfile threshold is reached. |
-| `seafile.gcthreshold` | — | `20` | Packfile count at which the `gc` tip appears (or auto-GC triggers). |
+| `seafile.autogc` | — | `false` | Automatically tail-merge the remote's small packfiles after a push, once their threshold is reached. |
+| `seafile.gcthreshold` | — | `20` | Count of *small* packfiles at which the `gc` tip appears (or auto-GC triggers). Large packs never count toward it. |
+| `seafile.gcmaxmib` | — | `8192` | MiB download budget for automatic tail merge; when the small packs total more than this, auto-GC defers to a manual run. |
+| `seafile.gcmaxpackmib` | — | `1024` | Per-pack freeze threshold in MiB: packs at or above it are left where they stand and never moved by tail merge. |
 | `seafile.forcefilehost` | `SEAFILE_FORCE_FILE_HOST` | `false` | Force download/upload links onto your server's **host** (a wrong scheme on the same host is always corrected). |
 | `seafile.locktimeout` | — | `15` | Maximum seconds to wait when acquiring the remote lock during push. |
 | `seafile.locklease` | — | `60` | Duration in seconds before an inactive lock lease is considered expired. |
@@ -439,7 +441,7 @@ git config --global seafile.skipsafetychecks true
 git config --global seafile.gittimeout 1800
 ```
 
-> Values that would defeat the mechanism outright are refused with a stderr warning and the documented default is used instead: a negative `seafile.locktimeout`, a zero or negative `seafile.locklease` (which would expire every lock immediately), a negative `seafile.locksettle`, a `seafile.gcthreshold` below 1 (which would compact on every push), and a `seafile.gittimeout` that is not a positive number of seconds (which would kill every git command outright). `seafile.locksettle 0` is *not* refused: it switches off a race guard rather than the lock, so it is a trade you are allowed to make — see §12.
+> Values that would defeat the mechanism outright are refused with a stderr warning and the documented default is used instead: a negative `seafile.locktimeout`, a zero or negative `seafile.locklease` (which would expire every lock immediately), a negative `seafile.locksettle`, a `seafile.gcthreshold` below 1 (which would compact on every push), a `seafile.gcmaxmib` or `seafile.gcmaxpackmib` below 1 (which would defer every automatic run, or make even the large consolidated packs movable), and a `seafile.gittimeout` that is not a positive number of seconds (which would kill every git command outright). `seafile.locksettle 0` is *not* refused: it switches off a race guard rather than the lock, so it is a trade you are allowed to make — see §12.
 
 **`seafile.skipsafetychecks` and `seafile.gittimeout` are read from the trusted scope only** — the environment, or the system and global git config. A repository shipping either key in its own `.git/config` is ignored, because a repository that could disarm a guardrail or raise a safety ceiling is a repository that has taken away the protection those settings exist to provide. See [RUNBOOK.md](RUNBOOK.md) §7 for what the timeout bounds and when to raise it.
 
@@ -633,25 +635,27 @@ git-remote-seafile gc seafile://code/myproject
 - **Scratch space**: compaction downloads the remote's packfiles, repacks them, and re-uploads the result, all under the system temporary directory. Point `TMPDIR` (Linux/macOS) or `TEMP`/`TMP` (Windows) at a volume with room for roughly 2–3× the repository's packed size before compacting a large library; otherwise the run fails late, after it has already taken the lock.
 
 ### 10.2 Automatic Detection & Notification (Default)
-By default, whenever you push, `git-remote-seafile` checks the number of remote packfiles:
-- If packfile count reaches **20** (or custom threshold), it prints a non-intrusive tip to your terminal:
+By default, whenever you push, `git-remote-seafile` checks the number of *small* remote packfiles — packs below `seafile.gcmaxpackmib` (default 1 GiB). Large packs are frozen and never counted:
+- If the small-pack count reaches **20** (or custom threshold), it prints a non-intrusive tip to your terminal:
   ```text
-  Notice: Remote repository has 22 packfiles (threshold: 20).
+  Notice: Remote repository has 22 small packfiles (threshold: 20), totaling 0.1 GiB.
   Tip: Run 'git-remote-seafile gc seafile://...' to optimize remote storage,
-       or run 'git config seafile.autogc true' to enable automatic compaction.
+       or run 'git config seafile.autogc true' to enable automatic tail merge.
   ```
 - Your normal pushes are unchanged by this check: it reads a directory listing and prints a tip, and adds no network round-trip to the transfer. (The one fixed cost on every push is the lock's settlement window — see §12.)
 
-### 10.3 Opt-In Automatic Compaction (`seafile.autogc`)
-If you want `git-remote-seafile` to automatically run compaction during `git push` whenever the threshold is reached:
+### 10.3 Opt-In Automatic Tail Merge (`seafile.autogc`)
+If you want `git-remote-seafile` to automatically merge small packfiles during `git push` whenever the threshold is reached:
 
 ```bash
-# Enable automatic compaction on push
+# Enable automatic tail merge on push
 git config seafile.autogc true
 
 # (Optional) Customize threshold (default: 20)
 git config seafile.gcthreshold 25
 ```
+
+Unlike a full compaction, an automatic run never touches large packs: every pack at or above `seafile.gcmaxpackmib` (default 1 GiB) is frozen where it stands, and only the smaller ones are downloaded, merged into one self-contained pack, re-uploaded and removed. Cost per cycle therefore tracks the small tail — a few megabytes in a typical repository — not the size of your history. If even the movable packs total more than `seafile.gcmaxmib` (default 8 GiB), the run is deferred with a notice so a push never round-trips that much; manual `gc` (§10.1) remains available for those cases and is the only tier that re-deltas across the entire history.
 
 ### 10.4 Multiple Commits, Rollbacks, Branching & Performance Impact
 
@@ -675,7 +679,7 @@ Understanding how `git-remote-seafile` handles complex Git workflows and remote 
 | Mode | Trigger | Push Latency | Concurrency Behavior | Best Use Case |
 | :--- | :--- | :--- | :--- | :--- |
 | **Notification Mode (Default)** | Remote reaches 20 packfiles | **No added delay** | Terminal tip displayed; push never pauses | Daily development, interactive CLI usage |
-| **Opt-in Auto-GC (`autogc true`)** | Remote reaches 20 packfiles | **A full compaction, inline** — duration tracks the size of the repository, so there is no fixed figure to quote | Repositories locked via `.git-lock.d/` ticket queue during repack | Fully automated maintenance, solo developers |
+| **Opt-in Auto-GC (`autogc true`)** | 20 *small* packfiles accumulate | **A bounded tail merge, inline** — only packs below `seafile.gcmaxpackmib` move, so duration tracks the small tail rather than the repository; deferred with a notice if that tail exceeds `seafile.gcmaxmib` | Repositories locked via `.git-lock.d/` ticket queue during repack | Fully automated maintenance, solo developers |
 
 > [!TIP]
 > **Recommendation**: Leave `seafile.autogc` disabled (the default) so your everyday push stays interactive — no compaction pause on top of the lock's settlement window. Run compaction manually (`git-remote-seafile gc seafile://...`) or as part of a scheduled CI job when convenient.
@@ -1040,7 +1044,19 @@ Measured on real pushes, not estimated (`SNAPSHOT.md` §8):
 | A 1-byte edit to an 8 MB file | +8202 KB, until `git-remote-seafile gc` |
 | A 32 MB file snapshotted three times | remote grows 33 → 65 → 97 MB |
 
-The last row is the one to watch: **`seafile.autogc` is off**, so a large file that changes daily grows the Seafile library by its own size every day. Run `git-remote-seafile gc` (§10) on the *vault's* remote periodically, or keep large build artefacts out with `--default-excludes` (§15.2.1).
+The last row is the one to watch: **`seafile.autogc` is off**, so a large file that changes daily grows the Seafile library by its own size every day. Run `git-remote-seafile gc` (§10) on the *vault's* remote periodically — or turn `seafile.autogc` on, which tail-merges those small packs between full gcs and bounds the growth — or keep large build artefacts out with `--default-excludes` (§15.2.1).
+
+### 15.8 Keeping the vault small
+
+Every snapshot commit writes new objects into the vault's local object store, and like any repository they accumulate in tiers: loose objects (one file per object — what a fresh clone or first commits produce), incremental packs, and full packs after consolidation. The tool maintains the first two tiers itself; the remote tier is the helper's job (§10).
+
+- **Automatic incremental repack.** Before each push that has a destination, the tool measures its own loose tier, and once it passes 256 MiB or 50,000 objects it runs `git repack -d` + prune — consolidating *loose objects only*, never touching existing packs. It is best-effort: a failure is reported and the push proceeds anyway. `--no-repack` skips it for one run.
+- **Manual full reset.** `--full-repack` runs `git repack -ad` + prune over the whole store, collapsing everything into one pack. Use it after large deletions or when the local pack count has grown high; nothing runs it automatically.
+- **Report.** `--maintain` changes nothing: loose/object/pack counts, object-store size against free disk space, and — once measured — the rolling compression figure below.
+
+**Compression is a write-time policy with a measured advisory.** Object compression (`core.compression`) is read at write time only, so it can be flipped freely; existing objects keep their encoding until some repack rewrites them. The tool never changes it for you (though `--no-object-compression` runs with the repo-local level 0). Instead each committing run measures how much of its raw staged bytes actually end up stored, folds that into a rolling aggregate kept in the vault's own config, and — only when the mix has *sustainedly* shifted (three consecutive runs inside a band) — recommends a level: essentially incompressible payloads → `core.compression=1` (or 0 / `--no-object-compression`) for future snapshots; mixed → 1–2; compresses well → keep the default. Steady state stays silent, and `--maintain` shows the current figure on demand.
+
+**The vault's remote is a remote.** Every push adds one small packfile there, so the §10 threshold warning and tail merge apply to it exactly as to any other — and SNAPSHOT.md §8's large-files caveat is the reason to watch it.
 
 The full design — the alternatives that do not work, the nested-repository analysis (today the tool warns; the measured capture is future work), the own-review findings, and a comparison with restic and Borg — is in [SNAPSHOT.md](SNAPSHOT.md).
 

@@ -1587,6 +1587,94 @@ class ArgumentValidationTests(unittest.TestCase):
         self.assertEqual(rc, 1)
         self.assertIn("--maintain and --restore are different modes", err)
 
+    def test_full_repack_requires_maintain(self):
+        # Outside housekeeping there is no repack to select one for.
+        rc, _, err = self.run_tool("--full-repack")
+        self.assertEqual(rc, 1)
+        self.assertIn("--full-repack only applies to --maintain", err)
+
+    def test_no_repack_does_not_apply_to_maintain(self):
+        # Housekeeping performs the repack itself; skipping it is a snapshot
+        # concern and would be silently ignored here.
+        rc, _, err = self.run_tool("--maintain", "--no-repack")
+        self.assertEqual(rc, 1)
+        self.assertIn("--no-repack does not apply to --maintain", err)
+
+
+class AutoRepackTests(_SnapshotFixture):
+    """The push-time incremental repack packs the loose tier and nothing else."""
+
+    def test_packs_the_loose_tier_once_it_passes_the_gate(self):
+        rc, _, _ = self.snapshot()
+        self.assertEqual(rc, 0)
+        git_dir = self.vault / ".git"
+        before = snap._object_store_stats(git_dir, self.code)
+        self.assertGreater(before["count"], 0)
+        with unittest.mock.patch.object(snap, "_REPACK_MIN_LOOSE_BYTES", 1), \
+             unittest.mock.patch.object(snap, "_REPACK_MIN_LOOSE_OBJECTS", 1):
+            snap.auto_incremental_repack(git_dir, self.code)
+        after = snap._object_store_stats(git_dir, self.code)
+        self.assertEqual(after["count"], 0)
+        self.assertGreater(after.get("size-pack", 0), 0)
+
+    def test_skips_below_the_gate(self):
+        rc, _, _ = self.snapshot()
+        self.assertEqual(rc, 0)
+        git_dir = self.vault / ".git"
+        before = snap._object_store_stats(git_dir, self.code)
+        with unittest.mock.patch.object(snap, "_REPACK_MIN_LOOSE_BYTES", 1 << 60), \
+             unittest.mock.patch.object(snap, "_REPACK_MIN_LOOSE_OBJECTS", 1 << 30):
+            snap.auto_incremental_repack(git_dir, self.code)
+        after = snap._object_store_stats(git_dir, self.code)
+        self.assertEqual(after["count"], before["count"])
+
+
+class CompressionAdvisoryTests(unittest.TestCase):
+    """The rolling compression advisory: bands, hysteresis, steady-state silence."""
+
+    def test_ratio_bands(self):
+        self.assertEqual(snap._ratio_band(0.95), 2)
+        self.assertEqual(snap._ratio_band(0.9499), 1)
+        self.assertEqual(snap._ratio_band(0.7), 1)
+        self.assertEqual(snap._ratio_band(0.6999), 0)
+
+    def _fresh_vault(self):
+        td = tempfile.TemporaryDirectory()
+        self.addCleanup(td.cleanup)
+        vault = pathlib.Path(td.name) / "v"
+        git_dir = snap.ensure_vault(vault, "main")
+        return git_dir, vault
+
+    def test_notices_once_per_sustained_band_change(self):
+        git_dir, vault = self._fresh_vault()
+        notices = [snap._record_ratio(git_dir, vault, 0.97) for _ in range(4)]
+        # Two runs are not yet a sustained mix; the third announces it ...
+        self.assertIsNone(notices[0])
+        self.assertIsNone(notices[1])
+        self.assertIsNotNone(notices[2])
+        self.assertIn("incompressible", notices[2])
+        # ... and steady state stays quiet.
+        self.assertIsNone(notices[3])
+
+    def test_each_sustained_shift_announces_exactly_once(self):
+        git_dir, vault = self._fresh_vault()
+        # Settle into the incompressible band: announced once, on run three.
+        first = [snap._record_ratio(git_dir, vault, 0.97) for _ in range(3)]
+        self.assertEqual(sum(n is not None for n in first), 1)
+        # A sustained shift to a compressible payload announces exactly once
+        # too -- the EMA drifts across both middle bands on the way without
+        # re-announcing, because neither band holds three runs.
+        second = [snap._record_ratio(git_dir, vault, 0.5) for _ in range(6)]
+        self.assertEqual(sum(n is not None for n in second), 1)
+        self.assertIn("compresses well", next(n for n in second if n))
+
+    def test_flapping_raw_input_announces_at_most_once(self):
+        # Raw ratios that alternate run-to-run settle, through the EMA, into a
+        # single sustained band -- so they may announce once and must not spam.
+        git_dir, vault = self._fresh_vault()
+        notices = [snap._record_ratio(git_dir, vault, r) for r in (0.97, 0.5) * 8]
+        self.assertLessEqual(sum(n is not None for n in notices), 1)
+
 
 class ObjectCompressionTests(unittest.TestCase):
     """--no-object-compression skips deflation for new objects, losslessly."""
