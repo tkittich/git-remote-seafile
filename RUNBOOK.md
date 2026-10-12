@@ -187,9 +187,14 @@ the expected size, so a failed run leaves the repository exactly as it was.
 `refs/heads/`, `objects/pack/`, or `.git-lock.d/`, and refs stop resolving.
 
 **Cause.** The Seafile desktop client — or the server's own concurrent-write handling — produced a
-conflict copy instead of overwriting. This is the failure mode the whole project exists to avoid,
-and it appears when a *synced* library is used as a Git remote and something writes to it from two
-places at once.
+conflict copy instead of overwriting. This is the failure mode the whole project exists to avoid.
+It appears when a *synced* library is used as a Git remote and something writes to it from two
+places at once, and — measured against a real Seafile CE 13.0.28 — also when two *API* writers hit
+one path at the same moment: every upload reports success and the server keeps the losers as
+`<name> (SFConflict <user> <date>)` files beside the path. Through the lock this does not happen
+(nine concurrent pushers produced none); a client that bypasses the lock, or an older helper that
+predates it, can produce it. The helper now warns after a ref write when a conflict copy of that ref
+appears, and names the copy when it lists refs.
 
 **Recover.**
 

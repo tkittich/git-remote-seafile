@@ -167,3 +167,43 @@ class TestIterRefs(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestConflictCopies(unittest.TestCase):
+    """A Seafile conflict copy is a symptom, and is named as one."""
+
+    def test_helpers(self):
+        from git_remote_seafile.refs import conflict_copies_of, is_conflict_copy
+
+        self.assertTrue(is_conflict_copy("main (SFConflict bob 2026-Oct-13-05-44-44)"))
+        self.assertFalse(is_conflict_copy("main"))
+        entries = [
+            {"name": "main"},
+            {"name": "main (SFConflict bob 2026-Oct-13-05-44-44)"},
+            {"name": "main2 (SFConflict bob 2026-Oct-13-05-44-45)"},
+            {"name": "mainline"},
+        ]
+        self.assertEqual(
+            conflict_copies_of(entries, "main"),
+            ["main (SFConflict bob 2026-Oct-13-05-44-44)"],
+        )
+
+    def test_listing_skips_a_conflict_copy_with_a_specific_message(self):
+        import io
+        from unittest.mock import MagicMock, patch
+
+        from git_remote_seafile.refs import iter_refs
+
+        client = MagicMock()
+        client.list_dir.return_value = [
+            {"name": "main", "type": "file"},
+            {"name": "main (SFConflict bob 2026-Oct-13-05-44-44)", "type": "file"},
+        ]
+        client.get_file_text.return_value = "a" * 40
+        err = io.StringIO()
+        with patch("sys.stderr", err):
+            found = list(iter_refs(client, "repo1", "/r", "refs/heads"))
+        self.assertEqual([name for name, _ in found], ["refs/heads/main"])
+        self.assertIn("conflict copy", err.getvalue())
+        self.assertNotIn("malformed", err.getvalue())
+

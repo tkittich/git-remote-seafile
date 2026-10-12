@@ -14,7 +14,7 @@ from .config import RemoteConfig
 from .git_util import PACK_BIG_FILE_THRESHOLD, clean_git_env, get_git_timeout
 from .lock import RemoteLock, describe_ownership_failure
 from .packs import fetch_pack_artifact, is_valid_pack_name
-from .refs import REF_NAMESPACES, is_valid_ref_name, iter_refs
+from .refs import REF_NAMESPACES, is_conflict_copy, is_valid_ref_name, iter_refs
 
 #: Ref prefixes the mirror in :func:`compact_repository` carries into the
 #: scratch repository -- the only namespaces whose objects ``repack -a -d`` is
@@ -114,6 +114,10 @@ def refs_outside_namespaces(client: SeafileClient, repo_id: str, repo_path: str)
             elif entry.get("type") == "file":
                 if not full.startswith(_MIRRORED_PREFIXES):
                     problems.append(f"{full} (outside refs/heads and refs/tags)")
+                elif is_conflict_copy(name):
+                    problems.append(
+                        f"{full} (a Seafile conflict copy -- see RUNBOOK.md, \"Conflict Artifacts\")"
+                    )
                 elif not is_valid_ref_name(full):
                     problems.append(f"{full} (not a valid git ref name)")
             else:

@@ -18,7 +18,7 @@ from .packs import (
     load_installed_packs,
     record_installed_packs,
 )
-from .refs import REF_NAMESPACES, iter_refs, is_valid_ref_name
+from .refs import REF_NAMESPACES, conflict_copies_of, is_conflict_copy, iter_refs, is_valid_ref_name
 from .safety import check_preflight_safety, SafetyError
 from .url import parse_seafile_url
 from .git_util import (
@@ -195,7 +195,13 @@ class RemoteHelper:
         for namespace in REF_NAMESPACES:
             for ref_name, sha in iter_refs(self.client, self.repo_id, self.repo_path, namespace):
                 if not is_valid_ref_name(ref_name):
-                    sys.stderr.write(f"Warning: ignoring malformed ref name '{ref_name}'\n")
+                    if is_conflict_copy(ref_name):
+                        sys.stderr.write(
+                            f"Warning: '{ref_name}' is a Seafile conflict copy; ignoring it "
+                            f"(RUNBOOK.md, \"Conflict Artifacts\").\n"
+                        )
+                    else:
+                        sys.stderr.write(f"Warning: ignoring malformed ref name '{ref_name}'\n")
                     sys.stderr.flush()
                     continue
                 if not HEX_SHA_RE.fullmatch(sha):
@@ -616,6 +622,26 @@ class RemoteHelper:
                                         "writing it; the write is unverified.\n"
                                     )
                                     sys.stderr.flush()
+
+                            # A concurrent writer leaves its copy *beside* the
+                            # ref, and the read-back above cannot see that: it
+                            # reads our path, which holds one of the two values.
+                            # Measured on a real server, simultaneous writes to
+                            # one path all report success and leave
+                            # "<ref> (SFConflict ...)" files next to it.
+                            try:
+                                siblings = self.client.list_dir(self.repo_id, dst_parent)
+                                copies = conflict_copies_of(siblings, dst_filename)
+                            except Exception:
+                                copies = []
+                            if copies:
+                                sys.stderr.write(
+                                    f"Warning: another client wrote {dst} at the same time; Seafile "
+                                    f"kept its version as {', '.join(copies)}. This push is recorded, "
+                                    f"but decide which commit is right and delete the copy "
+                                    f"(RUNBOOK.md, \"Conflict Artifacts\").\n"
+                                )
+                                sys.stderr.flush()
 
                             # If HEAD does not exist, set default branch
                             # Only point HEAD to a branch in refs/heads/, never to a tag

@@ -90,6 +90,27 @@ sdist, for someone building from source.
 
 ---
 
+## Testing against a real Seafile server (opt-in)
+
+Everything above validates the helper against an in-process stub, which encodes
+the authors' *beliefs* about the server. `tests/test_realserver.py` is the check
+on those beliefs. It is skipped unless you name a scratch library:
+
+```bash
+SEAFILE_TEST_LIBRARY=test python -m unittest tests.test_realserver -v   # ~70 s
+```
+
+Credentials come from the usual places (desktop client, `~/.git-seafile.json`,
+`SEAFILE_SERVER` + `SEAFILE_TOKEN`). Each run writes under one unique top-level
+folder of that library and removes it afterwards; nothing else is read or
+written. It covers the API semantics the stub copies, the SHA-1 and SHA-256
+push / clone / fetch / delete / tail-merge round trip, concurrent pushers through
+the lock, and the observation that simultaneous same-path uploads leave
+`(SFConflict ...)` copies -- the reason the lock exists. Run it before a release,
+and whenever the stub's `do_DELETE`/`do_POST` semantics are changed.
+
+---
+
 ## The snapshot tool is one file to users and several parts to maintainers
 
 `tools/seafile_snapshot.py` is **generated**. Its source is a handful of cohesive

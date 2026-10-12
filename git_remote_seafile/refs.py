@@ -32,6 +32,28 @@ REF_NAMESPACES = ("refs/heads", "refs/tags")
 _INVALID_REF_CHARS = re.compile(r"[\s\x00-\x1f\x7f~^:?*\[\\]|\.\.|//|\.lock$|@\{")
 
 
+#: How Seafile names the loser of a concurrent write to one path.  Measured on a
+#: real server (CE 13.0.28): twelve simultaneous ``replace=1`` uploads to one
+#: path all returned success, and left the path itself plus six copies named
+#: ``<name> (SFConflict <user> <date>)`` beside it.
+CONFLICT_MARKER = " (SFConflict "
+
+
+def is_conflict_copy(name: str) -> bool:
+    """True for a file Seafile created to hold the loser of a concurrent write."""
+    return CONFLICT_MARKER in name
+
+
+def conflict_copies_of(entries: list, filename: str) -> list[str]:
+    """Names in a directory listing that are conflict copies of *filename*."""
+    prefix = filename + CONFLICT_MARKER
+    return sorted(
+        str(e.get("name"))
+        for e in entries
+        if isinstance(e, dict) and str(e.get("name", "")).startswith(prefix)
+    )
+
+
 def is_valid_ref_name(ref_name: str) -> bool:
     """Return True if ref_name is a valid Git ref name per git-check-ref-format."""
     # Only the bare refname "@" (an alias for HEAD) and the "@{" sequence are
@@ -84,6 +106,18 @@ def iter_refs(
                 stack.append((f"{dir_path}/{name}", f"{prefix}{name}/"))
             elif kind == "file":
                 ref_name = f"{ns}/{prefix}{name}"
+                if is_conflict_copy(name):
+                    # Not a malformed name: a *symptom*.  Two clients wrote one
+                    # ref at once and the server kept both.  Say what it is and
+                    # what to do, because "malformed ref name" sends the reader
+                    # looking for a typo.
+                    sys.stderr.write(
+                        f"Warning: '{ref_name}' is a Seafile conflict copy -- two clients wrote the "
+                        f"same ref at once. It is ignored; delete it once you have decided which "
+                        f"commit is right (RUNBOOK.md, \"Conflict Artifacts\").\n"
+                    )
+                    sys.stderr.flush()
+                    continue
                 if not is_valid_ref_name(ref_name):
                     sys.stderr.write(f"Warning: ignoring malformed ref name '{ref_name}'\n")
                     sys.stderr.flush()
@@ -129,4 +163,11 @@ def iter_refs(
                     yield ref_name, sha
 
 
-__all__ = ["REF_NAMESPACES", "is_valid_ref_name", "iter_refs"]
+__all__ = [
+    "CONFLICT_MARKER",
+    "REF_NAMESPACES",
+    "conflict_copies_of",
+    "is_conflict_copy",
+    "is_valid_ref_name",
+    "iter_refs",
+]

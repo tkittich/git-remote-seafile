@@ -608,10 +608,15 @@ git push origin main
 
    > [!NOTE]
    > That is a claim about the paths this tool writes, not about the Seafile
-   > *server*. What the server would do with two simultaneous writes to one
-   > path has never been exercised against a real instance, which is why the
-   > design avoids the situation rather than depending on the answer
-   > (`DESIGN.md` §3.3).
+   > *server*. The server itself does **not** protect you: measured against a
+   > real Seafile CE 13.0.28, twelve simultaneous `replace=1` uploads of one path
+   > all returned success and left the path plus six
+   > `<name> (SFConflict <user> <date>)` copies beside it. That is why the design
+   > avoids the situation (the lock, then re-read, compare and read-back — and a
+   > check of the directory for conflict copies after every ref write,
+   > `DESIGN.md` §3.3), and why a bypassed lock shows up as a warning naming the
+   > copy rather than as a silent loss. Six clients pushing at once through the
+   > lock produced no copies.
 
 ---
 

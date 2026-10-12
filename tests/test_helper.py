@@ -1982,6 +1982,35 @@ class TestPushRefReadBack(unittest.TestCase):
         self.assertNotIn("ok refs/heads/main", out.getvalue())
         self.assertIn("another client updated it concurrently", err.getvalue())
 
+    def test_a_conflict_copy_beside_the_ref_is_reported_not_swallowed(self):
+        """Simultaneous writers each report success and leave a copy *beside* the ref.
+
+        Measured on a real Seafile CE 13.0.28: twelve concurrent replace=1
+        uploads of one path all returned success and left the path plus six
+        ``<name> (SFConflict ...)`` files.  The read-back reads our path, which
+        holds one of the two values, so only a look at the directory sees it.
+        """
+        remote = _FakeRemote()
+        copy = "main (SFConflict someone 2026-Oct-13-05-44-44)"
+        remote.list_dir = lambda repo_id, path: [
+            {"name": "main", "type": "file"},
+            {"name": copy, "type": "file"},
+            {"name": "other", "type": "file"},
+        ]
+        out, err = io.StringIO(), io.StringIO()
+        self._push(remote, out, err)
+
+        self.assertIn("ok refs/heads/main", out.getvalue())
+        self.assertIn("another client wrote refs/heads/main at the same time", err.getvalue())
+        self.assertIn(copy, err.getvalue())
+
+    def test_a_clean_directory_produces_no_conflict_warning(self):
+        remote = _FakeRemote()
+        remote.list_dir = lambda repo_id, path: [{"name": "main", "type": "file"}]
+        out, err = io.StringIO(), io.StringIO()
+        self._push(remote, out, err)
+        self.assertNotIn("SFConflict", err.getvalue())
+
     def test_an_unreadable_ref_is_a_warning_not_an_error(self):
         """The upload already succeeded, so a read we cannot finish proves nothing.
 
