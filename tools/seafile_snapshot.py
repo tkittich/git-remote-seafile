@@ -439,6 +439,18 @@ def _run(
     return subprocess.CompletedProcess(cmd, proc.returncode, out, err)
 
 
+
+#: Variables git uses to pick the repository it operates on; a run launched from
+#: a hook or CI step inherits them, and they override --git-dir.  A copy of
+#: ``git_remote_seafile.git_util._GIT_REPO_ENV_VARS`` (this file must run
+#: without the package installed); tests/test_git_util.py fails if they differ.
+_REPO_ENV_VARS = (
+    "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_COMMON_DIR", "GIT_NAMESPACE",
+    "GIT_PREFIX", "GIT_CEILING_DIRECTORIES",
+)
+
+
 def git(
     git_dir: Path,
     work_tree: Path | None,
@@ -480,11 +492,7 @@ def git(
         cmd.append(f"--work-tree={work_tree}")
     cmd.extend(args)
     env = dict(os.environ)
-    for var in (
-        "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY",
-        "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_COMMON_DIR", "GIT_NAMESPACE",
-        "GIT_PREFIX", "GIT_CEILING_DIRECTORIES",
-    ):
+    for var in _REPO_ENV_VARS:
         env.pop(var, None)
     env["GIT_TERMINAL_PROMPT"] = "0"
     # Every path this tool hands git is meant literally.  Without this, the
@@ -2809,8 +2817,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="with --maintain, run a one-shot full repack + prune of the entire "
         "object store. Ordinary snapshot runs already pack the loose tier "
-        "incrementally before each push (once it passes roughly 256 MiB or "
-        "50k objects); use this after large deletions to reclaim space",
+        "incrementally before each push (once it passes roughly 256 MiB); "
+        "use this after large deletions to reclaim space",
     )
     parser.add_argument(
         "--no-repack",

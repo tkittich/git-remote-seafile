@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import re
-import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -11,7 +10,7 @@ from typing import Any
 
 from .client import SeafileAPIError, SeafileClient
 from .config import RemoteConfig
-from .git_util import PACK_BIG_FILE_THRESHOLD, clean_git_env, get_git_timeout
+from .git_util import PACK_BIG_FILE_THRESHOLD, clean_git_env, run_git_checked
 from .lock import RemoteLock, describe_ownership_failure
 from .packs import fetch_pack_artifact, is_valid_pack_name
 from .refs import REF_NAMESPACES, is_conflict_copy, is_valid_ref_name, iter_refs
@@ -45,45 +44,6 @@ def detect_object_format(pack_names: list[str]) -> str:
         if m and len(m.group(1)) == 64:
             return "sha256"
     return "sha1"
-
-
-def _run_git(
-    args: list[str], env: dict[str, str], **kwargs: Any
-) -> subprocess.CompletedProcess[Any]:
-    """Run git against the scratch repository, bounded by :func:`get_git_timeout`.
-
-    Compaction holds the remote lease for the whole operation, so a git child
-    that never returns is not merely a stuck command -- it is a stuck *lease*,
-    and the queue will lawfully hand the lock to another client while this
-    process still believes it owns it.  A timeout is therefore converted into a
-    RuntimeError so the caller's ordinary failure path (which releases the
-    lease) runs, rather than the process blocking until someone kills it.
-
-    ``repack -a -d`` over a large remote is the step most likely to outlast the
-    default ceiling, which is why that ceiling is raisable from the trusted
-    scope -- see :func:`get_git_timeout`.
-    """
-    limit = get_git_timeout()
-    check = kwargs.pop("check", False)
-    try:
-        return subprocess.run(["git", *args], env=env, timeout=limit, check=check, **kwargs)
-    except subprocess.CalledProcessError as exc:
-        # CalledProcessError's repr is the command line and the exit status and
-        # *not* git's own words, which are the one line that says what was wrong
-        # ("pack is corrupted (SHA1 mismatch)").  Name them.
-        detail = exc.stderr
-        if isinstance(detail, bytes):
-            detail = detail.decode("utf-8", errors="replace")
-        detail = (detail or "").strip() or "(no output)"
-        raise RuntimeError(
-            f"git {' '.join(args[:4])} failed (exit {exc.returncode}): {detail}"
-        ) from None
-    except subprocess.TimeoutExpired:
-        raise RuntimeError(
-            f"git {' '.join(args)} did not finish within {limit:g}s; aborting compaction. "
-            f"If this repository legitimately needs longer, raise seafile.gittimeout "
-            f"in the system or global git config."
-        ) from None
 
 
 def refs_outside_namespaces(client: SeafileClient, repo_id: str, repo_path: str) -> list[str]:
@@ -207,7 +167,7 @@ def _fetch_and_verify_pack_pair(
 
     verified = False
     if idx_file.is_file():
-        res = _run_git(
+        res = run_git_checked(
             ["-C", str(bare_repo), "verify-pack", "-v", str(idx_file)],
             scratch_env,
             capture_output=True,
@@ -219,7 +179,7 @@ def _fetch_and_verify_pack_pair(
             idx_file.unlink(missing_ok=True)
         except Exception:
             pass
-        _run_git(
+        run_git_checked(
             ["-C", str(bare_repo), "index-pack", "-o", str(idx_file), str(pack_file)],
             scratch_env,
             check=True,
@@ -246,7 +206,7 @@ def _init_scratch(tmp: Path, pack_names: list[str], scratch_env: dict[str, str])
     init_cmd = ["init", "--bare"]
     if detect_object_format(pack_names) == "sha256":
         init_cmd.append("--object-format=sha256")
-    _run_git(init_cmd + [str(bare_repo)], scratch_env, check=True, capture_output=True)
+    run_git_checked(init_cmd + [str(bare_repo)], scratch_env, check=True, capture_output=True)
     local_pack_dir = bare_repo / "objects" / "pack"
     local_pack_dir.mkdir(parents=True, exist_ok=True)
     return bare_repo, local_pack_dir
@@ -543,7 +503,7 @@ def tail_merge(
             # bag union with no reachability semantics, which is what makes this
             # safe to run while branches are being created and deleted.
             maybe_renew()
-            res = _run_git(
+            res = run_git_checked(
                 ["-C", str(bare_repo), "cat-file", "--batch-all-objects", "--batch-check"],
                 scratch_env,
                 capture_output=True,
@@ -577,7 +537,7 @@ def tail_merge(
             # store's own "pack-" prefix keeps the result indistinguishable from
             # every other pack in /objects/pack.
             before = {p.name for p in local_pack_dir.glob("pack-*.pack")}
-            res = _run_git(
+            res = run_git_checked(
                 ["-C", str(bare_repo), "-c", f"core.bigFileThreshold={PACK_BIG_FILE_THRESHOLD}",
                  "pack-objects", "-q", str(local_pack_dir / "pack-tail")],
                 scratch_env,
@@ -853,7 +813,7 @@ def compact_repository(
             maybe_renew()
             if verbose:
                 sys.stderr.write("  Repacking objects with delta compression...\n")
-            res = _run_git(
+            res = run_git_checked(
                 ["-C", str(bare_repo), "repack", "-a", "-d", "-l"],
                 scratch_env,
                 capture_output=True,

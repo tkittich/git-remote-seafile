@@ -337,7 +337,7 @@ class TestRemoteGC(unittest.TestCase):
             repack_called = any("repack" in cmd for cmd, _ in [(c.args[0], c) for c in mock_subprocess.call_args_list if c.args])
             self.assertTrue(repack_called)
 
-    @patch("git_remote_seafile.gc.subprocess.run")
+    @patch("subprocess.run")
     def test_gc_aborts_and_preserves_packs_if_lock_lost_before_cleanup(self, mock_subprocess):
         """GC must verify lock ownership before deleting old remote packs and abort if lost (N-4)."""
         mock_client = MagicMock()
@@ -1120,12 +1120,12 @@ class TestGcSubprocessTimeout(unittest.TestCase):
 
     def test_run_git_converts_a_timeout_into_a_named_failure(self):
         with patch.object(
-            gc_module.subprocess,
+            subprocess,
             "run",
             side_effect=subprocess.TimeoutExpired(cmd="git repack", timeout=1),
         ):
             with self.assertRaises(RuntimeError) as ctx:
-                gc_module._run_git(["-C", "scratch", "repack", "-a", "-d", "-l"], {})
+                gc_module.run_git_checked(["-C", "scratch", "repack", "-a", "-d", "-l"], {})
         self.assertIn("did not finish within", str(ctx.exception))
         self.assertIn("repack", str(ctx.exception))
 
@@ -1432,7 +1432,7 @@ class TestGitFailuresNameTheCause(unittest.TestCase):
 
     def test_check_true_failure_carries_stderr(self):
         with self.assertRaises(RuntimeError) as ctx:
-            gc_module._run_git(
+            gc_module.run_git_checked(
                 ["config", "--get", "--bogus-flag"],
                 env={}, check=True, capture_output=True,
             )

@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from typing import Any
 
 
 class GitError(Exception):
@@ -119,6 +120,34 @@ def get_git_timeout() -> int:
     return _GIT_TIMEOUT
 
 
+def _communicate(
+    cmd: list[str], input_bytes: bytes | None, timeout: float | None
+) -> tuple[bytes, bytes, int]:
+    """Run *cmd* with piped output; kill it and raise TimeoutExpired on overrun.
+
+    The one place a bounded git child is started, waited on and reaped, so the
+    timeout is applied -- and a hung child killed -- the same way for every
+    caller.  Callers decide what an overrun *means*: ``run_git`` reports a
+    failure, ``filter_existing_objects`` degrades to "cannot tell".
+    """
+    proc = subprocess.Popen(
+        cmd,
+        stdin=subprocess.PIPE if input_bytes is not None else None,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    try:
+        out, err = proc.communicate(input=input_bytes, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        try:
+            proc.communicate(timeout=5)
+        except Exception:
+            pass
+        raise
+    return out, err, proc.returncode
+
+
 def run_git(
     args: list[str],
     input_bytes: bytes | None = None,
@@ -133,26 +162,14 @@ def run_git(
     """
     if isinstance(timeout, _TimeoutUnset):
         timeout = get_git_timeout()
-    proc = subprocess.Popen(
-        ["git"] + args,
-        stdin=subprocess.PIPE if input_bytes is not None else None,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
     try:
-        out, err = proc.communicate(input=input_bytes, timeout=timeout)
+        return _communicate(["git"] + args, input_bytes, timeout)
     except subprocess.TimeoutExpired:
-        proc.kill()
-        try:
-            proc.communicate(timeout=5)
-        except Exception:
-            pass
         raise GitError(
             f"git {' '.join(args)} did not finish within {timeout:g}s and was killed. "
             f"If this repository legitimately needs longer, raise seafile.gittimeout "
             f"in the system or global git config."
         ) from None
-    return out, err, proc.returncode
 
 
 def get_git_dir() -> Path:
@@ -194,6 +211,49 @@ def clean_git_env() -> dict[str, str]:
     for var in _GIT_REPO_ENV_VARS:
         env.pop(var, None)
     return env
+
+
+def run_git_checked(
+    args: list[str], env: dict[str, str], **kwargs: Any
+) -> subprocess.CompletedProcess[Any]:
+    """Run git against a scratch repository, bounded by :func:`get_git_timeout`.
+
+    Compaction holds the remote lease for the whole operation, so a git child
+    that never returns is not merely a stuck command -- it is a stuck *lease*,
+    and the queue will lawfully hand the lock to another client while this
+    process still believes it owns it.  A timeout is therefore converted into a
+    RuntimeError so the caller's ordinary failure path (which releases the
+    lease) runs, rather than the process blocking until someone kills it.
+
+    ``repack -a -d`` over a large remote is the step most likely to outlast the
+    default ceiling, which is why that ceiling is raisable from the trusted
+    scope -- see :func:`get_git_timeout`.
+
+    Unlike :func:`run_git` this takes an explicit *env* (use
+    :func:`clean_git_env`) and the usual ``subprocess.run`` keywords, and with
+    ``check=True`` turns a failure into a RuntimeError carrying git's own words.
+    """
+    limit = get_git_timeout()
+    check = kwargs.pop("check", False)
+    try:
+        return subprocess.run(["git", *args], env=env, timeout=limit, check=check, **kwargs)
+    except subprocess.CalledProcessError as exc:
+        # CalledProcessError's repr is the command line and the exit status and
+        # *not* git's own words, which are the one line that says what was wrong
+        # ("pack is corrupted (SHA1 mismatch)").  Name them.
+        detail = exc.stderr
+        if isinstance(detail, bytes):
+            detail = detail.decode("utf-8", errors="replace")
+        detail = (detail or "").strip() or "(no output)"
+        raise RuntimeError(
+            f"git {' '.join(args[:4])} failed (exit {exc.returncode}): {detail}"
+        ) from None
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(
+            f"git {' '.join(args)} did not finish within {limit:g}s; aborting. "
+            f"If this repository legitimately needs longer, raise seafile.gittimeout "
+            f"in the system or global git config."
+        ) from None
 
 
 def rev_parse(ref: str) -> str | None:
@@ -253,23 +313,12 @@ def filter_existing_objects(shas: list[str] | str | None) -> list[str]:
     limit = get_git_timeout()
 
     try:
-        proc = subprocess.Popen(
-            cmd,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+        out, _, returncode = _communicate(
+            cmd, ("\n".join(candidates) + "\n").encode("utf-8"), limit
         )
-        out, _ = proc.communicate(
-            ("\n".join(candidates) + "\n").encode("utf-8"), timeout=limit
-        )
-        if proc.returncode != 0:
+        if returncode != 0:
             return []
     except subprocess.TimeoutExpired:
-        proc.kill()
-        try:
-            proc.communicate(timeout=5)
-        except Exception:
-            pass
         # "Cannot tell" must not be answered as "none of them exist".  Both
         # callers read an empty list as "nothing here to skip", so the result is
         # more work (a redundant download, a fuller rev-list) rather than a

@@ -317,152 +317,189 @@ class SeafileClient:
         sys.stderr.flush()
 
     def _load_credentials(self, require_token: bool = True) -> None:
-        """Load credentials from env vars, config file, or local Seafile client.
+        """Find a server and token: environment, then config file, then the
+        Seafile desktop client's accounts.db.
 
         ``require_token=False`` accepts a server URL on its own.  With the
-        default (``True``) the search is unchanged: it keeps looking until it
-        finds a server *and* a token, and raises if it cannot.
+        default (``True``) the search keeps looking until it finds a server
+        *and* a token, and raises if it cannot.  Each source is its own method;
+        the first to adopt wins.
         """
-        # 1. Environment variables
-        #
-        # A token is only ever sent to the server it was *declared* for.  A
-        # bare SEAFILE_TOKEN used to be adopted for whatever server the URL
-        # happened to name -- so `git clone seafile://somewhere.example/lib/path`,
-        # a command a user is far more likely to have been handed than to have
-        # written, silently posted the user's Seafile token to that host.  That
-        # is a confused deputy: the URL is attacker-chosen, the credential is
-        # not.  Scoping it costs an explicit SEAFILE_SERVER, and the message
-        # below names the omission rather than reporting "no credentials".
+        if self._credentials_from_env(require_token):
+            return
+        config_path = Path.home() / ".git-seafile.json"
+        found, cfg_server, cfg_token = self._credentials_from_config_file(config_path, require_token)
+        if found:
+            return
+        if self._credentials_from_accounts_db(require_token):
+            return
+        if not self.server_url or (require_token and not self.token):
+            raise SeafileAuthError(
+                self._missing_credentials_message(require_token, config_path, cfg_server, cfg_token)
+            )
+
+    def _credentials_from_env(self, require_token: bool) -> bool:
+        """SEAFILE_SERVER / SEAFILE_TOKEN.  True when adopted.
+
+        A token is only ever sent to the server it was *declared* for.  A bare
+        SEAFILE_TOKEN used to be adopted for whatever server the URL happened to
+        name -- so `git clone seafile://somewhere.example/lib/path`, a command a
+        user is far more likely to have been handed than to have written,
+        silently posted the user's Seafile token to that host.  That is a
+        confused deputy: the URL is attacker-chosen, the credential is not.
+        Scoping it costs an explicit SEAFILE_SERVER, and the failure message
+        names the omission rather than reporting "no credentials".
+        """
         env_server = os.environ.get("SEAFILE_SERVER")
         env_token = os.environ.get("SEAFILE_TOKEN")
         if env_server and (env_token or not require_token):
             if not self.server_url or normalize_netloc(env_server) == normalize_netloc(self.server_url):
                 self.server_url = env_server.rstrip("/")
                 self._adopt_token(env_token, "SEAFILE_TOKEN")
-                return
+                return True
+        return False
 
-        # 2. Config file (~/.git-seafile.json)
-        #
-        # Bound before the read so the failure message below can name a token
-        # that arrived without a server beside it, rather than treating the
-        # whole file as absent.
+    def _credentials_from_config_file(
+        self, config_path: Path, require_token: bool
+    ) -> tuple[bool, str | None, str | None]:
+        """``~/.git-seafile.json``.  Returns ``(adopted, server, token)``.
+
+        The server and token are returned even when not adopted, so the failure
+        message can name a token that arrived without a server beside it rather
+        than treating the whole file as absent.
+        """
         cfg_server: str | None = None
         cfg_token: str | None = None
-        config_path = Path.home() / ".git-seafile.json"
-        if config_path.is_file():
-            if os.name != "nt":
-                try:
-                    mode = config_path.stat().st_mode
-                    if mode & 0o077:
-                        sys.stderr.write(
-                            f"Warning: {config_path} is accessible by others (mode {oct(mode & 0o777)}). "
-                            f"Permissions should be set to 0600 (chmod 600 {config_path}) to protect credentials.\n"
-                        )
-                except Exception:
-                    pass
+        if not config_path.is_file():
+            return False, None, None
+        if os.name != "nt":
             try:
-                cfg = json.loads(config_path.read_text(encoding="utf-8"))
-                cfg_server = cfg.get("server")
-                cfg_token = cfg.get("token")
-                cfg_user = cfg.get("username") or cfg.get("user")
-                if cfg_user and not self.username:
-                    self.username = cfg_user
-                if cfg_server and (cfg_token or not require_token):
-                    if not self.server_url or normalize_netloc(cfg_server) == normalize_netloc(self.server_url):
-                        self.server_url = cfg_server.rstrip("/")
-                        self._adopt_token(cfg_token, f"the token in {config_path}")
-                        return
-            except Exception as ex:
-                # Not fatal -- accounts.db may still authenticate -- but silence
-                # here means a user who mistyped a token in this file gets a
-                # bare 401 with no hint that their config was rejected.
-                sys.stderr.write(
-                    f"Warning: {config_path} could not be used ({ex}); "
-                    f"continuing with other credential sources.\n"
-                )
-                sys.stderr.flush()
+                mode = config_path.stat().st_mode
+                if mode & 0o077:
+                    sys.stderr.write(
+                        f"Warning: {config_path} is accessible by others (mode {oct(mode & 0o777)}). "
+                        f"Permissions should be set to 0600 (chmod 600 {config_path}) to protect credentials.\n"
+                    )
+            except Exception:
+                pass
+        try:
+            cfg = json.loads(config_path.read_text(encoding="utf-8"))
+            cfg_server = cfg.get("server")
+            cfg_token = cfg.get("token")
+            cfg_user = cfg.get("username") or cfg.get("user")
+            if cfg_user and not self.username:
+                self.username = cfg_user
+            if cfg_server and (cfg_token or not require_token):
+                if not self.server_url or normalize_netloc(cfg_server) == normalize_netloc(self.server_url):
+                    self.server_url = cfg_server.rstrip("/")
+                    self._adopt_token(cfg_token, f"the token in {config_path}")
+                    return True, cfg_server, cfg_token
+        except Exception as ex:
+            # Not fatal -- accounts.db may still authenticate -- but silence
+            # here means a user who mistyped a token in this file gets a bare
+            # 401 with no hint that their config was rejected.
+            sys.stderr.write(
+                f"Warning: {config_path} could not be used ({ex}); "
+                f"continuing with other credential sources.\n"
+            )
+            sys.stderr.flush()
+        return False, cfg_server, cfg_token
 
-        # 3. Read directly from local Seafile client accounts.db (Windows, Linux, macOS, seaf-cli)
-        candidates = get_candidate_db_paths("accounts.db")
-        for db_path in candidates:
+    def _account_row(self, con: Any) -> tuple[str | None, str | None, str | None] | None:
+        """The ``(url, token, username)`` row to use from an open accounts.db.
+
+        With a server URL known, the most recently visited account on that
+        server; without one, the most recently visited account.  Older clients'
+        schema has no ``username`` column, so a failing three-column query falls
+        back to two.  ``LookupError`` means neither query ran.
+        """
+        target = normalize_netloc(self.server_url) if self.server_url else None
+        for cols in ("url, token, username", "url, token"):
+            try:
+                if target:
+                    rows = con.execute(
+                        f"SELECT {cols} FROM Accounts ORDER BY lastVisited DESC"
+                    ).fetchall()
+                    row = next((r for r in rows if r[0] and normalize_netloc(r[0]) == target), None)
+                else:
+                    row = con.execute(
+                        f"SELECT {cols} FROM Accounts ORDER BY lastVisited DESC LIMIT 1"
+                    ).fetchone()
+            except Exception:
+                continue
+            if row is None:
+                return None
+            padded = tuple(row) + (None,) * (3 - len(row))
+            return padded[0], padded[1], padded[2]
+        raise LookupError("accounts.db could not be queried")
+
+    def _credentials_from_accounts_db(self, require_token: bool) -> bool:
+        """The desktop client's accounts.db (Windows, Linux, macOS, seaf-cli)."""
+        for db_path in get_candidate_db_paths("accounts.db"):
             row = None
             with open_live_sqlite_ro(db_path) as con:
                 if con is None:
                     continue
                 try:
-                    if self.server_url:
-                        target_netloc = normalize_netloc(self.server_url)
-                        rows = con.execute(
-                            "SELECT url, token, username FROM Accounts ORDER BY lastVisited DESC"
-                        ).fetchall()
-                        for r in rows:
-                            if r[0] and normalize_netloc(r[0]) == target_netloc:
-                                row = r
-                                break
-                    else:
-                        row = con.execute("SELECT url, token, username FROM Accounts ORDER BY lastVisited DESC LIMIT 1").fetchone()
-                except Exception:
-                    try:
-                        if self.server_url:
-                            target_netloc = normalize_netloc(self.server_url)
-                            rows = con.execute(
-                                "SELECT url, token FROM Accounts ORDER BY lastVisited DESC"
-                            ).fetchall()
-                            for r in rows:
-                                if r[0] and normalize_netloc(r[0]) == target_netloc:
-                                    row = (r[0], r[1], None)
-                                    break
-                        else:
-                            r2 = con.execute("SELECT url, token FROM Accounts ORDER BY lastVisited DESC LIMIT 1").fetchone()
-                            if r2:
-                                row = (r2[0], r2[1], None)
-                    except Exception:
-                        continue
+                    row = self._account_row(con)
+                except LookupError:
+                    continue
             if row and row[0] and (row[1] or not require_token):
                 if not self.server_url:
                     self.server_url = row[0].rstrip("/")
                 self._adopt_token(row[1], "the token in the Seafile client's accounts.db")
-                if len(row) > 2 and row[2] and not self.username:
+                if row[2] and not self.username:
                     self.username = row[2]
-                return
+                return True
+        return False
 
-        if not self.server_url or (require_token and not self.token):
-            if self.server_url:
-                # Every source that *looked* usable is named here.  A skipped
-                # token that is not mentioned reads as "no credentials exist",
-                # and the user goes hunting for one that is already set.
-                skipped: list[str] = []
-                if env_token and not env_server:
-                    skipped.append(
-                        "SEAFILE_TOKEN was set without SEAFILE_SERVER, so it was not used: "
-                        "a token is only sent to the server it names, and a URL may name "
-                        "any server. Set SEAFILE_SERVER to the server the token belongs to"
-                    )
-                elif env_server and env_token and normalize_netloc(env_server) != normalize_netloc(self.server_url):
-                    skipped.append(
-                        f"SEAFILE_SERVER names {normalize_netloc(env_server)}, so "
-                        "SEAFILE_SERVER/SEAFILE_TOKEN were not used for this server; "
-                        "they are only sent to the server they name"
-                    )
-                if cfg_token and not cfg_server:
-                    skipped.append(
-                        f"{config_path} holds a token but no \"server\", so the token was "
-                        "not used: a token is only sent to the server it names"
-                    )
-                detail = " (" + "; ".join(skipped) + ")" if skipped else ""
-                raise SeafileAuthError(
-                    f"Could not find Seafile credentials for '{self.server_url}'{detail}. "
-                    "Set SEAFILE_TOKEN or configure ~/.git-seafile.json"
+    def _missing_credentials_message(
+        self,
+        require_token: bool,
+        config_path: Path,
+        cfg_server: str | None,
+        cfg_token: str | None,
+    ) -> str:
+        """Why no credentials were found, naming every source that looked usable.
+
+        A skipped token that is not mentioned reads as "no credentials exist",
+        and the user goes hunting for one that is already set.
+        """
+        if self.server_url:
+            env_server = os.environ.get("SEAFILE_SERVER")
+            env_token = os.environ.get("SEAFILE_TOKEN")
+            skipped: list[str] = []
+            if env_token and not env_server:
+                skipped.append(
+                    "SEAFILE_TOKEN was set without SEAFILE_SERVER, so it was not used: "
+                    "a token is only sent to the server it names, and a URL may name "
+                    "any server. Set SEAFILE_SERVER to the server the token belongs to"
                 )
-            if require_token:
-                raise SeafileAuthError(
-                    "Could not find Seafile credentials. Set SEAFILE_SERVER and SEAFILE_TOKEN "
-                    "or configure ~/.git-seafile.json"
+            elif env_server and env_token and normalize_netloc(env_server) != normalize_netloc(self.server_url):
+                skipped.append(
+                    f"SEAFILE_SERVER names {normalize_netloc(env_server)}, so "
+                    "SEAFILE_SERVER/SEAFILE_TOKEN were not used for this server; "
+                    "they are only sent to the server they name"
                 )
-            raise SeafileAuthError(
-                "Could not determine the Seafile server URL. Set SEAFILE_SERVER or "
-                "configure ~/.git-seafile.json"
+            if cfg_token and not cfg_server:
+                skipped.append(
+                    f"{config_path} holds a token but no \"server\", so the token was "
+                    "not used: a token is only sent to the server it names"
+                )
+            detail = " (" + "; ".join(skipped) + ")" if skipped else ""
+            return (
+                f"Could not find Seafile credentials for '{self.server_url}'{detail}. "
+                "Set SEAFILE_TOKEN or configure ~/.git-seafile.json"
             )
+        if require_token:
+            return (
+                "Could not find Seafile credentials. Set SEAFILE_SERVER and SEAFILE_TOKEN "
+                "or configure ~/.git-seafile.json"
+            )
+        return (
+            "Could not determine the Seafile server URL. Set SEAFILE_SERVER or "
+            "configure ~/.git-seafile.json"
+        )
 
     @staticmethod
     def _mount_retries(session: requests.Session) -> None:
