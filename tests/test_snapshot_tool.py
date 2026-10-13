@@ -1798,6 +1798,10 @@ class LargePayloadProfileTests(unittest.TestCase):
         self.assertEqual(snap.decide_profile({**base, "total": 1.0 * gib, "payload": 1.0 * gib}), "default")
         self.assertEqual(snap.decide_profile({**base, "payload": 1.0 * gib}), "default")
         self.assertEqual(snap.decide_profile({**base, "ratio": 0.4}), "default")
+        # Mixed data that shrinks only ~15% still goes raw: deflate costs more
+        # one-core time than the bytes it saves cost on the wire (measured on
+        # the flood tree, sample ratio 0.85: 45 vs ~190 MiB/s staging).
+        self.assertEqual(snap.decide_profile({**base, "ratio": 0.85}), "raw")
         self.assertEqual(snap.decide_profile({**base, "sampled": 0.0, "ratio": 0.0}), "default")
 
     def test_the_sample_sees_incompressible_and_compressible_payloads(self):

@@ -829,8 +829,15 @@ _PROFILE_BIG_FILE_BYTES = 1024 ** 2
 _PROFILE_SAMPLE_FILES = 32
 _PROFILE_SAMPLE_CHUNK = 256 * 1024
 #: Sampled data that keeps at least this fraction of its size under a fast
-#: deflate is treated as incompressible.
-_PROFILE_INCOMPRESSIBLE_RATIO = 0.9
+#: deflate is treated as not worth compressing.  This is a break-even, not a
+#: purity test: deflate costs ~1/45 s per MiB on one core against ~1/186 raw
+#: (an extra ~0.017 s/MiB), and the bytes it saves are worth (1 - ratio)/32
+#: s/MiB at the ~32 MiB/s upload measured on the real server.  The two meet
+#: near a ratio of 0.45, so anything above 0.5 is faster raw end to end --
+#: measured on the flood tree, whose sample kept 85 %: deflating staged it at
+#: ~45 MiB/s (about 50 minutes for 131 GiB) where raw takes about 11.  The old
+#: 0.9 cut-off sent exactly such mixed data down the slow path.
+_PROFILE_INCOMPRESSIBLE_RATIO = 0.5
 #: What to set for a raw payload.  The threshold is the one measured in
 #: git_remote_seafile.git_util.PACK_BIG_FILE_THRESHOLD (kept as a literal so
 #: this file does not need the package just to name a string).

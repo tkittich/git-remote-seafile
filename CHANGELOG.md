@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **Snapshot tool: the raw-payload profile now starts at a sample ratio of 0.5, not 0.9.** Deflating on one core costs more time than the bytes it saves cost on the wire, so mixed data that shrinks only ~15% is staged faster uncompressed. Measured on a 131 GiB tree whose sample kept 85%: ~45 MiB/s (about 50 minutes) before, ~125-200 MiB/s after. A vault that already decided `default` is re-sampled only by the existing recheck rule; `git config snapshot.profile raw` + `core.compression 0` applies it by hand.
+
 ## [0.8.8] - 2026-10-13
 
 Everything here follows from the 2026-10-12 review and the decisions taken on it, then from measuring the result against a real Seafile server (CE 13.0.28): a 4 GiB merge, a 5 GiB single-file push, and a two-gigabyte request ceiling nobody had known about.
