@@ -481,6 +481,7 @@ def main(argv: list[str] | None = None) -> int:
             f"on {socket.gethostname()}"
         )
 
+        refuse_flagless_payload_vault(git_dir, source, branch, payload_min)
         remote_tip: str | None = None
         with VaultLock(git_dir):
             # The code push happens here -- identity is settled and no other

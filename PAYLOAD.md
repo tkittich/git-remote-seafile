@@ -41,7 +41,7 @@ encryption and retention policy.
 | :-- | :--- | :--- |
 | R1 | A restored tree is byte-identical to the source at snapshot time, payload files included. | `test_restore_downloads_and_verifies_the_payload`; real-server soak |
 | R2 | A snapshot never references an object that was not verified present before the vault was pushed. | ordering in D5; `test_a_failed_parallel_upload_names_the_file_and_resumes` |
-| R3 | A run never overwrites or deletes an object. | design; `test_a_file_removed_from_the_source_keeps_its_object` |
+| R3 | A run never replaces an object with different bytes, and never deletes one. (It does replace a *wrong-size* object, which is damage, with the correct bytes.) | design; `test_a_file_removed_from_the_source_keeps_its_object`, `test_a_name_another_writer_just_stored_is_not_deleted_by_a_collision` |
 | R4 | An unchanged tree uploads nothing and commits nothing. | `test_an_unchanged_tree_uploads_nothing_and_commits_nothing` |
 | R5 | A rename or duplicate uploads nothing. | `test_a_rename_uploads_nothing`, `test_duplicate_content_is_one_object` |
 | R6 | A file that changed between hashing and upload is never stored under another content's name. | `test_a_file_that_changes_between_hash_and_upload_is_refused` |
@@ -188,7 +188,7 @@ reports; with `--payload-delete` it **marks, and later deletes, in two phases**:
   (default 7, minimum 1) **and is still unreferenced**. An object a run reused in
   the meantime is referenced again when the second run looks, so it survives;
   nothing depends on the server's timestamps;
-- it reads the manifest of **every commit reachable from every ref of the remote**
+- it reads the manifest of **every commit reachable from every branch and tag of the remote**
   (fetched into a scratch repository), plus the local vault's refs when `--vault`
   is given -- which must be a vault, and whose fetch must succeed -- because an
   un-pushed local snapshot may name objects already uploaded;
@@ -258,14 +258,14 @@ data, or surprise. Disposition is one of **fixed**, **handled**, **specified**
 | A3 | File edited after hashing, before upload | bytes under another content's name | **fixed** (the first handling was wrong, see 6.1): D5 hashes the bytes as they are sent |
 | A4 | Same-size edit within the timestamp granularity | cached hash would be trusted | **handled**: D6 racy rule against this machine's hash time, plus inode |
 | A5 | mtime restored by a copy tool (`cp -p`, `robocopy`) | cache trusted, content differs | **open**: force-rehash switch |
-| A6 | Another machine's un-pushed snapshot references an object; retention deletes it | data loss | **handled**: D9 two-phase, every ref of the remote plus the local vault (which must be one); tested by mutation |
+| A6 | Another machine's un-pushed snapshot references an object; retention deletes it | data loss | **handled within the grace period**: D9 two-phase, every branch and tag of the remote plus the local vault's (which must be one). Another machine's objects that are uploaded but not pushed are invisible to this machine's retention; they survive `--payload-grace-days`, after which that machine's next run re-uploads them (source unchanged) or refuses to push. Run retention from one machine |
 | A7 | Run interrupted after upload, before push | orphan objects | **handled**: harmless, reused (D5) |
 | A8 | An object is truncated or altered on the server, same size | upload skipped as "present"; backup silently bad until a restore | **open**: only a restore drill detects it; the tool no longer creates this state itself (D5); consider `--payload-verify` sampling |
 | A9 | `(SFConflict ...)` copies appear next to an object | listing sees a non-hash name | **handled**: ignored; collectable |
 | A10 | Two paths differ by case, Unicode form, or a trailing dot or space; restore onto Windows or macOS | one overwrites the other, both verify | **fixed**: D8 never overwrites; collisions are skipped and reported |
 | A11 | Payload path looks like a credential | the secrets report covered only staged paths | **fixed**: payload paths scanned |
 | A12 | File held open exclusively (Windows) | traceback or silent skip | **handled**: R9 |
-| A13 | OneDrive "files on demand" placeholder | hashing triggers a download of the whole file | **open**: documented behaviour of any read; consider detecting reparse points |
+| A13 | OneDrive "files on demand" placeholder | hashing triggers a download of the whole file | **handled**: a placeholder is refused by name, and reparse points are not walked |
 | A14 | The threshold changes between runs | files move between git and payload | **handled**: staging skips payload paths; old snapshots unaffected; flag is required (R10) |
 | A15 | A payload file becomes a symlink or shrinks below the threshold | falls to git | **handled** |
 | A16 | `--reset-to-remote` drops local-only snapshots | their objects become orphans; the previous-manifest cache disappears | **handled**: harmless; a rehash |
@@ -279,7 +279,7 @@ data, or surprise. Disposition is one of **fixed**, **handled**, **specified**
 | A24 | A server that rewrites object names | would break "listing proves presence" | **handled**: names are lowercase hex; verified on the real server |
 | A25 | `--payload-jobs` very large on a flaky link | many partial uploads | **handled**: pool is bounded; failure stops the queue |
 
-### 6.1 The independent review round (2026-10-13)
+### 6.1 The independent review rounds (2026-10-13 and 14)
 
 Three reviewers (one given only this specification, two the code) attacked the
 branch independently. Every finding below was reproduced against the stub before
@@ -308,7 +308,30 @@ one-line mutations, none survive).
 | OneDrive placeholders are hydrated by reading (A13) | SURPRISE | refused by name |
 | Ctrl-C does not stop queued uploads (F13) | refuted by execution | none needed; `Executor.map` cancels |
 
-*Not changed, recorded:* the racy rule uses this machine's clock (D6, F9/F15); a
+**Round 2** (three more reviewers, against `ce2f573`; no CRITICAL, one reviewer
+found nothing above NIT). Each fix below was again verified by deleting it and
+watching a named test fail (9 further mutations, none survive), and the
+rename-based upload was re-run against the real server.
+
+| Finding | Consequence | Fixed by |
+| :--- | :--- | :--- |
+| A retried chunk is not re-hashed, so an edit between attempts is hidden behind the first attempt's digest | LOSS (narrow) | D5: a re-read marks the object; it must then pass a full rehash equal to its name with an unchanged stat |
+| Retention read the local vault's branches but not its tags | LOSS | D9 fetches tags of the vault too |
+| A server listing with a non-integer size raised a traceback | SURPRISE | unknown size is "re-upload" / "not deletable" |
+| A failure constructing a worker's client escaped the pool | SURPRISE | inside the failure path |
+| `.part-` temporaries of interrupted uploads were never collected | disk | D9 collects them through the same two phases |
+| `--code-remote` was pushed before the flagless-vault refusal | SURPRISE | the local branch tip is checked first |
+| `.seafile-payload.` (trailing dot) was not caught as the reserved directory | WRONG | same spelling rules as `.git` |
+| A rename collision deleted a good object another writer had just stored | NIT | an object of the right size is kept, the temporary dropped |
+| The pre-push re-upload was not re-listed | NIT | it is |
+| Restored mode and mtime, the post-upload listing check, unparseable JSON in history | test gaps | tests |
+
+*Not changed, recorded:* a retention run's grace clock is the clock of the machine that
+marked the object, so two machines that both run retention shift the effective window by
+their skew (bounded by the one-day floor); a non-UTF-8 name from a POSIX source cannot be
+restored on Windows; `SeafileClient.copy_entries` was removed until views need it.
+
+*Not changed, recorded (round 1):* the racy rule uses this machine's clock (D6, F9/F15); a
 snapshot is never expired by itself -- there is no `--keep-snapshots` yet, so a
 file that changes daily grows the store until history is rewritten; a non-UTF-8
 file name on Linux is not handled by the staging path (a pre-existing limit).
@@ -316,7 +339,7 @@ file name on Linux is not handled by the staging path (a pre-existing limit).
 ## 7. Test matrix
 
 `tests/test_snapshot_payload.py` drives the real tool and helper against the
-in-process stub (49 tests). Each fix in 6.1 was verified by mutation: a one-line
+in-process stub. Each fix in 6.1 was verified by mutation: a one-line
 change that removes it makes a named test fail (12 of 12). The real-server soaks
 cover a 1.1 GiB chunked upload, unchanged run, same-size edit, restore and
 older-snapshot restore, `auto` selection and retention, and the 131 GiB flood

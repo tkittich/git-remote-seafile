@@ -728,7 +728,7 @@ class PayloadModeTests(unittest.TestCase):
     def test_gc_leaves_names_that_are_not_objects_alone(self):
         self.assertEqual(self.snapshot()[0], 0)
         stranger = f"{self.objects}/ab/not-a-hash.txt"
-        part = f"{self.objects}/ab/{'c' * 64}.part-1234"
+        part = f"{self.objects}/ab/{'c' * 64}.bak"   # looks like an object, is not one
         self.stub.files[REPO_ID][stranger] = b"x"
         self.stub.files[REPO_ID][part] = b"y"
         for _ in range(2):
@@ -772,6 +772,168 @@ class PayloadModeTests(unittest.TestCase):
         self.assertNotEqual(rc, 0)
         self.assertIn("format 3", out + err)
         self.assertIn(orphan, self.server_files())
+
+    # -- round 2: findings of the second review round ---------------------------
+    def test_a_retried_chunk_cannot_hide_an_edit_between_attempts(self):
+        # The uploader reads the file again on a retry; the digest of the first
+        # attempt must not vouch for what the second attempt sent.
+        original = SeafileClient.upload_file
+        target = self.src / "big1.bin"
+        stat = target.stat()
+        altered = bytes(b ^ 0x33 for b in self.big1)
+        state = {"done": False}
+
+        def read_edit_then_upload(client, rid, parent, name, content, *a, **kw):
+            if not state["done"] and name.startswith(_sha(self.big1)):
+                state["done"] = True
+                content.read()               # the first attempt sends everything...
+                target.write_bytes(altered)  # ...the file moves before the retry...
+                os.utime(target, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+                content.seek(0)              # ...and the retry re-reads it from the start
+            return original(client, rid, parent, name, content, *a, **kw)
+
+        with unittest.mock.patch.object(SeafileClient, "upload_file", read_edit_then_upload):
+            rc, out, err = self.snapshot("--payload-jobs", "1")
+        self.assertNotEqual(rc, 0)
+        self.assertIn("changed while it was being uploaded", out + err)
+        self.assertNotIn(self.object_key(self.big1), self.server_files())
+
+    def test_a_file_that_shrinks_mid_upload_is_refused(self):
+        original = SeafileClient.upload_file
+        target = self.src / "big1.bin"
+        state = {"done": False}
+
+        def truncate_then_upload(client, rid, parent, name, content, *a, **kw):
+            if not state["done"] and name.startswith(_sha(self.big1)):
+                state["done"] = True
+                os.truncate(target, len(self.big1) // 2)
+            return original(client, rid, parent, name, content, *a, **kw)
+
+        with unittest.mock.patch.object(SeafileClient, "upload_file", truncate_then_upload):
+            rc, out, err = self.snapshot("--payload-jobs", "1")
+        self.assertNotEqual(rc, 0)
+        self.assertNotIn(self.object_key(self.big1), self.server_files())
+
+    def test_an_upload_the_listing_does_not_confirm_is_an_error(self):
+        # D5 step 4: a rename that reports success but loses the object.
+        def lossy_rename(client, rid, path, new_name):
+            self.stub.files[REPO_ID].pop(path, None)
+            return True
+
+        with unittest.mock.patch.object(SeafileClient, "rename_entry", lossy_rename):
+            rc, out, err = self.snapshot("--payload-jobs", "1")
+        self.assertNotEqual(rc, 0)
+        self.assertIn("missing or the wrong size", out + err)
+
+    def test_a_lying_listing_is_a_message_not_a_traceback(self):
+        self.assertEqual(self.snapshot()[0], 0)
+        real = SeafileClient.list_dir
+
+        def liar(client, rid, path="/"):
+            entries = real(client, rid, path)
+            if "/payload/objects/" in path:
+                for entry in entries:
+                    entry["size"] = None
+            return entries
+
+        with unittest.mock.patch.object(SeafileClient, "list_dir", liar):
+            rc_gc, out_gc, err_gc = self.gc("--payload-grace-days", "1")
+        self.assertNotIn("Traceback", err_gc)
+        self.assertEqual(rc_gc, 0, out_gc + err_gc)
+
+    def test_gc_protects_a_snapshot_reachable_only_from_a_local_tag(self):
+        self.assertEqual(self.snapshot()[0], 0)
+        s1_commit = _git(self.vault, "rev-parse", "snapshot").strip()
+        s2 = os.urandom(6000)
+        (self.src / "big1.bin").write_bytes(s2)
+        with unittest.mock.patch.object(snap, "push_snapshot", side_effect=snap.SnapshotError("down")):
+            self.assertNotEqual(self.snapshot()[0], 0)
+        _git(self.vault, "tag", "keep", "snapshot")
+        _git(self.vault, "update-ref", "refs/heads/snapshot", s1_commit)  # the branch moves back
+        key = self.object_key(s2)
+        for _ in range(2):
+            self.gc("--payload-delete", "--payload-grace-days", "1", "--vault", self.vault)
+            if f"{self.base}/gc-pending.json" in self.server_files():
+                self.backdate_pending(2)
+        self.assertIn(key, self.server_files(), "an object named only from a tag was collected")
+
+    def test_gc_refuses_a_manifest_that_is_not_json(self):
+        self.assertEqual(self.snapshot()[0], 0)
+        gd = str(self.vault / ".git")
+        env = dict(os.environ, GIT_INDEX_FILE=str(self.vault / ".git" / "tmp-index"),
+                   GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@e", GIT_COMMITTER_NAME="t",
+                   GIT_COMMITTER_EMAIL="t@e")
+
+        def plumbing(*args):
+            return subprocess.run(["git", f"--git-dir={gd}", *args], env=env, capture_output=True,
+                                  check=True).stdout.decode().strip()
+
+        blob = subprocess.run(["git", f"--git-dir={gd}", "hash-object", "-w", "--stdin"],
+                              input=b"{not json", capture_output=True, check=True).stdout.decode().strip()
+        plumbing("read-tree", "snapshot")
+        plumbing("update-index", "--add", "--cacheinfo", f"100644,{blob},.seafile-payload/manifest.json")
+        commit = plumbing("commit-tree", plumbing("write-tree"), "-p", "snapshot", "-m", "garbled")
+        plumbing("update-ref", "refs/heads/snapshot", commit)
+        orphan = self.orphan()
+        rc, out, err = self.gc("--payload-delete", "--payload-grace-days", "1", "--vault", self.vault)
+        self.assertNotEqual(rc, 0)
+        self.assertIn("unreadable", out + err)
+        self.assertIn(orphan, self.server_files())
+
+    def test_gc_collects_the_temporaries_of_interrupted_uploads_after_the_grace_period(self):
+        self.assertEqual(self.snapshot()[0], 0)
+        part = f"{self.objects}/cc/{'c' * 64}.part-1234"   # a temporary lives beside its object
+        self.stub.files[REPO_ID][part] = b"half an object"
+        self.gc("--payload-delete", "--payload-grace-days", "1")
+        self.assertIn(part, self.server_files(), "marked first, not deleted")
+        self.backdate_pending(2)
+        rc, out, err = self.gc("--payload-delete", "--payload-grace-days", "1")
+        self.assertEqual(rc, 0, out + err)
+        self.assertNotIn(part, self.server_files())
+        self.assertEqual(self.object_count(), 2)
+
+    def test_restore_sets_the_recorded_mode_and_mtime(self):
+        target = self.src / "big1.bin"
+        os.utime(target, ns=(OLD_NS, OLD_NS))
+        if os.name != "nt":
+            os.chmod(target, 0o755)
+        self.assertEqual(self.snapshot()[0], 0)
+        rc, out, err, into = self.restore("meta")
+        self.assertEqual(rc, 0, out + err)
+        restored = into / "big1.bin"
+        self.assertLess(abs(restored.stat().st_mtime_ns - OLD_NS), 200)  # NTFS: 100 ns ticks
+        if os.name != "nt":
+            self.assertTrue(restored.stat().st_mode & 0o100, "executable bit was not restored")
+
+    def test_a_flagless_run_is_refused_before_the_code_repository_is_pushed(self):
+        self.assertEqual(self.snapshot()[0], 0)
+        with self.assertRaises(snap.SnapshotError):
+            snap.refuse_flagless_payload_vault(self.vault / ".git", self.src, "snapshot", None)
+        snap.refuse_flagless_payload_vault(self.vault / ".git", self.src, "snapshot", 1000)
+
+    def test_the_reserved_directory_in_any_spelling_is_refused(self):
+        for spelling in (".seafile-payload./x", ".seafile-payload /x", ".SEAFILE-PAYLOAD/x"):
+            with self.subTest(spelling=spelling):
+                self.assertIsNotNone(snap.path_security_problem(spelling))
+
+    def test_a_name_another_writer_just_stored_is_not_deleted_by_a_collision(self):
+        class Fake:
+            def __init__(self):
+                self.deleted = []
+
+            def rename_entry(self, rid, path, new):
+                return False  # the name is taken
+
+            def list_dir(self, rid, directory):
+                return [{"name": "h" * 64, "size": 10}]
+
+            def delete_entry(self, rid, path):
+                self.deleted.append(path)
+                return True
+
+        fake = Fake()
+        self.assertTrue(snap._commit_object(fake, "r", "/d", "h" * 64 + ".part-1", "h" * 64, 10))
+        self.assertEqual(fake.deleted, ["/d/" + "h" * 64 + ".part-1"])
 
     def test_gc_refuses_to_act_when_it_finds_no_manifest(self):
         self.assertEqual(self.snapshot()[0], 0)

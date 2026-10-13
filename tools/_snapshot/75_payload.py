@@ -135,10 +135,15 @@ class _HashingFile:
         self._size = size
         self._hash = hashlib.sha256()
         self._hashed = 0
+        #: True once any byte was read a second time (a retried chunk).  The
+        #: digest then describes the *first* attempt, not what the server kept.
+        self.rewound = False
 
     def read(self, size: int = -1) -> bytes:
         at = self._fh.tell()
         data = self._fh.read(size)
+        if data and at < self._hashed:
+            self.rewound = True
         if data and at == self._hashed:
             self._hash.update(data)
             self._hashed += len(data)
@@ -234,8 +239,9 @@ def _remote_objects(client: Any, rid: str, base: str, shas: set[str]) -> dict[st
         )
         for entry in entries:
             name = entry.get("name")
-            if name in shas and entry.get("type") != "dir":
-                held[name] = int(entry.get("size", -1))
+            if isinstance(name, str) and name in shas and entry.get("type") != "dir":
+                size = entry.get("size", -1)
+                held[name] = size if isinstance(size, int) and not isinstance(size, bool) else -1
     return held
 
 
@@ -247,12 +253,22 @@ def _unchanged(source: Path, rel: str, size: int, mtime_ns: int) -> bool:
     return st.st_size == size and st.st_mtime_ns == mtime_ns
 
 
-def _commit_object(client: Any, rid: str, directory: str, temp: str, sha: str) -> bool:
-    """Give the verified temporary file its hash name, replacing a wrong-size one."""
+def _commit_object(
+    client: Any, rid: str, directory: str, temp: str, sha: str, size: int
+) -> bool:
+    """Give the verified temporary file its hash name.
+
+    If the name is taken by an object of the right size (another machine or worker
+    stored the same bytes a moment ago) the temporary is simply dropped: the same
+    name always has the same content.  A taken name with a wrong size is a stale
+    object; it is removed and the rename tried once more.
+    """
     if client.rename_entry(rid, f"{directory}/{temp}", sha):
         return True
-    # The name is taken: a stale wrong-size object (the run only gets here for
-    # objects it found missing or the wrong size).  Remove it and try once more.
+    for entry in client.list_dir(rid, directory):
+        if entry.get("name") == sha and entry.get("size") == size:
+            client.delete_entry(rid, f"{directory}/{temp}")
+            return True
     client.delete_entry(rid, f"{directory}/{sha}")
     return bool(client.rename_entry(rid, f"{directory}/{temp}", sha))
 
@@ -294,9 +310,6 @@ def _upload_all(
         if not _unchanged(source, rel, size, item["mtime_ns"]):
             failed.append(f"{rel}: changed since it was hashed; run again")
             return
-        worker = getattr(local, "client", None)
-        if worker is None:
-            worker = local.client = _open_client(server_url)
         with lock:
             counter[0] += 1
             print(
@@ -306,17 +319,28 @@ def _upload_all(
         directory = f"{base}/{object_dir(sha)}"
         temp = f"{sha}{_PART_SUFFIX}{os.urandom(4).hex()}"
         try:
+            worker = getattr(local, "client", None)
+            if worker is None:
+                worker = local.client = _open_client(server_url)
             with open(source / rel, "rb") as fh:
                 reader = _HashingFile(fh, size)
                 ok = worker.upload_file(rid, directory, temp, reader)
             if not ok:
                 failed.append(f"{rel}: the server did not accept the upload")
                 return
-            if not reader.complete or reader.hexdigest() != sha:
+            # A retried chunk means the digest describes the first attempt, not the
+            # bytes the server kept: only a fresh read of the whole file, equal to the
+            # name and with an unchanged stat, vouches for the object then.
+            if reader.rewound:
+                clean = (_sha256_file(source / rel) == sha
+                         and _unchanged(source, rel, size, item["mtime_ns"]))
+            else:
+                clean = reader.complete and reader.hexdigest() == sha
+            if not clean:
                 worker.delete_entry(rid, f"{directory}/{temp}")
                 failed.append(f"{rel}: changed while it was being uploaded; run again")
                 return
-            if not _commit_object(worker, rid, directory, temp, sha):
+            if not _commit_object(worker, rid, directory, temp, sha, size):
                 worker.delete_entry(rid, f"{directory}/{temp}")
                 failed.append(f"{rel}: the server would not name the object")
         except OSError as exc:
@@ -433,7 +457,8 @@ def verify_payload_before_push(
         print(f"re-uploading {len(redo)} payload object(s) that went missing before the push",
               flush=True)
         _upload_all(client, rid, server_url, base, source, redo, jobs)
-        missing -= set(redo)
+        after = _remote_objects(client, rid, base, set(redo))
+        missing -= {sha for sha, item in redo.items() if after.get(sha) == item["size"]}
     if missing:
         sample = ", ".join(sorted(owners[sha] for sha in missing)[:5])
         raise SnapshotError(

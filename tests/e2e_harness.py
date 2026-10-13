@@ -204,20 +204,6 @@ class _Handler(BaseHTTPRequestHandler):
                     return self._send(400, b'{"error":"file already exists"}')
                 files[new] = files.pop(p)
                 return self._send(200, b'"success"')
-        if path == "/api/v2.1/repos/sync-batch-copy-item/":
-            if self.stub.faults.get("copy"):
-                return self._send(self.stub.faults["copy"], b"injected failure")
-            req = json.loads(body.decode("utf-8") or "{}")
-            rid = req["src_repo_id"]
-            files = self.stub.files.setdefault(rid, {})
-            src_parent = _norm(req["src_parent_dir"]).rstrip("/")
-            dst_parent = _norm(req["dst_parent_dir"]).rstrip("/")
-            for name in req["src_dirents"]:
-                src = src_parent + "/" + name
-                for key in [k for k in files if k == src or k.startswith(src + "/")]:
-                    files[dst_parent + "/" + name + key[len(src):]] = files[key]
-            return self._send(200, b'{"success":true}')
-
         if path.startswith("/upload/"):
             if self.stub.faults.get("upload"):
                 return self._send(self.stub.faults["upload"], b"injected failure")

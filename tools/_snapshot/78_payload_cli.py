@@ -72,6 +72,25 @@ def plan_payload(
     return min_size, find_payload_files(source, excludes, min_size, auto), rule
 
 
+def refuse_flagless_payload_vault(
+    git_dir: Path, source: Path, branch: str, min_size: int | None
+) -> None:
+    """Refuse a run without the flag when the local branch's last snapshot used
+    payload mode -- before anything outward happens (a ``--code-remote`` push)."""
+    if min_size is not None:
+        return
+    tip = current_tip(git_dir, source, branch)
+    previous = load_manifest(git_dir, source, tip)
+    if previous is not None:
+        raise SnapshotError(
+            "this vault's last snapshot used payload mode, so its large files are not in "
+            "git; running without --payload-min-size would stage them into git instead. "
+            "Repeat the flag (--payload-min-size "
+            f"{'auto' if previous.get('rule') == 'auto' else previous.get('min_size', 'SIZE')}), "
+            "or pass --payload-min-size 0 to leave payload mode deliberately"
+        )
+
+
 def run_payload_step(
     git_dir: Path,
     source: Path,

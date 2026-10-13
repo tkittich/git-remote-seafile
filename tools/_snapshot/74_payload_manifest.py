@@ -89,7 +89,7 @@ def path_security_problem(rel: str) -> str | None:
             return "is absolute or has an empty, '.' or '..' component"
         if _component_is_git(part):
             return "reaches .git"
-    if parts[0].casefold() == PAYLOAD_RESERVED_DIR:
+    if parts[0].rstrip(". ").casefold() == PAYLOAD_RESERVED_DIR:
         return f"is inside the reserved {PAYLOAD_RESERVED_DIR} directory"
     if re.match(r"^[A-Za-z]:", parts[0]) and os.name == "nt":
         return "names a drive"

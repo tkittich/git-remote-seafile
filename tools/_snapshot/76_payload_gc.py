@@ -29,6 +29,8 @@
 # expires and the server's GC runs (SNAPSHOT.md section 15.1).
 
 _OBJECT_NAME = re.compile(r"^[0-9a-f]{64}$")
+#: An object, or the temporary an interrupted upload left beside it.
+_COLLECTABLE_NAME = re.compile(r"^[0-9a-f]{64}(\.part-[0-9a-f]+)?$")
 DEFAULT_GRACE_DAYS = 7.0
 #: A grace period shorter than this is refused: it would let a retention run
 #: delete what a snapshot run, started hours earlier, is about to reference.
@@ -107,7 +109,8 @@ def _hashes_in_history(remote: str, vault: Path | None) -> tuple[set[str], int, 
         if vault is not None:
             git(
                 repo, None,
-                ["fetch", "-q", "--no-tags", str(vault), "+refs/heads/*:refs/remotes/local/*"],
+                ["fetch", "-q", "--no-tags", str(vault),
+                 "+refs/heads/*:refs/remotes/local/*", "+refs/tags/*:refs/remotes/local-tags/*"],
                 cwd=Path(td),
             )
         commits = [c for c in git(repo, None, ["rev-list", "--all"], cwd=Path(td)).stdout.split() if c]
@@ -181,13 +184,17 @@ def payload_gc(
         )
         for entry in entries:
             name = entry.get("name", "")
-            if entry.get("type") == "dir" or not _OBJECT_NAME.match(name):
+            if (entry.get("type") == "dir" or not isinstance(name, str)
+                    or not _COLLECTABLE_NAME.match(name)):
                 others += 1
                 continue
-            stored[name] = int(entry.get("size", 0))
+            size = entry.get("size", 0)
+            stored[name] = size if isinstance(size, int) and not isinstance(size, bool) else 0
 
-    unused = {sha for sha in stored if sha not in referenced}
-    missing = referenced - set(stored)
+    # A temporary is never referenced; the grace period keeps one that a run in
+    # progress is still writing.
+    unused = {name for name in stored if name[:64] not in referenced or len(name) > 64}
+    missing = referenced - {name for name in stored if len(name) == 64}
     pending_text = _api(lambda: client.get_file_text(rid, f"{base}/{_PENDING_NAME}"), "reading gc state")
     try:
         pending_raw = json.loads(pending_text) if pending_text else {}
@@ -195,7 +202,7 @@ def payload_gc(
         raise SnapshotError(f"{base}/{_PENDING_NAME} is unreadable; remove it and run again") from None
     pending = {
         sha: float(ts) for sha, ts in (pending_raw.items() if isinstance(pending_raw, dict) else [])
-        if isinstance(sha, str) and _OBJECT_NAME.match(sha) and isinstance(ts, (int, float))
+        if isinstance(sha, str) and _COLLECTABLE_NAME.match(sha) and isinstance(ts, (int, float))
     }
     now = time.time()
     due = {sha for sha in unused if sha in pending and now - pending[sha] >= grace_days * 86400}
@@ -229,7 +236,7 @@ def payload_gc(
     deleted = 0
     for index, sha in enumerate(sorted(due), 1):
         if not client.delete_entry(rid, f"{base}/{object_dir(sha)}/{sha}"):
-            raise SnapshotError(f"the server refused to delete object {sha}")
+            raise SnapshotError(f"the server refused to delete {sha}")
         deleted += 1
         if index % 100 == 0 or index == len(due):
             print(f"deleted [{index}/{len(due)}]", flush=True)

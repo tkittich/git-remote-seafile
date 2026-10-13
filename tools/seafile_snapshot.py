@@ -2054,7 +2054,7 @@ def path_security_problem(rel: str) -> str | None:
             return "is absolute or has an empty, '.' or '..' component"
         if _component_is_git(part):
             return "reaches .git"
-    if parts[0].casefold() == PAYLOAD_RESERVED_DIR:
+    if parts[0].rstrip(". ").casefold() == PAYLOAD_RESERVED_DIR:
         return f"is inside the reserved {PAYLOAD_RESERVED_DIR} directory"
     if re.match(r"^[A-Za-z]:", parts[0]) and os.name == "nt":
         return "names a drive"
@@ -2335,10 +2335,15 @@ class _HashingFile:
         self._size = size
         self._hash = hashlib.sha256()
         self._hashed = 0
+        #: True once any byte was read a second time (a retried chunk).  The
+        #: digest then describes the *first* attempt, not what the server kept.
+        self.rewound = False
 
     def read(self, size: int = -1) -> bytes:
         at = self._fh.tell()
         data = self._fh.read(size)
+        if data and at < self._hashed:
+            self.rewound = True
         if data and at == self._hashed:
             self._hash.update(data)
             self._hashed += len(data)
@@ -2434,8 +2439,9 @@ def _remote_objects(client: Any, rid: str, base: str, shas: set[str]) -> dict[st
         )
         for entry in entries:
             name = entry.get("name")
-            if name in shas and entry.get("type") != "dir":
-                held[name] = int(entry.get("size", -1))
+            if isinstance(name, str) and name in shas and entry.get("type") != "dir":
+                size = entry.get("size", -1)
+                held[name] = size if isinstance(size, int) and not isinstance(size, bool) else -1
     return held
 
 
@@ -2447,12 +2453,22 @@ def _unchanged(source: Path, rel: str, size: int, mtime_ns: int) -> bool:
     return st.st_size == size and st.st_mtime_ns == mtime_ns
 
 
-def _commit_object(client: Any, rid: str, directory: str, temp: str, sha: str) -> bool:
-    """Give the verified temporary file its hash name, replacing a wrong-size one."""
+def _commit_object(
+    client: Any, rid: str, directory: str, temp: str, sha: str, size: int
+) -> bool:
+    """Give the verified temporary file its hash name.
+
+    If the name is taken by an object of the right size (another machine or worker
+    stored the same bytes a moment ago) the temporary is simply dropped: the same
+    name always has the same content.  A taken name with a wrong size is a stale
+    object; it is removed and the rename tried once more.
+    """
     if client.rename_entry(rid, f"{directory}/{temp}", sha):
         return True
-    # The name is taken: a stale wrong-size object (the run only gets here for
-    # objects it found missing or the wrong size).  Remove it and try once more.
+    for entry in client.list_dir(rid, directory):
+        if entry.get("name") == sha and entry.get("size") == size:
+            client.delete_entry(rid, f"{directory}/{temp}")
+            return True
     client.delete_entry(rid, f"{directory}/{sha}")
     return bool(client.rename_entry(rid, f"{directory}/{temp}", sha))
 
@@ -2494,9 +2510,6 @@ def _upload_all(
         if not _unchanged(source, rel, size, item["mtime_ns"]):
             failed.append(f"{rel}: changed since it was hashed; run again")
             return
-        worker = getattr(local, "client", None)
-        if worker is None:
-            worker = local.client = _open_client(server_url)
         with lock:
             counter[0] += 1
             print(
@@ -2506,17 +2519,28 @@ def _upload_all(
         directory = f"{base}/{object_dir(sha)}"
         temp = f"{sha}{_PART_SUFFIX}{os.urandom(4).hex()}"
         try:
+            worker = getattr(local, "client", None)
+            if worker is None:
+                worker = local.client = _open_client(server_url)
             with open(source / rel, "rb") as fh:
                 reader = _HashingFile(fh, size)
                 ok = worker.upload_file(rid, directory, temp, reader)
             if not ok:
                 failed.append(f"{rel}: the server did not accept the upload")
                 return
-            if not reader.complete or reader.hexdigest() != sha:
+            # A retried chunk means the digest describes the first attempt, not the
+            # bytes the server kept: only a fresh read of the whole file, equal to the
+            # name and with an unchanged stat, vouches for the object then.
+            if reader.rewound:
+                clean = (_sha256_file(source / rel) == sha
+                         and _unchanged(source, rel, size, item["mtime_ns"]))
+            else:
+                clean = reader.complete and reader.hexdigest() == sha
+            if not clean:
                 worker.delete_entry(rid, f"{directory}/{temp}")
                 failed.append(f"{rel}: changed while it was being uploaded; run again")
                 return
-            if not _commit_object(worker, rid, directory, temp, sha):
+            if not _commit_object(worker, rid, directory, temp, sha, size):
                 worker.delete_entry(rid, f"{directory}/{temp}")
                 failed.append(f"{rel}: the server would not name the object")
         except OSError as exc:
@@ -2633,7 +2657,8 @@ def verify_payload_before_push(
         print(f"re-uploading {len(redo)} payload object(s) that went missing before the push",
               flush=True)
         _upload_all(client, rid, server_url, base, source, redo, jobs)
-        missing -= set(redo)
+        after = _remote_objects(client, rid, base, set(redo))
+        missing -= {sha for sha, item in redo.items() if after.get(sha) == item["size"]}
     if missing:
         sample = ", ".join(sorted(owners[sha] for sha in missing)[:5])
         raise SnapshotError(
@@ -2672,6 +2697,8 @@ def verify_payload_before_push(
 # expires and the server's GC runs (SNAPSHOT.md section 15.1).
 
 _OBJECT_NAME = re.compile(r"^[0-9a-f]{64}$")
+#: An object, or the temporary an interrupted upload left beside it.
+_COLLECTABLE_NAME = re.compile(r"^[0-9a-f]{64}(\.part-[0-9a-f]+)?$")
 DEFAULT_GRACE_DAYS = 7.0
 #: A grace period shorter than this is refused: it would let a retention run
 #: delete what a snapshot run, started hours earlier, is about to reference.
@@ -2750,7 +2777,8 @@ def _hashes_in_history(remote: str, vault: Path | None) -> tuple[set[str], int, 
         if vault is not None:
             git(
                 repo, None,
-                ["fetch", "-q", "--no-tags", str(vault), "+refs/heads/*:refs/remotes/local/*"],
+                ["fetch", "-q", "--no-tags", str(vault),
+                 "+refs/heads/*:refs/remotes/local/*", "+refs/tags/*:refs/remotes/local-tags/*"],
                 cwd=Path(td),
             )
         commits = [c for c in git(repo, None, ["rev-list", "--all"], cwd=Path(td)).stdout.split() if c]
@@ -2824,13 +2852,17 @@ def payload_gc(
         )
         for entry in entries:
             name = entry.get("name", "")
-            if entry.get("type") == "dir" or not _OBJECT_NAME.match(name):
+            if (entry.get("type") == "dir" or not isinstance(name, str)
+                    or not _COLLECTABLE_NAME.match(name)):
                 others += 1
                 continue
-            stored[name] = int(entry.get("size", 0))
+            size = entry.get("size", 0)
+            stored[name] = size if isinstance(size, int) and not isinstance(size, bool) else 0
 
-    unused = {sha for sha in stored if sha not in referenced}
-    missing = referenced - set(stored)
+    # A temporary is never referenced; the grace period keeps one that a run in
+    # progress is still writing.
+    unused = {name for name in stored if name[:64] not in referenced or len(name) > 64}
+    missing = referenced - {name for name in stored if len(name) == 64}
     pending_text = _api(lambda: client.get_file_text(rid, f"{base}/{_PENDING_NAME}"), "reading gc state")
     try:
         pending_raw = json.loads(pending_text) if pending_text else {}
@@ -2838,7 +2870,7 @@ def payload_gc(
         raise SnapshotError(f"{base}/{_PENDING_NAME} is unreadable; remove it and run again") from None
     pending = {
         sha: float(ts) for sha, ts in (pending_raw.items() if isinstance(pending_raw, dict) else [])
-        if isinstance(sha, str) and _OBJECT_NAME.match(sha) and isinstance(ts, (int, float))
+        if isinstance(sha, str) and _COLLECTABLE_NAME.match(sha) and isinstance(ts, (int, float))
     }
     now = time.time()
     due = {sha for sha in unused if sha in pending and now - pending[sha] >= grace_days * 86400}
@@ -2872,7 +2904,7 @@ def payload_gc(
     deleted = 0
     for index, sha in enumerate(sorted(due), 1):
         if not client.delete_entry(rid, f"{base}/{object_dir(sha)}/{sha}"):
-            raise SnapshotError(f"the server refused to delete object {sha}")
+            raise SnapshotError(f"the server refused to delete {sha}")
         deleted += 1
         if index % 100 == 0 or index == len(due):
             print(f"deleted [{index}/{len(due)}]", flush=True)
@@ -3072,6 +3104,25 @@ def plan_payload(
             "seafile://<library>/<path> (or run from a source with a seafile:// remote)"
         )
     return min_size, find_payload_files(source, excludes, min_size, auto), rule
+
+
+def refuse_flagless_payload_vault(
+    git_dir: Path, source: Path, branch: str, min_size: int | None
+) -> None:
+    """Refuse a run without the flag when the local branch's last snapshot used
+    payload mode -- before anything outward happens (a ``--code-remote`` push)."""
+    if min_size is not None:
+        return
+    tip = current_tip(git_dir, source, branch)
+    previous = load_manifest(git_dir, source, tip)
+    if previous is not None:
+        raise SnapshotError(
+            "this vault's last snapshot used payload mode, so its large files are not in "
+            "git; running without --payload-min-size would stage them into git instead. "
+            "Repeat the flag (--payload-min-size "
+            f"{'auto' if previous.get('rule') == 'auto' else previous.get('min_size', 'SIZE')}), "
+            "or pass --payload-min-size 0 to leave payload mode deliberately"
+        )
 
 
 def run_payload_step(
@@ -4569,6 +4620,7 @@ def main(argv: list[str] | None = None) -> int:
             f"on {socket.gethostname()}"
         )
 
+        refuse_flagless_payload_vault(git_dir, source, branch, payload_min)
         remote_tip: str | None = None
         with VaultLock(git_dir):
             # The code push happens here -- identity is settled and no other
