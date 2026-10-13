@@ -846,20 +846,28 @@ interface or syncs it. Disk need is the payload once, not twice.
   each, the price of one library commit per file;
 - **quota and library size count a copy at full size**: a 200 MiB file and
   its snapshot copy read as 400 MiB in the account usage and the library
-  size, and deleting the folder returned both to baseline. Whatever the
-  disk does underneath, a user with a *finite* quota pays for every
-  snapshot as if it were a full copy, so snapshot retention is a quota
-  question and the tool must say so.
+  size, and deleting the folder returned both to baseline. A user with a
+  *finite* quota pays for every snapshot as if it were a full copy, so
+  snapshot retention is a quota question and the tool must say so;
+- **the block store confirms the sharing** (server in Docker on OpenZFS,
+  `du -sb` of `storage/blocks` sampled every 10 s): uploading a 1 GiB random
+  file grew it by exactly 1,073,741,824 bytes; the server-side copy of that
+  folder grew it by **0** bytes; replacing the original with different
+  1 GiB content grew it by another exactly 1 GiB (the snapshot still holds
+  the old blocks); and deleting the whole folder freed **nothing**, still
+  nothing 1 h 30 min later -- the blocks stay until the library's history
+  no longer references them *and* the server's garbage collector runs.
+  So the physical cost of a snapshot is only the blocks that differ from
+  every other retained version, while quota counts it whole; and deleting
+  a snapshot to reclaim disk is a two-stage affair outside this tool's
+  control.
 
 **Not measured -- must be checked before building:**
 
-- whether blocks really are shared on disk after a copy and after the
-  original is replaced (the API reports logical sizes only; the 20 ms copy
-  says no data moved, but only the server's own storage statistics can
-  confirm physical sharing);
-- that deleting an old `snapshots/<snapshot>/` directory followed by the
-  server's own garbage collection actually frees the blocks, and what the
-  library-history retention does to the space meanwhile;
+- that shortening the library's history retention and then running the
+  server's garbage collector actually frees the blocks of a deleted
+  snapshot (deleting alone was measured to free nothing), and how long that
+  takes on a library of this size;
 - the copy at tens of thousands of entries (1,500 was measured);
 - every upload is a library commit, so a first run of ~7,000 files writes ~7,000
   history entries -- whether that matters for the library's history view and
