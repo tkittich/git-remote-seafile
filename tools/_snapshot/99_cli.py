@@ -166,6 +166,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     add_payload_arguments(parser)
     add_payload_jobs_argument(parser)
+    add_payload_gc_arguments(parser)
     parser.add_argument(
         "--verify",
         action="store_true",
@@ -214,7 +215,7 @@ def validate_args(args: argparse.Namespace) -> None:
     signal either way.  ``--ref`` without ``--restore`` is the sharpest -- a run
     meant to restore an *old* snapshot quietly takes a *new* one instead.
     """
-    problems: list[str] = []
+    problems: list[str] = payload_gc_conflicts(args)
 
     if args.maintain and args.restore:
         problems.append("--maintain and --restore are different modes")
@@ -386,6 +387,11 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         validate_args(args)
+        if args.payload_gc:
+            return payload_gc(
+                args.remote, args.vault.expanduser().resolve() if args.vault else None,
+                delete=args.delete, grace_days=args.grace_days,
+            )
         if args.restore:
             if not args.remote:
                 raise SnapshotError("--restore requires --remote <url>")
@@ -422,7 +428,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.dry_run and remote:
             print(f"dry run -- would push the vault to {remote}")
 
-        payload_min, payload_candidates = plan_payload(
+        payload_min, payload_candidates, payload_rule = plan_payload(
             args.payload_min_size, remote, source, exclude
         )
         payload_skip = frozenset(payload_candidates)
@@ -529,7 +535,7 @@ def main(argv: list[str] | None = None) -> int:
             # preview prints (file count, size, diffstat, secrets, gitlinks).
             manifest, payload_todo = run_payload_step(
                 git_dir, source, base, remote, payload_min, payload_candidates,
-                dry_run=args.dry_run, jobs=args.payload_jobs,
+                dry_run=args.dry_run, jobs=args.payload_jobs, rule=payload_rule,
             )
             tree, commit, excluded = build_snapshot(
                 git_dir, source, base, exclude, message,

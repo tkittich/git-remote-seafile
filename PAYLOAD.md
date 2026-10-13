@@ -53,12 +53,16 @@ encryption and retention policy.
 
 ## 4. Decisions
 
-### D1. Which files are payload — **open** (a rule is proposed)
+### D1. Which files are payload — **decided** (`auto`)
 
-Today: size alone, `--payload-min-size SIZE`. The example value `64M` in the help
-text was never derived from anything; it should not be read as a default.
+`--payload-min-size` takes `auto` (also what a bare flag means) or a size. A size
+selects on size alone. **`auto` selects a file when it is at least 64 MiB, or when
+it is at least 4 MiB and a sample of it does not compress** (zlib level 1 over three
+256 KiB chunks, ratio ≥ 0.9). Everything else stays in git, where batching,
+compression and delta apply. The manifest records which rule produced it, and a
+vault that used payload mode refuses a run without the flag, naming the value.
 
-What the data says (flood tree, 6,853 files, 130.7 GiB):
+Why those numbers (flood tree, 6,853 files, 130.7 GiB):
 
 | size | files | GiB | typical content |
 | :--- | ---: | ---: | :--- |
@@ -69,21 +73,18 @@ What the data says (flood tree, 6,853 files, 130.7 GiB):
 | 16 – 64 MiB | 335 | 9.41 | npy, jp2, tif |
 | ≥ 64 MiB | 352 | 118.09 | tiff, npy, zip, jp2 |
 
-What a payload object costs that a git blob in a pack does not: one request
-(measured ~34 ms for a tiny file), one library-history entry, and — for a file
-that changes — a whole new object instead of a delta. What it saves: the local
-copy, the staging pass, the pack cap. Break-even on request overhead alone is a
-few MiB. The point of the feature is *data git cannot help*: compressed formats
-and arrays, which a sample of the file shows (zlib level 1 over three chunks).
-Of the 12.1 GiB between 1 and 64 MiB, about 7.0 GiB is incompressible and 4.6 GiB
-compresses (json, xml).
+A payload object costs what a git blob in a pack does not: one request (measured
+~34 ms for a tiny file), one library-history entry, and a whole new object when the
+file changes instead of a delta. It saves the local copy, the staging pass and the
+pack cap. Request overhead is roughly 100% of transfer time at 1 MiB and 25% at
+4 MiB, hence the lower bound. The feature exists for data git cannot shrink, which
+the sample detects: of the 12.1 GiB between 1 and 64 MiB, about 7.0 GiB is
+incompressible and 4.6 GiB compresses (json, xml) and stays in git. A file whose
+class changes between runs simply moves (A14).
 
-**Proposed rule (`auto`):** payload when `size ≥ 64 MiB`, or when
-`1 MiB ≤ size < 64 MiB` **and** the sample ratio is ≥ 0.9. Everything else stays in
-git, where batching, compression and delta apply. `--payload-min-size N` stays as
-the explicit, size-only override. *Open:* whether the lower bound is 1 MiB or
-4 MiB (per-file overhead is ~100% at 1 MiB and ~25% at 4 MiB), and whether to
-make `auto` the default once built.
+The bounds are constants (`_AUTO_UPPER`, `_AUTO_LOWER`) and the sample ratio is
+`_AUTO_INCOMPRESSIBLE`; none is a setting. *Caveat:* a bare `--payload-min-size`
+swallows the next argument, so write the source first or `--payload-min-size=auto`.
 
 ### D2. Object identity and layout — **decided**
 
@@ -149,15 +150,26 @@ component, a backslash or a colon; any hash that is not 64 lowercase hex digits;
 bad size, mode or mtime; and any two paths that differ only by case or Unicode
 form (they would overwrite each other on a case-insensitive filesystem).
 
-### D9. Retention — **proposed**
+### D9. Retention — **decided** (`--payload-gc`)
 
-Nothing in a run deletes. A separate, explicit command lists the objects no manifest
-references and deletes them on request. It must read the manifest of **every
-commit reachable from every remote ref**, and must not delete an object younger
-than a grace period (default 7 days): an object uploaded by a run that has not
-yet pushed its vault is, correctly, unreferenced. Deleting frees quota at once;
-disk is freed only after the library's history expires and the server's GC runs
-(measured). Recommended library setting: a short history (days), as a safety net.
+Nothing in a snapshot run deletes. `--payload-gc --remote URL [--vault DIR]`
+reports, and with `--delete` removes, objects no snapshot references:
+
+- it reads the manifest of **every commit reachable from every ref of the remote**
+  (fetched into a scratch repository), plus the local vault's refs when `--vault`
+  is given, because an un-pushed local snapshot may name objects already uploaded;
+- it never touches an object younger than `--grace-days` (default 7): a run that
+  has uploaded but not yet pushed its vault is, correctly, unreferenced;
+- it refuses to delete when it found no manifest at all (a wrong remote or an
+  empty fetch would otherwise make the whole store garbage), and when a manifest in
+  the history is unreadable;
+- it only ever deletes names that are exactly 64 hex digits; anything else in the
+  directory (conflict copies, strangers) is reported and left alone;
+- it reports any object a manifest names that is **missing** from the server.
+
+Deleting frees quota at once; disk is freed only after the library's history
+expires and the server's GC runs (measured). Recommended library setting: a short
+history (days), as a safety net for a mistaken delete.
 
 ### D10. Views — **proposed**
 
@@ -209,7 +221,7 @@ data, or surprise. Disposition is one of **fixed**, **handled**, **specified**
 | A3 | File edited after hashing, before upload | bytes under another content's name | **handled**: R6 pre/post `stat` |
 | A4 | Same-size edit within the timestamp granularity | cached hash would be trusted | **handled**: racy rule (D6) |
 | A5 | mtime restored by a copy tool (`cp -p`, `robocopy`) | cache trusted, content differs | **open**: force-rehash switch |
-| A6 | Another machine's un-pushed snapshot references an object; retention deletes it | data loss | **specified**: D9 grace period and all-refs walk; helper not built |
+| A6 | Another machine's un-pushed snapshot references an object; retention deletes it | data loss | **handled**: D9 grace period, every ref of the remote plus the local vault; tested |
 | A7 | Run interrupted after upload, before push | orphan objects | **handled**: harmless, reused (D5) |
 | A8 | An object is truncated or altered on the server, same size | upload skipped as "present"; backup silently bad until a restore | **open**: only a restore drill detects it; consider `--verify` sampling by download |
 | A9 | `(SFConflict ...)` copies appear next to an object | listing sees a non-hash name | **handled**: ignored; collectable |
@@ -233,16 +245,15 @@ data, or surprise. Disposition is one of **fixed**, **handled**, **specified**
 ## 7. Test matrix
 
 `tests/test_snapshot_payload.py` drives the real tool and helper against the
-in-process stub (21 tests). The real-server soak
+in-process stub (28 tests, including the `auto` rule and retention). The real-server soak
 (`SEAFILE_TEST_LIBRARY`-style scratch use only) covers: a 1.1 GiB chunked upload,
 unchanged run, same-size edit, restore and older-snapshot restore. Not yet
-covered: the retention helper (D9), views (D10), the `auto` selection rule (D1), a
-force-rehash switch (D6), and manifests at 100,000 files (D4).
+covered: views (D10), a force-rehash switch (D6), and manifests at 100,000 files (D4).
 
 ## 8. Order of work
 
-1. Decide D1 (selection rule) — it changes the default behaviour users see.
-2. Retention helper (D9), because an unrecoverable mistake lives there.
-3. Remembered setting and force-rehash (D11, D6).
-4. Views (D10).
-5. The 131 GiB flood run, last, as the acceptance test.
+1. ~~Decide D1 (selection rule).~~ Done: `auto`.
+2. ~~Retention helper (D9).~~ Done.
+3. The 131 GiB flood run, as the acceptance test.
+4. Remembered setting and force-rehash (D11, D6).
+5. Views (D10).

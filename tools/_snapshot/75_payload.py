@@ -28,6 +28,15 @@ _PAYLOAD_HASH_BLOCK = 8 * 1024 * 1024
 #: cached hash: a file edited to the same size within the filesystem's timestamp
 #: granularity would look untouched (git calls this "racily clean").
 _RACY_WINDOW_NS = 2_000_000_000
+#: The ``auto`` selection rule (PAYLOAD.md D1): a file is payload when it is at
+#: least ``_AUTO_UPPER`` bytes, or at least ``_AUTO_LOWER`` bytes *and* a sample
+#: of it does not compress.  Below the lower bound a request costs more than
+#: git's pack batching saves; between the bounds only data git cannot shrink
+#: is worth the per-file overhead.
+_AUTO_UPPER = 64 * 1024 ** 2
+_AUTO_LOWER = 4 * 1024 ** 2
+_AUTO_INCOMPRESSIBLE = 0.9
+_AUTO_SAMPLE_CHUNK = 256 * 1024
 _SIZE_UNITS = {"": 1, "k": 1024, "m": 1024 ** 2, "g": 1024 ** 3, "t": 1024 ** 4}
 
 
@@ -41,7 +50,9 @@ def parse_size(text: str) -> int:
         return int(value * _SIZE_UNITS[unit])
     except (ValueError, KeyError):
         raise SnapshotError(
-            f"not a size: {text!r} (examples: 64M, 1G, 500k, 1048576)"
+            f"not a size: {text!r} (examples: 64M, 1G, 500k, 1048576, or auto). A bare "
+            "--payload-min-size takes the next argument as its value: put SOURCE first, "
+            "or write --payload-min-size=auto"
         ) from None
 
 
@@ -85,18 +96,38 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _incompressible(path: Path, size: int) -> bool:
+    """Whether three sampled chunks of *path* barely shrink under a fast deflate."""
+    raw = comp = 0
+    try:
+        with open(path, "rb") as fh:
+            for offset in sorted({0, max(0, size // 2 - _AUTO_SAMPLE_CHUNK // 2),
+                                  max(0, size - _AUTO_SAMPLE_CHUNK)}):
+                fh.seek(offset)
+                chunk = fh.read(_AUTO_SAMPLE_CHUNK)
+                raw += len(chunk)
+                comp += len(zlib.compress(chunk, 1))
+    except OSError:
+        return False  # unreadable here is unreadable later: git reports it
+    return raw > 0 and comp / raw >= _AUTO_INCOMPRESSIBLE
+
+
 def find_payload_files(
-    source: Path, excludes: list[str], min_size: int
+    source: Path, excludes: list[str], min_size: int, auto: bool = False
 ) -> dict[str, tuple[int, int, str]]:
     """``{relative path: (size, mtime_ns, mode)}`` for every payload file.
 
-    A payload file is a *regular* file of at least ``min_size`` bytes that no
-    ``--exclude`` removes.  Symlinks stay with git (they are a few bytes and git
-    stores them exactly); so does everything smaller.
+    A payload file is a *regular* file that no ``--exclude`` removes and that
+    the rule selects: size alone (``size >= min_size``), or with *auto* the
+    rule in PAYLOAD.md D1.  Symlinks stay with git (they are a few bytes and
+    git stores them exactly); so does everything the rule leaves out.
     """
     found: dict[str, tuple[int, int, str]] = {}
+    floor = _AUTO_LOWER if auto else min_size
     for size, rel in _walk_sizes(source, excludes):
-        if size < min_size:
+        if size < floor:
+            continue
+        if auto and size < _AUTO_UPPER and not _incompressible(source / rel, size):
             continue
         try:
             st = os.lstat(source / rel)
@@ -133,6 +164,7 @@ def build_manifest(
     *,
     reference_ns: int = 0,
     quiet: bool = False,
+    rule: str = "size",
 ) -> dict[str, Any]:
     """Hash every payload file and return the manifest, snapshot id included.
 
@@ -172,6 +204,7 @@ def build_manifest(
         "format": PAYLOAD_FORMAT,
         "snapshot": "p-" + ident.hexdigest()[:16],
         "min_size": min_size,
+        "rule": rule,
         "files": entries,
     }
 
@@ -425,13 +458,16 @@ def restore_payload(remote: str, into: Path) -> None:
 def add_payload_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--payload-min-size",
-        metavar="SIZE",
+        metavar="SIZE|auto",
+        nargs="?",
+        const="auto",
         default=None,
-        help="payload mode: files of at least SIZE (e.g. 64M, 1G) bypass git; they are "
-        "hashed (SHA-256) and uploaded to Seafile by hash under <path>/payload/objects, "
-        "and the snapshot records a manifest instead. Needs a remote; a restore downloads "
-        "and verifies them. 0 turns it off. A vault that has used it needs the flag on "
-        "every run (SNAPSHOT.md section 15.1)",
+        help="payload mode: files bypass git; they are hashed (SHA-256) and uploaded to "
+        "Seafile by hash under <path>/payload/objects, and the snapshot records a manifest "
+        "instead. With no value, or 'auto': files of 64 MiB or more, plus files of 4 MiB or "
+        "more that do not compress. With SIZE (e.g. 64M, 1G): files of at least SIZE. "
+        "Needs a remote; a restore downloads and verifies them. 0 turns it off. A vault "
+        "that has used it needs the flag on every run (PAYLOAD.md)",
     )
 
 
@@ -458,17 +494,19 @@ def payload_conflicts(args: argparse.Namespace) -> list[str]:
 
 def plan_payload(
     value: str | None, remote: str | None, source: Path, excludes: list[str]
-) -> tuple[int | None, dict[str, tuple[int, int, str]]]:
-    """``(min_size, candidates)`` for this run; ``(None, {})`` when payload mode is off."""
-    min_size = parse_size(value) if value is not None else None
+) -> tuple[int | None, dict[str, tuple[int, int, str]], str]:
+    """``(min_size, candidates, rule)``; ``(None, {}, "size")`` when payload mode is off."""
+    auto = value is not None and value.strip().lower() == "auto"
+    min_size = _AUTO_UPPER if auto else (parse_size(value) if value is not None else None)
+    rule = "auto" if auto else "size"
     if not min_size:
-        return min_size, {}
+        return min_size, {}, rule
     if not remote:
         raise SnapshotError(
             "payload mode needs a remote to upload to: pass --remote "
             "seafile://<library>/<path> (or run from a source with a seafile:// remote)"
         )
-    return min_size, find_payload_files(source, excludes, min_size)
+    return min_size, find_payload_files(source, excludes, min_size, auto), rule
 
 
 def run_payload_step(
@@ -481,6 +519,7 @@ def run_payload_step(
     *,
     dry_run: bool,
     jobs: int = 3,
+    rule: str = "size",
 ) -> tuple[dict[str, Any] | None, tuple[int, int]]:
     """Hash and upload the payload; ``(manifest, (objects, bytes) to upload)``."""
     previous = load_manifest(git_dir, source, base)
@@ -488,10 +527,16 @@ def run_payload_step(
         raise SnapshotError(
             "this vault's last snapshot used payload mode, so its large files are not "
             "in git; running without --payload-min-size would stage them into git "
-            f"instead. Repeat the flag (--payload-min-size {previous.get('min_size', 'SIZE')}), "
+            "instead. Repeat the flag (--payload-min-size "
+            f"{'auto' if previous.get('rule') == 'auto' else previous.get('min_size', 'SIZE')}), "
             "or pass --payload-min-size 0 to leave payload mode deliberately"
         )
     if not min_size:
+        return None, (0, 0)
+    if not candidates and previous is None:
+        # Nothing qualifies and the vault never used payload mode: no manifest,
+        # so a tree that merely *could* grow payload files is not locked into
+        # needing the flag.
         return None, (0, 0)
     reference_ns = 0
     if base and previous is not None:
@@ -499,7 +544,7 @@ def run_payload_step(
         if stamp.returncode == 0 and stamp.stdout.strip().isdigit():
             reference_ns = int(stamp.stdout.strip()) * 1_000_000_000
     manifest = build_manifest(
-        candidates, source, previous, min_size, reference_ns=reference_ns
+        candidates, source, previous, min_size, reference_ns=reference_ns, rule=rule
     )
     todo = publish_payload(
         remote or "", source, manifest, previous, dry_run=dry_run, jobs=jobs

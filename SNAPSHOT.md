@@ -797,10 +797,11 @@ adversarial review -- is [PAYLOAD.md](PAYLOAD.md); this section keeps the
 measurements and the reasoning for the layout. Files at or above the
 given size are hashed, stored on the server under their SHA-256, and listed in a
 manifest the vault commit carries; `--restore` downloads and verifies every one.
-**Not implemented yet:** named, browsable *views* of a snapshot (below), a
-retention helper that finds unreferenced objects, a remembered setting (the flag
-must be repeated on every run, and a vault that used it refuses a run without
-it), and a payload location in a different library from the vault.
+The selection rule (`auto`) and a retention helper (`--payload-gc`) are
+implemented too. **Not implemented yet:** named, browsable *views* of a snapshot
+(below), a remembered setting (the flag must be repeated on every run, and a vault
+that used it refuses a run without it), a force-rehash switch, and a payload
+location in a different library from the vault.
 
 **The problem it answers.** A vault carries every file *through git*: each blob
 is hashed, written as a loose object, packed, uploaded as a pack. For a tree

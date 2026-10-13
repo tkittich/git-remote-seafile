@@ -204,6 +204,7 @@ import socket
 import stat
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import unicodedata
@@ -1978,6 +1979,15 @@ _PAYLOAD_HASH_BLOCK = 8 * 1024 * 1024
 #: cached hash: a file edited to the same size within the filesystem's timestamp
 #: granularity would look untouched (git calls this "racily clean").
 _RACY_WINDOW_NS = 2_000_000_000
+#: The ``auto`` selection rule (PAYLOAD.md D1): a file is payload when it is at
+#: least ``_AUTO_UPPER`` bytes, or at least ``_AUTO_LOWER`` bytes *and* a sample
+#: of it does not compress.  Below the lower bound a request costs more than
+#: git's pack batching saves; between the bounds only data git cannot shrink
+#: is worth the per-file overhead.
+_AUTO_UPPER = 64 * 1024 ** 2
+_AUTO_LOWER = 4 * 1024 ** 2
+_AUTO_INCOMPRESSIBLE = 0.9
+_AUTO_SAMPLE_CHUNK = 256 * 1024
 _SIZE_UNITS = {"": 1, "k": 1024, "m": 1024 ** 2, "g": 1024 ** 3, "t": 1024 ** 4}
 
 
@@ -1991,7 +2001,9 @@ def parse_size(text: str) -> int:
         return int(value * _SIZE_UNITS[unit])
     except (ValueError, KeyError):
         raise SnapshotError(
-            f"not a size: {text!r} (examples: 64M, 1G, 500k, 1048576)"
+            f"not a size: {text!r} (examples: 64M, 1G, 500k, 1048576, or auto). A bare "
+            "--payload-min-size takes the next argument as its value: put SOURCE first, "
+            "or write --payload-min-size=auto"
         ) from None
 
 
@@ -2035,18 +2047,38 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _incompressible(path: Path, size: int) -> bool:
+    """Whether three sampled chunks of *path* barely shrink under a fast deflate."""
+    raw = comp = 0
+    try:
+        with open(path, "rb") as fh:
+            for offset in sorted({0, max(0, size // 2 - _AUTO_SAMPLE_CHUNK // 2),
+                                  max(0, size - _AUTO_SAMPLE_CHUNK)}):
+                fh.seek(offset)
+                chunk = fh.read(_AUTO_SAMPLE_CHUNK)
+                raw += len(chunk)
+                comp += len(zlib.compress(chunk, 1))
+    except OSError:
+        return False  # unreadable here is unreadable later: git reports it
+    return raw > 0 and comp / raw >= _AUTO_INCOMPRESSIBLE
+
+
 def find_payload_files(
-    source: Path, excludes: list[str], min_size: int
+    source: Path, excludes: list[str], min_size: int, auto: bool = False
 ) -> dict[str, tuple[int, int, str]]:
     """``{relative path: (size, mtime_ns, mode)}`` for every payload file.
 
-    A payload file is a *regular* file of at least ``min_size`` bytes that no
-    ``--exclude`` removes.  Symlinks stay with git (they are a few bytes and git
-    stores them exactly); so does everything smaller.
+    A payload file is a *regular* file that no ``--exclude`` removes and that
+    the rule selects: size alone (``size >= min_size``), or with *auto* the
+    rule in PAYLOAD.md D1.  Symlinks stay with git (they are a few bytes and
+    git stores them exactly); so does everything the rule leaves out.
     """
     found: dict[str, tuple[int, int, str]] = {}
+    floor = _AUTO_LOWER if auto else min_size
     for size, rel in _walk_sizes(source, excludes):
-        if size < min_size:
+        if size < floor:
+            continue
+        if auto and size < _AUTO_UPPER and not _incompressible(source / rel, size):
             continue
         try:
             st = os.lstat(source / rel)
@@ -2083,6 +2115,7 @@ def build_manifest(
     *,
     reference_ns: int = 0,
     quiet: bool = False,
+    rule: str = "size",
 ) -> dict[str, Any]:
     """Hash every payload file and return the manifest, snapshot id included.
 
@@ -2122,6 +2155,7 @@ def build_manifest(
         "format": PAYLOAD_FORMAT,
         "snapshot": "p-" + ident.hexdigest()[:16],
         "min_size": min_size,
+        "rule": rule,
         "files": entries,
     }
 
@@ -2375,13 +2409,16 @@ def restore_payload(remote: str, into: Path) -> None:
 def add_payload_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--payload-min-size",
-        metavar="SIZE",
+        metavar="SIZE|auto",
+        nargs="?",
+        const="auto",
         default=None,
-        help="payload mode: files of at least SIZE (e.g. 64M, 1G) bypass git; they are "
-        "hashed (SHA-256) and uploaded to Seafile by hash under <path>/payload/objects, "
-        "and the snapshot records a manifest instead. Needs a remote; a restore downloads "
-        "and verifies them. 0 turns it off. A vault that has used it needs the flag on "
-        "every run (SNAPSHOT.md section 15.1)",
+        help="payload mode: files bypass git; they are hashed (SHA-256) and uploaded to "
+        "Seafile by hash under <path>/payload/objects, and the snapshot records a manifest "
+        "instead. With no value, or 'auto': files of 64 MiB or more, plus files of 4 MiB or "
+        "more that do not compress. With SIZE (e.g. 64M, 1G): files of at least SIZE. "
+        "Needs a remote; a restore downloads and verifies them. 0 turns it off. A vault "
+        "that has used it needs the flag on every run (PAYLOAD.md)",
     )
 
 
@@ -2408,17 +2445,19 @@ def payload_conflicts(args: argparse.Namespace) -> list[str]:
 
 def plan_payload(
     value: str | None, remote: str | None, source: Path, excludes: list[str]
-) -> tuple[int | None, dict[str, tuple[int, int, str]]]:
-    """``(min_size, candidates)`` for this run; ``(None, {})`` when payload mode is off."""
-    min_size = parse_size(value) if value is not None else None
+) -> tuple[int | None, dict[str, tuple[int, int, str]], str]:
+    """``(min_size, candidates, rule)``; ``(None, {}, "size")`` when payload mode is off."""
+    auto = value is not None and value.strip().lower() == "auto"
+    min_size = _AUTO_UPPER if auto else (parse_size(value) if value is not None else None)
+    rule = "auto" if auto else "size"
     if not min_size:
-        return min_size, {}
+        return min_size, {}, rule
     if not remote:
         raise SnapshotError(
             "payload mode needs a remote to upload to: pass --remote "
             "seafile://<library>/<path> (or run from a source with a seafile:// remote)"
         )
-    return min_size, find_payload_files(source, excludes, min_size)
+    return min_size, find_payload_files(source, excludes, min_size, auto), rule
 
 
 def run_payload_step(
@@ -2431,6 +2470,7 @@ def run_payload_step(
     *,
     dry_run: bool,
     jobs: int = 3,
+    rule: str = "size",
 ) -> tuple[dict[str, Any] | None, tuple[int, int]]:
     """Hash and upload the payload; ``(manifest, (objects, bytes) to upload)``."""
     previous = load_manifest(git_dir, source, base)
@@ -2438,10 +2478,16 @@ def run_payload_step(
         raise SnapshotError(
             "this vault's last snapshot used payload mode, so its large files are not "
             "in git; running without --payload-min-size would stage them into git "
-            f"instead. Repeat the flag (--payload-min-size {previous.get('min_size', 'SIZE')}), "
+            "instead. Repeat the flag (--payload-min-size "
+            f"{'auto' if previous.get('rule') == 'auto' else previous.get('min_size', 'SIZE')}), "
             "or pass --payload-min-size 0 to leave payload mode deliberately"
         )
     if not min_size:
+        return None, (0, 0)
+    if not candidates and previous is None:
+        # Nothing qualifies and the vault never used payload mode: no manifest,
+        # so a tree that merely *could* grow payload files is not locked into
+        # needing the flag.
         return None, (0, 0)
     reference_ns = 0
     if base and previous is not None:
@@ -2449,7 +2495,7 @@ def run_payload_step(
         if stamp.returncode == 0 and stamp.stdout.strip().isdigit():
             reference_ns = int(stamp.stdout.strip()) * 1_000_000_000
     manifest = build_manifest(
-        candidates, source, previous, min_size, reference_ns=reference_ns
+        candidates, source, previous, min_size, reference_ns=reference_ns, rule=rule
     )
     todo = publish_payload(
         remote or "", source, manifest, previous, dry_run=dry_run, jobs=jobs
@@ -2464,6 +2510,176 @@ def payload_summary(manifest: dict[str, Any], todo: tuple[int, int], dry_run: bo
         f"payload: {len(manifest['files'])} file(s) ({human_bytes(total)}) bypass git; "
         f"snapshot {manifest['snapshot']}; {verb} {todo[0]} object(s) ({human_bytes(todo[1])})"
     )
+
+
+# -- Payload retention ---------------------------------------------------------
+#
+# A snapshot run never deletes an object (PAYLOAD.md R3).  This is the one place
+# that does, and it is built around the one way it could lose data: an object that
+# *looks* unreferenced because the reader did not see every manifest that names it.
+# So it reads the manifest of every commit reachable from every ref of the remote
+# -- and of the local vault, whose un-pushed snapshots may name objects already
+# uploaded -- and it never touches an object younger than a grace period, because
+# a run that has uploaded but not yet pushed is indistinguishable from garbage.
+#
+# Deleting frees quota at once; disk is freed only after the library's history
+# expires and the server's own GC runs (SNAPSHOT.md section 15.1).
+
+_OBJECT_NAME = re.compile(r"^[0-9a-f]{64}$")
+DEFAULT_GRACE_DAYS = 7.0
+
+
+def add_payload_gc_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--payload-gc",
+        action="store_true",
+        help="payload retention: list the stored objects that no snapshot in the remote's "
+        "history (nor the local vault) references, and with --delete remove those older "
+        "than --grace-days. Needs --remote; --vault adds the local vault's refs",
+    )
+    parser.add_argument(
+        "--delete",
+        action="store_true",
+        help="with --payload-gc, actually delete the unreferenced objects (default: report only)",
+    )
+    parser.add_argument(
+        "--grace-days",
+        type=float,
+        default=DEFAULT_GRACE_DAYS,
+        metavar="DAYS",
+        help=f"with --payload-gc, never touch an object younger than DAYS (default "
+        f"{DEFAULT_GRACE_DAYS:g}): a run that has uploaded but not yet pushed looks unreferenced",
+    )
+
+
+def payload_gc_conflicts(args: argparse.Namespace) -> list[str]:
+    problems: list[str] = []
+    if args.payload_gc:
+        for flag, value in (("--restore", args.restore), ("--maintain", args.maintain),
+                            ("--dry-run", args.dry_run), ("--payload-min-size", args.payload_min_size)):
+            if value:
+                problems.append(f"{flag} does not apply to --payload-gc")
+        if not args.remote:
+            problems.append("--payload-gc requires --remote <url>")
+    else:
+        if args.delete:
+            problems.append("--delete only applies to --payload-gc")
+        if args.grace_days != DEFAULT_GRACE_DAYS:
+            problems.append("--grace-days only applies to --payload-gc")
+    return problems
+
+
+def referenced_hashes(remote: str, vault: Path | None) -> tuple[set[str], int, int]:
+    """``(hashes, commits scanned, manifests found)`` over every ref of *remote*
+    (and of the local *vault*, when it exists)."""
+    with tempfile.TemporaryDirectory(prefix="grs-payload-gc-") as td:
+        repo = Path(td) / "history.git"
+        made = _run(
+            ["git", "init", "-q", "--bare", str(repo)],
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        if made.returncode != 0:
+            raise SnapshotError(f"could not create a scratch repository: {made.stderr.strip()}")
+        git(
+            repo, None,
+            ["fetch", "-q", "--no-tags", remote,
+             "+refs/heads/*:refs/remotes/remote/*", "+refs/tags/*:refs/remotes/remote-tags/*"],
+            cwd=Path(td), status=f"fetching the history of {remote}", stall_limit=None,
+        )
+        if vault is not None and (vault / ".git").exists():
+            git(
+                repo, None,
+                ["fetch", "-q", "--no-tags", str(vault), "+refs/heads/*:refs/remotes/local/*"],
+                cwd=Path(td), check=False,
+            )
+        commits = [c for c in git(repo, None, ["rev-list", "--all"], cwd=Path(td)).stdout.split() if c]
+        if not commits:
+            return set(), 0, 0
+        specs = "".join(f"{c}:{PAYLOAD_MANIFEST}\n" for c in commits)
+        checked = git(repo, None, ["cat-file", "--batch-check"], cwd=Path(td), stdin=specs).stdout
+        blobs = sorted({
+            line.split()[0] for line in checked.splitlines()
+            if len(line.split()) == 3 and line.split()[1] == "blob"
+        })
+        hashes: set[str] = set()
+        for oid in blobs:
+            body = git(repo, None, ["cat-file", "blob", oid], cwd=Path(td)).stdout
+            try:
+                data = json.loads(body)
+            except ValueError:
+                raise SnapshotError(
+                    f"a payload manifest in the history ({oid[:12]}) is unreadable; refusing "
+                    "to decide what is unreferenced"
+                ) from None
+            for item in data.get("files", []) if isinstance(data, dict) else []:
+                sha = item.get("sha256") if isinstance(item, dict) else None
+                if isinstance(sha, str) and _OBJECT_NAME.match(sha):
+                    hashes.add(sha)
+        return hashes, len(commits), len(blobs)
+
+
+def payload_gc(
+    remote: str, vault: Path | None, *, delete: bool, grace_days: float
+) -> int:
+    """Report (or, with *delete*, remove) unreferenced payload objects."""
+    library, base, server_url = payload_location(remote)
+    client = _open_client(server_url)
+    rid = client.get_repo_id(library)
+
+    referenced, commits, manifests = referenced_hashes(remote, vault)
+    print(f"history: {commits} commit(s), {manifests} distinct manifest(s), "
+          f"{len(referenced)} referenced object(s)")
+
+    stored: dict[str, tuple[int, float]] = {}
+    strangers = 0
+    for prefix in (f"{n:02x}" for n in range(256)):
+        for entry in client.list_dir(rid, f"{base}/objects/{prefix}"):
+            name = entry.get("name", "")
+            if entry.get("type") == "dir" or not _OBJECT_NAME.match(name):
+                strangers += 1
+                continue
+            stored[name] = (int(entry.get("size", 0)), float(entry.get("mtime", 0) or 0))
+
+    now = time.time()
+    keep = {sha for sha in stored if sha in referenced}
+    orphans = {sha: v for sha, v in stored.items() if sha not in referenced}
+    old = {sha: v for sha, v in orphans.items() if v[1] and now - v[1] >= grace_days * 86400}
+    young = {sha: v for sha, v in orphans.items() if sha not in old}
+    missing = referenced - set(stored)
+
+    def total(items: Any) -> str:
+        return human_bytes(sum(v[0] for v in items))
+
+    print(f"stored : {len(stored)} object(s), {total(stored.values())} under {base}/objects")
+    print(f"in use : {len(keep)} object(s), {total(stored[s] for s in keep)}")
+    print(f"unused : {len(orphans)} object(s), {total(orphans.values())}")
+    print(f"  older than {grace_days:g} day(s) (deletable): {len(old)}, {total(old.values())}")
+    print(f"  within the grace period (kept): {len(young)}, {total(young.values())}")
+    if strangers:
+        print(f"other  : {strangers} entry(ies) that are not objects (left alone)")
+    if missing:
+        print(f"WARNING: {len(missing)} object(s) named by a manifest are NOT on the server; "
+              f"the snapshots that need them cannot be restored")
+
+    if not delete:
+        if old:
+            print("\nnothing deleted (report only); add --delete to remove the deletable objects")
+        return 0
+    if manifests == 0:
+        raise SnapshotError(
+            "found no payload manifest anywhere in the history, so every object would look "
+            "unreferenced; refusing to delete (wrong remote, or a fetch that returned nothing?)"
+        )
+    deleted = 0
+    for index, sha in enumerate(sorted(old), 1):
+        if not client.delete_entry(rid, f"{base}/{object_dir(sha)}/{sha}"):
+            raise SnapshotError(f"the server refused to delete object {sha}")
+        deleted += 1
+        if index % 100 == 0 or index == len(old):
+            print(f"deleted [{index}/{len(old)}]", flush=True)
+    print(f"deleted {deleted} object(s), {total(old.values())}; quota is released at once, disk "
+          f"after the library's history expires and the server's GC runs")
+    return 0
 
 
 def source_remote_urls(source: Path) -> list[tuple[str, str]]:
@@ -3595,6 +3811,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     add_payload_arguments(parser)
     add_payload_jobs_argument(parser)
+    add_payload_gc_arguments(parser)
     parser.add_argument(
         "--verify",
         action="store_true",
@@ -3643,7 +3860,7 @@ def validate_args(args: argparse.Namespace) -> None:
     signal either way.  ``--ref`` without ``--restore`` is the sharpest -- a run
     meant to restore an *old* snapshot quietly takes a *new* one instead.
     """
-    problems: list[str] = []
+    problems: list[str] = payload_gc_conflicts(args)
 
     if args.maintain and args.restore:
         problems.append("--maintain and --restore are different modes")
@@ -3815,6 +4032,11 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         validate_args(args)
+        if args.payload_gc:
+            return payload_gc(
+                args.remote, args.vault.expanduser().resolve() if args.vault else None,
+                delete=args.delete, grace_days=args.grace_days,
+            )
         if args.restore:
             if not args.remote:
                 raise SnapshotError("--restore requires --remote <url>")
@@ -3851,7 +4073,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.dry_run and remote:
             print(f"dry run -- would push the vault to {remote}")
 
-        payload_min, payload_candidates = plan_payload(
+        payload_min, payload_candidates, payload_rule = plan_payload(
             args.payload_min_size, remote, source, exclude
         )
         payload_skip = frozenset(payload_candidates)
@@ -3958,7 +4180,7 @@ def main(argv: list[str] | None = None) -> int:
             # preview prints (file count, size, diffstat, secrets, gitlinks).
             manifest, payload_todo = run_payload_step(
                 git_dir, source, base, remote, payload_min, payload_candidates,
-                dry_run=args.dry_run, jobs=args.payload_jobs,
+                dry_run=args.dry_run, jobs=args.payload_jobs, rule=payload_rule,
             )
             tree, commit, excluded = build_snapshot(
                 git_dir, source, base, exclude, message,

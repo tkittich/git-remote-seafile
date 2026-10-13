@@ -321,6 +321,118 @@ class PayloadModeTests(unittest.TestCase):
         self.assertIn("server.pem", out)
         self.assertIn("look like credentials", out)
 
+    def test_the_auto_rule_sends_big_and_incompressible_files_to_payload(self):
+        # Bounds scaled down: >= 8000 bytes is payload outright, 2000-7999 only if
+        # it does not compress, anything smaller stays in git.
+        (self.src / "big1.bin").unlink()
+        (self.src / "sub" / "big2.bin").unlink()
+        data = {
+            "huge.bin": os.urandom(9000),                # over the upper bound
+            "mid_random.bin": os.urandom(3000),          # in range, incompressible
+            "mid_text.bin": b"abcdefgh" * 500,           # in range, compresses
+            "small_random.bin": os.urandom(1500),        # under the lower bound
+        }
+        for name, content in data.items():
+            (self.src / name).write_bytes(content)
+        with unittest.mock.patch.object(snap, "_AUTO_UPPER", 8000), \
+                unittest.mock.patch.object(snap, "_AUTO_LOWER", 2000):
+            rc, out, err = self.run_tool(
+                self.src, "--vault", self.vault, "--remote", self.remote,
+                "--payload-min-size", "auto",
+            )
+        self.assertEqual(rc, 0, out + err)
+        manifest = json.loads(_git(self.vault, "show", "snapshot:.seafile-payload/manifest.json"))
+        self.assertEqual(manifest["rule"], "auto")
+        self.assertEqual({f["path"] for f in manifest["files"]}, {"huge.bin", "mid_random.bin"})
+        tree = _git(self.vault, "ls-tree", "-r", "--name-only", "snapshot")
+        self.assertIn("mid_text.bin", tree)
+        self.assertIn("small_random.bin", tree)
+        self.assertNotIn("mid_random.bin", tree)
+        # The vault must now be run with the flag again, and says which.
+        rc, out, err = self.run_tool(self.src, "--vault", self.vault, "--remote", self.remote)
+        self.assertNotEqual(rc, 0)
+        self.assertIn("--payload-min-size auto", out + err)
+
+    def test_a_bare_flag_means_auto(self):
+        rc, out, err = self.run_tool(
+            self.src, "--vault", self.vault, "--remote", self.remote, "--payload-min-size"
+        )
+        self.assertEqual(rc, 0, out + err)
+        # Defaults are 64 MiB / 4 MiB, so the 5-7 KB fixture files stay in git.
+        self.assertNotIn("payload:", out)
+
+    # -- retention ------------------------------------------------------------
+    def _orphan(self, content: bytes = b"orphaned object") -> str:
+        sha = _sha(content)
+        key = f"{self.objects}/{sha[:2]}/{sha}"
+        self.stub.files.setdefault(REPO_ID, {})[key] = content
+        return key
+
+    def test_gc_reports_unreferenced_objects_and_deletes_nothing_by_default(self):
+        self.assertEqual(self.snapshot()[0], 0)
+        orphan = self._orphan()
+        rc, out, err = self.run_tool(
+            "--payload-gc", "--remote", self.remote, "--grace-days", "0"
+        )
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn("2 referenced object(s)", out)
+        self.assertIn("unused : 1 object(s)", out)
+        self.assertIn("report only", out)
+        self.assertIn(orphan, self.server_files())
+
+    def test_gc_delete_removes_only_old_unreferenced_objects(self):
+        self.assertEqual(self.snapshot()[0], 0)
+        (self.src / "big1.bin").write_bytes(os.urandom(6000))  # a second snapshot
+        self.assertEqual(self.snapshot()[0], 0)
+        orphan = self._orphan()
+        before = {k for k in self.server_files() if k.startswith(self.objects)}
+        rc, out, err = self.run_tool(
+            "--payload-gc", "--remote", self.remote, "--grace-days", "0", "--delete"
+        )
+        self.assertEqual(rc, 0, out + err)
+        after = {k for k in self.server_files() if k.startswith(self.objects)}
+        self.assertEqual(before - after, {orphan})
+        # Both snapshots' objects survive, so the older one still restores.
+        into = self.case / "after-gc"
+        rc, out, err = self.run_tool(
+            "--restore", "--remote", self.remote, "--into", into, "--ref", "snapshot~1"
+        )
+        self.assertEqual(rc, 0, out + err)
+        self.assertEqual((into / "big1.bin").read_bytes(), self.big1)
+
+    def test_gc_keeps_objects_inside_the_grace_period(self):
+        self.assertEqual(self.snapshot()[0], 0)
+        orphan = self._orphan()
+        rc, out, err = self.run_tool("--payload-gc", "--remote", self.remote, "--delete")
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn("within the grace period (kept): 1", out)
+        self.assertIn(orphan, self.server_files())
+
+    def test_gc_refuses_to_delete_when_it_finds_no_manifest(self):
+        # Objects exist but the remote's history names none of them: a wrong
+        # remote or an empty fetch must not turn the whole store into garbage.
+        self.assertEqual(self.snapshot()[0], 0)
+        other = "seafile://testlib/otherrepo"
+        for key, data in list(self.server_files().items()):
+            if key.startswith(self.objects):
+                self.stub.files[REPO_ID][key.replace("/pvault/", "/otherrepo/")] = data
+        self.assertEqual(
+            self.run_tool(self.src, "--vault", self.case / "v2", "--remote", other)[0], 0
+        )  # an empty-ish vault with no payload manifest
+        rc, out, err = self.run_tool(
+            "--payload-gc", "--remote", other, "--grace-days", "0", "--delete"
+        )
+        self.assertNotEqual(rc, 0)
+        self.assertIn("found no payload manifest", out + err)
+        self.assertEqual(
+            len([k for k in self.server_files() if k.startswith("/otherrepo/payload/objects")]), 2
+        )
+
+    def test_gc_flags_only_apply_to_gc(self):
+        rc, out, err = self.run_tool(self.src, "--vault", self.vault, "--delete")
+        self.assertEqual(rc, 1, out + err)
+        self.assertIn("--delete only applies to --payload-gc", err)
+
     def test_parse_size(self):
         self.assertEqual(snap.parse_size("64M"), 64 * 1024 ** 2)
         self.assertEqual(snap.parse_size("1g"), 1024 ** 3)
