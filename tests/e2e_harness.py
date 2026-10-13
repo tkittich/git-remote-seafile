@@ -192,6 +192,18 @@ class _Handler(BaseHTTPRequestHandler):
         if path.startswith("/api2/repos/") and path.endswith("/dir/"):
             return self._send(200, b"{}")
 
+        if path.startswith("/api2/repos/") and path.endswith("/file/"):
+            form = parse_qs(body.decode("utf-8", "replace"))
+            if form.get("operation") == ["rename"]:
+                rid, p = self._rid(), _norm(self._query_p())
+                files = self.stub.files.setdefault(rid, {})
+                new = _norm(p.rsplit("/", 1)[0] + "/" + form.get("newname", [""])[0])
+                if p not in files:
+                    return self._send(404, b'{"error":"not found"}')
+                if new in files:
+                    return self._send(400, b'{"error":"file already exists"}')
+                files[new] = files.pop(p)
+                return self._send(200, b'"success"')
         if path == "/api/v2.1/repos/sync-batch-copy-item/":
             if self.stub.faults.get("copy"):
                 return self._send(self.stub.faults["copy"], b"injected failure")

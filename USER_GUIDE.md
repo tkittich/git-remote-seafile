@@ -934,10 +934,9 @@ Defaults are resolved most-specific-first:
 | `--reset-to-remote` | Adopt the remote chain when the vault has diverged and the two have no common tip, dropping the local-only snapshots (§15.6). Never taken implicitly — this is the one way a snapshot can be lost. |
 | `--allow-shared-remote` | Override the shared-remote guard (§15.5) deliberately. |
 | `--payload-min-size [<size>\|auto]` | **Payload mode.** Selected files are not put through git: each is SHA-256-hashed and uploaded **by hash** to `<path>/payload/objects/` inside the vault's remote directory, and the commit records a manifest. With no value, or `auto`: files of 64 MiB or more, plus files of 4 MiB or more that do not compress. With a size (`64M`, `1G`): files of at least that size. A restore downloads and verifies them. Objects are never overwritten or deleted by a run, so a snapshot costs nothing to keep and a rename uploads nothing. Needs a remote; cannot be combined with `--no-push`; `0` turns it off. A vault that has used it needs the flag on every run. Put SOURCE first, or write `--payload-min-size=auto`. See PAYLOAD.md. |
-| `--payload-gc` | **Payload retention.** Report the stored objects no snapshot references (in any ref of `--remote`, or the local `--vault`). Add `--delete` to remove those older than `--grace-days` (default 7). Refuses to delete when it finds no manifest. |
-| `--delete` | With `--payload-gc`, actually delete (default: report only). |
-| `--grace-days <n>` | With `--payload-gc`, never touch an object younger than *n* days. |
-| `--payload-jobs <n>` | With `--payload-min-size`: upload *n* files at once (default 3). Measured on one server: one upload ran at about 32 MiB/s and three at once reached about 53 MiB/s in aggregate, so more rarely helps. |
+| `--payload-gc` | **Payload retention.** Report the stored objects no snapshot references (in any ref of `--remote`, or the local `--vault`, which must be a vault). With `--payload-delete` it marks them, and a later run deletes those that stayed unreferenced for `--payload-grace-days` (default 7, minimum 1). Refuses to act when it finds no manifest, an unreadable one, or a Seafile conflict copy of a ref. |
+| `--payload-delete` | With `--payload-gc`, act (mark, then delete after the grace period); default: report only. |
+| `--payload-grace-days <n>` | With `--payload-gc`, how long an object must stay unreferenced before it is deleted. |
 | `--restore` | Restore a snapshot instead of taking one; requires `--remote` and `--into` (§15.4). |
 | `--into <dir>` | Destination directory for `--restore`. |
 | `--ref <rev>` | Which snapshot to restore. Default: the vault branch tip. Only meaningful with `--restore` — passing it without one is an error, not a no-op. |

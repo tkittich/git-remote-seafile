@@ -1139,6 +1139,16 @@ class SeafileClient:
         finally:
             file_resp.close()
 
+    def rename_entry(self, repo_id: str, path: str, new_name: str) -> bool:
+        """Rename a file or directory in place (same parent).  False when refused,
+        which includes a name already taken."""
+        clean_path = "/" + path.strip("/")
+        url = f"{self.server_url}/api2/repos/{repo_id}/file/?p={quote(clean_path, safe='/')}"
+        resp = self.session.post(
+            url, data={"operation": "rename", "newname": new_name}, timeout=self.timeout
+        )
+        return resp.status_code in (200, 201)
+
     def copy_entries(self, repo_id: str, src_parent: str, names: list[str], dst_parent: str) -> bool:
         """Copy files or directories server-side, within one library.
 

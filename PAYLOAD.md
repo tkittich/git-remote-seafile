@@ -113,24 +113,40 @@ git's binary delta should absorb most of it, but this is unmeasured.
 
 ### D5. Ordering and failure model — **decided**
 
-1. hash; 2. list the fan-out directories the hashes fall in; 3. upload what is
-missing or the wrong size (largest first, `--payload-jobs` at once); 4. list again
-and require every uploaded object at its size; 5. only then build the tree,
-commit and push the vault.
+1. hash (D6); 2. list the fan-out directories the hashes fall in; 3. upload what is
+missing or the wrong size (largest first, `--payload-jobs` at once), **each object
+under a temporary name `<sha>.part-<token>`, through a reader that hashes the bytes
+as they are sent, renamed to `<sha>` only if the digest is the name**; 4. list again
+and require **every** object the manifest names, at its size; 5. build the tree,
+commit, and — **immediately before the push** — re-list every object named by every
+manifest in `remote_tip..tip`, re-uploading any that went missing from the source
+(if it is unchanged) or refusing the push, naming the snapshot; 6. push.
 
-Consequences: a vault never names an object that was not verified present (R2); an
-interrupted run leaves objects no snapshot names, which the next run reuses; the
-first failed upload stops the queue and is reported once the running uploads
-finish. The server cannot report a content hash, so upload correctness is a size
-check; **restore always verifies SHA-256** (R8).
+Consequences: an object's name is always the hash of its content (R2, R6) -- even
+when a file is rewritten in place without touching its mtime, which a size-and-mtime
+comparison cannot see; a vault never names an object that was not verified present
+at push time; an interrupted run leaves objects no snapshot names (and possibly a
+`.part-` file, which retention ignores), reused by the next run; the first failed
+upload stops the queue and is reported once the running uploads finish. The server
+cannot report a content hash, so a listing proves only presence at a size;
+**restore always verifies SHA-256** (R8).
 
-### D6. Change detection — **decided** (one gap open)
+### D6. Change detection — **decided** (clock-domain gap documented)
 
-A cached hash is reused only if size **and** mtime are unchanged **and** the mtime
-is older than the previous commit by 2 s (git's "racily clean" rule). A file is
-re-`stat`ed before and after its upload; any change since hashing fails the run
-(R6). *Open:* a switch to force a full rehash, for a tree whose mtimes were
-restored by a copy tool.
+Hashes are cached **per machine**, in the vault's git directory
+(`payload-cache.json`), never read from a manifest: a manifest comes from a remote
+anyone with write access could have written. An entry is keyed by path and trusted
+only while size, mtime **and inode** are unchanged (a rename keeps size and mtime,
+and tiles extracted from one archive share both), the mtime is not a whole second
+(a coarse clock), and the mtime is older than the moment this machine hashed the
+file by 2 s (git's "racily clean" rule). A file is compared with its recorded size
+and mtime before upload, and its bytes are hashed as they are sent (D5), so a
+modification the cache missed cannot put wrong bytes under a name.
+
+*Known limits:* the racy rule compares the file's mtime with this machine's clock,
+which is the right domain for a local disk and not for a network share whose clock
+differs; a file with a future mtime is rehashed on every run (a cost, not a risk).
+There is no force-rehash switch yet.
 
 ### D7. Concurrency — **decided**
 
@@ -143,28 +159,46 @@ before (SNAPSHOT.md section 6).
 
 ### D8. Restore — **decided**
 
-Clone and check out the snapshot, read its manifest, **validate it**, download each
-object to its real path, verify size and SHA-256, set mode and mtime. Validation
-(R7) rejects any path that is empty, absolute, contains `..`, `.`, an empty
-component, a backslash or a colon; any hash that is not 64 lowercase hex digits; a
-bad size, mode or mtime; and any two paths that differ only by case or Unicode
-form (they would overwrite each other on a case-insensitive filesystem).
+Clone and check out the snapshot, read its manifest, **validate it**, then for each
+entry download the object to `<name>.part`, verify size and SHA-256, and rename into
+place. Two classes of problem, handled differently:
+
+- **Security** refuses the whole manifest (R7): a path that is empty, absolute,
+  or contains `.`, `..` or an empty component (on Windows, split on `\` too); that
+  reaches `.git` in any spelling (case, trailing dots and spaces, `git~1`) -- a
+  `core.fsmonitor` or a hook there runs code on the next `git status` -- or the
+  reserved `.seafile-payload` directory; that resolves outside the destination
+  (a symlink the tree holds); a hash that is not 64 lowercase hex digits; a bad
+  size, mode or mtime; a `format` this tool does not know.
+- **Representability** skips and reports the entry, restores the rest, and then
+  fails: a name Windows cannot hold (forbidden characters, trailing dot or space,
+  reserved device names), a path something is already at (git's own file, or a
+  name the filesystem treats as another entry's -- nothing is ever overwritten), a
+  download or verification that fails after three tries. A rerun into the same
+  directory keeps files that verify.
 
 ### D9. Retention — **decided** (`--payload-gc`)
 
 Nothing in a snapshot run deletes. `--payload-gc --remote URL [--vault DIR]`
-reports, and with `--delete` removes, objects no snapshot references:
+reports; with `--payload-delete` it **marks, and later deletes, in two phases**:
 
+- the first run records, in `payload/gc-pending.json` on the server and by this
+  machine's clock, every object no snapshot references; a later run deletes an
+  object only if it has been recorded unreferenced for `--payload-grace-days`
+  (default 7, minimum 1) **and is still unreferenced**. An object a run reused in
+  the meantime is referenced again when the second run looks, so it survives;
+  nothing depends on the server's timestamps;
 - it reads the manifest of **every commit reachable from every ref of the remote**
   (fetched into a scratch repository), plus the local vault's refs when `--vault`
-  is given, because an un-pushed local snapshot may name objects already uploaded;
-- it never touches an object younger than `--grace-days` (default 7): a run that
-  has uploaded but not yet pushed its vault is, correctly, unreferenced;
-- it refuses to delete when it found no manifest at all (a wrong remote or an
-  empty fetch would otherwise make the whole store garbage), and when a manifest in
-  the history is unreadable;
-- it only ever deletes names that are exactly 64 hex digits; anything else in the
-  directory (conflict copies, strangers) is reported and left alone;
+  is given -- which must be a vault, and whose fetch must succeed -- because an
+  un-pushed local snapshot may name objects already uploaded;
+- a manifest it cannot read, or of a format it does not know, stops it: "cannot
+  parse" is never "references nothing";
+- Seafile conflict copies under `refs/` stop it (a snapshot reachable only from one
+  is invisible to git);
+- it refuses to act when it found no manifest at all;
+- it deletes only names that are exactly 64 hex digits (temporary `.part-` files and
+  strangers are reported and left alone);
 - it reports any object a manifest names that is **missing** from the server.
 
 Deleting frees quota at once; disk is freed only after the library's history
@@ -181,10 +215,13 @@ loses nothing.
 
 ### D11. Flags — **decided**, remembered setting **open**
 
-`--payload-min-size SIZE` (`0` = off), `--payload-jobs N` (default 3; measured:
-one upload 32 MiB/s, three 53 MiB/s, five no better). Incompatible with
+`--payload-min-size [SIZE|auto]` (`0` = off; a bare flag means `auto`),
+`--payload-jobs N` (default 3; measured: one upload 32 MiB/s, three 53 MiB/s, five
+no better), `--payload-gc`, `--payload-delete`, `--payload-grace-days N`.
+Combinations that would be silently ignored are refused. Incompatible with
 `--no-push`. A vault whose last snapshot has a manifest refuses a run that omits
-the flag (R10). *Open:* remembering the setting in the vault the way the remote and
+the flag (R10), naming the value. The `.seafile-payload` directory of a source is
+never staged. *Open:* remembering the setting in the vault the way the remote and
 excludes are, so a scheduled bare command keeps working.
 
 ### D12. Privacy and security — **decided**
@@ -218,14 +255,14 @@ data, or surprise. Disposition is one of **fixed**, **handled**, **specified**
 | :-- | :--- | :--- | :--- |
 | A1 | A manifest with `../../x` or `/etc/x` (a library writer alters it) | the first implementation wrote wherever the manifest said | **fixed**: D8 validation, R7 |
 | A2 | A manifest hash like `../../other` becomes part of a server path | same | **fixed**: hash must be 64 hex |
-| A3 | File edited after hashing, before upload | bytes under another content's name | **handled**: R6 pre/post `stat` |
-| A4 | Same-size edit within the timestamp granularity | cached hash would be trusted | **handled**: racy rule (D6) |
+| A3 | File edited after hashing, before upload | bytes under another content's name | **fixed** (the first handling was wrong, see 6.1): D5 hashes the bytes as they are sent |
+| A4 | Same-size edit within the timestamp granularity | cached hash would be trusted | **handled**: D6 racy rule against this machine's hash time, plus inode |
 | A5 | mtime restored by a copy tool (`cp -p`, `robocopy`) | cache trusted, content differs | **open**: force-rehash switch |
-| A6 | Another machine's un-pushed snapshot references an object; retention deletes it | data loss | **handled**: D9 grace period, every ref of the remote plus the local vault; tested |
+| A6 | Another machine's un-pushed snapshot references an object; retention deletes it | data loss | **handled**: D9 two-phase, every ref of the remote plus the local vault (which must be one); tested by mutation |
 | A7 | Run interrupted after upload, before push | orphan objects | **handled**: harmless, reused (D5) |
-| A8 | An object is truncated or altered on the server, same size | upload skipped as "present"; backup silently bad until a restore | **open**: only a restore drill detects it; consider `--verify` sampling by download |
+| A8 | An object is truncated or altered on the server, same size | upload skipped as "present"; backup silently bad until a restore | **open**: only a restore drill detects it; the tool no longer creates this state itself (D5); consider `--payload-verify` sampling |
 | A9 | `(SFConflict ...)` copies appear next to an object | listing sees a non-hash name | **handled**: ignored; collectable |
-| A10 | Two paths differ by case or Unicode form; restore onto Windows or macOS | one overwrites the other, both verify | **fixed**: D8 |
+| A10 | Two paths differ by case, Unicode form, or a trailing dot or space; restore onto Windows or macOS | one overwrites the other, both verify | **fixed**: D8 never overwrites; collisions are skipped and reported |
 | A11 | Payload path looks like a credential | the secrets report covered only staged paths | **fixed**: payload paths scanned |
 | A12 | File held open exclusively (Windows) | traceback or silent skip | **handled**: R9 |
 | A13 | OneDrive "files on demand" placeholder | hashing triggers a download of the whole file | **open**: documented behaviour of any read; consider detecting reparse points |
@@ -242,13 +279,50 @@ data, or surprise. Disposition is one of **fixed**, **handled**, **specified**
 | A24 | A server that rewrites object names | would break "listing proves presence" | **handled**: names are lowercase hex; verified on the real server |
 | A25 | `--payload-jobs` very large on a flaky link | many partial uploads | **handled**: pool is bounded; failure stops the queue |
 
+### 6.1 The independent review round (2026-10-13)
+
+Three reviewers (one given only this specification, two the code) attacked the
+branch independently. Every finding below was reproduced against the stub before
+it was accepted; two claims were refuted by execution and dropped. The test that
+now holds each fix was checked by deleting the fix and watching it fail (12
+one-line mutations, none survive).
+
+| Finding (reviewer ids) | Consequence | Fixed by |
+| :--- | :--- | :--- |
+| A file rewritten in place with the same size and mtime puts other bytes under a hash name; later copies of the genuine bytes share the bad object (F3, F1) | LOSS | D5: hash while sending, temporary name, rename |
+| GC deletes an old object a run has just reused (F1, F2, F3) | LOSS | D9 two-phase; D5 pre-push re-verification |
+| A snapshot whose push failed, then GC elsewhere, then two snapshots pushed together (F2) | LOSS | D5 re-verifies every manifest in `remote_tip..tip` |
+| Renumbered same-size, same-mtime files restore with their predecessors' contents, "verified" (F4) | WRONG | D6 per-machine cache keyed by inode |
+| A remote-written manifest hash is trusted as a cache and spliced into a server path (F2) | WRONG / injection | D6 cache never read from a manifest |
+| A manifest entry `.git/config` is written into the restored clone and runs on `git status` (F5, F1) | code execution | D8 refuses `.git` in any spelling and the reserved directory |
+| An unknown manifest format makes GC and restore treat it as "names nothing" (F8, F3, F4) | LOSS | D4 / D9: format and shape are checked everywhere |
+| Windows drops a trailing dot or space and merges two entries; case-insensitive merges (F6, F5) | WRONG | D8: never overwrite; Windows names are skipped and reported |
+| One unrepresentable name aborts the whole restore on every platform (F7, F8) | SURPRISE | D8 skip-and-report, restore the rest |
+| A bad or mistyped `--vault` is silently ignored by GC (F11, F4, F13) | LOSS | D9: must be a vault, fetch must succeed |
+| Seafile conflict copies of refs hide a snapshot from GC (suspicion) | LOSS | D9 stops when any exist |
+| A restored payload tree reused as a source breaks a plain vault (F6, F7) | SURPRISE | the reserved directory is never staged |
+| Windows junctions are walked, so a junction to a drive root hashes the drive (F7) | WRONG | the walk skips reparse points |
+| Server and network errors, bad manifests and odd inputs escape as tracebacks (F9, F8) | SURPRISE | wrapped; restore catches per entry |
+| `parse_size("-1")` selects every file; a bare flag swallows a directory name (F10, F14) | SURPRISE | strict sizes; a digits-only value that is a directory is questioned |
+| Partial files left at their real name after a failed download (F14) | SURPRISE | `.part` and rename; reruns keep verified files |
+| OneDrive placeholders are hydrated by reading (A13) | SURPRISE | refused by name |
+| Ctrl-C does not stop queued uploads (F13) | refuted by execution | none needed; `Executor.map` cancels |
+
+*Not changed, recorded:* the racy rule uses this machine's clock (D6, F9/F15); a
+snapshot is never expired by itself -- there is no `--keep-snapshots` yet, so a
+file that changes daily grows the store until history is rewritten; a non-UTF-8
+file name on Linux is not handled by the staging path (a pre-existing limit).
+
 ## 7. Test matrix
 
 `tests/test_snapshot_payload.py` drives the real tool and helper against the
-in-process stub (28 tests, including the `auto` rule and retention). The real-server soak
-(`SEAFILE_TEST_LIBRARY`-style scratch use only) covers: a 1.1 GiB chunked upload,
-unchanged run, same-size edit, restore and older-snapshot restore. Not yet
-covered: views (D10), a force-rehash switch (D6), and manifests at 100,000 files (D4).
+in-process stub (49 tests). Each fix in 6.1 was verified by mutation: a one-line
+change that removes it makes a named test fail (12 of 12). The real-server soaks
+cover a 1.1 GiB chunked upload, unchanged run, same-size edit, restore and
+older-snapshot restore, `auto` selection and retention, and the 131 GiB flood
+tree end to end. Not yet covered: views (D10), a force-rehash switch (D6), a
+remembered setting (D11), manifests at 100,000 files (D4), and a macOS or Linux
+non-UTF-8 run.
 
 ## 8. Order of work
 

@@ -161,7 +161,8 @@ def build_snapshot(
     the caller may have just re-based on the remote tip.  The branch is *not*
     moved here: that is the caller's job, so a dry run can stop one step short.
     """
-    if excludes or skip_paths:
+    reserved = (work_tree / PAYLOAD_RESERVED_DIR).exists()
+    if excludes or skip_paths or reserved:
         candidates = stageable_paths(git_dir, work_tree)
         excluded = [
             path
@@ -172,9 +173,15 @@ def build_snapshot(
         # Payload files are not excluded in the user's sense -- they are
         # recorded in the manifest and live on the server -- so they are
         # kept out of the index without being reported as excluded.
+        # macOS hands the walk decomposed (NFD) names while git reports them
+        # precomposed, so the two sides are compared in one form.
+        skipped = {unicodedata.normalize("NFC", p) for p in (skip_paths or ())}
         kept = [
             path for path in candidates
-            if path not in excluded_set and not (skip_paths and path in skip_paths)
+            if path not in excluded_set
+            and unicodedata.normalize("NFC", path) not in skipped
+            and path != PAYLOAD_RESERVED_DIR
+            and not path.startswith(PAYLOAD_RESERVED_DIR + "/")
         ]
         kept_set = set(kept)
         if kept:

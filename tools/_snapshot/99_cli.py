@@ -215,7 +215,7 @@ def validate_args(args: argparse.Namespace) -> None:
     signal either way.  ``--ref`` without ``--restore`` is the sharpest -- a run
     meant to restore an *old* snapshot quietly takes a *new* one instead.
     """
-    problems: list[str] = payload_gc_conflicts(args)
+    problems: list[str] = payload_gc_conflicts(args) + payload_conflicts(args)
 
     if args.maintain and args.restore:
         problems.append("--maintain and --restore are different modes")
@@ -245,7 +245,6 @@ def validate_args(args: argparse.Namespace) -> None:
                             ("--ref", args.ref)):
             if value:
                 problems.append(f"{flag} only applies to --restore")
-        problems.extend(payload_conflicts(args))
     else:
         for flag, value in (
             ("--vault", args.vault),
@@ -390,7 +389,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.payload_gc:
             return payload_gc(
                 args.remote, args.vault.expanduser().resolve() if args.vault else None,
-                delete=args.delete, grace_days=args.grace_days,
+                delete=args.payload_delete, grace_days=args.payload_grace_days,
             )
         if args.restore:
             if not args.remote:
@@ -649,6 +648,10 @@ def main(argv: list[str] | None = None) -> int:
                 # holds snapshots the remote has never seen (taken offline),
                 # there is no *new* commit to send -- the existing branch is the
                 # thing to push, and `base` is where it points.
+                verify_payload_before_push(
+                    git_dir, source, remote, remote_tip, commit or base or "",
+                    manifest, jobs=args.payload_jobs or 3,
+                )
                 push_snapshot(
                     git_dir,
                     source,
