@@ -293,6 +293,34 @@ class PayloadModeTests(unittest.TestCase):
         self.assertEqual(rc, 0, out + err)
         self.assertEqual(self.object_count(), 6)
 
+    def test_a_hostile_manifest_cannot_write_outside_the_restore(self):
+        good = {"path": "a/b.bin", "size": 3, "mode": "100644", "mtime_ns": 1, "sha256": "0" * 64}
+        dest = self.case / "dest"
+        dest.mkdir()
+        snap.validate_manifest({"files": [good]}, dest)  # the control: this one is fine
+        for bad_path in ("../evil", "a/../../evil", "/etc/passwd", "C:/evil", "a\\b",
+                         "a//b", "./a", "", "a/."):
+            with self.subTest(path=bad_path), self.assertRaises(snap.SnapshotError):
+                snap.validate_manifest({"files": [{**good, "path": bad_path}]}, dest)
+        for key, value in (("sha256", "../../x"), ("sha256", "A" * 64), ("size", -1),
+                           ("size", True), ("mode", "120000"), ("mtime_ns", "now")):
+            with self.subTest(key=key, value=value), self.assertRaises(snap.SnapshotError):
+                snap.validate_manifest({"files": [{**good, key: value}]}, dest)
+        with self.assertRaises(snap.SnapshotError):
+            snap.validate_manifest({"files": "nope"}, dest)
+        # Two paths a case-insensitive filesystem would merge are refused too.
+        with self.assertRaises(snap.SnapshotError):
+            snap.validate_manifest(
+                {"files": [good, {**good, "path": "A/B.bin", "sha256": "1" * 64}]}, dest
+            )
+
+    def test_payload_paths_that_look_like_credentials_are_reported(self):
+        (self.src / "server.pem").write_bytes(os.urandom(4000))
+        rc, out, err = self.snapshot()
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn("server.pem", out)
+        self.assertIn("look like credentials", out)
+
     def test_parse_size(self):
         self.assertEqual(snap.parse_size("64M"), 64 * 1024 ** 2)
         self.assertEqual(snap.parse_size("1g"), 1024 ** 3)

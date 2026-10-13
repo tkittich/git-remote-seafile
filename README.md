@@ -182,6 +182,7 @@ git clone seafile://seafile.example.com/code/myproject
 - [Security Policy (SECURITY.md)](SECURITY.md): Credential handling and precedence, the threat model, TLS/private-CA and proxy configuration, and how to report a vulnerability.
 - [Operations Runbook (RUNBOOK.md)](RUNBOOK.md): Recovery procedures — a stuck lock, stray or conflicting refs, half-uploaded packfiles, and what to capture before opening an issue.
 - [Snapshot Tool Design (SNAPSHOT.md)](SNAPSHOT.md): The design of the whole-tree snapshot tool — the vault, byte-exactness, multi-machine semantics, and the measured cost model.
+- [Payload Mode Specification (PAYLOAD.md)](PAYLOAD.md): Large files stored by hash instead of through git — requirements, decisions, failure model and the adversarial review.
 - [Changelog (CHANGELOG.md)](CHANGELOG.md): What changed in each release.
 - [Contributing Guidelines (CONTRIBUTING.md)](CONTRIBUTING.md): How to contribute, run tests, and adhere to development standards.
 - [Code of Conduct (CODE_OF_CONDUCT.md)](CODE_OF_CONDUCT.md): The standard this project adopts, and how to report a problem.

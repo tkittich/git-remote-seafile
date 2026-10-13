@@ -6,6 +6,7 @@ import fnmatch
 import hashlib
 import json
 import os
+import re
 import shutil
 import socket
 import stat
@@ -13,6 +14,7 @@ import subprocess
 import sys
 import threading
 import time
+import unicodedata
 import zlib
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime

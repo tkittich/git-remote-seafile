@@ -572,7 +572,10 @@ def main(argv: list[str] | None = None) -> int:
                     "remote that survives."
                 )
 
-            secrets = find_secrets(index_paths(git_dir, source))
+            secrets = find_secrets(
+                index_paths(git_dir, source)
+                + [item["path"] for item in (manifest or {}).get("files", [])]
+            )
             if secrets:
                 print(
                     f"\nWARNING: {len(secrets)} captured path(s) look like "

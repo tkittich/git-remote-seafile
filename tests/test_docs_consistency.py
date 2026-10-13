@@ -56,6 +56,7 @@ _DOC_NAMES = (
     "CONTRIBUTING.md",
     "ROADMAP.md",
     "SNAPSHOT.md",
+    "PAYLOAD.md",
     "CODE_OF_CONDUCT.md",
 )
 

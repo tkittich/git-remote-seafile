@@ -198,6 +198,7 @@ import fnmatch
 import hashlib
 import json
 import os
+import re
 import shutil
 import socket
 import stat
@@ -205,6 +206,7 @@ import subprocess
 import sys
 import threading
 import time
+import unicodedata
 import zlib
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
@@ -2268,6 +2270,64 @@ def publish_payload(
     return len(todo), todo_bytes
 
 
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+
+
+def validate_manifest(manifest: Any, into: Path) -> list[dict[str, Any]]:
+    """The manifest's file entries, or ``SnapshotError`` if any is unsafe.
+
+    A restore writes wherever a manifest entry says, and a manifest arrives from
+    a remote that anyone with write access to the library could have altered.
+    So a path must stay inside the destination (no absolute path, drive, ``..``
+    or empty component, whatever the platform), a hash must be 64 hex digits (it
+    becomes part of a server path), and size and mode must be what the tool
+    writes.
+    """
+    if not isinstance(manifest, dict) or not isinstance(manifest.get("files"), list):
+        raise SnapshotError("the snapshot's payload manifest has no file list")
+    root = into.resolve()
+    clean: list[dict[str, Any]] = []
+    seen: dict[str, str] = {}
+    for item in manifest["files"]:
+        if not isinstance(item, dict):
+            raise SnapshotError("the payload manifest holds an entry that is not an object")
+        rel, sha, size = item.get("path"), item.get("sha256"), item.get("size")
+        if not isinstance(rel, str):
+            raise SnapshotError(f"the payload manifest names an unsafe path: {rel!r}")
+        unsafe = (
+            not rel
+            or "\\" in rel
+            or ":" in rel
+            or any(part in ("", ".", "..") for part in rel.split("/"))
+        )
+        if unsafe:
+            raise SnapshotError(f"the payload manifest names an unsafe path: {rel!r}")
+        try:
+            (into / rel).resolve().relative_to(root)
+        except ValueError:
+            raise SnapshotError(f"the payload manifest names a path outside the restore: {rel!r}") from None
+        if not isinstance(sha, str) or not _SHA256_RE.match(sha):
+            raise SnapshotError(f"the payload manifest has a bad SHA-256 for {rel!r}")
+        if isinstance(size, bool) or not isinstance(size, int) or size < 0:
+            raise SnapshotError(f"the payload manifest has a bad size for {rel!r}")
+        if item.get("mode") not in ("100644", "100755"):
+            raise SnapshotError(f"the payload manifest has a bad mode for {rel!r}")
+        mtime = item.get("mtime_ns")
+        if isinstance(mtime, bool) or not isinstance(mtime, int) or mtime < 0:
+            raise SnapshotError(f"the payload manifest has a bad mtime for {rel!r}")
+        # Two paths a case-insensitive or normalising filesystem would merge
+        # (Linux -> Windows or macOS) would overwrite each other, each file
+        # verifying fine in turn; refuse before anything is written.
+        folded = unicodedata.normalize("NFC", rel).casefold()
+        if seen.setdefault(folded, rel) != rel:
+            raise SnapshotError(
+                f"payload paths {seen[folded]!r} and {rel!r} differ only by case or Unicode "
+                "form, so one would overwrite the other on a case-insensitive filesystem"
+            )
+        clean.append(item)
+    return clean
+
+
 def restore_payload(remote: str, into: Path) -> None:
     """Download and verify the payload a restored snapshot's manifest names."""
     manifest_path = into / PAYLOAD_MANIFEST
@@ -2277,7 +2337,7 @@ def restore_payload(remote: str, into: Path) -> None:
         manifest = json.loads(manifest_path.read_bytes())
     except ValueError as exc:
         raise SnapshotError(f"the snapshot's payload manifest is unreadable: {exc}") from None
-    files = manifest.get("files", [])
+    files = validate_manifest(manifest, into)
     library, base, server_url = payload_location(remote)
     client = _open_client(server_url)
     rid = client.get_repo_id(library)
@@ -3941,7 +4001,10 @@ def main(argv: list[str] | None = None) -> int:
                     "remote that survives."
                 )
 
-            secrets = find_secrets(index_paths(git_dir, source))
+            secrets = find_secrets(
+                index_paths(git_dir, source)
+                + [item["path"] for item in (manifest or {}).get("files", [])]
+            )
             if secrets:
                 print(
                     f"\nWARNING: {len(secrets)} captured path(s) look like "

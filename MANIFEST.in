@@ -16,6 +16,7 @@ include RUNBOOK.md
 include CONTRIBUTING.md
 include ROADMAP.md
 include SNAPSHOT.md
+include PAYLOAD.md
 include CODE_OF_CONDUCT.md
 include pyproject.toml
 

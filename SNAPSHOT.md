@@ -791,7 +791,10 @@ Borg, and changes nothing for the helper or the vault.
 
 ### 15.1 Payload mode: large files by hash, behind `--payload-min-size`
 
-**Status.** Implemented on the `feat/payload-mode` branch. Files at or above the
+**Status.** Implemented on the `feat/payload-mode` branch. The contract the
+implementation is held to -- requirements, decisions, failure model and an
+adversarial review -- is [PAYLOAD.md](PAYLOAD.md); this section keeps the
+measurements and the reasoning for the layout. Files at or above the
 given size are hashed, stored on the server under their SHA-256, and listed in a
 manifest the vault commit carries; `--restore` downloads and verifies every one.
 **Not implemented yet:** named, browsable *views* of a snapshot (below), a
