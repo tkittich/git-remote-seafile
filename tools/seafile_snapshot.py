@@ -1257,7 +1257,7 @@ def pid_is_alive(pid: int) -> bool:
             # OpenProcess outright; treating that as "dead" would let a
             # concurrent run steal its lock.  Only "no such process" proves
             # death -- anything else reads as alive (see the docstring).
-            return ctypes.get_last_error() != error_invalid_parameter
+            return ctypes.get_last_error() != error_invalid_parameter  # type: ignore[attr-defined,unused-ignore]
         try:
             code = ctypes.c_ulong()
             if not kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):

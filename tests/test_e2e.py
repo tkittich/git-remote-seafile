@@ -370,7 +370,8 @@ class TestPackSizeCap(E2ETestCase):
             # on disk, about 700 kB once git compresses it).
             (src / f"blob{n}.txt").write_text(os.urandom(700_000).hex())
             run_git(["add", "--", f"blob{n}.txt"], src, self.env)
-        run_git(["commit", "-q", "-m", "big"], src, self.env)
+        run_git(["-c", "user.email=e2e@example.com", "-c", "user.name=E2E Tester",
+                 "commit", "-q", "-m", "big"], src, self.env)
         run_git(["push", "-q", "origin", "main"], src, self.env)
 
         packs = sorted(p for p in self.stub.packs("/cap") if p.endswith(".pack"))
@@ -397,7 +398,8 @@ class TestTailMergeUnderTheCap(E2ETestCase):
         for n in range(4):
             (src / f"blob{n}.txt").write_text(os.urandom(300_000).hex())
             run_git(["add", "--", f"blob{n}.txt"], src, self.env)
-            run_git(["commit", "-q", "-m", f"c{n}"], src, self.env)
+            run_git(["-c", "user.email=e2e@example.com", "-c", "user.name=E2E Tester",
+                     "commit", "-q", "-m", f"c{n}"], src, self.env)
             run_git(["push", "-q", "origin", "main"], src, self.env)
         before = sorted(p for p in self.stub.packs("/tail_cap") if p.endswith(".pack"))
         self.assertGreaterEqual(len(before), 4, before)

@@ -136,10 +136,14 @@ jobs:
     # guards could have rotted into vacuous passes with every job still green
     # (B4).  Both are cheap: the guards are a handful of regex checks over ten
     # documents, and the scenarios are the same checks against deliberately
-    # drifted text.  No install step is needed -- the guards import
-    # `git_remote_seafile` from the checkout, which `python` puts on sys.path.
+    # drifted text.  The package is not installed -- the guards import
+    # `git_remote_seafile` from the checkout, which `python` puts on sys.path --
+    # but its `cli` module imports `requests`, so that one dependency is (a bare
+    # interpreter fails with ModuleNotFoundError, which is how v0.8.8's first
+    # tag run found out).
     - name: Doc guards and their drift scenarios
       run: |
+        python -m pip install requests
         python -m unittest tests.test_docs_consistency
         python tools/verify_docs_guards.py
 
