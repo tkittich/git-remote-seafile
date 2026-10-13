@@ -9,6 +9,7 @@ import sys
 import tempfile
 import time
 from pathlib import Path
+from typing import NamedTuple
 
 from .client import SeafileClient, SeafileAPIError
 from .config import RemoteConfig
@@ -95,6 +96,15 @@ def _destination_error(dst: str) -> str | None:
         return "refusing to push a name git would reject (git-check-ref-format)"
     return None
 
+
+
+class _PendingUpdate(NamedTuple):
+    """A ref update that passed its checks and is waiting for the pack."""
+
+    dst: str
+    local_sha: str
+    expected: str | None
+    force: bool
 
 
 _NOTICE_INTERVAL_SECONDS = 24 * 60 * 60
@@ -333,6 +343,67 @@ class RemoteHelper:
         self._report_safety_warnings(warnings)
         return warnings
 
+    # ------------------------------------------------------------------
+    # Push
+    #
+    # cmd_push is a sequence of named steps.  The two decisions a dry run must
+    # answer exactly as a real push does -- "is this spec acceptable" and "may
+    # this ref move" -- are _split_spec and _decide_update, and both paths call
+    # them, so the dry run cannot drift from the real thing.
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _spec_destination(spec: str) -> str:
+        """Best-effort destination of *spec*, for reporting a failure that
+        happened before it was parsed."""
+        clean = spec.lstrip("+")
+        return clean.split(":", 1)[1] if ":" in clean else clean
+
+    def _split_spec(self, spec: str) -> tuple[bool, str, str] | None:
+        """Parse one push spec into ``(force, src, dst)``.
+
+        Writes the protocol error line and returns ``None`` when the spec
+        cannot be acted on: a malformed spec (git itself never sends one without
+        the colon, but a hand-driven protocol can, and a ValueError here would
+        kill the helper mid-protocol with no error line for git to read) or a
+        destination outside the allowed namespaces.
+        """
+        force = spec.startswith("+")
+        clean_spec = spec.lstrip("+")
+        if ":" not in clean_spec:
+            _proto_error(clean_spec, "invalid refspec (missing ':')")
+            return None
+        src, dst = clean_spec.split(":", 1)
+        problem = _destination_error(dst)
+        if problem:
+            _proto_error(dst, problem)
+            return None
+        return force, src, dst
+
+    def _decide_update(self, src: str, dst: str, force: bool) -> tuple[str, str | None] | str:
+        """Decide whether *dst* may move to what *src* points at.
+
+        Returns ``(local_sha, remote_sha)`` when it may, or the reason string
+        git will be shown when it may not.  Reads only; it is the whole of what
+        a dry run needs.  The remote value is read fresh and noted in the refs
+        cache, which is only ever a record of what was last seen.
+        """
+        local_sha = rev_parse(src)
+        if not local_sha:
+            return "local ref does not exist"
+        remote_sha = self.client.get_file_text(self.repo_id, self._full_path(dst))
+        if remote_sha:
+            self._refs_cache[dst] = remote_sha
+        else:
+            self._refs_cache.pop(dst, None)
+        if remote_sha and not force:
+            try:
+                if not is_ancestor(remote_sha, local_sha):
+                    return "non-fast-forward"
+            except GitError:
+                return "fetch first"
+        return local_sha, remote_sha
+
     def _push_dry_run(self, push_specs: list[str]) -> None:
         """Report what cmd_push() *would* do, and write nothing.
 
@@ -340,8 +411,7 @@ class RemoteHelper:
         commands -- that is `git push --dry-run` -- and then reads exactly the
         same ``ok``/``error`` lines a real push emits.  So the accuracy of those
         lines *is* the feature, and they come from the same decisions the real
-        path makes: the namespace check, whether the ref exists locally, whether
-        it exists remotely, and whether the update is a fast-forward.
+        path makes (:meth:`_split_spec`, :meth:`_decide_update`).
 
         Deliberately takes no lock and performs no write.  A dry run is an
         advisory snapshot by definition, so the read-then-decide race that the
@@ -353,48 +423,310 @@ class RemoteHelper:
         that would then have to be consumed.
         """
         for spec in push_specs:
-            force = spec.startswith("+")
-            clean_spec = spec.lstrip("+")
-            if ":" not in clean_spec:
-                # git itself never sends a spec without the src:dst colon; a
-                # hand-driven protocol can.  A ValueError here would kill the
-                # helper mid-protocol with no error line for git to read.
-                _proto_error(clean_spec, "invalid refspec (missing ':')")
+            parsed = self._split_spec(spec)
+            if parsed is None:
                 continue
-            src, dst = clean_spec.split(":", 1)
-
-            problem = _destination_error(dst)
-            if problem:
-                _proto_error(dst, problem)
-                continue
-
+            force, src, dst = parsed
             try:
                 # Branch deletion: report it, delete nothing.
                 if not src:
                     sys.stdout.write(f"ok {dst}\n")
                     continue
-
-                local_sha = rev_parse(src)
-                if not local_sha:
-                    _proto_error(dst, "local ref does not exist")
-                    continue
-
-                remote_sha = self.client.get_file_text(self.repo_id, self._full_path(dst))
-                if remote_sha and not force:
-                    try:
-                        if not is_ancestor(remote_sha, local_sha):
-                            _proto_error(dst, "non-fast-forward")
-                            continue
-                    except GitError:
-                        _proto_error(dst, "fetch first")
-                        continue
-
-                sys.stdout.write(f"ok {dst}\n")
+                verdict = self._decide_update(src, dst, force)
+                if isinstance(verdict, str):
+                    _proto_error(dst, verdict)
+                else:
+                    sys.stdout.write(f"ok {dst}\n")
             except Exception as ex:
                 _proto_error(dst, ex)
 
         sys.stdout.write("\n")
         sys.stdout.flush()
+
+    def _note_defaulted_path(self) -> None:
+        """First push into an empty location with no path in the URL: say where
+        it is going, once, because "seafile://code" quietly meaning
+        "code/git-repo" is the kind of default people only learn by looking in
+        the library."""
+        if self.path_defaulted and not self._refs_cache:
+            sys.stderr.write(
+                f"Note: {self.raw_url} names no path, so this repository lives at "
+                f"'{self.repo_path}' in library '{self.library_name}'. Use "
+                f"seafile://{self.library_name}{self.repo_path} to say so explicitly.\n"
+            )
+            sys.stderr.flush()
+
+    def _delete_remote_ref(self, lock: RemoteLock, dst: str) -> None:
+        """Handle ``push :<ref>``: write ``ok`` or a protocol error for *dst*."""
+        ref_file = self._full_path(dst)
+        try:
+            # Read the ref before removing it, for three reasons.  It proves the
+            # target is a *file*: a ref is a file under refs/, while
+            # `delete_entry` removes files and directories alike, so deleting
+            # blind is how `:refs/heads/` took every branch with it.  It turns
+            # deleting a ref that is not there into git's own "remote ref does
+            # not exist" instead of an `ok` for a no-op.  And it gives the lease
+            # fence something to be checked *before* -- a deletion is as
+            # destructive as a ref write.
+            existing = self.client.get_file_text(self.repo_id, ref_file)
+            if not existing:
+                _proto_error(dst, "remote ref does not exist")
+            elif not lock.verify_ownership():
+                state = lock.ownership_state()
+                _proto_error(
+                    dst,
+                    "could not confirm lock ownership before deleting a ref "
+                    f"({describe_ownership_failure(state)})",
+                )
+            elif not self.client.delete_entry(self.repo_id, ref_file):
+                _proto_error(dst, "failed to delete ref on remote")
+            else:
+                # Forget it here as well.  The cache is read back as a push
+                # exclusion list, and it is only truthful while the ref still
+                # exists on the remote -- a stale SHA would have a later push
+                # exclude objects on the strength of a ref that is gone.
+                self._refs_cache.pop(dst, None)
+                self._prune_empty_ref_parents(dst)
+                sys.stdout.write(f"ok {dst}\n")
+        except Exception as ex:
+            _proto_error(dst, ex)
+
+    def _upload_push_pack(
+        self,
+        lock: RemoteLock,
+        pending_updates: list[_PendingUpdate],
+    ) -> None:
+        """Build one pack of everything the pending updates need and upload it.
+
+        Raises on any failure; the caller reports it against every pending ref.
+        """
+        known_remote_shas = {s for s in self._refs_cache.values() if s}
+        for upd in pending_updates:
+            if upd.expected:
+                known_remote_shas.add(upd.expected)
+        exclude = list(known_remote_shas)
+        target_shas = [u.local_sha for u in pending_updates]
+
+        def on_upload_progress(transferred: int, total: int) -> None:
+            lock.maybe_renew(20.0)
+
+        lock.maybe_renew(20.0)
+        objects_to_push = get_objects_to_push(target_shas, exclude)
+        if not objects_to_push:
+            return
+        try:
+            git_dir = get_git_dir()
+        except Exception:
+            git_dir = None
+        staging_dir = Path(tempfile.mkdtemp(prefix="grs-push-", dir=str(git_dir) if git_dir else None))
+        try:
+            pack_sha, pack_data, idx_data = create_packfile(objects_to_push, staged_dir=staging_dir)
+            lock.maybe_renew(20.0)
+            if isinstance(pack_data, (bytes, bytearray)):
+                pack_size = len(pack_data)
+                has_pack = bool(pack_size)
+            else:
+                pack_path = Path(pack_data)
+                has_pack = pack_path.is_file()
+                pack_size = pack_path.stat().st_size if has_pack else 0
+            if not has_pack:
+                return
+            size_kb = max(1, pack_size // 1024)
+            sys.stderr.write(f"Uploading packfile pack-{pack_sha[:8]} ({size_kb} KB)...\n")
+            sys.stderr.flush()
+            pack_dir = self._full_path("objects/pack")
+            self.client.upload_file(
+                self.repo_id,
+                pack_dir,
+                f"pack-{pack_sha}.pack",
+                pack_data,
+                replace=True,
+                progress_callback=on_upload_progress,
+            )
+            self.client.upload_file(
+                self.repo_id, pack_dir, f"pack-{pack_sha}.idx", idx_data, replace=True
+            )
+        finally:
+            shutil.rmtree(staging_dir, ignore_errors=True)
+
+    def _publish_ref(self, dst: str, local_sha: str, expected_remote_sha: str | None, force: bool) -> bool:
+        """Move one remote ref and report it; True when ``ok`` was written.
+
+        CAS re-check, write, read-back, conflict-copy check, default HEAD.
+        Writes the protocol error itself for the failures it can name; an
+        unexpected exception propagates to the caller.
+        """
+        # CAS check: verify remote ref hasn't changed since fast-forward check
+        current_remote = self.client.get_file_text(self.repo_id, self._full_path(dst))
+        if current_remote != expected_remote_sha and not force:
+            _proto_error(dst, "fetch first")
+            return False
+
+        dst_parent = self._full_path(os.path.dirname(dst))
+        dst_filename = os.path.basename(dst)
+        self.client.upload_file(
+            self.repo_id,
+            dst_parent,
+            dst_filename,
+            f"{local_sha}\n".encode("utf-8"),
+            replace=True,
+        )
+
+        # Read the ref back.  Seafile exposes no atomic compare-and-swap, so the
+        # CAS check above and this write are separate round trips, and a peer
+        # that ignores the advisory lock can land between them: the ref would
+        # then hold *its* commit while we report ok, and the push that lost
+        # would be silent.  Re-reading turns that into a reported failure.
+        #
+        # Only a *string* that differs proves a lost update.  A read that cannot
+        # settle the question -- None (the ref is not there), an exception, or a
+        # client that returns something that is not a string at all -- is a
+        # warning, never an error: the upload already returned success, and
+        # telling the user a good push failed is its own bug.  The same
+        # tri-state reasoning as the lock's LEASE_HELD / LOST / UNKNOWN.
+        try:
+            landed = self.client.get_file_text(self.repo_id, self._full_path(dst))
+        except Exception as ex:
+            sys.stderr.write(
+                f"Warning: could not re-read {dst} after writing it "
+                f"({ex}); the write is unverified.\n"
+            )
+            sys.stderr.flush()
+        else:
+            if isinstance(landed, str) and landed != local_sha:
+                _proto_error(dst, "fetch first")
+                sys.stderr.write(
+                    f"\nPush error for {dst}: the remote ref holds "
+                    f"{landed} after this push wrote {local_sha} -- "
+                    "another client updated it concurrently. "
+                    "Fetch and retry.\n"
+                )
+                sys.stderr.flush()
+                return False
+            if landed is None:
+                sys.stderr.write(
+                    f"Warning: {dst} was not visible immediately after "
+                    "writing it; the write is unverified.\n"
+                )
+                sys.stderr.flush()
+
+        # A concurrent writer leaves its copy *beside* the ref, and the
+        # read-back above cannot see that: it reads our path, which holds one of
+        # the two values.  Measured on a real server, simultaneous writes to one
+        # path all report success and leave "<ref> (SFConflict ...)" files next
+        # to it.
+        try:
+            siblings = self.client.list_dir(self.repo_id, dst_parent)
+            copies = conflict_copies_of(siblings, dst_filename)
+        except Exception:
+            copies = []
+        if copies:
+            sys.stderr.write(
+                f"Warning: another client wrote {dst} at the same time; Seafile "
+                f"kept its version as {', '.join(copies)}. This push is recorded, "
+                f"but decide which commit is right and delete the copy "
+                f"(RUNBOOK.md, \"Conflict Artifacts\").\n"
+            )
+            sys.stderr.flush()
+
+        # If HEAD does not exist, set default branch.  Only point HEAD to a
+        # branch in refs/heads/, never to a tag.
+        if dst.startswith("refs/heads/"):
+            head_path = self._full_path("HEAD")
+            if not self.client.get_file_text(self.repo_id, head_path):
+                self.client.upload_file(
+                    self.repo_id,
+                    self.repo_path,
+                    "HEAD",
+                    f"ref: {dst}\n".encode("utf-8"),
+                    replace=True,
+                )
+
+        self._refs_cache[dst] = local_sha
+        sys.stdout.write(f"ok {dst}\n")
+        return True
+
+    def _auto_gc_advice(self, session_config: RemoteConfig) -> int:
+        """Decide whether a tail merge is due, and tell the user what applies.
+
+        Returns the movable-pack count when one should run after the lock is
+        released, else 0.  Only *decides*: running it under the push lock
+        self-deadlocks, because tail_merge acquires the same lock and
+        RemoteLock is not reentrant.
+        """
+        try:
+            pack_entries = self.client.list_dir(self.repo_id, self._full_path("objects/pack"))
+            freeze_at = session_config.gc_max_pack_mib * 1024 * 1024
+            # Movable vs frozen is decided by size alone -- the same split
+            # tail_merge makes under the lock, so this decision cannot drift
+            # from what the merge itself will do.
+            pack_info = [
+                (e["name"], int(e.get("size") or 0))
+                for e in pack_entries if e["name"].endswith(".pack")
+            ]
+            movable_count = sum(1 for _, size in pack_info if size < freeze_at)
+            movable_bytes = sum(size for _, size in pack_info if size < freeze_at)
+            threshold = session_config.gc_threshold
+            auto_gc = session_config.auto_gc
+
+            if movable_count < threshold:
+                return 0
+            # Tail merge downloads only the small packs and re-uploads their
+            # union, so above the download budget it defers to a manual
+            # off-hours run no matter how many pile up.
+            if auto_gc and movable_bytes > session_config.gc_max_mib * 1024 * 1024:
+                sys.stderr.write(
+                    f"\nNotice: Movable packs total {movable_bytes / (1024**3):.1f} GiB across "
+                    f"{movable_count} packfile(s), above the automatic download budget "
+                    f"({session_config.gc_max_mib} MiB, 8 x seafile.gcmaxpackmib).\n"
+                    f"Auto tail-merge was deferred: it downloads and re-uploads those packs.\n"
+                    f"Run 'git-remote-seafile gc {self.raw_url}' manually when the time cost suits.\n\n"
+                )
+                sys.stderr.flush()
+                return 0
+            if auto_gc:
+                return movable_count
+            if _notice_due(self.raw_url):
+                sys.stderr.write(
+                    f"\nNotice: Remote repository has {movable_count} small packfiles (threshold: {threshold}), "
+                    f"totaling {movable_bytes / (1024**3):.1f} GiB.\n"
+                    f"Tip: Run 'git-remote-seafile gc {self.raw_url}' to optimize remote storage,\n"
+                    f"     or run 'git config seafile.autogc true' to enable automatic tail merge\n"
+                    f"     (automatic runs defer while the movable packs exceed 8 x seafile.gcmaxpackmib).\n\n"
+                )
+                sys.stderr.flush()
+        except Exception:
+            pass
+        return 0
+
+    def _run_auto_tail_merge(self, movable_count: int, session_config: RemoteConfig) -> None:
+        """Merge the small packs, after the push lock is released.
+
+        It must never disturb the per-ref ok/error lines already written: the
+        push succeeded, and a tail-merge problem is a separate, recoverable
+        event (gc can always be run by hand).  Under genuine contention with
+        another machine this may still time out, which is correct -- it just
+        must not self-inflict it.
+        """
+        try:
+            sys.stderr.write(
+                f"Auto-merging remote repository tail ({movable_count} small packfiles detected)...\n"
+            )
+            sys.stderr.flush()
+            from .gc import tail_merge
+
+            # The threshold and budget are re-checked inside, under the lock, so
+            # growth between this decision and the merge is covered.
+            tail_merge(
+                self.client,
+                self.repo_id,
+                self.repo_path,
+                config=session_config,
+                verbose=True,
+            )
+        except Exception as ex:
+            sys.stderr.write(f"Auto tail-merge skipped: {_flatten(ex)}\n")
+            sys.stderr.flush()
 
     def cmd_push(self, push_specs: list[str]) -> None:
         """Process push instructions."""
@@ -404,23 +736,12 @@ class RemoteHelper:
         except SafetyError as safe_err:
             first_line = str(safe_err).splitlines()[0]
             for spec in push_specs:
-                dst = spec.lstrip("+").split(":", 1)[1] if ":" in spec else spec
-                _proto_error(dst, f"safety check failed: {first_line}")
+                _proto_error(self._spec_destination(spec), f"safety check failed: {first_line}")
             sys.stdout.write("\n")
             sys.stdout.flush()
             return
 
-        if self.path_defaulted and not self._refs_cache:
-            # First push into an empty location with no path in the URL: say
-            # where it is going, once, because "seafile://code" quietly meaning
-            # "code/git-repo" is the kind of default people only learn by
-            # looking in the library.
-            sys.stderr.write(
-                f"Note: {self.raw_url} names no path, so this repository lives at "
-                f"'{self.repo_path}' in library '{self.library_name}'. Use "
-                f"seafile://{self.library_name}{self.repo_path} to say so explicitly.\n"
-            )
-            sys.stderr.flush()
+        self._note_defaulted_path()
 
         # A dry run answers the same question a push does -- what would change --
         # and must change nothing to answer it.  Handled before the lock is
@@ -429,372 +750,102 @@ class RemoteHelper:
             self._push_dry_run(push_specs)
             return
 
-        # Set while the push lock is held, acted on after it is released.
         auto_gc_movable_count = 0
-        reported_specs: set[str] = set()
+        reported: set[str] = set()
+        session_config: RemoteConfig | None = None
 
-        # Load session config once and reuse it for the push lock below and the
-        # post-lock auto-GC so these values resolve through one documented
-        # dataclass.
         try:
+            # Loaded once and reused for the push lock and the post-lock tail
+            # merge, so these values resolve through one documented dataclass.
             session_config = RemoteConfig.load()
             with RemoteLock(self.client, self.repo_id, self.repo_path, config=session_config) as lock:
-                def on_upload_progress(transferred: int, total: int) -> None:
-                    lock.maybe_renew(20.0)
+                pending = self._stage_updates(lock, push_specs, reported)
 
-                pending_updates: list[tuple[str, str, str | None]] = []
-
-                for spec in push_specs:
-                    force = spec.startswith("+")
-                    clean_spec = spec.lstrip("+")
-                    if ":" not in clean_spec:
-                        # See _push_dry_run: a malformed spec must produce a
-                        # protocol error line, not a dead helper.
-                        _proto_error(clean_spec, "invalid refspec (missing ':')")
-                        reported_specs.add(clean_spec)
-                        continue
-                    src, dst = clean_spec.split(":", 1)
-
-                    problem = _destination_error(dst)
-                    if problem:
-                        _proto_error(dst, problem)
-                        reported_specs.add(dst)
-                        continue
-
-                    # Case 1: Branch deletion (push :refs/heads/branch)
-                    if not src:
-                        ref_file = self._full_path(dst)
-                        try:
-                            # Read the ref before removing it, for three
-                            # reasons.  It proves the target is a *file*: a ref
-                            # is a file under refs/, while `delete_entry`
-                            # removes files and directories alike, so deleting
-                            # blind is how `:refs/heads/` took every branch with
-                            # it.  It turns deleting a ref that is not there
-                            # into git's own "remote ref does not exist" instead
-                            # of an `ok` for a no-op.  And it gives the lease
-                            # fence something to be checked *before* -- a
-                            # deletion is as destructive as a ref write, and
-                            # until now only writes were fenced.
-                            existing = self.client.get_file_text(self.repo_id, ref_file)
-                            if not existing:
-                                _proto_error(dst, "remote ref does not exist")
-                            elif not lock.verify_ownership():
-                                state = lock.ownership_state()
-                                _proto_error(
-                                    dst,
-                                    "could not confirm lock ownership before deleting a ref "
-                                    f"({describe_ownership_failure(state)})",
-                                )
-                            elif not self.client.delete_entry(self.repo_id, ref_file):
-                                _proto_error(dst, "failed to delete ref on remote")
-                            else:
-                                # Forget it here as well.  The cache is read back
-                                # as a push exclusion list, and it is only
-                                # truthful while the ref still exists on the
-                                # remote -- a stale SHA would have a later push
-                                # exclude objects on the strength of a ref that
-                                # is gone.
-                                self._refs_cache.pop(dst, None)
-                                self._prune_empty_ref_parents(dst)
-                                sys.stdout.write(f"ok {dst}\n")
-                        except Exception as ex:
-                            _proto_error(dst, ex)
-                        reported_specs.add(dst)
-                        continue
-
-                    # Case 2: Normal / Fast-forward push - validate and stage for batched packing
+                if pending:
                     try:
-                        local_sha = rev_parse(src)
-                        if not local_sha:
-                            _proto_error(dst, "local ref does not exist")
-                            reported_specs.add(dst)
-                            continue
-
-                        # Always re-read ref under lock to catch concurrent pushes
-                        remote_sha = self.client.get_file_text(self.repo_id, self._full_path(dst))
-                        if remote_sha:
-                            self._refs_cache[dst] = remote_sha
-                        else:
-                            self._refs_cache.pop(dst, None)
-
-                        if remote_sha and not force:
-                            try:
-                                if not is_ancestor(remote_sha, local_sha):
-                                    _proto_error(dst, "non-fast-forward")
-                                    reported_specs.add(dst)
-                                    continue
-                            except GitError:
-                                _proto_error(dst, "fetch first")
-                                reported_specs.add(dst)
-                                continue
-
-                        pending_updates.append((dst, local_sha, remote_sha))
+                        self._upload_push_pack(lock, pending)
                     except Exception as ex:
-                        _proto_error(dst, ex)
-                        sys.stderr.write(f"\nPush error for {dst}: {ex}\n")
-                        sys.stderr.flush()
-                        reported_specs.add(dst)
-
-                # Batch packfile generation and upload for all valid update targets
-                if pending_updates:
-                    known_remote_shas = {s for s in self._refs_cache.values() if s}
-                    for _, _, r_sha in pending_updates:
-                        if r_sha:
-                            known_remote_shas.add(r_sha)
-                    exclude = list(known_remote_shas)
-                    target_shas = [u[1] for u in pending_updates]
-
-                    try:
-                        lock.maybe_renew(20.0)
-                        objects_to_push = get_objects_to_push(target_shas, exclude)
-                        if objects_to_push:
-                            try:
-                                git_dir = get_git_dir()
-                            except Exception:
-                                git_dir = None
-                            staging_dir = Path(tempfile.mkdtemp(prefix="grs-push-", dir=str(git_dir) if git_dir else None))
-                            try:
-                                pack_sha, pack_data, idx_data = create_packfile(objects_to_push, staged_dir=staging_dir)
-                                lock.maybe_renew(20.0)
-                                if isinstance(pack_data, (bytes, bytearray)):
-                                    pack_size = len(pack_data)
-                                    has_pack = bool(pack_size)
-                                else:
-                                    pack_path = Path(pack_data)
-                                    has_pack = pack_path.is_file()
-                                    pack_size = pack_path.stat().st_size if has_pack else 0
-
-                                if has_pack:
-                                    size_kb = max(1, pack_size // 1024)
-                                    sys.stderr.write(f"Uploading packfile pack-{pack_sha[:8]} ({size_kb} KB)...\n")
-                                    sys.stderr.flush()
-                                    pack_dir = self._full_path("objects/pack")
-                                    self.client.upload_file(
-                                        self.repo_id,
-                                        pack_dir,
-                                        f"pack-{pack_sha}.pack",
-                                        pack_data,
-                                        replace=True,
-                                        progress_callback=on_upload_progress,
-                                    )
-                                    self.client.upload_file(
-                                        self.repo_id, pack_dir, f"pack-{pack_sha}.idx", idx_data, replace=True
-                                    )
-                            finally:
-                                shutil.rmtree(staging_dir, ignore_errors=True)
-                    except Exception as ex:
-                        for dst, _, _ in pending_updates:
-                            _proto_error(dst, ex)
-                            reported_specs.add(dst)
+                        for upd in pending:
+                            _proto_error(upd.dst, ex)
+                            reported.add(upd.dst)
                         sys.stderr.write(f"\nPush pack upload error: {ex}\n")
                         sys.stderr.flush()
-                        pending_updates.clear()
+                        pending.clear()
 
-                    # Update remote ref files and report ok for each updated target
-                    if pending_updates and not lock.verify_ownership():
-                        state = lock.ownership_state()
+                    if pending and not lock.verify_ownership():
                         reason = (
                             "could not confirm lock ownership before updating refs "
-                            f"({describe_ownership_failure(state)})"
+                            f"({describe_ownership_failure(lock.ownership_state())})"
                         )
-                        for dst, _, _ in pending_updates:
-                            _proto_error(dst, reason)
-                            reported_specs.add(dst)
+                        for upd in pending:
+                            _proto_error(upd.dst, reason)
+                            reported.add(upd.dst)
                         sys.stderr.write(f"\nPush error: {reason}\n")
                         sys.stderr.flush()
-                        pending_updates.clear()
+                        pending.clear()
 
-                    for dst, local_sha, expected_remote_sha in pending_updates:
+                    for upd in pending:
                         try:
-                            # CAS check: verify remote ref hasn't changed since fast-forward check
-                            current_remote = self.client.get_file_text(self.repo_id, self._full_path(dst))
-                            if current_remote != expected_remote_sha and not force:
-                                _proto_error(dst, "fetch first")
-                                reported_specs.add(dst)
-                                continue
-
-                            dst_parent = self._full_path(os.path.dirname(dst))
-                            dst_filename = os.path.basename(dst)
-                            self.client.upload_file(
-                                self.repo_id,
-                                dst_parent,
-                                dst_filename,
-                                f"{local_sha}\n".encode("utf-8"),
-                                replace=True,
-                            )
-
-                            # Read the ref back.  Seafile exposes no atomic
-                            # compare-and-swap, so the CAS check above and this
-                            # write are separate round trips, and a peer that
-                            # ignores the advisory lock can land between them:
-                            # the ref would then hold *its* commit while we
-                            # report ok, and the push that lost would be silent.
-                            # Re-reading turns that into a reported failure.
-                            #
-                            # Only a *string* that differs proves a lost update.
-                            # A read that cannot settle the question -- None (the
-                            # ref is not there), an exception, or a client that
-                            # returns something that is not a string at all -- is
-                            # a warning, never an error: the upload already
-                            # returned success, and telling the user a good push
-                            # failed is its own bug.  The same tri-state
-                            # reasoning as the lock's LEASE_HELD / LOST /
-                            # UNKNOWN, and for the same reason.
-                            try:
-                                landed = self.client.get_file_text(
-                                    self.repo_id, self._full_path(dst)
-                                )
-                            except Exception as ex:
-                                sys.stderr.write(
-                                    f"Warning: could not re-read {dst} after writing it "
-                                    f"({ex}); the write is unverified.\n"
-                                )
-                                sys.stderr.flush()
-                            else:
-                                if isinstance(landed, str) and landed != local_sha:
-                                    _proto_error(dst, "fetch first")
-                                    sys.stderr.write(
-                                        f"\nPush error for {dst}: the remote ref holds "
-                                        f"{landed} after this push wrote {local_sha} -- "
-                                        "another client updated it concurrently. "
-                                        "Fetch and retry.\n"
-                                    )
-                                    sys.stderr.flush()
-                                    reported_specs.add(dst)
-                                    continue
-                                if landed is None:
-                                    sys.stderr.write(
-                                        f"Warning: {dst} was not visible immediately after "
-                                        "writing it; the write is unverified.\n"
-                                    )
-                                    sys.stderr.flush()
-
-                            # A concurrent writer leaves its copy *beside* the
-                            # ref, and the read-back above cannot see that: it
-                            # reads our path, which holds one of the two values.
-                            # Measured on a real server, simultaneous writes to
-                            # one path all report success and leave
-                            # "<ref> (SFConflict ...)" files next to it.
-                            try:
-                                siblings = self.client.list_dir(self.repo_id, dst_parent)
-                                copies = conflict_copies_of(siblings, dst_filename)
-                            except Exception:
-                                copies = []
-                            if copies:
-                                sys.stderr.write(
-                                    f"Warning: another client wrote {dst} at the same time; Seafile "
-                                    f"kept its version as {', '.join(copies)}. This push is recorded, "
-                                    f"but decide which commit is right and delete the copy "
-                                    f"(RUNBOOK.md, \"Conflict Artifacts\").\n"
-                                )
-                                sys.stderr.flush()
-
-                            # If HEAD does not exist, set default branch
-                            # Only point HEAD to a branch in refs/heads/, never to a tag
-                            if dst.startswith("refs/heads/"):
-                                head_path = self._full_path("HEAD")
-                                if not self.client.get_file_text(self.repo_id, head_path):
-                                    self.client.upload_file(
-                                        self.repo_id,
-                                        self.repo_path,
-                                        "HEAD",
-                                        f"ref: {dst}\n".encode("utf-8"),
-                                        replace=True,
-                                    )
-
-                            self._refs_cache[dst] = local_sha
-                            sys.stdout.write(f"ok {dst}\n")
-                            reported_specs.add(dst)
+                            self._publish_ref(upd.dst, upd.local_sha, upd.expected, upd.force)
                         except Exception as ex:
-                            _proto_error(dst, ex)
-                            sys.stderr.write(f"\nPush error for {dst}: {ex}\n")
+                            _proto_error(upd.dst, ex)
+                            sys.stderr.write(f"\nPush error for {upd.dst}: {ex}\n")
                             sys.stderr.flush()
-                            reported_specs.add(dst)
+                        reported.add(upd.dst)
 
-                # Decide whether tail merge is due -- but only *decide* here.
-                # Running it inside this block self-deadlocks: tail_merge acquires
-                # the same lock, RemoteLock is not reentrant, so the inner acquire
-                # would read back our own unexpired lease, wait out the timeout and
-                # fail.
-                try:
-                    pack_entries = self.client.list_dir(self.repo_id, self._full_path("objects/pack"))
-                    freeze_at = session_config.gc_max_pack_mib * 1024 * 1024
-                    # Movable vs frozen is decided by size alone -- the same split
-                    # tail_merge makes under the lock, so this decision cannot drift
-                    # from what the merge itself will do.
-                    pack_info = [
-                        (e["name"], int(e.get("size") or 0))
-                        for e in pack_entries if e["name"].endswith(".pack")
-                    ]
-                    movable_count = sum(1 for _, size in pack_info if size < freeze_at)
-                    movable_bytes = sum(size for _, size in pack_info if size < freeze_at)
-                    threshold = session_config.gc_threshold
-                    auto_gc = session_config.auto_gc
-
-                    if movable_count >= threshold:
-                        # Tail merge downloads only the small packs and re-uploads
-                        # their union, so above the download budget it defers to a
-                        # manual off-hours run no matter how many pile up.
-                        if auto_gc and movable_bytes > session_config.gc_max_mib * 1024 * 1024:
-                            sys.stderr.write(
-                                f"\nNotice: Movable packs total {movable_bytes / (1024**3):.1f} GiB across "
-                                f"{movable_count} packfile(s), above the automatic download budget "
-                                f"({session_config.gc_max_mib} MiB, 8 x seafile.gcmaxpackmib).\n"
-                                f"Auto tail-merge was deferred: it downloads and re-uploads those packs.\n"
-                                f"Run 'git-remote-seafile gc {self.raw_url}' manually when the time cost suits.\n\n"
-                            )
-                            sys.stderr.flush()
-                        elif auto_gc:
-                            auto_gc_movable_count = movable_count
-                        elif _notice_due(self.raw_url):
-                            sys.stderr.write(
-                                f"\nNotice: Remote repository has {movable_count} small packfiles (threshold: {threshold}), "
-                                f"totaling {movable_bytes / (1024**3):.1f} GiB.\n"
-                                f"Tip: Run 'git-remote-seafile gc {self.raw_url}' to optimize remote storage,\n"
-                                f"     or run 'git config seafile.autogc true' to enable automatic tail merge\n"
-                                f"     (automatic runs defer while the movable packs exceed 8 x seafile.gcmaxpackmib).\n\n"
-                            )
-                            sys.stderr.flush()
-                except Exception:
-                    pass
+                auto_gc_movable_count = self._auto_gc_advice(session_config)
         except Exception as lock_err:
             for spec in push_specs:
-                dst = spec.lstrip("+").split(":", 1)[1] if ":" in spec else spec
-                if dst not in reported_specs:
+                dst = self._spec_destination(spec)
+                if dst not in reported:
                     _proto_error(dst, lock_err)
             sys.stderr.write(f"\nPush failed: {lock_err}\n")
             sys.stderr.flush()
 
-        # Tail merge runs here, after the push lock is released, so that it can
-        # take the lock for itself.  It must never disturb the per-ref ok/error
-        # lines written above: the push already succeeded, and a tail-merge
-        # problem is a separate, recoverable event (gc can always be run by
-        # hand).  Under genuine contention with another machine this may still
-        # time out, which is correct -- it just must not self-inflict it.
-        if auto_gc_movable_count:
-            try:
-                sys.stderr.write(
-                    f"Auto-merging remote repository tail ({auto_gc_movable_count} small packfiles detected)...\n"
-                )
-                sys.stderr.flush()
-                from .gc import tail_merge
-
-                # The threshold and budget are re-checked inside, under the lock,
-                # so growth between this decision and the merge is covered.
-                tail_merge(
-                    self.client,
-                    self.repo_id,
-                    self.repo_path,
-                    config=session_config,
-                    verbose=True,
-                )
-            except Exception as ex:
-                sys.stderr.write(f"Auto tail-merge skipped: {_flatten(ex)}\n")
-                sys.stderr.flush()
+        if auto_gc_movable_count and session_config is not None:
+            self._run_auto_tail_merge(auto_gc_movable_count, session_config)
 
         sys.stdout.write("\n")
         sys.stdout.flush()
+
+    def _stage_updates(
+        self, lock: RemoteLock, push_specs: list[str], reported: set[str]
+    ) -> list[_PendingUpdate]:
+        """Handle every spec that needs no pack, and return those that do.
+
+        Deletions are carried out here (under the lock, each fenced); updates
+        are decided and returned as ``(dst, local_sha, remote_sha)`` so one
+        pack can serve them all.  Anything refused is reported and added to
+        *reported* so the caller's failure path does not report it twice.
+        """
+        pending: list[_PendingUpdate] = []
+        for spec in push_specs:
+            parsed = self._split_spec(spec)
+            if parsed is None:
+                reported.add(self._spec_destination(spec))
+                continue
+            force, src, dst = parsed
+
+            if not src:
+                self._delete_remote_ref(lock, dst)
+                reported.add(dst)
+                continue
+
+            try:
+                # Always re-read the ref under the lock to catch concurrent pushes.
+                verdict = self._decide_update(src, dst, force)
+            except Exception as ex:
+                _proto_error(dst, ex)
+                sys.stderr.write(f"\nPush error for {dst}: {ex}\n")
+                sys.stderr.flush()
+                reported.add(dst)
+                continue
+            if isinstance(verdict, str):
+                _proto_error(dst, verdict)
+                reported.add(dst)
+                continue
+            pending.append(_PendingUpdate(dst, verdict[0], verdict[1], force))
+        return pending
 
     @staticmethod
     def _objects_present(shas: list[str]) -> bool:
