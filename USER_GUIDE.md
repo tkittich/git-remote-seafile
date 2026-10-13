@@ -782,6 +782,66 @@ The table below covers the common failures. For a repository that is unreadable,
 | `HTTP 403 Forbidden` on push | Read-only library permissions | Ensure your Seafile account has Read-Write permission on the target library. |
 | `Push failed: Repository is locked by '<owner>' on '<machine>'` | Another client is mid-push and holds the lock | Wait for that push to finish, or raise `seafile.locktimeout`. If the other client crashed, the lease expires on its own (`seafile.locklease`, default 60s). `git-remote-seafile lock-status <url>` names the holder; `unlock <url> --force` breaks a stale lock. |
 
+### Known Limitations and What They Mean for You
+
+These are the places where the tool, Git, or Seafile stops short. None is hidden: each is either reported at run time or listed here with what to do. "Measured" means observed on a real server (Seafile CE 13.0.28) rather than inferred; see [DESIGN.md](DESIGN.md) §4.3.1 for the evidence.
+
+#### Concurrency and consistency
+
+| Limitation | What it means for you | What to do |
+| :--- | :--- | :--- |
+| **The lock is advisory.** Seafile has no atomic compare-and-swap, so the ticket lock reduces contention but cannot *force* exclusion on a client that ignores it. | Two helpers cooperate and never collide. A non-cooperating writer (an old version, a script, the web UI) can overwrite a ref. Measured: simultaneous same-path uploads all report success and leave `(SFConflict …)` copies beside the file. | The helper re-reads every ref after writing it and warns when a conflict copy appears. Recovery is in [RUNBOOK.md](RUNBOOK.md) §5. Keep all writers on the helper. |
+| **Pushes are not atomic across refs.** `--atomic` is not supported; refs are written one at a time. | A push of several branches can land some and fail others; each ref is reported separately, exactly as git expects. | Re-run the push; completed refs are no-ops. |
+| **A lost race is reported, not retried.** If another client moved the branch between the check and the write, you get `fetch first`. | Your push did not land; nothing is corrupted. | `git fetch`, integrate, push again. |
+| **A merge holds the lock.** The automatic tail merge costs about 0.05 s per MiB and runs under the push lock (a 4 GiB merge measured 3 min 43 s). | Another person pushing during that window is told the repository is locked after `seafile.locktimeout`. A retry succeeds. | Keep `seafile.autogc` on for solo or small-team use; on a busy shared remote, set it to `false` and run `gc --tail` from a schedule. |
+| **Each push is a burst of library commits.** Measured: about 13 history entries per push (ticket create/renew/delete, pack, index, ref). | The library's history view is noisy, and server history grows with every push. | Use a library dedicated to remotes, not your document library. |
+
+#### Size and storage
+
+| Limitation | What it means for you | What to do |
+| :--- | :--- | :--- |
+| **A single request has a ceiling on some servers.** Measured on the test server: 1.75 GiB accepted, 2 GiB reset. | An uncapped 4 GiB merged pack failed at the upload. | Handled: every pack is capped at `seafile.gcmaxpackmib` (1 GiB), and files of 1 GiB or more upload in `Content-Range` chunks (5 GiB verified byte-identical). If your proxy is stricter, lower `seafile.gcmaxpackmib`. |
+| **One object cannot be split.** A single blob larger than the cap becomes one larger pack. | It uploads in chunks and works, but it is not subject to the cap and a merge never moves it. | Nothing; it is frozen where it stands. |
+| **Git for Windows cannot handle a 4 GiB+ blob with `core.autocrlf=true`** (its default). Measured: `git add` silently truncated a 5 GiB file to 1 GiB, and `git clone` of a real 5 GiB blob did not finish in 240 s. With `core.autocrlf=false` the same file added in 110 s and cloned in 11 s, byte-identical. | A very large raw-data file can be **silently corrupted at `git add`** before the helper ever sees it, and cannot be recovered from git afterwards. | Set `core.autocrlf=false` *before* adding such files (or mark them `-text` in `.gitattributes`), or use the snapshot tool, which always stages byte-exact. The helper warns when it sees a 4 GiB+ pack on Windows. |
+| **Deleting history does not free server space immediately.** Removing a pack removes it from the library; the blocks are reclaimed only when the server's garbage collection runs after its retention window. | Compaction and branch deletion shrink the *repository*, not the server's disk, until `seaf-gc` runs. | A server-administrator task. |
+| **Tail merge never prunes.** It is a pure union of the small packs. | Objects from deleted branches survive until a full `gc`. | Run `git-remote-seafile gc <url>` occasionally for reachability pruning and re-deltification. |
+| **Merging and `gc` need scratch space.** Measured: scratch about 2x the data, memory about the data size while git maps the packs. | A large manual `gc` can fail late if the temp volume is small. | Point `TMPDIR` / `TEMP` at a volume with 2–3x the repository's packed size. |
+
+#### Servers and libraries
+
+| Limitation | What it means for you | What to do |
+| :--- | :--- | :--- |
+| **Encrypted libraries are refused.** | The helper stops with a clear message; the server serves their files only after a password the helper cannot supply. | Use an unencrypted library. For at-rest encryption, encrypt the volume or use a tool built for it. |
+| **Validated against one server.** Seafile CE 13.0.28 was exercised (round trip, SHA-1 and SHA-256, concurrency, large files). Pro-only features, clustered or object-store backends, and releases other than CE 13.0.x are *expected* to work on the documented `/api2` surface but are not tested. | A problem on another deployment is not unexpected, just unreported. | Run `git-remote-seafile doctor <url>` first; report what it prints. |
+| **Seafile's server-side file locking is not used.** It is Pro-only and its owner is the Seafile user, not the machine. | No change to behaviour. | None. |
+| **The first push to an empty remote decides the object format.** With no refs there is nothing to infer SHA-256 from. | A SHA-256 repository works, but the format is only visible once a ref exists. | None; it is correct after the first push. |
+| **A deleted or renamed library is noticed late.** The library id is cached for the process, so the failure appears at the point of use with the server's error. | A confusing 404 rather than "library not found". | Re-run; the cache is per process. |
+| **Server time has one-second resolution.** The lock orders clients by the server's `Date`, never the local clock. | Two pushes inside the same second are ordered by tie-breaks, not by who was "first". | None; it is a fairness detail, not a correctness one. |
+
+#### Git features
+
+| Feature | Status |
+| :--- | :--- |
+| `--atomic`, push options (`-o`), signed pushes, `followtags` | Not supported; git refuses them before the push. |
+| Shallow (`--depth`) or partial (`--filter`) clones | The helper installs every remote pack whatever git asked for, so these options do not reduce what is downloaded. |
+| `git lfs` | Supported through the custom transfer agent; `lfs.standalonetransferagent` is not scoped per remote, so a dual-remote setup splits objects (see §8.5 and §11.1). |
+| Hostile repository config | `seafile.skipsafetychecks` and `seafile.gittimeout` are read only from system/global git config and the environment; a repository's own config cannot weaken them. |
+
+#### Whole-tree snapshots (`tools/seafile_snapshot.py`)
+
+| Limitation | What it means for you |
+| :--- | :--- |
+| No retention or pruning | Every snapshot is kept forever; pruning would rewrite history. Choose the remote knowing it only grows. |
+| Secrets are permanent | `.env` and keys are captured by design and Git history is forever. Every run lists the credential-shaped paths; push only to a library only you can read. |
+| File modes and symlinks on Windows | The executable bit is not reliably recorded; symlinks restore as text files unless `core.symlinks` is enabled. The restore verification names a mismatch rather than reporting success. |
+| Embedded git repositories | Only the nested repository's commit id is recorded, not its contents. Back them up separately. |
+| Timestamps and empty directories | Not preserved; Git records content. A restore gives every file the checkout time. |
+| Touching a file produces no commit | A heartbeat record of "a backup ran" is not available. |
+| Case-insensitive filesystems and long Windows paths | `Foo.txt`/`foo.txt` may not both round-trip; a deep restore destination can exceed 260 characters. |
+| Large payloads | The vault turns compression off and raises the big-file threshold after sampling, so a 20 GB tree stages at disk speed. A very large file that *changes* adds its own size to the remote per change until a merge; `seafile.autogc` bounds that. |
+
+The full snapshot caveat list, with the reasoning, is in [SNAPSHOT.md](SNAPSHOT.md) §8.
+
 ---
 
 ## 15. Whole-Tree Snapshots (`tools/seafile_snapshot.py`)

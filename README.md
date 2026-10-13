@@ -177,6 +177,7 @@ git clone seafile://seafile.example.com/code/myproject
 ## Documentation
 
 - [User's Guide (USER_GUIDE.md)](USER_GUIDE.md): Full walkthrough of setup, configuration files, multi-account usage, and dual-remote (GitHub + Seafile) setups.
+- [Known limitations (USER_GUIDE.md §14)](USER_GUIDE.md#known-limitations-and-what-they-mean-for-you): The places the tool, Git or Seafile stops short — advisory locking, request and object size limits (including Git for Windows and 4 GiB files), encrypted libraries, tested-server scope, snapshot caveats — and what each means for you.
 - [Architecture & Design Spec (DESIGN.md)](DESIGN.md): Technical protocol specifications and upstream RFC for Seafile maintainers.
 - [Security Policy (SECURITY.md)](SECURITY.md): Credential handling and precedence, the threat model, TLS/private-CA and proxy configuration, and how to report a vulnerability.
 - [Operations Runbook (RUNBOOK.md)](RUNBOOK.md): Recovery procedures — a stuck lock, stray or conflicting refs, half-uploaded packfiles, and what to capture before opening an issue.

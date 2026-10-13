@@ -11,6 +11,7 @@ Everything here follows from the 2026-10-12 review (`REVIEW.sonnet.md`) and the 
 The theme is **less machinery, and the machinery that remains fails loudly**.
 
 ### Added
+- **A "Known Limitations and What They Mean for You" section** in USER_GUIDE §14: concurrency, size and storage, server and library scope, Git feature gaps and the snapshot tool's caveats, each with what it means and what to do.
 - **`gc --tail`** runs the automatic tail-merge tier on demand, so "what does autogc do" is a command you can run, test and schedule rather than a trigger you have to provoke.
 
 - **`git-remote-seafile doctor [<seafile://url>]`**: login, how the URL is interpreted (server / library / path), safety guards and a write-and-delete probe in one run, stopping at the first failure and printing the next command.

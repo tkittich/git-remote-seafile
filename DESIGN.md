@@ -445,7 +445,7 @@ This section states what the *protocol* assumes and defends against. Deployment 
 
 ## 7. Non-Goals
 
-Explicitly out of scope, with the reason, so a reader does not infer an intention that is not there:
+Explicitly out of scope, with the reason, so a reader does not infer an intention that is not there. The user-facing consequences of these and of the measured server limits are collected in [USER_GUIDE.md](USER_GUIDE.md) §14, "Known Limitations and What They Mean for You".
 
 - **A true mutex.** Seafile offers no atomic create-if-absent, no compare-and-swap, and no server-enforced lock on Community Edition. No arrangement of files and clocks provides mutual exclusion on such storage. The lock is advisory and documented as such; correctness rests on read-back and CAS (§3.3). A content-addressed ref scheme that removes clock dependence from correctness entirely is a possible future direction, but it is a protocol change and has not been designed here.
 - **A server-side lock dependency.** Seafile Pro's file-lock API exists, but it is Pro-only, the lock owner is the Seafile *user* rather than the machine — so for the common single-account, several-machines scenario it fences nobody — and it would require a patched server on CE. It may become an optional probed capability; it will not become a requirement.
