@@ -875,16 +875,31 @@ interface or syncs it. Disk need is the payload once, not twice.
 
 **Not measured -- must be checked before building:**
 
-- that shortening the library's history retention and then running the
-  server's garbage collector actually frees the blocks of a deleted
-  snapshot (deleting alone was measured to free nothing), and how long that
-  takes on a library of this size;
+- GC on a payload library that also holds data worth keeping: the test
+  library held only scratch data, so everything unreferenced was removable
+  and the freed size is an upper bound for any one snapshot;
 - the copy at tens of thousands of entries (1,500 was measured);
 - whether ~7,000 history entries from one first run matter for the library's
   history view and its retention policy (the count is measured above; the
   effect is not);
 - the client's *upload* side when a person edits files in a synced `current/`
   while the tool also writes there (the download side was measured above).
+
+**Retention, as measured.** With the library's history set to *no history*,
+deleting the scratch folder and running the server's garbage collector for
+that one library freed the blocks: `7277 blocks total, about 0 reachable
+blocks, 7277 blocks are removed`, and the block store fell by 36,294,808,921
+bytes (33.8 GiB) within seconds of the run. That figure is every scratch
+version in the library's history, not one snapshot, so it bounds what a
+single snapshot can free. The GC was **online** (`Database is MySQL/...,
+use online GC`): the server was not stopped. Two things follow. First, a
+snapshot that is still a live folder is untouched by a *no history*
+setting -- only deleted ones become collectable -- so the payload library
+should be a dedicated library with history limited, and its own history is
+not the recovery path: the snapshots and their manifests are. Second,
+retention is a server-side operation (delete the folder, GC the library);
+the tool can list snapshots and say what to delete but cannot reclaim the
+space itself.
 
 **Failure model.** `current/` is a working area, never authoritative: an
 interrupted run leaves it partly updated and the next run finishes it. A
