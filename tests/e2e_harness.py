@@ -33,7 +33,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import quote, urlparse, parse_qs
 
 REPO_ID = "testlib-id"
 REPO_NAME = "testlib"
@@ -156,7 +156,9 @@ class _Handler(BaseHTTPRequestHandler):
                 return self._send(500, b"injected failure")
             if p not in self.stub.files.get(rid, {}):
                 return self._send(404, b"null")
-            link = f"http://127.0.0.1:{self.stub.port}/raw/{rid}?p={p}"
+            # ASCII, like a real download link (token + percent-encoded name): the
+            # client reads the body as a bare quoted string, not as JSON.
+            link = f"http://127.0.0.1:{self.stub.port}/raw/{rid}?p={quote(p, safe='/')}"
             return self._send(200, json.dumps(link).encode("utf-8"))
 
         if path.startswith("/api2/repos/") and path.endswith("/upload-link/"):
@@ -216,6 +218,12 @@ class _Handler(BaseHTTPRequestHandler):
             parent = fields.get("parent_dir", "/")
             if filename is None or filedata is None:
                 return self._send(400, b'{"error":"no file part"}')
+            if self.stub.faults.get("server_names"):
+                # The real server stores names NFC-normalised and turns a
+                # double quote into %22 (measured on CE 13.0.28).
+                import unicodedata
+                parent = unicodedata.normalize("NFC", parent)
+                filename = unicodedata.normalize("NFC", filename).replace('"', "%22")
             target = _norm(parent + "/" + filename)
             rng = re.match(r"bytes (\d+)-(\d+)/(\d+)", self.headers.get("Content-Range", ""))
             if rng and not self.stub.faults.get("ignore_range"):

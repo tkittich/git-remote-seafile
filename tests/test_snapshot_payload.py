@@ -18,6 +18,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import unicodedata
 import unittest
 import unittest.mock
 
@@ -200,6 +201,52 @@ class PayloadModeTests(unittest.TestCase):
         self.assertEqual(rc, 0, out + err)
         self.assertIn("to upload 2 file(s)", out)
         self.assertEqual(self.server_files(), {})
+
+    def test_names_the_server_rewrites_still_round_trip(self):
+        # The real server stores names NFC-normalised and turns '"' into %22;
+        # the stub does the same when asked, so the tool must compare and fetch
+        # by the name the server holds, not the name it sent.
+        self.stub.faults["server_names"] = 1
+        nfd = unicodedata.normalize("NFD", "caf\u00e9") + ".bin"
+        content = os.urandom(3000)
+        (self.src / nfd).write_bytes(content)
+        quoted = None
+        if os.name != "nt":
+            quoted = 'say "hi".bin'
+            (self.src / quoted).write_bytes(content[::-1])
+        rc, out, err = self.snapshot()
+        self.assertEqual(rc, 0, out + err)
+        held = {k.rsplit("/", 1)[-1] for k in self.server_files() if "/current/" in k}
+        self.assertIn(unicodedata.normalize("NFC", nfd), held)
+        # A second run recognises what is there: nothing to upload.
+        rc, out, err = self.snapshot()
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn("uploaded 0 file(s)", out)
+        into = self.case / "names"
+        rc, out, err = self.run_tool("--restore", "--remote", self.remote, "--into", into)
+        self.assertEqual(rc, 0, out + err)
+        self.assertEqual((into / nfd).read_bytes(), content)
+        if quoted:
+            self.assertEqual((into / quoted).read_bytes(), content[::-1])
+
+    def test_a_name_over_255_bytes_is_refused_before_any_upload(self):
+        long_name = "\u0e01" * 86 + ".bin"  # 86 x 3 bytes + 4 = 262 bytes of UTF-8
+        (self.src / long_name).write_bytes(os.urandom(3000))
+        rc, out, err = self.snapshot()
+        self.assertNotEqual(rc, 0)
+        self.assertIn("longer than 255 bytes", out + err)
+        self.assertEqual(self.server_files(), {})
+
+    def test_two_paths_that_become_one_server_name_are_refused(self):
+        nfc = unicodedata.normalize("NFC", "caf\u00e9") + ".bin"
+        nfd = unicodedata.normalize("NFD", "caf\u00e9") + ".bin"
+        (self.src / nfc).write_bytes(os.urandom(2000))
+        (self.src / nfd).write_bytes(os.urandom(2100))
+        if len({p.name for p in self.src.iterdir() if p.suffix == ".bin"}) < 3:
+            self.skipTest("this filesystem folds the two spellings into one file")
+        rc, out, err = self.snapshot()
+        self.assertNotEqual(rc, 0)
+        self.assertIn("become the same name on the server", out + err)
 
     def test_parse_size(self):
         self.assertEqual(snap.parse_size("64M"), 64 * 1024 ** 2)

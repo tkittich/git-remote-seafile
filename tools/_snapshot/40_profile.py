@@ -227,6 +227,7 @@ def _use_profile_for_this_process_only() -> None:
 def choose_profile(
     vault: Path, git_dir: Path, source: Path, excludes: list[str],
     vault_config: dict[str, list[str]], *, write: bool, recheck: bool = False,
+    skip: "frozenset[str] | None" = None,
 ) -> None:
     """Decide the vault's storage profile on the first run that needs it.
 
@@ -244,7 +245,7 @@ def choose_profile(
         return
     if profile and not recheck:
         return
-    measure = sample_payload(source, excludes)
+    measure = sample_payload(source, excludes, skip)
     verdict = decide_profile(measure)
     if verdict == "raw":
         what = (

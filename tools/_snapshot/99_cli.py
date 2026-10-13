@@ -424,7 +424,6 @@ def main(argv: list[str] | None = None) -> int:
         payload_min, payload_candidates = plan_payload(
             args.payload_min_size, remote, source, exclude
         )
-        payload_mode = bool(payload_min)
         payload_skip = frozenset(payload_candidates)
         git_dir = ensure_vault(vault, branch)
         # One read of the vault's config serves identity, byte-exactness and
@@ -442,16 +441,18 @@ def main(argv: list[str] | None = None) -> int:
             ensure_byte_exact(vault, git_dir, vault_config=vault_config)
             if args.no_object_compression:
                 apply_large_payload_profile(vault, git_dir)
-            elif not payload_mode:
-                choose_profile(vault, git_dir, source, exclude, vault_config, write=True)
+            else:
+                choose_profile(vault, git_dir, source, exclude, vault_config, write=True,
+                               skip=payload_skip or None)
         else:
             # The identity *check* still runs on a preview -- failing
             # early with the actionable message beats a commit-tree
             # traceback -- but read-only: a dry run writes nothing at all
             ensure_identity(vault, source, vault_config=vault_config,
                             write_identity=False)
-            if not args.no_object_compression and not payload_mode:
-                choose_profile(vault, git_dir, source, exclude, vault_config, write=False)
+            if not args.no_object_compression:
+                choose_profile(vault, git_dir, source, exclude, vault_config, write=False,
+                               skip=payload_skip or None)
         # Free what a killed earlier run left behind first, under the vault
         # lock: it can be tens of GiB, and the free-space check that follows is
         # only honest once it is gone.
@@ -540,10 +541,9 @@ def main(argv: list[str] | None = None) -> int:
             # payload gets one more look -- for the *next* run, since this one
             # has already staged -- once per doubling of the tree.
             if (not args.dry_run and not args.no_object_compression
-                    and not payload_mode
                     and profile_recheck_due(vault_config, size)):
                 choose_profile(vault, git_dir, source, exclude, vault_config,
-                               write=True, recheck=True)
+                               write=True, recheck=True, skip=payload_skip or None)
 
             print(f"source : {source}")
             print(f"vault  : {vault}")

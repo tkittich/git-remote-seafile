@@ -38,12 +38,40 @@ def parse_size(text: str) -> int:
         ) from None
 
 
-class PayloadEntry(TypedDict):
-    path: str
-    size: int
-    mode: str
-    sha256: str
-    mtime_ns: int
+#: What this server was measured to do to names (CE 13.0.28): a name is stored
+#: NFC-normalised, a double quote becomes ``%22``, and a name longer than 255
+#: *bytes* of UTF-8 is refused.  Everything else tried -- ``: * ? < > |``, a
+#: trailing space or dot, reserved Windows names, emoji, Thai, a path of 4,200
+#: characters -- was stored as given.
+_MAX_NAME_BYTES = 255
+
+
+def remote_rel(rel: str) -> str:
+    """The path the server will hold for source path *rel*."""
+    return "/".join(
+        unicodedata.normalize("NFC", part).replace('"', "%22") for part in rel.split("/")
+    )
+
+
+def check_payload_names(paths: list[str]) -> None:
+    """Refuse, before anything is uploaded, names the server cannot hold or would merge."""
+    too_long = [
+        p for p in paths
+        if any(len(part.encode("utf-8")) > _MAX_NAME_BYTES for part in remote_rel(p).split("/"))
+    ]
+    if too_long:
+        raise SnapshotError(
+            f"{len(too_long)} payload path(s) have a name longer than {_MAX_NAME_BYTES} bytes "
+            f"(UTF-8), which the server refuses; first: {too_long[0]}"
+        )
+    seen: dict[str, str] = {}
+    for p in paths:
+        other = seen.setdefault(remote_rel(p), p)
+        if other != p:
+            raise SnapshotError(
+                f"payload paths {other!r} and {p!r} become the same name on the server "
+                "(Unicode normalisation or quote escaping); rename one or exclude it"
+            )
 
 
 def payload_location(remote: str) -> tuple[str, str, str | None]:
@@ -130,11 +158,11 @@ def build_manifest(
 ) -> dict[str, Any]:
     """Hash every payload file (reusing the previous run's hash when size and
     mtime are unchanged) and return the manifest, snapshot id included."""
-    known: dict[str, PayloadEntry] = {}
+    known: dict[str, dict[str, Any]] = {}
     for entry in (previous or {}).get("files", []):
         if isinstance(entry, dict) and "path" in entry:
-            known[entry["path"]] = entry  # type: ignore[assignment]
-    entries: list[PayloadEntry] = []
+            known[entry["path"]] = entry
+    entries: list[dict[str, Any]] = []
     hashed = reused = 0
     total = len(candidates)
     for index, rel in enumerate(sorted(candidates), 1):
@@ -148,9 +176,12 @@ def build_manifest(
                 print(f"hashing [{index}/{total}] {rel} ({human_bytes(size)})", flush=True)
             digest = _sha256_file(source / rel)
             hashed += 1
-        entries.append(
-            {"path": rel, "size": size, "mode": mode, "sha256": digest, "mtime_ns": mtime_ns}
-        )
+        record: dict[str, Any] = {
+            "path": rel, "size": size, "mode": mode, "sha256": digest, "mtime_ns": mtime_ns,
+        }
+        if remote_rel(rel) != rel:
+            record["remote"] = remote_rel(rel)  # what the server actually holds
+        entries.append(record)
     ident = hashlib.sha256()
     for item in entries:
         ident.update(f"{item['path']}\0{item['size']}\0{item['mode']}\0{item['sha256']}\n".encode())
@@ -224,6 +255,9 @@ def publish_payload(
     current = f"{base}/current"
     snap_id = manifest["snapshot"]
     wanted = {item["path"]: item for item in manifest["files"]}
+    check_payload_names(list(wanted))
+    remote_of = {rel: item.get("remote", rel) for rel, item in wanted.items()}
+    held = set(remote_of.values())
 
     # The listing can only prove a file is *there at the right size*.  A file
     # edited in place to the same length would pass that test while holding the
@@ -237,15 +271,15 @@ def publish_payload(
     remote_files = _remote_index(client, rid, current)
     todo = [
         rel for rel, item in wanted.items()
-        if remote_files.get(rel) != item["size"] or committed.get(rel) != item["sha256"]
+        if remote_files.get(remote_of[rel]) != item["size"] or committed.get(rel) != item["sha256"]
     ]
-    stale = [rel for rel in remote_files if rel not in wanted]
+    stale = [rel for rel in remote_files if rel not in held]
     todo_bytes = sum(wanted[rel]["size"] for rel in todo)
     if dry_run:
         return len(todo), todo_bytes
 
     for index, rel in enumerate(sorted(todo), 1):
-        parent, _, name = rel.rpartition("/")
+        parent, _, name = remote_of[rel].rpartition("/")
         client.mkdir_p(rid, current + ("/" + parent if parent else ""))
         print(
             f"uploading [{index}/{len(todo)}] {rel} ({human_bytes(wanted[rel]['size'])})",
@@ -259,7 +293,9 @@ def publish_payload(
         client.delete_entry(rid, f"{current}/{rel}")
     if todo or stale:
         after = _remote_index(client, rid, current)
-        wrong = [rel for rel, item in wanted.items() if after.get(rel) != item["size"]]
+        wrong = [
+            rel for rel, item in wanted.items() if after.get(remote_of[rel]) != item["size"]
+        ]
         if wrong:
             raise SnapshotError(
                 f"payload upload did not land: {len(wrong)} file(s) missing or the wrong "
@@ -305,7 +341,7 @@ def restore_payload(remote: str, into: Path) -> None:
         dest = into / rel
         dest.parent.mkdir(parents=True, exist_ok=True)
         print(f"downloading [{index}/{len(files)}] {rel} ({human_bytes(item['size'])})", flush=True)
-        if not client.download_file_to(rid, f"{snap_dir}/{rel}", dest):
+        if not client.download_file_to(rid, f"{snap_dir}/{item.get('remote', rel)}", dest):
             problems.append(f"{rel}: not found in {snap_dir}")
             continue
         if dest.stat().st_size != item["size"]:

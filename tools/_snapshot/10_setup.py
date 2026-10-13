@@ -12,6 +12,7 @@ import stat
 import subprocess
 import sys
 import time
+import unicodedata
 import zlib
 from datetime import datetime
 from pathlib import Path
