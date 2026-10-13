@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- **Snapshot tool, payload mode (`--payload-min-size SIZE`).** Files of at least SIZE bypass git: they are SHA-256-hashed and uploaded as plain files to `<path>.payload/current/`, each snapshot is one server-side directory copy to `<path>.payload/snapshots/<id>/` (metadata only, shared blocks), and the vault commit carries `.seafile-payload/manifest.json`. `--restore` downloads every file and verifies size and SHA-256. Removes the local object copy and the staging pass for large immutable data. Opt-in; design and measurements in SNAPSHOT.md section 15.1.
+- **Snapshot tool, payload mode (`--payload-min-size SIZE`).** Files of at least SIZE bypass git: each is SHA-256-hashed and uploaded **by hash** to `<path>/payload/objects/<xx>/<sha256>` inside the vault's remote directory, and the vault commit carries `.seafile-payload/manifest.json`. `--restore` downloads every file and verifies size and SHA-256. Objects are never overwritten or deleted, so a snapshot costs nothing to keep, a rename or duplicate uploads nothing, and no server name rule applies. Removes the local object copy and the staging pass for large immutable data. Opt-in; design and measurements in SNAPSHOT.md section 15.1.
 - **`--payload-jobs N`** uploads N payload files at once (default 3; measured 30 s -> 19.7 s for six 128 MiB files, no gain at 5).
 - **`SeafileClient.copy_entries`**: server-side copy of files or directories within a library.
 

@@ -766,7 +766,7 @@ Borg, and changes nothing for the helper or the vault.
    flag is accepted and ignored (section 12, USER_GUIDE §8.2).
 4. **Payload mode** -- large immutable files go to Seafile as plain files with
    a manifest in git, snapshots by server-side copy; design in
-   [section 15.1](#151-payload-mode-implemented-behind---payload-min-size-design-and-measurements).
+   [section 15.1](#151-payload-mode-large-files-by-hash-behind---payload-min-size).
 
 **Open questions, deliberately unresolved:**
 
@@ -789,168 +789,184 @@ Borg, and changes nothing for the helper or the vault.
 - **Keep the secrets report a warning, not a refusal.** A backup that refuses to
   back up is a backup that gets switched off.
 
-### 15.1 Payload mode (implemented behind `--payload-min-size`; design and measurements)
+### 15.1 Payload mode: large files by hash, behind `--payload-min-size`
 
-**Status.** The core is implemented on the `feat/payload-mode` branch: files at
-or above the given size are hashed and uploaded as plain files, snapshots are
-server-side directory copies, the vault commit carries the manifest, and
-`--restore` downloads and verifies every file against it. **Not implemented
-yet:** rename detection (a renamed file is uploaded again),
-a remembered setting (the flag must be repeated on every run, and a vault
-that used it refuses a run without it), a maintenance listing of snapshots,
-and a quick-hash that avoids the second read of a changed file. The rest of
-this section is the design the implementation follows and the measurements
-behind it.
+**Status.** Implemented on the `feat/payload-mode` branch. Files at or above the
+given size are hashed, stored on the server under their SHA-256, and listed in a
+manifest the vault commit carries; `--restore` downloads and verifies every one.
+**Not implemented yet:** named, browsable *views* of a snapshot (below), a
+retention helper that finds unreferenced objects, a remembered setting (the flag
+must be repeated on every run, and a vault that used it refuses a run without
+it), and a payload location in a different library from the vault.
 
 **The problem it answers.** A vault carries every file *through git*: each blob
 is hashed, written as a loose object, packed, uploaded as a pack. For a tree
-that is 99.8% large immutable data (measured: 131 GiB of 131 GiB in one
-`data/` directory) that is pure overhead -- a second local copy of the payload
-(loose objects, then temporary packs), a staging pass of 12-20 minutes, a
-restore that needs the objects *and* the checked-out files on disk at once, and
-the 1 GiB pack cap and 2 GiB request ceiling worked around with chunking.
-Git's strengths -- history of small text, metadata, integrity of a tree -- are
-not used on that data at all.
+that is 99.8% large immutable data (measured: 118 GiB of a 131 GiB tree in 352
+files) that is pure overhead -- a second local copy of the payload (loose
+objects, then temporary packs), a staging pass of 12-20 minutes, a restore that
+needs the objects *and* the checked-out files on disk at once, and the 1 GiB
+pack cap and 2 GiB request ceiling worked around with chunking. Git's
+strengths -- history of small text, metadata, integrity of a tree -- are not
+used on that data at all.
 
-**The idea.** Split the tree at a size threshold. Small files keep going
-through the vault exactly as now. Files at or above the threshold are
-*payload*: they never enter git. They are stream-hashed (SHA-256, no local
-copy) and uploaded to Seafile as ordinary files at their real relative paths.
-The vault commit carries a manifest -- path, mode, size, SHA-256, mtime -- so
-git still holds what git is good at: the file list, the checksums, the history
-of both.
+**The design.** Split the tree at a size threshold. Small files go through the
+vault exactly as before. Files at or above the threshold are *payload*: they
+never enter git. Each is stream-hashed (SHA-256, no local copy) and uploaded to
 
-**Browsable *and* consistent: server-side copy.** The obvious trade-off is
-content-addressed names (immutable, consistent, but unreadable in the Seafile
-UI and useless to the desktop client) against path-mirrored files (readable,
-but only ever the latest state). Seafile's copy operation removes the
-trade-off, because a copy shares the source's blocks and touches no data:
+    <vault path>/payload/objects/<first two hex digits>/<sha256>
 
-    <library>/<vault-name>/payload/current/<relative path>        working mirror, updated in place
-    <library>/<vault-name>/payload/snapshots/<snapshot>/<...>     one directory copy of current/ per snapshot
+inside the vault's own remote directory -- one URL names both, and the helper
+ignores what it does not know (measured on the real server: push, clone,
+`doctor`, `gc --tail` and a full `gc` all behaved and left the directory
+alone). The vault commit carries `.seafile-payload/manifest.json`: path, mode,
+size, SHA-256 and mtime of every payload file, plus a snapshot id derived from
+them. Git keeps what git is good at -- the file list, the checksums, the history
+of both -- and Seafile keeps what it is good at: big files and shared blocks.
 
-A run uploads only the files whose size/mtime/hash changed into `current/`,
-builds and commits the manifest, then makes **one server-side directory copy**
-of `current/` to `snapshots/<snapshot>/`, then pushes the vault. Every
-snapshot is a complete, real-named, browsable tree that a desktop client can
-sync, and it is point-in-time consistent because it is created in one
-operation and never modified afterwards. A rename is a server-side move (the
-manifest hash match proves the content is the same), so it costs no upload.
+A run hashes (reusing the previous hash where size and mtime are unchanged and
+not racily close to the last commit), lists only the fan-out directories the
+hashes fall in, uploads the objects that are missing -- largest first, three at
+a time -- verifies them with a listing, and only then commits and pushes the
+vault. **Nothing is ever overwritten or deleted by a run.**
 
-**Restore** clones the vault, reads the manifest, downloads each payload file
-from `snapshots/<snapshot>/`, verifies its SHA-256, and sets mode and mtime.
-Or, with no tool at all, a person opens `snapshots/<snapshot>/` in the web
-interface or syncs it. Disk need is the payload once, not twice.
+**Why by hash, and not a mirror of the tree.** The first implementation mirrored
+the tree into `current/` and made each snapshot a server-side copy of it. That
+worked and was measured end to end (below), but a named mirror has costs that a
+hash-named store does not:
 
-**Measured on the real server (CE 13.0.28, 2026-10-13, scratch library):**
+- an object is never replaced, so a **snapshot is a manifest and costs nothing
+  to keep** -- no per-snapshot quota charge, no history entry, no copy
+  operation;
+- a **rename or a duplicate uploads nothing**: the same bytes are already there
+  under the same name (measured by test: rename = 0 objects; two identical files
+  = one object);
+- **no name rules apply**: what the server holds is a hex string, so NFC
+  normalisation, `"` becoming `%22` and the 255-byte limit (all measured below)
+  cannot touch a payload file, and a path of any length restores;
+- **concurrent writers cannot conflict**: two machines storing the same object
+  write the same content under the same name, where two writers of one named
+  path made `(SFConflict ...)` copies (measured);
+- **retention is ours**: the tool can compute which objects no snapshot
+  references, and deleting them frees quota at once.
 
-- a server-side directory copy of four 256 MiB files took 20-30 ms and
-  returned success, i.e. it moves metadata, not bytes;
-- after the copy, replacing a file in `current/` left the copy's file
-  byte-identical to the original (verified by SHA-256 on both);
-- a single upload ran at 32 MiB/s; three uploads of *different* files in
-  parallel reached 53 MiB/s aggregate, so a small worker pool (about 3) is
-  worth about 1.6x and more is not (confirmed through the tool: six 128 MiB
-  files took 30 s with one worker, 19.7 s with three and 19.6 s with five);
-- the copy of a tree of 1,500 entries, three directories deep, also took
-  about 20 ms, and a server-side rename about 30 ms (so scale and
-  nesting are not where the cost is); 1,500 tiny uploads cost about 34 ms
-  each, the price of one library commit per file;
-- **quota and library size count a copy at full size**: a 200 MiB file and
-  its snapshot copy read as 400 MiB in the account usage and the library
-  size, and deleting the folder returned both to baseline. A user with a
-  *finite* quota pays for every snapshot as if it were a full copy, so
-  snapshot retention is a quota question and the tool must say so;
-- **the block store confirms the sharing** (server in Docker on OpenZFS,
-  `du -sb` of `storage/blocks` sampled every 10 s): uploading a 1 GiB random
-  file grew it by exactly 1,073,741,824 bytes; the server-side copy of that
-  folder grew it by **0** bytes; replacing the original with different
-  1 GiB content grew it by another exactly 1 GiB (the snapshot still holds
-  the old blocks); and deleting the whole folder freed **nothing**, still
-  nothing 1 h 30 min later -- the blocks stay until the library's history
-  no longer references them *and* the server's garbage collector runs.
-  So the physical cost of a snapshot is only the blocks that differ from
-  every other retained version, while quota counts it whole; and deleting
-  a snapshot to reclaim disk is a two-stage affair outside this tool's
-  control;
-- **history growth is one entry per operation**: a library at 3,887 entries
-  gained exactly 8 for two uploads, two directory copies and four `mkdir`s.
-  A first run of ~7,000 files therefore writes ~7,000 entries and every
-  snapshot after it one (the copy);
-- **the desktop client does not deduplicate across the copies**: a folder
-  with three 1 GiB files, two of them identical and one an older version
-  (3 GiB logical, 2 GiB distinct blocks), synced in 43 s and received
-  3,202 MiB on the network adapter (about 75 MiB/s). A library that holds
-  `current/` and N snapshots is downloaded N+1 times by every client that
-  syncs it, so the payload belongs in a library nobody syncs whole, or the
-  snapshots belong in a folder the client is told to skip.
+The price is that the server's own file view is unreadable -- `ab/ab3f...` --
+and that only the tool (or a script that reads the manifest) can rebuild a
+tree. The answer to "I want to look" is a **view**, planned: one directory of
+real names built on demand by server-side copy and rename of objects (about two
+calls per file, no data transferred -- the copy was measured at 20-30 ms for
+1,500 entries), deleted when no longer wanted. A view is a convenience, never
+the source of truth.
 
-**Not measured -- must be checked before building:**
+**Restore** clones the vault, reads the manifest, downloads each object to its
+real path, verifies size and SHA-256, and sets mode and mtime. Restoring an old
+snapshot works for as long as its objects exist. Disk need is the payload once,
+not twice.
 
-- GC on a payload library that also holds data worth keeping: the test
-  library held only scratch data, so everything unreferenced was removable
-  and the freed size is an upper bound for any one snapshot;
-- the copy at tens of thousands of entries (1,500 was measured);
-- whether ~7,000 history entries from one first run matter for the library's
-  history view and its retention policy (the count is measured above; the
-  effect is not);
-- the client's *upload* side when a person edits files in a synced `current/`
-  while the tool also writes there (the download side was measured above).
+**What of DESIGN.md section 2 applies?** That section explains why a `.git`
+*directory* cannot live in a synced library: the desktop client's index keeps
+whole-second mtimes (a same-second, same-size edit looks unchanged), Windows
+holds mandatory locks on files the client is hashing, event buffers overflow
+under bursts, and two machines produce conflict copies. All of those are
+properties of **the desktop client watching a working tree**. The payload step
+involves no desktop client: it reads the source with ordinary file reads and
+writes with the REST API, and the source and the vault are refused if they sit
+in a synced folder. The *same class* of problem does exist in the tool's own
+change detection, and is handled the same way git handles it:
 
-**Retention, as measured.** With the library's history set to *no history*,
-deleting the scratch folder and running the server's garbage collector for
-that one library freed the blocks: `7277 blocks total, about 0 reachable
-blocks, 7277 blocks are removed`, and the block store fell by 36,294,808,921
-bytes (33.8 GiB) within seconds of the run. That figure is every scratch
-version in the library's history, not one snapshot, so it bounds what a
-single snapshot can free. The GC was **online** (`Database is MySQL/...,
-use online GC`): the server was not stopped. Two things follow. First, a
-snapshot that is still a live folder is untouched by a *no history*
-setting -- only deleted ones become collectable -- so the payload library
-should be a dedicated library with history limited, and its own history is
-not the recovery path: the snapshots and their manifests are. Second,
-retention is a server-side operation (delete the folder, GC the library);
-the tool can list snapshots and say what to delete but cannot reclaim the
-space itself.
+- a cached hash is trusted only when size and mtime match **and** the mtime is
+  older than the last commit by a margin (git's "racily clean" rule), so a
+  same-size edit inside the timestamp granularity is rehashed, not missed;
+- a file is compared with its recorded size and mtime both before and after it
+  is uploaded, so bytes that changed after hashing cannot sit under another
+  content's name; the run stops and says which file;
+- a file another process holds open exclusively (a Windows database or GIS
+  project) stops the run naming it, never a quiet omission;
+- there is no switch yet to force a full rehash; a cache the racy rule cannot
+  vouch for (a file whose mtime was restored by a copy tool) is the case that
+  would want one.
 
-**Failure model.** `current/` is a working area, never authoritative: an
-interrupted run leaves it partly updated and the next run finishes it. A
-`snapshots/<snapshot>/` directory is created only after every payload file
-listed in the manifest is present at the expected size, and it is created
-before the vault push, so the vault never references a snapshot that does not
-exist. A snapshot directory with no vault commit (a failed push) is harmless
-and found by a maintenance listing. The server cannot report a content SHA-256,
-so upload correctness rests on size checks and, optionally, a download-and-hash
-verify; **restore always verifies**, which is where corruption would surface.
+**Seafile's own file history.** Library history is not the snapshot mechanism
+and must not be relied on as one: it is per library commit, retention-limited,
+and subject to the server's GC. What it does do:
+
+- *Replaced files:* because objects are never overwritten, file history has
+  nothing to keep -- a hash name has one version. (In the mirror design every
+  replacement was a history version.)
+- *Deleted files:* a deleted object stays in history until the library's history
+  expires and GC runs. Measured: deleting a folder freed **no** disk for 1 h
+  30 min; setting the library to *no history* and running the server's online GC
+  for that library freed 33.8 GiB within seconds. Quota is different -- it
+  dropped the moment the folder was deleted.
+- *A safety net:* with a short history (days, not "none"), an object the tool
+  deleted by mistake -- or that a person did -- can be restored from Seafile's
+  trash. That is worth the little disk it costs, and is the recommended setting
+  for the payload library.
+- *One entry per operation:* each upload or delete is one library commit
+  (measured: 8 entries for 2 uploads, 2 copies and 4 `mkdir`s). A first run of
+  ~350 files writes ~350 entries.
+
+**Measured on the real server (Seafile CE 13.0.28 in Docker on OpenZFS,
+2026-10-13).** Kept here because they decided the design:
+
+- a single upload ran at 32 MiB/s; three of *different* files at once reached
+  53 MiB/s aggregate, and through the tool six 128 MiB files took 30 s with one
+  worker, 19.7 s with three, 19.6 s with five (the default is three);
+- a 1.1 GiB file went through the chunked `Content-Range` path and restored
+  byte-identical; a restore ran at about 85 MiB/s;
+- a server-side directory copy of four 256 MiB files, and of a 1,500-entry tree
+  three levels deep, took 20-30 ms and added **0 bytes** to the block store
+  (`du -sb` of `storage/blocks`, sampled every 10 s: +1,073,741,824 for the
+  upload, +0 for the copy, +1,073,741,824 for a replacement, +0 for the
+  delete); a server-side rename took about 30 ms;
+- quota and library size count a copy **at full size** (a 200 MiB file and its
+  copy read as 400 MiB), and a desktop client that syncs a library holding
+  copies downloads each one in full (3 GiB for three 1 GiB files, 43 s) -- so a
+  payload library is best one nobody syncs whole;
+- what the server does to names: stored **NFC-normalised**; a `"` becomes
+  `%22`; a name over **255 bytes of UTF-8** is refused (255 ASCII and 85 Thai
+  characters pass, 256 and 86 fail); `: * ? < > |`, a trailing space or dot,
+  reserved Windows names, emoji, Thai and a 4,212-character path were stored as
+  given. These rules apply to *views*, not to payload objects.
+
+**Not measured:** GC on a payload library that also holds data worth keeping
+(the test library held only scratch data, so the 33.8 GiB is an upper bound);
+a view of a large snapshot (the per-file copy-and-rename cost); the desktop
+client's behaviour when a person edits files in a library the tool also writes.
+
+**Failure model.** Objects are written before the vault commit that names them,
+and the commit is pushed after, so a vault never references an object that was
+not verified present. An interrupted run leaves objects that no snapshot names;
+they are harmless, reused by the next run, and found by the retention helper.
+The server cannot report a content SHA-256, so upload correctness rests on
+size checks; **restore always verifies SHA-256**, which is where corruption
+would surface.
 
 **Why not the alternatives.**
 
-- *Git LFS (the helper already ships a custom transfer agent).* It keeps a
-  second copy under `.git/lfs`, depends on `.gitattributes` filters (which the
-  vault disables to stay byte-exact) and tracks by pattern, so it does not
-  reach ignored files -- the reason the snapshot tool exists.
+- *A mirror of the tree plus a server-side copy per snapshot* -- built and
+  measured, and kept as the reference for what a view does. Rejected as the
+  default for the reasons above: per-snapshot quota and history cost, renames
+  re-uploaded, name rules, in-place replacement.
+- *Git LFS (the helper ships a custom transfer agent).* It keeps a second copy
+  under `.git/lfs`, depends on `.gitattributes` filters (which the vault
+  disables to stay byte-exact) and tracks by pattern, so it does not reach
+  ignored files -- the reason the snapshot tool exists.
 - *The desktop client or `seaf-cli`.* The sync protocol (commit and fs objects
-  plus content-defined blocks, with client-side dedup and resumable block
-  transfer) is a different protocol from the REST API the helper speaks, is not
-  documented as a stable interface, and -- as far as is known -- `seaf-cli` is
-  packaged for Linux and drives a daemon. Re-implementing it is a project of its
-  own; driving the installed client is not portable. Syncing `data/` with the
-  desktop client is still the right answer when no consistent code-plus-data
-  snapshot is needed, and needs no code here.
-- *Content-addressed names only.* Consistent and deduplicating, but the result
-  is unreadable without the tool; the copy design keeps the consistency and
-  gives real names.
+  plus content-defined blocks, client-side dedup, resumable block transfer) is a
+  different protocol from the REST API the helper speaks, is not documented as a
+  stable interface, and -- as far as is known -- `seaf-cli` is packaged for
+  Linux and drives a daemon. Syncing `data/` with the desktop client remains
+  the right answer when no consistent code-plus-data snapshot is needed.
+- *Library history as the snapshot.* Retention-limited and GC-dependent.
 
-**Cost model for the 131 GiB case.** First run is bound by the upload: 131 GiB
-at 32-53 MiB/s is roughly 41-68 minutes, with no local duplicate and no pack
-cap. A run with nothing changed is a directory walk and a stat comparison.
+**Cost for the 131 GiB case.** First run: hashing at disk speed, then 118 GiB at
+32-53 MiB/s (about 40-60 minutes), no local duplicate, no pack cap. A run with
+nothing changed is a directory walk and one listing per fan-out directory.
 
-**Phasing.** (0) measure the open items above on the real server; (1) payload
-upload, manifest and verified restore behind an opt-in flag, with a
-restore-and-compare test on a tree containing symlinks, modes and empty files;
-(2) snapshots by directory copy and a maintenance listing; (3) the parallel
-worker pool. Phase 1 alone already removes the local duplicate and the staging
-pass.
+**Next.** Views; a retention helper (list the objects no manifest in the
+vault's history references, and delete them on request); a remembered flag;
+optionally a payload library separate from the vault's, for quota or client-sync
+reasons.
 
 ## 16. Maintenance
 

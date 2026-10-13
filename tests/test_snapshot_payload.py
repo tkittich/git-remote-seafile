@@ -1,9 +1,9 @@
 """Payload mode of the snapshot tool, against the in-process Seafile stub.
 
-Large files bypass git: they are uploaded to ``<path>.payload/current`` and
-snapshotted by one server-side copy, and the vault commit carries a manifest.
-These tests drive the real tool (``snap.main``) with the real helper behind a
-PATH shim, so the vault push and the payload upload both hit the stub.
+Large files bypass git: they are stored on the server by SHA-256 under
+``<path>/payload/objects/<xx>/<sha256>`` and the vault commit carries a
+manifest.  These tests drive the real tool (``snap.main``) with the real helper
+behind a PATH shim, so the vault push and the payload upload both hit the stub.
 """
 
 from __future__ import annotations
@@ -27,9 +27,7 @@ sys.path.insert(0, str(_ROOT / "tools"))
 sys.path.insert(0, str(_ROOT / "tests"))
 
 import seafile_snapshot as snap  # noqa: E402
-from e2e_harness import SeafileStub, make_helper_env  # noqa: E402
-
-REPO_ID = "00000000-0000-0000-0000-0000000000e2"
+from e2e_harness import REPO_ID, SeafileStub, make_helper_env  # noqa: E402
 
 
 def _git(cwd: pathlib.Path, *args: str) -> str:
@@ -37,6 +35,10 @@ def _git(cwd: pathlib.Path, *args: str) -> str:
         ["git", *args], cwd=str(cwd), capture_output=True, text=True, check=True
     )
     return proc.stdout
+
+
+def _sha(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
 
 
 class PayloadModeTests(unittest.TestCase):
@@ -71,7 +73,7 @@ class PayloadModeTests(unittest.TestCase):
         _git(self.src, "add", ".gitignore", "small.txt")
         _git(self.src, "commit", "-qm", "init")
         self.remote = "seafile://testlib/pvault"
-        self.payload_dir = "/pvault.payload"
+        self.objects = "/pvault/payload/objects"
 
     # -- helpers --------------------------------------------------------------
     def run_tool(self, *argv: object) -> tuple[int, str, str]:
@@ -88,29 +90,25 @@ class PayloadModeTests(unittest.TestCase):
         )
 
     def server_files(self) -> dict[str, bytes]:
-        return dict(self.stub.files.get(self.stub_repo(), {}))
+        return dict(self.stub.files.get(REPO_ID, {}))
 
-    def stub_repo(self) -> str:
-        # The stub serves one library; its id is whatever the listing returns.
-        import e2e_harness
-        return e2e_harness.REPO_ID
+    def object_key(self, data: bytes) -> str:
+        sha = _sha(data)
+        return f"{self.objects}/{sha[:2]}/{sha}"
 
-    def snapshot_dirs(self) -> list[str]:
-        prefix = f"{self.payload_dir}/snapshots/"
-        return sorted({k[len(prefix):].split("/")[0] for k in self.server_files() if k.startswith(prefix)})
+    def object_count(self) -> int:
+        return sum(1 for k in self.server_files() if k.startswith(self.objects + "/"))
 
     # -- tests ----------------------------------------------------------------
-    def test_payload_bypasses_git_and_lands_on_the_server(self):
+    def test_payload_bypasses_git_and_lands_by_hash(self):
         rc, out, err = self.snapshot()
         self.assertEqual(rc, 0, out + err)
         self.assertIn("payload: 2 file(s)", out)
 
         files = self.server_files()
-        self.assertEqual(files[f"{self.payload_dir}/current/big1.bin"], self.big1)
-        self.assertEqual(files[f"{self.payload_dir}/current/sub/big2.bin"], self.big2)
-        ids = self.snapshot_dirs()
-        self.assertEqual(len(ids), 1)
-        self.assertEqual(files[f"{self.payload_dir}/snapshots/{ids[0]}/big1.bin"], self.big1)
+        self.assertEqual(files[self.object_key(self.big1)], self.big1)
+        self.assertEqual(files[self.object_key(self.big2)], self.big2)
+        self.assertEqual(self.object_count(), 2)
 
         tree = _git(self.vault, "ls-tree", "-r", "--name-only", "snapshot")
         self.assertIn("small.txt", tree)
@@ -120,9 +118,8 @@ class PayloadModeTests(unittest.TestCase):
 
         manifest = json.loads(_git(self.vault, "show", "snapshot:.seafile-payload/manifest.json"))
         by_path = {f["path"]: f for f in manifest["files"]}
-        self.assertEqual(by_path["big1.bin"]["sha256"], hashlib.sha256(self.big1).hexdigest())
+        self.assertEqual(by_path["big1.bin"]["sha256"], _sha(self.big1))
         self.assertEqual(by_path["sub/big2.bin"]["size"], 7000)
-        self.assertEqual(manifest["snapshot"], ids[0])
 
     def test_restore_downloads_and_verifies_the_payload(self):
         self.assertEqual(self.snapshot()[0], 0)
@@ -140,17 +137,18 @@ class PayloadModeTests(unittest.TestCase):
         rc, out, err = self.snapshot()
         self.assertEqual(rc, 0, out + err)
         self.assertIn("no changes since the last snapshot", out)
-        self.assertIn("uploaded 0 file(s)", out)
+        self.assertIn("uploaded 0 object(s)", out)
         self.assertEqual(self.server_files(), before)
 
-    def test_a_same_size_edit_is_still_uploaded(self):
+    def test_a_same_size_edit_is_a_new_object_and_the_old_one_stays(self):
         self.assertEqual(self.snapshot()[0], 0)
         edited = bytes(b ^ 0xFF for b in self.big1)  # same length, different bytes
         (self.src / "big1.bin").write_bytes(edited)
         rc, out, err = self.snapshot()
         self.assertEqual(rc, 0, out + err)
-        self.assertEqual(self.server_files()[f"{self.payload_dir}/current/big1.bin"], edited)
-        self.assertEqual(len(self.snapshot_dirs()), 2)
+        files = self.server_files()
+        self.assertEqual(files[self.object_key(edited)], edited)
+        self.assertEqual(files[self.object_key(self.big1)], self.big1)
 
     def test_an_older_snapshot_restores_the_older_bytes(self):
         self.assertEqual(self.snapshot()[0], 0)
@@ -163,25 +161,54 @@ class PayloadModeTests(unittest.TestCase):
         self.assertEqual(rc, 0, out + err)
         self.assertEqual((into / "big1.bin").read_bytes(), self.big1)
 
-    def test_a_file_removed_from_the_source_leaves_the_mirror(self):
+    def test_a_rename_uploads_nothing(self):
+        self.assertEqual(self.snapshot()[0], 0)
+        (self.src / "big1.bin").rename(self.src / "renamed.bin")
+        rc, out, err = self.snapshot()
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn("uploaded 0 object(s)", out)
+        self.assertEqual(self.object_count(), 2)
+        into = self.case / "renamed"
+        self.assertEqual(self.run_tool("--restore", "--remote", self.remote, "--into", into)[0], 0)
+        self.assertEqual((into / "renamed.bin").read_bytes(), self.big1)
+        self.assertFalse((into / "big1.bin").exists())
+
+    def test_duplicate_content_is_one_object(self):
+        (self.src / "copy.bin").write_bytes(self.big1)
+        rc, out, err = self.snapshot()
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn("payload: 3 file(s)", out)
+        self.assertIn("uploaded 2 object(s)", out)
+        self.assertEqual(self.object_count(), 2)
+        into = self.case / "dup"
+        self.assertEqual(self.run_tool("--restore", "--remote", self.remote, "--into", into)[0], 0)
+        self.assertEqual((into / "copy.bin").read_bytes(), self.big1)
+
+    def test_a_file_removed_from_the_source_keeps_its_object(self):
         self.assertEqual(self.snapshot()[0], 0)
         (self.src / "sub" / "big2.bin").unlink()
         self.assertEqual(self.snapshot()[0], 0)
-        files = self.server_files()
-        self.assertNotIn(f"{self.payload_dir}/current/sub/big2.bin", files)
-        # ...but the earlier snapshot still holds it.
-        self.assertTrue(any(k.endswith("/sub/big2.bin") and "/snapshots/" in k for k in files))
+        # Nothing is ever deleted by a snapshot run: the older snapshot needs it.
+        self.assertIn(self.object_key(self.big2), self.server_files())
 
     def test_corrupt_payload_fails_the_restore(self):
         self.assertEqual(self.snapshot()[0], 0)
-        sid = self.snapshot_dirs()[0]
-        key = f"{self.payload_dir}/snapshots/{sid}/big1.bin"
-        self.stub.files[self.stub_repo()][key] = bytes(len(self.big1))  # right size, wrong bytes
+        self.stub.files[REPO_ID][self.object_key(self.big1)] = bytes(len(self.big1))
         rc, out, err = self.run_tool(
             "--restore", "--remote", self.remote, "--into", self.case / "bad"
         )
         self.assertNotEqual(rc, 0)
         self.assertIn("SHA-256 does not match the manifest", out + err)
+
+    def test_a_missing_object_fails_the_restore_naming_the_file(self):
+        self.assertEqual(self.snapshot()[0], 0)
+        del self.stub.files[REPO_ID][self.object_key(self.big2)]
+        rc, out, err = self.run_tool(
+            "--restore", "--remote", self.remote, "--into", self.case / "gone"
+        )
+        self.assertNotEqual(rc, 0)
+        self.assertIn("sub/big2.bin", out + err)
+        self.assertIn("not found", out + err)
 
     def test_a_vault_that_used_payload_refuses_a_run_without_the_flag(self):
         self.assertEqual(self.snapshot()[0], 0)
@@ -199,54 +226,46 @@ class PayloadModeTests(unittest.TestCase):
     def test_dry_run_reads_the_server_and_changes_nothing(self):
         rc, out, err = self.snapshot("--dry-run")
         self.assertEqual(rc, 0, out + err)
-        self.assertIn("to upload 2 file(s)", out)
+        self.assertIn("to upload 2 object(s)", out)
         self.assertEqual(self.server_files(), {})
 
-    def test_names_the_server_rewrites_still_round_trip(self):
-        # The real server stores names NFC-normalised and turns '"' into %22;
-        # the stub does the same when asked, so the tool must compare and fetch
-        # by the name the server holds, not the name it sent.
-        self.stub.faults["server_names"] = 1
-        nfd = unicodedata.normalize("NFD", "caf\u00e9") + ".bin"
-        content = os.urandom(3000)
-        (self.src / nfd).write_bytes(content)
-        quoted = None
+    def test_names_need_no_special_handling(self):
+        # Objects are named by hash, so decomposed Unicode, a long name and (off
+        # Windows) a double quote never meet the server's name rules.
+        nfd = unicodedata.normalize("NFD", "café") + ".bin"
+        long_name = "ก" * 86 + ".bin"  # 262 bytes of UTF-8: refused as a server name
+        content = {nfd: os.urandom(3000), long_name: os.urandom(3100)}
         if os.name != "nt":
-            quoted = 'say "hi".bin'
-            (self.src / quoted).write_bytes(content[::-1])
+            content['say "hi".bin'] = os.urandom(3200)
+        for name, data in content.items():
+            (self.src / name).write_bytes(data)
         rc, out, err = self.snapshot()
         self.assertEqual(rc, 0, out + err)
-        held = {k.rsplit("/", 1)[-1] for k in self.server_files() if "/current/" in k}
-        self.assertIn(unicodedata.normalize("NFC", nfd), held)
-        # A second run recognises what is there: nothing to upload.
-        rc, out, err = self.snapshot()
-        self.assertEqual(rc, 0, out + err)
-        self.assertIn("uploaded 0 file(s)", out)
         into = self.case / "names"
         rc, out, err = self.run_tool("--restore", "--remote", self.remote, "--into", into)
         self.assertEqual(rc, 0, out + err)
-        self.assertEqual((into / nfd).read_bytes(), content)
-        if quoted:
-            self.assertEqual((into / quoted).read_bytes(), content[::-1])
+        for name, data in content.items():
+            self.assertEqual((into / name).read_bytes(), data)
 
-    def test_a_name_over_255_bytes_is_refused_before_any_upload(self):
-        long_name = "\u0e01" * 86 + ".bin"  # 86 x 3 bytes + 4 = 262 bytes of UTF-8
-        (self.src / long_name).write_bytes(os.urandom(3000))
-        rc, out, err = self.snapshot()
+    def test_a_file_that_changes_between_hash_and_upload_is_refused(self):
+        with unittest.mock.patch.object(snap, "_unchanged", return_value=False):
+            rc, out, err = self.snapshot()
         self.assertNotEqual(rc, 0)
-        self.assertIn("longer than 255 bytes", out + err)
-        self.assertEqual(self.server_files(), {})
+        self.assertIn("changed", out + err)
+        self.assertEqual(self.object_count(), 0)
 
-    def test_two_paths_that_become_one_server_name_are_refused(self):
-        nfc = unicodedata.normalize("NFC", "caf\u00e9") + ".bin"
-        nfd = unicodedata.normalize("NFD", "caf\u00e9") + ".bin"
-        (self.src / nfc).write_bytes(os.urandom(2000))
-        (self.src / nfd).write_bytes(os.urandom(2100))
-        if len({p.name for p in self.src.iterdir() if p.suffix == ".bin"}) < 3:
-            self.skipTest("this filesystem folds the two spellings into one file")
-        rc, out, err = self.snapshot()
+    def test_an_unreadable_file_names_itself(self):
+        real_open = open
+
+        def refuse(path, *a, **k):
+            if str(path).endswith("big1.bin"):
+                raise PermissionError(13, "sharing violation")
+            return real_open(path, *a, **k)
+
+        with unittest.mock.patch("builtins.open", side_effect=refuse):
+            rc, out, err = self.snapshot()
         self.assertNotEqual(rc, 0)
-        self.assertIn("become the same name on the server", out + err)
+        self.assertIn("big1.bin", out + err)
 
     def test_many_files_upload_in_parallel_and_all_land(self):
         contents = {}
@@ -257,9 +276,9 @@ class PayloadModeTests(unittest.TestCase):
         rc, out, err = self.snapshot("--payload-jobs", "4")
         self.assertEqual(rc, 0, out + err)
         files = self.server_files()
-        for name, data in contents.items():
-            self.assertEqual(files[f"{self.payload_dir}/current/{name}"], data)
-        self.assertIn("uploaded 14 file(s)", out)
+        for data in contents.values():
+            self.assertEqual(files[self.object_key(data)], data)
+        self.assertIn("uploaded 14 object(s)", out)
 
     def test_a_failed_parallel_upload_names_the_file_and_resumes(self):
         for i in range(4):
@@ -272,7 +291,7 @@ class PayloadModeTests(unittest.TestCase):
         del self.stub.faults["upload"]
         rc, out, err = self.snapshot("--payload-jobs", "3")
         self.assertEqual(rc, 0, out + err)
-        self.assertIn(f"{self.payload_dir}/current/fail0.bin", self.server_files())
+        self.assertEqual(self.object_count(), 6)
 
     def test_parse_size(self):
         self.assertEqual(snap.parse_size("64M"), 64 * 1024 ** 2)
