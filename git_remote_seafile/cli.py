@@ -34,10 +34,13 @@ _COMMANDS: tuple[tuple[str, str, str, tuple[tuple[str, str], ...]], ...] = (
      "Run pre-flight safety checks (Trap 1 & 2)", ()),
     ("check-auth", "git-remote-seafile check-auth",
      "Verify active Seafile login", ()),
-    ("gc", "git-remote-seafile gc <seafile://url> [--min-packs N]",
+    ("gc", "git-remote-seafile gc <seafile://url> [--min-packs N | --tail]",
      "Compact multiple remote packfiles",
      (("--min-packs N",
-       "Only compact when the remote holds at least N packfiles (default: 2)"),)),
+       "Only compact when the remote holds at least N packfiles (default: 2)"),
+      ("--tail",
+       "Run exactly what seafile.autogc runs: merge only the small packfiles, "
+       "leave large ones in place, no pruning"))),
     ("lfs-transfer", "git-remote-seafile lfs-transfer <seafile://url>",
      "Git LFS Custom Transfer Agent", ()),
     ("set-head", "git-remote-seafile set-head <seafile://url> <branch>",
@@ -369,11 +372,48 @@ def _cmd_test(rest: list[str]) -> int:
         return _error(f"Test failed: {ex}")
 
 
+def _gc_tail(url: str) -> int:
+    """``gc --tail``: the automatic tier, on demand.
+
+    Lets a user run, test or schedule exactly what ``seafile.autogc`` does.
+    It honours the same threshold and download budget, so "skipped" is a normal
+    answer.
+    """
+    try:
+        from .config import RemoteConfig
+        from .gc import describe_size_delta, tail_merge
+        helper = RemoteHelper("gc", url)
+        res = tail_merge(
+            helper.client, helper.repo_id, helper.repo_path, config=RemoteConfig.load()
+        )
+    except Exception as ex:
+        return _error(f"Tail merge failed: {ex}")
+    status = res.get("status")
+    if status in ("ok", "incomplete"):
+        delta = describe_size_delta((res["tail_bytes"] - res["new_pack_bytes"]) // 1024)
+        print(
+            f"Merged {res['merged_packs']} small packfiles ({delta}); "
+            f"{res['frozen_packs']} large packfile(s) left in place."
+        )
+        if status == "incomplete":
+            stopped = str(res.get("cleanup_stopped", "")).strip()
+            if stopped:
+                print(stopped)
+            return 1
+        return 0
+    if status == "error":
+        return _error(str(res.get("message", "Tail merge failed.")))
+    print(res.get("message", "Tail merge skipped."))
+    return 0
+
+
 def _cmd_gc(rest: list[str]) -> int:
     positional = _positional_args(rest, value_options=("--min-packs",))
     if not positional:
         return _usage("gc")
     url = positional[0]
+    if "--tail" in rest:
+        return _gc_tail(url)
     min_packs = _parse_min_packs(rest)
     try:
         from .config import RemoteConfig

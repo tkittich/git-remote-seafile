@@ -52,6 +52,35 @@ class TestDoctor(unittest.TestCase):
         self.assertIn("[FAIL] write probe", out)
 
 
+class TestGcTail(unittest.TestCase):
+    def _run(self, result):
+        helper = MagicMock(repo_id="rid", repo_path="/r")
+        out, err = io.StringIO(), io.StringIO()
+        with patch.object(sys, "argv", ["git-remote-seafile", "gc", "--tail", "seafile://lib/r"]),              patch("sys.stdout", out), patch("sys.stderr", err),              patch("git_remote_seafile.cli.RemoteHelper", return_value=helper),              patch("git_remote_seafile.gc.tail_merge", return_value=result) as merge:
+            code = main()
+        return code, out.getvalue(), err.getvalue(), merge
+
+    def test_ok_reports_what_was_merged(self):
+        code, out, _, merge = self._run({
+            "status": "ok", "merged_packs": 5, "frozen_packs": 2,
+            "new_pack_bytes": 1024, "tail_bytes": 4096,
+        })
+        self.assertEqual(code, 0)
+        self.assertIn("Merged 5 small packfiles", out)
+        self.assertIn("2 large packfile(s) left in place", out)
+        merge.assert_called_once()
+
+    def test_skipped_is_not_a_failure(self):
+        code, out, _, _ = self._run({"status": "skipped", "message": "Only 1 movable packfile(s)"})
+        self.assertEqual(code, 0)
+        self.assertIn("Only 1 movable", out)
+
+    def test_error_exits_nonzero_on_stderr(self):
+        code, _, err, _ = self._run({"status": "error", "message": "boom"})
+        self.assertEqual(code, 1)
+        self.assertIn("boom", err)
+
+
 class TestCLIBasics(unittest.TestCase):
     def test_help(self):
         with patch.object(sys, "argv", ["git-remote-seafile"]):

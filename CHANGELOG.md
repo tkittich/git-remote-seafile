@@ -10,7 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Everything here follows from the 2026-10-12 review (`REVIEW.sonnet.md`) and the decisions taken on it.
 The theme is **less machinery, and the machinery that remains fails loudly**.
 
-### Added
+### Added- **`gc --tail`** runs the automatic tail-merge tier on demand, so "what does autogc do" is a command you can run, test and schedule rather than a trigger you have to provoke.
+
 - **`git-remote-seafile doctor [<seafile://url>]`**: login, how the URL is interpreted (server / library / path), safety guards and a write-and-delete probe in one run, stopping at the first failure and printing the next command.
 - **An opt-in real-server test tier** (`tests/test_realserver.py`, `SEAFILE_TEST_LIBRARY=<scratch library>`): API semantics, the SHA-1/SHA-256 round trip, concurrent pushers through the lock, and the conflict-copy observation. First run against Seafile CE 13.0.28; see DESIGN §4.3.1.
 - **Conflict copies are named, not swallowed.** After a ref write the helper lists the directory and warns when `<ref> (SFConflict ...)` appeared beside it; ref listing and `gc` identify such files as conflict copies instead of "malformed ref name". Measured on a real server: twelve simultaneous same-path uploads all returned success and left six copies.

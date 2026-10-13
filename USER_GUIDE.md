@@ -650,6 +650,7 @@ git-remote-seafile gc seafile://code/myproject
 ```
 
 - **Options**: `--min-packs N` (default: 2) — only repack if at least $N$ packfiles exist.
+- **`--tail`**: run exactly what `seafile.autogc` runs (§10.3) — merge only the small packs, leave large ones where they are, prune nothing — so you can try, time or schedule the automatic tier by hand. It honours the same threshold and download budget; "skipped" is a normal answer.
 - Automatically locks the remote repository during compaction to prevent push conflicts; the lock lease is refreshed during pack downloads, and ownership is re-validated before the deletions begin *and again before each obsolete pack is removed*.
 - **Exit codes**: `0` on success and on a benign skip (fewer than `--min-packs` packfiles), `1` on a failed compaction (download error, size mismatch, invalid pack name) — safe to gate a scheduled CI job on.
 - **Off-namespace refs are refused.** The compaction mirror carries only `refs/heads` and `refs/tags`; if the library holds refs anywhere else under `refs/` (hand-created `refs/notes/...`, another tool's refs) — or a ref name git could not honour — gc refuses *before downloading anything*, naming the offending refs: their objects would otherwise be deleted from the consolidated pack while the ref file survived, broken. Move such refs into `refs/heads` or `refs/tags` first.
