@@ -244,6 +244,13 @@ git pull
 pip install -e .
 ```
 
+**Upgrading to v0.8.8 from v0.8.7 or earlier changes four defaults you may notice:**
+
+- `seafile.autogc` is now **on**: after a qualifying push the helper merges the small packs. `git config seafile.autogc false` restores the tip-only behaviour (§10.2).
+- Subcommand **usage errors exit 2 on stderr** (they used to exit 1 on stdout); results and reports stay on stdout. Re-check any script that parsed the old stream (§14, *Output and Exit Codes*).
+- `seafile.locksettle` and `seafile.gcmaxmib` are no longer settings; a value still in your git config is reported once and ignored. `seafile.gcmaxpackmib` now means the largest pack the helper writes, and the automatic budget is 2 x it.
+- The snapshot tool now **refuses to stage a tree the vault's volume cannot hold** (`--allow-low-disk` overrides), and `--restore` without `--branch` uses the remote's only branch.
+
 Two compatibility facts are worth knowing before upgrading a fleet:
 
 - **v0.7.0 removed the legacy lock protocol outright.** The `.git-lock.json` single-file lock was replaced by the `.git-lock.d/` ticket queue, and the helper no longer looks for, or deletes, an old mirror — a leftover `.git-lock.json` is harmless clutter you can delete by hand. Do not run a v0.1–v0.3 helper against the same repository as a v0.7.0+ one: those clients predate the ticket protocol and cannot see its locks.
@@ -1006,6 +1013,7 @@ which hashes the bytes as they lie on disk. That is the only one of Git's three 
 
 ### 15.5 What the tool refuses to do
 
+- **It will not stage a tree the vault's volume cannot hold.** Before the first byte is staged the tool estimates the new object storage (tree size scaled by the sampled compressibility, minus what the vault already holds) and refuses when that exceeds the free space less 1 GiB; `--allow-low-disk` overrides. A 130 GiB tree on a volume with 60 GiB free is refused with the numbers rather than filling the disk; narrow the tree with `--exclude` or point `--vault` at a bigger volume.
 - **It will not push the vault to one of the source's own code remotes.** A whole-tree backup legitimately contains `.env`, keys and build artefacts; pouring that into a shared code library is almost never what anyone wants. If the vault's destination collides with a URL in the source's `remote.*.url` / `remote.*.pushurl`, the push is refused and the colliding remote named. `--allow-shared-remote` overrides it.
 - **It reports credential-shaped paths at the end of every run.** This is a *warning, not a refusal* — a full backup *should* capture `.env`; the point is to find out before the first push, not after.
 - **It will not run on a stale lock.** A `seafile-snapshot.lock` left behind by a killed process is detected by checking whether the owning PID is still alive, and reclaimed rather than blocking every future run.

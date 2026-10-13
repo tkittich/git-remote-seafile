@@ -157,6 +157,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "risk of the client rewriting files under Git on you",
     )
     parser.add_argument(
+        "--allow-low-disk",
+        action="store_true",
+        help="stage even when the estimate says the vault's volume cannot hold "
+        "the tree. The estimate is an upper bound (tree size, scaled by the "
+        "sampled compressibility, minus what the vault already stores); this "
+        "is for data you know is more compressible than the sample suggests",
+    )
+    parser.add_argument(
         "--verify",
         action="store_true",
         help="with --restore, also run 'git fsck' on the clone. Byte-exactness "
@@ -473,6 +481,18 @@ def main(argv: list[str] | None = None) -> int:
                             write_identity=False)
             if not args.no_object_compression:
                 choose_profile(vault, git_dir, source, exclude, vault_config, write=False)
+        # Free what a killed earlier run left behind first, under the vault
+        # lock: it can be tens of GiB, and the free-space check that follows is
+        # only honest once it is gone.
+        if not args.dry_run:
+            with VaultLock(git_dir):
+                sweep_temp_packs(git_dir)
+        # Before a byte is staged: a tree the volume cannot hold must be refused
+        # now, not discovered when the disk fills (a dry run stages too).
+        check_free_space(
+            git_dir, vault, source, exclude, vault_config,
+            allow_low_disk=args.allow_low_disk,
+        )
         # The hostname is in the default message because a shared vault is a
         # single chain of snapshots from several machines, and the commit author
         # is the same person on all of them -- so without this, `git log` cannot
@@ -584,11 +604,23 @@ def main(argv: list[str] | None = None) -> int:
                 if len(secrets) > 20:
                     print(f"  ... and {len(secrets) - 20} more")
 
-            # A ``None`` commit *is* the "tree unchanged" signal: build_snapshot
-            # returns one when there is nothing new to record.  Testing
-            # ``commit is None`` directly rather than through an alias also lets
-            # the type checker narrow it where the commit is dereferenced.
-            if commit is None:
+            # A real run's ``None`` commit *is* the "tree unchanged" signal:
+            # build_snapshot returns one when there is nothing new to record.  A
+            # dry run never makes a commit, so there ``None`` says nothing and
+            # the tree is compared with the base's instead -- otherwise a first
+            # snapshot of 8 GiB was reported as "no changes since the last
+            # snapshot".
+            if args.dry_run:
+                if base:
+                    base_tree = git(
+                        git_dir, source, ["rev-parse", base + "^{tree}"], cwd=source, check=False
+                    ).stdout.strip()
+                    changed = tree != base_tree
+                else:
+                    changed = True
+            else:
+                changed = commit is not None
+            if not changed:
                 print("no changes since the last snapshot")
             elif base:
                 stat = diff_stat(git_dir, source, base, tree)
@@ -596,8 +628,13 @@ def main(argv: list[str] | None = None) -> int:
                     print(stat)
 
             if args.dry_run:
-                if commit is None:
+                if not changed:
                     print("\ndry run -- nothing to commit, nothing pushed")
+                elif commit is None:
+                    print(
+                        "\ndry run -- branch not moved, nothing pushed "
+                        "(a real run would record this tree)"
+                    )
                 else:
                     print(
                         f"\ndry run -- branch not moved, nothing pushed "

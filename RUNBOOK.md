@@ -312,7 +312,7 @@ If a repository is unreadable and the procedures above did not identify the caus
 following before opening an issue — it is the difference between a diagnosis and a guess:
 
 - the output of `git-remote-seafile version`,
-- the output of `check-auth`, `check-safety` and `test` for the affected URL,
+- the output of `git-remote-seafile doctor <url>` (login, how the URL was interpreted, safety checks, a write probe) for the affected URL — or, if you prefer the individual checks, `check-auth`, `check-safety` and `test`,
 - the full `stderr` from the failing command, including any `Warning:` lines,
 - a listing of the repository's `refs/heads/`, `objects/pack/` and `.git-lock.d/` from the Seafile
   Web UI,

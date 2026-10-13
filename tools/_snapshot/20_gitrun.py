@@ -284,7 +284,14 @@ def git(
     )
     if check and proc.returncode != 0:
         detail = (proc.stderr or proc.stdout).strip()
+        hint = ""
+        if "index.lock" in detail and "exist" in detail:
+            hint = (
+                "\nA git process left its lock behind (the earlier run was probably killed). "
+                "If no git process is running on this vault, delete the lock file named "
+                "above and re-run; the vault itself is not damaged."
+            )
         raise SnapshotError(
-            f"git {' '.join(args)} failed (rc={proc.returncode})\n{detail}"
+            f"git {' '.join(args)} failed (rc={proc.returncode})\n{detail}{hint}"
         )
     return proc

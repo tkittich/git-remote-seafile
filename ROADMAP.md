@@ -13,8 +13,9 @@
 
 | ID / Source | Component | Description & Impact | Effort | Risk | Planned Target |
 |---|---|---|:---:|:---:|:---:|
-| **Fault Injection** | `tests/` | Comprehensive End-to-End Fault Injection: Clustered Seafile tests and high-latency simulation. Per-path `file_404_on` / `file_500_on` / `upload` injection already ships in `e2e_harness.py` (v0.5.4), so "comprehensive" is the load-bearing word — what is missing is clustering and latency simulation, not fault injection itself. | L | Low | v1.0.0 |
-| **Credential Store**| `client.py` | Enterprise Credential Store: Windows Credential Manager and macOS Keychain integration. | M | Medium | v1.0.0 |
+| **Fault Injection** | `tests/` | Comprehensive End-to-End Fault Injection: Clustered Seafile tests and high-latency simulation. Per-path `file_404_on` / `file_500_on` / `upload` injection already ships in `e2e_harness.py` (v0.5.4), so "comprehensive" is the load-bearing word — what is missing is clustering and latency simulation, not fault injection itself. | L | Low | idea (not planned) |
+| **Credential Store**| `client.py` | Enterprise Credential Store: Windows Credential Manager and macOS Keychain integration. | M | Medium | idea (not planned) |
+| **Retired-key warnings** | `config.py` | `seafile.locksettle` and `seafile.gcmaxmib` are reported once per load and ignored (retired in v0.8.8). They cost one `git config --get-regexp` per operation; drop the warning once users have had a release to migrate. | S | None | backlog |
 
 ### 1.1 Deferred polish (v0.8.0 review cycle — cosmetic, no behavioral stake)
 

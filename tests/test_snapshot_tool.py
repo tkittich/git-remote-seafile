@@ -196,6 +196,10 @@ class SourceSafetyTests(_SnapshotFixture):
         self.assertIn("dry run", out)
         proc = _git(self.vault, "rev-parse", "-q", "--verify", f"refs/heads/{BRANCH}")
         self.assertNotEqual(proc.returncode, 0)
+        # A *first* snapshot is not "no changes": a dry run never commits, so
+        # the report has to compare trees rather than trust the missing commit.
+        self.assertNotIn("no changes since the last snapshot", out)
+        self.assertIn("a real run would record this tree", out)
 
     def test_captures_gitignored_files(self):
         rc, _, _ = self.snapshot()
@@ -1629,9 +1633,149 @@ class AutoRepackTests(_SnapshotFixture):
         self.assertEqual(after["count"], before["count"])
 
 
+class FreeSpaceGuardTests(unittest.TestCase):
+    """Staging a tree the volume cannot hold fills the disk; refuse it up front.
+
+    The incident: a 130 GiB tree and a vault on a volume with 60 GiB free.  A
+    dry run stages exactly as much as a real run, so the guard covers both.
+    """
+
+    MARGIN = 1024 ** 3
+
+    def _check(self, free, held_kib=0, allow=False, vault_config=None, mib=2):
+        with tempfile.TemporaryDirectory() as td:
+            src = pathlib.Path(td) / "src"
+            src.mkdir()
+            for i in range(3):
+                (src / f"raw{i}.bin").write_bytes(os.urandom(mib * 1024 * 1024))
+            usage = shutil._ntuple_diskusage(total=free * 2, used=free, free=free)
+            with unittest.mock.patch.object(snap.shutil, "disk_usage", return_value=usage),                  unittest.mock.patch.object(snap, "_object_store_stats",
+                                            return_value={"size": held_kib, "size-pack": 0}):
+                snap.check_free_space(pathlib.Path(td), pathlib.Path(td), src, [],
+                                      vault_config or {}, allow_low_disk=allow)
+
+    def test_a_tree_that_does_not_fit_is_refused_with_the_numbers(self):
+        with self.assertRaises(snap.SnapshotError) as ctx:
+            self._check(free=self.MARGIN + 1024 * 1024)
+        msg = str(ctx.exception)
+        self.assertIn("refusing to stage", msg)
+        self.assertIn("--allow-low-disk", msg)
+
+    def test_enough_room_passes_and_so_does_the_override(self):
+        self._check(free=self.MARGIN + 64 * 1024 * 1024)
+        self._check(free=1, allow=True)
+
+    def test_what_the_vault_already_holds_is_not_counted_again(self):
+        # 6 MiB tree, 6 MiB already stored: nothing new to write.
+        self._check(free=self.MARGIN, held_kib=6 * 1024)
+
+
+class DryRunUsesTheRawProfileTests(unittest.TestCase):
+    """A preview must stage at the speed of the run it previews.
+
+    On the flood tree the dry run deflated 8 GiB of incompressible zips on one
+    core (~46 MiB/s) while the real run would have used core.compression=0
+    (~186 MiB/s) -- four times slower, on a machine that looked idle.
+    """
+
+    def test_the_settings_reach_git_children_without_touching_the_vault(self):
+        with unittest.mock.patch.dict(os.environ, {}, clear=False):
+            for k in [k for k in os.environ if k.startswith("GIT_CONFIG_")]:
+                del os.environ[k]
+            snap._use_profile_for_this_process_only()
+            self.assertEqual(os.environ["GIT_CONFIG_COUNT"], "2")
+            pairs = {
+                os.environ[f"GIT_CONFIG_KEY_{i}"]: os.environ[f"GIT_CONFIG_VALUE_{i}"]
+                for i in range(2)
+            }
+            self.assertEqual(pairs["core.compression"], "0")
+            self.assertEqual(pairs["core.bigFileThreshold"], "50m")
+
+    def test_existing_config_environment_entries_are_kept(self):
+        env = {"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "x.y", "GIT_CONFIG_VALUE_0": "z"}
+        with unittest.mock.patch.dict(os.environ, env):
+            snap._use_profile_for_this_process_only()
+            self.assertEqual(os.environ["GIT_CONFIG_COUNT"], "3")
+            self.assertEqual(os.environ["GIT_CONFIG_KEY_0"], "x.y")
+            self.assertEqual(os.environ["GIT_CONFIG_KEY_1"], "core.compression")
+
+    def test_choose_profile_dry_run_applies_it_and_writes_no_config(self):
+        gib_tree = {"total": 4.0 * 1024 ** 3, "payload": 4.0 * 1024 ** 3, "sampled": 1e6, "ratio": 0.99}
+        with tempfile.TemporaryDirectory() as td,              unittest.mock.patch.dict(os.environ, {}, clear=False),              unittest.mock.patch.object(snap, "sample_payload", return_value=gib_tree),              contextlib.redirect_stdout(io.StringIO()):
+            for k in [k for k in os.environ if k.startswith("GIT_CONFIG_")]:
+                del os.environ[k]
+            vault = pathlib.Path(td)
+            snap.choose_profile(vault, vault / ".git", vault, [], {}, write=False)
+            self.assertEqual(os.environ.get("GIT_CONFIG_COUNT"), "2")
+            self.assertFalse((vault / ".git").exists(), "a dry run writes nothing")
+
+
+class TempPackSweepTests(unittest.TestCase):
+    """A killed `git pack-objects` leaves `tmp_pack_*` that git never removes.
+
+    On the flood vault one was 22.5 GiB (a killed run on 2026-10-12) and nothing
+    reported it: `count-objects` calls it "garbage" and the tool read that number
+    as unreachable objects.
+    """
+
+    def _vault(self, td):
+        git_dir = pathlib.Path(td) / ".git"
+        (git_dir / "objects" / "pack").mkdir(parents=True)
+        return git_dir
+
+    def test_only_old_temporary_packs_are_removed(self):
+        with tempfile.TemporaryDirectory() as td:
+            git_dir = self._vault(td)
+            pack_dir = git_dir / "objects" / "pack"
+            old = pack_dir / "tmp_pack_Old123"
+            fresh = pack_dir / "tmp_pack_New456"
+            real = pack_dir / "pack-abc.pack"
+            for p, n in ((old, 5000), (fresh, 3000), (real, 100)):
+                p.write_bytes(b"x" * n)
+            stale = time.time() - 7200
+            os.utime(old, (stale, stale))
+            os.utime(real, (stale, stale))
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                freed = snap.sweep_temp_packs(git_dir)
+            self.assertEqual(freed, 5000)
+            self.assertFalse(old.exists())
+            self.assertTrue(fresh.exists(), "a pack that may still be being written stays")
+            self.assertTrue(real.exists(), "a finished pack is never touched")
+            self.assertIn("leftover temporary pack", out.getvalue())
+
+    def test_nothing_to_sweep_is_silent(self):
+        with tempfile.TemporaryDirectory() as td:
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                self.assertEqual(snap.sweep_temp_packs(self._vault(td)), 0)
+            self.assertEqual(out.getvalue(), "")
+
+
+class StaleGitLockHintTests(unittest.TestCase):
+    def test_a_leftover_index_lock_is_explained_not_just_quoted(self):
+        proc = unittest.mock.MagicMock(
+            returncode=128, stdout="",
+            stderr="fatal: Unable to create 'V/.git/index.lock': File exists.",
+        )
+        with unittest.mock.patch.object(snap, "_run", return_value=proc):
+            with self.assertRaises(snap.SnapshotError) as ctx:
+                snap.git(pathlib.Path("V/.git"), None, ["add", "-A"], cwd=pathlib.Path("."))
+        self.assertIn("left its lock behind", str(ctx.exception))
+        self.assertIn("delete the lock file", str(ctx.exception))
+
+
 class LargePayloadProfileTests(unittest.TestCase):
     """A first-run sample decides once whether the vault should skip deflate and
     delta search -- the two costs that made a 20 GB+ raw-data tree time out."""
+
+    def setUp(self):
+        # A dry-run verdict puts git settings into this process's environment
+        # (so the preview stages at the real run's speed); keep that from
+        # leaking into the next test's `git config` reads.
+        patcher = unittest.mock.patch.dict(os.environ, {}, clear=False)
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def _tree(self, td, big_files=0, big_size=0, text_files=0, random_data=True):
         src = pathlib.Path(td) / "src"
@@ -1718,6 +1862,11 @@ class LargePayloadProfileTests(unittest.TestCase):
                     contextlib.redirect_stdout(io.StringIO()) as out:
                 snap.choose_profile(vault, git_dir, src, [], snap._read_local_config_map(vault), write=False)
             self.assertIn("dry run", out.getvalue())
+            # The preview's settings travel in the environment; the question
+            # here is what was *written*, so look at the vault's file alone.
+            self.assertEqual(os.environ.get("GIT_CONFIG_COUNT"), "2")
+            for k in [k for k in os.environ if k.startswith("GIT_CONFIG_")]:
+                del os.environ[k]
             self.assertEqual(snap._config(vault, "core.compression"), "")
             self.assertEqual(snap._config(vault, "snapshot.profile"), "")
 

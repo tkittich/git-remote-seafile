@@ -190,6 +190,27 @@ def decide_profile(measure: dict[str, float]) -> str:
     return "raw"
 
 
+def _use_profile_for_this_process_only() -> None:
+    """Give this process's git children the raw-payload settings, writing nothing.
+
+    A preview stages the whole tree -- that is how it can report the diffstat,
+    the secrets and the gitlinks -- and until this was added it did so with
+    git's defaults while the real run would use the raw profile.  Measured on
+    the flood tree: deflating incompressible zips ran at ~46 MiB/s on one core
+    (the machine looked idle: 1 of 24 threads busy) against ~186 MiB/s with
+    ``core.compression=0``, so the preview took four times as long as the run
+    it was previewing.  The settings go in through git's own environment
+    channel, so no config file is touched and the vault stays exactly as a dry
+    run promises.
+    """
+    base = int(os.environ.get("GIT_CONFIG_COUNT", "0") or 0)
+    settings = (("core.compression", "0"), ("core.bigFileThreshold", _PROFILE_BIG_FILE_THRESHOLD))
+    for offset, (key, value) in enumerate(settings):
+        os.environ[f"GIT_CONFIG_KEY_{base + offset}"] = key
+        os.environ[f"GIT_CONFIG_VALUE_{base + offset}"] = value
+    os.environ["GIT_CONFIG_COUNT"] = str(base + len(settings))
+
+
 def choose_profile(
     vault: Path, git_dir: Path, source: Path, excludes: list[str],
     vault_config: dict[str, list[str]], *, write: bool, recheck: bool = False,
@@ -225,11 +246,72 @@ def choose_profile(
                   f"Undo with `git -C {vault} config --unset core.compression` and "
                   f"`--unset core.bigFileThreshold`.")
         else:
+            _use_profile_for_this_process_only()
             print(f"dry run -- {what}: a real run would store objects uncompressed and "
-                  f"skip delta search for big blobs.")
+                  f"skip delta search for big blobs (applied to this preview only, "
+                  f"so it stages at the speed a real run would).")
     elif write:
         git(git_dir, vault, ["config", "snapshot.profile", "default"], cwd=vault)
         git(git_dir, vault, ["config", "snapshot.profilebytes", str(int(measure["total"]))], cwd=vault)
+
+
+#: Head-room kept free after staging: the index, the repack's temporary
+#: packfile and whatever else the volume is doing.
+_FREE_SPACE_MARGIN_BYTES = 1024 ** 3
+
+
+def estimate_staging_bytes(
+    git_dir: Path, vault: Path, source: Path, excludes: list[str],
+    vault_config: dict[str, list[str]],
+) -> tuple[int, int]:
+    """``(tree_bytes, new_bytes)``: the tree's size and what staging will add.
+
+    The estimate is deliberately an upper bound on the *new* data: the tree's
+    size, scaled by the sampled compressibility unless objects are stored
+    uncompressed, minus what the vault's object store already holds.  A second
+    run of an unchanged tree therefore estimates ~0; a first run of a 130 GiB
+    tree estimates ~130 GiB.  It can over-estimate (renamed files hash to
+    objects the vault already has) but not by enough to matter against a
+    refusal that is one flag to override.
+    """
+    measure = sample_payload(source, excludes)
+    total = measure["total"]
+    uncompressed = (
+        (vault_config.get("snapshot.profile") or [""])[0] == "raw"
+        or (vault_config.get("core.compression") or [""])[0] == "0"
+        or decide_profile(measure) == "raw"
+    )
+    ratio = measure["ratio"]
+    factor = 1.0 if (uncompressed or not 0.0 < ratio < 1.0) else ratio
+    stats = _object_store_stats(git_dir, vault)
+    held = (stats.get("size", 0) + stats.get("size-pack", 0)) * 1024
+    return int(total), max(0, int(total * factor) - held)
+
+
+def check_free_space(
+    git_dir: Path, vault: Path, source: Path, excludes: list[str],
+    vault_config: dict[str, list[str]], *, allow_low_disk: bool = False,
+) -> None:
+    """Refuse to start staging a tree the vault's volume cannot hold.
+
+    ``git add`` writes every new object before anything can be undone, and a
+    full volume does not fail cleanly: the vault is left with a partial object
+    store and everything else on that disk -- including the Seafile client's
+    own data -- starts failing too.  Staging a 130 GiB tree onto a volume with
+    60 GiB free is exactly that, and a dry run stages as much as a real one.
+    """
+    tree, need = estimate_staging_bytes(git_dir, vault, source, excludes, vault_config)
+    free = shutil.disk_usage(vault).free
+    if need + _FREE_SPACE_MARGIN_BYTES <= free or allow_low_disk:
+        return
+    raise SnapshotError(
+        f"refusing to stage: the tree is {_fmt_bytes(tree)} and staging it needs about "
+        f"{_fmt_bytes(need)} of new object storage in {vault}, but only {_fmt_bytes(free)} is free "
+        f"on that volume (and {_fmt_bytes(_FREE_SPACE_MARGIN_BYTES)} is kept in reserve). "
+        "Put the vault on a larger volume with --vault, narrow the tree with --exclude, "
+        "or pass --allow-low-disk if the data is far more compressible than the sample "
+        "suggests."
+    )
 
 
 def profile_recheck_due(vault_config: dict[str, list[str]], tree_bytes: int) -> bool:
@@ -248,6 +330,46 @@ def profile_recheck_due(vault_config: dict[str, list[str]], tree_bytes: int) -> 
     except ValueError:
         last = 0
     return tree_bytes >= 2 * last
+
+
+#: A temporary pack younger than this may belong to a git process that is still
+#: writing it; older ones were abandoned.
+_TEMP_PACK_MIN_AGE_SECONDS = 3600
+
+
+def sweep_temp_packs(git_dir: Path, *, min_age: float = _TEMP_PACK_MIN_AGE_SECONDS) -> int:
+    """Delete ``tmp_pack_*`` files an interrupted run left in the object store.
+
+    ``git pack-objects`` and ``repack`` write ``objects/pack/tmp_pack_<random>``
+    and rename it when complete; a run that is killed mid-write leaves the file
+    behind, and git never removes it (``count-objects`` reports it as "garbage").
+    On the flood vault one such file was 22.5 GiB -- nearly half the free space
+    on its volume -- and nothing in the tool mentioned it.  Called with the
+    vault lock held, so no other snapshot run can be writing one; the age
+    threshold covers a git process the user started by hand.  Returns bytes
+    freed.
+    """
+    freed = 0
+    cutoff = time.time() - min_age
+    pack_dir = git_dir / "objects" / "pack"
+    try:
+        entries = list(pack_dir.glob("tmp_pack_*"))
+    except OSError:
+        return 0
+    for path in entries:
+        try:
+            st = path.stat()
+            if st.st_mtime > cutoff:
+                continue
+            size = st.st_size
+            path.unlink()
+            freed += size
+        except OSError:
+            continue
+    if freed:
+        print(f"removed leftover temporary pack file(s) from an interrupted run "
+              f"({_fmt_bytes(freed)} freed)")
+    return freed
 
 
 def maintain_vault(vault: Path, *, full_repack: bool = False) -> int:
@@ -279,8 +401,9 @@ def maintain_vault(vault: Path, *, full_repack: bool = False) -> int:
           f"{_fmt_bytes(loose_kb * 1024)} loose, {_fmt_bytes(packed_kb * 1024)} "
           f"in {stats.get('packs', 0)} packfile(s)")
     if stats.get("garbage", 0):
-        print(f"note: git reports {stats['garbage']} unreachable object(s); "
-              "a repack + prune run removes them")
+        print(f"note: {stats['garbage']} leftover temporary file(s) from an interrupted run "
+              f"hold {_fmt_bytes(stats.get('size-garbage', 0) * 1024)} in objects/pack; "
+              "a snapshot run (or --maintain --full-repack) removes them")
 
     profile = _read_config_key(git_dir, "snapshot.profile")
     if profile:
@@ -302,6 +425,9 @@ def maintain_vault(vault: Path, *, full_repack: bool = False) -> int:
             f"{_fmt_bytes(free)} is free on this volume; a repack keeps the old packfiles "
             "until the new ones are complete, so it needs roughly that much headroom"
         )
+
+    with VaultLock(git_dir):
+        sweep_temp_packs(git_dir)
 
     print("repacking (this reads every object once; large vaults take a while) ...")
     git(

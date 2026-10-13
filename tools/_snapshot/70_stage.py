@@ -166,7 +166,9 @@ def build_snapshot(
             for path in candidates
             if any(exclude_matches(path, pat) for pat in excludes)
         ]
-        kept = [path for path in candidates if path not in set(excluded)]
+        excluded_set = set(excluded)
+        kept = [path for path in candidates if path not in excluded_set]
+        kept_set = set(kept)
         if kept:
             git(
                 git_dir,
@@ -183,7 +185,7 @@ def build_snapshot(
         # covers -- has to be dropped explicitly.
         indexed = git(git_dir, work_tree, ["ls-files", "-z"], cwd=work_tree).stdout
         stale = [
-            path for path in indexed.split("\0") if path and path not in set(kept)
+            path for path in indexed.split("\0") if path and path not in kept_set
         ]
         if stale:
             drop_from_index(git_dir, work_tree, stale)
