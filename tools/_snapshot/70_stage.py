@@ -137,6 +137,8 @@ def build_snapshot(
     excludes: list[str],
     message: str,
     make_commit: bool = True,
+    skip_paths: "frozenset[str] | None" = None,
+    manifest: "dict[str, Any] | None" = None,
 ) -> tuple[str, str | None, list[str]]:
     """Stage the tree into the vault index and write a commit object.
 
@@ -159,7 +161,7 @@ def build_snapshot(
     the caller may have just re-based on the remote tip.  The branch is *not*
     moved here: that is the caller's job, so a dry run can stop one step short.
     """
-    if excludes:
+    if excludes or skip_paths:
         candidates = stageable_paths(git_dir, work_tree)
         excluded = [
             path
@@ -167,7 +169,13 @@ def build_snapshot(
             if any(exclude_matches(path, pat) for pat in excludes)
         ]
         excluded_set = set(excluded)
-        kept = [path for path in candidates if path not in excluded_set]
+        # Payload files are not excluded in the user's sense -- they are
+        # recorded in the manifest and live on the server -- so they are
+        # kept out of the index without being reported as excluded.
+        kept = [
+            path for path in candidates
+            if path not in excluded_set and not (skip_paths and path in skip_paths)
+        ]
         kept_set = set(kept)
         if kept:
             git(
@@ -205,6 +213,8 @@ def build_snapshot(
         )
         excluded = []
 
+    if manifest is not None:
+        add_manifest_to_index(git_dir, work_tree, manifest)
     tree = git(git_dir, work_tree, ["write-tree"], cwd=work_tree).stdout.strip()
 
     if not make_commit:
@@ -316,3 +326,39 @@ def index_paths(git_dir: Path, work_tree: Path) -> list[str]:
     """Every path staged in the vault's index."""
     listing = git(git_dir, work_tree, ["ls-files", "-z"], cwd=work_tree).stdout
     return [path for path in listing.split("\0") if path]
+
+
+def suggest_excludes(
+    git_dir: Path, work_tree: Path, excluded: list[str]
+) -> list[str]:
+    """Name reproducible junk that was captured, and how to leave it out.
+
+    Deliberately a *suggestion* and not a default.  A snapshot is a backup; the
+    one failure that cannot be forgiven is a backup that quietly omitted the file
+    that mattered.  ``node_modules`` is reproducible and ``.env`` is not, and the
+    tool cannot tell them apart -- so it captures everything, and points at what
+    is merely bulky.
+
+    Returns the patterns found (for testing); prints the advice.
+    """
+    present = {pattern for pattern in RECOMMENDED_EXCLUDES} - set(excluded)
+    if not present:
+        return []
+    listing = git(
+        git_dir, work_tree, ["ls-files", "-z"], cwd=work_tree
+    ).stdout
+    paths = [p for p in listing.split("\0") if p]
+    found: list[str] = []
+    for pattern in sorted(present):
+        hit = any(exclude_matches(path, pattern) for path in paths)
+        if hit:
+            found.append(pattern)
+    if not found:
+        return []
+    flags = " ".join(f"--exclude {p!r}" for p in found)
+    print(
+        f"\nWARNING: the snapshot includes reproducible build output that is "
+        f"usually not worth\nbacking up.  Leave it out next time with "
+        f"--default-excludes, or explicitly:\n  {flags}"
+    )
+    return found

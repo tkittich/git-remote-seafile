@@ -1139,6 +1139,27 @@ class SeafileClient:
         finally:
             file_resp.close()
 
+    def copy_entries(self, repo_id: str, src_parent: str, names: list[str], dst_parent: str) -> bool:
+        """Copy files or directories server-side, within one library.
+
+        Moves metadata, not bytes: the copies share the originals' blocks, so a
+        copy of a 100 GiB directory takes milliseconds (measured on CE 13.0).  The
+        destination directory must already exist and keeps the source names.
+        """
+        url = f"{self.server_url}/api/v2.1/repos/sync-batch-copy-item/"
+        resp = self.session.post(
+            url,
+            json={
+                "src_repo_id": repo_id,
+                "src_parent_dir": "/" + src_parent.strip("/"),
+                "src_dirents": list(names),
+                "dst_repo_id": repo_id,
+                "dst_parent_dir": "/" + dst_parent.strip("/"),
+            },
+            timeout=self.timeout,
+        )
+        return resp.status_code == 200
+
     def delete_entry(self, repo_id: str, path: str) -> bool:
         """Delete file or directory at path."""
         clean_path = "/" + path.strip("/")

@@ -933,6 +933,7 @@ Defaults are resolved most-specific-first:
 | `--dry-run` | Report what would be committed and pushed, and do neither. |
 | `--reset-to-remote` | Adopt the remote chain when the vault has diverged and the two have no common tip, dropping the local-only snapshots (§15.6). Never taken implicitly — this is the one way a snapshot can be lost. |
 | `--allow-shared-remote` | Override the shared-remote guard (§15.5) deliberately. |
+| `--payload-min-size <size>` | **Payload mode.** Files at or above the size (`64M`, `1G`) are not put through git: they are SHA-256-hashed and uploaded as plain files to `<path>.payload/` beside the vault, each snapshot is one server-side copy of that mirror, and the commit records a manifest. A restore downloads and verifies them. Needs a remote; cannot be combined with `--no-push`; `0` turns it off. A vault that has used it needs the flag on every run. Quota counts each snapshot copy at full size even though the disk shares the blocks — see SNAPSHOT.md section 15.1. |
 | `--restore` | Restore a snapshot instead of taking one; requires `--remote` and `--into` (§15.4). |
 | `--into <dir>` | Destination directory for `--restore`. |
 | `--ref <rev>` | Which snapshot to restore. Default: the vault branch tip. Only meaningful with `--restore` — passing it without one is an error, not a no-op. |

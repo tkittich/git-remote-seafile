@@ -766,7 +766,7 @@ Borg, and changes nothing for the helper or the vault.
    flag is accepted and ignored (section 12, USER_GUIDE §8.2).
 4. **Payload mode** -- large immutable files go to Seafile as plain files with
    a manifest in git, snapshots by server-side copy; design in
-   [section 15.1](#151-proposed-payload-mode-design-only-nothing-here-is-implemented).
+   [section 15.1](#151-payload-mode-implemented-behind---payload-min-size-design-and-measurements).
 
 **Open questions, deliberately unresolved:**
 
@@ -789,7 +789,18 @@ Borg, and changes nothing for the helper or the vault.
 - **Keep the secrets report a warning, not a refusal.** A backup that refuses to
   back up is a backup that gets switched off.
 
-### 15.1 Proposed: payload mode (design only, nothing here is implemented)
+### 15.1 Payload mode (implemented behind `--payload-min-size`; design and measurements)
+
+**Status.** The core is implemented on the `feat/payload-mode` branch: files at
+or above the given size are hashed and uploaded as plain files, snapshots are
+server-side directory copies, the vault commit carries the manifest, and
+`--restore` downloads and verifies every file against it. **Not implemented
+yet:** parallel uploads, rename detection (a renamed file is uploaded again),
+a remembered setting (the flag must be repeated on every run, and a vault
+that used it refuses a run without it), a maintenance listing of snapshots,
+and a quick-hash that avoids the second read of a changed file. The rest of
+this section is the design the implementation follows and the measurements
+behind it.
 
 **The problem it answers.** A vault carries every file *through git*: each blob
 is hashed, written as a loose object, packed, uploaded as a pack. For a tree

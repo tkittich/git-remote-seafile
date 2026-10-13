@@ -244,19 +244,33 @@ def restore(
     target = branch
     verified_rev = branch
     if ref and ref != branch:
-        proc = _run(
-            ["git", "-C", str(into), "branch", branch, f"origin/{branch}"],
+        # Whether the clone already made the branch depends on what the remote
+        # advertises as HEAD: a remote whose HEAD is this branch (the helper's
+        # case) gets a local branch from `clone --no-checkout`; a bare remote
+        # with another HEAD does not.  Creating it unconditionally failed with
+        # "a branch named ... already exists" on the first kind.
+        exists = _run(
+            ["git", "-C", str(into), "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}"],
             text=True,
             encoding="utf-8",
             errors="replace",
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-        )
-        if proc.returncode != 0:
-            raise SnapshotError(
-                f"could not materialise '{branch}' in the clone "
-                f"(rc={proc.returncode})\n{proc.stderr.strip()}"
+        ).returncode == 0
+        if not exists:
+            made = _run(
+                ["git", "-C", str(into), "branch", branch, f"origin/{branch}"],
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
             )
+            if made.returncode != 0:
+                raise SnapshotError(
+                    f"could not materialise '{branch}' in the clone "
+                    f"(rc={made.returncode})\n{made.stderr.strip()}"
+                )
         proc = _run(
             ["git", "-C", str(into), "rev-parse", "--verify", f"{ref}^{{commit}}"],
             text=True,
@@ -328,6 +342,8 @@ def restore(
                 f"{proc.stdout.strip()}"
             )
         print("git fsck: object store intact")
+
+    restore_payload(remote, into)
 
     files = sum(1 for p in into.rglob("*") if p.is_file() and ".git" not in p.parts)
     print(f"restored {files} files from {target} into {into}")

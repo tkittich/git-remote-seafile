@@ -120,7 +120,9 @@ def apply_large_payload_profile(vault: Path, git_dir: Path) -> None:
     git(git_dir, vault, ["config", "snapshot.profile", "raw"], cwd=vault)
 
 
-def _walk_sizes(source: Path, excludes: list[str]) -> list[tuple[int, str]]:
+def _walk_sizes(
+    source: Path, excludes: list[str], skip: "frozenset[str] | None" = None
+) -> list[tuple[int, str]]:
     """``(size, relative posix path)`` for every regular file under *source*.
 
     Stat only -- no content is read.  ``.git`` directories are skipped (a source
@@ -136,6 +138,8 @@ def _walk_sizes(source: Path, excludes: list[str]) -> list[tuple[int, str]]:
             rel = os.path.relpath(full, root).replace(os.sep, "/")
             if excludes and any(exclude_matches(rel, pat) for pat in excludes):
                 continue
+            if skip and rel in skip:
+                continue
             try:
                 st = os.lstat(full)
             except OSError:
@@ -145,7 +149,9 @@ def _walk_sizes(source: Path, excludes: list[str]) -> list[tuple[int, str]]:
     return found
 
 
-def sample_payload(source: Path, excludes: list[str]) -> dict[str, float]:
+def sample_payload(
+    source: Path, excludes: list[str], skip: "frozenset[str] | None" = None
+) -> dict[str, float]:
     """Measure what staging this tree will cost, from a small sample.
 
     Returns ``total`` (bytes of all files), ``payload`` (bytes in files of at
@@ -155,7 +161,7 @@ def sample_payload(source: Path, excludes: list[str]) -> dict[str, float]:
     chunks of ``_PROFILE_SAMPLE_CHUNK`` each (start, middle, end), so the cost
     is bounded by ~24 MiB of reads however large the tree is.
     """
-    files = _walk_sizes(source, excludes)
+    files = _walk_sizes(source, excludes, skip)
     total = sum(size for size, _ in files)
     big = sorted(((s_, r) for s_, r in files if s_ >= _PROFILE_BIG_FILE_BYTES), reverse=True)
     payload = sum(size for size, _ in big)
@@ -269,7 +275,7 @@ _FREE_SPACE_MARGIN_BYTES = 1024 ** 3
 
 def estimate_staging_bytes(
     git_dir: Path, vault: Path, source: Path, excludes: list[str],
-    vault_config: dict[str, list[str]],
+    vault_config: dict[str, list[str]], skip: "frozenset[str] | None" = None,
 ) -> tuple[int, int]:
     """``(tree_bytes, new_bytes)``: the tree's size and what staging will add.
 
@@ -281,7 +287,7 @@ def estimate_staging_bytes(
     objects the vault already has) but not by enough to matter against a
     refusal that is one flag to override.
     """
-    measure = sample_payload(source, excludes)
+    measure = sample_payload(source, excludes, skip)
     total = measure["total"]
     uncompressed = (
         (vault_config.get("snapshot.profile") or [""])[0] == "raw"
@@ -298,6 +304,7 @@ def estimate_staging_bytes(
 def check_free_space(
     git_dir: Path, vault: Path, source: Path, excludes: list[str],
     vault_config: dict[str, list[str]], *, allow_low_disk: bool = False,
+    skip: "frozenset[str] | None" = None,
 ) -> None:
     """Refuse to start staging a tree the vault's volume cannot hold.
 
@@ -307,7 +314,9 @@ def check_free_space(
     own data -- starts failing too.  Staging a 130 GiB tree onto a volume with
     60 GiB free is exactly that, and a dry run stages as much as a real one.
     """
-    tree, need = estimate_staging_bytes(git_dir, vault, source, excludes, vault_config)
+    tree, need = estimate_staging_bytes(
+        git_dir, vault, source, excludes, vault_config, skip
+    )
     free = shutil.disk_usage(vault).free
     if need + _FREE_SPACE_MARGIN_BYTES <= free or allow_low_disk:
         return

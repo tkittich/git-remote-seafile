@@ -164,6 +164,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "sampled compressibility, minus what the vault already stores); this "
         "is for data you know is more compressible than the sample suggests",
     )
+    add_payload_arguments(parser)
     parser.add_argument(
         "--verify",
         action="store_true",
@@ -242,6 +243,7 @@ def validate_args(args: argparse.Namespace) -> None:
                             ("--ref", args.ref)):
             if value:
                 problems.append(f"{flag} only applies to --restore")
+        problems.extend(payload_conflicts(args))
     else:
         for flag, value in (
             ("--vault", args.vault),
@@ -378,42 +380,6 @@ def check_code_remote_is_git_remote(source: Path, name: str) -> None:
         )
 
 
-def suggest_excludes(
-    git_dir: Path, work_tree: Path, excluded: list[str]
-) -> list[str]:
-    """Name reproducible junk that was captured, and how to leave it out.
-
-    Deliberately a *suggestion* and not a default.  A snapshot is a backup; the
-    one failure that cannot be forgiven is a backup that quietly omitted the file
-    that mattered.  ``node_modules`` is reproducible and ``.env`` is not, and the
-    tool cannot tell them apart -- so it captures everything, and points at what
-    is merely bulky.
-
-    Returns the patterns found (for testing); prints the advice.
-    """
-    present = {pattern for pattern in RECOMMENDED_EXCLUDES} - set(excluded)
-    if not present:
-        return []
-    listing = git(
-        git_dir, work_tree, ["ls-files", "-z"], cwd=work_tree
-    ).stdout
-    paths = [p for p in listing.split("\0") if p]
-    found: list[str] = []
-    for pattern in sorted(present):
-        hit = any(exclude_matches(path, pattern) for path in paths)
-        if hit:
-            found.append(pattern)
-    if not found:
-        return []
-    flags = " ".join(f"--exclude {p!r}" for p in found)
-    print(
-        f"\nWARNING: the snapshot includes reproducible build output that is "
-        f"usually not worth\nbacking up.  Leave it out next time with "
-        f"--default-excludes, or explicitly:\n  {flags}"
-    )
-    return found
-
-
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
 
@@ -455,6 +421,11 @@ def main(argv: list[str] | None = None) -> int:
         if args.dry_run and remote:
             print(f"dry run -- would push the vault to {remote}")
 
+        payload_min, payload_candidates = plan_payload(
+            args.payload_min_size, remote, source, exclude
+        )
+        payload_mode = bool(payload_min)
+        payload_skip = frozenset(payload_candidates)
         git_dir = ensure_vault(vault, branch)
         # One read of the vault's config serves identity, byte-exactness and
         # the remembered settings below: none of them writes a key another one
@@ -471,7 +442,7 @@ def main(argv: list[str] | None = None) -> int:
             ensure_byte_exact(vault, git_dir, vault_config=vault_config)
             if args.no_object_compression:
                 apply_large_payload_profile(vault, git_dir)
-            else:
+            elif not payload_mode:
                 choose_profile(vault, git_dir, source, exclude, vault_config, write=True)
         else:
             # The identity *check* still runs on a preview -- failing
@@ -479,7 +450,7 @@ def main(argv: list[str] | None = None) -> int:
             # traceback -- but read-only: a dry run writes nothing at all
             ensure_identity(vault, source, vault_config=vault_config,
                             write_identity=False)
-            if not args.no_object_compression:
+            if not args.no_object_compression and not payload_mode:
                 choose_profile(vault, git_dir, source, exclude, vault_config, write=False)
         # Free what a killed earlier run left behind first, under the vault
         # lock: it can be tens of GiB, and the free-space check that follows is
@@ -491,7 +462,7 @@ def main(argv: list[str] | None = None) -> int:
         # now, not discovered when the disk fills (a dry run stages too).
         check_free_space(
             git_dir, vault, source, exclude, vault_config,
-            allow_low_disk=args.allow_low_disk,
+            allow_low_disk=args.allow_low_disk, skip=payload_skip or None,
         )
         # The hostname is in the default message because a shared vault is a
         # single chain of snapshots from several machines, and the commit author
@@ -554,9 +525,14 @@ def main(argv: list[str] | None = None) -> int:
             # no global identity, which is why passing locally did not mean
             # passing there.  write-tree alone answers every question a
             # preview prints (file count, size, diffstat, secrets, gitlinks).
+            manifest, payload_todo = run_payload_step(
+                git_dir, source, base, remote, payload_min, payload_candidates,
+                dry_run=args.dry_run,
+            )
             tree, commit, excluded = build_snapshot(
                 git_dir, source, base, exclude, message,
                 make_commit=not args.dry_run,
+                skip_paths=payload_skip or None, manifest=manifest,
             )
             count, size = describe_tree(git_dir, source, tree)
             # The profile was decided from a sample taken before the first
@@ -564,6 +540,7 @@ def main(argv: list[str] | None = None) -> int:
             # payload gets one more look -- for the *next* run, since this one
             # has already staged -- once per doubling of the tree.
             if (not args.dry_run and not args.no_object_compression
+                    and not payload_mode
                     and profile_recheck_due(vault_config, size)):
                 choose_profile(vault, git_dir, source, exclude, vault_config,
                                write=True, recheck=True)
@@ -573,6 +550,8 @@ def main(argv: list[str] | None = None) -> int:
             print(f"branch : {branch}")
             print(f"files  : {count} ({human_bytes(size)})")
             print(f"base   : {base[:12] if base else '(first snapshot)'}")
+            if manifest is not None:
+                print(payload_summary(manifest, payload_todo, args.dry_run))
             if excluded:
                 print(f"excluded: {len(excluded)} path(s) left out")
 

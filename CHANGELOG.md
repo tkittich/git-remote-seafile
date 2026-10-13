@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Snapshot tool, payload mode (`--payload-min-size SIZE`).** Files of at least SIZE bypass git: they are SHA-256-hashed and uploaded as plain files to `<path>.payload/current/`, each snapshot is one server-side directory copy to `<path>.payload/snapshots/<id>/` (metadata only, shared blocks), and the vault commit carries `.seafile-payload/manifest.json`. `--restore` downloads every file and verifies size and SHA-256. Removes the local object copy and the staging pass for large immutable data. Opt-in; design and measurements in SNAPSHOT.md section 15.1.
+- **`SeafileClient.copy_entries`**: server-side copy of files or directories within a library.
+
+### Fixed
+- **`--restore --ref <rev>` failed** (`a branch named 'snapshot' already exists`) against any remote whose HEAD is the vault branch, which is what the helper advertises.
+
 ## [0.8.8] - 2026-10-13
 
 Everything here follows from the 2026-10-12 review and the decisions taken on it, then from measuring the result against a real Seafile server (CE 13.0.28): a 4 GiB merge, a 5 GiB single-file push, and a two-gigabyte request ceiling nobody had known about.
