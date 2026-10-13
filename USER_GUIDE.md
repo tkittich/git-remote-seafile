@@ -596,6 +596,18 @@ Understanding how `git-remote-seafile` handles complex Git workflows and remote 
 | **Notification Mode (Default)** | Remote reaches 20 packfiles | **No added delay** | Terminal tip displayed; push never pauses | Daily development, interactive CLI usage |
 | **Opt-in Auto-GC (`autogc true`)** | 20 *small* packfiles accumulate | **A bounded tail merge, inline** — only packs below half of `seafile.gcmaxpackmib` move, so duration tracks the small tail rather than the repository; deferred with a notice if that tail exceeds 2 × `seafile.gcmaxpackmib` | Repositories locked via `.git-lock.d/` ticket queue during repack | Fully automated maintenance, solo developers |
 
+**Measured cost** (Seafile CE 13.0.28, one server, small commits; your network will differ):
+
+| What | Measured |
+| :--- | :--- |
+| An ordinary push | about 2.3 s, nearly all of it the lock's request round trips and settlement window |
+| Library history entries per push | about 13 (ticket create/renew/delete, pack, index, ref) — each push is a burst of small commits in the library's history |
+| The 20th push with `autogc true` | 6.5 s, and about 65 further history entries (the merge deleted 20 packs and their indexes) |
+| A 4 GiB tail merge (9 packs → 4) | 3 min 43 s with the lock held throughout: ~64 s download, ~30 s repack, ~2 min upload; peak scratch 8 GiB (2× the data), peak memory ~4 GiB while git maps the packs |
+| Largest single upload accepted | 1.75 GiB; a 2 GiB upload was reset — hence the pack size cap |
+
+Another client's push arriving during a merge waits for the lock and, after `seafile.locktimeout`, is told the repository is locked; it succeeds when retried. That is the practical cost of `autogc true` on a busy shared remote, and why the automatic budget is 2 GiB.
+
 > [!TIP]
 > **Recommendation**: Leave `seafile.autogc` disabled (the default) so your everyday push stays interactive — no compaction pause on top of the lock's settlement window. Run compaction manually (`git-remote-seafile gc seafile://...`) or as part of a scheduled CI job when convenient.
 

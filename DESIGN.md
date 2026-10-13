@@ -143,6 +143,20 @@ sequenceDiagram
 ```
 
 
+**Capability matrix.** What the helper advertises and what it deliberately does not:
+
+| Feature | Status | Notes |
+| --- | --- | --- |
+| `fetch`, `push` | Advertised | Pack-based; refs are plain files (§4.2) |
+| `option object-format` | Advertised | The format is reported from the refs themselves; an explicit algorithm is accepted and the remote's real format wins |
+| `option dry-run` | Accepted | `git push --dry-run` reports without a lock or a write |
+| `option progress`, `option verbosity` | Accepted | No effect |
+| any other `option` | `unsupported` | Git then proceeds without it |
+| Atomic push (`--atomic`) | Not supported | There is no multi-ref transaction on a file store; refs are written one at a time under the lock, each read back |
+| Push options (`-o`), `followtags`, signed pushes | Not supported | Not advertised, so git refuses them up front |
+| Peeled tag lines (`^{}`) | Not advertised | Git peels locally after fetching the objects |
+| `stateless-connect`, `import`/`export` | Not supported | Packs are transferred whole, not negotiated |
+
 The ref is not written with a single request that is itself atomic. Seafile has no compare-and-swap on a path, so the sequence is: re-read the destination ref *after* the lock is taken (bypassing the pre-lock `list` cache), verify the fresh SHA is an ancestor of the local commit (`git merge-base --is-ancestor`), build the pack excluding objects the fresh tips already cover, re-read the ref one final time immediately before writing, write it, and then read it back. A peer that ignores the advisory lock can land between the final read and the write; the read-back is what notices, and the push is reported as `error <dst> fetch first` rather than `ok`.
 
 Two details of the write itself are easy to get wrong and are therefore explicit here:
