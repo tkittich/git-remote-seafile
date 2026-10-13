@@ -194,6 +194,20 @@ class StreamingMultipartFile:
         return self._pos
 
 
+#: A file at least this large is uploaded in ``Content-Range`` chunks rather than
+#: as one request.  Measured against a real server: a single request of 2 GiB is
+#: reset while 1.75 GiB is accepted, but the same server assembled a 5 GiB file
+#: from 256 MiB chunks and served it back byte-identical.  Below the threshold
+#: the one-request form stays, because it is what every server version has done.
+CHUNKED_UPLOAD_MIN_BYTES = 1024 * 1024 * 1024
+
+#: Size of one chunk of a chunked upload.
+UPLOAD_CHUNK_BYTES = 128 * 1024 * 1024
+
+#: Attempts per chunk (the first plus retries) before the upload is abandoned.
+UPLOAD_CHUNK_ATTEMPTS = 3
+
+
 class SeafileClient:
     """Lightweight HTTP client for Seafile Web API v2.1."""
 
@@ -898,6 +912,11 @@ class SeafileClient:
             file_size = payload.tell() - cur
             payload.seek(cur)
 
+            if file_size >= CHUNKED_UPLOAD_MIN_BYTES:
+                return self._upload_chunked(
+                    repo_id, clean_parent, filename, payload, file_size, replace,
+                    upload_url, progress_callback,
+                )
             mp = StreamingMultipartFile(
                 fields={"parent_dir": clean_parent, "replace": "1" if replace else "0"},
                 file_field="file",
@@ -951,6 +970,87 @@ class SeafileClient:
                 f"Failed to upload {filename} to {clean_parent}: "
                 f"HTTP {up_resp.status_code} "
                 f"(POST {self._error_origin(upload_url)}) {up_resp.text}"
+            )
+        return True
+
+    def _upload_chunked(
+        self,
+        repo_id: str,
+        parent_dir: str,
+        filename: str,
+        fh: Any,
+        file_size: int,
+        replace: bool,
+        upload_url: str,
+        progress_callback: Any = None,
+    ) -> bool:
+        """Upload *fh* as ``Content-Range`` chunks and prove the result is whole.
+
+        The server assembles the chunks under *filename* and the file appears
+        when the last one lands.  A server (or proxy) that ignores
+        ``Content-Range`` would instead *replace* the file with each chunk in
+        turn, ending with only the last piece -- so the size is checked against
+        the listing before this returns True, and a mismatch is an error rather
+        than a quietly truncated pack.
+        """
+        start0 = fh.tell()
+        url = upload_url + ("&" if "?" in upload_url else "?") + "ret-json=1"
+        session = self._transfer_session(upload_url)
+        safe_name = _sanitize_header_param(filename)
+        offset = 0
+        while offset < file_size:
+            length = min(UPLOAD_CHUNK_BYTES, file_size - offset)
+            last_error = ""
+            for _attempt in range(UPLOAD_CHUNK_ATTEMPTS):
+                fh.seek(start0 + offset)
+
+                def chunk_progress(done: int, total: int, _base: int = offset) -> None:
+                    if progress_callback is not None:
+                        try:
+                            progress_callback(_base + done, file_size)
+                        except Exception:
+                            pass
+
+                mp = StreamingMultipartFile(
+                    fields={"parent_dir": parent_dir, "replace": "1" if replace else "0"},
+                    file_field="file",
+                    filename=filename,
+                    file_obj=fh,
+                    file_size=length,
+                    progress_callback=chunk_progress,
+                )
+                headers = {
+                    "Content-Type": mp.content_type,
+                    "Content-Length": str(len(mp)),
+                    "Content-Range": f"bytes {offset}-{offset + length - 1}/{file_size}",
+                    "Content-Disposition": f'attachment; filename="{safe_name}"',
+                }
+                try:
+                    resp = session.post(url, data=mp, headers=headers, timeout=self.timeout)
+                except requests.RequestException as ex:
+                    last_error = f"{type(ex).__name__}: {ex}"
+                    continue
+                if resp.status_code == 200:
+                    last_error = ""
+                    break
+                last_error = f"HTTP {resp.status_code} {resp.text[:200]}"
+                if resp.status_code < 500:
+                    break
+            if last_error:
+                raise SeafileAPIError(
+                    f"Failed to upload {filename} to {parent_dir}: chunk bytes "
+                    f"{offset}-{offset + length - 1} of {file_size}: {last_error} "
+                    f"(POST {self._error_origin(upload_url)})"
+                )
+            offset += length
+
+        entries = self.list_dir(repo_id, parent_dir)
+        landed = next((e for e in entries if e.get("name") == filename), None)
+        got = landed.get("size") if landed else None
+        if got != file_size:
+            raise SeafileAPIError(
+                f"Chunked upload of {filename} to {parent_dir} finished but the server holds "
+                f"{got} bytes instead of {file_size}; the server may not support Content-Range."
             )
         return True
 

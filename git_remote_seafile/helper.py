@@ -35,6 +35,7 @@ from .git_util import (
     GitError,
     rev_parse,
     get_git_dir,
+    get_git_config,
     sweep_stale_scratch,
 )
 
@@ -106,6 +107,34 @@ class _PendingUpdate(NamedTuple):
     local_sha: str
     expected: str | None
     force: bool
+
+
+_FOUR_GIB = 4 * 1024**3
+
+
+def _warn_if_checkout_may_stall(largest_pack_bytes: int) -> None:
+    """Warn before a fetch whose checkout git for Windows cannot do.
+
+    Measured on git 2.55 for Windows: with ``core.autocrlf=true`` (its default)
+    a blob of 4 GiB or more is silently *truncated* by ``git add`` (the size
+    wraps at 32 bits -- 5 GiB came out as 1 GiB) and a ``git clone`` of one
+    does not finish (240 s timeout, one core at 100 %), while with
+    ``core.autocrlf=false`` the same 5 GiB blob adds in 110 s and clones in
+    11 s, byte-identical.  The helper is not involved in either step, but it is
+    the one place that sees the pack sizes before git starts checking out.
+    """
+    if os.name != "nt" or largest_pack_bytes < _FOUR_GIB:
+        return
+    value = (get_git_config("core.autocrlf") or "").strip().lower()
+    if value in ("false", "input"):
+        return
+    sys.stderr.write(
+        f"Warning: this repository holds a pack of {largest_pack_bytes / 1024**3:.1f} GiB. "
+        "Git for Windows cannot check out a blob of 4 GiB or more while core.autocrlf is on "
+        "(it is on by default): the checkout stalls, and adding such a file silently truncates it. "
+        "Clone with 'git clone -c core.autocrlf=false <url>' (or set it before the checkout).\n"
+    )
+    sys.stderr.flush()
 
 
 _NOTICE_INTERVAL_SECONDS = 24 * 60 * 60
@@ -962,6 +991,9 @@ class RemoteHelper:
             remote_entries = self.client.list_dir(self.repo_id, remote_pack_dir)
             entries_by_name = {e["name"]: e for e in remote_entries if isinstance(e, dict) and "name" in e}
             pack_files = [name for name in entries_by_name if name.endswith(".pack")]
+            _warn_if_checkout_may_stall(
+                max((int(entries_by_name[n].get("size") or 0) for n in pack_files), default=0)
+            )
 
             def download_missing(already_fetched: dict[str, int]) -> dict[str, int | None]:
                 """Install every remote pack this clone does not already hold.

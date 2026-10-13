@@ -23,6 +23,30 @@ from git_remote_seafile.safety import SafetyError, check_preflight_safety
 from git_remote_seafile.git_util import GitError
 from git_remote_seafile.lock import LEASE_LOST, LEASE_UNKNOWN, RepositoryLockedError
 
+class CheckoutStallWarningTests(unittest.TestCase):
+    def _warn(self, nbytes, *, os_name="nt", autocrlf="true"):
+        import io
+        from unittest.mock import patch
+
+        from git_remote_seafile import helper as helper_mod
+
+        err = io.StringIO()
+        with patch.object(helper_mod.os, "name", os_name),              patch.object(helper_mod, "get_git_config", return_value=autocrlf),              patch("sys.stderr", err):
+            helper_mod._warn_if_checkout_may_stall(nbytes)
+        return err.getvalue()
+
+    def test_a_4_gib_pack_on_windows_with_autocrlf_warns(self):
+        out = self._warn(5 * 1024**3)
+        self.assertIn("core.autocrlf=false", out)
+        self.assertIn("5.0 GiB", out)
+
+    def test_it_stays_quiet_when_it_cannot_matter(self):
+        self.assertEqual(self._warn(3 * 1024**3), "")
+        self.assertEqual(self._warn(5 * 1024**3, os_name="posix"), "")
+        self.assertEqual(self._warn(5 * 1024**3, autocrlf="false"), "")
+        self.assertEqual(self._warn(5 * 1024**3, autocrlf="input"), "")
+
+
 class TestRemoteHelper(unittest.TestCase):
     def test_capabilities(self):
         h = make_helper()

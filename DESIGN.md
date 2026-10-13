@@ -231,7 +231,7 @@ The endpoints above are the documented v2 API. **The test suite validates the he
 | Seafile 7.x – 12.x                     | Expected to work               | Endpoints are long-stable; **not** exercised in CI                                                           |
 | SHA-256 repositories                   | Supported                      | Object format negotiated on the wire (§4.1)                                                                  |
 | Encrypted libraries                    | **Refused**                    | `get_repo_id` reads the listing's `encrypted` flag and fails with a clear message (no password path exists)  |
-| Single-upload size ceiling             | **Measured: ≈ 2 GiB**          | One CE 13.0.28 deployment accepted 1.75 GiB and reset a 2 GiB upload mid-transfer; the helper therefore caps every pack it writes (`seafile.gcmaxpackmib`, default 1 GiB) |
+| Single-upload size ceiling             | **Measured: ≈ 2 GiB**          | One CE 13.0.28 deployment accepted 1.75 GiB and reset a 2 GiB upload mid-transfer; the helper therefore caps every pack it writes (`seafile.gcmaxpackmib`, default 1 GiB) and uploads any file of 1 GiB or more in `Content-Range` chunks, which the same server assembled correctly up to the 5 GiB tried |
 | Server-side file locking               | Not used                       | Pro-only, and the owner is the Seafile *user* rather than the machine — see §7                               |
 | `seaf-gc` (server storage reclamation) | Administrator's responsibility | Removing a pack from the repository does not free blocks until the server GC runs after the retention window |
 

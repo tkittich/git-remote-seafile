@@ -95,8 +95,10 @@ class RemoteConfig:
     gc_max_mib: int = GC_BUDGET_FACTOR * 1024
     #: The largest pack the helper writes (``pack-objects --max-pack-size``),
     #: for pushes, tail merges and full gc alike.  Seafile deployments cap a
-    #: single upload -- measured on one server: 1.25 GiB accepted, 2 GiB reset
-    #: -- and a pack that cannot be uploaded cannot be pushed or merged.
+    #: single request -- measured on one server: 1.75 GiB accepted, 2 GiB reset --
+    #: and an uncapped merge produced a pack the server would not take.  A file
+    #: of 1 GiB or more is uploaded in Content-Range chunks, which is what lets
+    #: one object larger than the cap through as a single larger pack.
     gc_max_pack_mib: int = 1024
 
     @property

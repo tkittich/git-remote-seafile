@@ -415,6 +415,75 @@ class TestTailMergeUnderTheCap(E2ETestCase):
         self.assertEqual(run_git(["rev-list", "--count", "HEAD"], dst, self.env).stdout.strip(), "4")
 
 
+class TestChunkedUpload(E2ETestCase):
+    """A file past the single-request ceiling goes up as Content-Range chunks.
+
+    Measured on a real server: a 2 GiB request is reset, yet the same server
+    assembled a 5 GiB file from chunks.  The thresholds are shrunk here so the
+    same code path runs on kilobytes.
+    """
+
+    def _client(self):
+        from git_remote_seafile.client import SeafileClient
+
+        return SeafileClient(server_url=self.stub.base_url, token="t")
+
+    def test_a_large_file_is_assembled_from_chunks_and_read_back_whole(self):
+        import os
+        from unittest.mock import patch
+
+        from git_remote_seafile import client as client_mod
+
+        data = os.urandom(10_000)
+        path = self.work / "chunk_src.bin"
+        path.write_bytes(data)
+        c = self._client()
+        rid = c.get_repo_id("testlib")
+        progress = []
+        with patch.object(client_mod, "CHUNKED_UPLOAD_MIN_BYTES", 1000),              patch.object(client_mod, "UPLOAD_CHUNK_BYTES", 3000):
+            self.assertTrue(
+                c.upload_file(rid, "/big", "pack.bin", path, replace=True,
+                              progress_callback=lambda done, total: progress.append(done))
+            )
+        self.assertEqual(self.stub.files[rid]["/big/pack.bin"], data)
+        self.assertEqual(progress[-1], len(data))
+        self.assertEqual(progress, sorted(progress), "progress must never go backwards")
+
+    def test_a_server_that_ignores_content_range_is_detected_not_trusted(self):
+        import os
+        from unittest.mock import patch
+
+        from git_remote_seafile import client as client_mod
+        from git_remote_seafile.client import SeafileAPIError
+
+        path = self.work / "chunk_src2.bin"
+        path.write_bytes(os.urandom(10_000))
+        c = self._client()
+        rid = c.get_repo_id("testlib")
+        self.stub.faults["ignore_range"] = 1
+        with patch.object(client_mod, "CHUNKED_UPLOAD_MIN_BYTES", 1000),              patch.object(client_mod, "UPLOAD_CHUNK_BYTES", 3000):
+            with self.assertRaises(SeafileAPIError) as ctx:
+                c.upload_file(rid, "/big", "pack2.bin", path, replace=True)
+        self.assertIn("Content-Range", str(ctx.exception))
+
+    def test_a_failing_chunk_is_retried_then_reported_with_its_range(self):
+        import os
+        from unittest.mock import patch
+
+        from git_remote_seafile import client as client_mod
+        from git_remote_seafile.client import SeafileAPIError
+
+        path = self.work / "chunk_src3.bin"
+        path.write_bytes(os.urandom(5_000))
+        c = self._client()
+        rid = c.get_repo_id("testlib")
+        self.stub.faults["upload"] = 503
+        with patch.object(client_mod, "CHUNKED_UPLOAD_MIN_BYTES", 1000),              patch.object(client_mod, "UPLOAD_CHUNK_BYTES", 2000):
+            with self.assertRaises(SeafileAPIError) as ctx:
+                c.upload_file(rid, "/big", "pack3.bin", path, replace=True)
+        self.assertIn("bytes 0-1999 of 5000", str(ctx.exception))
+
+
 class TestRefsListingFailureIsNotSilent(E2ETestCase):
     """A failed refs listing must not be reported as an empty repository.
 

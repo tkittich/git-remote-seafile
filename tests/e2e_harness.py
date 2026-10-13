@@ -202,7 +202,24 @@ class _Handler(BaseHTTPRequestHandler):
             parent = fields.get("parent_dir", "/")
             if filename is None or filedata is None:
                 return self._send(400, b'{"error":"no file part"}')
-            self.stub.files.setdefault(rid, {})[_norm(parent + "/" + filename)] = filedata
+            target = _norm(parent + "/" + filename)
+            rng = re.match(r"bytes (\d+)-(\d+)/(\d+)", self.headers.get("Content-Range", ""))
+            if rng and not self.stub.faults.get("ignore_range"):
+                # Resumable upload: chunks accumulate under the name and the
+                # file appears when the last one lands, as Seafile's fileserver
+                # does.  ``ignore_range`` models a proxy that drops the header,
+                # in which case every chunk simply replaces the file.
+                start, end, total = (int(g) for g in rng.groups())
+                buf = self.stub.partial.setdefault((rid, target), bytearray())
+                if start != len(buf):
+                    return self._send(400, b'{"error":"unexpected offset"}')
+                buf.extend(filedata)
+                if end + 1 < total:
+                    return self._send(200, b'{"success": true}')
+                self.stub.files.setdefault(rid, {})[target] = bytes(self.stub.partial.pop((rid, target)))
+                body = '[{"id":"uploaded","name":"%s","size":%d}]' % (filename, total)
+                return self._send(200, body.encode())
+            self.stub.files.setdefault(rid, {})[target] = filedata
             return self._send(200, b'{"id":"uploaded"}')
 
         return self._send(404, b"{}")
@@ -235,6 +252,7 @@ class SeafileStub:
         self.faults: dict[str, int] = {}
         self.raw_hits: list[str] = []
         self.get_hooks: list[tuple[Any, Any]] = []
+        self.partial: dict[tuple[str, str], bytearray] = {}
         self.port = 0
         self._httpd = None
         self._thread = None
@@ -266,6 +284,7 @@ class SeafileStub:
         self.faults.clear()
         self.raw_hits.clear()
         self.get_hooks.clear()
+        self.partial.clear()
 
     # -- store helpers ----------------------------------------------------
     def has_under(self, repo_id: str, path: str) -> bool:
