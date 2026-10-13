@@ -412,6 +412,24 @@ Expected output:
 Authenticated successfully with https://seafile.example.com as user@example.com
 ```
 
+### First-Use Check (`doctor`)
+Checks everything a first push depends on, in order, and stops at the first failure:
+```bash
+git-remote-seafile doctor seafile://code/myproject
+```
+It reports the login, **how the URL was interpreted** (server, library, path), the safety guards, and a write-and-delete probe inside the repository path. With no URL it checks only the login.
+
+### Output and Exit Codes
+Every subcommand follows one convention, so scripts can rely on it:
+
+| | |
+|---|---|
+| stdout | The command's result or report, including the verdict of a report command (`doctor`'s `[FAIL]`, `check-safety`'s `[BLOCKED]`, `lock-status`'s `LOCKED`). |
+| stderr | Usage errors, failures that prevented a result, and warnings. |
+| exit `0` | Done, or nothing to do. |
+| exit `1` | The command ran and the answer is "no", or it failed. |
+| exit `2` | The command line was wrong (missing operand, unknown command). |
+
 ### Behavioural Configuration
 
 | Git config key | Environment variable | Default | Purpose |

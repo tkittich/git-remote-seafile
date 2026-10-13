@@ -20,7 +20,8 @@ The theme is **less machinery, and the machinery that remains fails loudly**.
 - **`tools/build_snapshot.py` and `tools/_snapshot/`.** The snapshot tool's source is now cohesive parts, concatenated into the single `tools/seafile_snapshot.py` users run; `--check` (and `tests/test_snapshot_build.py`) fail when the generated file drifts. See CONTRIBUTING.
 - **`seafile.gittimeout` / `SEAFILE_GIT_TIMEOUT`**, readable only from the system/global git config or the environment, raises the per-command git ceiling for large repositories. `SEAFILE_SNAPSHOT_STALL_LIMIT` does the same for the snapshot tool's no-progress limit.
 
-### Changed
+### Changed- **One output and exit-code convention for every subcommand**: results and reports on stdout, usage errors and failures on stderr; exit 0 done, 1 failed or "no", 2 usage error. Usage errors used to print to stdout and exit 1. `cli.main` is now a dispatch table of one function per command.
+
 - **A URL with no path says where it points.** The first push of `seafile://<library>` into an empty location prints that the repository lives at `/git-repo` and how to write that explicitly.
 - **The "run gc / enable autogc" tip is shown at most once a day per remote** (state in `~/.git-seafile-notices.json`), so it is not filtered out by being on every push.
 - **The lock wait follows queue progress.** The timeout restarts whenever the holder changes or this ticket moves up (absolute cap `max(10 x timeout, 120 s)`), and a waiting ticket is re-sent only to keep its lease alive instead of on every 2 s poll. Measured: six simultaneous pushers used 13.4 s of a 15 s budget; nine now all succeed.

@@ -165,9 +165,9 @@ class TestCLIFlagPlacement(unittest.TestCase):
     @patch("git_remote_seafile.cli.RemoteHelper")
     def test_unlock_with_only_flags_prints_usage(self, mock_helper_cls):
         with patch.object(sys, "argv", ["git-remote-seafile", "unlock", "--force"]):
-            with patch("sys.stdout", new_callable=io.StringIO) as mock_out:
+            with patch("sys.stderr", new_callable=io.StringIO) as mock_out:
                 code = main()
-        self.assertEqual(code, 1)
+        self.assertEqual(code, 2)
         self.assertIn("Usage:", mock_out.getvalue())
         mock_helper_cls.assert_not_called()
 
@@ -197,7 +197,7 @@ class TestCLICheckAuth(unittest.TestCase):
         mock_client.session.get.return_value = mock_resp
 
         with patch.object(sys, "argv", ["git-remote-seafile", "check-auth"]):
-            with patch("sys.stdout", new_callable=io.StringIO) as mock_out:
+            with patch("sys.stderr", new_callable=io.StringIO) as mock_out:
                 code = main()
                 self.assertEqual(code, 1)
                 self.assertIn("Authentication failed", mock_out.getvalue())
@@ -206,7 +206,7 @@ class TestCLICheckAuth(unittest.TestCase):
     def test_check_auth_exception(self, mock_client_cls):
         mock_client_cls.side_effect = RuntimeError("Network error")
         with patch.object(sys, "argv", ["git-remote-seafile", "check-auth"]):
-            with patch("sys.stdout", new_callable=io.StringIO) as mock_out:
+            with patch("sys.stderr", new_callable=io.StringIO) as mock_out:
                 code = main()
                 self.assertEqual(code, 1)
                 self.assertIn("Error: Network error", mock_out.getvalue())
@@ -215,9 +215,9 @@ class TestCLICheckAuth(unittest.TestCase):
 class TestCLICheckSafety(unittest.TestCase):
     def test_check_safety_missing_args(self):
         with patch.object(sys, "argv", ["git-remote-seafile", "check-safety"]):
-            with patch("sys.stdout", new_callable=io.StringIO) as mock_out:
+            with patch("sys.stderr", new_callable=io.StringIO) as mock_out:
                 code = main()
-                self.assertEqual(code, 1)
+                self.assertEqual(code, 2)
                 self.assertIn("Usage:", mock_out.getvalue())
 
     @patch("git_remote_seafile.cli.RemoteHelper")
@@ -285,7 +285,7 @@ class TestCLITestsAndGC(unittest.TestCase):
         mock_helper_cls.side_effect = RuntimeError("network down")
 
         with patch.object(sys, "argv", ["git-remote-seafile", "test", "seafile://code/repo"]):
-            with patch("sys.stdout", new_callable=io.StringIO) as mock_out:
+            with patch("sys.stderr", new_callable=io.StringIO) as mock_out:
                 code = main()
                 self.assertEqual(code, 1)
                 self.assertIn("Test failed: network down", mock_out.getvalue())
@@ -387,7 +387,7 @@ class TestCLITestsAndGC(unittest.TestCase):
             "message": "Packfile pack-1.pack is listed at /repo/objects/pack but could not be downloaded",
         }
         with patch.object(sys, "argv", ["git-remote-seafile", "gc", "seafile://code/repo"]):
-            with patch("sys.stdout", new_callable=io.StringIO) as mock_out:
+            with patch("sys.stderr", new_callable=io.StringIO) as mock_out:
                 code = main()
         self.assertEqual(code, 1)
         self.assertIn("could not be downloaded", mock_out.getvalue())
@@ -587,9 +587,9 @@ class TestCLIRemoteHelperInvocation(unittest.TestCase):
 class TestCLIDesktopUrl(unittest.TestCase):
     def test_desktop_url_missing_arg(self):
         with patch.object(sys, "argv", ["git-remote-seafile", "desktop-url"]):
-            with patch("sys.stdout", new_callable=io.StringIO) as mock_out:
+            with patch("sys.stderr", new_callable=io.StringIO) as mock_out:
                 code = main()
-                self.assertEqual(code, 1)
+                self.assertEqual(code, 2)
                 self.assertIn("Usage:", mock_out.getvalue())
 
     @patch("git_remote_seafile.cli.SeafileClient")
@@ -656,7 +656,7 @@ class TestCLIDesktopUrl(unittest.TestCase):
                 outside_path = fake_home / "outside" / "dir"
                 outside_path.mkdir(parents=True)
                 with patch.object(sys, "argv", ["git-remote-seafile", "desktop-url", str(outside_path)]):
-                    with patch("sys.stdout", new_callable=io.StringIO) as mock_out:
+                    with patch("sys.stderr", new_callable=io.StringIO) as mock_out:
                         code = main()
                         self.assertEqual(code, 1)
                         self.assertIn("Could not match", mock_out.getvalue())
@@ -762,7 +762,7 @@ class TestCLIDesktopUrl(unittest.TestCase):
         mock_client_cls.side_effect = SeafileAuthError("Could not determine the Seafile server URL.")
 
         with patch.object(sys, "argv", ["git-remote-seafile", "desktop-url", "/tmp/whatever"]):
-            with patch("sys.stdout", new_callable=io.StringIO) as mock_out:
+            with patch("sys.stderr", new_callable=io.StringIO) as mock_out:
                 code = main()
 
         self.assertEqual(code, 1)
@@ -772,9 +772,9 @@ class TestCLIDesktopUrl(unittest.TestCase):
 class TestCLILockManagement(unittest.TestCase):
     def test_lock_status_missing_args(self):
         with patch.object(sys, "argv", ["git-remote-seafile", "lock-status"]):
-            with patch("sys.stdout", new_callable=io.StringIO) as mock_out:
+            with patch("sys.stderr", new_callable=io.StringIO) as mock_out:
                 code = main()
-                self.assertEqual(code, 1)
+                self.assertEqual(code, 2)
                 self.assertIn("Usage:", mock_out.getvalue())
 
     @patch("git_remote_seafile.cli.RemoteLock")
@@ -817,9 +817,9 @@ class TestCLILockManagement(unittest.TestCase):
 
     def test_unlock_missing_args(self):
         with patch.object(sys, "argv", ["git-remote-seafile", "unlock"]):
-            with patch("sys.stdout", new_callable=io.StringIO) as mock_out:
+            with patch("sys.stderr", new_callable=io.StringIO) as mock_out:
                 code = main()
-                self.assertEqual(code, 1)
+                self.assertEqual(code, 2)
                 self.assertIn("Usage:", mock_out.getvalue())
 
     @patch("git_remote_seafile.cli.RemoteLock")

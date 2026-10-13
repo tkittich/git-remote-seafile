@@ -249,6 +249,383 @@ def _doctor(url: str | None) -> int:
     return 0
 
 
+# --------------------------------------------------------------------------
+# Subcommands
+#
+# One convention for all of them (E2):
+#
+#   stdout  what the command is *for*: its result or report, including the
+#           verdict of a report command ("[FAIL]", "[BLOCKED ...]", LOCKED).
+#   stderr  everything that is not the result: usage errors, failures that kept
+#           the command from producing a result, warnings.
+#   exit    0 done / nothing to do;  1 the command ran and the answer is "no"
+#           or it failed;  2 the command line itself was wrong.
+#
+# Each command is a function taking the arguments *after* its name.
+# --------------------------------------------------------------------------
+
+
+def _usage(command: str) -> int:
+    sys.stderr.write(f"Usage: {_COMMAND_TABLE[command][0]}\n")
+    return 2
+
+
+def _error(message: str) -> int:
+    sys.stderr.write(f"{message}\n")
+    return 1
+
+
+def _cmd_check_auth(rest: list[str]) -> int:
+    try:
+        client = SeafileClient()
+        info_url = f"{client.server_url}/api2/account/info/"
+        resp = client.session.get(info_url, timeout=client.timeout)
+    except Exception as ex:
+        return _error(f"Error: {ex}")
+    if resp.status_code == 200:
+        email = resp.json().get("email")
+        print(f"Authenticated successfully with {client.server_url} as {email}")
+        return 0
+    return _error(f"Authentication failed: HTTP {resp.status_code} {resp.text}")
+
+
+def _cmd_doctor(rest: list[str]) -> int:
+    positional = _positional_args(rest)
+    return _doctor(positional[0] if positional else None)
+
+
+def _cmd_check_safety(rest: list[str]) -> int:
+    positional = _positional_args(rest)
+    if not positional:
+        return _usage("check-safety")
+    try:
+        helper = RemoteHelper("check-safety", positional[0])
+        wt = get_local_work_tree()
+        synced = discover_local_synced_libraries()
+        print(f"Target Server     : {helper.client.server_url}")
+        print(f"Target Library    : {helper.library_name}")
+        print(f"Remote Path       : {helper.repo_path}")
+        print(f"Local Working Tree: {wt if wt else '(none detected)'}")
+        print(f"Synced Libraries  : {len(synced)} active on this machine")
+        for s in synced:
+            print(f"  - {s['name']} -> {s['worktree']}")
+
+        print("\nEvaluating safety guardrails (Trap 1 & Trap 2)...")
+        warnings = check_preflight_safety(
+            helper.client,
+            helper.library_name,
+            helper.repo_path,
+            local_worktree=wt,
+            push_mode=True,
+            synced_libs=synced,
+        )
+        for w in warnings:
+            print(f"\n[Warning]\n{w}")
+
+        print("\n[PASSED] Pre-flight safety checks completed successfully with no blocking issues.")
+        return 0
+    except SafetyError as safe_err:
+        print(f"\n[BLOCKED - SAFETY ERROR]\n{safe_err}")
+        return 1
+    except Exception as ex:
+        return _error(f"Safety check error: {ex}")
+
+
+def _cmd_test(rest: list[str]) -> int:
+    positional = _positional_args(rest)
+    if not positional:
+        return _usage("test")
+    try:
+        helper = RemoteHelper("test", positional[0])
+        print(f"Server      : {helper.client.server_url}")
+        print(f"Library     : {helper.library_name} (ID: {helper.repo_id})")
+        print(f"Remote Path : {helper.repo_path}")
+        print("Fetching remote ref list...")
+        # cmd_list writes the wire protocol (and enforces the empty-repo
+        # guard); capture it and render the listing for humans instead.
+        import contextlib
+
+        protocol = io.StringIO()
+        with contextlib.redirect_stdout(protocol):
+            helper.cmd_list()
+        for line in protocol.getvalue().splitlines():
+            if not line.strip() or line.startswith(":"):
+                continue
+            if line.startswith("@"):
+                print(f"  HEAD -> {line[1:].split(' ', 1)[0]}")
+            else:
+                sha, _, name = line.partition(" ")
+                print(f"  {name} {sha}")
+        print("Connection successful!")
+
+        warnings = check_preflight_safety(helper.client, helper.library_name, helper.repo_path, push_mode=False)
+        for w in warnings:
+            print(f"[Warning] {w}")
+        return 0
+    except SafetyError as safe_err:
+        print(f"[Safety Warning] {safe_err}")
+        return 1
+    except Exception as ex:
+        return _error(f"Test failed: {ex}")
+
+
+def _cmd_gc(rest: list[str]) -> int:
+    positional = _positional_args(rest, value_options=("--min-packs",))
+    if not positional:
+        return _usage("gc")
+    url = positional[0]
+    min_packs = _parse_min_packs(rest)
+    try:
+        from .config import RemoteConfig
+        helper = RemoteHelper("gc", url)
+        from .gc import compact_repository, describe_size_delta
+        res = compact_repository(
+            helper.client,
+            helper.repo_id,
+            helper.repo_path,
+            min_packs=min_packs,
+            config=RemoteConfig.load(),
+        )
+    except Exception as ex:
+        return _error(f"Compaction failed: {ex}")
+    status = res.get("status")
+    if status == "ok":
+        print(
+            f"Compacted {res['old_packs']} packfiles into {res['new_packs']} "
+            f"({describe_size_delta(res['saved_kb'])})."
+        )
+        return 0
+    if status == "incomplete":
+        # The consolidation succeeded and was verified; the *cleanup* stopped
+        # short because ownership of the lock was lost.  Nothing was lost, so
+        # this is not an error -- but it is not "ok" either, and a scheduled job
+        # that reads only the exit code has to tell a finished compaction from
+        # one that left orphans.
+        print(
+            f"Compacted {res['old_packs']} packfiles into {res['new_packs']} "
+            f"({describe_size_delta(res['saved_kb'])}) but did not finish "
+            f"removing the superseded ones."
+        )
+        stopped = str(res.get("cleanup_stopped", "")).strip()
+        if stopped:
+            print(stopped)
+        return 1
+    if status == "error":
+        # An aborted compaction is a real failure (download error, size
+        # mismatch, invalid pack name); scripts must see it.
+        return _error(str(res.get("message", "Compaction failed.")))
+    print(res.get("message", "Compaction skipped."))
+    return 0
+
+
+def _cmd_lfs_transfer(rest: list[str]) -> int:
+    positional = _positional_args(rest)
+    if not positional:
+        return _usage("lfs-transfer")
+    try:
+        helper = RemoteHelper("lfs", positional[0])
+        from .lfs import LFSTransferAgent
+        git_dir = None
+        try:
+            from .git_util import get_git_dir
+            git_dir = get_git_dir()
+        except Exception:
+            pass
+        agent = LFSTransferAgent(helper.client, helper.repo_id, helper.repo_path, git_dir=git_dir)
+        agent.run()
+        return 0
+    except Exception as ex:
+        return _error(f"LFS transfer error: {ex}")
+
+
+def _cmd_set_head(rest: list[str]) -> int:
+    positional = _positional_args(rest)
+    if len(positional) < 2:
+        return _usage("set-head")
+    url, branch = positional[0], positional[1]
+    try:
+        helper = RemoteHelper("set-head", url)
+        head_target = branch if branch.startswith("refs/heads/") else f"refs/heads/{branch}"
+        from .refs import iter_refs
+        existing_branches = {
+            ref_name
+            for ref_name, _ in iter_refs(helper.client, helper.repo_id, helper.repo_path, "refs/heads")
+        }
+        if head_target not in existing_branches:
+            return _error(f"Error: branch '{head_target}' does not exist on remote {mask_url(url)}")
+        # set-head is an explicit administrative maintenance command. It bypasses
+        # RemoteLock to allow recovering remotes where an interrupted operation
+        # left a broken HEAD or stale lock, while strictly validating that the
+        # target branch exists.
+        old_head = helper.client.get_file_text(helper.repo_id, helper.repo_path + "/HEAD")
+        head_content = f"ref: {head_target}\n".encode("utf-8")
+        helper.client.upload_file(
+            helper.repo_id,
+            helper.repo_path,
+            "HEAD",
+            head_content,
+            replace=True,
+        )
+        print(f"Updated remote HEAD on {mask_url(url)} to {head_target} (was {old_head or 'unset'})")
+        return 0
+    except Exception as ex:
+        return _error(f"Failed to set HEAD: {ex}")
+
+
+def _cmd_lock_status(rest: list[str]) -> int:
+    positional = _positional_args(rest)
+    if not positional:
+        return _usage("lock-status")
+    url = positional[0]
+    try:
+        helper = RemoteHelper("lock-status", url)
+        lock = RemoteLock(helper.client, helper.repo_id, helper.repo_path)
+        status = lock.get_status()
+    except Exception as ex:
+        return _error(f"Failed to check lock status: {ex}")
+    if status.get("locked") is None:
+        # A listing failure is not "unlocked": reporting it as such sent
+        # operators to `unlock --force` on a false confidence.
+        return _error(
+            f"Could not inspect the lock queue for {mask_url(url)} "
+            f"({status.get('error', 'unknown error')})."
+        )
+    if not status.get("locked"):
+        print(f"Repository at {mask_url(url)} is UNLOCKED.")
+        return 0
+    print(f"Repository at {mask_url(url)} is LOCKED:")
+    if status.get("stale"):
+        print("  State    : STALE -- the ticket's lease has expired, so a plain push would reclaim it")
+    print(f"  Owner    : {status.get('owner')}")
+    print(f"  Machine  : {status.get('machine')}")
+    if status.get("pid"):
+        print(f"  PID      : {status.get('pid')}")
+    if status.get("nonce"):
+        print(f"  Nonce    : {status.get('nonce')}")
+    print(f"  Protocol : {status.get('protocol')}")
+    if not status.get("holding"):
+        # The grant marker is what stops a newcomer from preempting an active
+        # holder, so its absence is worth naming: either the winning ticket is
+        # from a client older than v0.8.4, or the queue is abandoned and needs
+        # --force.
+        print("  Granted  : not marked -- a pre-v0.8.4 ticket, or an "
+              "abandoned queue that --force would clear")
+    print(f"  Expires  : in {status.get('expires_in')}s")
+    return 0
+
+
+def _cmd_unlock(rest: list[str]) -> int:
+    positional = _positional_args(rest)
+    if not positional:
+        return _usage("unlock")
+    url = positional[0]
+    force = "--force" in rest
+    try:
+        helper = RemoteHelper("unlock", url)
+        lock = RemoteLock(helper.client, helper.repo_id, helper.repo_path)
+        was_locked = lock.unlock(force=force)
+    except RepositoryLockedError as rle:
+        return _error(f"Error: {rle}")
+    except Exception as ex:
+        return _error(f"Failed to unlock repository: {ex}")
+    if not was_locked:
+        print(f"Repository at {mask_url(url)} is not locked; nothing to release.")
+    elif force:
+        print(f"Forcibly unlocked repository at {mask_url(url)}.")
+    else:
+        print(f"Unlocked repository at {mask_url(url)}.")
+    return 0
+
+
+def _cmd_desktop_url(rest: list[str]) -> int:
+    positional = _positional_args(rest)
+    if not positional:
+        return _usage("desktop-url")
+    target_path = Path(positional[0]).resolve()
+    try:
+        client = SeafileClient(require_credentials=False)
+    except SeafileAuthError as auth_err:
+        # Only the server URL is needed here: this command builds a URL and
+        # makes no authenticated request.  Requiring a token made it fail for
+        # users who have the desktop client installed but no reachable
+        # credentials, which is exactly the audience for this command.
+        return _error(f"Cannot determine the Seafile server: {auth_err}")
+
+    try:
+        synced_libs = discover_local_synced_libraries()
+        for lib in synced_libs:
+            rel = _relative_within(target_path, lib["worktree"])
+            if rel is None:
+                continue
+            # The *repo id*, not the worktree folder name: a synced folder is
+            # named by the user and need not match the library's name on the
+            # server (and two libraries can share one).  get_repo_id resolves an
+            # id before it tries any name, so the URL works whatever the folder
+            # is called.
+            server_url = (lib.get("server_url") or client.server_url or "").rstrip("/")
+            if not server_url:
+                return _error(
+                    f"Matched '{target_path}' to library '{lib['repo_id']}', but no "
+                    f"server URL is known for it. Set SEAFILE_SERVER and retry."
+                )
+            # Always state the scheme.  A bare first segment is read as a
+            # *library* unless it happens to look like a host, so the
+            # scheme-less spelling the command used to emit was the one form the
+            # URL grammar could misread.
+            scheme, sep, rest_url = server_url.partition("://")
+            if not sep:
+                scheme, rest_url = "https", server_url
+            print(f"seafile://{scheme.lower()}://{rest_url}/{quote(lib['repo_id'], safe='')}{_url_path(rel)}")
+            return 0
+        return _error(f"Could not match '{target_path}' to any local Seafile library worktree.")
+    except Exception as ex:
+        return _error(f"Error resolving path: {ex}")
+
+
+def _cmd_version(rest: list[str]) -> int:
+    from . import __version__
+    print(f"git-remote-seafile v{__version__}")
+    return 0
+
+
+_HANDLERS = {
+    "doctor": _cmd_doctor,
+    "test": _cmd_test,
+    "check-safety": _cmd_check_safety,
+    "check-auth": _cmd_check_auth,
+    "gc": _cmd_gc,
+    "lfs-transfer": _cmd_lfs_transfer,
+    "set-head": _cmd_set_head,
+    "lock-status": _cmd_lock_status,
+    "unlock": _cmd_unlock,
+    "desktop-url": _cmd_desktop_url,
+    "version": _cmd_version,
+}
+
+
+def _run_helper(args: list[str]) -> int:
+    """The remote-helper invocation: ``<remote-name> <url>`` or just ``<url>``.
+
+    Both forms carry the seafile:// URL, so an invocation with no such URL is
+    not a helper call at all -- it is a mistyped subcommand.  Without this check
+    a typo like `chck-auth` was passed to the helper as the *remote URL* and
+    surfaced as a baffling "library not found" or auth error.
+    """
+    if not any(arg.lower().startswith("seafile://") for arg in args):
+        sys.stderr.write(f"git-remote-seafile: unknown command '{args[0]}'\n\n")
+        print_help()
+        return 2
+    remote_name = args[0]
+    url = args[1] if len(args) > 1 else args[0]
+    try:
+        helper = RemoteHelper(remote_name, url)
+        helper.run()
+        return 0
+    except Exception as ex:
+        sys.stderr.write(f"git-remote-seafile fatal error: {ex}\n")
+        return 1
+
+
 def main() -> int:
     if hasattr(sys.stdout, "reconfigure"):
         try:
@@ -262,366 +639,20 @@ def main() -> int:
             pass
 
     args = sys.argv[1:]
-    if not args:
+    if not args or args[0] in ("-h", "--help", "help"):
         print_help()
         return 0
+    if args[0] in ("-v", "--version"):
+        return _cmd_version([])
 
-    if args[0] in ("-h", "--help", "help"):
-        print_help()
-        return 0
-
-    if args[0] in _COMMAND_TABLE and any(arg in ("-h", "--help") for arg in args[1:]):
-        print_command_help(args[0])
-        return 0
-
-    if args[0] in ("-v", "--version", "version"):
-        from . import __version__
-        print(f"git-remote-seafile v{__version__}")
-        return 0
-
-    if args[0] == "doctor":
-        return _doctor(args[1] if len(args) > 1 else None)
-
-    if args[0] == "check-auth":
-        try:
-            client = SeafileClient()
-            info_url = f"{client.server_url}/api2/account/info/"
-            resp = client.session.get(info_url, timeout=client.timeout)
-            if resp.status_code == 200:
-                email = resp.json().get("email")
-                print(f"Authenticated successfully with {client.server_url} as {email}")
-                return 0
-            else:
-                print(f"Authentication failed: HTTP {resp.status_code} {resp.text}")
-                return 1
-        except Exception as ex:
-            print(f"Error: {ex}")
-            return 1
-
-    if args[0] == "check-safety":
-        if len(args) < 2:
-            print("Usage: git-remote-seafile check-safety <seafile://url>")
-            return 1
-        url = args[1]
-        try:
-            helper = RemoteHelper("check-safety", url)
-            wt = get_local_work_tree()
-            synced = discover_local_synced_libraries()
-            print(f"Target Server     : {helper.client.server_url}")
-            print(f"Target Library    : {helper.library_name}")
-            print(f"Remote Path       : {helper.repo_path}")
-            print(f"Local Working Tree: {wt if wt else '(none detected)'}")
-            print(f"Synced Libraries  : {len(synced)} active on this machine")
-            for s in synced:
-                print(f"  - {s['name']} -> {s['worktree']}")
-
-            print("\nEvaluating safety guardrails (Trap 1 & Trap 2)...")
-            warnings = check_preflight_safety(
-                helper.client,
-                helper.library_name,
-                helper.repo_path,
-                local_worktree=wt,
-                push_mode=True,
-                synced_libs=synced,
-            )
-            for w in warnings:
-                print(f"\n[Warning]\n{w}")
-
-            print("\n[PASSED] Pre-flight safety checks completed successfully with no blocking issues.")
+    command = args[0]
+    if command in _HANDLERS:
+        if any(arg in ("-h", "--help") for arg in args[1:]):
+            print_command_help(command)
             return 0
-        except SafetyError as safe_err:
-            print(f"\n[BLOCKED - SAFETY ERROR]\n{safe_err}")
-            return 1
-        except Exception as ex:
-            print(f"Safety check error: {ex}")
-            return 1
+        return _HANDLERS[command](args[1:])
 
-    if args[0] == "test":
-        if len(args) < 2:
-            print("Usage: git-remote-seafile test <seafile://url>")
-            return 1
-        url = args[1]
-        try:
-            helper = RemoteHelper("test", url)
-            print(f"Server      : {helper.client.server_url}")
-            print(f"Library     : {helper.library_name} (ID: {helper.repo_id})")
-            print(f"Remote Path : {helper.repo_path}")
-            print("Fetching remote ref list...")
-            # cmd_list writes the wire protocol (and enforces the empty-repo
-            # guard); capture it and render the listing for humans instead.
-            import contextlib
-
-            protocol = io.StringIO()
-            with contextlib.redirect_stdout(protocol):
-                helper.cmd_list()
-            for line in protocol.getvalue().splitlines():
-                if not line.strip() or line.startswith(":"):
-                    continue
-                if line.startswith("@"):
-                    print(f"  HEAD -> {line[1:].split(' ', 1)[0]}")
-                else:
-                    sha, _, name = line.partition(" ")
-                    print(f"  {name} {sha}")
-            print("Connection successful!")
-
-            warnings = check_preflight_safety(helper.client, helper.library_name, helper.repo_path, push_mode=False)
-            for w in warnings:
-                print(f"[Warning] {w}")
-            return 0
-        except SafetyError as safe_err:
-            print(f"[Safety Warning] {safe_err}")
-            return 1
-        except Exception as ex:
-            print(f"Test failed: {ex}")
-            return 1
-
-    if args[0] == "gc":
-        # args[1:]: args[0] is the subcommand itself, not a positional operand.
-        positional = _positional_args(args[1:], value_options=("--min-packs",))
-        if not positional:
-            print("Usage: git-remote-seafile gc <seafile://url> [--min-packs N]")
-            return 1
-        url = positional[0]
-        min_packs = _parse_min_packs(args)
-        try:
-            from .config import RemoteConfig
-            helper = RemoteHelper("gc", url)
-            from .gc import compact_repository, describe_size_delta
-            res = compact_repository(
-                helper.client,
-                helper.repo_id,
-                helper.repo_path,
-                min_packs=min_packs,
-                config=RemoteConfig.load(),
-            )
-            status = res.get("status")
-            if status == "ok":
-                print(
-                    f"Compacted {res['old_packs']} packfiles into {res['new_packs']} "
-                    f"({describe_size_delta(res['saved_kb'])})."
-                )
-                return 0
-            if status == "incomplete":
-                # The consolidation succeeded and was verified; the *cleanup*
-                # stopped short because ownership of the lock was lost.  Nothing
-                # was lost, so this is not an error -- but it is not "ok" either,
-                # and a scheduled job that reads only the exit code has to be
-                # able to tell a finished compaction from one that left orphans.
-                print(
-                    f"Compacted {res['old_packs']} packfiles into {res['new_packs']} "
-                    f"({describe_size_delta(res['saved_kb'])}) but did not finish "
-                    f"removing the superseded ones."
-                )
-                stopped = str(res.get("cleanup_stopped", "")).strip()
-                if stopped:
-                    print(stopped)
-                return 1
-            if status == "error":
-                # An aborted compaction is a real failure (download error,
-                # size mismatch, invalid pack name); scripts must see it.
-                print(res.get("message", "Compaction failed."))
-                return 1
-            print(res.get("message", "Compaction skipped."))
-            return 0
-        except Exception as ex:
-            print(f"Compaction failed: {ex}")
-            return 1
-
-    if args[0] == "lfs-transfer":
-        if len(args) < 2:
-            print("Usage: git-remote-seafile lfs-transfer <seafile://url>")
-            return 1
-        url = args[1]
-        try:
-            helper = RemoteHelper("lfs", url)
-            from .lfs import LFSTransferAgent
-            git_dir = None
-            try:
-                from .git_util import get_git_dir
-                git_dir = get_git_dir()
-            except Exception:
-                pass
-            agent = LFSTransferAgent(helper.client, helper.repo_id, helper.repo_path, git_dir=git_dir)
-            agent.run()
-            return 0
-        except Exception as ex:
-            sys.stderr.write(f"LFS transfer error: {ex}\n")
-            return 1
-
-    if args[0] == "set-head":
-        if len(args) < 3:
-            print("Usage: git-remote-seafile set-head <seafile://url> <branch>")
-            return 1
-        url = args[1]
-        branch = args[2]
-        try:
-            helper = RemoteHelper("set-head", url)
-            head_target = branch if branch.startswith("refs/heads/") else f"refs/heads/{branch}"
-            from .refs import iter_refs
-            existing_branches = {
-                ref_name
-                for ref_name, _ in iter_refs(helper.client, helper.repo_id, helper.repo_path, "refs/heads")
-            }
-            if head_target not in existing_branches:
-                sys.stderr.write(f"Error: branch '{head_target}' does not exist on remote {mask_url(url)}\n")
-                return 1
-            # set-head is an explicit administrative maintenance command. It bypasses
-            # RemoteLock to allow recovering remotes where an interrupted operation left a
-            # broken HEAD or stale lock, while strictly validating that the target branch exists.
-            old_head = helper.client.get_file_text(helper.repo_id, helper.repo_path + "/HEAD")
-            head_content = f"ref: {head_target}\n".encode("utf-8")
-            helper.client.upload_file(
-                helper.repo_id,
-                helper.repo_path,
-                "HEAD",
-                head_content,
-                replace=True,
-            )
-            print(f"Updated remote HEAD on {mask_url(url)} to {head_target} (was {old_head or 'unset'})")
-            return 0
-        except Exception as ex:
-            print(f"Failed to set HEAD: {ex}")
-            return 1
-
-    if args[0] == "lock-status":
-        if len(args) < 2:
-            print("Usage: git-remote-seafile lock-status <seafile://url>")
-            return 1
-        url = args[1]
-        try:
-            helper = RemoteHelper("lock-status", url)
-            lock = RemoteLock(helper.client, helper.repo_id, helper.repo_path)
-            status = lock.get_status()
-            if status.get("locked") is None:
-                # A listing failure is not "unlocked": reporting it as such
-                # sent operators to `unlock --force` on a false confidence.
-                # Fail loudly and distinctly instead.
-                sys.stderr.write(
-                    f"Could not inspect the lock queue for {mask_url(url)} "
-                    f"({status.get('error', 'unknown error')}).\n"
-                )
-                return 1
-            if not status.get("locked"):
-                print(f"Repository at {mask_url(url)} is UNLOCKED.")
-                return 0
-            print(f"Repository at {mask_url(url)} is LOCKED:")
-            if status.get("stale"):
-                print("  State    : STALE -- the ticket's lease has expired, so a "
-                      "plain push would reclaim it")
-            print(f"  Owner    : {status.get('owner')}")
-            print(f"  Machine  : {status.get('machine')}")
-            if status.get("pid"):
-                print(f"  PID      : {status.get('pid')}")
-            if status.get("nonce"):
-                print(f"  Nonce    : {status.get('nonce')}")
-            print(f"  Protocol : {status.get('protocol')}")
-            if not status.get("holding"):
-                # The grant marker is what stops a newcomer from preempting an
-                # active holder, so its absence is worth naming: either the
-                # winning ticket is from a client older than v0.8.4, or the
-                # queue is abandoned and needs --force.
-                print("  Granted  : not marked -- a pre-v0.8.4 ticket, or an "
-                      "abandoned queue that --force would clear")
-            print(f"  Expires  : in {status.get('expires_in')}s")
-            return 0
-        except Exception as ex:
-            print(f"Failed to check lock status: {ex}")
-            return 1
-
-    if args[0] == "unlock":
-        positional = _positional_args(args[1:])
-        if not positional:
-            print("Usage: git-remote-seafile unlock <seafile://url> [--force]")
-            return 1
-        url = positional[0]
-        force = "--force" in args
-        try:
-            helper = RemoteHelper("unlock", url)
-            lock = RemoteLock(helper.client, helper.repo_id, helper.repo_path)
-            was_locked = lock.unlock(force=force)
-            if not was_locked:
-                print(f"Repository at {mask_url(url)} is not locked; nothing to release.")
-                return 0
-            if force:
-                print(f"Forcibly unlocked repository at {mask_url(url)}.")
-            else:
-                print(f"Unlocked repository at {mask_url(url)}.")
-            return 0
-        except RepositoryLockedError as rle:
-            sys.stderr.write(f"Error: {rle}\n")
-            return 1
-        except Exception as ex:
-            sys.stderr.write(f"Failed to unlock repository: {ex}\n")
-            return 1
-
-    if args[0] == "desktop-url":
-        if len(args) < 2:
-            print("Usage: git-remote-seafile desktop-url <path>")
-            return 1
-        target_path = Path(args[1]).resolve()
-        try:
-            client = SeafileClient(require_credentials=False)
-        except SeafileAuthError as auth_err:
-            # Only the server URL is needed here: this command builds a URL and
-            # makes no authenticated request.  Requiring a token made it fail
-            # for users who have the desktop client installed but no reachable
-            # credentials, which is exactly the audience for this command.
-            print(f"Cannot determine the Seafile server: {auth_err}")
-            return 1
-
-        try:
-            synced_libs = discover_local_synced_libraries()
-            for lib in synced_libs:
-                rel = _relative_within(target_path, lib["worktree"])
-                if rel is None:
-                    continue
-                # The *repo id*, not the worktree folder name: a synced folder
-                # is named by the user and need not match the library's name on
-                # the server (and two libraries can share one).  get_repo_id
-                # resolves an id before it tries any name, so the URL works
-                # whatever the folder is called.
-                server_url = (lib.get("server_url") or client.server_url or "").rstrip("/")
-                if not server_url:
-                    print(
-                        f"Matched '{target_path}' to library '{lib['repo_id']}', but no "
-                        f"server URL is known for it. Set SEAFILE_SERVER and retry."
-                    )
-                    return 1
-                # Always state the scheme.  A bare first segment is read as a
-                # *library* unless it happens to look like a host, so the
-                # scheme-less spelling the command used to emit was the one form
-                # the URL grammar could misread.
-                scheme, sep, rest = server_url.partition("://")
-                if not sep:
-                    scheme, rest = "https", server_url
-                print(f"seafile://{scheme.lower()}://{rest}/{quote(lib['repo_id'], safe='')}{_url_path(rel)}")
-                return 0
-            print(f"Could not match '{target_path}' to any local Seafile library worktree.")
-            return 1
-        except Exception as ex:
-            print(f"Error resolving path: {ex}")
-            return 1
-
-    # Standard Git remote helper invocation: git-remote-seafile <remote-name> <url>
-    # or git-remote-seafile <url> when Git is handed a URL directly.  Both forms
-    # carry the seafile:// URL, so an invocation with no such URL is not a helper
-    # call at all -- it is a mistyped subcommand.  Without this check a typo like
-    # `git-remote-seafile chck-auth` was passed to the helper as the *remote URL*
-    # and surfaced as a baffling "library not found" or auth error.
-    if not any(arg.lower().startswith("seafile://") for arg in args):
-        sys.stderr.write(f"git-remote-seafile: unknown command '{args[0]}'\n\n")
-        print_help()
-        return 2
-
-    remote_name = args[0]
-    url = args[1] if len(args) > 1 else args[0]
-    try:
-        helper = RemoteHelper(remote_name, url)
-        helper.run()
-        return 0
-    except Exception as ex:
-        sys.stderr.write(f"git-remote-seafile fatal error: {ex}\n")
-        return 1
+    return _run_helper(args)
 
 
 if __name__ == "__main__":

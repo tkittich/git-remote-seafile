@@ -205,14 +205,10 @@ def _normalise_default(raw: str) -> str:
 
 
 def _subcommands_implemented() -> set[str]:
-    source = _source_text()
-    names = set(_CODE_SUBCOMMAND_EQ.findall(source))
-    for group in _CODE_SUBCOMMAND_IN.findall(source):
-        for token in group.split(","):
-            token = token.strip().strip("\"'")
-            if token and not token.startswith("-"):
-                names.add(token)
-    return names
+    """The dispatch table itself (plus ``help``, handled before dispatch)."""
+    from git_remote_seafile import cli
+
+    return set(cli._HANDLERS) | {"help"}
 
 
 def _subcommands_documented() -> set[str]:
