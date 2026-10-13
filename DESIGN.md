@@ -336,7 +336,7 @@ All behavioural settings resolve through one `RemoteConfig.load()` passed to bot
 | -------------------------- | ------- | ----------------------------------------------------------------- |
 | `seafile.locktimeout`      | `15`    | Seconds to wait for the lock before giving up                     |
 | `seafile.locklease`        | `60`    | Lease duration in seconds                                         |
-| `seafile.autogc`           | `false` | Tail-merge the small packs automatically after a push once their threshold is exceeded |
+| `seafile.autogc`           | `true`  | Tail-merge the small packs automatically after a push once their threshold is exceeded (set `false` to only be told) |
 | `seafile.gcthreshold`      | `20`    | Movable-pack count at which auto-GC triggers (§4.5) |
 | `seafile.gcmaxpackmib`     | `1024`  | Largest pack written, in MiB (`--max-pack-size` for pushes, tail merges and full gc); packs at or above half of it are never moved by tail merge; the automatic download budget is 2 × this, above which auto-GC defers to a manual run (§4.5) |
 | `seafile.forcefilehost`    | `false` | Force the file-host header on uploads                             |

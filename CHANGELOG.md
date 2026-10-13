@@ -23,6 +23,7 @@ The theme is **less machinery, and the machinery that remains fails loudly**.
 - **`seafile.gittimeout` / `SEAFILE_GIT_TIMEOUT`**, readable only from the system/global git config or the environment, raises the per-command git ceiling for large repositories. `SEAFILE_SNAPSHOT_STALL_LIMIT` does the same for the snapshot tool's no-progress limit.
 
 ### Changed
+- **`seafile.autogc` now defaults to on.** The automatic tail merge is bounded (2 x `seafile.gcmaxpackmib` download budget, packs capped, deletes only after size verification, fenced per deletion), cost ~4 s on every 20th push on the measured server, and the alternative was a remote that grows without bound. `git config seafile.autogc false` restores the tip-only behaviour. The "run gc / enable autogc" tip now appears only for users who turned it off.
 - **One output and exit-code convention for every subcommand**: results and reports on stdout, usage errors and failures on stderr; exit 0 done, 1 failed or "no", 2 usage error. Usage errors used to print to stdout and exit 1. `cli.main` is now a dispatch table of one function per command.
 
 - **A URL with no path says where it points.** The first push of `seafile://<library>` into an empty location prints that the repository lives at `/git-repo` and how to write that explicitly.

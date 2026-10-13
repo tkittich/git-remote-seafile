@@ -328,7 +328,7 @@ Every subcommand follows one convention, so scripts can rely on it:
 | :--- | :--- | :--- | :--- |
 | `seafile.skipsafetychecks` | `SEAFILE_SKIP_SAFETY_CHECKS` | `false` | Bypass the pre-flight guardrails (Trap 1, Trap 2, root pollution). |
 | `seafile.gittimeout` | `SEAFILE_GIT_TIMEOUT` | `300` | Seconds one git subprocess may run before it is killed. Raise it when a multi-GB push, fetch or `gc` times out (system/global scope or environment only). |
-| `seafile.autogc` | — | `false` | Automatically tail-merge the remote's small packfiles after a push, once their threshold is reached. |
+| `seafile.autogc` | — | `true` | Automatically tail-merge the remote's small packfiles after a push, once their threshold is reached. Set `false` to be told instead. |
 | `seafile.gcthreshold` | — | `20` | Count of *small* packfiles at which the `gc` tip appears (or auto-GC triggers). Large packs never count toward it. |
 | `seafile.gcmaxpackmib` | — | `1024` | The largest pack the helper writes, in MiB (`pack-objects --max-pack-size`, for pushes, tail merges and full `gc`): a bigger push arrives as several packs. Packs at least half this size count as full and are left where they stand by tail merge. The automatic run's download budget is 2 × this (2 GiB at the default); above it the run defers to a manual `gc`. Keep it under your server's single-upload limit — one tested server accepted 1.75 GiB and reset a 2 GiB upload. |
 | `seafile.forcefilehost` | `SEAFILE_FORCE_FILE_HOST` | `false` | Force download/upload links onto your server's **host** (a wrong scheme on the same host is always corrected). |
@@ -337,7 +337,7 @@ Every subcommand follows one convention, so scripts can rely on it:
 
 ```bash
 # Examples
-git config seafile.autogc true
+git config seafile.autogc false
 git config seafile.gcthreshold 25
 git config seafile.forcefilehost true
 git config seafile.locktimeout 30
@@ -549,22 +549,22 @@ git-remote-seafile gc seafile://code/myproject
 - **Obsolete packs are deleted only after the consolidated packfile is verified.** The remote pack directory is listed again and every new `.pack`/`.idx` must be present at the size it has locally. An upload that returned success is not evidence that the bytes are there — a truncated write, a quota error a proxy answered `2xx`, and an `.idx` that never landed all look identical from the client — and what gc deletes are the packfiles the repository is *currently* served from. When the check cannot be satisfied (a file missing, a size that disagrees, or a listing that fails) gc refuses, names what it could not verify, and leaves every old packfile in place: until the new ones are proven present, they are still the only complete copy. Deletions that fail individually are named on stderr and in the result summary and simply remain for a later `gc` run. If ownership is lost part-way through the deletions, the run stops there, reports it, and leaves the rest — the consolidated packfiles are already verified by that point, so nothing is lost. That outcome is reported as `status: "incomplete"` and the command exits non-zero rather than printing a plain success, so a scheduled job can tell it from a compaction that finished; the leftovers are unreferenced and a later `gc` removes them.
 - **Scratch space**: compaction downloads the remote's packfiles, repacks them, and re-uploads the result, all under the system temporary directory. Point `TMPDIR` (Linux/macOS) or `TEMP`/`TMP` (Windows) at a volume with room for roughly 2–3× the repository's packed size before compacting a large library; otherwise the run fails late, after it has already taken the lock.
 
-### 10.2 Automatic Detection & Notification (Default)
-By default, whenever you push, `git-remote-seafile` checks the number of *small* remote packfiles — packs below half of `seafile.gcmaxpackmib` (default 1 GiB, so below 512 MiB). Larger packs are frozen and never counted:
+### 10.2 Automatic Detection & Notification (when `seafile.autogc` is off)
+With `seafile.autogc false`, whenever you push, `git-remote-seafile` checks the number of *small* remote packfiles — packs below half of `seafile.gcmaxpackmib` (default 1 GiB, so below 512 MiB). Larger packs are frozen and never counted:
 - If the small-pack count reaches **20** (or custom threshold), it prints a non-intrusive tip to your terminal:
   ```text
   Notice: Remote repository has 22 small packfiles (threshold: 20), totaling 0.1 GiB.
   Tip: Run 'git-remote-seafile gc seafile://...' to optimize remote storage,
-       or run 'git config seafile.autogc true' to enable automatic tail merge.
+       or run 'git config seafile.autogc true' to enable automatic tail merge.   (shown at most once a day per remote)
   ```
 - Your normal pushes are unchanged by this check: it reads a directory listing and prints a tip, and adds no network round-trip to the transfer. (The one fixed cost on every push is the lock's settlement window — see §12.)
 
-### 10.3 Opt-In Automatic Tail Merge (`seafile.autogc`)
-If you want `git-remote-seafile` to automatically merge small packfiles during `git push` whenever the threshold is reached:
+### 10.3 Automatic Tail Merge (`seafile.autogc`, on by default)
+`git-remote-seafile` automatically merges small packfiles after a `git push` whenever the threshold is reached. To switch that off and only be told:
 
 ```bash
-# Enable automatic tail merge on push
-git config seafile.autogc true
+# Disable the automatic tail merge (you will get a once-a-day tip instead)
+git config seafile.autogc false
 
 # (Optional) Customize threshold (default: 20)
 git config seafile.gcthreshold 25
@@ -589,12 +589,12 @@ Understanding how `git-remote-seafile` handles complex Git workflows and remote 
 - **Branch Independence**: Every branch has its own ref file (`refs/heads/<branch>`). Pushing a new branch only uploads objects unique to that branch (base commits on `main` are not re-uploaded).
 - **Global Cross-Delta Compression**: When compaction runs, `gc.py` discovers **all** remote branches and tags. Objects across all branches are packed together, optimizing deduplication and significantly reducing storage for long-lived feature branches.
 
-#### 4. Auto-GC Performance Trade-Offs (Notice Mode vs. Auto-Compaction)
+#### 4. Auto-GC Performance Trade-Offs (Auto-Compaction vs. Notice Mode)
 
 | Mode | Trigger | Push Latency | Concurrency Behavior | Best Use Case |
 | :--- | :--- | :--- | :--- | :--- |
-| **Notification Mode (Default)** | Remote reaches 20 packfiles | **No added delay** | Terminal tip displayed; push never pauses | Daily development, interactive CLI usage |
-| **Opt-in Auto-GC (`autogc true`)** | 20 *small* packfiles accumulate | **A bounded tail merge, inline** — only packs below half of `seafile.gcmaxpackmib` move, so duration tracks the small tail rather than the repository; deferred with a notice if that tail exceeds 2 × `seafile.gcmaxpackmib` | Repositories locked via `.git-lock.d/` ticket queue during repack | Fully automated maintenance, solo developers |
+| **Notification Mode (`autogc false`)** | Remote reaches 20 packfiles | **No added delay** | Terminal tip displayed; push never pauses | Daily development, interactive CLI usage |
+| **Auto-GC (`autogc true`, default)** | 20 *small* packfiles accumulate | **A bounded tail merge, inline** — only packs below half of `seafile.gcmaxpackmib` move, so duration tracks the small tail rather than the repository; deferred with a notice if that tail exceeds 2 × `seafile.gcmaxpackmib` | Repositories locked via `.git-lock.d/` ticket queue during repack | Fully automated maintenance, solo developers |
 
 **Measured cost** (Seafile CE 13.0.28, one server, small commits; your network will differ):
 
@@ -609,7 +609,7 @@ Understanding how `git-remote-seafile` handles complex Git workflows and remote 
 Another client's push arriving during a merge waits for the lock and, after `seafile.locktimeout`, is told the repository is locked; it succeeds when retried. That is the practical cost of `autogc true` on a busy shared remote, and why the automatic budget is 2 GiB.
 
 > [!TIP]
-> **Recommendation**: Leave `seafile.autogc` disabled (the default) so your everyday push stays interactive — no compaction pause on top of the lock's settlement window. Run compaction manually (`git-remote-seafile gc seafile://...`) or as part of a scheduled CI job when convenient.
+> **Recommendation**: Leave `seafile.autogc` on (the default): the typical cost is a few seconds on every 20th push, and a remote that is never merged grows without bound. Turn it off (`git config seafile.autogc false`) on a busy shared remote where a ~minute-long merge holding the lock would be disruptive, and run `git-remote-seafile gc --tail` (or a full `gc`) from a schedule instead.
 
 ---
 
@@ -970,7 +970,7 @@ Measured on real pushes, not estimated (`SNAPSHOT.md` §8):
 | A 1-byte edit to an 8 MB file | +8202 KB, until `git-remote-seafile gc` |
 | A 32 MB file snapshotted three times | remote grows 33 → 65 → 97 MB |
 
-The last row is the one to watch: **`seafile.autogc` is off**, so a large file that changes daily grows the Seafile library by its own size every day. Run `git-remote-seafile gc` (§10) on the *vault's* remote periodically — or turn `seafile.autogc` on, which tail-merges those small packs between full gcs and bounds the growth — or keep large build artefacts out with `--default-excludes` (§15.2.1).
+The last row is the one to watch: a large file that changes daily adds its own size to the Seafile library every day. `seafile.autogc` (on by default) tail-merges those small packs between full gcs and bounds the growth; if you turned it off, run `git-remote-seafile gc` (§10) on the *vault's* remote periodically — or keep large build artefacts out with `--default-excludes` (§15.2.1).
 
 ### 15.8 Keeping the vault small
 

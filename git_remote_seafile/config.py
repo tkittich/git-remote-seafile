@@ -132,7 +132,7 @@ class RemoteConfig:
             "lock_timeout": get_git_config_int("seafile.locktimeout", 15),
             "lock_lease": get_git_config_int("seafile.locklease", 60),
             "lock_settle": default_lock_settle(),
-            "auto_gc": get_git_config_bool("seafile.autogc", False),
+            "auto_gc": get_git_config_bool("seafile.autogc", True),
             "gc_threshold": get_git_config_int("seafile.gcthreshold", 20),
             # Per-pack freeze threshold for the tail merge: packs at or above
             # this size are left where they stand, so each cycle moves only the

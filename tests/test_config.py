@@ -24,7 +24,7 @@ class TestConfigModule(unittest.TestCase):
             self.assertEqual(cfg.lock_timeout, 15)
             self.assertEqual(cfg.lock_lease, 60)
             self.assertEqual(cfg.lock_settle, 1)
-            self.assertFalse(cfg.auto_gc)
+            self.assertTrue(cfg.auto_gc)
             self.assertEqual(cfg.gc_threshold, 20)
             self.assertEqual(cfg.gc_max_mib, 2048)  # 2 x the 1024 MiB pack size cap
             self.assertEqual(cfg.gc_max_pack_mib, 1024)

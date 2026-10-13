@@ -283,7 +283,7 @@ calls plus about 24 MiB of reads, no git processes) and, for a large raw
 payload, writes two config values; and a push whose loose tier has passed
 256 MiB takes an incremental `repack -d` + prune pair.
 
-> **Watch the remote's packfile count.** The helper counts only *small* packs (below half of seafile.gcmaxpackmib, default 1 GiB) and warns once their number reaches the threshold (seafile.gcthreshold, default 20). With `seafile.autogc` on, a bounded tail merge consolidates them inline after each qualifying push — large packs are frozen where they stand; without it (the default), run `git-remote-seafile gc <url>` deliberately. A remote that is never compacted grows in bytes without bound — see the
+> **Watch the remote's packfile count.** The helper counts only *small* packs (below half of seafile.gcmaxpackmib, default 1 GiB) and warns once their number reaches the threshold (seafile.gcthreshold, default 20). With `seafile.autogc` on (the default), a bounded tail merge consolidates them inline after each qualifying push — large packs are frozen where they stand; with it off, run `git-remote-seafile gc <url>` deliberately. A remote that is never compacted grows in bytes without bound — see the
 > large-files section below for how fast that can be.
 
 ## 6. Several machines, one vault
@@ -435,10 +435,10 @@ Measured with a 32 MB incompressible file, 1 KB changed per snapshot:
 | after `gc` | **33 MB** |
 
 The three near-identical revisions *do* delta-compress to essentially one copy —
-but only once something consolidates them. With `seafile.autogc` on that happens
+but only once something consolidates them. With `seafile.autogc` on (the default) that happens
 automatically: each qualifying push tail-merges the small packs (re-delta included),
 so a 32 MB file snapshotted daily settles back toward one copy at a bounded download
-cost per cycle. Without it — the default, where the helper does not compact on push —
+cost per cycle. With it off — where the helper does not compact on push —
 the same file grows the remote by 32 MB **per day** until someone runs `git-remote-seafile gc`. This is
 the most important operational caveat for large files, and it is a compaction
 problem, not a Git one.

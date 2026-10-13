@@ -32,7 +32,7 @@ Instead of syncing the local `.git/` folder, `git-remote-seafile` communicates d
 - **Lock Management CLI**: Built-in `lock-status` and `unlock [--force]` subcommands for operator inspection and emergency recovery.
 
 > [!NOTE]
-> **Packfiles accumulate; the file count stays bounded.** Every push adds one small packfile pair, and automatic maintenance (`seafile.autogc`) is **off** by default. Turn it on and the helper tail-merges the *small* packs inline after a qualifying push — large packs are frozen where they stand. Run `git-remote-seafile gc <url>` periodically for a full delta-compaction, or a long-lived remote's bytes grow without bound.
+> **Packfiles accumulate; the file count stays bounded.** Every push adds one small packfile pair, and automatic maintenance (`seafile.autogc`) is **on** by default: the helper tail-merges the *small* packs inline after a qualifying push — large packs are frozen where they stand. `git config seafile.autogc false` turns it into a tip only. Run `git-remote-seafile gc <url>` periodically for a full delta-compaction, or a long-lived remote's bytes grow without bound.
 
 ---
 
@@ -165,7 +165,7 @@ git clone seafile://seafile.example.com/code/myproject
 | `git-remote-seafile doctor [url]` | One-shot first-use check: login, how the URL is interpreted, safety guards, and a write/delete probe. |
 | `git-remote-seafile lock-status <url>` | Inspect remote repository lock status and lease holder details. |
 | `git-remote-seafile unlock <url> [--force]` | Release a held lock or forcibly break an abandoned lock. |
-| `git-remote-seafile gc <url> [--min-packs N]` | Consolidate and delta-compress remote packfiles. Fail-closed: refuses to compact if any pack fails to download or verify, or if refs sit outside heads/tags. An opt-in automatic version exists too (`git config seafile.autogc true`): after a qualifying push it tail-merges only the small packs (below half of `seafile.gcmaxpackmib`) inline, within a bounded download budget — large packs are frozen and never count toward the threshold. Off by default; until then the helper only warns. |
+| `git-remote-seafile gc <url> [--min-packs N]` | Consolidate and delta-compress remote packfiles. Fail-closed: refuses to compact if any pack fails to download or verify, or if refs sit outside heads/tags. An automatic version runs by default (`seafile.autogc`, on): after a qualifying push it tail-merges only the small packs (below half of `seafile.gcmaxpackmib`) inline, within a bounded download budget — large packs are frozen and never count toward the threshold. Set `git config seafile.autogc false` to be only warned. |
 | `git-remote-seafile lfs-transfer <url>` | Git LFS Custom Transfer Agent—invoked by Git LFS itself once you point it here (`git config lfs.customtransfer.seafile.*`, see [USER_GUIDE.md](USER_GUIDE.md)). No manual invocation needed. |
 | `git-remote-seafile set-head <url> <branch>` | Set default branch (`HEAD`) pointer after verifying branch exists. |
 | `git-remote-seafile test <url>` | Discover refs and verify connectivity without cloning. |
