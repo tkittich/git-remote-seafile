@@ -839,20 +839,32 @@ interface or syncs it. Disk need is the payload once, not twice.
   byte-identical to the original (verified by SHA-256 on both);
 - a single upload ran at 32 MiB/s; three uploads of *different* files in
   parallel reached 53 MiB/s aggregate, so a small worker pool (about 3) is
-  worth about 1.6x and more is not.
+  worth about 1.6x and more is not;
+- the copy of a tree of 1,500 entries, three directories deep, also took
+  about 20 ms, and a server-side rename about 30 ms (so scale and
+  nesting are not where the cost is); 1,500 tiny uploads cost about 34 ms
+  each, the price of one library commit per file;
+- **quota and library size count a copy at full size**: a 200 MiB file and
+  its snapshot copy read as 400 MiB in the account usage and the library
+  size, and deleting the folder returned both to baseline. Whatever the
+  disk does underneath, a user with a *finite* quota pays for every
+  snapshot as if it were a full copy, so snapshot retention is a quota
+  question and the tool must say so.
 
 **Not measured -- must be checked before building:**
 
-- how the server accounts for copied files in quota and library size (the
-  account usage figure was not conclusive), and whether blocks really are
-  shared on disk after the original is replaced;
+- whether blocks really are shared on disk after a copy and after the
+  original is replaced (the API reports logical sizes only; the 20 ms copy
+  says no data moved, but only the server's own storage statistics can
+  confirm physical sharing);
 - that deleting an old `snapshots/<snapshot>/` directory followed by the
   server's own garbage collection actually frees the blocks, and what the
   library-history retention does to the space meanwhile;
-- the behaviour of the copy at tens of thousands of entries and deep nesting;
+- the copy at tens of thousands of entries (1,500 was measured);
 - every upload is a library commit, so a first run of ~7,000 files writes ~7,000
   history entries -- whether that matters for the library's history view and
-  retention;
+  retention (the history API pages at 1,000 entries, so the growth was not
+  counted);
 - the interaction with a desktop client that syncs the same library: it would
   see `current/` *and* every snapshot as full trees (shared blocks should
   download once, but this is unverified), so the payload belongs in a
