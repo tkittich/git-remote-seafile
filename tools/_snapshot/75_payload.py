@@ -232,6 +232,58 @@ def _remote_index(client: Any, rid: str, directory: str) -> dict[str, int]:
     return found
 
 
+def _upload_all(
+    client: Any, rid: str, server_url: str | None, current: str, source: Path,
+    todo: list[str], remote_of: dict[str, str], sizes: dict[str, int], jobs: int,
+) -> None:
+    """Upload *todo* into ``current/`` with *jobs* concurrent workers, largest first.
+
+    Measured on the real server: one upload runs at ~32 MiB/s and three at once
+    reach ~53 MiB/s in aggregate, so a small pool helps and a large one does
+    not.  Directories are created up front in this thread; each worker thread
+    then uses a client of its own (a ``requests`` session is not meant to be
+    shared).  The first failure stops the queue and is raised once the running
+    uploads have finished -- the next run resumes from what landed.
+    """
+    for parent in sorted({remote_of[rel].rpartition("/")[0] for rel in todo}):
+        client.mkdir_p(rid, current + ("/" + parent if parent else ""))
+    order = sorted(todo, key=lambda rel: (-sizes[rel], rel))
+    local = threading.local()
+    lock = threading.Lock()
+    counter = [0]
+    failed: list[str] = []
+
+    def one(rel: str) -> None:
+        if failed:
+            return
+        worker = getattr(local, "client", None)
+        if worker is None:
+            worker = local.client = _open_client(server_url)
+        with lock:
+            counter[0] += 1
+            print(
+                f"uploading [{counter[0]}/{len(order)}] {rel} ({human_bytes(sizes[rel])})",
+                flush=True,
+            )
+        parent, _, name = remote_of[rel].rpartition("/")
+        try:
+            ok = worker.upload_file(
+                rid, current + ("/" + parent if parent else ""), name, source / rel
+            )
+        except Exception as exc:  # reported once, below
+            failed.append(f"{rel}: {exc}")
+            return
+        if not ok:
+            failed.append(f"{rel}: the server did not accept the upload")
+
+    with ThreadPoolExecutor(max_workers=max(1, jobs)) as pool:
+        list(pool.map(one, order))
+    if failed:
+        raise SnapshotError(
+            f"{len(failed)} payload upload(s) failed (the next run resumes); first: {failed[0]}"
+        )
+
+
 def publish_payload(
     remote: str,
     source: Path,
@@ -239,6 +291,7 @@ def publish_payload(
     previous: dict[str, Any] | None = None,
     *,
     dry_run: bool,
+    jobs: int = 3,
 ) -> tuple[int, int]:
     """Make the server hold exactly this payload, then snapshot it.
 
@@ -278,17 +331,11 @@ def publish_payload(
     if dry_run:
         return len(todo), todo_bytes
 
-    for index, rel in enumerate(sorted(todo), 1):
-        parent, _, name = remote_of[rel].rpartition("/")
-        client.mkdir_p(rid, current + ("/" + parent if parent else ""))
-        print(
-            f"uploading [{index}/{len(todo)}] {rel} ({human_bytes(wanted[rel]['size'])})",
-            flush=True,
+    if todo:
+        _upload_all(
+            client, rid, server_url, current, source, todo, remote_of,
+            {rel: wanted[rel]["size"] for rel in todo}, jobs,
         )
-        if not client.upload_file(
-            rid, current + ("/" + parent if parent else ""), name, source / rel
-        ):
-            raise SnapshotError(f"uploading {rel} to {remote} failed")
     for rel in stale:
         client.delete_entry(rid, f"{current}/{rel}")
     if todo or stale:
@@ -378,6 +425,17 @@ def add_payload_arguments(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def add_payload_jobs_argument(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--payload-jobs",
+        type=int,
+        default=3,
+        metavar="N",
+        help="payload mode: upload N files at once (default 3; measured on one server: "
+        "1 upload ~32 MiB/s, 3 at once ~53 MiB/s, so more rarely helps)",
+    )
+
+
 def payload_conflicts(args: argparse.Namespace) -> list[str]:
     if args.payload_min_size is not None and args.no_push:
         return [
@@ -412,6 +470,7 @@ def run_payload_step(
     candidates: dict[str, tuple[int, int, str]],
     *,
     dry_run: bool,
+    jobs: int = 3,
 ) -> tuple[dict[str, Any] | None, tuple[int, int]]:
     """Hash, upload and snapshot the payload; ``(manifest, (files, bytes) to upload)``."""
     previous = load_manifest(git_dir, source, base)
@@ -425,7 +484,9 @@ def run_payload_step(
     if not min_size:
         return None, (0, 0)
     manifest = build_manifest(candidates, source, previous, min_size)
-    todo = publish_payload(remote or "", source, manifest, previous, dry_run=dry_run)
+    todo = publish_payload(
+        remote or "", source, manifest, previous, dry_run=dry_run, jobs=jobs
+    )
     return manifest, todo
 
 

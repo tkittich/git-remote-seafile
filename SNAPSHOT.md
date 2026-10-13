@@ -795,7 +795,7 @@ Borg, and changes nothing for the helper or the vault.
 or above the given size are hashed and uploaded as plain files, snapshots are
 server-side directory copies, the vault commit carries the manifest, and
 `--restore` downloads and verifies every file against it. **Not implemented
-yet:** parallel uploads, rename detection (a renamed file is uploaded again),
+yet:** rename detection (a renamed file is uploaded again),
 a remembered setting (the flag must be repeated on every run, and a vault
 that used it refuses a run without it), a maintenance listing of snapshots,
 and a quick-hash that avoids the second read of a changed file. The rest of
@@ -850,7 +850,8 @@ interface or syncs it. Disk need is the payload once, not twice.
   byte-identical to the original (verified by SHA-256 on both);
 - a single upload ran at 32 MiB/s; three uploads of *different* files in
   parallel reached 53 MiB/s aggregate, so a small worker pool (about 3) is
-  worth about 1.6x and more is not;
+  worth about 1.6x and more is not (confirmed through the tool: six 128 MiB
+  files took 30 s with one worker, 19.7 s with three and 19.6 s with five);
 - the copy of a tree of 1,500 entries, three directories deep, also took
   about 20 ms, and a server-side rename about 30 ms (so scale and
   nesting are not where the cost is); 1,500 tiny uploads cost about 34 ms

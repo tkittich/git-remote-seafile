@@ -165,6 +165,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "is for data you know is more compressible than the sample suggests",
     )
     add_payload_arguments(parser)
+    add_payload_jobs_argument(parser)
     parser.add_argument(
         "--verify",
         action="store_true",
@@ -528,7 +529,7 @@ def main(argv: list[str] | None = None) -> int:
             # preview prints (file count, size, diffstat, secrets, gitlinks).
             manifest, payload_todo = run_payload_step(
                 git_dir, source, base, remote, payload_min, payload_candidates,
-                dry_run=args.dry_run,
+                dry_run=args.dry_run, jobs=args.payload_jobs,
             )
             tree, commit, excluded = build_snapshot(
                 git_dir, source, base, exclude, message,

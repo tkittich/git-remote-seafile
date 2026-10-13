@@ -248,6 +248,32 @@ class PayloadModeTests(unittest.TestCase):
         self.assertNotEqual(rc, 0)
         self.assertIn("become the same name on the server", out + err)
 
+    def test_many_files_upload_in_parallel_and_all_land(self):
+        contents = {}
+        for i in range(12):
+            data = os.urandom(1500 + i * 100)
+            (self.src / f"par{i:02d}.bin").write_bytes(data)
+            contents[f"par{i:02d}.bin"] = data
+        rc, out, err = self.snapshot("--payload-jobs", "4")
+        self.assertEqual(rc, 0, out + err)
+        files = self.server_files()
+        for name, data in contents.items():
+            self.assertEqual(files[f"{self.payload_dir}/current/{name}"], data)
+        self.assertIn("uploaded 14 file(s)", out)
+
+    def test_a_failed_parallel_upload_names_the_file_and_resumes(self):
+        for i in range(4):
+            (self.src / f"fail{i}.bin").write_bytes(os.urandom(2000))
+        self.stub.faults["upload"] = 500
+        rc, out, err = self.snapshot("--payload-jobs", "3")
+        self.assertNotEqual(rc, 0)
+        self.assertIn("payload upload(s) failed", out + err)
+        self.assertIn("the next run resumes", out + err)
+        del self.stub.faults["upload"]
+        rc, out, err = self.snapshot("--payload-jobs", "3")
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn(f"{self.payload_dir}/current/fail0.bin", self.server_files())
+
     def test_parse_size(self):
         self.assertEqual(snap.parse_size("64M"), 64 * 1024 ** 2)
         self.assertEqual(snap.parse_size("1g"), 1024 ** 3)
