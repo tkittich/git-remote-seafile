@@ -245,7 +245,11 @@ class PayloadModeTests(unittest.TestCase):
 
     def test_a_vault_that_used_payload_refuses_a_run_without_the_flag(self):
         self.assertEqual(self.snapshot()[0], 0)
-        rc, out, err = self.run_tool(self.src, "--vault", self.vault, "--remote", self.remote)
+        # A vault that remembered the setting just carries on (see the next tests);
+        # one that did not -- a fresh vault on another machine -- is refused, because
+        # the remote's last snapshot used payload mode.
+        rc, out, err = self.run_tool(self.src, "--vault", self.case / "fresh-vault",
+                                     "--remote", self.remote)
         self.assertNotEqual(rc, 0)
         self.assertIn("payload mode", out + err)
 
@@ -580,7 +584,8 @@ class PayloadModeTests(unittest.TestCase):
         tree = _git(self.vault, "ls-tree", "-r", "--name-only", "snapshot")
         self.assertIn("mid_text.bin", tree)
         self.assertNotIn("mid_random.bin", tree)
-        rc, out, err = self.run_tool(self.src, "--vault", self.vault, "--remote", self.remote)
+        rc, out, err = self.run_tool(self.src, "--vault", self.case / "fresh-vault",
+                                     "--remote", self.remote)
         self.assertNotEqual(rc, 0)
         self.assertIn("--payload-min-size auto", out + err)
 
@@ -934,6 +939,49 @@ class PayloadModeTests(unittest.TestCase):
         fake = Fake()
         self.assertTrue(snap._commit_object(fake, "r", "/d", "h" * 64 + ".part-1", "h" * 64, 10))
         self.assertEqual(fake.deleted, ["/d/" + "h" * 64 + ".part-1"])
+
+    # -- the remembered setting and the force-rehash switch ---------------------
+    def test_payload_rehash_ignores_the_cache_for_one_run(self):
+        (self.src / "big1.bin").unlink()
+        (self.src / "sub" / "big2.bin").unlink()
+        self._tiles()
+        self.assertEqual(self.snapshot()[0], 0)
+        cache_path = self.vault / ".git" / "payload-cache.json"
+        cache = json.loads(cache_path.read_text())
+        for entry in cache.values():
+            entry["at"] -= 10 * 1_000_000_000      # old enough to be trusted
+        cache_path.write_text(json.dumps(cache))
+        rc, out, err = self.snapshot()
+        self.assertEqual(out.count("hashing ["), 0, out)
+        rc, out, err = self.snapshot("--payload-rehash")
+        self.assertEqual(rc, 0, out + err)
+        self.assertEqual(out.count("hashing ["), 3, out)
+
+    def test_a_bare_run_keeps_using_what_the_vault_remembered(self):
+        self.assertEqual(self.snapshot()[0], 0)
+        rc, out, err = self.run_tool(self.src, "--vault", self.vault, "--remote", self.remote)
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn("payload: 2 file(s)", out)
+        self.assertIn("uploaded 0 object(s)", out)
+
+    def test_leaving_payload_mode_deliberately_is_remembered_too(self):
+        self.assertEqual(self.snapshot()[0], 0)
+        base = (self.src, "--vault", self.vault, "--remote", self.remote)
+        rc, out, err = self.run_tool(*base, "--payload-min-size", "0")
+        self.assertEqual(rc, 0, out + err)
+        tree = _git(self.vault, "ls-tree", "-r", "--name-only", "snapshot")
+        self.assertIn("big1.bin", tree)            # now an ordinary file in git
+        self.assertNotIn(".seafile-payload", tree)
+        rc, out, err = self.run_tool(*base)
+        self.assertEqual(rc, 0, out + err)
+        self.assertNotIn("payload:", out)
+
+    def test_a_preview_does_not_set_the_remembered_flag(self):
+        self.assertEqual(self.snapshot("--dry-run")[0], 0)
+        rc, out, err = self.run_tool(self.src, "--vault", self.vault, "--remote", self.remote)
+        self.assertEqual(rc, 0, out + err)
+        self.assertNotIn("payload:", out)
+        self.assertIn("big1.bin", _git(self.vault, "ls-tree", "-r", "--name-only", "snapshot"))
 
     def test_gc_refuses_to_act_when_it_finds_no_manifest(self):
         self.assertEqual(self.snapshot()[0], 0)

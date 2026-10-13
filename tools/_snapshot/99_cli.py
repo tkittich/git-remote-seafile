@@ -427,6 +427,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.dry_run and remote:
             print(f"dry run -- would push the vault to {remote}")
 
+        args.payload_min_size = resolve_payload_value(args.payload_min_size, vault)
         payload_min, payload_candidates, payload_rule = plan_payload(
             args.payload_min_size, remote, source, exclude
         )
@@ -536,6 +537,7 @@ def main(argv: list[str] | None = None) -> int:
             manifest, payload_todo = run_payload_step(
                 git_dir, source, base, remote, payload_min, payload_candidates,
                 dry_run=args.dry_run, jobs=args.payload_jobs, rule=payload_rule,
+                rehash=args.payload_rehash,
             )
             tree, commit, excluded = build_snapshot(
                 git_dir, source, base, exclude, message,
@@ -668,6 +670,7 @@ def main(argv: list[str] | None = None) -> int:
         # successful run leaves the next one with nothing to type -- and a typo'd
         # --remote that failed to push does not become the vault's remote for
         # every scheduled run after it.  A preview never gets here.
+        remember_payload_value(vault, args.payload_min_size, dry_run=args.dry_run)
         remember_settings(
             vault,
             source,

@@ -23,6 +23,13 @@ def add_payload_arguments(parser: argparse.ArgumentParser) -> None:
 
 def add_payload_jobs_argument(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
+        "--payload-rehash",
+        action="store_true",
+        help="payload mode: ignore the hash cache for this run and hash every payload file "
+        "again (for a tree whose timestamps were restored by a copy tool, or as a periodic "
+        "audit)",
+    )
+    parser.add_argument(
         "--payload-jobs",
         type=int,
         default=None,
@@ -47,7 +54,34 @@ def payload_conflicts(args: argparse.Namespace) -> list[str]:
             problems.append("--payload-jobs only applies with --payload-min-size")
     if args.payload_min_size is not None and (args.restore or args.maintain):
         problems.append("--payload-min-size does not apply to --restore or --maintain")
+    if args.payload_rehash and (args.restore or args.maintain or args.payload_gc):
+        problems.append("--payload-rehash only applies to a snapshot run")
     return problems
+
+
+def resolve_payload_value(value: str | None, vault: Path) -> str | None:
+    """The flag as given, else what this vault remembered from its last real run.
+
+    So a scheduled bare ``seafile_snapshot.py`` keeps using payload mode (or keeps
+    deliberately not using it, if ``0`` was remembered) the way the remote and the
+    excludes are kept.
+    """
+    if value is not None:
+        return value
+    if not (vault / ".git").exists():
+        return None
+    remembered = _config(vault, "snapshot.payload")
+    return remembered or None
+
+
+def remember_payload_value(vault: Path, value: str | None, *, dry_run: bool) -> None:
+    """Write the setting after a *complete* real run, never from a preview."""
+    if value is None or dry_run:
+        return
+    _run(
+        ["git", "-C", str(vault), "config", "snapshot.payload", value],
+        text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    )
 
 
 def plan_payload(
@@ -102,6 +136,7 @@ def run_payload_step(
     dry_run: bool,
     jobs: int | None = None,
     rule: str = "size",
+    rehash: bool = False,
 ) -> tuple[dict[str, Any] | None, tuple[int, int]]:
     """Hash and upload the payload; ``(manifest, (objects, bytes) to upload)``."""
     previous = load_manifest(git_dir, source, base)
@@ -121,7 +156,7 @@ def run_payload_step(
         # needing the flag.
         return None, (0, 0)
     manifest, cache = build_manifest(
-        candidates, source, load_hash_cache(git_dir), min_size, rule=rule
+        candidates, source, {} if rehash else load_hash_cache(git_dir), min_size, rule=rule
     )
     todo = publish_payload(
         remote or "", source, manifest, dry_run=dry_run, jobs=jobs or 3
