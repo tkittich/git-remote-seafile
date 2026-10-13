@@ -303,6 +303,13 @@ class RemoteHelper:
                 self._refs_cache[ref_name] = sha
                 discovered_refs.append((ref_name, sha))
 
+        # HEAD is read *before* anything is written.  A transient failure here
+        # used to surface after the ref lines were already on stdout, leaving
+        # git with a partial advertisement and a helper that then died; read
+        # first, the failure is raised while the listing is still empty and git
+        # sees a helper that failed, not one that answered wrongly.
+        head_content = self.client.get_file_text(self.repo_id, self._full_path("HEAD"))
+
         # Emit the object-format ref list keyword when refs exist.  An empty
         # remote emits nothing: it has no format yet to advertise, and git's
         # push to an empty remote is exercised by the e2e suite.
@@ -339,8 +346,6 @@ class RemoteHelper:
         # malformed HEAD is skipped rather than fatal: git then treats the
         # remote as having no default branch, which is exactly what a HEAD we
         # cannot parse means.
-        head_path = self._full_path("HEAD")
-        head_content = self.client.get_file_text(self.repo_id, head_path)
         if head_content and head_content.startswith("ref:"):
             target_ref = head_content.split(":", 1)[1].strip()
             if is_valid_ref_name(target_ref):
@@ -534,9 +539,32 @@ class RemoteHelper:
                 # exclude objects on the strength of a ref that is gone.
                 self._refs_cache.pop(dst, None)
                 self._prune_empty_ref_parents(dst)
+                self._warn_if_head_dangles(dst)
                 sys.stdout.write(f"ok {dst}\n")
         except Exception as ex:
             _proto_error(dst, ex)
+
+    def _warn_if_head_dangles(self, deleted_ref: str) -> None:
+        """Say so when the branch just deleted is the one remote HEAD names.
+
+        Git itself leaves a bare repository's HEAD pointing at a deleted branch
+        and warns on the next clone; saying it here, with the command that
+        fixes it, is the difference between a puzzling warning and a next step.
+        Best effort: a failure to read HEAD must never fail the deletion.
+        """
+        if not deleted_ref.startswith("refs/heads/"):
+            return
+        try:
+            head = self.client.get_file_text(self.repo_id, self._full_path("HEAD"))
+        except Exception:
+            return
+        if head and head.startswith("ref:") and head.split(":", 1)[1].strip() == deleted_ref:
+            sys.stderr.write(
+                f"Warning: the remote's default branch (HEAD) was {deleted_ref}, which no longer "
+                f"exists, so clones will have no default branch. Point it at another branch with "
+                f"'git-remote-seafile set-head {self.raw_url} <branch>'.\n"
+            )
+            sys.stderr.flush()
 
     def _upload_push_pack(
         self,

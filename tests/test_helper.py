@@ -1042,6 +1042,45 @@ class TestRemoteHelper(unittest.TestCase):
         self.assertIn("error refs/heads/main locked by user@otherhost", output)
         self.assertIn("error refs/heads/dev locked by user@otherhost", output)
 
+    def test_a_head_read_failure_is_raised_before_any_ref_line_is_written(self):
+        h = make_helper()
+        h.client = MagicMock()
+        h.repo_id = "repo1"
+        h.repo_path = "/git-repo"
+        h.client.get_file_text.side_effect = SeafileAPIError("HEAD read: HTTP 503")
+        out = io.StringIO()
+        with patch("git_remote_seafile.helper.iter_refs",
+                   side_effect=lambda c, r, p, ns: iter([(f"{ns}/main", "a" * 40)] if ns == "refs/heads" else [])),              patch("sys.stdout", out), patch("sys.stderr", io.StringIO()):
+            with self.assertRaises(SeafileAPIError):
+                h.cmd_list()
+        self.assertEqual(out.getvalue(), "", "git must not receive a partial advertisement")
+
+    def test_deleting_the_branch_head_points_at_says_so(self):
+        h = make_helper()
+        h.client = MagicMock()
+        h.repo_id = "repo1"
+        h.repo_path = "/git-repo"
+        h.raw_url = "seafile://lib/git-repo"
+        h._refs_cache = {}
+
+        def text(repo, path):
+            return "ref: refs/heads/main" if path.endswith("/HEAD") else "a" * 40
+
+        h.client.get_file_text.side_effect = text
+        h.client.delete_entry.return_value = True
+        lock = MagicMock()
+        lock.verify_ownership.return_value = True
+        err, out = io.StringIO(), io.StringIO()
+        with patch("sys.stderr", err), patch("sys.stdout", out):
+            h._delete_remote_ref(lock, "refs/heads/main")
+        self.assertIn("ok refs/heads/main", out.getvalue())
+        self.assertIn("set-head seafile://lib/git-repo", err.getvalue())
+
+        err2 = io.StringIO()
+        with patch("sys.stderr", err2), patch("sys.stdout", io.StringIO()):
+            h._delete_remote_ref(lock, "refs/heads/other")
+        self.assertNotIn("set-head", err2.getvalue())
+
     def test_a_command_that_merely_starts_like_a_known_one_is_unsupported(self):
         h = make_helper()
         h.cmd_list = MagicMock()

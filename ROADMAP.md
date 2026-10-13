@@ -1,8 +1,8 @@
 # Engineering Roadmap & Backlog
 
-**Baseline:** v0.8.7 (the fail-loud pass — a subprocess timeout everywhere one was missing, three client defects that each reported a failure as a success, the dangling review citations inlined, and the type check and coverage report D6 had left half-done)  
+**Baseline:** v0.8.8 (measured against a real server: a pack size cap, chunked upload for files of 1 GiB or more, autogc on by default, `doctor` and `gc --tail`, one output/exit convention, and `cmd_push`/`cli.main` split into named steps)  
 **Scope:** What shipped in each release line, the active backlog, and the v1.0.0 horizon.  
-**Test Suite:** 693 tests across 138 targets, all green (`tools/run_tests_parallel.py`). **Python:** 3.10+ (3.9 EOL).
+**Test Suite:** all green on `tools/run_tests_parallel.py` (the runner prints the current count; it is deliberately not repeated here). **Python:** 3.10+ (3.9 EOL).
 
 > [!NOTE]
 > All critical and high-severity findings from `archive/REVIEW.*.md` (including ticket-based distributed locking, abandoned ticket cleanup, post-lock ref verification, exception propagation, GC lock fencing, pack index validation, surrogateescape paths, container PID isolation, D/F ref pruning, multi-spec pack batching, Git LFS transfer progress, safety guardrails, parallel ref enumeration, smart pack fetch filtering, disk-staged streaming, and modular helper decoupling) have been completed. All findings from the October 2026 review cycle (REVIEW.glm/gemini/qwen/VERIFY/BACKLOG, now archived) were verified fixed or explicitly dispositioned, as was the earlier v0.7.0 cycle (REVIEW.deepseek/gemini/qwen), closed in v0.7.1. What is *left* is enumerated in §1.1 and §1.2 — §1.2 records, per row, whether the finding has been re-derived against the current release or is still only transcribed from the review that raised it. See [CHANGELOG.md](CHANGELOG.md) for detailed release notes.
@@ -22,12 +22,10 @@ Findings from `archive/REVIEW.*-v0.8.0.md` judged not worth their churn during t
 
 | ID / Source | Component | Description & Impact | Effort | Risk | Planned Target |
 |---|---|---|:---:|:---:|:---:|
-| **Helper test factory** | `tests/test_helper.py` | ~52 `RemoteHelper.__new__(RemoteHelper)` + hand-set-attribute sites already forced a source workaround (`dry_run` as a class attribute); a shared `make_helper()` factory would localise the next attribute addition. Mechanical, zero behavior change. | S | Low | v0.9.0 |
-| **De-glob test_gc** | `tests/test_gc.py` | 12 sites patch `pathlib.Path.glob` process-wide; a shared `_lock_aware_client()`-style helper returning staged packs would stop masking unrelated glob users inside `compact_repository`. | S | Low | v0.9.0 |
-| **CLI stream/exit conventions** | `cli.py` | Errors from most subcommands go to stdout with exit 1; `unlock`/`lfs-transfer` use stderr; `test` exits 1 for a *non-blocking* SafetyWarning. Standardise (errors → stderr; decide the warning exit code). Touches many CLI test assertions. | M | Low | v0.9.0 |
+| **De-glob test_gc** | `tests/test_gc.py` | 12 sites patch `pathlib.Path.glob` process-wide; a shared `_lock_aware_client()`-style helper returning staged packs would stop masking unrelated glob users inside `compact_repository`. | S | Low | backlog |
 | **PROPOSALS.md numbers** | `PROPOSALS.md` | Still says "Seafile Web API v2.1" (×3) and "400+ automated tests". Gitignored local file, so it cannot drift into a release — fix opportunistically. | S | None | next touch |
-| **Fixture hostname robustness** | `tests/test_lock.py` | `_ticket` defaults to `machine="nodeA"`/`pid=1234`; a CI host literally named `nodeA` with pid 1234 alive would flip the foreign-host premise. Use a name no host can have (e.g. read the hostname and negate it). | S | Low | v0.9.0 |
-| **Settlement-window coverage** | `tests/e2e_harness.py` | The harness sets `SEAFILE_TEST_LOCK_SETTLE=0` for every e2e run, so the shipped 1 s default is exercised by exactly one e2e test (`TestDefaultSettlementWindow`). Either add a guard that fails if that test disappears, or run one class with the default. | S | Low | v0.9.0 |
+| **Fixture hostname robustness** | `tests/test_lock.py` | `_ticket` defaults to `machine="nodeA"`/`pid=1234`; a CI host literally named `nodeA` with pid 1234 alive would flip the foreign-host premise. Use a name no host can have (e.g. read the hostname and negate it). | S | Low | backlog |
+| **Settlement-window coverage** | `tests/e2e_harness.py` | The harness sets `SEAFILE_TEST_LOCK_SETTLE=0` for every e2e run, so the shipped 1 s default is exercised by exactly one e2e test (`TestDefaultSettlementWindow`). Either add a guard that fails if that test disappears, or run one class with the default. | S | Low | backlog |
 
 ### 1.2 Backlog from the v0.8.2 verification and the r2 reviews
 
@@ -44,34 +42,28 @@ re-probe before fixing.
 
 | ID / Source | Component | Description & Impact | Verified | Effort | Risk | Planned Target |
 |---|---|---|---|:---:|:---:|:---:|
-| **H-13 / C-01** | `url.py` | **A reverse-proxy context path cannot be expressed.** A Seafile served under a subpath has nowhere to put it: `seafile://host/seafile/code/app` reads `seafile` as the *library* name, and `normalize_netloc()` drops the path, so `SEAFILE_SERVER` cannot carry it either. Needs URL syntax or a dedicated configuration key for the context path, plus a deployment note. | probed | M | Medium | v0.9.0 |
-| **H-23 / qwen** | `sqlite_read.py`, `safety.py` | A torn WAL copy is indistinguishable from "no database", so `discover_local_synced_libraries()` reports zero libraries and the synced-folder guard silently does not run — precisely while the desktop client is writing. | transcribed | S | Medium | v0.9.0 |
-| **H-20 / qwen** | `lock.py` | Mixed ticket formats force the mtime fallback, and waiters re-upload on every poll, so the "winner" can flip each round while neither lease expires. Needs a legacy client in contention. | transcribed | M | Low | v0.9.0 |
-| **H-19** | `helper.py` | Deleting the branch the remote `HEAD` points at leaves a dangling symbolic ref. | transcribed | S | Low | v0.9.0 |
-| **H-17 / C-06** | `client.py` | One 30 s timeout covers the server's post-upload commit phase, which for a large pack is the slowest part of the request. | transcribed | S | Low | v0.9.0 |
-| **H-18** | `helper.py` | A transient failure reading `HEAD` aborts the ref listing mid-stream rather than skipping it, leaving git with a partial advert and a dead helper. | transcribed | S | Low | v0.9.0 |
-| **H-22** | `cli.py` | `sys.stderr` is not reconfigured (only stdout is), so a non-ASCII library name on a legacy Windows code page can raise mid-push. | transcribed | S | Low | v0.9.0 |
-| **H-9** | `helper.py` | `line.startswith("option")` also matches `options…`; the prefix dispatch is looser than the protocol. | probed | S | Low | v0.9.0 |
-| **H-25** | `lock.py`, `config.py` | Duplicated default resolution (15/60/1) with divergent validation: only `RemoteConfig.load()` clamps. | transcribed | S | None | v0.9.0 |
-| **A12.7** | `lock.py` | A `--force` unlock that swept no ticket still reports success. The ownership proof and the "could not inspect" refusal are in place (v0.8.1); the residual is the return value. | probed | S | Low | v0.9.0 |
-| **A12.6 / H-10** | `lock.py` | The machine identity is `hex(uuid.getnode())` plus the hostname — no boot id, no PID-namespace inode — so a PID recycled across a reboot on the same host reads as live. | probed | S | Low | v0.9.0 |
-| **C-05 / qwen** | `client.py` | The shared `requests.Session` across threads is an unenforced invariant: safe only because the read paths do not mutate it and the one shared mutation (the `Date` hook's list) is GIL-atomic. Nothing states or tests that. | probed | S | Low | v0.9.0 |
-| **C-07** | `helper.py` | The protocol batch loops silently swallow non-command lines instead of naming them. | transcribed | S | Low | v0.9.0 |
-| **T-4** | `seafile_doctor.py`, `safety.py` | Two copies of the `repo.db` schema knowledge, already drifted. | transcribed | S | Low | v0.9.0 |
-| **T-5** | `seafile_snapshot.py` | `VaultLock.__enter__` leaks the fd and leaves a half-written lock file if `os.write`/`os.fsync` fails. | transcribed | S | Low | v0.9.0 |
-| **T-6** | `seafile_snapshot.py` | `apply_excludes` runs over `errors="replace"`-decoded paths, so a non-UTF-8 filename aborts the snapshot. `verify_restore` was made byte-exact; the exclude pass was not. | transcribed | S | Low | v0.9.0 |
-| **T-7** | `seafile_snapshot.py` | `verify_restore` guards `\n` in paths but not a leading `"` for `--stdin-paths`. | transcribed | S | Low | v0.9.0 |
-| **T-8** | `seafile_snapshot.py` | `--code-remote` is silently ignored under `--no-push`, against the tool's own "ignored flags are errors" rule. | transcribed | S | Low | v0.9.0 |
-| **T-11** | `seafile_snapshot.py` | `exclude_matches` is case-insensitive on Windows only, via `fnmatch.fnmatch`, so the documented "that name at any depth" rule changes with the filesystem. | transcribed | S | Low | v0.9.0 |
-| **T-14 / T-02** | `run_tests_parallel.py` | No interrupt handling: Ctrl-C orphans workers, and a Windows temp-dir teardown can raise *after* results are printed — turning a green run into a non-zero exit. | probed | S | Low | v0.9.0 |
-| **T-15 / T-21** | `run_tests_parallel.py` | `_start_worker` leaks the log file handle if `Popen` raises; workers get only `tests/` on `PYTHONPATH`; load failures report `tests=0`, so a partial run reads as a smaller suite. | transcribed | S | Low | v0.9.0 |
-| **R1 / R2 / R4 / P** | `seafile_snapshot.py` | `push_snapshot`'s second-failure message claims the vault "matches the remote" while the branch sits behind the tip; `delete_branch` swallows CAS failures (`check=False`), so a rollback can silently no-op; a failed restore leaves `into/` behind and blocks the retry; the vault lock is held across all network I/O, so a large first snapshot blocks every other local run. | transcribed | M | Low | v0.9.0 |
-| **G-5…G-10** | `tests/` | Six suite gaps: three `_load_credentials` branches untested; `test_helper.py` feeds `cmd_fetch` a spec shape the helper never produces; `fetch_pack_artifact`'s "empty" outcome is never produced; `test_refs.py`'s concurrency assertion is the suite's one flake candidate; `test_gc.py`'s "preserves all branches and tags" asserts less than its name promises; `e2e_harness.py` carries a stale cross-reference. | transcribed | S | Low | v0.9.0 |
+| **H-13 / C-01** | `url.py` | **A reverse-proxy context path cannot be expressed.** A Seafile served under a subpath has nowhere to put it: `seafile://host/seafile/code/app` reads `seafile` as the *library* name, and `normalize_netloc()` drops the path, so `SEAFILE_SERVER` cannot carry it either. Needs URL syntax or a dedicated configuration key for the context path, plus a deployment note. | probed | M | Medium | backlog |
+| **H-23 / qwen** | `sqlite_read.py`, `safety.py` | A torn WAL copy is indistinguishable from "no database", so `discover_local_synced_libraries()` reports zero libraries and the synced-folder guard silently does not run — precisely while the desktop client is writing. | transcribed | S | Medium | backlog |
+| **H-20 / qwen** | `lock.py` | Mixed ticket formats force the mtime fallback, and waiters re-upload on every poll, so the "winner" can flip each round while neither lease expires. Needs a legacy client in contention. | transcribed | M | Low | backlog |
+| **A12.7** | `lock.py` | A `--force` unlock that swept no ticket still reports success. The ownership proof and the "could not inspect" refusal are in place (v0.8.1); the residual is the return value. | probed | S | Low | backlog |
+| **A12.6 / H-10** | `lock.py` | The machine identity is `hex(uuid.getnode())` plus the hostname — no boot id, no PID-namespace inode — so a PID recycled across a reboot on the same host reads as live. | probed | S | Low | backlog |
+| **C-05 / qwen** | `client.py` | The shared `requests.Session` across threads is an unenforced invariant: safe only because the read paths do not mutate it and the one shared mutation (the `Date` hook's list) is GIL-atomic. Nothing states or tests that. | probed | S | Low | backlog |
+| **T-4** | `seafile_doctor.py`, `safety.py` | Two copies of the `repo.db` schema knowledge, already drifted. | transcribed | S | Low | backlog |
+| **T-5** | `seafile_snapshot.py` | `VaultLock.__enter__` leaks the fd and leaves a half-written lock file if `os.write`/`os.fsync` fails. | transcribed | S | Low | backlog |
+| **T-6** | `seafile_snapshot.py` | `apply_excludes` runs over `errors="replace"`-decoded paths, so a non-UTF-8 filename aborts the snapshot. `verify_restore` was made byte-exact; the exclude pass was not. | transcribed | S | Low | backlog |
+| **T-7** | `seafile_snapshot.py` | `verify_restore` guards `\n` in paths but not a leading `"` for `--stdin-paths`. | transcribed | S | Low | backlog |
+| **T-8** | `seafile_snapshot.py` | `--code-remote` is silently ignored under `--no-push`, against the tool's own "ignored flags are errors" rule. | transcribed | S | Low | backlog |
+| **T-11** | `seafile_snapshot.py` | `exclude_matches` is case-insensitive on Windows only, via `fnmatch.fnmatch`, so the documented "that name at any depth" rule changes with the filesystem. | transcribed | S | Low | backlog |
+| **T-14 / T-02** | `run_tests_parallel.py` | No interrupt handling: Ctrl-C orphans workers, and a Windows temp-dir teardown can raise *after* results are printed — turning a green run into a non-zero exit. | probed | S | Low | backlog |
+| **T-15 / T-21** | `run_tests_parallel.py` | `_start_worker` leaks the log file handle if `Popen` raises; workers get only `tests/` on `PYTHONPATH`; load failures report `tests=0`, so a partial run reads as a smaller suite. | transcribed | S | Low | backlog |
+| **R1 / R2 / R4 / P** | `seafile_snapshot.py` | `push_snapshot`'s second-failure message claims the vault "matches the remote" while the branch sits behind the tip; `delete_branch` swallows CAS failures (`check=False`), so a rollback can silently no-op; a failed restore leaves `into/` behind and blocks the retry; the vault lock is held across all network I/O, so a large first snapshot blocks every other local run. | transcribed | M | Low | backlog |
+| **G-5…G-10** | `tests/` | Six suite gaps: three `_load_credentials` branches untested; `test_helper.py` feeds `cmd_fetch` a spec shape the helper never produces; `fetch_pack_artifact`'s "empty" outcome is never produced; `test_refs.py`'s concurrency assertion is the suite's one flake candidate; `test_gc.py`'s "preserves all branches and tags" asserts less than its name promises; `e2e_harness.py` carries a stale cross-reference. | transcribed | S | Low | backlog |
 | **C9** | `README.md`, `USER_GUIDE.md` | The two overlap heavily — the comparison tables are near-duplicates. **Partly done:** USER_GUIDE §3–§4 moved to ALTERNATIVES.md and the AI-disclosure paragraph appears once; the README comparison tables remain. | transcribed | M | None | v1.0.0 |
 | **T1 / T2** | `tests/` | **Partly done:** `tests/test_realserver.py` (opt-in, `SEAFILE_TEST_LIBRARY`) runs the API semantics, the SHA-1/SHA-256 round trip, concurrent pushers and the conflict-copy observation against a real server (CE 13.0.28). Concurrency is covered (nine pushers through the lock; twelve same-path uploads) and a 4 GiB soak was run by hand. Still missing: Pro, clustered/object-store deployments, a scheduled CI job against a container. | probed | M | Low | v1.0.0 |
 | **D8** | — | **Rejected, not deferred.** Installing the tools as `git-remote-seafile-snapshot` / `-doctor` console scripts contradicts the standing decision that the snapshot tool stays a `tools/` script and is never a subcommand. The acquisition gap it pointed at was a documentation gap, closed in v0.8.2. | probed | — | — | won't do |
 
-**Closed on the way here, kept for the record.** `C7` (DESIGN restructure) and
+**Closed on the way here, kept for the record.** `H-17`/`C-06` (uploads wait for the reply), `H-18` (HEAD read before any ref line), `H-19` (dangling HEAD warned), `H-22` (stderr UTF-8), `H-9` (first-token dispatch), `H-25` and the helper-test-factory and CLI-conventions rows landed in v0.8.8.
+ `C7` (DESIGN restructure) and
 `C10` (SECURITY.md, threat model, TLS/proxy guidance) landed in v0.8.5;
 `A12.2` (`match` → `fullmatch`), `A12.16` (`desktop-url`), `D1`, `D4`, `D5`,
 `D7`, `D9` and `D10` landed in v0.8.6; `A11` (the unconditional "no `SFConflict`
@@ -79,7 +71,7 @@ files" claim) was scoped to the paths the tool writes in v0.8.6; `C6` (the
 unverifiable LFS memory figure) was replaced with a measured one. v0.8.7 closed
 `H-24`, `C8`, `A12.10`, `H-7`, `H-8` and the `D6` residual — the six rows above
 that a patch release could carry, which is why every row that is left still
-names v0.9.0, v1.0.0 or `won't do`. `A12.1` (multipart values refuse CR/LF), `A12.3` (global before system), `T-10`
+names `backlog`, v1.0.0 or `won't do`. `A12.1` (multipart values refuse CR/LF), `A12.3` (global before system), `T-10`
 (`is_ancestor` tells a git failure from "no") and `A13` (push cost measured: ~2.3 s, ~13 library
 commits per push, 6.5 s on the 20th with autogc) landed after v0.8.7, together with
 the pack-size cap found by the 4 GiB soak. `T-17` / `SNAP-01` (the vault's `git()`
@@ -93,7 +85,7 @@ neither belongs in the table above.
 
 | ID / Source | Component | Description & Impact | Effort | Risk | Planned Target |
 |---|---|---|---|:---:|:---:|:---:|
-| **Release pre-flight** | `tools/` | A `tools/release_check.py` that answers, *before* the tag exists, every question the release job answers after it: `__version__` ↔ the tag being cut, the notes file's shape, that its compare link's base tag is real, that the CHANGELOG has the matching section *and* its reference link, and that the tree is clean. Today the first feedback on a malformed release is a red tag, which is public. | S | Low | v0.9.0 |
+| **Release pre-flight** | `tools/` | A `tools/release_check.py` that answers, *before* the tag exists, every question the release job answers after it: `__version__` ↔ the tag being cut, the notes file's shape, that its compare link's base tag is real, that the CHANGELOG has the matching section *and* its reference link, and that the tree is clean. Today the first feedback on a malformed release is a red tag, which is public. | S | Low | backlog |
 | **`push.followTags`** | — | Not a repository change — a maintainer-side git setting. With it a bare `git push` carries any tag that points at what is being pushed, which is the failure that produced v0.8.6's "pushed, but no tag". `CONTRIBUTING.md` §Tagging now names the tag explicitly and says why, so this is a convenience rather than a fix. | S | None | next touch |
 
 ---

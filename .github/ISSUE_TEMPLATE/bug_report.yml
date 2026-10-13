@@ -45,7 +45,7 @@ body:
     attributes:
       label: Version
       description: The output of `git-remote-seafile version`.
-      placeholder: git-remote-seafile 0.8.7
+      placeholder: git-remote-seafile 0.8.8
     validations:
       required: true
 

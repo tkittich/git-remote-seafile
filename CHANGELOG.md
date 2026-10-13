@@ -7,8 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Everything here follows from the 2026-10-12 review (`REVIEW.sonnet.md`) and the decisions taken on it.
-The theme is **less machinery, and the machinery that remains fails loudly**.
+## [0.8.8] - 2026-10-13
+
+Everything here follows from the 2026-10-12 review and the decisions taken on it, then from measuring the result against a real Seafile server (CE 13.0.28): a 4 GiB merge, a 5 GiB single-file push, and a two-gigabyte request ceiling nobody had known about.
+The theme is **less machinery, and the machinery that remains fails loudly** -- plus the size work that the real server made necessary.
+
+### Upgrading from 0.8.7 or earlier
+
+- **`seafile.autogc` is now on by default.** After a qualifying push the helper merges the small packs. `git config seafile.autogc false` restores the tip-only behaviour.
+- **Subcommand usage errors exit 2 on stderr** (they were exit 1 on stdout). Results and reports stay on stdout; failures go to stderr. Scripts that parsed the old stream should be re-checked.
+- **`seafile.locksettle` and `seafile.gcmaxmib` are gone** (reported once, then ignored). `seafile.gcmaxpackmib` now means "the largest pack the helper writes"; the automatic budget is 2x it.
+- **Clients older than 0.8.4 must not share a remote with this version**: the legacy `.git-lock.json` probe was removed.
 
 ### Added
 - **A "Known Limitations and What They Mean for You" section** in USER_GUIDE §14: concurrency, size and storage, server and library scope, Git feature gaps and the snapshot tool's caveats, each with what it means and what to do.
@@ -40,6 +49,10 @@ The theme is **less machinery, and the machinery that remains fails loudly**.
 - **`RemoteHelper` carries no test-shaped defaults**: `dry_run` is set in `__init__`, `cmd_list` no longer `hasattr`-checks `_refs_cache`, and `RemoteLock` reads its own attributes directly. Tests build helpers with `tests/_helpers.make_helper()`.
 
 ### Fixed
+- **A long read timeout for uploads (H-17).** The 30 s request timeout also covered the server's post-upload assemble-and-commit phase, which grows with file size; uploads now wait up to 10 minutes for the reply (connect timeout unchanged).
+- **A transient `HEAD` read failure no longer leaves git with half an advertisement (H-18).** `HEAD` is read before the first ref line is written, so the failure is raised while the listing is still empty.
+- **Deleting the branch remote `HEAD` points at says so (H-19)**, with the `set-head` command that fixes it, instead of leaving a puzzling clone warning.
+- **`stderr` is UTF-8 with replacement (H-22)**, so a non-ASCII library name can no longer raise from a diagnostic write in the middle of a push.
 - **No pack the helper writes exceeds `seafile.gcmaxpackmib` (default 1 GiB).** A soak against a real server found that a single upload of 2 GiB is reset (1.75 GiB is accepted), which made a ~4 GiB tail merge fail at the upload and would equally fail any push of a 20 GB raw-data tree as one pack. Pushes, tail merges and full `gc` now pass `--max-pack-size`, so a large push arrives as several self-contained packs. A single object larger than the cap cannot be split; it becomes one larger pack, uploaded in chunks (next entry). The failure was safe -- nothing was deleted -- but the work was lost.
 - **Files at or above 1 GiB are uploaded in `Content-Range` chunks** (128 MiB each, three attempts per chunk), so a single object larger than the cap -- or than the server's single-request ceiling -- no longer makes a push impossible. Measured on the real server: 2.5 GiB and 5 GiB files assembled from chunks and downloaded byte-identical, and a 5 GiB single-file repository pushed through the helper in 181 s. After the last chunk the size is checked against the listing, so a server or proxy that ignores `Content-Range` (and would keep only the final piece) is reported, not trusted.
 - **A warning before a checkout git for Windows cannot do.** With `core.autocrlf=true` a 4 GiB+ blob is silently truncated by `git add` and stalls a `git clone` (measured: 5 GiB, 240 s timeout; with `core.autocrlf=false` the same file clones in 11 s, byte-identical). The helper sees pack sizes first and now says so, with the one-flag workaround. The helper itself pushed a 5 GiB single-file repository in 181 s and fetched it back.
@@ -1413,6 +1426,7 @@ Data-loss and silent-failure fixes, and the Python floor raised to 3.9.
   with zero-config desktop-client token discovery, distributed locking, remote
   packfile compaction, and a Git LFS custom transfer agent.
 
+[0.8.8]: https://github.com/tkittich/git-remote-seafile/compare/v0.8.7...v0.8.8
 [0.8.7]: https://github.com/tkittich/git-remote-seafile/compare/v0.8.6...v0.8.7
 [0.8.6]: https://github.com/tkittich/git-remote-seafile/compare/v0.8.5...v0.8.6
 [0.8.5]: https://github.com/tkittich/git-remote-seafile/compare/v0.8.4...v0.8.5

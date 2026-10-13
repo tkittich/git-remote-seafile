@@ -81,6 +81,14 @@ class TestGcTail(unittest.TestCase):
         self.assertIn("boom", err)
 
 
+class TestStderrEncoding(unittest.TestCase):
+    def test_main_makes_stderr_utf8_with_replacement(self):
+        fake_err = MagicMock()
+        with patch.object(sys, "argv", ["git-remote-seafile", "version"]),              patch("sys.stdout", new_callable=io.StringIO), patch("sys.stderr", fake_err):
+            main()
+        fake_err.reconfigure.assert_called_with(encoding="utf-8", errors="replace")
+
+
 class TestCLIBasics(unittest.TestCase):
     def test_help(self):
         with patch.object(sys, "argv", ["git-remote-seafile"]):

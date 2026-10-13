@@ -679,6 +679,15 @@ def main() -> int:
             sys.stdin.reconfigure(encoding="utf-8")
         except Exception:
             pass
+    if hasattr(sys.stderr, "reconfigure"):
+        # A library name or path with non-ASCII characters on a legacy Windows
+        # code page would otherwise raise UnicodeEncodeError from a diagnostic
+        # write -- in the middle of a push.  ``replace`` keeps the message
+        # readable and, above all, keeps it from becoming the failure.
+        try:
+            sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
 
     args = sys.argv[1:]
     if not args or args[0] in ("-h", "--help", "help"):

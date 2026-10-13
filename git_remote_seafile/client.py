@@ -204,6 +204,12 @@ CHUNKED_UPLOAD_MIN_BYTES = 1024 * 1024 * 1024
 #: Size of one chunk of a chunked upload.
 UPLOAD_CHUNK_BYTES = 128 * 1024 * 1024
 
+#: How long to wait for the server's *reply* to an upload.  The 30 s request
+#: timeout suits a directory listing; after the last byte of a large upload the
+#: server still has to assemble and commit the file, and that phase grows with
+#: the size.  The connect timeout stays short.
+UPLOAD_READ_TIMEOUT_SECONDS = 600
+
 #: Attempts per chunk (the first plus retries) before the upload is abandoned.
 UPLOAD_CHUNK_ATTEMPTS = 3
 
@@ -930,7 +936,7 @@ class SeafileClient:
                 "Content-Length": str(len(mp)),
             }
             up_resp = self._transfer_session(upload_url).post(
-                upload_url, data=mp, headers=headers, timeout=self.timeout
+                upload_url, data=mp, headers=headers, timeout=self._upload_timeout()
             )
         elif isinstance(payload, (bytes, bytearray)) and progress_callback is not None:
             bio = io.BytesIO(payload)
@@ -947,13 +953,13 @@ class SeafileClient:
                 "Content-Length": str(len(mp)),
             }
             up_resp = self._transfer_session(upload_url).post(
-                upload_url, data=mp, headers=headers, timeout=self.timeout
+                upload_url, data=mp, headers=headers, timeout=self._upload_timeout()
             )
         else:
             files = {"file": (filename, payload)}
             data = {"parent_dir": clean_parent, "replace": "1" if replace else "0"}
             up_resp = self._transfer_session(upload_url).post(
-                upload_url, files=files, data=data, timeout=self.timeout
+                upload_url, files=files, data=data, timeout=self._upload_timeout()
             )
             if progress_callback:
                 try:
@@ -972,6 +978,10 @@ class SeafileClient:
                 f"(POST {self._error_origin(upload_url)}) {up_resp.text}"
             )
         return True
+
+    def _upload_timeout(self) -> tuple[float, float]:
+        """``(connect, read)`` for an upload request; see the module constant."""
+        return (self.timeout, max(self.timeout, UPLOAD_READ_TIMEOUT_SECONDS))
 
     def _upload_chunked(
         self,
@@ -1026,7 +1036,7 @@ class SeafileClient:
                     "Content-Disposition": f'attachment; filename="{safe_name}"',
                 }
                 try:
-                    resp = session.post(url, data=mp, headers=headers, timeout=self.timeout)
+                    resp = session.post(url, data=mp, headers=headers, timeout=self._upload_timeout())
                 except requests.RequestException as ex:
                     last_error = f"{type(ex).__name__}: {ex}"
                     continue

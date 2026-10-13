@@ -219,6 +219,8 @@ The destination, branch and exclusions are **remembered in the vault** after the
 
 ### Diagnostics for the Seafile desktop client
 
+> Not to be confused with `git-remote-seafile doctor <url>`, which checks a *destination* (login, URL interpretation, write access). `tools/seafile_doctor.py` below is about the Seafile desktop **sync client**.
+
 `tools/seafile_doctor.py` is a read-only diagnostic for the Seafile **sync
 client**. It is for the case the [Critical Rule](#critical-rule-working-repository-placement)
 above is about: a repository that has been living inside a synced library, where

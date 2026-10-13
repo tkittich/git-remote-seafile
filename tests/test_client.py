@@ -462,6 +462,18 @@ class TestClientAPI(unittest.TestCase):
         )
         self.assertIn(b"/a/b", ok.header)
 
+    def test_uploads_wait_long_for_the_servers_reply_but_connect_quickly(self):
+        sess = MagicMock()
+        sess.post.return_value = MagicMock(status_code=200, text="ok")
+        link_resp = MagicMock(status_code=200, text='"http://127.0.0.1:1/upload-api/x"')
+        self.client.session.get = MagicMock(return_value=link_resp)
+        self.client.session.post = MagicMock(return_value=MagicMock(status_code=201, text="{}"))
+        with patch.object(self.client, "_transfer_session", return_value=sess),              patch.object(self.client, "mkdir_p", return_value=True):
+            self.client.upload_file("rid", "/p", "f.bin", b"abc", replace=True)
+        connect, read = sess.post.call_args.kwargs["timeout"]
+        self.assertEqual(connect, self.client.timeout)
+        self.assertGreaterEqual(read, 600)
+
     def test_get_repo_id_refuses_an_encrypted_library(self):
         mock_resp = MagicMock(status_code=200)
         mock_resp.json.return_value = [
