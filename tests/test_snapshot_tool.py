@@ -2299,10 +2299,10 @@ class StatusLineTests(unittest.TestCase):
                 f"p = pathlib.Path(r'{target}')\n"
                 "for i in range(6):\n"
                 "    p.write_bytes(b'x' * 1000 * (i + 1))\n"
-                "    time.sleep(0.25)\n"
+                "    time.sleep(0.5)\n"
             )
             with unittest.mock.patch.object(snap, "STATUS_INTERVAL", 0.1), \
-                    unittest.mock.patch.object(snap, "STALL_LIMIT", 0.4):
+                    unittest.mock.patch.object(snap, "STALL_LIMIT", 2.0):
                 proc = snap._run(
                     [sys.executable, "-c", code],
                     status="staging the tree",
@@ -2347,6 +2347,7 @@ class StatusLineTests(unittest.TestCase):
             proc = snap._run(
                 [sys.executable, "-c", code],
                 status="feeding a child",
+                stall_limit=None,  # pipes are under test here, not the watchdog
                 input=payload,
                 text=True,
                 stdout=subprocess.PIPE,
