@@ -54,9 +54,7 @@ re-probe before fixing.
 | **H-9** | `helper.py` | `line.startswith("option")` also matches `options…`; the prefix dispatch is looser than the protocol. | probed | S | Low | v0.9.0 |
 | **H-25** | `lock.py`, `config.py` | Duplicated default resolution (15/60/1) with divergent validation: only `RemoteConfig.load()` clamps. | transcribed | S | None | v0.9.0 |
 | **A12.7** | `lock.py` | A `--force` unlock that swept no ticket still reports success. The ownership proof and the "could not inspect" refusal are in place (v0.8.1); the residual is the return value. | probed | S | Low | v0.9.0 |
-| **A12.1** | `client.py` | Multipart *field values* are interpolated raw while field names and filenames go through `_sanitize_header_param`. Only internal values reach it today. | probed | S | Low | v0.9.0 |
 | **A12.6 / H-10** | `lock.py` | The machine identity is `hex(uuid.getnode())` plus the hostname — no boot id, no PID-namespace inode — so a PID recycled across a reboot on the same host reads as live. | probed | S | Low | v0.9.0 |
-| **A12.3** | `git_util.py` | Config precedence reads `--system` before `--global`, the inverse of git. Cosmetic — system scope is already the machine owner's. Fix the docstring or the order, deliberately. | probed | S | None | next touch |
 | **C-05 / qwen** | `client.py` | The shared `requests.Session` across threads is an unenforced invariant: safe only because the read paths do not mutate it and the one shared mutation (the `Date` hook's list) is GIL-atomic. Nothing states or tests that. | probed | S | Low | v0.9.0 |
 | **C-07** | `helper.py` | The protocol batch loops silently swallow non-command lines instead of naming them. | transcribed | S | Low | v0.9.0 |
 | **T-4** | `seafile_doctor.py`, `safety.py` | Two copies of the `repo.db` schema knowledge, already drifted. | transcribed | S | Low | v0.9.0 |
@@ -64,15 +62,13 @@ re-probe before fixing.
 | **T-6** | `seafile_snapshot.py` | `apply_excludes` runs over `errors="replace"`-decoded paths, so a non-UTF-8 filename aborts the snapshot. `verify_restore` was made byte-exact; the exclude pass was not. | transcribed | S | Low | v0.9.0 |
 | **T-7** | `seafile_snapshot.py` | `verify_restore` guards `\n` in paths but not a leading `"` for `--stdin-paths`. | transcribed | S | Low | v0.9.0 |
 | **T-8** | `seafile_snapshot.py` | `--code-remote` is silently ignored under `--no-push`, against the tool's own "ignored flags are errors" rule. | transcribed | S | Low | v0.9.0 |
-| **T-10** | `seafile_snapshot.py` | `is_ancestor` returns `False` for "git failed" as well as for "not an ancestor" (`check=False`, `returncode == 0`). | probed | S | Low | v0.9.0 |
 | **T-11** | `seafile_snapshot.py` | `exclude_matches` is case-insensitive on Windows only, via `fnmatch.fnmatch`, so the documented "that name at any depth" rule changes with the filesystem. | transcribed | S | Low | v0.9.0 |
 | **T-14 / T-02** | `run_tests_parallel.py` | No interrupt handling: Ctrl-C orphans workers, and a Windows temp-dir teardown can raise *after* results are printed — turning a green run into a non-zero exit. | probed | S | Low | v0.9.0 |
 | **T-15 / T-21** | `run_tests_parallel.py` | `_start_worker` leaks the log file handle if `Popen` raises; workers get only `tests/` on `PYTHONPATH`; load failures report `tests=0`, so a partial run reads as a smaller suite. | transcribed | S | Low | v0.9.0 |
 | **R1 / R2 / R4 / P** | `seafile_snapshot.py` | `push_snapshot`'s second-failure message claims the vault "matches the remote" while the branch sits behind the tip; `delete_branch` swallows CAS failures (`check=False`), so a rollback can silently no-op; a failed restore leaves `into/` behind and blocks the retry; the vault lock is held across all network I/O, so a large first snapshot blocks every other local run. | transcribed | M | Low | v0.9.0 |
 | **G-5…G-10** | `tests/` | Six suite gaps: three `_load_credentials` branches untested; `test_helper.py` feeds `cmd_fetch` a spec shape the helper never produces; `fetch_pack_artifact`'s "empty" outcome is never produced; `test_refs.py`'s concurrency assertion is the suite's one flake candidate; `test_gc.py`'s "preserves all branches and tags" asserts less than its name promises; `e2e_harness.py` carries a stale cross-reference. | transcribed | S | Low | v0.9.0 |
-| **C9** | `README.md`, `USER_GUIDE.md` | The two overlap heavily — the comparison tables are near-duplicates. Decide which is canonical and cut the other to a summary. | transcribed | M | None | v1.0.0 |
-| **A13** | — | The measured cost of a commit on the wire has never been published as a reproducible number, and with `seafile.autogc` off a large file snapshotted daily grows the remote daily. Measure and state it. | transcribed | M | Low | v1.0.0 |
-| **T1 / T2** | `tests/` | **Partly done:** `tests/test_realserver.py` (opt-in, `SEAFILE_TEST_LIBRARY`) runs the API semantics, the SHA-1/SHA-256 round trip, concurrent pushers and the conflict-copy observation against a real server (CE 13.0.28). Still missing: Pro, clustered/object-store deployments, encrypted libraries, a scheduled CI job against a container. | probed | M | Low | v1.0.0 |
+| **C9** | `README.md`, `USER_GUIDE.md` | The two overlap heavily — the comparison tables are near-duplicates. **Partly done:** USER_GUIDE §3–§4 moved to ALTERNATIVES.md and the AI-disclosure paragraph appears once; the README comparison tables remain. | transcribed | M | None | v1.0.0 |
+| **T1 / T2** | `tests/` | **Partly done:** `tests/test_realserver.py` (opt-in, `SEAFILE_TEST_LIBRARY`) runs the API semantics, the SHA-1/SHA-256 round trip, concurrent pushers and the conflict-copy observation against a real server (CE 13.0.28). Concurrency is covered (nine pushers through the lock; twelve same-path uploads) and a 4 GiB soak was run by hand. Still missing: Pro, clustered/object-store deployments, a scheduled CI job against a container. | probed | M | Low | v1.0.0 |
 | **D8** | — | **Rejected, not deferred.** Installing the tools as `git-remote-seafile-snapshot` / `-doctor` console scripts contradicts the standing decision that the snapshot tool stays a `tools/` script and is never a subcommand. The acquisition gap it pointed at was a documentation gap, closed in v0.8.2. | probed | — | — | won't do |
 
 **Closed on the way here, kept for the record.** `C7` (DESIGN restructure) and
@@ -83,7 +79,10 @@ files" claim) was scoped to the paths the tool writes in v0.8.6; `C6` (the
 unverifiable LFS memory figure) was replaced with a measured one. v0.8.7 closed
 `H-24`, `C8`, `A12.10`, `H-7`, `H-8` and the `D6` residual — the six rows above
 that a patch release could carry, which is why every row that is left still
-names v0.9.0, v1.0.0 or `won't do`. `T-17` / `SNAP-01` (the vault's `git()`
+names v0.9.0, v1.0.0 or `won't do`. `A12.1` (multipart values refuse CR/LF), `A12.3` (global before system), `T-10`
+(`is_ancestor` tells a git failure from "no") and `A13` (push cost measured: ~2.3 s, ~13 library
+commits per push, 6.5 s on the 20th with autogc) landed after v0.8.7, together with
+the pack-size cap found by the 4 GiB soak. `T-17` / `SNAP-01` (the vault's `git()`
 inheriting an ambient `GIT_DIR`) and `C-08` (bracketed IPv6 netloc) were fixed
 earlier and re-verified against v0.8.6, so they are not listed above.
 
