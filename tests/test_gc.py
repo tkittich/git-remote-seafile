@@ -1462,7 +1462,10 @@ class TestGitFailuresNameTheCause(unittest.TestCase):
         with self.assertRaises(RuntimeError) as ctx:
             gc_module.run_git_checked(
                 ["config", "--get", "--bogus-flag"],
-                env={}, check=True, capture_output=True,
+                # Not env={}: an empty environment block is invalid to
+                # CreateProcess on Windows and Python 3.10 raises
+                # OSError WinError 87 before git ever runs.
+                env={"GIT_TERMINAL_PROMPT": "0"}, check=True, capture_output=True,
             )
         text = str(ctx.exception)
         self.assertIn("failed (exit", text)
