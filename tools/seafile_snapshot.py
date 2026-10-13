@@ -1095,19 +1095,29 @@ def sweep_temp_packs(git_dir: Path, *, min_age: float = _TEMP_PACK_MIN_AGE_SECON
         entries = list(pack_dir.glob("tmp_pack_*"))
     except OSError:
         return 0
+    failed: list[str] = []
     for path in entries:
         try:
             st = path.stat()
             if st.st_mtime > cutoff:
                 continue
             size = st.st_size
-            path.unlink()
+            try:
+                path.unlink()
+            except PermissionError:
+                # Windows refuses to delete a read-only file, and git leaves its
+                # temporary packs read-only.  Clear the attribute and retry; if
+                # that fails too, something still has the file open.
+                os.chmod(path, stat.S_IWRITE)
+                path.unlink()
             freed += size
-        except OSError:
-            continue
+        except OSError as exc:
+            failed.append(f"{path.name} ({exc.strerror or exc})")
     if freed:
         print(f"removed leftover temporary pack file(s) from an interrupted run "
               f"({_fmt_bytes(freed)} freed)")
+    if failed:
+        print("warning: could not remove leftover temporary pack file(s): " + "; ".join(failed))
     return freed
 
 

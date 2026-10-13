@@ -1734,6 +1734,10 @@ class TempPackSweepTests(unittest.TestCase):
                 p.write_bytes(b"x" * n)
             stale = time.time() - 7200
             os.utime(old, (stale, stale))
+            # git leaves its temporary packs read-only, and Windows will not
+            # delete a read-only file: the real 22.5 GiB one survived the first
+            # version of this sweep for exactly that reason.
+            os.chmod(old, 0o444)
             os.utime(real, (stale, stale))
             out = io.StringIO()
             with contextlib.redirect_stdout(out):
