@@ -283,7 +283,7 @@ calls plus about 24 MiB of reads, no git processes) and, for a large raw
 payload, writes two config values; and a push whose loose tier has passed
 256 MiB takes an incremental `repack -d` + prune pair.
 
-> **Watch the remote's packfile count.** The helper counts only *small* packs (below seafile.gcmaxpackmib, default 1 GiB) and warns once their number reaches the threshold (seafile.gcthreshold, default 20). With `seafile.autogc` on, a bounded tail merge consolidates them inline after each qualifying push — large packs are frozen where they stand; without it (the default), run `git-remote-seafile gc <url>` deliberately. A remote that is never compacted grows in bytes without bound — see the
+> **Watch the remote's packfile count.** The helper counts only *small* packs (below half of seafile.gcmaxpackmib, default 1 GiB) and warns once their number reaches the threshold (seafile.gcthreshold, default 20). With `seafile.autogc` on, a bounded tail merge consolidates them inline after each qualifying push — large packs are frozen where they stand; without it (the default), run `git-remote-seafile gc <url>` deliberately. A remote that is never compacted grows in bytes without bound — see the
 > large-files section below for how fast that can be.
 
 ## 6. Several machines, one vault
@@ -581,7 +581,7 @@ directory containing `a.txt` and `.env` and no `.git` at all snapshotted fine.
 A branch-based design has nowhere to put the branch.
 
 **And the lifecycles are different.** The vault can be deleted, recreated, given
-its own remote, its own permissions (an encrypted Seafile library) and its own
+its own remote, its own permissions (a separate library with its own sharing) and its own
 retention. The code repository's history is the thing you least want to touch.
 
 **A subdirectory inside the source (`.vault/`, `snapshots/`) is worse, and the
@@ -608,7 +608,7 @@ A hidden directory is not a loophole; `-f` does not care about dot-prefixes.
 | Reaches Seafile through the existing helper | no | only via WebDAV/rclone | **yes — plain `git push`** |
 | History / diff semantics | a list of snapshots | a list of snapshots | **a real Git DAG**: `git log`, `git diff`, `git show`, `git bisect` |
 | Restore granularity | whole dataset | whole file | whole file, and **the whole tree in one command** |
-| Encryption at rest | filesystem-level | built in | none — use a Seafile encrypted library |
+| Encryption at rest | filesystem-level | built in | none — encrypt the disk/volume, or use restic / Borg (Seafile encrypted libraries are not supported by this tool) |
 | Retention / expiry | usually built in | built in | **none** |
 | Integrity check | filesystem-level | content checksums | Git's own object hashing |
 | Needs the tree to be a Git repo | no | no | no |
@@ -639,7 +639,7 @@ The jobs to give to restic/Borg rather than build here:
 | Missing capability | Hand it to | Why not here |
 | :--- | :--- | :--- |
 | Deduplication across *different* files, compression | restic / Borg | Git dedups blobs, not content; a copied file is stored twice. |
-| Encryption at rest | restic / Borg, or a Seafile **encrypted library** | `git-crypt` works on the vault but encrypts per-repo, not per-file-set. |
+| Encryption at rest | restic / Borg, or an encrypted volume (Seafile encrypted libraries are **not supported**: the helper refuses them) | `git-crypt` works on the vault but encrypts per-repo, not per-file-set. |
 | **Retention and expiry** | restic / Borg | The clearest gap: the vault keeps everything and cannot prune without rewriting history. |
 | Efficient large, volatile binaries | restic / Borg via rclone, or keep them out of the vault | See the large-files section — the cost is real; a bounded automatic tail merge now exists (§5), but full delta-compaction remains a manual `gc`. |
 
@@ -780,7 +780,7 @@ Borg, and changes nothing for the helper or the vault.
 **Deliberate non-goals** — do not add these:
 
 - **No dedup, compression, encryption, or retention in code.** restic and Borg
-  own those problems; a Seafile encrypted library covers encryption at rest.
+  own those problems; encrypt the volume the vault lives on (Seafile encrypted libraries are refused by the helper).
 - **No merge of diverged chains.** Refusing is correct.
 - **Keep `--exclude` opt-in.** "All files" is the point.
 - **Keep the secrets report a warning, not a refusal.** A backup that refuses to

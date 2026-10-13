@@ -261,7 +261,7 @@ nobody at the keyboard.
 Five minutes is generous for an ordinary repository and too short for a large one. A first push of a
 few GB, an `index-pack` of one large downloaded pack, and a full `repack -a -d` during manual `gc` all
 routinely exceed it. The automatic tail merge is bounded by design — only packs below
-`seafile.gcmaxpackmib`, within the download budget (8 × `seafile.gcmaxpackmib`) — so it rarely reaches the
+`seafile.gcmaxpackmib`, within the download budget (2 × `seafile.gcmaxpackmib`) — so it rarely reaches the
 ceiling; when any of these does, the failure is deterministic (the same repository stops at the same point every
 time), and with `seafile.autogc` enabled the failing run defers and is retried on the next push.
 

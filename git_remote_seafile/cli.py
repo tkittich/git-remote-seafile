@@ -376,15 +376,17 @@ def _gc_tail(url: str) -> int:
     """``gc --tail``: the automatic tier, on demand.
 
     Lets a user run, test or schedule exactly what ``seafile.autogc`` does.
-    It honours the same threshold and download budget, so "skipped" is a normal
-    answer.
+    It honours the same movable-pack threshold, so "skipped" is a normal answer,
+    but not the download budget: that exists to keep an *automatic* merge from
+    holding the push lock for minutes, and this one was asked for.
     """
     try:
         from .config import RemoteConfig
         from .gc import describe_size_delta, tail_merge
         helper = RemoteHelper("gc", url)
         res = tail_merge(
-            helper.client, helper.repo_id, helper.repo_path, config=RemoteConfig.load()
+            helper.client, helper.repo_id, helper.repo_path, config=RemoteConfig.load(),
+            respect_budget=False,
         )
     except Exception as ex:
         return _error(f"Tail merge failed: {ex}")

@@ -12,7 +12,13 @@ def current_tip(git_dir: Path, work_tree: Path, branch: str) -> str | None:
 
 
 def is_ancestor(git_dir: Path, work_tree: Path, older: str, newer: str) -> bool:
-    """True iff ``older`` is an ancestor of ``newer`` (equal counts)."""
+    """True iff ``older`` is an ancestor of ``newer`` (equal counts).
+
+    ``merge-base --is-ancestor`` answers 0 (yes) or 1 (no); anything else is git
+    failing -- an unknown commit, a damaged object -- and is *not* "no".  Reading
+    it as "no" told users their history had diverged and pointed them at
+    ``--reset-to-remote``, the one flag that drops snapshots.
+    """
     proc = git(
         git_dir,
         work_tree,
@@ -20,6 +26,11 @@ def is_ancestor(git_dir: Path, work_tree: Path, older: str, newer: str) -> bool:
         cwd=work_tree,
         check=False,
     )
+    if proc.returncode not in (0, 1):
+        detail = (proc.stderr or "").strip() or f"exit {proc.returncode}"
+        raise SnapshotError(
+            f"could not compare {older[:12]} with {newer[:12]}: {detail}"
+        )
     return proc.returncode == 0
 
 

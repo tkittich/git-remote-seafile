@@ -88,6 +88,13 @@ class StreamingMultipartFile:
 
         prefix = []
         for name, val in fields.items():
+            # A field *value* sits between the header block and the next
+            # boundary unescaped.  The boundary is random, so a value cannot
+            # realistically forge one, but a CR/LF would still let it start a
+            # header of its own -- refuse rather than send a form the server
+            # reads differently from what was meant.
+            if "\r" in val or "\n" in val or self.boundary in val:
+                raise ValueError(f"multipart field {name!r} contains a line break or the boundary")
             safe_name = _sanitize_header_param(name)
             prefix.append(
                 f"--{self.boundary}\r\n"
@@ -217,6 +224,7 @@ class SeafileClient:
         self._mount_retries(self._file_session)
         self.session.hooks["response"].append(self._record_server_date_header)
         self._repos_cache: dict[str, str] = {}  # name_or_id -> id
+        self._encrypted_repo_ids: set[str] = set()
         self._known_dirs: set[tuple[str, str]] = set()  # (repo_id, clean_path)
 
         # `require_credentials=False` is for commands that need to know which
@@ -605,7 +613,23 @@ class SeafileClient:
         return raw_url
 
     def get_repo_id(self, name_or_id: str) -> str:
-        """Resolve a library name or id to its repo UUID."""
+        """Resolve a library name or id to its repo UUID.
+
+        Refuses an encrypted library: the web API serves its files only after a
+        per-library password has been supplied, which this tool has no way to
+        take, so every later call would fail with a status code that does not
+        say why.
+        """
+        rid = self._resolve_repo_id(name_or_id)
+        if rid in self._encrypted_repo_ids:
+            raise SeafileAPIError(
+                f"Seafile library '{name_or_id}' is encrypted. Encrypted libraries are not "
+                "supported: the server will not serve their files over the web API without "
+                "the library password. Use an unencrypted library for the remote."
+            )
+        return rid
+
+    def _resolve_repo_id(self, name_or_id: str) -> str:
         if name_or_id in self._repos_cache:
             return self._repos_cache[name_or_id]
 
@@ -623,6 +647,8 @@ class SeafileClient:
             rid = repo.get("id", "")
             if rid:
                 self._repos_cache[rid] = rid
+                if repo.get("encrypted") is True:
+                    self._encrypted_repo_ids.add(rid)
                 if rid == name_or_id:
                     return rid
 

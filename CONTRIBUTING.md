@@ -45,45 +45,28 @@ python tools/run_tests_parallel.py -k e2e   # only matching classes
 python tools/run_tests_parallel.py --list   # show the units of work
 ```
 
-Measured on a 12-core AMD 5900X, **693 tests across 138 targets**:
+Wall time depends on the machine far more than on the suite, so no figure is
+published here -- it would be stale by the next change (earlier versions of this
+page listed 339 s and 272 s for numbers this suite now finishes in well under a
+minute on a 24-thread desktop). The runner prints its own wall time; run it, or
+link a dated CI run if you need a number.
 
-| workers | wall time |
-| ------- | --------- |
-| 4 | 339.0 s |
-| 8 | 271.6 s |
-| 8, `--granularity test` | 387.9 s (693 targets instead of 138) |
+The *shape* is stable and is what to remember:
 
-Treat the column as indicative rather than exact. On an idle machine repeated runs
-spread by about a tenth, and the machine's throughput drifts by much more between
-sessions — the same `-j 8` run has measured 232.9 s, 243.3 s, 245.9 s, 250.6 s,
-271.6 s, 310.2 s and 328.9 s across sessions and suite sizes. The shape is the
-point: eight workers are clearly better than four and nowhere near twice as good,
-and beyond eight the wall time barely moves, because the heavy cases are themselves
-multi-process. The *factor* is not stable — the 339.0 s and 271.6 s above are one
-back-to-back pair and give 1.25x where an earlier pair gave 1.40x — so quote the
-shape, not the ratio. The wall time is bounded by the slowest single unit of work,
-not by throughput, and that unit is now a snapshot class —
-`test_snapshot_tool.ByteExactnessTests`, 95.7 s against a 271.6 s wall at `-j 8`.
-
-The serial baseline is deliberately not listed. It was 204.4 s when this table
-was first taken at 268 tests, and the suite has since more than doubled, so that
-figure is exactly the kind of stale number this table was corrected to remove.
-Run `python -m unittest discover tests` if you want a current one, and budget
-for it: the snapshot module makes the serial path a long wait, which is the
-whole reason this runner exists.
-
-The unit of work is the test class — see the module docstring for why per-test
-scheduling is measurably *worse* here (387.9 s against 271.6 s, for five times
-the process start-ups).
+* The wall time is bounded by the slowest single unit of work, not by
+  throughput -- today a snapshot class such as
+  `test_snapshot_tool.ByteExactnessTests`. More workers than there are heavy
+  classes buy nothing.
+* The unit of work is the test class. Per-test scheduling is measurably worse
+  (many more process start-ups for the same work).
+* `-j 1` is slower than `python -m unittest discover tests`, because it pays an
+  interpreter start-up per class. Use the serial command for a baseline.
 
 Because the unit of work is the class, a **class that defines `test_*` methods
 must not be subclassed**: `unittest` inherits tests, so every case would run
 twice — once under the base's own name and once under the subclass's. Put shared
 `setUp` and helpers in a base with no test methods (as `_SnapshotFixture` does in
 `test_snapshot_tool.py`); `tests/test_suite_shape.py` fails the suite otherwise.
-
-Note that `-j 1` is *slower* than the serial command above, because it pays an
-interpreter start-up per class. Use the serial command for a baseline.
 
 It has no dependencies. It is not in the installed package — it travels in the
 sdist, for someone building from source.

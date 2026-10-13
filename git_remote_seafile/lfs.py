@@ -7,10 +7,46 @@ import os
 import re
 import sys
 import tempfile
+import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any, TypeGuard
 
 from .client import SeafileClient
+
+
+class _ProgressThrottle:
+    """Forward transport progress to git-lfs without one line per chunk.
+
+    A transfer reports on every 64 KiB chunk -- tens of thousands of JSON lines
+    per GiB, each parsed by git-lfs.  An update is passed on when at least one
+    percent of the object has moved or 250 ms have passed since the last one;
+    ``last_bytes`` is what was actually reported, so the caller's final "the
+    rest" event still adds up to the whole object.
+    """
+
+    _MIN_INTERVAL = 0.25
+
+    def __init__(self, emit: Callable[[int, int], None]) -> None:
+        self._emit = emit
+        self.last_bytes = 0
+        self._last_time: float | None = None
+
+    def callback(self, transferred: int, total: int) -> None:
+        delta = transferred - self.last_bytes
+        if delta <= 0:
+            return
+        now = time.monotonic()
+        due = (
+            self._last_time is None
+            or delta >= max(total // 100, 1)
+            or now - self._last_time >= self._MIN_INTERVAL
+        )
+        if not due:
+            return
+        self._emit(transferred, delta)
+        self.last_bytes = transferred
+        self._last_time = now
 
 
 class LFSTransferAgent:
@@ -122,18 +158,13 @@ class LFSTransferAgent:
             # Hand the client the *path*, not the bytes.  An LFS object is
             # routinely far larger than RAM, and reading it in first is exactly
             # what LFS exists to avoid; the client streams it from disk.
-            last_bytes = 0
-
-            def on_upload_progress(transferred: int, total: int) -> None:
-                nonlocal last_bytes
-                delta = transferred - last_bytes
-                if delta > 0:
-                    self._send_progress(oid, transferred, delta)
-                    last_bytes = transferred
+            throttle = _ProgressThrottle(lambda so_far, delta: self._send_progress(oid, so_far, delta))
 
             self.client.upload_file(
-                self.repo_id, parent_dir, filename, Path(local_path), replace=True, progress_callback=on_upload_progress
+                self.repo_id, parent_dir, filename, Path(local_path), replace=True,
+                progress_callback=throttle.callback,
             )
+            last_bytes = throttle.last_bytes
             final_delta = local_size - last_bytes
             if final_delta > 0:
                 self._send_progress(oid, local_size, final_delta)
@@ -165,18 +196,12 @@ class LFSTransferAgent:
             temp_dest = Path(self._temp_dir.name) / oid
             # Streamed straight to disk: `get_file_bytes` would hold the whole
             # object in memory before writing it.
-            last_bytes = 0
-
-            def on_download_progress(transferred: int, total: int) -> None:
-                nonlocal last_bytes
-                delta = transferred - last_bytes
-                if delta > 0:
-                    self._send_progress(oid, transferred, delta)
-                    last_bytes = transferred
+            throttle = _ProgressThrottle(lambda so_far, delta: self._send_progress(oid, so_far, delta))
 
             download_ok = self.client.download_file_to(
-                self.repo_id, file_path, temp_dest, progress_callback=on_download_progress
+                self.repo_id, file_path, temp_dest, progress_callback=throttle.callback
             )
+            last_bytes = throttle.last_bytes
 
             if not download_ok:
                 self._send_json({

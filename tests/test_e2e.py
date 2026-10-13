@@ -349,6 +349,72 @@ class TestGcAfterTailMergeOnSha256(E2ETestCase):
         self.assertIn("c2", run_git(["log", "--oneline"], dst, self.env).stdout)
 
 
+class TestPackSizeCap(E2ETestCase):
+    """No pack the helper writes exceeds ``seafile.gcmaxpackmib``.
+
+    Measured against a real server, a single upload of 2 GiB is reset while
+    1.75 GiB is accepted, so one giant pack is a push that cannot complete (and
+    a tail merge that cannot upload its result).  git splits the output when
+    asked; each piece is self-contained and fetches like any other pack.
+    """
+
+    def test_a_push_larger_than_the_cap_arrives_as_several_packs(self):
+        import os
+
+        src = self.work / "src_cap"
+        run_git(["init", "-b", "main", str(src)], self.work, self.env)
+        run_git(["config", "seafile.gcmaxpackmib", "1"], src, self.env)
+        run_git(["remote", "add", "origin", self.url("cap")], src, self.env)
+        for n in range(3):
+            # ~700 kB of incompressible bytes per file, as hex text (so ~1.4 MB
+            # on disk, about 700 kB once git compresses it).
+            (src / f"blob{n}.txt").write_text(os.urandom(700_000).hex())
+            run_git(["add", "--", f"blob{n}.txt"], src, self.env)
+        run_git(["commit", "-q", "-m", "big"], src, self.env)
+        run_git(["push", "-q", "origin", "main"], src, self.env)
+
+        packs = sorted(p for p in self.stub.packs("/cap") if p.endswith(".pack"))
+        self.assertGreaterEqual(len(packs), 2, f"expected the push to be split, got {packs}")
+
+        dst = self.work / "clone_cap"
+        run_git(["clone", self.url("cap"), str(dst)], self.work, self.env)
+        self.assertEqual(run_git(["fsck", "--no-dangling"], dst, self.env, check=False).returncode, 0)
+        self.assertEqual((dst / "blob2.txt").stat().st_size, 1_400_000)
+
+
+class TestTailMergeUnderTheCap(E2ETestCase):
+    """A tail merge whose union exceeds the cap writes several packs, all valid."""
+
+    def test_merge_splits_at_the_cap_and_the_result_clones_and_fscks(self):
+        import os
+
+        src = self.work / "src_tail_cap"
+        run_git(["init", "-b", "main", str(src)], self.work, self.env)
+        run_git(["config", "seafile.gcmaxpackmib", "1"], src, self.env)
+        run_git(["config", "seafile.gcthreshold", "3"], src, self.env)
+        run_git(["config", "seafile.autogc", "false"], src, self.env)
+        run_git(["remote", "add", "origin", self.url("tail_cap")], src, self.env)
+        for n in range(4):
+            (src / f"blob{n}.txt").write_text(os.urandom(300_000).hex())
+            run_git(["add", "--", f"blob{n}.txt"], src, self.env)
+            run_git(["commit", "-q", "-m", f"c{n}"], src, self.env)
+            run_git(["push", "-q", "origin", "main"], src, self.env)
+        before = sorted(p for p in self.stub.packs("/tail_cap") if p.endswith(".pack"))
+        self.assertGreaterEqual(len(before), 4, before)
+
+        res = run_helper(["gc", "--tail", self.url("tail_cap")], src, self.env, check=False)
+        self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
+
+        after = sorted(p for p in self.stub.packs("/tail_cap") if p.endswith(".pack"))
+        self.assertTrue(all(p.startswith("pack-tail-") for p in after), after)
+        self.assertLess(len(after), len(before))
+        dst = self.work / "clone_tail_cap"
+        run_git(["clone", self.url("tail_cap"), str(dst)], self.work, self.env)
+        fsck = run_git(["fsck", "--no-dangling"], dst, self.env, check=False)
+        self.assertEqual(fsck.returncode, 0, fsck.stdout + fsck.stderr)
+        self.assertEqual(run_git(["rev-list", "--count", "HEAD"], dst, self.env).stdout.strip(), "4")
+
+
 class TestRefsListingFailureIsNotSilent(E2ETestCase):
     """A failed refs listing must not be reported as an empty repository.
 

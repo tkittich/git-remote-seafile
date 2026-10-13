@@ -164,7 +164,10 @@ class TestRemoteGC(unittest.TestCase):
         mock_client.get_file_text.side_effect = fake_get_text
 
         # Mock git pack-objects writing a packfile
+        seen_cmds: list[list[str]] = []
+
         def fake_subprocess(cmd, **kwargs):
+            seen_cmds.append(list(cmd))
             if "pack-objects" in cmd:
                 return MagicMock(returncode=0, stdout=b"abcdef1234567890abcdef1234567890abcdef12\n")
             return MagicMock(returncode=0)
@@ -191,6 +194,11 @@ class TestRemoteGC(unittest.TestCase):
             res = compact_repository(mock_client, "repo1", "/path", min_packs=2, verbose=False)
             self.assertEqual(res["status"], "ok")
             self.assertEqual(res["old_packs"], 2)
+            # The repack is told the size cap: a pack the server will not
+            # accept in one upload is a compaction that cannot finish.
+            repack = [c for c in seen_cmds if "repack" in c]
+            self.assertTrue(repack)
+            self.assertTrue(any(a.startswith("--max-pack-size=") for a in repack[0]))
             # Every pack download renews the lease as it goes: gc holds the
             # lock across multi-gigabyte transfers.
             for call in mock_client.download_file_to.call_args_list:
@@ -1311,6 +1319,26 @@ class TestTailMerge(unittest.TestCase):
         self.assertEqual(self._deleted_pack_paths(client), [])
 
     # --- the merge itself ---------------------------------------------------
+
+    @patch("subprocess.run")
+    def test_tail_merge_caps_the_size_of_what_it_writes(self, mock_subprocess):
+        """A pack above the server's per-upload ceiling cannot be uploaded at all
+        (2 GiB was reset on a real server), so the merge hands git the cap."""
+        small = [{"name": "pack-1.pack", "size": len(b"PACK-DATA")}, {"name": "pack-2.pack", "size": len(b"PACK-DATA")}]
+        client = self._client(small)
+        commands = []
+        inner = self._subprocess_fake()
+
+        def recording(cmd, **kwargs):
+            commands.append(list(cmd))
+            return inner(cmd, **kwargs)
+
+        mock_subprocess.side_effect = recording
+        tail_merge(client, "repo1", "/path", config=self._cfg(threshold=2, max_pack_mib=7), verbose=False)
+
+        pack_objects = [c for c in commands if "pack-objects" in c]
+        self.assertTrue(pack_objects)
+        self.assertIn(f"--max-pack-size={7 * 1024 * 1024}", pack_objects[0])
 
     @patch("subprocess.run")
     def test_tail_merge_consolidates_only_the_movable_packs(self, mock_subprocess):

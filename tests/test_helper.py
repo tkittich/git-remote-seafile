@@ -795,7 +795,7 @@ class TestRemoteHelper(unittest.TestCase):
             {"name": f"pack-{i}.pack", "size": mi_b} for i in range(9)
         ]
         cfg = RemoteConfig(lock_timeout=15, lock_lease=60, lock_settle=0, auto_gc=True, gc_threshold=3,
-                           gc_max_mib=8, gc_max_pack_mib=2)
+                           gc_max_mib=8, gc_max_pack_mib=4)
 
         err = io.StringIO()
         with patch("sys.stderr", err), \
@@ -1017,6 +1017,18 @@ class TestRemoteHelper(unittest.TestCase):
         output = out.getvalue()
         self.assertIn("error refs/heads/main locked by user@otherhost", output)
         self.assertIn("error refs/heads/dev locked by user@otherhost", output)
+
+    def test_a_command_that_merely_starts_like_a_known_one_is_unsupported(self):
+        h = make_helper()
+        h.cmd_list = MagicMock()
+        h.cmd_push = MagicMock()
+        for line in ("listing", "pushed refs/heads/a:refs/heads/a", "fetching abc"):
+            with patch("sys.stdin", io.StringIO(line + "\n")), \
+                 patch("sys.stdout", io.StringIO()), patch("sys.stderr", io.StringIO()):
+                with self.assertRaises(GitError):
+                    h.run()
+        h.cmd_list.assert_not_called()
+        h.cmd_push.assert_not_called()
 
     def test_helper_run_protocol_loop(self):
         h = make_helper()

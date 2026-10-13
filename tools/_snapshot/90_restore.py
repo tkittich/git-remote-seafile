@@ -153,14 +153,51 @@ def verify_restore(repo: Path, rev: str) -> list[str]:
     ] + mismatched_symlinks
 
 
+def _resolve_assumed_branch(clone: Path, assumed: str) -> str:
+    """The branch to restore when the user did not name one.
+
+    The assumed name wins when the remote has it.  Otherwise a remote with
+    exactly one branch is unambiguous; with several, naming them beats guessing.
+    """
+    proc = _run(
+        ["git", "-C", str(clone), "for-each-ref", "--format=%(refname)", "refs/remotes/origin"],
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    prefix = "refs/remotes/origin/"
+    names = [
+        line[len(prefix):]
+        for line in proc.stdout.splitlines()
+        if line.startswith(prefix) and line != prefix + "HEAD"
+    ]
+    if assumed in names or not names:
+        return assumed
+    if len(names) == 1:
+        print(f"note: the remote has no branch '{assumed}'; restoring its only branch '{names[0]}'")
+        return names[0]
+    raise SnapshotError(
+        f"the remote has no branch '{assumed}' and holds several: {', '.join(sorted(names))}. "
+        f"Choose one with --branch."
+    )
+
+
 def restore(
     remote: str,
     into: Path,
     branch: str,
     ref: str | None,
     verify: bool = False,
+    branch_explicit: bool = True,
 ) -> None:
     """Materialise a snapshot into a new directory, byte-for-byte.
+
+    ``branch_explicit`` is False when the caller only assumed the default
+    branch name.  A restore starts from nothing -- there is no vault here to
+    remember a branch from -- so the default may simply be wrong for this
+    remote; then the one branch the remote has is used, and several are listed.
 
     A plain ``git clone`` of the vault is *not* enough on Windows: the clone
     inherits ``core.autocrlf=true`` from Git for Windows' system config, and
@@ -194,6 +231,9 @@ def restore(
         )
 
     ensure_byte_exact(into, into / ".git")
+
+    if not branch_explicit:
+        branch = _resolve_assumed_branch(into, branch)
 
     # A --no-checkout clone has no local branch, so a revision like
     # "snapshot~3" cannot resolve until the branch exists locally.  When the

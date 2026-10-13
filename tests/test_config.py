@@ -26,7 +26,7 @@ class TestConfigModule(unittest.TestCase):
             self.assertEqual(cfg.lock_settle, 1)
             self.assertFalse(cfg.auto_gc)
             self.assertEqual(cfg.gc_threshold, 20)
-            self.assertEqual(cfg.gc_max_mib, 8192)  # 8 x the 1024 MiB freeze threshold
+            self.assertEqual(cfg.gc_max_mib, 2048)  # 2 x the 1024 MiB pack size cap
             self.assertEqual(cfg.gc_max_pack_mib, 1024)
 
     def test_remote_config_load_custom(self):
@@ -47,7 +47,7 @@ class TestConfigModule(unittest.TestCase):
             self.assertEqual(cfg.lock_settle, 1)
             self.assertTrue(cfg.auto_gc)
             self.assertEqual(cfg.gc_threshold, 50)
-            self.assertEqual(cfg.gc_max_mib, 8 * 256)  # derived, not a second key
+            self.assertEqual(cfg.gc_max_mib, 2 * 256)  # derived, not a second key
             self.assertEqual(cfg.gc_max_pack_mib, 256)
 
     def test_the_settlement_window_is_not_a_git_config_setting(self):
@@ -82,7 +82,7 @@ class TestConfigModule(unittest.TestCase):
         self.assertIn("seafile.locksettle is no longer a setting", text)
         self.assertIn("seafile.gcmaxmib is no longer a setting", text)
         self.assertEqual(cfg.lock_settle, 1)
-        self.assertEqual(cfg.gc_max_mib, 8 * cfg.gc_max_pack_mib)
+        self.assertEqual(cfg.gc_max_mib, 2 * cfg.gc_max_pack_mib)
 
     def test_implausible_config_falls_back_to_documented_defaults(self):
         """A zero lease would expire every lock immediately; refuse to honor it.
@@ -107,7 +107,7 @@ class TestConfigModule(unittest.TestCase):
         self.assertEqual(cfg.lock_lease, 60)
         self.assertEqual(cfg.lock_settle, 1)
         self.assertEqual(cfg.gc_threshold, 20)
-        self.assertEqual(cfg.gc_max_mib, 8192)
+        self.assertEqual(cfg.gc_max_mib, 2048)
         self.assertEqual(cfg.gc_max_pack_mib, 1024)
         self.assertIn("seafile.locklease=0 -> 60", mock_err.getvalue())
         self.assertIn("seafile.gcthreshold=0 -> 20", mock_err.getvalue())

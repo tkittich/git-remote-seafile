@@ -447,6 +447,38 @@ class TestClientAPI(unittest.TestCase):
         self.assertEqual(self.client.get_repo_id("id-1"), "id-1")
         self.assertIn("code", self.client._repos_cache)
 
+    def test_multipart_field_values_with_line_breaks_are_refused(self):
+        from git_remote_seafile.client import StreamingMultipartFile
+
+        for bad in ("/a\r\nX-Evil: 1", "/a\nb"):
+            with self.assertRaises(ValueError):
+                StreamingMultipartFile(
+                    fields={"parent_dir": bad}, file_field="file", filename="f",
+                    file_obj=io.BytesIO(b"x"), file_size=1,
+                )
+        ok = StreamingMultipartFile(
+            fields={"parent_dir": "/a/b"}, file_field="file", filename="f",
+            file_obj=io.BytesIO(b"x"), file_size=1,
+        )
+        self.assertIn(b"/a/b", ok.header)
+
+    def test_get_repo_id_refuses_an_encrypted_library(self):
+        mock_resp = MagicMock(status_code=200)
+        mock_resp.json.return_value = [
+            {"id": "id-1", "name": "Vault", "encrypted": True},
+            {"id": "id-2", "name": "code", "encrypted": False},
+        ]
+        self.client.session.get = MagicMock(return_value=mock_resp)
+
+        self.assertEqual(self.client.get_repo_id("code"), "id-2")
+        for ref in ("Vault", "id-1"):
+            with self.assertRaises(SeafileAPIError) as ctx:
+                self.client.get_repo_id(ref)
+            self.assertIn("encrypted", str(ctx.exception))
+        # ...and again from the cache, which must not turn it into a success.
+        with self.assertRaises(SeafileAPIError):
+            self.client.get_repo_id("Vault")
+
     def test_get_repo_id_errors(self):
         # HTTP error
         self.client.session.get = MagicMock(return_value=MagicMock(status_code=500, text="Internal Error"))

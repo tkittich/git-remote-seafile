@@ -7,6 +7,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -256,6 +257,36 @@ def run_git_checked(
         ) from None
 
 
+#: Prefixes of the scratch directories this package creates under ``.git``.
+_SCRATCH_PREFIXES = ("grs-staging-", "grs-push-", "grs-fetch-")
+
+
+def sweep_stale_scratch(max_age_seconds: float = 24 * 3600, now: float | None = None) -> int:
+    """Remove scratch directories a crashed run left under ``.git``.
+
+    Each is created and removed inside one operation, so anything older than a
+    day belongs to a process that did not get to clean up (a kill, a power
+    cut) -- and a staged pack can be gigabytes.  Best effort: never raises, and
+    returns how many directories were removed.
+    """
+    removed = 0
+    try:
+        git_dir = get_git_dir()
+        cutoff = (time.time() if now is None else now) - max_age_seconds
+        for entry in git_dir.iterdir():
+            if not entry.name.startswith(_SCRATCH_PREFIXES) or not entry.is_dir():
+                continue
+            try:
+                if entry.stat().st_mtime < cutoff:
+                    shutil.rmtree(entry, ignore_errors=True)
+                    removed += 1
+            except OSError:
+                continue
+    except Exception:
+        return removed
+    return removed
+
+
 def rev_parse(ref: str) -> str | None:
     """Resolve a reference to its SHA-1 hash."""
     out, _, code = run_git(["rev-parse", "--verify", ref])
@@ -453,22 +484,30 @@ def get_objects_to_push(local_sha: list[str] | str, exclude_shas: list[str] | st
     return objects
 
 
-def _generate_pack_in_dir(tmp_dir: Path, object_shas: list[str]) -> tuple[str, Path, Path]:
-    """Helper to generate packfile and index in a target directory."""
+def _generate_pack_in_dir(
+    tmp_dir: Path, object_shas: list[str], max_pack_bytes: int | None = None
+) -> tuple[str, Path, Path]:
+    """Helper to generate packfile and index in a target directory.
+
+    With *max_pack_bytes* git may write several packs (each self-contained, no
+    deltas across them); the first one's name is returned and the others sit
+    beside it in *tmp_dir* for the caller to find.
+    """
     tmp_dir.mkdir(parents=True, exist_ok=True)
     pack_prefix = tmp_dir / "pack"
 
     input_data = ("\n".join(object_shas) + "\n").encode("utf-8", errors="surrogateescape")
-    out, err, code = run_git(
-        ["-c", f"core.bigFileThreshold={PACK_BIG_FILE_THRESHOLD}",
-         "pack-objects", str(pack_prefix)],
-        input_bytes=input_data,
-    )
+    cmd = ["-c", f"core.bigFileThreshold={PACK_BIG_FILE_THRESHOLD}", "pack-objects"]
+    if max_pack_bytes:
+        cmd.append(f"--max-pack-size={max_pack_bytes}")
+    cmd.append(str(pack_prefix))
+    out, err, code = run_git(cmd, input_bytes=input_data)
     if code != 0:
         err_msg = err.decode("utf-8", errors="replace").strip()
         raise GitError(f"git pack-objects failed: {err_msg}")
 
-    pack_sha = out.decode("utf-8").strip()
+    # One hash per pack written, in order; the first names the one returned.
+    pack_sha = (out.decode("utf-8").split() or [""])[0]
     pack_file = tmp_dir / f"pack-{pack_sha}.pack"
     idx_file = tmp_dir / f"pack-{pack_sha}.idx"
 
@@ -488,12 +527,17 @@ def _generate_pack_in_dir(tmp_dir: Path, object_shas: list[str]) -> tuple[str, P
 def create_packfile(
     object_shas: list[str],
     staged_dir: Path | str | None = None,
+    max_pack_bytes: int | None = None,
 ) -> tuple[str, bytes | Path, bytes | Path]:
     """Generate a .pack file and corresponding .idx file for the given object SHAs.
 
     If *staged_dir* is provided, the pack and idx are created directly in that
     directory and their Path objects are returned, avoiding buffering the packfile
     into memory. Otherwise, returns (pack_sha, pack_bytes, idx_bytes).
+
+    *max_pack_bytes* only takes effect with *staged_dir*: the in-memory form can
+    only return one pack.  When the objects do not fit, further packs are left
+    in *staged_dir* and the caller uploads every ``pack-*.pack`` found there.
     """
     if not object_shas:
         return "", b"", b""
@@ -507,7 +551,7 @@ def create_packfile(
         tmp_parent = None
 
     if staged_dir is not None:
-        return _generate_pack_in_dir(Path(staged_dir), object_shas)
+        return _generate_pack_in_dir(Path(staged_dir), object_shas, max_pack_bytes)
 
     with tempfile.TemporaryDirectory(prefix="git-seaf-pack-", dir=str(tmp_parent) if tmp_parent else None) as td:
         pack_sha, pack_file, idx_file = _generate_pack_in_dir(Path(td), object_shas)
@@ -633,6 +677,20 @@ def get_git_config(key: str, default: str | None = None) -> str | None:
     return out.decode("utf-8").strip()
 
 
+def _trusted_config_value(key: str) -> str | None:
+    """*key* from the machine owner's scopes only, or None when unset.
+
+    Global is consulted before system because that is git's own precedence: a
+    user's ``~/.gitconfig`` overrides ``/etc/gitconfig``.  Repository-local
+    config is never read.
+    """
+    for scope in ("--global", "--system"):
+        out, _, code = run_git(["config", scope, "--get", key])
+        if code == 0 and out:
+            return out.decode("utf-8").strip()
+    return None
+
+
 def get_trusted_git_config_bool(key: str, default: bool = False) -> bool:
     """Read a boolean *security-relevant* git config value, ignoring repo-local config.
 
@@ -646,12 +704,10 @@ def get_trusted_git_config_bool(key: str, default: bool = False) -> bool:
     global scopes) and the environment; the repository being cloned or pushed
     to never gets a vote.
     """
-    out, _, code = run_git(["config", "--system", "--get", key])
-    if code != 0 or not out:
-        out, _, code = run_git(["config", "--global", "--get", key])
-    if code != 0 or not out:
+    raw_value = _trusted_config_value(key)
+    if raw_value is None:
         return default
-    return out.decode("utf-8").strip().lower() in ("true", "1", "yes", "on")
+    return raw_value.lower() in ("true", "1", "yes", "on")
 
 
 def get_trusted_git_config_int(key: str, default: int) -> int:
@@ -663,12 +719,10 @@ def get_trusted_git_config_int(key: str, default: int) -> int:
     be the scope that answers.  A value that is not an integer is reported and
     ignored rather than silently becoming the default.
     """
-    out, _, code = run_git(["config", "--system", "--get", key])
-    if code != 0 or not out:
-        out, _, code = run_git(["config", "--global", "--get", key])
-    if code != 0 or not out:
+    raw_value = _trusted_config_value(key)
+    if raw_value is None:
         return default
-    raw = out.decode("utf-8").strip()
+    raw = raw_value
     try:
         return int(raw)
     except ValueError:

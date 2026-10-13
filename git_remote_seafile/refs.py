@@ -66,6 +66,11 @@ def is_valid_ref_name(ref_name: str) -> bool:
         return False
     if ref_name.endswith("."):
         return False
+    # git-check-ref-format: no leading or trailing slash, and at least one slash (the
+    # one-level form is only legal under --allow-onelevel, which no ref this
+    # helper writes is).  Found by differential testing against git itself.
+    if ref_name.startswith("/") or ref_name.endswith("/") or "/" not in ref_name:
+        return False
     return True
 
 

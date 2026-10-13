@@ -357,8 +357,9 @@ def tail_merge(
     repo_path: str,
     config: RemoteConfig | None = None,
     verbose: bool = True,
+    respect_budget: bool = True,
 ) -> dict[str, Any]:
-    """Merge the remote's small ("movable") packfiles into one.
+    """Merge the remote's small ("movable") packfiles.
 
     The automatic tier of compaction (DESIGN.md §4.5).  Unlike
     :func:`compact_repository` it never moves the big packs: a pack at or above
@@ -372,6 +373,11 @@ def tail_merge(
     away.  File count stays bounded at *frozen packs + a small constant*; cost
     per cycle is 2×tail bytes, not 2×store.
 
+    ``respect_budget=False`` is for a run the user asked for by hand
+    (``gc --tail``): the download budget exists so an *automatic* merge cannot
+    hold the push lock for minutes, and a person who started one has already
+    accepted the time.
+
     Returns a dict whose ``status`` is one of:
 
     ``"ok"``
@@ -383,7 +389,7 @@ def tail_merge(
         unreferenced clutter a later run removes.
     ``"skipped"``
         Nothing to do: fewer than ``config.gc_threshold`` movable packfiles --
-        or their total exceeds the download budget (``config.gc_max_mib``, 8 x ``gc_max_pack_mib``), when
+        or their total exceeds the download budget (``config.gc_max_mib``, 2 x ``gc_max_pack_mib``), when
         auto-GC defers to a manual off-hours run instead of round-tripping that
         much mid-push.  The message says which case applied.
     ``"error"``
@@ -415,7 +421,7 @@ def tail_merge(
             maybe_renew()
 
         # 1. Discover remote packfiles and split them into movable and frozen.
-        freeze_at = cfg.gc_max_pack_mib * 1024 * 1024
+        freeze_at = cfg.freeze_bytes
         entries = client.list_dir(repo_id, pack_dir)
         pack_sizes: dict[Any, Any] = {
             e.get("name"): e.get("size")
@@ -457,7 +463,7 @@ def tail_merge(
 
         total_movable = sum(int(size or 0) for _, size in movable)
         budget = cfg.gc_max_mib * 1024 * 1024
-        if total_movable > budget:
+        if respect_budget and total_movable > budget:
             return {
                 "status": "skipped",
                 "movable_packs": len(movable),
@@ -539,7 +545,8 @@ def tail_merge(
             before = {p.name for p in local_pack_dir.glob("pack-*.pack")}
             res = run_git_checked(
                 ["-C", str(bare_repo), "-c", f"core.bigFileThreshold={PACK_BIG_FILE_THRESHOLD}",
-                 "pack-objects", "-q", str(local_pack_dir / "pack-tail")],
+                 "pack-objects", "-q", f"--max-pack-size={cfg.max_pack_bytes}",
+                 str(local_pack_dir / "pack-tail")],
                 scratch_env,
                 input="\n".join(shas) + "\n",
                 text=True,
@@ -665,6 +672,7 @@ def compact_repository(
     clean_repo = repo_path.rstrip("/")
     pack_dir = f"{clean_repo}/objects/pack"
 
+    cfg = config if config is not None else RemoteConfig.load()
     with RemoteLock(client, repo_id, clean_repo, config=config) as lock:
         def maybe_renew() -> None:
             lock.maybe_renew(20.0)
@@ -814,7 +822,8 @@ def compact_repository(
             if verbose:
                 sys.stderr.write("  Repacking objects with delta compression...\n")
             res = run_git_checked(
-                ["-C", str(bare_repo), "repack", "-a", "-d", "-l"],
+                ["-C", str(bare_repo), "repack", "-a", "-d", "-l",
+                 f"--max-pack-size={cfg.max_pack_bytes}"],
                 scratch_env,
                 capture_output=True,
                 text=True,

@@ -9,7 +9,7 @@ import sys
 import tempfile
 import time
 from pathlib import Path
-from typing import NamedTuple
+from typing import Any, NamedTuple
 
 from .client import SeafileClient, SeafileAPIError
 from .config import RemoteConfig
@@ -35,6 +35,7 @@ from .git_util import (
     GitError,
     rev_parse,
     get_git_dir,
+    sweep_stale_scratch,
 )
 
 
@@ -144,7 +145,7 @@ class RemoteHelper:
     server_url: str | None = None
     library_name: str = ""
     repo_path: str = ""
-    repo_id: str = ""
+    _repo_id: str = ""
     path_defaulted: bool = False
     #: Set from ``option dry-run true``, which git sends for ``git push
     #: --dry-run``.
@@ -159,9 +160,26 @@ class RemoteHelper:
         self.repo_path = parsed_url.repo_path
         self.path_defaulted = parsed_url.path_defaulted
         self.client = client if client is not None else SeafileClient(server_url=self.server_url)
-        self.repo_id = self.client.get_repo_id(self.library_name)
         self.dry_run = False
         self._refs_cache: dict[str, str] = {}  # refname -> sha1
+
+    @property
+    def repo_id(self) -> str:
+        """The library's repo id, resolved on first use.
+
+        Not in ``__init__``: git asks ``capabilities`` before anything else, and
+        that answer needs no server.  Resolving here keeps a bare handshake --
+        which IDEs and prompt integrations trigger constantly -- off the
+        network.  A library that does not exist is still reported, at the first
+        operation that needs it.
+        """
+        if not self._repo_id:
+            self._repo_id = self.client.get_repo_id(self.library_name)
+        return self._repo_id
+
+    @repo_id.setter
+    def repo_id(self, value: str) -> None:
+        self._repo_id = value
 
     def _full_path(self, rel_path: str) -> str:
         """Combine repo_path with relative subpath."""
@@ -495,6 +513,7 @@ class RemoteHelper:
         self,
         lock: RemoteLock,
         pending_updates: list[_PendingUpdate],
+        max_pack_bytes: int | None = None,
     ) -> None:
         """Build one pack of everything the pending updates need and upload it.
 
@@ -520,7 +539,9 @@ class RemoteHelper:
             git_dir = None
         staging_dir = Path(tempfile.mkdtemp(prefix="grs-push-", dir=str(git_dir) if git_dir else None))
         try:
-            pack_sha, pack_data, idx_data = create_packfile(objects_to_push, staged_dir=staging_dir)
+            pack_sha, pack_data, idx_data = create_packfile(
+                objects_to_push, staged_dir=staging_dir, max_pack_bytes=max_pack_bytes
+            )
             lock.maybe_renew(20.0)
             if isinstance(pack_data, (bytes, bytearray)):
                 pack_size = len(pack_data)
@@ -531,21 +552,31 @@ class RemoteHelper:
                 pack_size = pack_path.stat().st_size if has_pack else 0
             if not has_pack:
                 return
-            size_kb = max(1, pack_size // 1024)
-            sys.stderr.write(f"Uploading packfile pack-{pack_sha[:8]} ({size_kb} KB)...\n")
-            sys.stderr.flush()
+            # More than one pack when the objects exceed the size cap: each is
+            # self-contained, so they upload independently.
+            uploads: list[tuple[str, Any, Any]] = [(pack_sha, pack_data, idx_data)]
+            if not isinstance(pack_data, (bytes, bytearray)):
+                for extra in sorted(staging_dir.glob("pack-*.pack")):
+                    extra_sha = extra.name[len("pack-"):-len(".pack")]
+                    if extra_sha != pack_sha:
+                        uploads.append((extra_sha, extra, extra.with_suffix(".idx")))
             pack_dir = self._full_path("objects/pack")
-            self.client.upload_file(
-                self.repo_id,
-                pack_dir,
-                f"pack-{pack_sha}.pack",
-                pack_data,
-                replace=True,
-                progress_callback=on_upload_progress,
-            )
-            self.client.upload_file(
-                self.repo_id, pack_dir, f"pack-{pack_sha}.idx", idx_data, replace=True
-            )
+            for up_sha, up_pack, up_idx in uploads:
+                up_size = len(up_pack) if isinstance(up_pack, (bytes, bytearray)) else Path(up_pack).stat().st_size
+                size_kb = max(1, up_size // 1024)
+                sys.stderr.write(f"Uploading packfile pack-{up_sha[:8]} ({size_kb} KB)...\n")
+                sys.stderr.flush()
+                self.client.upload_file(
+                    self.repo_id,
+                    pack_dir,
+                    f"pack-{up_sha}.pack",
+                    up_pack,
+                    replace=True,
+                    progress_callback=on_upload_progress,
+                )
+                self.client.upload_file(
+                    self.repo_id, pack_dir, f"pack-{up_sha}.idx", up_idx, replace=True
+                )
         finally:
             shutil.rmtree(staging_dir, ignore_errors=True)
 
@@ -656,7 +687,7 @@ class RemoteHelper:
         """
         try:
             pack_entries = self.client.list_dir(self.repo_id, self._full_path("objects/pack"))
-            freeze_at = session_config.gc_max_pack_mib * 1024 * 1024
+            freeze_at = session_config.freeze_bytes
             # Movable vs frozen is decided by size alone -- the same split
             # tail_merge makes under the lock, so this decision cannot drift
             # from what the merge itself will do.
@@ -678,7 +709,7 @@ class RemoteHelper:
                 sys.stderr.write(
                     f"\nNotice: Movable packs total {movable_bytes / (1024**3):.1f} GiB across "
                     f"{movable_count} packfile(s), above the automatic download budget "
-                    f"({session_config.gc_max_mib} MiB, 8 x seafile.gcmaxpackmib).\n"
+                    f"({session_config.gc_max_mib} MiB, 2 x seafile.gcmaxpackmib).\n"
                     f"Auto tail-merge was deferred: it downloads and re-uploads those packs.\n"
                     f"Run 'git-remote-seafile gc {self.raw_url}' manually when the time cost suits.\n\n"
                 )
@@ -692,7 +723,7 @@ class RemoteHelper:
                     f"totaling {movable_bytes / (1024**3):.1f} GiB.\n"
                     f"Tip: Run 'git-remote-seafile gc {self.raw_url}' to optimize remote storage,\n"
                     f"     or run 'git config seafile.autogc true' to enable automatic tail merge\n"
-                    f"     (automatic runs defer while the movable packs exceed 8 x seafile.gcmaxpackmib).\n\n"
+                    f"     (automatic runs defer while the movable packs exceed 2 x seafile.gcmaxpackmib).\n\n"
                 )
                 sys.stderr.flush()
         except Exception:
@@ -730,6 +761,7 @@ class RemoteHelper:
 
     def cmd_push(self, push_specs: list[str]) -> None:
         """Process push instructions."""
+        sweep_stale_scratch()
         # Pre-flight safety checks (Trap 1, Trap 2, root pollution, typos)
         try:
             self._preflight_safety(push_mode=True)
@@ -763,7 +795,7 @@ class RemoteHelper:
 
                 if pending:
                     try:
-                        self._upload_push_pack(lock, pending)
+                        self._upload_push_pack(lock, pending, session_config.max_pack_bytes)
                     except Exception as ex:
                         for upd in pending:
                             _proto_error(upd.dst, ex)
@@ -879,6 +911,7 @@ class RemoteHelper:
         against the *server*, but it writes a repository locally, and that is
         what the collision check is about.
         """
+        sweep_stale_scratch()
         # The fetch half of the protocol has no ``error <ref>`` line, so a block
         # here can only be signalled by exiting non-zero -- the same reasoning as
         # the failure path below.  The banner is already on stderr.
@@ -1012,9 +1045,13 @@ class RemoteHelper:
             if not line:
                 continue
 
-            if line == "capabilities":
+            # First token, not a prefix: "listing" or "pushed" is not "list" or
+            # "push", and a hand-driven session should hear about it.
+            command = line.split(None, 1)[0]
+
+            if command == "capabilities":
                 self.cmd_capabilities()
-            elif line.startswith("option"):
+            elif command == "option":
                 parts = line.split(None, 2)
                 opt = parts[1] if len(parts) > 1 else ""
                 val = parts[2] if len(parts) > 2 else ""
@@ -1040,10 +1077,10 @@ class RemoteHelper:
                 else:
                     sys.stdout.write("unsupported\n")
                 sys.stdout.flush()
-            elif line.startswith("list"):
+            elif command == "list":
                 for_push = "for-push" in line
                 self.cmd_list(for_push=for_push)
-            elif line.startswith("push"):
+            elif command == "push":
                 push_specs = [line.removeprefix("push ").strip()]
                 # Collect all remaining push lines until empty line
                 while True:
@@ -1053,7 +1090,7 @@ class RemoteHelper:
                     if next_line.startswith("push "):
                         push_specs.append(next_line.removeprefix("push ").strip())
                 self.cmd_push(push_specs)
-            elif line.startswith("fetch"):
+            elif command == "fetch":
                 fetch_specs = [line.removeprefix("fetch ").strip()]
                 while True:
                     next_line = sys.stdin.readline()

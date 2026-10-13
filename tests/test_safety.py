@@ -503,8 +503,12 @@ class TestSafetyGuardrails(unittest.TestCase):
         mock_resp.json.return_value = [{"id": "id-1", "name": "Documents"}]
         client.session.get = MagicMock(return_value=mock_resp)
 
+        # Construction is offline now (capabilities needs no server); the
+        # library is resolved by the first operation that needs it.
+        helper = RemoteHelper("test", "seafile://docment/myproject", client=client)
+        client.session.get.assert_not_called()
         with self.assertRaises(SeafileAPIError) as ctx:
-            RemoteHelper("test", "seafile://docment/myproject", client=client)
+            _ = helper.repo_id
 
         msg = str(ctx.exception)
         self.assertIn("Seafile library not found: 'docment'", msg)

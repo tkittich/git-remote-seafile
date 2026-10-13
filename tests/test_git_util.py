@@ -779,6 +779,76 @@ class SnapshotEnvScrubListTests(unittest.TestCase):
         self.assertEqual(tuple(module._REPO_ENV_VARS), tuple(_GIT_REPO_ENV_VARS))
 
 
+class SweepStaleScratchTests(unittest.TestCase):
+    def test_only_old_scratch_dirs_with_our_prefixes_are_removed(self):
+        import os
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+
+        from git_remote_seafile import git_util
+
+        with tempfile.TemporaryDirectory() as td:
+            git_dir = Path(td)
+            old = git_dir / "grs-push-old"
+            new = git_dir / "grs-fetch-new"
+            other = git_dir / "objects"
+            foreign = git_dir / "grs-other-old"
+            for d in (old, new, other, foreign):
+                d.mkdir()
+            (old / "pack").write_bytes(b"x")
+            stale = 1_000_000.0
+            for d in (old, other, foreign):
+                os.utime(d, (stale, stale))
+            with patch.object(git_util, "get_git_dir", return_value=git_dir):
+                removed = git_util.sweep_stale_scratch(max_age_seconds=3600)
+            self.assertEqual(removed, 1)
+            self.assertFalse(old.exists())
+            self.assertTrue(new.exists())
+            self.assertTrue(other.exists())
+            self.assertTrue(foreign.exists())
+
+    def test_outside_a_repository_it_is_a_silent_no_op(self):
+        from unittest.mock import patch
+
+        from git_remote_seafile import git_util
+
+        with patch.object(git_util, "get_git_dir", side_effect=git_util.GitError("not a repo")):
+            self.assertEqual(git_util.sweep_stale_scratch(), 0)
+
+
+class TrustedConfigPrecedenceTests(unittest.TestCase):
+    def _run(self, system, global_):
+        from unittest.mock import patch
+
+        from git_remote_seafile import git_util
+
+        values = {"--system": system, "--global": global_}
+        calls = []
+
+        def fake(args, *a, **k):
+            scope = args[1]
+            calls.append(scope)
+            v = values[scope]
+            return (v.encode() if v is not None else b""), b"", (0 if v is not None else 1)
+
+        with patch.object(git_util, "run_git", side_effect=fake):
+            return git_util.get_trusted_git_config_int("seafile.gittimeout", 300), calls
+
+    def test_global_overrides_system_as_git_itself_does(self):
+        value, calls = self._run(system="111", global_="222")
+        self.assertEqual(value, 222)
+        self.assertEqual(calls, ["--global"])
+
+    def test_system_is_the_fallback(self):
+        value, calls = self._run(system="111", global_=None)
+        self.assertEqual(value, 111)
+        self.assertEqual(calls, ["--global", "--system"])
+
+    def test_unset_everywhere_is_the_default(self):
+        self.assertEqual(self._run(None, None)[0], 300)
+
+
 if __name__ == "__main__":
     unittest.main()
 

@@ -19,10 +19,20 @@ from .git_util import (
 #: so nobody's configuration changes meaning without a word.
 RETIRED_KEYS = ("seafile.locksettle", "seafile.gcmaxmib")
 
-#: The automatic tail merge's download budget, as a multiple of the per-pack
-#: freeze threshold: 8 GiB at the default 1 GiB.  It used to be a second key
-#: (`seafile.gcmaxmib`) that had to be reasoned about together with the first.
-GC_BUDGET_FACTOR = 8
+#: The automatic tail merge's download budget, as a multiple of the largest
+#: pack the helper creates (`seafile.gcmaxpackmib`): 2 GiB at the default 1 GiB.
+#: Measured against a real server (soak, 2026-10-13): merging costs about
+#: 0.05 s per MiB end to end (64 MiB/s down, 32 MiB/s up), and the push lock is
+#: held throughout, so 2 GiB is roughly a minute and a half during which other
+#: pushers see "locked".  It used to be a second key (`seafile.gcmaxmib`) and
+#: 8 x -- a six-minute hold.
+GC_BUDGET_FACTOR = 2
+
+#: A pack at least this fraction of the size cap counts as full and is left
+#: where it stands by the tail merge.  The cap itself cannot be the freeze
+#: line: ``pack-objects --max-pack-size`` stops *before* exceeding the cap, so
+#: a full pack is always a little under it and would look movable forever.
+FREEZE_FRACTION = 0.5
 
 #: The settlement window in seconds.  Not a user setting: it is a race guard,
 #: and switching it off trades a correctness property for a second per push.
@@ -83,7 +93,21 @@ class RemoteConfig:
     # stays so a config can still be constructed directly (tests, embedded
     # callers) with an explicit value.
     gc_max_mib: int = GC_BUDGET_FACTOR * 1024
+    #: The largest pack the helper writes (``pack-objects --max-pack-size``),
+    #: for pushes, tail merges and full gc alike.  Seafile deployments cap a
+    #: single upload -- measured on one server: 1.25 GiB accepted, 2 GiB reset
+    #: -- and a pack that cannot be uploaded cannot be pushed or merged.
     gc_max_pack_mib: int = 1024
+
+    @property
+    def freeze_bytes(self) -> int:
+        """Packs at or above this size are left alone by the tail merge."""
+        return int(self.gc_max_pack_mib * 1024 * 1024 * FREEZE_FRACTION)
+
+    @property
+    def max_pack_bytes(self) -> int:
+        """The size cap handed to ``--max-pack-size``."""
+        return self.gc_max_pack_mib * 1024 * 1024
 
     @classmethod
     def load(cls) -> RemoteConfig:

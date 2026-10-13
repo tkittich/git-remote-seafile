@@ -165,6 +165,43 @@ class TestIterRefs(unittest.TestCase):
         self.assertFalse(is_valid_ref_name("refs/heads/trailing."))
 
 
+class RefNameDifferentialTests(unittest.TestCase):
+    """`is_valid_ref_name` against `git check-ref-format`, the specification.
+
+    The hand-written rules in refs.py are a reimplementation of a git command;
+    this runs both over every combination of awkward name fragments and demands
+    they agree.  It found the trailing-slash and one-level cases.
+    """
+
+    ATOMS = [
+        "a", "b.c", "", ".", " ", "a b", "a~1", "a^", "a:", "a?", "a*", "a[", "a\\",
+        "a..b", "a@{b", "@", "a@b", ".a", "a.", "a.lock", "a/", "/a", "", "a	b",
+        "-a", "{", "a{b", "@{", "b.lock",
+    ]
+
+    def test_agrees_with_git_check_ref_format(self):
+        import itertools
+        import shutil
+        import subprocess
+
+        if shutil.which("git") is None:
+            self.skipTest("git not available")
+        candidates = set()
+        for atom in self.ATOMS:
+            candidates.add("refs/heads/" + atom)
+            candidates.add(atom)
+        for a, b in itertools.product(self.ATOMS[:14], repeat=2):  # pairs of the first 14: keep the git calls ~300
+            candidates.add(f"refs/heads/{a}/{b}")
+        disagreements = []
+        for name in sorted(candidates):
+            git_says = subprocess.run(
+                ["git", "check-ref-format", name], capture_output=True
+            ).returncode == 0
+            if git_says != is_valid_ref_name(name):
+                disagreements.append((name, git_says))
+        self.assertEqual(disagreements, [], "is_valid_ref_name differs from git check-ref-format")
+
+
 if __name__ == "__main__":
     unittest.main()
 

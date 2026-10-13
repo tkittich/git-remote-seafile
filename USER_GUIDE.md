@@ -169,7 +169,7 @@ Trap 1 therefore blocks clone and fetch as well. Trap 2 stays push-only **by des
 > The guard relies on `GIT_DIR`, which Git sets for every helper it spawns; only exotic invocations that suppress it can slip past, and the advice stands regardless: never keep working repositories inside synced libraries.
 
 #### 🛡️ Library Root Pollution Protection
-- A remote destination that resolves to the library root itself is refused with `Cannot use the library root '/' as a Git remote destination.` — bare objects and refs at the top level would clutter the library.
+- A URL that names no path means `git-repo`, never the library root, so a push cannot scatter bare objects and refs across the top level of a library. (As a backstop the helper also refuses a destination that resolves to the root, with `Cannot use the library root '/' as a Git remote destination.`; no URL you can type reaches it.)
 - Note what *is* allowed: a URL with no path is not the root. `seafile://Documents` and `seafile://Documents/` both default to the `git-repo` subfolder (see §7), which is a normal destination. No URL reaches the bare root: a path that normalises away, such as `seafile://Documents/%2F`, falls back to `git-repo` rather than to `/`.
 
 #### 🛡️ Library Typo Detection & Suggestions
@@ -188,121 +188,13 @@ In automated CI runners or headless servers without a local desktop client, safe
 
 ---
 
-## 3. In-Depth Comparison: `git-remote-seafile` vs. "Move Code Out + Git Remotes"
+## 3. Comparison With "Move Code Out + Git Remotes"
 
-When moving code out of synced cloud folders, developers face an architectural choice:
-1. **Move Code Out + Traditional Git Remotes** (Push to GitHub, GitLab, Gitea, Forgejo)
-2. **Move Code Out + `git-remote-seafile`** (Push to private Seafile server via this helper)
+How this helper compares with pushing to GitHub/GitLab/Gitea, and a decision guide for which to use, is in [ALTERNATIVES.md](ALTERNATIVES.md). Short version: use a Git forge for collaboration features; use this helper when the code must stay on infrastructure you control and the Seafile server is already where your data lives. The two combine (dual remote, §8.5).
 
-Both approaches eliminate desktop sync thrashing and lock contention. Below is a detailed technical comparison of their trade-offs:
+## 4. Alternative Workarounds and Why They Fail
 
-### 3.1 Detailed Feature & Architectural Comparison
-
-| Dimension | Move Code Out + Git Forge (GitHub / Gitea) | Move Code Out + `git-remote-seafile` |
-| :--- | :--- | :--- |
-| **New Infrastructure** | **High / Moderate.** Requires creating an external SaaS account (GitHub) or provisioning, securing, and maintaining a standalone server (Gitea/GitLab, database, SSH daemon, reverse proxy, backups). | **Zero.** Reuses your existing Seafile server, user authentication, and storage backend with no new services to manage. |
-| **Data Sovereignty & Privacy** | **Conditional.** SaaS keeps code on third-party servers subject to foreign jurisdiction and AI scrapers. Self-hosted forges require ongoing CVE patching. | **100% Private & Self-Hosted.** Commits and files stay within your Seafile instance. Transfers secured via TLS/HTTPS (client-side password-encrypted libraries are not supported over REST API). |
-| **Storage Limits & Economics** | **Restricted / Costly.** GitHub enforces soft 1–2 GB repo limits; Git LFS costs $5/mo per 50 GB. Self-hosted forges consume separate disk pools. | **Unrestricted.** Utilizes your existing Seafile storage quota (often multi-terabyte). Native Git LFS custom transfer agent with zero extra fees. |
-| **Code Review & Collaboration** | **Full Web Forge UI.** Pull requests, inline comments, code search, issue tracking, and automated CI/CD runners (GitHub Actions, GitLab CI). | **Storage & Transport Layer Only.** No built-in web code review UI. Focuses purely on reliable Git transport, distributed locking, and ref sync. |
-| **Transport Protocol** | Git Smart HTTP (`git-upload-pack`, `git-receive-pack`) or SSH protocol. Server negotiates deltas dynamically. | Client-side packfile packaging over Seafile Web API v2 (`/api2/repos/.../upload-link/`). Packfiles stored as `.pack` objects. |
-| **Concurrency & Safety** | Handled natively by server Git process with atomic ref updates. | Enforced by fast-forward checks and cooperative distributed lease locking (`.git-lock.d/` ticket queue with auto-expiry). |
-| **Client-Side Daemon Churn** | Zero. Working tree is outside sync folders. | Zero. Working tree is outside sync folders. |
-
-### 3.2 Decision Guide: Which Should You Use?
-
-#### Choose Traditional Git Forges (GitHub, GitLab, Gitea) when:
-- You work with a **team that requires Pull Requests, inline code review, and discussion threads**.
-- You need integrated **CI/CD pipelines** (e.g. GitHub Actions, GitLab CI) triggered automatically on every push.
-- You are developing **open-source software** where public visibility, forks, and issues are essential.
-- You already operate a dedicated, fully-maintained Gitea or GitLab instance with dedicated administration.
-
-#### Choose `git-remote-seafile` when:
-- You already run Seafile and want **instant, zero-maintenance Git remotes** without deploying or maintaining a separate Git forge stack.
-- You work on **private personal projects, research, proprietary code, or solitary workflows** across multiple personal computers (desktop, laptop, workstation).
-- You manage **large datasets, ML model weights, game assets, or video files (via Git LFS)** that would exceed GitHub's expensive storage and bandwidth quotas.
-- You require an **offsite, private disaster recovery backup** for existing repositories.
-
-### 3.3 The Best of Both Worlds: Dual-Remote Setup
-
-You are not locked into one solution. A highly effective workflow is to push to GitHub for collaboration/CI while maintaining an automated private mirror on Seafile:
-
-```bash
-# Configure origin with multiple push URLs:
-git remote set-url --add --push origin git@github.com:myorg/myproject.git
-git remote set-url --add --push origin seafile://code/myproject
-
-# Now a single push command updates both GitHub and your private Seafile server:
-git push origin main
-```
-
----
-
-## 4. Comprehensive Analysis of Alternative Workarounds & Why They Fail
-
-Before developing `git-remote-seafile`, extensive real-world testing and diagnostic auditing were conducted on various workarounds. Below is the technical post-mortem of why each alternative fails:
-
-### 4.1 Workaround 1: Live Working Tree in Synced Seafile Folder
-- **How it works**: Storing an active Git repository directly inside a synced Seafile directory.
-- **Success Case**: Works only as an offline single-machine backup if no other device touches the library and no rapid Git operations take place.
-- **Why it Fails (Real-World Evidence)**:
-  - **Re-commit Storms**: A real audit of a live Seafile installation (`9.0.21`) measured **1,606 full re-commit cycles in a single day** on a code library—approximately one full library re-index every 10 seconds.
-  - **Lockfile Deadlock**: Ephemeral locks (`.git/index.lock`, `HEAD.lock`) are uploaded before Git can release them, downloading onto secondary machines and freezing Git operations with `fatal: Unable to create '.git/index.lock': File exists`.
-  - **The 1,749-File Conflict Storm**: On 2026-10-01, branch divergence caused Seafile to create **1,749 `(SFConflict ...)` files**. Because conflict copies preserve the original file extension (e.g. `test_suite (SFConflict ...).py`), test runners like `pytest` immediately collected the duplicate files, causing catastrophic test pollution and broken builds.
-
-### 4.2 Workaround 2: Pausing Sync During Development (`Disable auto sync` / `seaf-cli stop`)
-- **How it works**: Developer pauses sync on the library before coding, commits changes, and unpauses sync when finished.
-- **Success Case**: Eliminates disk churn on the local machine *during* active editing.
-- **Why it Fails**:
-  - **Sync pause is strictly local**: Pausing auto-sync on Machine A does nothing to Machine B. Machine B remains active and continues to modify or sync files.
-  - **Unpause shockwaves**: When Machine A unpauses after multiple commits or branch switches, hundreds of file modifications hit the Seafile server simultaneously. If Machine B has touched anything, Seafile's conflict resolution triggers massive duplicate copies because Seafile cannot perform Git 3-way merges.
-  - **Human error**: Developers inevitably forget to pause before running `git checkout` or `npm install`, or forget to unpause, leaving work unbacked up.
-
-### 4.3 Workaround 3: Seafile Ignore Rules (`seafile-ignore.txt`)
-- **How it works**: Placing `.git/` or `code/` patterns in `seafile-ignore.txt`.
-- **Success Case**: Effectively ignores non-synced directories like `node_modules/` or build artifacts *if configured prior to the library's initial creation*.
-- **Why it Fails**:
-  1. **The "Already Synced" Rule**: As explicitly documented in the official Seafile manual, `seafile-ignore.txt` only affects files that have **never been synced**. If `.git/` was ever uploaded, adding it to the ignore file is completely ignored. The only fix is to delete and re-sync the entire library.
-  2. **Root Placement Limitation**: Ignore files **must** sit in the library root (e.g. `Documents/seafile-ignore.txt`). Placing ignore files in subfolders (e.g. `Documents/code/myrepo/seafile-ignore.txt`) is silently ignored by the client daemon.
-  3. **Dot-Prefixed Folder Bug**: Seafile client has a long-standing parser issue with dot-prefixed directories (`haiwen/seafile#1137`), frequently failing to match patterns like `.git/` or `*/.git/*`.
-  4. **VCS Amputation**: If `.git/` is ignored while source code is synced, secondary machines receive source files without any Git repository! Developers on secondary machines lose all branch history, commit capabilities, and version control.
-
-### 4.4 Workaround 4: Generic Cloud Sync (Dropbox, OneDrive, Google Drive, Syncthing)
-- **How it works**: Storing active repositories inside Dropbox, OneDrive, Google Drive, or Syncthing.
-- **Success Case**: Basic single-file text document backups.
-- **Why it Fails**:
-  - **Broken Transaction Atomicity**: Git requires multi-file atomicity (updating index, writing packfiles, updating ref pointers in a strict order). Cloud sync engines sync files asynchronously in arbitrary order, exposing inconsistent repository states to other machines.
-  - **Reparse Points & Files-On-Demand**: Features like OneDrive "Files On-Demand" replace idle Git objects with offline NTFS reparse points/placeholders. When Git executes `git status` or `git rev-parse`, accessing dehydrated objects fails with `ERROR_CANT_ACCESS_FILE` or severe command latency.
-  - **Corrupted Loose Objects**: Conflict files generated in `.git/objects/` or `.git/refs/` cause fatal Git errors: `fatal: bad object HEAD` or `error: object file ... is empty`.
-
-### 4.5 Workaround 5: Git Bundles in Synced Folders (`git bundle create`)
-- **How it works**: Working repository is kept outside cloud storage. Developer periodically runs `git bundle create myproject.bundle --all` and saves the single `.bundle` file into a Seafile synced folder.
-- **Success Case**: Fully safe from lockfile contention and `.git/` file churn because a `.bundle` is a single, self-contained binary archive.
-- **Why it Fails for Daily Development**:
-  - Terrible ergonomics: Requires manual bundling and unbundling commands for every single push or pull.
-  - No standard Git commands: You cannot run `git push`, `git pull`, or `git fetch`.
-  - No remote branch tracking, conflict warnings, or automated fast-forward validation.
-
-### 4.6 Workaround 6: Bare Git Repositories in Synced Folders (`git init --bare`)
-- **How it works**: Working tree lives outside Seafile. A bare repository (`myproject.git`) is placed inside a synced Seafile folder and accessed via local file URLs (`git push file:///C:/path/to/synced-folder/git-bare/myproject.git`).
-- **Success Case**: Isolates working tree churn from the sync client.
-- **Why it Fails**:
-  - Bare repositories still contain hundreds of loose object files and reference files (`refs/heads/*`).
-  - When two machines push to their respective local synced copies of the bare repo, Seafile syncs loose objects out of order and creates `(SFConflict ...)` copies on `refs/heads/main`, corrupting branch pointers.
-
-### 4.7 Summary Matrix of All Evaluated Solutions
-
-| Solution | Working Tree Churn | Lock Safety | Multi-Machine Merge | Ergonomics | Verdict |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| **Live Sync in Seafile** | ❌ 1,500+ cycles/day | ❌ Freezes `.git/*.lock` | ❌ 1,749 SFConflict files | Normal Git CLI | ❌ Unusable |
-| **Sync Pause / Resume** | ⚠️ High on resume | ❌ Collisions on unpause | ❌ Destructive conflicts | Manual toggle | ❌ Unviable |
-| **Seafile Ignore Rules** | ❌ Buggy on dot-dirs | ❌ Doesn't fix synced dirs | ❌ Desyncs `.git/` from code | Config file | ❌ Unviable |
-| **OneDrive / Dropbox** | ❌ File placeholder lag | ❌ Corrupts refs & index | ❌ Broken commit graphs | Normal Git CLI | ❌ Unusable |
-| **Git Bundles in Sync** | ✅ Zero | ✅ Safe single file | ⚠️ Manual unpack | ❌ Manual bundle cmds | ⚠️ Archive only |
-| **Bare Repo in Sync** | ⚠️ Moderate churn | ❌ Ref file conflicts | ❌ Async ref collisions | Standard Git CLI | ❌ Fragile |
-| **Move Code + Git Forge** | ✅ Zero | ✅ Server-side locks | ✅ Git 3-way merge | Full Web UI + CLI | ✅ Recommended (Teams/PRs) |
-| **Move Code + git-remote-seafile** | ✅ Zero | ✅ Distributed lease lock | ✅ Git 3-way merge | Native Git CLI | ✅ Recommended (Private/Self-hosted) |
-
----
+The six alternatives people reach for first — a live working tree in a synced folder, pausing sync, `seafile-ignore.txt`, generic cloud sync, bundles in synced folders and bare repositories in synced folders — are analysed in [ALTERNATIVES.md](ALTERNATIVES.md). None of them removes the underlying conflict between a sync daemon and Git's file churn (§2); this helper does by keeping the working tree out of the synced folder.
 
 ## 5. Installation
 
@@ -438,7 +330,7 @@ Every subcommand follows one convention, so scripts can rely on it:
 | `seafile.gittimeout` | `SEAFILE_GIT_TIMEOUT` | `300` | Seconds one git subprocess may run before it is killed. Raise it when a multi-GB push, fetch or `gc` times out (system/global scope or environment only). |
 | `seafile.autogc` | — | `false` | Automatically tail-merge the remote's small packfiles after a push, once their threshold is reached. |
 | `seafile.gcthreshold` | — | `20` | Count of *small* packfiles at which the `gc` tip appears (or auto-GC triggers). Large packs never count toward it. |
-| `seafile.gcmaxpackmib` | — | `1024` | Per-pack freeze threshold in MiB: packs at or above it are left where they stand and never moved by tail merge. The automatic run's download budget is 8 × this (8 GiB at the default); above it the run defers to a manual `gc`. |
+| `seafile.gcmaxpackmib` | — | `1024` | The largest pack the helper writes, in MiB (`pack-objects --max-pack-size`, for pushes, tail merges and full `gc`): a bigger push arrives as several packs. Packs at least half this size count as full and are left where they stand by tail merge. The automatic run's download budget is 2 × this (2 GiB at the default); above it the run defers to a manual `gc`. Keep it under your server's single-upload limit — one tested server accepted 1.75 GiB and reset a 2 GiB upload. |
 | `seafile.forcefilehost` | `SEAFILE_FORCE_FILE_HOST` | `false` | Force download/upload links onto your server's **host** (a wrong scheme on the same host is always corrected). |
 | `seafile.locktimeout` | — | `15` | Maximum seconds to wait when acquiring the remote lock during push. |
 | `seafile.locklease` | — | `60` | Duration in seconds before an inactive lock lease is considered expired. |
@@ -458,7 +350,7 @@ git config --global seafile.gittimeout 1800
 
 > Values that would defeat the mechanism outright are refused with a stderr warning and the documented default is used instead: a negative `seafile.locktimeout`, a zero or negative `seafile.locklease` (which would expire every lock immediately), a `seafile.gcthreshold` below 1 (which would compact on every push), a `seafile.gcmaxpackmib` below 1 (which would make even the large consolidated packs movable), and a `seafile.gittimeout` that is not a positive number of seconds (which would kill every git command outright).
 >
-> **Retired keys.** `seafile.locksettle` (the settlement window is fixed at one second — it is a race guard, and the only thing switching it off bought was a second per push) and `seafile.gcmaxmib` (the download budget is now 8 × `seafile.gcmaxpackmib`) are no longer settings. A value still present in your git config is reported once per push and ignored.
+> **Retired keys.** `seafile.locksettle` (the settlement window is fixed at one second — it is a race guard, and the only thing switching it off bought was a second per push) and `seafile.gcmaxmib` (the download budget is now 2 × `seafile.gcmaxpackmib`) are no longer settings. A value still present in your git config is reported once per push and ignored.
 
 **`seafile.skipsafetychecks` and `seafile.gittimeout` are read from the trusted scope only** — the environment, or the system and global git config. A repository shipping either key in its own `.git/config` is ignored, because a repository that could disarm a guardrail or raise a safety ceiling is a repository that has taken away the protection those settings exist to provide. See [RUNBOOK.md](RUNBOOK.md) §7 for what the timeout bounds and when to raise it.
 
@@ -658,7 +550,7 @@ git-remote-seafile gc seafile://code/myproject
 - **Scratch space**: compaction downloads the remote's packfiles, repacks them, and re-uploads the result, all under the system temporary directory. Point `TMPDIR` (Linux/macOS) or `TEMP`/`TMP` (Windows) at a volume with room for roughly 2–3× the repository's packed size before compacting a large library; otherwise the run fails late, after it has already taken the lock.
 
 ### 10.2 Automatic Detection & Notification (Default)
-By default, whenever you push, `git-remote-seafile` checks the number of *small* remote packfiles — packs below `seafile.gcmaxpackmib` (default 1 GiB). Large packs are frozen and never counted:
+By default, whenever you push, `git-remote-seafile` checks the number of *small* remote packfiles — packs below half of `seafile.gcmaxpackmib` (default 1 GiB, so below 512 MiB). Larger packs are frozen and never counted:
 - If the small-pack count reaches **20** (or custom threshold), it prints a non-intrusive tip to your terminal:
   ```text
   Notice: Remote repository has 22 small packfiles (threshold: 20), totaling 0.1 GiB.
@@ -678,7 +570,7 @@ git config seafile.autogc true
 git config seafile.gcthreshold 25
 ```
 
-Unlike a full compaction, an automatic run never touches large packs: every pack at or above `seafile.gcmaxpackmib` (default 1 GiB) is frozen where it stands, and only the smaller ones are downloaded, merged into one self-contained pack, re-uploaded and removed. Cost per cycle therefore tracks the small tail — a few megabytes in a typical repository — not the size of your history. If even the movable packs total more than 8 × `seafile.gcmaxpackmib` (8 GiB at the default), the run is deferred with a notice so a push never round-trips that much; manual `gc` (§10.1) remains available for those cases and is the only tier that re-deltas across the entire history.
+Unlike a full compaction, an automatic run never touches large packs: every pack at or above half of `seafile.gcmaxpackmib` (512 MiB at the default) is frozen where it stands, and only the smaller ones are downloaded, merged into self-contained packs of at most `seafile.gcmaxpackmib` each, re-uploaded and removed. Cost per cycle therefore tracks the small tail — a few megabytes in a typical repository — not the size of your history. If even the movable packs total more than 2 × `seafile.gcmaxpackmib` (2 GiB at the default), the run is deferred with a notice so a push never holds the lock for minutes round-tripping that much (measured: about 0.05 s per MiB, so 2 GiB is roughly a minute and a half); manual `gc` (§10.1) remains available for those cases and is the only tier that re-deltas across the entire history.
 
 ### 10.4 Multiple Commits, Rollbacks, Branching & Performance Impact
 
@@ -702,7 +594,7 @@ Understanding how `git-remote-seafile` handles complex Git workflows and remote 
 | Mode | Trigger | Push Latency | Concurrency Behavior | Best Use Case |
 | :--- | :--- | :--- | :--- | :--- |
 | **Notification Mode (Default)** | Remote reaches 20 packfiles | **No added delay** | Terminal tip displayed; push never pauses | Daily development, interactive CLI usage |
-| **Opt-in Auto-GC (`autogc true`)** | 20 *small* packfiles accumulate | **A bounded tail merge, inline** — only packs below `seafile.gcmaxpackmib` move, so duration tracks the small tail rather than the repository; deferred with a notice if that tail exceeds 8 × `seafile.gcmaxpackmib` | Repositories locked via `.git-lock.d/` ticket queue during repack | Fully automated maintenance, solo developers |
+| **Opt-in Auto-GC (`autogc true`)** | 20 *small* packfiles accumulate | **A bounded tail merge, inline** — only packs below half of `seafile.gcmaxpackmib` move, so duration tracks the small tail rather than the repository; deferred with a notice if that tail exceeds 2 × `seafile.gcmaxpackmib` | Repositories locked via `.git-lock.d/` ticket queue during repack | Fully automated maintenance, solo developers |
 
 > [!TIP]
 > **Recommendation**: Leave `seafile.autogc` disabled (the default) so your everyday push stays interactive — no compaction pause on top of the lock's settlement window. Run compaction manually (`git-remote-seafile gc seafile://...`) or as part of a scheduled CI job when convenient.
@@ -871,7 +763,6 @@ The table below covers the common failures. For a repository that is unreadable,
 | `fatal: remote helper 'seafile' not found` | Helper binary not in `PATH` | Ensure `git-remote-seafile` or `git-remote-seafile.bat` is in a folder listed in your system `PATH`. |
 | `DANGEROUS PATH COLLISION DETECTED (Trap 1)` | Local working tree is inside synced library at identical remote path | Change remote to an unsynced library (`seafile://code/repo`) or use an ignored subfolder (e.g. `seafile://Documents/seafile-git/repo`). |
 | `UNIGNORED REMOTE PATH IN SYNCED LIBRARY (Trap 2)` | Remote destination in synced library is not in `seafile-ignore.txt` | Add the target subfolder (e.g. `seafile-git/`) to `seafile-ignore.txt` at the synced library root. |
-| `Cannot use the library root '/'` | Remote URL points to library root without project subfolder | Specify a subfolder name, e.g. `seafile://library/myproject` or `seafile://library/seafile-git/myproject`. |
 | `Seafile library not found: 'XYZ'` | Library not yet created, name typo, or permissions | Create the library via the Seafile Web UI, or verify spelling. The helper will suggest close matches. |
 | `HTTP 401 Unauthorized` | Invalid or expired token | Run `git-remote-seafile check-auth` and verify credentials in `~/.git-seafile.json`. |
 | `Could not find Seafile credentials for '…'` | `SEAFILE_TOKEN` was set without `SEAFILE_SERVER`, so it was ignored | Set `SEAFILE_SERVER` alongside the token. A token is only sent to the server it names — see [SECURITY.md](SECURITY.md). |
@@ -1108,5 +999,4 @@ The full design — the alternatives that do not work, the nested-repository ana
 
 ## 17. AI Disclosure & Authorship
 
-This project—including its source code, test suites, architecture specifications, and documentation—was authored primarily with generative AI assistance from multiple AI systems, in collaboration with human architectural design, real-world forensic diagnostics, and verification by [@tkittich](https://github.com/tkittich). All code and protocol implementations are fully open source, tested on Windows (with CI workflows configured for cross-platform validation), and licensed under the Apache License 2.0.
-
+See [AI Disclosure & Authorship](README.md#ai-disclosure--authorship) in the README.

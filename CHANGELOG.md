@@ -10,7 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Everything here follows from the 2026-10-12 review (`REVIEW.sonnet.md`) and the decisions taken on it.
 The theme is **less machinery, and the machinery that remains fails loudly**.
 
-### Added- **`gc --tail`** runs the automatic tail-merge tier on demand, so "what does autogc do" is a command you can run, test and schedule rather than a trigger you have to provoke.
+### Added
+- **`gc --tail`** runs the automatic tail-merge tier on demand, so "what does autogc do" is a command you can run, test and schedule rather than a trigger you have to provoke.
 
 - **`git-remote-seafile doctor [<seafile://url>]`**: login, how the URL is interpreted (server / library / path), safety guards and a write-and-delete probe in one run, stopping at the first failure and printing the next command.
 - **An opt-in real-server test tier** (`tests/test_realserver.py`, `SEAFILE_TEST_LIBRARY=<scratch library>`): API semantics, the SHA-1/SHA-256 round trip, concurrent pushers through the lock, and the conflict-copy observation. First run against Seafile CE 13.0.28; see DESIGN §4.3.1.
@@ -21,7 +22,8 @@ The theme is **less machinery, and the machinery that remains fails loudly**.
 - **`tools/build_snapshot.py` and `tools/_snapshot/`.** The snapshot tool's source is now cohesive parts, concatenated into the single `tools/seafile_snapshot.py` users run; `--check` (and `tests/test_snapshot_build.py`) fail when the generated file drifts. See CONTRIBUTING.
 - **`seafile.gittimeout` / `SEAFILE_GIT_TIMEOUT`**, readable only from the system/global git config or the environment, raises the per-command git ceiling for large repositories. `SEAFILE_SNAPSHOT_STALL_LIMIT` does the same for the snapshot tool's no-progress limit.
 
-### Changed- **One output and exit-code convention for every subcommand**: results and reports on stdout, usage errors and failures on stderr; exit 0 done, 1 failed or "no", 2 usage error. Usage errors used to print to stdout and exit 1. `cli.main` is now a dispatch table of one function per command.
+### Changed
+- **One output and exit-code convention for every subcommand**: results and reports on stdout, usage errors and failures on stderr; exit 0 done, 1 failed or "no", 2 usage error. Usage errors used to print to stdout and exit 1. `cli.main` is now a dispatch table of one function per command.
 
 - **A URL with no path says where it points.** The first push of `seafile://<library>` into an empty location prints that the repository lives at `/git-repo` and how to write that explicitly.
 - **The "run gc / enable autogc" tip is shown at most once a day per remote** (state in `~/.git-seafile-notices.json`), so it is not filtered out by being on every push.
@@ -36,6 +38,17 @@ The theme is **less machinery, and the machinery that remains fails loudly**.
 - **`RemoteHelper` carries no test-shaped defaults**: `dry_run` is set in `__init__`, `cmd_list` no longer `hasattr`-checks `_refs_cache`, and `RemoteLock` reads its own attributes directly. Tests build helpers with `tests/_helpers.make_helper()`.
 
 ### Fixed
+- **No pack the helper writes exceeds `seafile.gcmaxpackmib` (default 1 GiB).** A soak against a real server found that a single upload of 2 GiB is reset (1.75 GiB is accepted), which made a ~4 GiB tail merge fail at the upload and would equally fail any push of a 20 GB raw-data tree as one pack. Pushes, tail merges and full `gc` now pass `--max-pack-size`, so a large push arrives as several self-contained packs. A single object larger than the cap still cannot be split. The failure was safe -- nothing was deleted -- but the work was lost.
+- **Tail-merge sizing follows from that cap**: packs at least half the cap count as full and are frozen (a full pack is always a little *under* the cap, so the cap itself could never be the freeze line); the automatic budget is 2 x the cap instead of 8 x, because the merge holds the push lock for about 0.05 s per MiB (measured: 64 MiB/s down, 32 MiB/s up) and 8 GiB was a six-minute hold during which other pushers see "locked".
+- **`gc --tail` ignores the download budget** (the budget keeps an *automatic* merge short; someone who ran it by hand accepted the time).
+- **Encrypted libraries are refused with a clear message** instead of failing later with a bare status code (`get_repo_id` reads the listing's `encrypted` flag). SNAPSHOT.md no longer recommends one.
+- **`is_valid_ref_name` now agrees with `git check-ref-format`** on trailing and leading slashes and one-level names, found by a new differential test that runs both over ~300 awkward names.
+- **Snapshot tool:** `is_ancestor` no longer reads a git failure as "diverged" (which steered users at `--reset-to-remote`); settings are remembered only after a run succeeds, so a typo'd `--remote` does not stick; `--code-remote` is pushed after the vault's own checks rather than before; `--restore` without `--branch` uses the remote's only branch (or lists several) instead of insisting on `snapshot`.
+- **Trusted config scopes follow git's precedence** (global before system).
+- `lock-status` no longer prints "Reclaiming stale lock" while only inspecting.
+- LFS progress is throttled (1 % or 250 ms) instead of one JSON line per 64 KiB chunk.
+- Scratch directories (`grs-push-*`, `grs-fetch-*`, `grs-staging-*`) left under `.git` by a crashed run are swept after 24 h.
+- The helper resolves the library only when first needed, so `capabilities` no longer touches the network; protocol commands are matched on the first token, not a prefix.
 - **Manual `gc` on a SHA-256 remote failed once the tail merge had written its packs.** The format detector measured what remained after stripping `pack-`, so `pack-tail-<64 hex>` read as a 69-character hash and the scratch repository came out SHA-1. The detector now reads the hash from the *end* of the name, in one function both paths use.
 - **A fetch could fail after a local `gc`** (`did not send all necessary objects`): the "already fetched" hint is now discarded when the requested tips are not actually present.
 - **`gc` no longer passes a fence it cannot check.** The `hasattr(lock, "verify_ownership")` fallbacks, including the final `return True`, are gone.

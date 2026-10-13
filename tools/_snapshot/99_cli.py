@@ -430,6 +430,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.branch or DEFAULT_BRANCH,
                 args.ref,
                 verify=args.verify,
+                branch_explicit=bool(args.branch),
             )
             return 0
 
@@ -445,29 +446,6 @@ def main(argv: list[str] | None = None) -> int:
 
         if args.dry_run and remote:
             print(f"dry run -- would push the vault to {remote}")
-
-        if code_remote:
-            if args.dry_run:
-                print(
-                    f"dry run -- would push the source repo to "
-                    f"'{code_remote}'"
-                )
-            else:
-                print(f"pushing source repo to '{code_remote}' ...")
-                proc = _run(
-                    ["git", "-C", str(source), "push", code_remote],
-                    text=True,
-                    encoding="utf-8",
-                    errors="replace",
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                )
-                sys.stdout.write(proc.stdout)
-                if proc.returncode != 0:
-                    raise SnapshotError(
-                        f"pushing the source repo failed (rc={proc.returncode}); "
-                        f"snapshot aborted before touching the vault"
-                    )
 
         git_dir = ensure_vault(vault, branch)
         # One read of the vault's config serves identity, byte-exactness and
@@ -495,18 +473,6 @@ def main(argv: list[str] | None = None) -> int:
                             write_identity=False)
             if not args.no_object_compression:
                 choose_profile(vault, git_dir, source, exclude, vault_config, write=False)
-        # Remember *after* the vault exists, so the first run leaves the next one
-        # with nothing to type.  Not on a dry run: a preview must not mutate.
-        if not args.dry_run:
-            remember_settings(
-                vault,
-                source,
-                remote=_UNSET if args.no_push else remote,
-                code_remote=_UNSET if args.no_push else code_remote,
-                exclude=exclude,
-                branch=branch,
-                vault_config=vault_config,
-            )
         # The hostname is in the default message because a shared vault is a
         # single chain of snapshots from several machines, and the commit author
         # is the same person on all of them -- so without this, `git log` cannot
@@ -519,6 +485,33 @@ def main(argv: list[str] | None = None) -> int:
 
         remote_tip: str | None = None
         with VaultLock(git_dir):
+            # The code push happens here -- identity is settled and no other
+            # run holds the vault -- rather than first thing: every check that
+            # can refuse this run has already had its say, so a refused run no
+            # longer leaves the code pushed and the run reported failed.
+            if code_remote:
+                if args.dry_run:
+                    print(
+                        f"dry run -- would push the source repo to "
+                        f"'{code_remote}'"
+                    )
+                else:
+                    print(f"pushing source repo to '{code_remote}' ...")
+                    proc = _run(
+                        ["git", "-C", str(source), "push", code_remote],
+                        text=True,
+                        encoding="utf-8",
+                        errors="replace",
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.STDOUT,
+                    )
+                    sys.stdout.write(proc.stdout)
+                    if proc.returncode != 0:
+                        raise SnapshotError(
+                            f"pushing the source repo failed (rc={proc.returncode}); "
+                            f"snapshot aborted before the vault was changed"
+                        )
+
             # Decide the base *after* consulting the remote, so a second machine
             # appends to the shared chain rather than building an unrelated one.
             if remote:
@@ -640,6 +633,20 @@ def main(argv: list[str] | None = None) -> int:
                     base,
                     message,
                 )
+
+        # Remember only a run that got all the way through, so the first
+        # successful run leaves the next one with nothing to type -- and a typo'd
+        # --remote that failed to push does not become the vault's remote for
+        # every scheduled run after it.  A preview never gets here.
+        remember_settings(
+            vault,
+            source,
+            remote=_UNSET if args.no_push else remote,
+            code_remote=_UNSET if args.no_push else code_remote,
+            exclude=exclude,
+            branch=branch,
+            vault_config=vault_config,
+        )
         return 0
 
     except SnapshotError as exc:

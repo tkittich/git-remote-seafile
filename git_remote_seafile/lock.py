@@ -835,7 +835,7 @@ class RemoteLock:
             return {"locked": None, "error": str(ex)}
         if tickets:
             tickets.sort(key=_queue_key)
-            active = [t for t in tickets if self._is_lock_active(t, now)]
+            active = [t for t in tickets if self._is_lock_active(t, now, quiet=True)]
             stale = not active
             winner = active[0] if active else tickets[0]
             try:
