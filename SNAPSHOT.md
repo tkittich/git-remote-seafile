@@ -860,7 +860,18 @@ interface or syncs it. Disk need is the payload once, not twice.
   So the physical cost of a snapshot is only the blocks that differ from
   every other retained version, while quota counts it whole; and deleting
   a snapshot to reclaim disk is a two-stage affair outside this tool's
-  control.
+  control;
+- **history growth is one entry per operation**: a library at 3,887 entries
+  gained exactly 8 for two uploads, two directory copies and four `mkdir`s.
+  A first run of ~7,000 files therefore writes ~7,000 entries and every
+  snapshot after it one (the copy);
+- **the desktop client does not deduplicate across the copies**: a folder
+  with three 1 GiB files, two of them identical and one an older version
+  (3 GiB logical, 2 GiB distinct blocks), synced in 43 s and received
+  3,202 MiB on the network adapter (about 75 MiB/s). A library that holds
+  `current/` and N snapshots is downloaded N+1 times by every client that
+  syncs it, so the payload belongs in a library nobody syncs whole, or the
+  snapshots belong in a folder the client is told to skip.
 
 **Not measured -- must be checked before building:**
 
@@ -869,14 +880,11 @@ interface or syncs it. Disk need is the payload once, not twice.
   snapshot (deleting alone was measured to free nothing), and how long that
   takes on a library of this size;
 - the copy at tens of thousands of entries (1,500 was measured);
-- every upload is a library commit, so a first run of ~7,000 files writes ~7,000
-  history entries -- whether that matters for the library's history view and
-  retention (the history API pages at 1,000 entries, so the growth was not
-  counted);
-- the interaction with a desktop client that syncs the same library: it would
-  see `current/` *and* every snapshot as full trees (shared blocks should
-  download once, but this is unverified), so the payload belongs in a
-  dedicated library or a folder excluded by selective sync.
+- whether ~7,000 history entries from one first run matter for the library's
+  history view and its retention policy (the count is measured above; the
+  effect is not);
+- the client's *upload* side when a person edits files in a synced `current/`
+  while the tool also writes there (the download side was measured above).
 
 **Failure model.** `current/` is a working area, never authoritative: an
 interrupted run leaves it partly updated and the next run finishes it. A
