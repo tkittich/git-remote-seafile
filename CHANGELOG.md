@@ -7,9 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Changed
-- **Snapshot tool: the raw-payload profile now starts at a sample ratio of 0.5, not 0.9.** Deflating on one core costs more time than the bytes it saves cost on the wire, so mixed data that shrinks only ~15% is staged faster uncompressed. Measured on a 131 GiB tree whose sample kept 85%: ~45 MiB/s (about 50 minutes) before, ~125-200 MiB/s after. A vault that already decided `default` is re-sampled only by the existing recheck rule; `git config snapshot.profile raw` + `core.compression 0` applies it by hand.
-
 ## [0.8.8] - 2026-10-13
 
 Everything here follows from the 2026-10-12 review and the decisions taken on it, then from measuring the result against a real Seafile server (CE 13.0.28): a 4 GiB merge, a 5 GiB single-file push, and a two-gigabyte request ceiling nobody had known about.
@@ -36,6 +33,7 @@ The theme is **less machinery, and the machinery that remains fails loudly** -- 
 - **`seafile.gittimeout` / `SEAFILE_GIT_TIMEOUT`**, readable only from the system/global git config or the environment, raises the per-command git ceiling for large repositories. `SEAFILE_SNAPSHOT_STALL_LIMIT` does the same for the snapshot tool's no-progress limit.
 
 ### Changed
+- **Snapshot tool: the raw-payload profile now starts at a sample ratio of 0.5, not 0.9.** Deflating on one core costs more time than the bytes it saves cost on the wire, so mixed data that shrinks only ~15% is staged faster uncompressed. Measured on a 131 GiB tree whose sample kept 85%: ~45 MiB/s (about 50 minutes) before, ~125-200 MiB/s after. A vault that already decided `default` is re-sampled only by the existing recheck rule; `git config snapshot.profile raw` + `core.compression 0` applies it by hand.
 - **`seafile.autogc` now defaults to on.** The automatic tail merge is bounded (2 x `seafile.gcmaxpackmib` download budget, packs capped, deletes only after size verification, fenced per deletion), cost ~4 s on every 20th push on the measured server, and the alternative was a remote that grows without bound. `git config seafile.autogc false` restores the tip-only behaviour. The "run gc / enable autogc" tip now appears only for users who turned it off.
 - **One output and exit-code convention for every subcommand**: results and reports on stdout, usage errors and failures on stderr; exit 0 done, 1 failed or "no", 2 usage error. Usage errors used to print to stdout and exit 1. `cli.main` is now a dispatch table of one function per command.
 

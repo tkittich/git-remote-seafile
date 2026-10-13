@@ -764,6 +764,9 @@ Borg, and changes nothing for the helper or the vault.
    This needs the *helper* to implement Git's `depth`/`filter` options first:
    today it answers `unsupported`, and Git silently does a full clone, so the
    flag is accepted and ignored (section 12, USER_GUIDE §8.2).
+4. **Payload mode** -- large immutable files go to Seafile as plain files with
+   a manifest in git, snapshots by server-side copy; design in
+   [section 15.1](#151-proposed-payload-mode-design-only-nothing-here-is-implemented).
 
 **Open questions, deliberately unresolved:**
 
@@ -785,6 +788,114 @@ Borg, and changes nothing for the helper or the vault.
 - **Keep `--exclude` opt-in.** "All files" is the point.
 - **Keep the secrets report a warning, not a refusal.** A backup that refuses to
   back up is a backup that gets switched off.
+
+### 15.1 Proposed: payload mode (design only, nothing here is implemented)
+
+**The problem it answers.** A vault carries every file *through git*: each blob
+is hashed, written as a loose object, packed, uploaded as a pack. For a tree
+that is 99.8% large immutable data (measured: 131 GiB of 131 GiB in one
+`data/` directory) that is pure overhead -- a second local copy of the payload
+(loose objects, then temporary packs), a staging pass of 12-20 minutes, a
+restore that needs the objects *and* the checked-out files on disk at once, and
+the 1 GiB pack cap and 2 GiB request ceiling worked around with chunking.
+Git's strengths -- history of small text, metadata, integrity of a tree -- are
+not used on that data at all.
+
+**The idea.** Split the tree at a size threshold. Small files keep going
+through the vault exactly as now. Files at or above the threshold are
+*payload*: they never enter git. They are stream-hashed (SHA-256, no local
+copy) and uploaded to Seafile as ordinary files at their real relative paths.
+The vault commit carries a manifest -- path, mode, size, SHA-256, mtime -- so
+git still holds what git is good at: the file list, the checksums, the history
+of both.
+
+**Browsable *and* consistent: server-side copy.** The obvious trade-off is
+content-addressed names (immutable, consistent, but unreadable in the Seafile
+UI and useless to the desktop client) against path-mirrored files (readable,
+but only ever the latest state). Seafile's copy operation removes the
+trade-off, because a copy shares the source's blocks and touches no data:
+
+    <library>/<vault-name>/payload/current/<relative path>        working mirror, updated in place
+    <library>/<vault-name>/payload/snapshots/<snapshot>/<...>     one directory copy of current/ per snapshot
+
+A run uploads only the files whose size/mtime/hash changed into `current/`,
+builds and commits the manifest, then makes **one server-side directory copy**
+of `current/` to `snapshots/<snapshot>/`, then pushes the vault. Every
+snapshot is a complete, real-named, browsable tree that a desktop client can
+sync, and it is point-in-time consistent because it is created in one
+operation and never modified afterwards. A rename is a server-side move (the
+manifest hash match proves the content is the same), so it costs no upload.
+
+**Restore** clones the vault, reads the manifest, downloads each payload file
+from `snapshots/<snapshot>/`, verifies its SHA-256, and sets mode and mtime.
+Or, with no tool at all, a person opens `snapshots/<snapshot>/` in the web
+interface or syncs it. Disk need is the payload once, not twice.
+
+**Measured on the real server (CE 13.0.28, 2026-10-13, scratch library):**
+
+- a server-side directory copy of four 256 MiB files took 20-30 ms and
+  returned success, i.e. it moves metadata, not bytes;
+- after the copy, replacing a file in `current/` left the copy's file
+  byte-identical to the original (verified by SHA-256 on both);
+- a single upload ran at 32 MiB/s; three uploads of *different* files in
+  parallel reached 53 MiB/s aggregate, so a small worker pool (about 3) is
+  worth about 1.6x and more is not.
+
+**Not measured -- must be checked before building:**
+
+- how the server accounts for copied files in quota and library size (the
+  account usage figure was not conclusive), and whether blocks really are
+  shared on disk after the original is replaced;
+- that deleting an old `snapshots/<snapshot>/` directory followed by the
+  server's own garbage collection actually frees the blocks, and what the
+  library-history retention does to the space meanwhile;
+- the behaviour of the copy at tens of thousands of entries and deep nesting;
+- every upload is a library commit, so a first run of ~7,000 files writes ~7,000
+  history entries -- whether that matters for the library's history view and
+  retention;
+- the interaction with a desktop client that syncs the same library: it would
+  see `current/` *and* every snapshot as full trees (shared blocks should
+  download once, but this is unverified), so the payload belongs in a
+  dedicated library or a folder excluded by selective sync.
+
+**Failure model.** `current/` is a working area, never authoritative: an
+interrupted run leaves it partly updated and the next run finishes it. A
+`snapshots/<snapshot>/` directory is created only after every payload file
+listed in the manifest is present at the expected size, and it is created
+before the vault push, so the vault never references a snapshot that does not
+exist. A snapshot directory with no vault commit (a failed push) is harmless
+and found by a maintenance listing. The server cannot report a content SHA-256,
+so upload correctness rests on size checks and, optionally, a download-and-hash
+verify; **restore always verifies**, which is where corruption would surface.
+
+**Why not the alternatives.**
+
+- *Git LFS (the helper already ships a custom transfer agent).* It keeps a
+  second copy under `.git/lfs`, depends on `.gitattributes` filters (which the
+  vault disables to stay byte-exact) and tracks by pattern, so it does not
+  reach ignored files -- the reason the snapshot tool exists.
+- *The desktop client or `seaf-cli`.* The sync protocol (commit and fs objects
+  plus content-defined blocks, with client-side dedup and resumable block
+  transfer) is a different protocol from the REST API the helper speaks, is not
+  documented as a stable interface, and -- as far as is known -- `seaf-cli` is
+  packaged for Linux and drives a daemon. Re-implementing it is a project of its
+  own; driving the installed client is not portable. Syncing `data/` with the
+  desktop client is still the right answer when no consistent code-plus-data
+  snapshot is needed, and needs no code here.
+- *Content-addressed names only.* Consistent and deduplicating, but the result
+  is unreadable without the tool; the copy design keeps the consistency and
+  gives real names.
+
+**Cost model for the 131 GiB case.** First run is bound by the upload: 131 GiB
+at 32-53 MiB/s is roughly 41-68 minutes, with no local duplicate and no pack
+cap. A run with nothing changed is a directory walk and a stat comparison.
+
+**Phasing.** (0) measure the open items above on the real server; (1) payload
+upload, manifest and verified restore behind an opt-in flag, with a
+restore-and-compare test on a tree containing symlinks, modes and empty files;
+(2) snapshots by directory copy and a maintenance listing; (3) the parallel
+worker pool. Phase 1 alone already removes the local duplicate and the staging
+pass.
 
 ## 16. Maintenance
 
