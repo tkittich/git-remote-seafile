@@ -212,6 +212,91 @@ def save_hash_cache(git_dir: Path, cache: dict[str, dict[str, int | str]]) -> No
         pass  # a cache that cannot be written only costs a rehash
 
 
+#: Filesystem types whose clock is another machine's.
+_NETWORK_FS_TYPES = frozenset(
+    {"nfs", "nfs4", "cifs", "smb3", "smbfs", "9p", "davfs", "fuse.sshfs", "fuse.rclone"}
+)
+#: A smaller offset is noise (a probe is one round trip), not a skewed clock.
+_CLOCK_SKEW_NOISE_NS = 5_000_000_000
+
+
+def _is_network_fs(path: Path) -> bool:
+    """Whether ``path`` lives on a filesystem another machine's clock stamps."""
+    text = str(path)
+    if os.name == "nt":
+        if text.startswith(chr(92) * 2) and not text.startswith(chr(92) * 2 + "?" + chr(92)):
+            return True
+        try:
+            import ctypes
+
+            anchor = Path(text).anchor
+            dll = "windll"  # a name, not an attribute: ctypes has none off Windows
+            kernel32 = getattr(ctypes, dll).kernel32
+            return bool(anchor) and kernel32.GetDriveTypeW(anchor) == 4
+        except (OSError, AttributeError, ValueError):
+            return False
+    try:
+        best, kind = "", ""
+        resolved = os.path.realpath(text)
+        for line in Path("/proc/self/mountinfo").read_text(encoding="utf-8").splitlines():
+            head, _sep, tail = line.partition(" - ")
+            fields = head.split()
+            if len(fields) < 5 or not tail:
+                continue
+            mount = fields[4].replace("\\040", " ")
+            inside = resolved == mount or resolved.startswith(mount.rstrip("/") + "/")
+            if inside and len(mount) >= len(best):
+                best, kind = mount, tail.split()[0]
+        return kind in _NETWORK_FS_TYPES
+    except (OSError, ValueError):
+        return False
+
+
+def _probe_fs_clock(directory: Path) -> int | None:
+    """The filesystem's own "now", from a file created and removed at once; ``None`` if it cannot be."""
+    name = directory / f".grs-clock-probe-{os.getpid()}-{time.time_ns()}"
+    try:
+        fd = os.open(name, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    except OSError:
+        return None
+    try:
+        os.close(fd)
+        return os.stat(name).st_mtime_ns
+    except OSError:
+        return None
+    finally:
+        try:
+            os.unlink(name)
+        except OSError:
+            pass
+
+
+def fs_clock_offset_ns(
+    source: Path, *, is_network: Any = _is_network_fs, probe: Any = _probe_fs_clock
+) -> int:
+    """The source filesystem's clock minus this machine's, in ns; 0 when it is this machine's.
+
+    The racy rule (D6) needs "now" in the clock that stamps the files.  On a
+    local disk that is this machine's; on a share it is the server's, and a
+    server running an hour behind makes every freshly edited file look old
+    enough to trust -- a same-size edit within one timestamp granule then keeps
+    its stale hash.  A probe file measures the difference; it is made only on a
+    network filesystem, so a local source tree is never written to.
+    """
+    if not is_network(source):
+        return 0
+    before = time.time_ns()
+    stamp = probe(source)
+    if stamp is None:
+        print("note: the source is on a network share and its clock could not be measured "
+              "(no write access); a file edited right after it was hashed is detected only "
+              "if its size or timestamp differs -- --payload-rehash re-checks everything",
+              flush=True)
+        return 0
+    offset = int(stamp) - before
+    return 0 if abs(offset) < _CLOCK_SKEW_NOISE_NS else offset
+
+
 def build_manifest(
     candidates: dict[str, Candidate],
     source: Path,
@@ -220,8 +305,15 @@ def build_manifest(
     *,
     quiet: bool = False,
     rule: str = "size",
+    clock_offset_ns: int = 0,
 ) -> tuple[dict[str, Any], dict[str, dict[str, int | str]]]:
-    """Hash every payload file; return ``(manifest, updated cache)``."""
+    """Hash every payload file; return ``(manifest, updated cache)``.
+
+    ``clock_offset_ns`` is the source filesystem's clock minus this machine's
+    (:func:`fs_clock_offset_ns`).  The racy rule compares a file's mtime with the
+    moment it was hashed, and an mtime is written by the *filesystem's* clock, so
+    the moment is recorded in that clock's domain.
+    """
     entries: list[dict[str, Any]] = []
     fresh: dict[str, dict[str, int | str]] = {}
     total = len(candidates)
@@ -238,6 +330,9 @@ def build_manifest(
             and isinstance(hashed_at, int)
             and mtime_ns % 1_000_000_000 != 0  # whole-second mtimes: a coarse clock
             and mtime_ns < hashed_at - _RACY_WINDOW_NS
+            # A timestamp taken in this machine's clock says nothing about a
+            # skewed share's, so it cannot vouch for a file there.
+            and (not clock_offset_ns or old.get("fs") is True)
         )
         if trusted:
             digest = str(old["sha256"])
@@ -246,11 +341,13 @@ def build_manifest(
             stale += isinstance(old.get("sha256"), str)
             if not quiet:
                 print(f"hashing [{index}/{total}] {rel} ({human_bytes(size)})", flush=True)
-            started = time.time_ns()
+            started = time.time_ns() + clock_offset_ns
             digest = _sha256_file(source / rel)
             fresh[rel] = {
                 "size": size, "mtime_ns": mtime_ns, "ino": ino, "sha256": digest, "at": started,
             }
+            if clock_offset_ns:
+                fresh[rel]["fs"] = True
         entries.append(
             {"path": rel, "size": size, "mode": mode, "sha256": digest, "mtime_ns": mtime_ns}
         )

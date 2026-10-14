@@ -5,6 +5,25 @@
 # -- restore -------------------------------------------------------------------
 
 
+def extended_path(path: Path) -> Path:
+    """``path`` in Windows' extended-length form, so 260 characters is not a limit.
+
+    Python reaches past MAX_PATH only when the machine opted in
+    (``LongPathsEnabled``); the extended-length prefix works everywhere and costs
+    nothing elsewhere.  A relative or already-prefixed path is returned unchanged.
+    """
+    if os.name != "nt":
+        return path
+    text = str(path)
+    bs = chr(92)
+    prefix = bs * 2 + "?" + bs
+    if text.startswith(prefix) or not os.path.isabs(text):
+        return path
+    if text.startswith(bs * 2):
+        return Path(prefix + "UNC" + bs + text[2:])
+    return Path(prefix + text)
+
+
 def _download_verified(
     client: Any, rid: str, source_path: str, dest: Path, item: dict[str, Any]
 ) -> str | None:
@@ -65,7 +84,7 @@ def restore_payload(remote: str, into: Path, *, allow_low_disk: bool = False) ->
             if why:
                 problems.append(f"{rel}: skipped, the name {why}")
                 continue
-        dest = into / rel
+        dest = extended_path(into / rel)
         try:
             dest.parent.mkdir(parents=True, exist_ok=True)
         except OSError as exc:

@@ -722,11 +722,16 @@ def ensure_byte_exact(
     """
     if vault_config is None:
         vault_config = _read_local_config_map(vault)
-    for key in ("core.autocrlf", "core.safecrlf"):
+    # core.longpaths is not a line-ending lever: Git for Windows refuses a path
+    # over 260 characters unless it is set, and a deep source tree (or a restore
+    # into a deep destination) would otherwise fail for a reason unrelated to
+    # the data.  Harmless where the limit does not exist.
+    for key, wanted in (("core.autocrlf", "false"), ("core.safecrlf", "false"),
+                        ("core.longpaths", "true")):
         have = (vault_config.get(key) or [""])[0]
-        if have == "false":
+        if have == wanted:
             continue
-        git(git_dir, vault, ["config", key, "false"], cwd=vault)
+        git(git_dir, vault, ["config", key, wanted], cwd=vault)
 
     attributes = git_dir / "info" / "attributes"
     attributes.parent.mkdir(parents=True, exist_ok=True)
@@ -1725,6 +1730,8 @@ def build_snapshot(
     make_commit: bool = True,
     skip_paths: "frozenset[str] | None" = None,
     manifest: "dict[str, Any] | None" = None,
+    capture_embedded: bool = True,
+    embedded_report: "list[tuple[str, int]] | None" = None,
 ) -> tuple[str, str | None, list[str]]:
     """Stage the tree into the vault index and write a commit object.
 
@@ -1746,6 +1753,9 @@ def build_snapshot(
     alone.  ``parent`` is passed in rather than read from the branch, because
     the caller may have just re-based on the remote tip.  The branch is *not*
     moved here: that is the caller's job, so a dry run can stop one step short.
+
+    An embedded repository is captured as its files (:func:`inline_embedded_repositories`)
+    unless ``capture_embedded`` is false; each one is appended to ``embedded_report``.
     """
     reserved = (work_tree / PAYLOAD_RESERVED_DIR).exists()
     if excludes or skip_paths or reserved:
@@ -1805,6 +1815,11 @@ def build_snapshot(
             measure_dir=git_dir / "objects",
         )
         excluded = []
+
+    if capture_embedded:
+        captured = inline_embedded_repositories(git_dir, work_tree, excludes, skip_paths)
+        if embedded_report is not None:
+            embedded_report.extend(captured)
 
     if manifest is not None:
         add_manifest_to_index(git_dir, work_tree, manifest)
@@ -1955,6 +1970,108 @@ def suggest_excludes(
         f"--default-excludes, or explicitly:\n  {flags}"
     )
     return found
+
+
+# -- Embedded repositories (see 70_stage.py) ---------------------------------------
+
+
+def embedded_repositories(git_dir: Path, work_tree: Path) -> list[str]:
+    """Paths the vault index holds as gitlinks (``160000``): a repository, not its files."""
+    listing = git(git_dir, work_tree, ["ls-files", "-s", "-z"], cwd=work_tree).stdout
+    found: list[str] = []
+    for entry in listing.split("\0"):
+        meta, _sep, path = entry.partition("\t")
+        if path and meta.startswith("160000 "):
+            found.append(path)
+    return found
+
+
+def _files_of_repository(root: Path, prefix: str) -> list[str]:
+    """Index paths for everything under *root* except ``.git`` itself.
+
+    ``os.walk`` rather than ``git ls-files``: git treats a directory holding a
+    ``.git`` as one opaque thing and will not list what is inside it, which is
+    the very reason the contents were missing.  A symlink is its own entry (git
+    stores the link, not its target), and a junction is not followed, as in
+    :func:`_walk_sizes`.  A repository nested inside this one is walked on the
+    same terms, so depth does not matter.
+    """
+    found: list[str] = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        keep: list[str] = []
+        for name in dirnames:
+            full = os.path.join(dirpath, name)
+            if name == ".git":
+                continue
+            if os.path.islink(full):
+                found.append(f"{prefix}/{os.path.relpath(full, root)}".replace(os.sep, "/"))
+            elif not getattr(os.lstat(full), "st_file_attributes", 0) & 0x400:
+                keep.append(name)
+        dirnames[:] = keep
+        for name in filenames:
+            if name == ".git":  # a submodule's or linked worktree's pointer file
+                continue
+            full = os.path.join(dirpath, name)
+            found.append(f"{prefix}/{os.path.relpath(full, root)}".replace(os.sep, "/"))
+    return found
+
+
+def inline_embedded_repositories(
+    git_dir: Path,
+    work_tree: Path,
+    excludes: list[str],
+    skip_paths: "frozenset[str] | None" = None,
+) -> list[tuple[str, int]]:
+    """Replace each gitlink in the index by the files under it; ``[(path, files)]``.
+
+    ``git add`` records a directory that has its own ``.git`` as a pointer to that
+    repository's commit and copies nothing, so a restore produced an empty
+    directory in something sold as a *full* backup.  The working tree is what a
+    snapshot is for, so the files go in -- ignored ones too, like everywhere else
+    in the tree, and subject to ``--exclude`` and to payload mode.  The nested
+    ``.git`` is not captured: the snapshot has the files as they were, not the
+    repository's history, and the report says so.
+
+    The index is written with ``update-index`` rather than ``add`` because
+    ``add`` goes through the same directory scan that refuses to look inside.
+    """
+    links = embedded_repositories(git_dir, work_tree)
+    if not links:
+        return []
+    skipped = {unicodedata.normalize("NFC", p) for p in (skip_paths or ())}
+    drop_from_index(git_dir, work_tree, links)
+    report: list[tuple[str, int]] = []
+    for link in links:
+        root = work_tree / link
+        files = _files_of_repository(root, link) if root.is_dir() else []
+        files = [
+            path for path in files
+            if not any(exclude_matches(path, pat) for pat in excludes)
+            and unicodedata.normalize("NFC", path) not in skipped
+        ]
+        for start in range(0, len(files), _INDEX_BATCH):
+            batch = files[start : start + _INDEX_BATCH]
+            git(
+                git_dir,
+                work_tree,
+                ["update-index", "--add", "-z", "--stdin"],
+                cwd=work_tree,
+                stdin="\0".join(batch) + "\0",
+            )
+        report.append((link, len(files)))
+    return report
+
+
+def embedded_note(report: list[tuple[str, int]]) -> str:
+    """The notice printed when embedded repositories were captured as plain files."""
+    lines = [
+        "\nNOTE: these paths are embedded git repositories.  Their files were captured "
+        "as ordinary\nfiles; their .git directories (history, branches, stashes) were not:"
+    ]
+    lines += [f"  {path} ({count} file(s))" for path, count in report]
+    lines.append("  Back the history up separately, or pass --no-embedded-repos to record "
+                 "only each repository's commit id.")
+    return "\n".join(lines)
 
 
 # -- Payload safeguards: provenance, preflight, markers (see PAYLOAD.md D13) --------
@@ -2378,6 +2495,91 @@ def save_hash_cache(git_dir: Path, cache: dict[str, dict[str, int | str]]) -> No
         pass  # a cache that cannot be written only costs a rehash
 
 
+#: Filesystem types whose clock is another machine's.
+_NETWORK_FS_TYPES = frozenset(
+    {"nfs", "nfs4", "cifs", "smb3", "smbfs", "9p", "davfs", "fuse.sshfs", "fuse.rclone"}
+)
+#: A smaller offset is noise (a probe is one round trip), not a skewed clock.
+_CLOCK_SKEW_NOISE_NS = 5_000_000_000
+
+
+def _is_network_fs(path: Path) -> bool:
+    """Whether ``path`` lives on a filesystem another machine's clock stamps."""
+    text = str(path)
+    if os.name == "nt":
+        if text.startswith(chr(92) * 2) and not text.startswith(chr(92) * 2 + "?" + chr(92)):
+            return True
+        try:
+            import ctypes
+
+            anchor = Path(text).anchor
+            dll = "windll"  # a name, not an attribute: ctypes has none off Windows
+            kernel32 = getattr(ctypes, dll).kernel32
+            return bool(anchor) and kernel32.GetDriveTypeW(anchor) == 4
+        except (OSError, AttributeError, ValueError):
+            return False
+    try:
+        best, kind = "", ""
+        resolved = os.path.realpath(text)
+        for line in Path("/proc/self/mountinfo").read_text(encoding="utf-8").splitlines():
+            head, _sep, tail = line.partition(" - ")
+            fields = head.split()
+            if len(fields) < 5 or not tail:
+                continue
+            mount = fields[4].replace("\\040", " ")
+            inside = resolved == mount or resolved.startswith(mount.rstrip("/") + "/")
+            if inside and len(mount) >= len(best):
+                best, kind = mount, tail.split()[0]
+        return kind in _NETWORK_FS_TYPES
+    except (OSError, ValueError):
+        return False
+
+
+def _probe_fs_clock(directory: Path) -> int | None:
+    """The filesystem's own "now", from a file created and removed at once; ``None`` if it cannot be."""
+    name = directory / f".grs-clock-probe-{os.getpid()}-{time.time_ns()}"
+    try:
+        fd = os.open(name, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    except OSError:
+        return None
+    try:
+        os.close(fd)
+        return os.stat(name).st_mtime_ns
+    except OSError:
+        return None
+    finally:
+        try:
+            os.unlink(name)
+        except OSError:
+            pass
+
+
+def fs_clock_offset_ns(
+    source: Path, *, is_network: Any = _is_network_fs, probe: Any = _probe_fs_clock
+) -> int:
+    """The source filesystem's clock minus this machine's, in ns; 0 when it is this machine's.
+
+    The racy rule (D6) needs "now" in the clock that stamps the files.  On a
+    local disk that is this machine's; on a share it is the server's, and a
+    server running an hour behind makes every freshly edited file look old
+    enough to trust -- a same-size edit within one timestamp granule then keeps
+    its stale hash.  A probe file measures the difference; it is made only on a
+    network filesystem, so a local source tree is never written to.
+    """
+    if not is_network(source):
+        return 0
+    before = time.time_ns()
+    stamp = probe(source)
+    if stamp is None:
+        print("note: the source is on a network share and its clock could not be measured "
+              "(no write access); a file edited right after it was hashed is detected only "
+              "if its size or timestamp differs -- --payload-rehash re-checks everything",
+              flush=True)
+        return 0
+    offset = int(stamp) - before
+    return 0 if abs(offset) < _CLOCK_SKEW_NOISE_NS else offset
+
+
 def build_manifest(
     candidates: dict[str, Candidate],
     source: Path,
@@ -2386,8 +2588,15 @@ def build_manifest(
     *,
     quiet: bool = False,
     rule: str = "size",
+    clock_offset_ns: int = 0,
 ) -> tuple[dict[str, Any], dict[str, dict[str, int | str]]]:
-    """Hash every payload file; return ``(manifest, updated cache)``."""
+    """Hash every payload file; return ``(manifest, updated cache)``.
+
+    ``clock_offset_ns`` is the source filesystem's clock minus this machine's
+    (:func:`fs_clock_offset_ns`).  The racy rule compares a file's mtime with the
+    moment it was hashed, and an mtime is written by the *filesystem's* clock, so
+    the moment is recorded in that clock's domain.
+    """
     entries: list[dict[str, Any]] = []
     fresh: dict[str, dict[str, int | str]] = {}
     total = len(candidates)
@@ -2404,6 +2613,9 @@ def build_manifest(
             and isinstance(hashed_at, int)
             and mtime_ns % 1_000_000_000 != 0  # whole-second mtimes: a coarse clock
             and mtime_ns < hashed_at - _RACY_WINDOW_NS
+            # A timestamp taken in this machine's clock says nothing about a
+            # skewed share's, so it cannot vouch for a file there.
+            and (not clock_offset_ns or old.get("fs") is True)
         )
         if trusted:
             digest = str(old["sha256"])
@@ -2412,11 +2624,13 @@ def build_manifest(
             stale += isinstance(old.get("sha256"), str)
             if not quiet:
                 print(f"hashing [{index}/{total}] {rel} ({human_bytes(size)})", flush=True)
-            started = time.time_ns()
+            started = time.time_ns() + clock_offset_ns
             digest = _sha256_file(source / rel)
             fresh[rel] = {
                 "size": size, "mtime_ns": mtime_ns, "ino": ino, "sha256": digest, "at": started,
             }
+            if clock_offset_ns:
+                fresh[rel]["fs"] = True
         entries.append(
             {"path": rel, "size": size, "mode": mode, "sha256": digest, "mtime_ns": mtime_ns}
         )
@@ -3394,6 +3608,25 @@ def payload_gc(
 # -- restore -------------------------------------------------------------------
 
 
+def extended_path(path: Path) -> Path:
+    """``path`` in Windows' extended-length form, so 260 characters is not a limit.
+
+    Python reaches past MAX_PATH only when the machine opted in
+    (``LongPathsEnabled``); the extended-length prefix works everywhere and costs
+    nothing elsewhere.  A relative or already-prefixed path is returned unchanged.
+    """
+    if os.name != "nt":
+        return path
+    text = str(path)
+    bs = chr(92)
+    prefix = bs * 2 + "?" + bs
+    if text.startswith(prefix) or not os.path.isabs(text):
+        return path
+    if text.startswith(bs * 2):
+        return Path(prefix + "UNC" + bs + text[2:])
+    return Path(prefix + text)
+
+
 def _download_verified(
     client: Any, rid: str, source_path: str, dest: Path, item: dict[str, Any]
 ) -> str | None:
@@ -3454,7 +3687,7 @@ def restore_payload(remote: str, into: Path, *, allow_low_disk: bool = False) ->
             if why:
                 problems.append(f"{rel}: skipped, the name {why}")
                 continue
-        dest = into / rel
+        dest = extended_path(into / rel)
         try:
             dest.parent.mkdir(parents=True, exist_ok=True)
         except OSError as exc:
@@ -3534,6 +3767,7 @@ def add_payload_groups(parser: argparse.ArgumentParser) -> None:
     )
     add_payload_arguments(mode_group)
     add_payload_jobs_argument(mode_group)
+    add_payload_report_argument(mode_group)
     tools_group = parser.add_argument_group(
         "payload tools: act on a remote's payload (no snapshot is taken)",
         "Each needs --remote. Reports and verification change nothing; "
@@ -3585,8 +3819,26 @@ def add_payload_jobs_argument(parser: Any) -> None:
     )
 
 
+def add_payload_report_argument(parser: Any) -> None:
+    parser.add_argument(
+        "--payload-report-days",
+        type=float,
+        default=None,
+        metavar="N",
+        help="payload mode: after a run that pushes, print the report-only --payload-gc "
+        "summary (what is stored, in use and reclaimable) when none was printed in the last "
+        "N days (default 7; 0 never). It changes nothing on the server; --payload-gc "
+        "--payload-delete is still the only thing that deletes",
+    )
+
+
 def payload_conflicts(args: argparse.Namespace) -> list[str]:
     problems: list[str] = []
+    if args.payload_report_days is not None:
+        if args.payload_report_days < 0:
+            problems.append("--payload-report-days must be 0 or more")
+        if args.restore or args.maintain or args.payload_gc or args.no_push:
+            problems.append("--payload-report-days only applies to a snapshot run that pushes")
     if args.no_payload and args.payload_min_size is not None:
         problems.append("--no-payload and --payload-min-size contradict each other")
     # Only a flag typed on this command line is checked here: a default or a
@@ -3786,7 +4038,8 @@ def run_payload_step(
     if from_default and previous is None and base is not None:
         print(conversion_warning(candidates, dry_run), flush=True)
     manifest, cache = build_manifest(
-        candidates, source, {} if rehash else load_hash_cache(git_dir), min_size, rule=rule
+        candidates, source, {} if rehash else load_hash_cache(git_dir), min_size, rule=rule,
+        clock_offset_ns=fs_clock_offset_ns(source) if candidates else 0,
     )
     todo = publish_payload(
         remote or "", source, manifest, dry_run=dry_run, jobs=jobs or 3
@@ -3816,6 +4069,45 @@ def payload_summary(
         if store:
             text += "\n" + store
     return text
+
+
+_REPORT_KEY = "snapshot.payloadgcreport"
+_DEFAULT_REPORT_DAYS = 7.0
+
+
+def maybe_report_payload_gc(
+    git_dir: Path, vault: Path, remote: str, days: float | None, *, now: float | None = None
+) -> bool:
+    """Print the report-only ``--payload-gc`` summary when one is due; never raises.
+
+    Reclaimable space is invisible until someone asks, and a store that only
+    grows is the one thing payload mode cannot fix by itself.  Asking costs a
+    listing of the object directories and a history scan, so it is rationed to
+    once per *days*, and it runs after the push so a slow or failing report can
+    never cost a snapshot.  It deletes nothing and writes nothing but the time
+    it ran, on this machine.
+    """
+    period = _DEFAULT_REPORT_DAYS if days is None else days
+    if period <= 0:
+        return False
+    stamp = _read_config_key(git_dir, _REPORT_KEY)
+    current = time.time() if now is None else now
+    try:
+        if stamp and current - float(stamp) < period * 86400:
+            return False
+    except ValueError:
+        pass  # an unreadable stamp means "due"
+    print("\npayload store report (report only; nothing is deleted):", flush=True)
+    try:
+        payload_gc(remote, vault, delete=False, grace_days=1.0)
+    except Exception as exc:  # a report must never cost the run that already pushed
+        print(f"payload report skipped: {exc}", flush=True)
+        return False
+    _run(
+        ["git", "--git-dir", str(git_dir), "config", _REPORT_KEY, f"{current:.0f}"],
+        text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    )
+    return True
 
 
 # -- Payload views -------------------------------------------------------------
@@ -4226,7 +4518,7 @@ def push_snapshot(
 
 
 def _checkout(repo: Path, rev: str, *, detach: bool = False) -> None:
-    args = ["git", "-C", str(repo), "checkout", "-f"]
+    args = ["git", "-C", str(repo), "-c", "core.longpaths=true", "checkout", "-f"]
     if detach:
         args.append("--detach")
     args.append(rev)
@@ -4443,7 +4735,7 @@ def restore(
     # hours, and git's "Receiving objects" progress goes to the terminal only
     # when it is not being piped.  The watchdog adds one line per minute on top.
     proc = _run(
-        ["git", "clone", "--no-checkout", remote, str(into)],
+        ["git", "-c", "core.longpaths=true", "clone", "--no-checkout", remote, str(into)],
         text=True,
         encoding="utf-8",
         errors="replace",
@@ -4727,6 +5019,7 @@ def validate_args(args: argparse.Namespace) -> None:
             ("--reset-to-remote", args.reset_to_remote),
             ("--allow-shared-remote", args.allow_shared_remote),
             ("--no-push", args.no_push),
+            ("--no-embedded-repos", args.no_embedded_repos),
             ("--verify", args.verify),
             ("--into", args.into),
             ("--ref", args.ref),
@@ -4752,6 +5045,7 @@ def validate_args(args: argparse.Namespace) -> None:
             ("--reset-to-remote", args.reset_to_remote),
             ("--allow-shared-remote", args.allow_shared_remote),
             ("--no-push", args.no_push),
+            ("--no-embedded-repos", args.no_embedded_repos),
             # A restore fetches and checks out; it packs nothing, so skipping
             # the push-time repack would be silently ignored.
             ("--no-repack", args.no_repack),
@@ -5355,6 +5649,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "use this after large deletions to reclaim space",
     )
     parser.add_argument(
+        "--no-embedded-repos",
+        action="store_true",
+        help="record a nested git repository (a directory with its own .git) only as "
+        "its commit id, as 0.9.0 did, instead of capturing its files",
+    )
+    parser.add_argument(
         "--no-repack",
         action="store_true",
         help="skip the automatic incremental repack that runs before a push",
@@ -5522,10 +5822,13 @@ def main(argv: list[str] | None = None) -> int:
                 dry_run=args.dry_run, jobs=args.payload_jobs, rule=payload_rule,
                 rehash=args.payload_rehash, from_default=payload_default,
             )
+            embedded_report: list[tuple[str, int]] = []
             tree, commit, excluded = build_snapshot(
                 git_dir, source, base, exclude, message,
                 make_commit=not args.dry_run,
                 skip_paths=payload_skip or None, manifest=manifest,
+                capture_embedded=not args.no_embedded_repos,
+                embedded_report=embedded_report,
             )
             count, size = describe_tree(git_dir, source, tree)
             # The profile was decided from a sample taken before the first
@@ -5551,6 +5854,9 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"excluded: {len(excluded)} path(s) left out")
 
             suggest_excludes(git_dir, source, excluded)
+
+            if embedded_report:
+                print(embedded_note(embedded_report))
 
             gitlinks = find_gitlinks(git_dir, source, tree)
             if gitlinks:
@@ -5657,6 +5963,8 @@ def main(argv: list[str] | None = None) -> int:
         # --remote that failed to push does not become the vault's remote for
         # every scheduled run after it.  A preview never gets here.
         remember_payload_value(vault, args.payload_min_size, dry_run=args.dry_run)
+        if manifest is not None and remote and not args.dry_run:
+            maybe_report_payload_gc(git_dir, vault, remote, args.payload_report_days)
         remember_settings(
             vault,
             source,

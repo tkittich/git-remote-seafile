@@ -136,7 +136,7 @@ upload stops the queue and is reported once the running uploads finish. The serv
 cannot report a content hash, so a listing proves only presence at a size;
 **restore always verifies SHA-256** (R8).
 
-### D6. Change detection — **decided** (clock-domain gap documented)
+### D6. Change detection — **decided**
 
 Hashes are cached **per machine**, in the vault's git directory
 (`payload-cache.json`), never read from a manifest: a manifest comes from a remote
@@ -148,11 +148,17 @@ file by 2 s (git's "racily clean" rule). A file is compared with its recorded si
 and mtime before upload, and its bytes are hashed as they are sent (D5), so a
 modification the cache missed cannot put wrong bytes under a name.
 
-*Known limits:* the racy rule compares the file's mtime with this machine's clock,
-which is the right domain for a local disk and not for a network share whose clock
-differs; a file with a future mtime is rehashed on every run (a cost, not a risk).
-`--payload-rehash` ignores the cache for one run (a tree whose timestamps a copy tool
-restored, or a periodic audit).
+*Clock domain.* An mtime is written by the clock of the machine that owns the
+filesystem, so "the moment it was hashed" is recorded in that clock, not this
+machine's. On a network share (a UNC path or a mapped remote drive on Windows; an
+NFS, CIFS/SMB, 9p, sshfs, davfs or rclone mount on Linux) the tool creates and
+removes one probe file in the source root to read the share's clock, stores the
+offset's effect in each cache entry (`fs`), and trusts only entries made that way.
+An offset under 5 s is noise and ignored; a share that cannot be written to is
+reported and treated as before. A local source tree is never written to. *Known
+limit:* macOS network mounts are not detected, so the rule there is the
+machine-clock one; `--payload-rehash` is the audit. A file with a future mtime is
+rehashed on every run (a cost, not a risk).
 
 ### D7. Concurrency — **decided**
 
@@ -309,7 +315,7 @@ data, or surprise. Disposition is one of **fixed**, **handled**, **specified**
 | A1 | A manifest with `../../x` or `/etc/x` (a library writer alters it) | the first implementation wrote wherever the manifest said | **fixed**: D8 validation, R7 |
 | A2 | A manifest hash like `../../other` becomes part of a server path | same | **fixed**: hash must be 64 hex |
 | A3 | File edited after hashing, before upload | bytes under another content's name | **fixed** (the first handling was wrong, see 6.1): D5 hashes the bytes as they are sent |
-| A4 | Same-size edit within the timestamp granularity | cached hash would be trusted | **handled**: D6 racy rule against this machine's hash time, plus inode |
+| A4 | Same-size edit within the timestamp granularity | cached hash would be trusted | **handled**: D6 racy rule against the filesystem's hash time (a share's own clock, measured by a probe file), plus inode; `test_a_share_whose_clock_is_behind_does_not_vouch_for_a_fresh_edit` |
 | A5 | mtime restored by a copy tool (`cp -p`, `robocopy`) | cache trusted, content differs | **handled**: inode in the cache key catches most; `--payload-rehash` for the rest |
 | A6 | Another machine's un-pushed snapshot references an object; retention deletes it | data loss | **handled within the grace period**: D9 two-phase, every branch and tag of the remote plus the local vault's (which must be one). Another machine's objects that are uploaded but not pushed are invisible to this machine's retention; they survive `--payload-grace-days`, after which that machine's next run re-uploads them (source unchanged) or refuses to push. Run retention from one machine |
 | A7 | Run interrupted after upload, before push | orphan objects | **handled**: harmless, reused (D5) |
@@ -331,6 +337,8 @@ data, or surprise. Disposition is one of **fixed**, **handled**, **specified**
 | A23 | An encrypted library | the client refuses it | **handled** |
 | A24 | A server that rewrites object names | would break "listing proves presence" | **handled**: names are lowercase hex; verified on the real server |
 | A25 | `--payload-jobs` very large on a flaky link | many partial uploads | **handled**: pool is bounded; failure stops the queue |
+| A26 | A report-only `--payload-gc` after every run | cost of listing 256 directories and the history; a failing report failing the run | **handled**: at most once per `--payload-report-days` (7), after the push, never fatal, never deletes; `test_a_failing_report_never_fails_the_run_that_pushed` |
+| A27 | A restore path over 260 characters on Windows | file skipped or `git checkout` fails | **handled**: payload files use extended-length paths and git runs with `core.longpaths=true`; `test_the_vault_and_the_restored_clone_allow_long_paths` |
 
 ### 6.1 The independent review rounds (2026-10-13 and 14)
 

@@ -200,6 +200,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "use this after large deletions to reclaim space",
     )
     parser.add_argument(
+        "--no-embedded-repos",
+        action="store_true",
+        help="record a nested git repository (a directory with its own .git) only as "
+        "its commit id, as 0.9.0 did, instead of capturing its files",
+    )
+    parser.add_argument(
         "--no-repack",
         action="store_true",
         help="skip the automatic incremental repack that runs before a push",
@@ -367,10 +373,13 @@ def main(argv: list[str] | None = None) -> int:
                 dry_run=args.dry_run, jobs=args.payload_jobs, rule=payload_rule,
                 rehash=args.payload_rehash, from_default=payload_default,
             )
+            embedded_report: list[tuple[str, int]] = []
             tree, commit, excluded = build_snapshot(
                 git_dir, source, base, exclude, message,
                 make_commit=not args.dry_run,
                 skip_paths=payload_skip or None, manifest=manifest,
+                capture_embedded=not args.no_embedded_repos,
+                embedded_report=embedded_report,
             )
             count, size = describe_tree(git_dir, source, tree)
             # The profile was decided from a sample taken before the first
@@ -396,6 +405,9 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"excluded: {len(excluded)} path(s) left out")
 
             suggest_excludes(git_dir, source, excluded)
+
+            if embedded_report:
+                print(embedded_note(embedded_report))
 
             gitlinks = find_gitlinks(git_dir, source, tree)
             if gitlinks:
@@ -502,6 +514,8 @@ def main(argv: list[str] | None = None) -> int:
         # --remote that failed to push does not become the vault's remote for
         # every scheduled run after it.  A preview never gets here.
         remember_payload_value(vault, args.payload_min_size, dry_run=args.dry_run)
+        if manifest is not None and remote and not args.dry_run:
+            maybe_report_payload_gc(git_dir, vault, remote, args.payload_report_days)
         remember_settings(
             vault,
             source,

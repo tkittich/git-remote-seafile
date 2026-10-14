@@ -1,7 +1,7 @@
 
 
 def _checkout(repo: Path, rev: str, *, detach: bool = False) -> None:
-    args = ["git", "-C", str(repo), "checkout", "-f"]
+    args = ["git", "-C", str(repo), "-c", "core.longpaths=true", "checkout", "-f"]
     if detach:
         args.append("--detach")
     args.append(rev)
@@ -218,7 +218,7 @@ def restore(
     # hours, and git's "Receiving objects" progress goes to the terminal only
     # when it is not being piped.  The watchdog adds one line per minute on top.
     proc = _run(
-        ["git", "clone", "--no-checkout", remote, str(into)],
+        ["git", "-c", "core.longpaths=true", "clone", "--no-checkout", remote, str(into)],
         text=True,
         encoding="utf-8",
         errors="replace",

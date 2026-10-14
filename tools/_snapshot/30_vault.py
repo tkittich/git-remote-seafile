@@ -183,11 +183,16 @@ def ensure_byte_exact(
     """
     if vault_config is None:
         vault_config = _read_local_config_map(vault)
-    for key in ("core.autocrlf", "core.safecrlf"):
+    # core.longpaths is not a line-ending lever: Git for Windows refuses a path
+    # over 260 characters unless it is set, and a deep source tree (or a restore
+    # into a deep destination) would otherwise fail for a reason unrelated to
+    # the data.  Harmless where the limit does not exist.
+    for key, wanted in (("core.autocrlf", "false"), ("core.safecrlf", "false"),
+                        ("core.longpaths", "true")):
         have = (vault_config.get(key) or [""])[0]
-        if have == "false":
+        if have == wanted:
             continue
-        git(git_dir, vault, ["config", key, "false"], cwd=vault)
+        git(git_dir, vault, ["config", key, wanted], cwd=vault)
 
     attributes = git_dir / "info" / "attributes"
     attributes.parent.mkdir(parents=True, exist_ok=True)

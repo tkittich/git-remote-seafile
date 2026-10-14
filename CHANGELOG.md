@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Embedded git repositories are captured as their files.** A directory with its own `.git` used to be recorded as a commit id and restore empty; its tracked, untracked and ignored files now go into the snapshot (subject to `--exclude` and payload mode), at any depth, and the run lists them. The nested `.git` is not captured. `--no-embedded-repos` keeps the old behaviour; a vault holding a gitlink converts on its next run.
+- **A report-only `--payload-gc` summary after a run that pushes**, at most every `--payload-report-days N` (default 7, `0` off). It deletes nothing and a failing report is a note, not a failed run.
+
+### Fixed
+- **The payload hash cache's racy rule used this machine's clock on a network share.** A share whose clock ran behind made a freshly edited file look old enough to trust, so a same-size edit within one timestamp granule kept its stale hash. On a network filesystem the share's clock is now measured with a probe file and cache entries are made in that clock; a local source tree is never written to.
+- **Long Windows paths.** The vault and a restored clone set `core.longpaths=true`, and payload files are restored through extended-length paths.
+
+### Documentation
+- Manifest growth at 100,000 files is measured (PAYLOAD.md D4): about 10 kB per snapshot at 0.1% changed, 110 kB at 1%, 6 MB when every entry changes.
+- SNAPSHOT.md no longer lists a snapshot-time `gc` step as future work: the helper's `seafile.autogc` already does it.
+
 ## [0.9.0] - 2026-10-14
 
 The snapshot tool grows up: it installs with the package, and it can carry a 131 GiB tree.

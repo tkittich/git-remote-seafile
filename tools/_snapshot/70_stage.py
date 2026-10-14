@@ -139,6 +139,8 @@ def build_snapshot(
     make_commit: bool = True,
     skip_paths: "frozenset[str] | None" = None,
     manifest: "dict[str, Any] | None" = None,
+    capture_embedded: bool = True,
+    embedded_report: "list[tuple[str, int]] | None" = None,
 ) -> tuple[str, str | None, list[str]]:
     """Stage the tree into the vault index and write a commit object.
 
@@ -160,6 +162,9 @@ def build_snapshot(
     alone.  ``parent`` is passed in rather than read from the branch, because
     the caller may have just re-based on the remote tip.  The branch is *not*
     moved here: that is the caller's job, so a dry run can stop one step short.
+
+    An embedded repository is captured as its files (:func:`inline_embedded_repositories`)
+    unless ``capture_embedded`` is false; each one is appended to ``embedded_report``.
     """
     reserved = (work_tree / PAYLOAD_RESERVED_DIR).exists()
     if excludes or skip_paths or reserved:
@@ -219,6 +224,11 @@ def build_snapshot(
             measure_dir=git_dir / "objects",
         )
         excluded = []
+
+    if capture_embedded:
+        captured = inline_embedded_repositories(git_dir, work_tree, excludes, skip_paths)
+        if embedded_report is not None:
+            embedded_report.extend(captured)
 
     if manifest is not None:
         add_manifest_to_index(git_dir, work_tree, manifest)

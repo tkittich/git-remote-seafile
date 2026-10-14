@@ -24,6 +24,7 @@ def validate_args(args: argparse.Namespace) -> None:
             ("--reset-to-remote", args.reset_to_remote),
             ("--allow-shared-remote", args.allow_shared_remote),
             ("--no-push", args.no_push),
+            ("--no-embedded-repos", args.no_embedded_repos),
             ("--verify", args.verify),
             ("--into", args.into),
             ("--ref", args.ref),
@@ -49,6 +50,7 @@ def validate_args(args: argparse.Namespace) -> None:
             ("--reset-to-remote", args.reset_to_remote),
             ("--allow-shared-remote", args.allow_shared_remote),
             ("--no-push", args.no_push),
+            ("--no-embedded-repos", args.no_embedded_repos),
             # A restore fetches and checks out; it packs nothing, so skipping
             # the push-time repack would be silently ignored.
             ("--no-repack", args.no_repack),

@@ -1447,6 +1447,143 @@ class PayloadModeTests(unittest.TestCase):
             len([k for k in self.server_files() if k.startswith("/otherrepo/payload/objects")]), 2
         )
 
+    # -- clock domain of the racy rule, long paths, the periodic report ----------
+    def _cache_case(self, *, behind_ns: int):
+        """One 1 MiB candidate, hashed once, with an mtime ``behind_ns`` before 'now'."""
+        path = self.case / "racy-unit.bin"
+        path.write_bytes(b"x" * 1024)
+        now = time.time_ns()
+        mtime = now - behind_ns
+        stale = {"size": 1024, "mtime_ns": mtime, "ino": 7, "sha256": "a" * 64, "at": now}
+        return path, {"racy-unit.bin": (1024, mtime, "100644", 7)}, stale
+
+    def test_a_share_whose_clock_is_behind_does_not_vouch_for_a_fresh_edit(self):
+        # The share's clock is an hour behind, so a file edited this instant carries
+        # an mtime an hour "old" by this machine's clock: the unmodified rule trusted
+        # it, and a same-size edit within one granule kept its stale hash.
+        hour = 3600 * 1_000_000_000
+        path, cands, entry = self._cache_case(behind_ns=hour + 500_000_000)
+        manifest, _ = snap.build_manifest(
+            cands, self.case, {"racy-unit.bin": dict(entry)}, 1024, quiet=True,
+            clock_offset_ns=-hour,
+        )
+        self.assertNotEqual(manifest["files"][0]["sha256"], "a" * 64)  # rehashed
+        # Without the correction the same entry is (wrongly) trusted: the guard has
+        # a reason to exist.
+        manifest, _ = snap.build_manifest(
+            cands, self.case, {"racy-unit.bin": dict(entry)}, 1024, quiet=True,
+        )
+        self.assertEqual(manifest["files"][0]["sha256"], "a" * 64)
+
+    def test_a_hash_made_in_the_shares_clock_is_trusted_once_it_is_old_enough(self):
+        hour = 3600 * 1_000_000_000
+        _path, cands, entry = self._cache_case(behind_ns=hour + 10 * 1_000_000_000)
+        entry["at"] -= hour
+        entry["fs"] = True
+        manifest, cache = snap.build_manifest(
+            cands, self.case, {"racy-unit.bin": dict(entry)}, 1024, quiet=True,
+            clock_offset_ns=-hour,
+        )
+        self.assertEqual(manifest["files"][0]["sha256"], "a" * 64)
+        self.assertTrue(cache["racy-unit.bin"]["fs"])
+
+    def test_the_clock_is_probed_only_on_a_network_filesystem(self):
+        calls = []
+
+        def probe(_dir):
+            calls.append(1)
+            return time.time_ns() - 7200 * 1_000_000_000
+
+        self.assertEqual(
+            snap.fs_clock_offset_ns(self.case, is_network=lambda _p: False, probe=probe), 0
+        )
+        self.assertEqual(calls, [])
+        off = snap.fs_clock_offset_ns(self.case, is_network=lambda _p: True, probe=probe)
+        self.assertLess(abs(off + 7200 * 1_000_000_000), 2_000_000_000)
+        near = snap.fs_clock_offset_ns(
+            self.case, is_network=lambda _p: True, probe=lambda _d: time.time_ns() + 1_000_000_000
+        )
+        self.assertEqual(near, 0)  # a second is a round trip, not a skewed clock
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            unknown = snap.fs_clock_offset_ns(
+                self.case, is_network=lambda _p: True, probe=lambda _d: None
+            )
+        self.assertEqual(unknown, 0)
+        self.assertIn("could not be measured", buf.getvalue())
+
+    def test_the_probe_file_is_removed_and_leaves_the_directory_as_it_was(self):
+        before = sorted(p.name for p in self.src.iterdir())
+        stamp = snap._probe_fs_clock(self.src)
+        self.assertIsNotNone(stamp)
+        self.assertEqual(sorted(p.name for p in self.src.iterdir()), before)
+
+    def test_a_local_source_is_never_written_to_by_the_clock_probe(self):
+        with unittest.mock.patch.object(snap, "_probe_fs_clock") as probe:
+            rc, out, err = self.bare()
+        self.assertEqual(rc, 0, out + err)
+        probe.assert_not_called()
+
+    def test_restore_paths_are_extended_on_windows_and_untouched_elsewhere(self):
+        long_dir = self.case.joinpath(*(["d" * 40] * 8))
+        got = snap.extended_path(long_dir / "f.bin")
+        if os.name == "nt":
+            self.assertTrue(str(got).startswith(chr(92) * 2 + "?" + chr(92)))
+            self.assertEqual(snap.extended_path(got), got)  # idempotent
+            self.assertEqual(snap.extended_path(pathlib.Path("rel") / "x"), pathlib.Path("rel") / "x")
+        else:
+            self.assertEqual(got, long_dir / "f.bin")
+
+    def test_the_vault_and_the_restored_clone_allow_long_paths(self):
+        self.assertEqual(self.bare()[0], 0)
+        self.assertEqual(_git(self.vault, "config", "core.longpaths").strip(), "true")
+        rc, out, err, into = self.restore("longpaths")
+        self.assertEqual(rc, 0, out + err)
+        self.assertEqual(_git(into, "config", "core.longpaths").strip(), "true")
+
+    def test_the_payload_store_is_reported_once_a_week_and_never_changed(self):
+        before = dict(self.server_files())
+        rc, out, err = self.bare()
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn("payload store report (report only", out)
+        self.assertIn("unused :", out)
+        self.assertTrue(_git(self.vault, "config", "snapshot.payloadgcreport").strip())
+        added = {k for k in self.server_files() if k not in before}
+        self.assertFalse(any("pending" in k or "gc" in k.lower() for k in added), added)
+        rc, out, err = self.bare()
+        self.assertEqual(rc, 0, out + err)
+        self.assertNotIn("payload store report", out)
+        # Due again: age the stamp past the period.
+        _git(self.vault, "config", "snapshot.payloadgcreport", str(time.time() - 8 * 86400))
+        (self.src / "big1.bin").write_bytes(bytes(b ^ 0x01 for b in self.big1))
+        rc, out, err = self.bare()
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn("payload store report", out)
+
+    def test_the_report_can_be_turned_off_and_its_flag_is_validated(self):
+        rc, out, err = self.bare("--payload-report-days", "0")
+        self.assertEqual(rc, 0, out + err)
+        self.assertNotIn("payload store report", out)
+        rc, out, err = self.bare("--payload-report-days", "-1")
+        self.assertEqual(rc, 1, out + err)
+        self.assertIn("--payload-report-days must be 0 or more", err)
+        rc, out, err = self.run_tool(
+            self.src, "--vault", self.vault, "--no-push", "--payload-report-days", "3"
+        )
+        self.assertEqual(rc, 1, out + err)
+        self.assertIn("--payload-report-days only applies", err)
+
+    def test_a_failing_report_never_fails_the_run_that_pushed(self):
+        with unittest.mock.patch.object(snap, "payload_gc", side_effect=snap.SnapshotError("boom")):
+            rc, out, err = self.bare()
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn("payload report skipped: boom", out)
+        probe = subprocess.run(
+            ["git", "-C", str(self.vault), "config", "snapshot.payloadgcreport"],
+            capture_output=True, text=True,
+        )
+        self.assertNotEqual(probe.returncode, 0)  # a failed report leaves no stamp
+
 
 if __name__ == "__main__":
     unittest.main()

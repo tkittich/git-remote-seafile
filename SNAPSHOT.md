@@ -406,15 +406,18 @@ makes the contrast real rather than assumed.
 
 ## 8. Caveats and inherent limits
 
-**Nested Git repositories are detected and named — their contents are NOT
-captured.** `git add` records a directory containing its own `.git` as a single
-commit reference (mode `160000`), and that commit is not copied into the vault.
+**Nested Git repositories are captured as their files, not their history.**
+`git add` records a directory containing its own `.git` as a single commit
+reference (mode `160000`), and that commit is not copied into the vault.
 Measured: `git cat-file -t` on the recorded object fails with "could not get
-object info", and `nested/inner.txt` is absent from the snapshot. A restore
-would produce a broken directory. The tool prints a prominent warning naming
-each such path — **back those up separately**. Submodules are the same mechanism
-and are warned about identically. The capture plumbing is measured (below) and
-is the top item in [Future work](#15-future-work-and-deliberate-non-goals).
+object info", and `nested/inner.txt` is absent from a plain `git add` snapshot.
+Since 0.9.1 the tool replaces each such entry by the files under it (tracked,
+untracked and ignored, subject to `--exclude` and payload mode), at any depth,
+and prints which paths it did this for. The nested `.git` itself (history,
+branches, stashes) is **not** captured: back it up separately if you need it.
+Submodules take the same road. `--no-embedded-repos` restores the old
+behaviour (the commit id only, with a warning), and a vault that already holds
+a gitlink converts on its next run. The plumbing is measured below.
 
 **The source's `.git` is not captured.** The vault records the *working tree*,
 not the code repository's history — verified as 0 `.git/` entries in the
@@ -489,6 +492,11 @@ Retention is a real feature of restic and Borg — see
 [section 11](#11-how-this-compares-to-restic-borg-and-filesystem-snapshots).
 
 ### The nested-repository capture, measured for future work
+
+*Shipped in 0.9.1; the measurements below are what it is built on. The
+implementation uses `update-index --add` with paths, after dropping the
+gitlink, which behaves the same as `--cacheinfo` here and needs no
+`hash-object` pass of its own.*
 
 Caveat 1 is not a Git limitation. It is a limitation of `git add`, and the
 plumbing underneath `git add` does not have it. Measured, in this order:
@@ -756,19 +764,17 @@ Borg, and changes nothing for the helper or the vault.
 
 **The short list, in order:**
 
-1. **Capture nested repositories** instead of only warning about them — the
-   plumbing is measured at the end of [section 8](#8-caveats-and-inherent-limits).
-2. **Surface `gc`** — either run `git-remote-seafile gc` after a snapshot when
-   the helper reports enough packfiles, or document a schedule. Today the
-   warning is printed and nothing acts on it.
-3. **Shallow/partial restore** — `--restore` fetches the whole history; for a
+1. **Shallow/partial restore** — `--restore` fetches the whole history; for a
    vault with years of snapshots, `--depth` or `--filter=blob:none` would help.
    This needs the *helper* to implement Git's `depth`/`filter` options first:
    today it answers `unsupported`, and Git silently does a full clone, so the
    flag is accepted and ignored (section 12, USER_GUIDE §8.2).
-4. **Payload mode** -- large immutable files go to Seafile as plain files with
-   a manifest in git, snapshots by server-side copy; design in
-   [section 15.1](#151-payload-mode-large-files-by-hash-behind---payload-min-size).
+
+*Done since this list was written: nested-repository capture (0.9.1) and payload
+mode (0.9.0, [section 15.1](#151-payload-mode-large-files-by-hash-behind---payload-min-size)).
+The helper already tail-merges small packs after a push (`seafile.autogc`, on by
+default, deferred with a notice above the download budget), so the snapshot tool
+needs no `gc` step of its own.*
 
 **Open questions, deliberately unresolved:**
 

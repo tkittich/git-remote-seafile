@@ -31,6 +31,7 @@ def add_payload_groups(parser: argparse.ArgumentParser) -> None:
     )
     add_payload_arguments(mode_group)
     add_payload_jobs_argument(mode_group)
+    add_payload_report_argument(mode_group)
     tools_group = parser.add_argument_group(
         "payload tools: act on a remote's payload (no snapshot is taken)",
         "Each needs --remote. Reports and verification change nothing; "
@@ -82,8 +83,26 @@ def add_payload_jobs_argument(parser: Any) -> None:
     )
 
 
+def add_payload_report_argument(parser: Any) -> None:
+    parser.add_argument(
+        "--payload-report-days",
+        type=float,
+        default=None,
+        metavar="N",
+        help="payload mode: after a run that pushes, print the report-only --payload-gc "
+        "summary (what is stored, in use and reclaimable) when none was printed in the last "
+        "N days (default 7; 0 never). It changes nothing on the server; --payload-gc "
+        "--payload-delete is still the only thing that deletes",
+    )
+
+
 def payload_conflicts(args: argparse.Namespace) -> list[str]:
     problems: list[str] = []
+    if args.payload_report_days is not None:
+        if args.payload_report_days < 0:
+            problems.append("--payload-report-days must be 0 or more")
+        if args.restore or args.maintain or args.payload_gc or args.no_push:
+            problems.append("--payload-report-days only applies to a snapshot run that pushes")
     if args.no_payload and args.payload_min_size is not None:
         problems.append("--no-payload and --payload-min-size contradict each other")
     # Only a flag typed on this command line is checked here: a default or a
@@ -283,7 +302,8 @@ def run_payload_step(
     if from_default and previous is None and base is not None:
         print(conversion_warning(candidates, dry_run), flush=True)
     manifest, cache = build_manifest(
-        candidates, source, {} if rehash else load_hash_cache(git_dir), min_size, rule=rule
+        candidates, source, {} if rehash else load_hash_cache(git_dir), min_size, rule=rule,
+        clock_offset_ns=fs_clock_offset_ns(source) if candidates else 0,
     )
     todo = publish_payload(
         remote or "", source, manifest, dry_run=dry_run, jobs=jobs or 3
@@ -313,3 +333,42 @@ def payload_summary(
         if store:
             text += "\n" + store
     return text
+
+
+_REPORT_KEY = "snapshot.payloadgcreport"
+_DEFAULT_REPORT_DAYS = 7.0
+
+
+def maybe_report_payload_gc(
+    git_dir: Path, vault: Path, remote: str, days: float | None, *, now: float | None = None
+) -> bool:
+    """Print the report-only ``--payload-gc`` summary when one is due; never raises.
+
+    Reclaimable space is invisible until someone asks, and a store that only
+    grows is the one thing payload mode cannot fix by itself.  Asking costs a
+    listing of the object directories and a history scan, so it is rationed to
+    once per *days*, and it runs after the push so a slow or failing report can
+    never cost a snapshot.  It deletes nothing and writes nothing but the time
+    it ran, on this machine.
+    """
+    period = _DEFAULT_REPORT_DAYS if days is None else days
+    if period <= 0:
+        return False
+    stamp = _read_config_key(git_dir, _REPORT_KEY)
+    current = time.time() if now is None else now
+    try:
+        if stamp and current - float(stamp) < period * 86400:
+            return False
+    except ValueError:
+        pass  # an unreadable stamp means "due"
+    print("\npayload store report (report only; nothing is deleted):", flush=True)
+    try:
+        payload_gc(remote, vault, delete=False, grace_days=1.0)
+    except Exception as exc:  # a report must never cost the run that already pushed
+        print(f"payload report skipped: {exc}", flush=True)
+        return False
+    _run(
+        ["git", "--git-dir", str(git_dir), "config", _REPORT_KEY, f"{current:.0f}"],
+        text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    )
+    return True

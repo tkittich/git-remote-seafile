@@ -326,26 +326,64 @@ class SnapshotGuardTests(_SnapshotFixture):
         self.assertEqual(rc, 1)
         self.assertIn("another snapshot is running", err)
 
-    def test_embedded_repositories_are_reported(self):
-        # git records a directory containing its own .git as a gitlink: the
-        # commit id is captured, the contents are not.  Silently producing a
-        # broken restore is the worst thing a backup tool can do, so this must
-        # be loud.
-        nested = self.code / "nested"
+    def _nested_repo(self, name: str = "nested") -> pathlib.Path:
+        nested = self.code / name
         nested.mkdir()
         (nested / "inner.txt").write_bytes(b"inner\n")
+        (nested / "sub").mkdir()
+        (nested / "sub" / "deep.txt").write_bytes(b"deep\n")
         _git(nested, "init", "-q", "-b", "main", ".")
         _git(nested, "config", "user.email", "inner@example.com")
         _git(nested, "config", "user.name", "Inner")
         _git(nested, "add", "-A")
         _git(nested, "commit", "-qm", "inner")
+        (nested / "ignored.log").write_bytes(b"ignored\n")
+        (nested / ".gitignore").write_bytes(b"*.log\n")
+        return nested
 
+    def test_embedded_repositories_are_captured_as_their_files(self):
+        # git records a directory containing its own .git as a gitlink: the
+        # commit id is captured, the contents are not, and a restore of that was
+        # an empty directory.  The files go in (ignored ones too -- this is a
+        # whole-tree backup) and the .git does not.
+        self._nested_repo()
         rc, out, _ = self.snapshot()
         self.assertEqual(rc, 0)
         self.assertIn("embedded git repositories", out)
-        self.assertIn("nested", out)
-        # and the warning is telling the truth: the content is not there
+        self.assertIn("nested (4 file(s))", out)
+        self.assertNotIn("WARNING: these paths are embedded", out)
+        tree = self.tree()
+        for name in ("nested/inner.txt", "nested/sub/deep.txt", "nested/ignored.log"):
+            self.assertIn(name, tree)
+        self.assertFalse([p for p in tree if "/.git/" in p or p.endswith("/.git")])
+        self.assertNotIn("160000", _git(self.vault, "ls-tree", "-r", BRANCH).stdout)
+
+    def test_a_captured_repository_follows_changes_and_excludes(self):
+        nested = self._nested_repo()
+        self.assertEqual(self.snapshot()[0], 0)
+        (nested / "added.txt").write_bytes(b"added\n")
+        (nested / "inner.txt").unlink()
+        rc, out, _ = self.snapshot("--exclude", "*.log")
+        self.assertEqual(rc, 0)
+        tree = self.tree()
+        self.assertIn("nested/added.txt", tree)
+        self.assertNotIn("nested/inner.txt", tree)
+        self.assertNotIn("nested/ignored.log", tree)
+        self.assertNotIn("160000", _git(self.vault, "ls-tree", "-r", BRANCH).stdout)
+
+    def test_no_embedded_repos_keeps_the_gitlink_and_the_warning(self):
+        self._nested_repo()
+        rc, out, _ = self.snapshot("--no-embedded-repos")
+        self.assertEqual(rc, 0)
+        self.assertIn("WARNING: these paths are embedded", out)
         self.assertNotIn("nested/inner.txt", self.tree())
+
+    def test_a_vault_that_holds_a_gitlink_converts_on_the_next_run(self):
+        self._nested_repo()
+        self.assertEqual(self.snapshot("--no-embedded-repos")[0], 0)
+        self.assertNotIn("nested/inner.txt", self.tree())
+        self.assertEqual(self.snapshot()[0], 0)
+        self.assertIn("nested/inner.txt", self.tree())
 
 class ByteExactnessTests(_SnapshotFixture):
     """The round trip: bytes on disk come back unchanged, filters or not."""
@@ -1106,7 +1144,7 @@ class RestoreVerificationTests(_SnapshotFixture):
         _git(inner, "-c", "user.email=e@x", "-c", "user.name=v",
              "commit", "-q", "-m", "inner")
 
-        self.snapshot("--remote", str(self.remote))
+        self.snapshot("--remote", str(self.remote), "--no-embedded-repos")
         rc, out, err = self.restore_to(self.restored)
         self.assertEqual(rc, 0, err)
         self.assertIn("embedded git repositories", out)

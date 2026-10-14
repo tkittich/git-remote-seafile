@@ -841,7 +841,7 @@ These are the places where the tool, Git, or Seafile stops short. None is hidden
 | No retention or pruning | Every snapshot is kept forever; pruning would rewrite history. Choose the remote knowing it only grows. |
 | Secrets are permanent | `.env` and keys are captured by design and Git history is forever. Every run lists the credential-shaped paths; push only to a library only you can read. |
 | File modes and symlinks on Windows | The executable bit is not reliably recorded; symlinks restore as text files unless `core.symlinks` is enabled. The restore verification names a mismatch rather than reporting success. |
-| Embedded git repositories | Only the nested repository's commit id is recorded, not its contents. Back them up separately. |
+| Embedded git repositories | The files are captured (ignored ones too); the nested `.git` (history, branches, stashes) is not, so back that up separately. `--no-embedded-repos` records only the commit id, as 0.9.0 did. |
 | Timestamps and empty directories | Not preserved; Git records content. A restore gives every file the checkout time. |
 | Touching a file produces no commit | A heartbeat record of "a backup ran" is not available. |
 | Case-insensitive filesystems and long Windows paths | `Foo.txt`/`foo.txt` may not both round-trip; a deep restore destination can exceed 260 characters. |
@@ -927,6 +927,8 @@ Defaults are resolved most-specific-first:
 | `--branch <branch>` | The vault branch holding the snapshots. Default: `snapshot` — one shared chain across machines (§15.6). `--branch snapshot-<host>` gives per-machine chains instead. |
 | `--exclude <glob>` | Repeatable. Skip matching paths, e.g. `--exclude node_modules`. |
 | `--default-excludes` / `--no-default-excludes` | Add the recommended junk exclusions (§15.2.1), or explicitly not. |
+| `--no-embedded-repos` | Record a nested git repository only as its commit id (the 0.9.0 behaviour). By default its files are captured, its `.git` is not. |
+| `--payload-report-days N` | Payload mode: print the report-only `--payload-gc` summary when none was printed in N days (default 7, `0` off). |
 | `--message <text>` | Override the snapshot commit message. |
 | `--code-remote <name>` | Also `git push <name>` in the source repo first; the name is validated up front. |
 | `--no-push` | This run pushes nothing and changes no remembered setting. |
@@ -1070,7 +1072,7 @@ Before the first staging the tool samples the tree (a few chunks from each of up
 
 **The vault's remote is a remote.** Every push adds one small packfile there, so the §10 threshold warning and tail merge apply to it exactly as to any other — and SNAPSHOT.md §8's large-files caveat is the reason to watch it.
 
-The full design — the alternatives that do not work, the nested-repository analysis (today the tool warns; the measured capture is future work), the own-review findings, and a comparison with restic and Borg — is in [SNAPSHOT.md](SNAPSHOT.md).
+The full design — the alternatives that do not work, the nested-repository analysis (the measured capture shipped in 0.9.1), the own-review findings, and a comparison with restic and Borg — is in [SNAPSHOT.md](SNAPSHOT.md).
 
 ### 15.9 Large payloads: payload mode
 
@@ -1129,6 +1131,11 @@ What to know:
   - *History rewrites need care.* The manifests are what keep objects alive: `git push --force`, `git filter-repo` or deleting a snapshot branch or tag make older manifests unreachable, and a later `--payload-gc --payload-delete` will then treat their objects as unused.
 - **A snapshot costs nothing to keep.** Objects are never overwritten, so a snapshot
   is a manifest; a renamed or duplicated file uploads nothing.
+- **A weekly report, never a deletion.** After a run that pushes, the tool prints the
+  report-only `--payload-gc` summary (stored, in use, reclaimable) when none was printed in
+  the last 7 days; `--payload-report-days N` changes the period and `0` turns it off. A
+  report that fails is a note, not a failed run, and nothing is deleted without
+  `--payload-gc --payload-delete`.
 - **Uploads are parallel and verified.** `--payload-jobs N` (default 3). Each object
   goes up under a temporary name, is hashed as it is sent, and is renamed to its hash
   only if the bytes match; the whole set is re-checked just before the vault is pushed.
