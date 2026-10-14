@@ -1277,12 +1277,12 @@ class TestTransferLinksAreNotTrustedBlindly(unittest.TestCase):
 
     def test_a_backslash_authority_does_not_borrow_the_api_hosts_identity(self):
         # urlparse reads the host as api-host:8000; urllib3 connects to "other".
-        link = "http://other\@api-host:8000/seafhttp/files/t/x"
+        link = "http://other\\@api-host:8000/seafhttp/files/t/x"
         self.assertIsNot(self.client._transfer_session(link), self.client.session)
 
     def test_a_link_with_an_ambiguous_authority_is_refused_outright(self):
         for link in (
-            "http://other\@api-host:8000/seafhttp/files/t/x",
+            "http://other\\@api-host:8000/seafhttp/files/t/x",
             "http://user:pw@api-host:8000/seafhttp/files/t/x",
             "http://api-host:8000\x00.evil/seafhttp/files/t/x",
         ):
