@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-10-14
+
+A review release: three independent code reviews of the Git remote helper, and every finding that was a
+defect is fixed. Two could lose data silently (`gc` and `push`), three leaked or misdirected a token, and
+the snapshot tool now captures nested repositories as their files.
+
+### Upgrading from 0.9.0
+
+- **`gc` is stricter, on purpose.** A ref that cannot be read, or a refs directory its parent lists but that now reports 404, stops `gc` with nothing deleted. It used to carry on without that ref, and its commits were pruned. A re-run after the transient failure is the remedy.
+- **A push does one more listing and one more check.** The remote refs are read again under the lock, and the pack directory is listed after the upload so every `.pack` and `.idx` is seen at its local size before a ref names it. On a slow link that is two extra requests per push.
+- **A nested git repository is now captured as its files** (the nested `.git` is not). A vault whose source holds one gets those files on its next snapshot, which can be large. `--no-embedded-repos` keeps the 0.9.0 behaviour.
+- **After a run that pushes, the tool may print a payload store report** (at most every 7 days, report-only). `--payload-report-days 0` turns it off.
+- **Pack names must be lowercase** and a `seafile://` path may not contain a backslash. Nothing this tool or git writes is affected; a library holding hand-made names is.
+- **A remote named like a subcommand (`gc`, `test`, `unlock`, `doctor`) now works** as a remote. Nothing changes for a person running the subcommand.
+- **Set the library's history to a few days** (USER_GUIDE 8.0.1). It is advice, not a requirement, but full history keeps every pack `gc` removes.
+- No format changed: 0.9.0 vaults, manifests and remotes are read as before, and `PAYLOAD_MIN_TOOL` stays `0.9.0`.
+
 ### Added
 - **Embedded git repositories are captured as their files.** A directory with its own `.git` used to be recorded as a commit id and restore empty; its tracked, untracked and ignored files now go into the snapshot (subject to `--exclude` and payload mode), at any depth, and the run lists them. The nested `.git` is not captured. `--no-embedded-repos` keeps the old behaviour; a vault holding a gitlink converts on its next run.
 - **A report-only `--payload-gc` summary after a run that pushes**, at most every `--payload-report-days N` (default 7, `0` off). It deletes nothing and a failing report is a note, not a failed run.
@@ -1504,6 +1521,7 @@ Data-loss and silent-failure fixes, and the Python floor raised to 3.9.
   with zero-config desktop-client token discovery, distributed locking, remote
   packfile compaction, and a Git LFS custom transfer agent.
 
+[0.9.1]: https://github.com/tkittich/git-remote-seafile/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/tkittich/git-remote-seafile/compare/v0.8.8...v0.9.0
 [0.8.8]: https://github.com/tkittich/git-remote-seafile/compare/v0.8.7...v0.8.8
 [0.8.7]: https://github.com/tkittich/git-remote-seafile/compare/v0.8.6...v0.8.7

@@ -244,6 +244,8 @@ git pull
 pip install -e .
 ```
 
+**Upgrading to v0.9.1 from v0.9.0** changes behaviour in four places: `gc` stops (deleting nothing) when a ref or refs directory cannot be read, so re-run it after a transient failure; a push lists the pack directory and re-reads the refs under the lock (two more requests); a nested git repository in a snapshot source is captured as its files (`--no-embedded-repos` keeps the old record); pack names must be lowercase. No file format changed.
+
 **Upgrading to v0.8.8 from v0.8.7 or earlier changes four defaults you may notice:**
 
 - `seafile.autogc` is now **on**: after a qualifying push the helper merges the small packs. `git config seafile.autogc false` restores the tip-only behaviour (§10.2).
