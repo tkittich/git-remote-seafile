@@ -289,6 +289,10 @@ def sweep_stale_scratch(max_age_seconds: float = 24 * 3600, now: float | None = 
 
 def rev_parse(ref: str) -> str | None:
     """Resolve a reference to its SHA-1 hash."""
+    if ref.startswith("-"):
+        # git would read it as an option.  Git sends full ref names and object
+        # ids, so this only guards a hand-driven or hostile spec.
+        return None
     out, _, code = run_git(["rev-parse", "--verify", ref])
     if code != 0:
         return None

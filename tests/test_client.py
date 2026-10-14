@@ -1269,6 +1269,65 @@ class TestTransferSession(unittest.TestCase):
         self.assertFalse(retry.raise_on_status)
 
 
+class TestTransferLinksAreNotTrustedBlindly(unittest.TestCase):
+    """A returned link is server output: it may not choose where the token goes."""
+
+    def setUp(self):
+        self.client = SeafileClient(server_url="http://api-host:8000", token="test-tok")
+
+    def test_a_backslash_authority_does_not_borrow_the_api_hosts_identity(self):
+        # urlparse reads the host as api-host:8000; urllib3 connects to "other".
+        link = "http://other\@api-host:8000/seafhttp/files/t/x"
+        self.assertIsNot(self.client._transfer_session(link), self.client.session)
+
+    def test_a_link_with_an_ambiguous_authority_is_refused_outright(self):
+        for link in (
+            "http://other\@api-host:8000/seafhttp/files/t/x",
+            "http://user:pw@api-host:8000/seafhttp/files/t/x",
+            "http://api-host:8000\x00.evil/seafhttp/files/t/x",
+        ):
+            with self.assertRaises(SeafileAPIError):
+                self.client._adjust_url(link)
+
+    def test_an_ordinary_link_still_passes(self):
+        link = "http://api-host:8000/seafhttp/files/t/x.pack"
+        self.assertEqual(self.client._adjust_url(link), link)
+        self.assertIs(self.client._transfer_session(link), self.client.session)
+        rel = "/seafhttp/files/t/x.pack"
+        self.assertTrue(self.client._adjust_url(rel).startswith("http://api-host:8000/"))
+
+    def test_a_transfer_failure_does_not_print_the_link_token(self):
+        import requests
+
+        link = "http://api-host:8000/seafhttp/files/SECRETTOKEN/x.pack?token=SECRETTOKEN"
+        self.client.session.get = MagicMock(
+            side_effect=requests.ConnectionError(
+                "HTTPConnectionPool(host='api-host', port=8000): Max retries exceeded with url: "
+                "/seafhttp/files/SECRETTOKEN/x.pack?token=SECRETTOKEN (Caused by NewConnectionError)"
+            )
+        )
+        with self.assertRaises(SeafileAPIError) as ctx:
+            self.client._xfer("get", link, timeout=1)
+        self.assertNotIn("SECRETTOKEN", str(ctx.exception))
+        self.assertIn("ConnectionError", str(ctx.exception))
+        self.assertIn("http://api-host:8000", str(ctx.exception))
+
+    def test_an_upload_failure_does_not_print_the_link_token(self):
+        import requests
+
+        self.client.session.post = MagicMock(
+            side_effect=requests.ConnectionError(
+                "Max retries exceeded with url: /upload-api/SECRETTOKEN?ret-json=1 (reset)"
+            )
+        )
+        self.client.session.get = MagicMock(
+            return_value=MagicMock(status_code=200, text='"http://api-host:8000/upload-api/SECRETTOKEN"')
+        )
+        with self.assertRaises(SeafileAPIError) as ctx:
+            self.client.upload_file("repo1", "/d", "f.bin", b"abc")
+        self.assertNotIn("SECRETTOKEN", str(ctx.exception))
+
+
 class TestTransferRetries(unittest.TestCase):
     """A blip mid-transfer must not fail the whole fetch (#7).
 
@@ -1564,6 +1623,42 @@ class TestDeleteForgetsDirectories(unittest.TestCase):
         client.session.delete.return_value = MagicMock(status_code=500)
         self.assertFalse(client.delete_entry("r1", "/a"))
         self.assertEqual(client._known_dirs, {("r1", "/a")})
+
+
+
+class TestTextFilesAreBounded(unittest.TestCase):
+    def setUp(self):
+        self.client = SeafileClient(server_url="http://api-host:8000", token="t")
+        self.client.session.get = MagicMock(
+            return_value=MagicMock(status_code=200, text='"http://api-host:8000/seafhttp/files/t/ref"')
+        )
+
+    def _body(self, declared, content=b"abc"):
+        return MagicMock(status_code=200, headers={"Content-Length": str(declared)}, content=content)
+
+    def test_a_body_declared_larger_than_the_cap_is_not_read(self):
+        resp = self._body(200 * 1024 * 1024)
+        type(resp).content = property(lambda self: (_ for _ in ()).throw(AssertionError("body was read")))
+        self.client._file_session.get = MagicMock(return_value=resp)
+        self.client.session.get = MagicMock(
+            side_effect=[
+                MagicMock(status_code=200, text='"http://api-host:8000/seafhttp/files/t/ref"'),
+                resp,
+            ]
+        )
+        with self.assertRaises(SeafileAPIError) as ctx:
+            self.client.get_file_bytes("repo1", "/refs/heads/main", max_bytes=1024)
+        self.assertIn("refusing to read", str(ctx.exception))
+
+    def test_a_small_body_is_returned(self):
+        resp = self._body(3, b"abc")
+        self.client.session.get = MagicMock(
+            side_effect=[
+                MagicMock(status_code=200, text='"http://api-host:8000/seafhttp/files/t/ref"'),
+                resp,
+            ]
+        )
+        self.assertEqual(self.client.get_file_bytes("repo1", "/refs/heads/main", max_bytes=1024), b"abc")
 
 
 if __name__ == "__main__":

@@ -83,5 +83,17 @@ class TestPacksModule(unittest.TestCase):
         installer.assert_called_once()
 
 
+
+class TestPackNamesCannotCollideByCase(unittest.TestCase):
+    """A remote pack that differs from a local one only by case is one file on Windows."""
+
+    def test_an_uppercase_name_is_not_a_valid_pack_name(self):
+        from git_remote_seafile.packs import is_valid_pack_name
+
+        self.assertTrue(is_valid_pack_name("pack-0123456789abcdef0123456789abcdef01234567.pack"))
+        self.assertFalse(is_valid_pack_name("pack-0123456789ABCDEF0123456789ABCDEF01234567.pack"))
+        self.assertFalse(is_valid_pack_name("pack-aB.pack"))
+
+
 if __name__ == "__main__":
     unittest.main()

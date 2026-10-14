@@ -340,5 +340,19 @@ class TestNoticeRateLimit(unittest.TestCase):
             self.assertTrue(helper._notice_due("u", now=1000.0 + 86401))
 
 
+
+class TestBackslashesInThePath(unittest.TestCase):
+    """The collision guard compares the forward-slash form, so a backslash must not reach it."""
+
+    def test_a_backslash_in_a_path_component_is_refused(self):
+        for url in ("seafile://lib/sub\\repo", "seafile://lib/a/b\\c"):
+            with self.assertRaises(ValueError, msg=url) as ctx:
+                parse_seafile_url(url)
+            self.assertIn("backslash", str(ctx.exception))
+
+    def test_an_ordinary_nested_path_still_parses(self):
+        self.assertEqual(parse_seafile_url("seafile://lib/sub/repo").repo_path, "/sub/repo")
+
+
 if __name__ == "__main__":
     unittest.main()

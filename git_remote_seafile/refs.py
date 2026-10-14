@@ -29,6 +29,10 @@ from .client import SeafileAPIError, SeafileClient
 #: stable (heads before tags), which makes the advertised listing deterministic.
 REF_NAMESPACES = ("refs/heads", "refs/tags")
 
+#: A ref file is an object id and a newline (at most 65 bytes); anything near
+#: this is not one.
+_MAX_REF_FILE_BYTES = 4096
+
 _INVALID_REF_CHARS = re.compile(r"[\s\x00-\x1f\x7f~^:?*\[\\]|\.\.|//|\.lock$|@\{")
 
 
@@ -155,6 +159,20 @@ def iter_refs(
                 stack.append((f"{dir_path}/{name}", f"{prefix}{name}/", True))
             elif kind == "file":
                 ref_name = f"{ns}/{prefix}{name}"
+                size = entry.get("size")
+                if isinstance(size, int) and not isinstance(size, bool) and size > _MAX_REF_FILE_BYTES:
+                    # A ref holds one object id.  Reading a file this large
+                    # only to reject it as "not a SHA" is the memory cost a
+                    # hostile library is after.
+                    message = (
+                        f"the ref {ref_name} is {size} bytes; a ref holds one object id, so it "
+                        "is not read"
+                    )
+                    if strict:
+                        raise SeafileAPIError(message)
+                    sys.stderr.write(f"Warning: {message}\n")
+                    sys.stderr.flush()
+                    continue
                 if is_conflict_copy(name):
                     # Not a malformed name: a *symptom*.  Two clients wrote one
                     # ref at once and the server kept both.  Say what it is and

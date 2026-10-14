@@ -8,6 +8,7 @@ import io
 import json
 import os
 from pathlib import Path
+import re
 import sys
 import time
 from typing import Any
@@ -16,12 +17,86 @@ from urllib.parse import quote, urlparse, urlunparse
 
 import requests
 from requests.adapters import HTTPAdapter
+from urllib3.util import parse_url as _urllib3_parse_url
 from urllib3.util.retry import Retry
 
 from .git_util import get_git_config_bool
 from .seafile_paths import get_candidate_db_paths
 from .url import normalize_netloc
 from .sqlite_read import open_live_sqlite_ro
+
+
+def _transfer_authority(url: str) -> tuple[str, int | None] | None:
+    """``(host, port)`` of *url* as the HTTP stack will connect to it, or ``None``.
+
+    Whether the account token rides along is decided by comparing this with the
+    API server's.  It must be the parser the *connection* uses: ``urlparse`` and
+    urllib3 read ``http://other\\@api-host/x`` differently (the first sees host
+    ``api-host``, the second connects to ``other``), and a check made with one
+    parser on a request sent by the other hands the token to ``other``.  The
+    port is dropped when it is the scheme's default, so ``https://h`` and
+    ``https://h:443`` -- and a proxy's mistaken ``http://h`` -- are one place.
+    ``None`` (unparseable) never equals anything, so it never gets the token.
+    """
+    try:
+        parsed = _urllib3_parse_url(url if "://" in url else f"http://{url}")
+    except Exception:
+        return None
+    host = (parsed.host or "").lower()
+    if not host:
+        return None
+    port = parsed.port
+    if port in (80, 443):
+        port = None
+    return host, port
+
+
+def _link_authority_is_sane(url: str) -> bool:
+    """False for a transfer link whose authority cannot be read the same way twice.
+
+    A real file-server link is ``scheme://host[:port]/path``.  Backslashes,
+    userinfo and control characters in the authority exist only to make two
+    parsers disagree, so a link carrying them is refused rather than
+    interpreted.
+    """
+    if "://" not in url:
+        return True  # relative: completed against the server
+    authority = url.split("://", 1)[1]
+    for stop in ("/", "?", "#"):
+        authority = authority.split(stop, 1)[0]
+    return not any(ch in authority for ch in ("\\", "@")) and all(
+        32 < ord(ch) < 127 for ch in authority
+    )
+
+
+_LINK_IN_ERROR = re.compile(r"url: \S+")
+
+
+def _scrub_transfer_error(ex: BaseException, url: str) -> str:
+    """The text of a request error without the transfer link it names.
+
+    ``requests`` puts the request path in its messages (``Max retries exceeded
+    with url: /seafhttp/files/<token>/...``), and the path of a download or
+    upload link carries a short-lived bearer token.  ``_error_origin`` keeps it
+    out of the messages this module writes; this keeps it out of the ones
+    ``requests`` writes.
+    """
+    text = str(ex)
+    parsed = urlparse(url)
+    for secret in (
+        f"{parsed.path}?{parsed.query}" if parsed.query else "",
+        parsed.path,
+        parsed.query,
+    ):
+        if secret and len(secret) > 1:
+            text = text.replace(secret, "<transfer link>")
+    return _LINK_IN_ERROR.sub("url: <transfer link>", text)
+
+
+#: What a text file the tool reads from a library (ref, HEAD, lock ticket, a
+#: small state file) may be.  Generous for the largest of those, and far below
+#: what a hostile library could plant to exhaust memory.
+MAX_TEXT_FILE_BYTES = 16 * 1024 * 1024
 
 
 class SeafileAuthError(Exception):
@@ -561,7 +636,7 @@ class SeafileClient:
         Both sessions share pooling, TLS/proxy settings and the retry adapter;
         they differ only in whether the Seafile account token rides along.
         """
-        if normalize_netloc(url) == normalize_netloc(self.server_url):
+        if _transfer_authority(url) == _transfer_authority(self.server_url):
             return self.session
         return self._file_session
 
@@ -613,6 +688,11 @@ class SeafileClient:
         on ``host:8082`` is not ``host``, and ``host:8082`` over http stays
         ``host:8082``.
         """
+        if not _link_authority_is_sane(raw_url):
+            raise SeafileAPIError(
+                "the server returned a transfer link with an unreadable host "
+                f"({self._error_origin(raw_url)}); refusing to send anything to it"
+            )
         srv = urlparse(self.server_url)
         tgt = urlparse(raw_url)
 
@@ -821,13 +901,20 @@ class SeafileClient:
 
     def get_file_text(self, repo_id: str, file_path: str) -> str | None:
         """Download file and return as string, or None if not found."""
-        data = self.get_file_bytes(repo_id, file_path)
+        data = self.get_file_bytes(repo_id, file_path, max_bytes=MAX_TEXT_FILE_BYTES)
         if data is None:
             return None
         return data.decode("utf-8", errors="replace").strip()
 
-    def get_file_bytes(self, repo_id: str, file_path: str) -> bytes | None:
-        """Download file content, or None if 404."""
+    def get_file_bytes(
+        self, repo_id: str, file_path: str, max_bytes: int | None = None
+    ) -> bytes | None:
+        """Download file content, or None if 404.
+
+        With ``max_bytes`` a body the server *declares* larger than that is
+        refused before it is read: refs, HEAD and lock tickets are a few dozen
+        bytes, and a planted 200 MiB one was otherwise buffered whole.
+        """
         clean_path = "/" + file_path.strip("/")
         url = f"{self.server_url}/api2/repos/{repo_id}/file/?p={quote(clean_path, safe='/')}"
         resp = self.session.get(url, timeout=self.timeout)
@@ -838,15 +925,47 @@ class SeafileClient:
 
         dl_url = resp.text.strip().strip('"')
         dl_url = self._adjust_url(dl_url)
-        file_resp = self._transfer_session(dl_url).get(dl_url, timeout=self.timeout)
-        if file_resp.status_code == 404:
-            return None
-        if file_resp.status_code != 200:
+        file_resp = self._xfer("get", dl_url, timeout=self.timeout, stream=max_bytes is not None)
+        try:
+            if file_resp.status_code == 404:
+                return None
+            if file_resp.status_code != 200:
+                raise SeafileAPIError(
+                    f"Failed to download {clean_path}: HTTP {file_resp.status_code} "
+                    f"(GET {self._error_origin(dl_url)})"
+                )
+            if max_bytes is not None:
+                try:
+                    declared = int(file_resp.headers.get("Content-Length", ""))
+                except (TypeError, ValueError):
+                    declared = None
+                if declared is not None and declared > max_bytes:
+                    raise SeafileAPIError(
+                        f"{clean_path} is {declared} bytes, more than the {max_bytes} this "
+                        "file may hold; refusing to read it"
+                    )
+            return file_resp.content
+        finally:
+            if max_bytes is not None:
+                try:
+                    file_resp.close()
+                except Exception:
+                    pass
+
+    def _xfer(self, method: str, url: str, **kwargs: Any) -> requests.Response:
+        """One request to a transfer link, with its failures stripped of the link.
+
+        The exception ``requests`` raises names the full request path, token
+        included, and callers print exceptions.  ``from None`` also keeps the
+        original out of an uncaught traceback.
+        """
+        try:
+            return getattr(self._transfer_session(url), method)(url, **kwargs)
+        except requests.RequestException as ex:
             raise SeafileAPIError(
-                f"Failed to download {clean_path}: HTTP {file_resp.status_code} "
-                f"(GET {self._error_origin(dl_url)})"
-            )
-        return file_resp.content
+                f"{type(ex).__name__} during {method.upper()} {self._error_origin(url)}: "
+                f"{_scrub_transfer_error(ex, url)}"
+            ) from None
 
     @staticmethod
     def _error_origin(url: str) -> str:
@@ -935,8 +1054,8 @@ class SeafileClient:
                 "Content-Type": mp.content_type,
                 "Content-Length": str(len(mp)),
             }
-            up_resp = self._transfer_session(upload_url).post(
-                upload_url, data=mp, headers=headers, timeout=self._upload_timeout()
+            up_resp = self._xfer(
+                "post", upload_url, data=mp, headers=headers, timeout=self._upload_timeout()
             )
         elif isinstance(payload, (bytes, bytearray)) and progress_callback is not None:
             bio = io.BytesIO(payload)
@@ -952,14 +1071,14 @@ class SeafileClient:
                 "Content-Type": mp.content_type,
                 "Content-Length": str(len(mp)),
             }
-            up_resp = self._transfer_session(upload_url).post(
-                upload_url, data=mp, headers=headers, timeout=self._upload_timeout()
+            up_resp = self._xfer(
+                "post", upload_url, data=mp, headers=headers, timeout=self._upload_timeout()
             )
         else:
             files = {"file": (filename, payload)}
             data = {"parent_dir": clean_parent, "replace": "1" if replace else "0"}
-            up_resp = self._transfer_session(upload_url).post(
-                upload_url, files=files, data=data, timeout=self._upload_timeout()
+            up_resp = self._xfer(
+                "post", upload_url, files=files, data=data, timeout=self._upload_timeout()
             )
             if progress_callback:
                 try:
@@ -1038,7 +1157,7 @@ class SeafileClient:
                 try:
                     resp = session.post(url, data=mp, headers=headers, timeout=self._upload_timeout())
                 except requests.RequestException as ex:
-                    last_error = f"{type(ex).__name__}: {ex}"
+                    last_error = f"{type(ex).__name__}: {_scrub_transfer_error(ex, upload_url)}"
                     continue
                 if resp.status_code == 200:
                     last_error = ""
@@ -1091,9 +1210,7 @@ class SeafileClient:
             raise SeafileAPIError(f"Failed to get download link for {clean_path}: HTTP {resp.status_code}")
 
         dl_url = self._adjust_url(resp.text.strip().strip('"'))
-        file_resp = self._transfer_session(dl_url).get(
-            dl_url, timeout=self.timeout, stream=True
-        )
+        file_resp = self._xfer("get", dl_url, timeout=self.timeout, stream=True)
         try:
             if file_resp.status_code == 404:
                 return False

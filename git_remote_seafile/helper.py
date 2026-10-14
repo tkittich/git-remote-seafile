@@ -23,7 +23,7 @@ from .packs import (
 )
 from .refs import REF_NAMESPACES, conflict_copies_of, is_conflict_copy, iter_refs, is_valid_ref_name
 from .safety import check_preflight_safety, SafetyError
-from .url import parse_seafile_url
+from .url import mask_url, parse_seafile_url
 from .git_util import (
     HEX_SHA_RE,
     create_packfile,
@@ -502,7 +502,7 @@ class RemoteHelper:
         the library."""
         if self.path_defaulted and not self._refs_cache:
             sys.stderr.write(
-                f"Note: {self.raw_url} names no path, so this repository lives at "
+                f"Note: {mask_url(self.raw_url)} names no path, so this repository lives at "
                 f"'{self.repo_path}' in library '{self.library_name}'. Use "
                 f"seafile://{self.library_name}{self.repo_path} to say so explicitly.\n"
             )
@@ -562,7 +562,7 @@ class RemoteHelper:
             sys.stderr.write(
                 f"Warning: the remote's default branch (HEAD) was {deleted_ref}, which no longer "
                 f"exists, so clones will have no default branch. Point it at another branch with "
-                f"'git-remote-seafile set-head {self.raw_url} <branch>'.\n"
+                f"'git-remote-seafile set-head {mask_url(self.raw_url)} <branch>'.\n"
             )
             sys.stderr.flush()
 
@@ -805,7 +805,7 @@ class RemoteHelper:
                 sys.stderr.write(
                     f"Warning: {dst} was pushed, but the remote's default branch (HEAD) could "
                     f"not be set ({_flatten(ex)}). Set it with "
-                    f"'git-remote-seafile set-head {self.raw_url} <branch>'.\n"
+                    f"'git-remote-seafile set-head {mask_url(self.raw_url)} <branch>'.\n"
                 )
                 sys.stderr.flush()
 
@@ -847,7 +847,7 @@ class RemoteHelper:
                     f"{movable_count} packfile(s), above the automatic download budget "
                     f"({session_config.gc_max_mib} MiB, 2 x seafile.gcmaxpackmib).\n"
                     f"Auto tail-merge was deferred: it downloads and re-uploads those packs.\n"
-                    f"Run 'git-remote-seafile gc {self.raw_url}' manually when the time cost suits.\n\n"
+                    f"Run 'git-remote-seafile gc {mask_url(self.raw_url)}' manually when the time cost suits.\n\n"
                 )
                 sys.stderr.flush()
                 return 0
@@ -857,7 +857,7 @@ class RemoteHelper:
                 sys.stderr.write(
                     f"\nNotice: Remote repository has {movable_count} small packfiles (threshold: {threshold}), "
                     f"totaling {movable_bytes / (1024**3):.1f} GiB.\n"
-                    f"Tip: Run 'git-remote-seafile gc {self.raw_url}' to optimize remote storage,\n"
+                    f"Tip: Run 'git-remote-seafile gc {mask_url(self.raw_url)}' to optimize remote storage,\n"
                     f"     or run 'git config seafile.autogc true' to enable automatic tail merge\n"
                     f"     (automatic runs defer while the movable packs exceed 2 x seafile.gcmaxpackmib).\n\n"
                 )

@@ -202,6 +202,40 @@ class RefNameDifferentialTests(unittest.TestCase):
         self.assertEqual(disagreements, [], "is_valid_ref_name differs from git check-ref-format")
 
 
+
+class TestOversizedRefFiles(unittest.TestCase):
+    """A ref is one object id; a planted multi-megabyte file is not read."""
+
+    class _Client(FakeClient):
+        def list_dir(self, repo_id, path):
+            entries = super().list_dir(repo_id, path)
+            for entry in entries:
+                if entry["name"] == "huge":
+                    entry["size"] = 200 * 1024 * 1024
+            return entries
+
+        def get_file_text(self, repo_id, path):
+            raise AssertionError("an oversized ref must not be downloaded")
+
+    TREE = {"/r/refs/heads": {"huge": "file:aaa"}}
+
+    def test_lax_warns_and_does_not_download_it(self):
+        import contextlib
+        import io
+
+        buf = io.StringIO()
+        with contextlib.redirect_stderr(buf):
+            got = list(iter_refs(self._Client(self.TREE), "rid", "/r", "refs/heads"))
+        self.assertEqual(got, [])
+        self.assertIn("refs/heads/huge", buf.getvalue())
+
+    def test_strict_raises(self):
+        from git_remote_seafile.client import SeafileAPIError
+
+        with self.assertRaises(SeafileAPIError):
+            list(iter_refs(self._Client(self.TREE), "rid", "/r", "refs/heads", strict=True))
+
+
 if __name__ == "__main__":
     unittest.main()
 

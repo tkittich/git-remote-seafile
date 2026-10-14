@@ -849,6 +849,16 @@ class TrustedConfigPrecedenceTests(unittest.TestCase):
         self.assertEqual(self._run(None, None)[0], 300)
 
 
+
+class TestRevParseOptionLookingRefs(unittest.TestCase):
+    def test_a_ref_that_looks_like_an_option_is_not_passed_to_git(self):
+        from git_remote_seafile.git_util import rev_parse
+
+        with patch("git_remote_seafile.git_util.run_git") as run:
+            self.assertIsNone(rev_parse("-foo"))
+        run.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()
 

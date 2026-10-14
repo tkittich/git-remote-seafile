@@ -160,6 +160,14 @@ def _path_components(raw: str, url: str) -> list[str]:
             raise ValueError(
                 f"Invalid Seafile URL format: path segments cannot contain a NUL byte: {url}"
             )
+        if "\\" in part:
+            # A backslash is a separator on Windows and a letter elsewhere, so
+            # one URL would name two paths; the safety checks compare the
+            # forward-slash form, and a component holding a backslash slipped
+            # past the working-tree collision guard.
+            raise ValueError(
+                f"Invalid Seafile URL format: path segments cannot contain a backslash: {url}"
+            )
     return components
 
 

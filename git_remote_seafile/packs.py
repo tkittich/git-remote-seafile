@@ -14,7 +14,12 @@ from typing import Any
 from .client import SeafileClient, SeafileAPIError
 from .git_util import install_packfile
 
-PACK_NAME_RE = re.compile(r"^pack-[0-9a-zA-Z._-]+\.pack$")
+#: Lowercase only.  Git writes pack names as lowercase hex, and a name that
+#: differs from a local pack only by case is one file on Windows and macOS: a
+#: remote ``pack-<UPPERCASE>.pack`` passed the "do I already have it" check
+#: (case-sensitive) and then replaced the local pack in place.  No name this
+#: tool or git produces contains an uppercase letter, so none is accepted.
+PACK_NAME_RE = re.compile(r"^pack-[0-9a-z._-]+\.pack$")
 MAX_IN_MEMORY_PACK_BYTES = 16 * 1024 * 1024
 
 

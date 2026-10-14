@@ -716,6 +716,22 @@ class TestRemoteHelper(unittest.TestCase):
             self.assertNotIn("stale_sha", exclude)
         self.assertIn("could not re-read the remote refs", err.getvalue())
 
+    def test_a_password_in_the_url_is_masked_in_every_message_that_names_it(self):
+        h = make_helper()
+        h.client = MagicMock()
+        h.repo_id = "repo1"
+        h.repo_path = "/git-repo"
+        h.library_name = "lib"
+        h.raw_url = "seafile://https://user:SECRETPW@seafile.example.com/lib"
+        h.path_defaulted = True
+        h._refs_cache = {}
+        err = io.StringIO()
+        with patch("sys.stderr", err):
+            h._note_defaulted_path()
+            h._warn_if_head_dangles("refs/heads/main")
+        self.assertNotIn("SECRETPW", err.getvalue())
+        self.assertIn("seafile.example.com", err.getvalue())
+
     # -- a ref is published only for packs proven to be on the remote ---------
     def _push_one(self, listing, **kw):
         """Push main with one 8-byte pack; *listing* answers the pack directory."""
