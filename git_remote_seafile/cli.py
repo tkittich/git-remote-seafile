@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import io
+import os
 import sys
 from pathlib import Path
+from typing import Any
 from urllib.parse import quote
 from .helper import RemoteHelper
 from .client import SeafileAuthError, SeafileClient
@@ -681,6 +683,28 @@ def _run_helper(args: list[str]) -> int:
         return 1
 
 
+def _is_git_invoking_the_helper(args: list[str]) -> bool:
+    """True when ``<subcommand-name> <seafile url>`` is git talking, not a person.
+
+    Both shapes are ``name url``, so argv cannot tell them apart.  Git, and only
+    git, runs a helper with ``GIT_DIR`` set, no terminal on stdin, and the
+    protocol's first word waiting on it, so all three must hold.  Peeking does
+    not consume the byte stream: the helper still reads ``capabilities`` itself.
+    """
+    if len(args) != 2 or not args[1].lower().startswith("seafile://"):
+        return False
+    if not os.environ.get("GIT_DIR"):
+        return False
+    try:
+        stdin = sys.stdin
+        if stdin is None or stdin.isatty():
+            return False
+        raw: Any = stdin.buffer
+        return bool(raw.peek(12)[:12].startswith(b"capabilities"))
+    except Exception:
+        return False
+
+
 def main() -> int:
     if hasattr(sys.stdout, "reconfigure"):
         try:
@@ -710,6 +734,11 @@ def main() -> int:
         return _cmd_version([])
 
     command = args[0]
+    if command in _HANDLERS and _is_git_invoking_the_helper(args):
+        # A remote *named* like a subcommand (`gc`, `test`, `unlock`) is run by
+        # git as `git-remote-seafile <that name> <url>`; without this,
+        # `git fetch gc` ran a full compaction.
+        return _run_helper(args)
     if command in _HANDLERS:
         # `snapshot` has a full help of its own; every other command is rendered
         # from the table above.

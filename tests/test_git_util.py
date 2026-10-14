@@ -859,6 +859,56 @@ class TestRevParseOptionLookingRefs(unittest.TestCase):
         run.assert_not_called()
 
 
+
+class TestRemoveTree(unittest.TestCase):
+    def test_a_tree_of_read_only_files_is_actually_removed(self):
+        import stat as stat_mod
+
+        from git_remote_seafile.git_util import remove_tree
+
+        with tempfile.TemporaryDirectory() as td:
+            tree = Path(td) / "grs-push-x"
+            (tree / "sub").mkdir(parents=True)
+            for name in ("a.idx", "sub/b.pack"):
+                f = tree / name
+                f.write_bytes(b"x")
+                os.chmod(f, stat_mod.S_IREAD)
+            self.assertTrue(remove_tree(tree))
+            self.assertFalse(tree.exists())
+
+    def test_a_missing_tree_is_already_gone(self):
+        from git_remote_seafile.git_util import remove_tree
+
+        with tempfile.TemporaryDirectory() as td:
+            self.assertTrue(remove_tree(Path(td) / "never-existed"))
+
+    def test_the_sweeper_counts_only_what_it_removed(self):
+        import time
+
+        from git_remote_seafile import git_util
+
+        with tempfile.TemporaryDirectory() as td:
+            git_dir = Path(td)
+            keep, gone = git_dir / "grs-push-keep", git_dir / "grs-push-gone"
+            keep.mkdir()
+            gone.mkdir()
+            old = time.time() - 3 * 24 * 3600
+            os.utime(keep, (old, old))
+            os.utime(gone, (old, old))
+            def stubborn_remove(path):
+                # one directory cannot be removed, however hard we try
+                if path.name == "grs-push-keep":
+                    return False
+                path.rmdir()
+                return True
+
+            with patch.object(git_util, "get_git_dir", return_value=git_dir), \
+                    patch.object(git_util, "remove_tree", side_effect=stubborn_remove):
+                removed = git_util.sweep_stale_scratch()
+            self.assertEqual(removed, 1)
+            self.assertTrue(keep.exists())
+
+
 if __name__ == "__main__":
     unittest.main()
 

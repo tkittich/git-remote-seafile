@@ -1661,5 +1661,18 @@ class TestTextFilesAreBounded(unittest.TestCase):
         self.assertEqual(self.client.get_file_bytes("repo1", "/refs/heads/main", max_bytes=1024), b"abc")
 
 
+
+class TestListingsAreNormalised(unittest.TestCase):
+    def test_an_entry_without_a_name_is_dropped_not_a_keyerror_for_every_caller(self):
+        client = SeafileClient(server_url="http://api-host:8000", token="t")
+        client.session.get = MagicMock(
+            return_value=MagicMock(
+                status_code=200,
+                json=lambda: [{"type": "file"}, {"name": 7}, {"name": "ok", "type": "file"}, "junk"],
+            )
+        )
+        self.assertEqual(client.list_dir("repo1", "/d"), [{"name": "ok", "type": "file"}])
+
+
 if __name__ == "__main__":
     unittest.main()

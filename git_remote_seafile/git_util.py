@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import time
@@ -261,6 +262,34 @@ def run_git_checked(
 _SCRATCH_PREFIXES = ("grs-staging-", "grs-push-", "grs-fetch-")
 
 
+def remove_tree(path: Path | str) -> bool:
+    """Delete a directory tree, including files git marked read-only; True if it is gone.
+
+    Git for Windows writes pack ``.idx`` and ``.pack`` files ``0444``, and
+    Windows will not delete a read-only file, so ``rmtree(ignore_errors=True)``
+    silently left every scratch directory behind -- a staged pack can be
+    gigabytes -- while the sweeper counted it as removed.  The handler clears
+    the attribute and retries once; what still cannot be removed is reported by
+    the return value rather than assumed.
+    """
+
+    def _retry(func: Any, failed: str, _exc: Any) -> None:
+        try:
+            os.chmod(failed, stat.S_IWRITE | stat.S_IREAD)
+            func(failed)
+        except OSError:
+            pass
+
+    try:
+        if sys.version_info >= (3, 12):
+            shutil.rmtree(path, onexc=_retry)
+        else:
+            shutil.rmtree(path, onerror=_retry)
+    except OSError:
+        pass
+    return not Path(path).exists()
+
+
 def sweep_stale_scratch(max_age_seconds: float = 24 * 3600, now: float | None = None) -> int:
     """Remove scratch directories a crashed run left under ``.git``.
 
@@ -278,8 +307,8 @@ def sweep_stale_scratch(max_age_seconds: float = 24 * 3600, now: float | None = 
                 continue
             try:
                 if entry.stat().st_mtime < cutoff:
-                    shutil.rmtree(entry, ignore_errors=True)
-                    removed += 1
+                    if remove_tree(entry):
+                        removed += 1
             except OSError:
                 continue
     except Exception:
@@ -670,7 +699,7 @@ def install_packfile(
     finally:
         # After a successful publish the staged files have been renamed away;
         # after a failure this is what keeps the final path clean for a retry.
-        shutil.rmtree(staging_dir, ignore_errors=True)
+        remove_tree(staging_dir)
 
 
 def get_git_config(key: str, default: str | None = None) -> str | None:

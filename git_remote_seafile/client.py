@@ -827,7 +827,10 @@ class SeafileClient:
             raise SeafileAPIError(
                 f"Failed to list dir {clean_path}: expected a JSON array, got {type(data).__name__}"
             )
-        return [e for e in data if isinstance(e, dict)]
+        # An entry without a string name cannot be addressed or compared, and
+        # every caller indexes ``name``; drop it here once instead of crashing
+        # in a caller with a bare KeyError.
+        return [e for e in data if isinstance(e, dict) and isinstance(e.get("name"), str)]
 
 
     def dir_exists(self, repo_id: str, dir_path: str) -> bool:

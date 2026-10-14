@@ -971,5 +971,50 @@ class TestModuleEntryPoint(unittest.TestCase):
         mock_exit.assert_called_once_with(3)
 
 
+
+class TestRemoteNamedLikeASubcommand(unittest.TestCase):
+    """git runs `git-remote-seafile <remote name> <url>`; a remote may be named `gc`."""
+
+    URL = "seafile://lib/repo"
+
+    def _stdin(self, payload: bytes):
+        return io.TextIOWrapper(io.BufferedReader(io.BytesIO(payload)), encoding="utf-8")
+
+    def _run(self, argv, *, git_dir, stdin_bytes, tty=False):
+        env = {"GIT_DIR": ".git"} if git_dir else {}
+        stdin = self._stdin(stdin_bytes)
+        if tty:
+            stdin.isatty = lambda: True  # type: ignore[method-assign]
+        handler = MagicMock(return_value=0)
+        with patch.object(sys, "argv", ["git-remote-seafile", *argv]), \
+                patch.dict("os.environ", env, clear=False), \
+                patch("sys.stdin", stdin), \
+                patch("git_remote_seafile.cli._run_helper", return_value=0) as helper, \
+                patch.dict("git_remote_seafile.cli._HANDLERS", {"gc": handler, "test": handler}):
+            if not git_dir:
+                os.environ.pop("GIT_DIR", None)
+            main()
+        return helper, handler
+
+    def test_git_driving_a_remote_named_gc_reaches_the_helper_not_the_compactor(self):
+        helper, handler = self._run(["gc", self.URL], git_dir=True, stdin_bytes=b"capabilities\n")
+        helper.assert_called_once()
+        handler.assert_not_called()
+
+    def test_a_person_running_the_subcommand_still_gets_the_subcommand(self):
+        # no GIT_DIR, and a terminal
+        helper, handler = self._run(["gc", self.URL], git_dir=False, stdin_bytes=b"", tty=True)
+        handler.assert_called_once()
+        helper.assert_not_called()
+
+    def test_a_hook_calling_the_subcommand_is_not_mistaken_for_git(self):
+        # GIT_DIR is set in a hook, but what is on stdin is not the protocol
+        helper, handler = self._run(
+            ["test", self.URL], git_dir=True, stdin_bytes=b"refs/heads/main abc refs/heads/main abc\n"
+        )
+        handler.assert_called_once()
+        helper.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 import sys
 import tempfile
 import time
@@ -36,6 +35,7 @@ from .git_util import (
     rev_parse,
     get_git_dir,
     get_git_config,
+    remove_tree,
     sweep_stale_scratch,
 )
 
@@ -671,7 +671,7 @@ class RemoteHelper:
                 )
             self._verify_packs_landed(pack_dir, landed)
         finally:
-            shutil.rmtree(staging_dir, ignore_errors=True)
+            remove_tree(staging_dir)
 
     def _verify_packs_landed(self, pack_dir: str, expected: dict[str, int]) -> None:
         """Raise unless every uploaded file is listed on the remote at its local size.

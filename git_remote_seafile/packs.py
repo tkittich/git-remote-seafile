@@ -6,13 +6,12 @@ from pathlib import Path
 import inspect
 import json
 import re
-import shutil
 import sys
 import tempfile
 from typing import Any
 
 from .client import SeafileClient, SeafileAPIError
-from .git_util import install_packfile
+from .git_util import install_packfile, remove_tree
 
 #: Lowercase only.  Git writes pack names as lowercase hex, and a name that
 #: differs from a local pack only by case is one file on Windows and macOS: a
@@ -272,4 +271,4 @@ def fetch_and_install_pack(
         else:
             target(pack_name, staged_pack, staged_idx if idx_downloaded else None)
     finally:
-        shutil.rmtree(staging_dir, ignore_errors=True)
+        remove_tree(staging_dir)
