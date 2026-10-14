@@ -566,6 +566,40 @@ class RemoteHelper:
             )
             sys.stderr.flush()
 
+    def _known_remote_tips(self, pending_updates: list[_PendingUpdate]) -> set[str]:
+        """The commits the remote holds *now*, which the new pack may leave out.
+
+        Whatever is reachable from a ref the remote still has is on the remote,
+        so the pack need not repeat it.  Which refs it still has is only known
+        under the lock: the listing ``list for-push`` produced was taken before
+        it, and a branch deleted since then (with a ``gc`` run in the window)
+        takes its unique commits with it.  A pack that left those out would be
+        accepted, the ref would be written, and the repository would name an
+        object it does not have -- for good, because a later push excludes it
+        the same way.  So the refs are read again here.  When they cannot be
+        read the exclusion shrinks to the tips verified under the lock (each
+        ``expected``): a bigger pack, never a missing object.
+        """
+        known: set[str] = set()
+        try:
+            for namespace in REF_NAMESPACES:
+                for _name, sha in iter_refs(
+                    self.client, self.repo_id, self.repo_path, namespace, strict=True
+                ):
+                    if sha:
+                        known.add(sha)
+        except Exception as ex:
+            sys.stderr.write(
+                f"Warning: could not re-read the remote refs under the lock ({_flatten(ex)}); "
+                "sending every object the new tips need.\n"
+            )
+            sys.stderr.flush()
+            known = set()
+        for upd in pending_updates:
+            if upd.expected:
+                known.add(upd.expected)
+        return known
+
     def _upload_push_pack(
         self,
         lock: RemoteLock,
@@ -576,11 +610,7 @@ class RemoteHelper:
 
         Raises on any failure; the caller reports it against every pending ref.
         """
-        known_remote_shas = {s for s in self._refs_cache.values() if s}
-        for upd in pending_updates:
-            if upd.expected:
-                known_remote_shas.add(upd.expected)
-        exclude = list(known_remote_shas)
+        exclude = list(self._known_remote_tips(pending_updates))
         target_shas = [u.local_sha for u in pending_updates]
 
         def on_upload_progress(transferred: int, total: int) -> None:
@@ -618,6 +648,7 @@ class RemoteHelper:
                     if extra_sha != pack_sha:
                         uploads.append((extra_sha, extra, extra.with_suffix(".idx")))
             pack_dir = self._full_path("objects/pack")
+            landed: dict[str, int] = {}
             for up_sha, up_pack, up_idx in uploads:
                 up_size = len(up_pack) if isinstance(up_pack, (bytes, bytearray)) else Path(up_pack).stat().st_size
                 size_kb = max(1, up_size // 1024)
@@ -634,8 +665,46 @@ class RemoteHelper:
                 self.client.upload_file(
                     self.repo_id, pack_dir, f"pack-{up_sha}.idx", up_idx, replace=True
                 )
+                landed[f"pack-{up_sha}.pack"] = up_size
+                landed[f"pack-{up_sha}.idx"] = (
+                    len(up_idx) if isinstance(up_idx, (bytes, bytearray)) else Path(up_idx).stat().st_size
+                )
+            self._verify_packs_landed(pack_dir, landed)
         finally:
             shutil.rmtree(staging_dir, ignore_errors=True)
+
+    def _verify_packs_landed(self, pack_dir: str, expected: dict[str, int]) -> None:
+        """Raise unless every uploaded file is listed on the remote at its local size.
+
+        An upload that answered 2xx is not evidence the bytes are there: a
+        truncated write, or a proxy that answered for a quota error, looks the
+        same from here.  ``gc`` already proves its new pack this way before it
+        deletes anything; the push does it before it publishes a ref, because
+        a ref naming a pack that is not there is a repository nobody can clone.
+        """
+        listing = self.client.list_dir(self.repo_id, pack_dir)
+        remote = {
+            e.get("name"): e.get("size")
+            for e in listing
+            if isinstance(e, dict) and e.get("name")
+        }
+        problems: list[str] = []
+        for name, size in sorted(expected.items()):
+            got = remote.get(name)
+            try:
+                got_int = int(got) if got is not None else None
+            except (TypeError, ValueError):
+                got_int = None
+            if got_int is None:
+                problems.append(f"{name} is not listed on the remote with a readable size")
+            elif got_int != size:
+                problems.append(f"{name} is {got_int} bytes on the remote but {size} locally")
+        if problems:
+            raise RuntimeError(
+                "the uploaded packfile could not be verified on the remote ("
+                + "; ".join(problems)
+                + "); no ref was updated"
+            )
 
     def _publish_ref(self, dst: str, local_sha: str, expected_remote_sha: str | None, force: bool) -> bool:
         """Move one remote ref and report it; True when ``ok`` was written.
@@ -720,15 +789,25 @@ class RemoteHelper:
         # If HEAD does not exist, set default branch.  Only point HEAD to a
         # branch in refs/heads/, never to a tag.
         if dst.startswith("refs/heads/"):
-            head_path = self._full_path("HEAD")
-            if not self.client.get_file_text(self.repo_id, head_path):
-                self.client.upload_file(
-                    self.repo_id,
-                    self.repo_path,
-                    "HEAD",
-                    f"ref: {dst}\n".encode("utf-8"),
-                    replace=True,
+            # Best effort: the ref is already written and verified, so a
+            # failure here must not turn a landed push into "remote rejected".
+            try:
+                head_path = self._full_path("HEAD")
+                if not self.client.get_file_text(self.repo_id, head_path):
+                    self.client.upload_file(
+                        self.repo_id,
+                        self.repo_path,
+                        "HEAD",
+                        f"ref: {dst}\n".encode("utf-8"),
+                        replace=True,
+                    )
+            except Exception as ex:
+                sys.stderr.write(
+                    f"Warning: {dst} was pushed, but the remote's default branch (HEAD) could "
+                    f"not be set ({_flatten(ex)}). Set it with "
+                    f"'git-remote-seafile set-head {self.raw_url} <branch>'.\n"
                 )
+                sys.stderr.flush()
 
         self._refs_cache[dst] = local_sha
         sys.stdout.write(f"ok {dst}\n")
@@ -874,6 +953,21 @@ class RemoteHelper:
                         pending.clear()
 
                     for upd in pending:
+                        # Each ref is several round trips, so a long multi-ref
+                        # push can outlive the lease it took the fence under.
+                        # Re-check before every ref, as a deletion does:
+                        # DESIGN section 6.3 says fencing is at every
+                        # destructive step, and a ref write is one.
+                        if not lock.verify_ownership():
+                            reason = (
+                                "could not confirm lock ownership before updating this ref "
+                                f"({describe_ownership_failure(lock.ownership_state())})"
+                            )
+                            _proto_error(upd.dst, reason)
+                            sys.stderr.write(f"\nPush error for {upd.dst}: {reason}\n")
+                            sys.stderr.flush()
+                            reported.add(upd.dst)
+                            continue
                         try:
                             self._publish_ref(upd.dst, upd.local_sha, upd.expected, upd.force)
                         except Exception as ex:

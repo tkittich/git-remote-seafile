@@ -47,6 +47,29 @@ class CheckoutStallWarningTests(unittest.TestCase):
         self.assertEqual(self._warn(5 * 1024**3, autocrlf="input"), "")
 
 
+def _pack_dir_shows_uploads(client):
+    """A ``list_dir`` that lists the pack files the helper uploaded, at their sizes.
+
+    The push now proves its packs landed before it writes a ref, so a fixture
+    has to model a remote that kept what it was sent.  Any other directory
+    lists empty.
+    """
+
+    def listing(repo_id, path):
+        if "objects/pack" not in path:
+            return []
+        out = []
+        for call in client.upload_file.call_args_list:
+            name, content = call.args[2], call.args[3]
+            if not (name.endswith(".pack") or name.endswith(".idx")):
+                continue
+            size = len(content) if isinstance(content, (bytes, bytearray)) else content.stat().st_size
+            out.append({"name": name, "size": size})
+        return out
+
+    return listing
+
+
 class TestRemoteHelper(unittest.TestCase):
     def test_capabilities(self):
         h = make_helper()
@@ -543,6 +566,7 @@ class TestRemoteHelper(unittest.TestCase):
         h.repo_id = "repo1"
         h.repo_path = "/git-repo"
         h._refs_cache = {"refs/heads/main": "commit0sha"}
+        h.client.list_dir.side_effect = _pack_dir_shows_uploads(h.client)
 
         out = io.StringIO()
         with patch("sys.stdout", out), patch("git_remote_seafile.helper.RemoteLock"):
@@ -610,6 +634,7 @@ class TestRemoteHelper(unittest.TestCase):
         h = make_helper()
         h.client = MagicMock()
         h.client.get_file_text.return_value = None
+        h.client.list_dir.side_effect = _pack_dir_shows_uploads(h.client)
         h.repo_id = "repo1"
         h.repo_path = "/git-repo"
         h._refs_cache = {}
@@ -634,26 +659,159 @@ class TestRemoteHelper(unittest.TestCase):
         self.assertIn("b1", uploaded_files)
         self.assertIn("b2", uploaded_files)
 
-    @patch("git_remote_seafile.helper.rev_parse", return_value="local_sha_feature")
+    @patch("git_remote_seafile.helper.rev_parse", return_value="local_sha_main")
     @patch("git_remote_seafile.helper.is_ancestor", return_value=True)
     @patch("git_remote_seafile.helper.get_objects_to_push", return_value=[])
-    def test_cmd_push_excludes_all_known_remote_refs(self, mock_objs, mock_ancestor, mock_rev):
+    def test_cmd_push_excludes_the_refs_the_remote_has_under_the_lock(self, mock_objs, mock_ancestor, mock_rev):
         h = make_helper()
         h.client = MagicMock()
         h.repo_id = "repo1"
         h.repo_path = "/git-repo"
+        # The pre-lock listing is stale on purpose: it still names a branch that
+        # has since been deleted.  What may be left out of the pack is what the
+        # remote holds *now*.
         h._refs_cache = {
-            "refs/heads/main": "remote_sha_main",
-            "refs/heads/dev": "remote_sha_dev",
+            "refs/heads/main": "stale_sha_main",
+            "refs/heads/deleted": "stale_sha_deleted",
         }
+        tree = {
+            "/git-repo/refs": [{"type": "dir", "name": "heads"}],
+            "/git-repo/refs/heads": [
+                {"type": "file", "name": "main"},
+                {"type": "file", "name": "dev"},
+            ],
+        }
+        shas = {"/git-repo/refs/heads/main": "live_sha_main", "/git-repo/refs/heads/dev": "live_sha_dev"}
+        h.client.list_dir.side_effect = lambda rid, path: tree.get(path.rstrip("/"), [])
+        h.client.get_file_text.side_effect = lambda rid, path: shas.get(path)
 
         with patch("sys.stdout", io.StringIO()), patch("git_remote_seafile.helper.RemoteLock"):
             h.cmd_push(["refs/heads/feature:refs/heads/feature"])
 
         mock_objs.assert_called_once()
         _, exclude = mock_objs.call_args[0]
-        self.assertIn("remote_sha_main", exclude)
-        self.assertIn("remote_sha_dev", exclude)
+        self.assertIn("live_sha_main", exclude)
+        self.assertIn("live_sha_dev", exclude)
+        self.assertNotIn("stale_sha_deleted", exclude)
+        self.assertNotIn("stale_sha_main", exclude)
+
+    @patch("git_remote_seafile.helper.rev_parse", return_value="local_sha_main")
+    @patch("git_remote_seafile.helper.is_ancestor", return_value=True)
+    @patch("git_remote_seafile.helper.get_objects_to_push", return_value=[])
+    def test_cmd_push_sends_everything_when_the_refs_cannot_be_re_read(self, mock_objs, mock_ancestor, mock_rev):
+        h = make_helper()
+        h.client = MagicMock()
+        h.repo_id = "repo1"
+        h.repo_path = "/git-repo"
+        h._refs_cache = {"refs/heads/other": "stale_sha"}
+        h.client.list_dir.side_effect = RuntimeError("boom")
+        h.client.get_file_text.return_value = None
+
+        with patch("sys.stdout", io.StringIO()), patch("sys.stderr", io.StringIO()) as err, \
+                patch("git_remote_seafile.helper.RemoteLock"):
+            h.cmd_push(["refs/heads/feature:refs/heads/feature"])
+
+        if mock_objs.call_args is not None:
+            _, exclude = mock_objs.call_args[0]
+            self.assertNotIn("stale_sha", exclude)
+        self.assertIn("could not re-read the remote refs", err.getvalue())
+
+    # -- a ref is published only for packs proven to be on the remote ---------
+    def _push_one(self, listing, **kw):
+        """Push main with one 8-byte pack; *listing* answers the pack directory."""
+        h = make_helper()
+        h.client = MagicMock()
+        h.repo_id = "repo1"
+        h.repo_path = "/git-repo"
+        h._refs_cache = {}
+        h.client.list_dir.side_effect = lambda rid, path: listing(h.client) if "objects/pack" in path else []
+        for key, value in kw.items():
+            setattr(h.client, key, value)
+        out, err = io.StringIO(), io.StringIO()
+        with patch("sys.stdout", out), patch("sys.stderr", err), \
+                patch("git_remote_seafile.helper.RemoteLock"), \
+                patch("git_remote_seafile.helper.rev_parse", return_value="sha1"), \
+                patch("git_remote_seafile.helper.is_ancestor", return_value=True), \
+                patch("git_remote_seafile.helper.get_objects_to_push", return_value=["o"]), \
+                patch("git_remote_seafile.helper.create_packfile",
+                      return_value=("abc", b"12345678", b"IDX")):
+            h.cmd_push(["refs/heads/main:refs/heads/main"])
+        ref_writes = [c for c in h.client.upload_file.call_args_list if c.args[2] == "main"]
+        return h, out.getvalue(), err.getvalue(), ref_writes
+
+    def test_a_truncated_pack_upload_publishes_no_ref(self):
+        _h, out, err, ref_writes = self._push_one(
+            lambda client: [{"name": "pack-abc.pack", "size": 3}, {"name": "pack-abc.idx", "size": 3}]
+        )
+        self.assertEqual(ref_writes, [], "a ref was written for a pack that landed short")
+        self.assertIn("error refs/heads/main", out)
+        self.assertIn("is 3 bytes on the remote but 8 locally", out)
+
+    def test_a_pack_missing_from_the_listing_publishes_no_ref(self):
+        _h, out, _err, ref_writes = self._push_one(lambda client: [{"name": "pack-abc.idx", "size": 3}])
+        self.assertEqual(ref_writes, [])
+        self.assertIn("pack-abc.pack is not listed on the remote", out)
+
+    def test_a_pack_that_landed_whole_publishes_the_ref(self):
+        _h, out, _err, ref_writes = self._push_one(
+            lambda client: [{"name": "pack-abc.pack", "size": 8}, {"name": "pack-abc.idx", "size": 3}]
+        )
+        self.assertEqual(len(ref_writes), 1)
+        self.assertIn("ok refs/heads/main", out)
+
+    # -- every ref is fenced, not just the first -------------------------------
+    @patch("git_remote_seafile.helper.rev_parse", side_effect=lambda ref: f"sha_{ref.split('/')[-1]}")
+    @patch("git_remote_seafile.helper.is_ancestor", return_value=True)
+    @patch("git_remote_seafile.helper.get_objects_to_push", return_value=[])
+    def test_the_lease_is_re_checked_before_each_ref(self, mock_objs, mock_ancestor, mock_rev):
+        h = make_helper()
+        h.client = MagicMock()
+        h.client.get_file_text.return_value = None
+        h.repo_id = "repo1"
+        h.repo_path = "/git-repo"
+        h._refs_cache = {}
+        lock = MagicMock()
+        lock.__enter__.return_value = lock
+        # before the loop, before b1, then the lease is gone before b2
+        lock.verify_ownership.side_effect = [True, True, False]
+        lock.ownership_state.return_value = LEASE_LOST
+        out, err = io.StringIO(), io.StringIO()
+        with patch("sys.stdout", out), patch("sys.stderr", err), \
+                patch("git_remote_seafile.helper.RemoteLock", return_value=lock):
+            h.cmd_push(["refs/heads/b1:refs/heads/b1", "refs/heads/b2:refs/heads/b2"])
+        written = [c.args[2] for c in h.client.upload_file.call_args_list]
+        self.assertIn("b1", written)
+        self.assertNotIn("b2", written, "a ref was written after the lease was lost")
+        self.assertIn("ok refs/heads/b1", out.getvalue())
+        self.assertIn("error refs/heads/b2 could not confirm lock ownership", out.getvalue())
+
+    # -- a landed push is not reported rejected --------------------------------
+    @patch("git_remote_seafile.helper.rev_parse", return_value="sha_main")
+    @patch("git_remote_seafile.helper.is_ancestor", return_value=True)
+    @patch("git_remote_seafile.helper.get_objects_to_push", return_value=[])
+    def test_a_head_bootstrap_failure_does_not_reject_a_landed_push(self, mock_objs, mock_ancestor, mock_rev):
+        h = make_helper()
+        h.client = MagicMock()
+        h.repo_id = "repo1"
+        h.repo_path = "/git-repo"
+        h.raw_url = "seafile://lib/repo"
+        h._refs_cache = {}
+
+        def get_text(rid, path):
+            if path.endswith("/HEAD"):
+                raise RuntimeError("HTTP 500")
+            if path.endswith("refs/heads/main"):
+                return "sha_main" if h.client.upload_file.called else None
+            return None
+
+        h.client.get_file_text.side_effect = get_text
+        out, err = io.StringIO(), io.StringIO()
+        with patch("sys.stdout", out), patch("sys.stderr", err), \
+                patch("git_remote_seafile.helper.RemoteLock"):
+            h.cmd_push(["refs/heads/main:refs/heads/main"])
+        self.assertIn("ok refs/heads/main", out.getvalue())
+        self.assertNotIn("error refs/heads/main", out.getvalue())
+        self.assertIn("default branch (HEAD) could not be set", err.getvalue())
 
     @patch("git_remote_seafile.helper.rev_parse", return_value="local_sha_main")
     @patch("git_remote_seafile.helper.is_ancestor", return_value=True)
@@ -781,10 +939,11 @@ class TestRemoteHelper(unittest.TestCase):
         # 2 small packs plus 30 frozen ones: the total count crosses the
         # threshold, but the *movable* count does not.
         mi_b = 1024**2
-        h.client.list_dir.return_value = (
+        packs = (
             [{"name": f"pack-small-{i}.pack", "size": mi_b // 2} for i in range(2)]
             + [{"name": f"pack-big-{i}.pack", "size": 2 * mi_b} for i in range(30)]
         )
+        h.client.list_dir.side_effect = lambda rid, path: packs if "objects/pack" in path else []
         cfg = RemoteConfig(lock_timeout=15, lock_lease=60, lock_settle=0, auto_gc=True, gc_threshold=20,
                            gc_max_pack_mib=1)
 
@@ -1189,6 +1348,7 @@ class TestRemoteHelper(unittest.TestCase):
         h._refs_cache = {}
         # read 1: the fast-forward check; read 2: the CAS re-check
         h.client.get_file_text.side_effect = ["remote_sha", "moved_sha"]
+        h.client.list_dir.side_effect = _pack_dir_shows_uploads(h.client)
 
         out = io.StringIO()
         with patch("sys.stdout", out), patch("git_remote_seafile.helper.RemoteLock"):
