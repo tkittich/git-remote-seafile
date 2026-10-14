@@ -7,8 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Upgrading from 0.9.1
+
+- **A snapshot that pushes to a `seafile://` remote now also records the modification time of every git-stored file** in `.seafile-payload/mtimes.json`, and `--restore` puts the times back. Your vault gets one more file in its tree on the next run (about 60 bytes per file, changing only when content changes; git deltas it). `--no-record-mtimes` turns it off and the vault remembers that. Snapshots made before this restore as they did.
+
 ### Added
+- **Restoring modification times for git-stored files** (`--record-mtimes` / `--no-record-mtimes`). A file keeps the time recorded when its content was first seen, so touching a file does not make a new snapshot. A restore applies the record with the same path checks as a manifest and skips what does not fit.
 - **`git push --force-with-lease` is supported.** The helper accepts git's `cas` option: a push over a lease may rewrite history, but only over the value the user last saw (an empty expectation means "must not exist"), and is refused as `stale info` otherwise, for updates and deletions, in `--dry-run` too. The compare-and-swap re-check under the lock still applies. A malformed `cas` is answered `unsupported`, never guessed at.
+
+### Fixed
+- **The clock probe's debris and noise.** A probe file left at the source root by a killed run is no longer captured as content and is removed by the next probe once it is old; "the clock could not be measured" is said once per vault, not on every run.
+
+### Documentation
+- **A correction to 0.9.1.** Its changelog listed "the conflict-copy warning missed refs with a dot" as fixed. Measured on the real server (CE 13.0.28), Seafile names the loser of a concurrent write `<name> (SFConflict <user> <date>).<last extension>` (`v1.0.0` becomes `v1.0.0 (SFConflict ...).0.0`), which the original prefix match already caught; the report was an inference from two reviews and was wrong. The extra match of the name without its last extension is harmless, and a real-server test now pins the observed naming.
 
 ### Changed
 - **Listing the remote for a fetch no longer advertises half a repository.** A refs directory that the parent listing showed and that then answers 404 is retried once and then an error, instead of a warning followed by an advertisement without those branches. A ref file with unusable content is still only a warning, so one planted file cannot make a repository unfetchable.

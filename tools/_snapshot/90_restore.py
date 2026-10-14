@@ -311,6 +311,14 @@ def restore(
             "remote that survives."
         )
 
+    # Git stores no timestamps; the record the snapshot wrote (if it wrote one)
+    # puts them back.  After the checkout and before the byte check, which
+    # reads content only and so is not affected.
+    applied, skipped = apply_recorded_mtimes(into)
+    if applied or skipped:
+        print(f"restored the modification time of {applied} file(s)"
+              + (f" ({skipped} could not be set)" if skipped else ""))
+
     # A restore that differs from the snapshot is not a restore, and the
     # autocrlf class of bug is invisible to `git status` -- so check the bytes.
     mismatched = verify_restore(into, verified_rev)

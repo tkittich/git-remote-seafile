@@ -867,7 +867,7 @@ These are the places where the tool, Git, or Seafile stops short. None is hidden
 | Secrets are permanent | `.env` and keys are captured by design and Git history is forever. Every run lists the credential-shaped paths; push only to a library only you can read. |
 | File modes and symlinks on Windows | The executable bit is not reliably recorded; symlinks restore as text files unless `core.symlinks` is enabled. The restore verification names a mismatch rather than reporting success. |
 | Embedded git repositories | The files are captured (ignored ones too); the nested `.git` (history, branches, stashes) is not, so back that up separately. `--no-embedded-repos` records only the commit id, as 0.9.0 did. |
-| Timestamps and empty directories | Not preserved; Git records content. A restore gives every file the checkout time. |
+| Timestamps and empty directories | Empty directories are not captured. File times are recorded since 0.9.2 (a run that pushes to a `seafile://` remote, or `--record-mtimes`) in `.seafile-payload/mtimes.json` and applied by a restore, as *the time when that content was first seen*; older snapshots and `--no-record-mtimes` restore the checkout time. Directory times are not recorded. |
 | Touching a file produces no commit | A heartbeat record of "a backup ran" is not available. |
 | Case-insensitive filesystems and long Windows paths | `Foo.txt`/`foo.txt` may not both round-trip; a deep restore destination can exceed 260 characters. |
 | Large payloads | The vault turns compression off and raises the big-file threshold after sampling, so a 20 GB tree stages at disk speed. A very large file that *changes* adds its own size to the remote per change until a merge; `seafile.autogc` bounds that. |
@@ -953,6 +953,7 @@ Defaults are resolved most-specific-first:
 | `--exclude <glob>` | Repeatable. Skip matching paths, e.g. `--exclude node_modules`. |
 | `--default-excludes` / `--no-default-excludes` | Add the recommended junk exclusions (§15.2.1), or explicitly not. |
 | `--no-embedded-repos` | Record a nested git repository only as its commit id (the 0.9.0 behaviour). By default its files are captured, its `.git` is not. |
+| `--record-mtimes` / `--no-record-mtimes` | Record (or not) the modification time of git-stored files in `.seafile-payload/mtimes.json`. On by default for a run that pushes to a `seafile://` remote; an explicit choice is remembered by the vault. |
 | `--payload-report-days N` | Payload mode: print the report-only `--payload-gc` summary when none was printed in N days (default 7, `0` off). |
 | `--message <text>` | Override the snapshot commit message. |
 | `--code-remote <name>` | Also `git push <name>` in the source repo first; the name is validated up front. |

@@ -628,7 +628,7 @@ class PayloadManifestAndSelectionTests(_PayloadFixture):
             rc, out, err = self.run_tool(self.src, "--vault", self.vault, "--remote", self.remote)
             self.assertEqual(rc, 0, out + err)
         tree = _git(self.vault, "ls-tree", "-r", "--name-only", "snapshot")
-        self.assertNotIn(".seafile-payload", tree)
+        self.assertNotIn(".seafile-payload/manifest.json", tree)  # no payload mode (the times record may be there)
         rc, out, err, into = self.restore("plain")
         self.assertEqual(rc, 0, out + err)
 
@@ -701,7 +701,7 @@ class PayloadDefaultAndSafeguardTests(_PayloadFixture):
         self.assertNotIn("payload:", out)
         tree = _git(self.vault, "ls-tree", "-r", "--name-only", "snapshot")
         self.assertIn("big1.bin", tree)
-        self.assertNotIn(".seafile-payload", tree)
+        self.assertNotIn(".seafile-payload/manifest.json", tree)  # no payload mode (the times record may be there)
         self.assertEqual(self.object_count(), 0)
         self.assertEqual(_git(self.vault, "config", "snapshot.payload").strip(), "0")
         rc, out, err = self.bare()
@@ -715,7 +715,7 @@ class PayloadDefaultAndSafeguardTests(_PayloadFixture):
         self.assertEqual(rc, 0, out + err)
         self.assertNotIn("payload:", out)
         tree = _git(self.vault, "ls-tree", "-r", "--name-only", "snapshot")
-        self.assertNotIn(".seafile-payload", tree)
+        self.assertNotIn(".seafile-payload/manifest.json", tree)  # no payload mode (the times record may be there)
         self.assertFalse(any(k.startswith(self.base) for k in self.server_files()))
 
     def test_a_remembered_setting_does_not_break_a_local_no_push_run(self):
@@ -1327,7 +1327,7 @@ class PayloadRememberVerifyViewAndClockTests(_PayloadFixture):
         self.assertEqual(rc, 0, out + err)
         tree = _git(self.vault, "ls-tree", "-r", "--name-only", "snapshot")
         self.assertIn("big1.bin", tree)            # now an ordinary file in git
-        self.assertNotIn(".seafile-payload", tree)
+        self.assertNotIn(".seafile-payload/manifest.json", tree)  # no payload mode (the times record may be there)
         rc, out, err = self.run_tool(*base)
         self.assertEqual(rc, 0, out + err)
         self.assertNotIn("payload:", out)
@@ -1563,6 +1563,57 @@ class PayloadRememberVerifyViewAndClockTests(_PayloadFixture):
         self.assertTrue(net("/Volumes/data", mount))
         self.assertFalse(net("/Users/tk/code", mount))
         self.assertFalse(net("/Volumes/USB DRIVE/x", mount))
+
+    def test_a_push_to_seafile_records_the_times_of_git_stored_files_and_a_restore_applies_them(self):
+        want = 1_600_000_000 * 1_000_000_000 + 123_456_700
+        os.utime(self.src / "small.txt", ns=(want, want))
+        rc, out, err = self.bare()
+        self.assertEqual(rc, 0, out + err)
+        listing = _git(self.vault, "ls-tree", "-r", "--name-only", "snapshot")
+        self.assertIn(".seafile-payload/mtimes.json", listing)
+        record = json.loads(_git(self.vault, "show", "snapshot:.seafile-payload/mtimes.json"))
+        self.assertEqual(record["files"]["small.txt"], want)
+        # payload files carry theirs in the manifest, not here
+        self.assertNotIn("big1.bin", record["files"])
+        with unittest.mock.patch.object(snap, "_AUTO_UPPER", 8000),                 unittest.mock.patch.object(snap, "_AUTO_LOWER", 2000):
+            rc, out, err, into = self.restore("mtimes")
+        self.assertEqual(rc, 0, out + err)
+        self.assertEqual((into / "small.txt").stat().st_mtime_ns, want)
+
+    def test_a_probe_file_a_killed_run_left_behind_is_not_captured(self):
+        (self.src / ".grs-clock-probe-4242-1").write_bytes(b"")
+        rc, out, err = self.bare()
+        self.assertEqual(rc, 0, out + err)
+        listing = _git(self.vault, "ls-tree", "-r", "--name-only", "snapshot")
+        self.assertNotIn(".grs-clock-probe", listing)
+        self.assertIn("small.txt", listing)
+
+    def test_the_probe_removes_old_debris_but_not_a_fresh_file(self):
+        old = self.src / ".grs-clock-probe-1-1"
+        fresh = self.src / ".grs-clock-probe-2-2"
+        old.write_bytes(b"")
+        fresh.write_bytes(b"")
+        long_ago = time.time() - 7 * 24 * 3600
+        os.utime(old, (long_ago, long_ago))
+        self.assertIsNotNone(snap._probe_fs_clock(self.src))
+        self.assertFalse(old.exists())
+        self.assertTrue(fresh.exists())
+
+    def test_an_unmeasurable_clock_is_said_once_per_vault(self):
+        git_dir = self.vault / ".git"
+        self.vault.mkdir(parents=True, exist_ok=True)
+        subprocess.run(["git", "init", "-q", str(self.vault)], check=True, capture_output=True)
+
+        def unmeasurable(source, *, note=print, **kw):
+            note("note: the source is on a network share and its clock could not be measured")
+            return 0
+
+        out = io.StringIO()
+        with unittest.mock.patch.object(snap, "fs_clock_offset_ns", unmeasurable), \
+                contextlib.redirect_stdout(out):
+            snap._clock_offset_once_noted(git_dir, self.src)
+            snap._clock_offset_once_noted(git_dir, self.src)
+        self.assertEqual(out.getvalue().count("could not be measured"), 1)
 
     def test_restore_paths_are_extended_on_windows_and_untouched_elsewhere(self):
         long_dir = self.case.joinpath(*(["d" * 40] * 8))

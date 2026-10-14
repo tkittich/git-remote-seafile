@@ -284,9 +284,31 @@ def _is_network_fs(path: Path) -> bool:
         return False
 
 
+#: The probe file's name prefix.  A run killed between creating and removing it
+#: leaves one behind, and the next snapshot would capture it as content.
+_PROBE_PREFIX = ".grs-clock-probe-"
+#: Debris older than this is removed by the next probe (generous: a clock that
+#: is hours off must not make a live probe look stale).
+_PROBE_DEBRIS_AGE_S = 6 * 3600
+
+
+def is_clock_probe_debris(rel: str) -> bool:
+    """True for a probe file at the source root, which never belongs in a snapshot."""
+    return "/" not in rel and rel.startswith(_PROBE_PREFIX)
+
+
 def _probe_fs_clock(directory: Path) -> int | None:
     """The filesystem's own "now", from a file created and removed at once; ``None`` if it cannot be."""
-    name = directory / f".grs-clock-probe-{os.getpid()}-{time.time_ns()}"
+    try:
+        for stale in directory.glob(_PROBE_PREFIX + "*"):
+            try:
+                if abs(time.time() - stale.stat().st_mtime) > _PROBE_DEBRIS_AGE_S:
+                    stale.unlink()
+            except OSError:
+                pass
+    except OSError:
+        pass
+    name = directory / f"{_PROBE_PREFIX}{os.getpid()}-{time.time_ns()}"
     try:
         fd = os.open(name, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
     except OSError:
@@ -304,7 +326,11 @@ def _probe_fs_clock(directory: Path) -> int | None:
 
 
 def fs_clock_offset_ns(
-    source: Path, *, is_network: Any = _is_network_fs, probe: Any = _probe_fs_clock
+    source: Path,
+    *,
+    is_network: Any = _is_network_fs,
+    probe: Any = _probe_fs_clock,
+    note: Any = print,
 ) -> int:
     """The source filesystem's clock minus this machine's, in ns; 0 when it is this machine's.
 
@@ -320,10 +346,9 @@ def fs_clock_offset_ns(
     before = time.time_ns()
     stamp = probe(source)
     if stamp is None:
-        print("note: the source is on a network share and its clock could not be measured "
-              "(no write access); a file edited right after it was hashed is detected only "
-              "if its size or timestamp differs -- --payload-rehash re-checks everything",
-              flush=True)
+        note("note: the source is on a network share and its clock could not be measured "
+             "(no write access); a file edited right after it was hashed is detected only "
+             "if its size or timestamp differs -- --payload-rehash re-checks everything")
         return 0
     offset = int(stamp) - before
     return 0 if abs(offset) < _CLOCK_SKEW_NOISE_NS else offset

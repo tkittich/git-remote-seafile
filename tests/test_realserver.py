@@ -241,6 +241,34 @@ class RealServerTests(unittest.TestCase):
         final = self.client.get_file_bytes(self.rid, base + "/ref")
         self.assertTrue(final.startswith(b"writer-"))
 
+    def test_conflict_copies_of_a_dotted_ref_name_are_recognised(self):
+        """Measured: Seafile names the loser ``<name> (SFConflict <user> <date>).<last ext>``.
+
+        0.9.1 listed "the conflict-copy warning missed refs with a dot" as fixed
+        on the strength of two reviews' inference; this is the measurement, and
+        it is why ``conflict_copies_of`` has to match whatever the server does.
+        """
+        from git_remote_seafile.client import SeafileClient
+        from git_remote_seafile.refs import conflict_copies_of
+
+        base = f"/{self.base}/dotted"
+        self.client.mkdir_p(self.rid, base)
+
+        def writer(i):
+            SeafileClient(server_url=self.client.server_url).upload_file(
+                self.rid, base, "v1.0.0", f"w{i}\n".encode(), replace=True
+            )
+
+        threads = [threading.Thread(target=writer, args=(i,)) for i in range(10)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        entries = self.client.list_dir(self.rid, base)
+        copies = [e["name"] for e in entries if "SFConflict" in e["name"]]
+        self.assertTrue(copies, "no conflict copies were produced")
+        self.assertEqual(sorted(conflict_copies_of(entries, "v1.0.0")), sorted(copies))
+
 
 if __name__ == "__main__":
     unittest.main()

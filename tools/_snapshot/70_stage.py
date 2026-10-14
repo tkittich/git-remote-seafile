@@ -141,6 +141,7 @@ def build_snapshot(
     manifest: "dict[str, Any] | None" = None,
     capture_embedded: bool = True,
     embedded_report: "list[tuple[str, int]] | None" = None,
+    record_mtimes: bool = False,
 ) -> tuple[str, str | None, list[str]]:
     """Stage the tree into the vault index and write a commit object.
 
@@ -167,7 +168,9 @@ def build_snapshot(
     unless ``capture_embedded`` is false; each one is appended to ``embedded_report``.
     """
     reserved = (work_tree / PAYLOAD_RESERVED_DIR).exists()
-    if excludes or skip_paths or reserved:
+    # A clock probe a killed run left at the root must not be captured.
+    probe_debris = any(True for _ in work_tree.glob(_PROBE_PREFIX + "*"))
+    if excludes or skip_paths or reserved or probe_debris:
         candidates = stageable_paths(git_dir, work_tree)
         excluded = [
             path
@@ -187,6 +190,7 @@ def build_snapshot(
             and unicodedata.normalize("NFC", path) not in skipped
             and path != PAYLOAD_RESERVED_DIR
             and not path.startswith(PAYLOAD_RESERVED_DIR + "/")
+            and not is_clock_probe_debris(path)
         ]
         kept_set = set(kept)
         if kept:
@@ -229,6 +233,9 @@ def build_snapshot(
         captured = inline_embedded_repositories(git_dir, work_tree, excludes, skip_paths)
         if embedded_report is not None:
             embedded_report.extend(captured)
+
+    if record_mtimes:
+        record_mtimes_in_index(git_dir, work_tree, parent)
 
     if manifest is not None:
         add_manifest_to_index(git_dir, work_tree, manifest)

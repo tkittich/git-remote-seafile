@@ -167,6 +167,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "With --restore: download a payload that does not appear to fit",
     )
     add_payload_groups(parser)
+    add_mtimes_arguments(parser)
     parser.add_argument(
         "--verify",
         action="store_true",
@@ -261,6 +262,9 @@ def main(argv: list[str] | None = None) -> int:
         args.payload_min_size, payload_default = resolve_payload_value(
             args.payload_min_size, vault, remote=remote, no_push=args.no_push,
             no_payload=args.no_payload,
+        )
+        record_mtimes = resolve_record_mtimes(
+            args, vault, remote=remote, no_push=args.no_push
         )
         payload_min, payload_candidates, payload_rule = plan_payload(
             args.payload_min_size, remote, source, exclude
@@ -380,6 +384,7 @@ def main(argv: list[str] | None = None) -> int:
                 skip_paths=payload_skip or None, manifest=manifest,
                 capture_embedded=not args.no_embedded_repos,
                 embedded_report=embedded_report,
+                record_mtimes=record_mtimes,
             )
             count, size = describe_tree(git_dir, source, tree)
             # The profile was decided from a sample taken before the first
@@ -514,6 +519,7 @@ def main(argv: list[str] | None = None) -> int:
         # --remote that failed to push does not become the vault's remote for
         # every scheduled run after it.  A preview never gets here.
         remember_payload_value(vault, args.payload_min_size, dry_run=args.dry_run)
+        remember_record_mtimes(vault, args, dry_run=args.dry_run)
         if manifest is not None and remote and not args.dry_run:
             maybe_report_payload_gc(git_dir, vault, remote, args.payload_report_days)
         remember_settings(

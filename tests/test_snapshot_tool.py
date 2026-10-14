@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import contextlib
 import io
+import json
 import os
 import pathlib
 import shutil
@@ -2458,6 +2459,100 @@ class StatusLineTests(unittest.TestCase):
             with unittest.mock.patch.dict(os.environ, {"SEAFILE_GIT_TIMEOUT": "42"}):
                 snap.git(pathlib.Path("v"), None, ["status"], cwd=pathlib.Path("."))
             self.assertEqual(captured["env"]["SEAFILE_GIT_TIMEOUT"], "42")
+
+
+class ModificationTimeTests(_SnapshotFixture):
+    """Git stores no timestamps; the snapshot records them and a restore applies them."""
+
+    WHEN = 1_600_000_000  # 2020-09-13, nowhere near "now"
+
+    def _age(self, name: str, seconds: int | None = None) -> int:
+        stamp = (seconds or self.WHEN) * 1_000_000_000 + 123_456_700  # 100 ns: NTFS granularity
+        os.utime(self.code / name, ns=(stamp, stamp))
+        return stamp
+
+    def test_a_restore_puts_the_recorded_times_back(self):
+        want = self._age("README.md")
+        rc, out, err = self.snapshot("--remote", str(self.remote), "--record-mtimes")
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn(".seafile-payload/mtimes.json", self.tree())
+        rc, out, err = self.restore_to(self.restored)
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn("restored the modification time of", out)
+        self.assertEqual((self.restored / "README.md").stat().st_mtime_ns, want)
+
+    def test_a_local_only_snapshot_records_nothing_unless_asked(self):
+        self.assertEqual(self.snapshot()[0], 0)
+        self.assertNotIn(".seafile-payload/mtimes.json", self.tree())
+
+    def test_touching_a_file_does_not_make_a_new_snapshot(self):
+        self._age("README.md")
+        self.assertEqual(self.snapshot("--record-mtimes")[0], 0)
+        before = self.commits()
+        self._age("README.md", self.WHEN + 86_400)  # touched, same bytes
+        rc, out, err = self.snapshot("--record-mtimes")
+        self.assertEqual(rc, 0, out + err)
+        self.assertEqual(self.commits(), before)
+        self.assertIn("no changes since the last snapshot", out)
+
+    def test_new_content_records_its_own_time(self):
+        self._age("README.md")
+        self.assertEqual(self.snapshot("--record-mtimes")[0], 0)
+        (self.code / "README.md").write_bytes(b"changed\n")
+        later = self._age("README.md", self.WHEN + 5 * 86_400)
+        self.assertEqual(self.snapshot("--record-mtimes", "--remote", str(self.remote))[0], 0)
+        rc, out, err = self.restore_to(self.restored)
+        self.assertEqual(rc, 0, out + err)
+        self.assertEqual((self.restored / "README.md").stat().st_mtime_ns, later)
+
+    def test_the_choice_is_remembered_and_can_be_reversed(self):
+        self.assertEqual(self.snapshot("--record-mtimes")[0], 0)
+        (self.code / "more.txt").write_bytes(b"x\n")
+        self.assertEqual(self.snapshot()[0], 0)  # remembered
+        self.assertIn(".seafile-payload/mtimes.json", self.tree())
+        (self.code / "more2.txt").write_bytes(b"y\n")
+        self.assertEqual(self.snapshot("--no-record-mtimes")[0], 0)
+        self.assertNotIn(".seafile-payload/mtimes.json", self.tree())
+
+    def test_the_flags_contradict_and_do_not_apply_to_a_restore(self):
+        rc, out, err = self.snapshot("--record-mtimes", "--no-record-mtimes")
+        self.assertEqual(rc, 1)
+        self.assertIn("contradict", err)
+        rc, out, err = self.run_tool("--restore", "--remote", self.remote, "--into",
+                                     self.restored, "--record-mtimes")
+        self.assertEqual(rc, 1)
+        self.assertIn("only apply to a snapshot run", err)
+
+    def test_a_hostile_record_cannot_reach_outside_the_restored_tree(self):
+        victim = self.tmp / "victim.txt"
+        victim.write_bytes(b"keep\n")
+        before = victim.stat().st_mtime_ns
+        into = self.tmp / "into"
+        (into / ".seafile-payload").mkdir(parents=True)
+        (into / "ok.txt").write_bytes(b"ok\n")
+        record = {
+            "format": 1,
+            "files": {
+                "ok.txt": 1_500_000_000_000_000_000,
+                "../victim.txt": 1_500_000_000_000_000_000,
+                "/etc/passwd": 1_500_000_000_000_000_000,
+                ".git/config": 1_500_000_000_000_000_000,
+                "bad.txt": True,
+                "neg.txt": -5,
+            },
+        }
+        (into / ".seafile-payload" / "mtimes.json").write_text(json.dumps(record), encoding="utf-8")
+        applied, skipped = snap.apply_recorded_mtimes(into)
+        self.assertEqual(applied, 1)
+        self.assertGreaterEqual(skipped, 4)
+        self.assertEqual(victim.stat().st_mtime_ns, before)
+        self.assertEqual((into / "ok.txt").stat().st_mtime_ns, 1_500_000_000_000_000_000)
+
+    def test_a_snapshot_without_a_record_restores_exactly_as_before(self):
+        self.assertEqual(self.snapshot("--remote", str(self.remote), "--no-record-mtimes")[0], 0)
+        rc, out, err = self.restore_to(self.restored)
+        self.assertEqual(rc, 0, out + err)
+        self.assertNotIn("modification time", out)
 
 
 if __name__ == "__main__":

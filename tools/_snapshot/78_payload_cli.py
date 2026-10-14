@@ -258,6 +258,22 @@ def conversion_warning(candidates: dict[str, Candidate], dry_run: bool) -> str:
     )
 
 
+_CLOCK_NOTE_KEY = "snapshot.clocknote"
+
+
+def _clock_offset_once_noted(git_dir: Path, source: Path) -> int:
+    """The share-clock offset, saying "could not be measured" once per vault, not every run."""
+    messages: list[str] = []
+    offset = fs_clock_offset_ns(source, note=messages.append)
+    if messages and not _read_config_key(git_dir, _CLOCK_NOTE_KEY):
+        print(messages[0], flush=True)
+        _run(
+            ["git", "--git-dir", str(git_dir), "config", _CLOCK_NOTE_KEY, "1"],
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+    return offset
+
+
 def run_payload_step(
     git_dir: Path,
     source: Path,
@@ -303,7 +319,7 @@ def run_payload_step(
         print(conversion_warning(candidates, dry_run), flush=True)
     manifest, cache = build_manifest(
         candidates, source, {} if rehash else load_hash_cache(git_dir), min_size, rule=rule,
-        clock_offset_ns=fs_clock_offset_ns(source) if candidates else 0,
+        clock_offset_ns=_clock_offset_once_noted(git_dir, source) if candidates else 0,
     )
     todo = publish_payload(
         remote or "", source, manifest, dry_run=dry_run, jobs=jobs or 3

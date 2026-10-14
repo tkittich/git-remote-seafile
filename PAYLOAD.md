@@ -49,7 +49,7 @@ encryption and retention policy.
 | R8 | Corruption of a stored object is detected at restore, never accepted. | `test_corrupt_payload_fails_the_restore` |
 | R9 | A run that cannot read a file stops and names it; nothing is skipped silently. | `test_an_unreadable_file_names_itself` |
 | R10 | A payload vault never silently starts staging its large files into git. | `test_a_vault_that_used_payload_still_refuses_when_it_cannot_stay_in_it`, `test_a_fresh_vault_on_another_machine_follows_the_default` |
-| R11 | Payload mode is on by default, and a tree with no qualifying file is snapshotted exactly as without it (no manifest, no server directory); where it cannot work (no remote, a remote that is not `seafile://`, `--no-push`) the default stays off instead of failing. | `test_a_tree_with_nothing_big_is_snapshotted_as_without_payload_mode`, `test_the_default_stays_off_where_payload_mode_cannot_work` |
+| R11 | Payload mode is on by default, and a tree with no qualifying file is snapshotted exactly as without it (no manifest, no server directory; since 0.9.2 the tree also holds the times record `.seafile-payload/mtimes.json`, which is not part of payload mode); where it cannot work (no remote, a remote that is not `seafile://`, `--no-push`) the default stays off instead of failing. | `test_a_tree_with_nothing_big_is_snapshotted_as_without_payload_mode`, `test_the_default_stays_off_where_payload_mode_cannot_work` |
 
 ## 4. Decisions
 

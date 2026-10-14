@@ -476,9 +476,14 @@ links.
 **Path length** — a deep source tree can exceed Windows' 260-character limit,
 and a restore into a deeper destination is where it surfaces.
 
-**File timestamps are not preserved.** Git records content, not mtime. A restore
-gives every file the checkout time, so a build system may rebuild everything
-once. Harmless for a backup, surprising if you restore in place.
+**File timestamps are recorded in a side file, not by git.** Git records
+content, not mtime, so since 0.9.2 a run that pushes to a `seafile://` remote (or
+that is given `--record-mtimes`) also writes `.seafile-payload/mtimes.json`, and
+a restore sets each file's time from it. The time is *the modification time when
+that content was first seen*: touching a file without changing it neither
+changes the record nor makes a new snapshot. Snapshots made before 0.9.2, or with
+`--no-record-mtimes`, restore every file with the checkout time, so a build
+system may rebuild everything once. Directory times are not recorded.
 
 **Empty directories are not captured.** Git does not track them.
 

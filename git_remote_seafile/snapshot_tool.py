@@ -1732,6 +1732,7 @@ def build_snapshot(
     manifest: "dict[str, Any] | None" = None,
     capture_embedded: bool = True,
     embedded_report: "list[tuple[str, int]] | None" = None,
+    record_mtimes: bool = False,
 ) -> tuple[str, str | None, list[str]]:
     """Stage the tree into the vault index and write a commit object.
 
@@ -1758,7 +1759,9 @@ def build_snapshot(
     unless ``capture_embedded`` is false; each one is appended to ``embedded_report``.
     """
     reserved = (work_tree / PAYLOAD_RESERVED_DIR).exists()
-    if excludes or skip_paths or reserved:
+    # A clock probe a killed run left at the root must not be captured.
+    probe_debris = any(True for _ in work_tree.glob(_PROBE_PREFIX + "*"))
+    if excludes or skip_paths or reserved or probe_debris:
         candidates = stageable_paths(git_dir, work_tree)
         excluded = [
             path
@@ -1778,6 +1781,7 @@ def build_snapshot(
             and unicodedata.normalize("NFC", path) not in skipped
             and path != PAYLOAD_RESERVED_DIR
             and not path.startswith(PAYLOAD_RESERVED_DIR + "/")
+            and not is_clock_probe_debris(path)
         ]
         kept_set = set(kept)
         if kept:
@@ -1820,6 +1824,9 @@ def build_snapshot(
         captured = inline_embedded_repositories(git_dir, work_tree, excludes, skip_paths)
         if embedded_report is not None:
             embedded_report.extend(captured)
+
+    if record_mtimes:
+        record_mtimes_in_index(git_dir, work_tree, parent)
 
     if manifest is not None:
         add_manifest_to_index(git_dir, work_tree, manifest)
@@ -2283,6 +2290,211 @@ def write_seen_tips(client: Any, rid: str, base: str, tips: dict[str, str]) -> N
     _write_json_marker(client, rid, base, _SEEN_NAME, tips)
 
 
+# -- Modification times of the files git stores (see 70_stage.py) ------------------
+#
+# Git records content and a mode, not a timestamp, so a restore used to give
+# every git-tracked file the time of the checkout.  Payload files already carry
+# their mtime in the manifest.  This records the rest in one more file inside
+# the reserved directory, ``.seafile-payload/mtimes.json``, and a restore puts
+# the times back.
+
+_MTIMES_NAME = "mtimes.json"
+_MTIMES_FORMAT = 1
+
+
+def mtimes_path() -> str:
+    """Where the record lives in a snapshot tree."""
+    return f"{PAYLOAD_RESERVED_DIR}/{_MTIMES_NAME}"
+
+
+def add_mtimes_arguments(parser: Any) -> None:
+    parser.add_argument(
+        "--record-mtimes",
+        action="store_true",
+        help="record the modification time of every git-stored file in "
+        ".seafile-payload/mtimes.json so a restore can put them back (default for a run "
+        "that pushes to a seafile:// remote; remembered by the vault)",
+    )
+    parser.add_argument(
+        "--no-record-mtimes",
+        action="store_true",
+        help="do not record modification times (the vault remembers this; a restore then "
+        "gives git-stored files the time of the checkout, as before 0.9.2)",
+    )
+
+
+def mtimes_conflicts(args: argparse.Namespace) -> list[str]:
+    problems: list[str] = []
+    if args.record_mtimes and args.no_record_mtimes:
+        problems.append("--record-mtimes and --no-record-mtimes contradict each other")
+    if (args.record_mtimes or args.no_record_mtimes) and (
+        args.restore or args.maintain or args.payload_gc or args.payload_verify is not None
+        or args.payload_view is not None
+    ):
+        problems.append(
+            "--record-mtimes and --no-record-mtimes only apply to a snapshot run"
+        )
+    return problems
+
+
+def resolve_record_mtimes(
+    args: argparse.Namespace, vault: Path, *, remote: str | None, no_push: bool
+) -> bool:
+    """The flag as typed, else what the vault remembered, else on for a Seafile push.
+
+    A default is not a request: with no seafile:// remote (a local-only
+    snapshot) it stays off, so nothing that worked before changes.
+    """
+    if args.no_record_mtimes:
+        return False
+    if args.record_mtimes:
+        return True
+    if (vault / ".git").exists():
+        remembered = _config(vault, "snapshot.mtimes")
+        if remembered in ("0", "1"):
+            return remembered == "1"
+    return payload_by_default_possible(remote, no_push)
+
+
+def remember_record_mtimes(vault: Path, args: argparse.Namespace, *, dry_run: bool) -> None:
+    """Remember an explicit choice after a complete real run (never a default)."""
+    if dry_run or not (args.record_mtimes or args.no_record_mtimes):
+        return
+    _run(
+        ["git", "-C", str(vault), "config", "snapshot.mtimes", "0" if args.no_record_mtimes else "1"],
+        text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    )
+
+
+def _blobs_of_tree(git_dir: Path, work_tree: Path, rev: str) -> dict[str, str]:
+    """``{path: blob id}`` for every file in snapshot ``rev``."""
+    listing = git(git_dir, work_tree, ["ls-tree", "-r", "-z", rev], cwd=work_tree).stdout
+    found: dict[str, str] = {}
+    for entry in listing.split("\0"):
+        meta, _sep, path = entry.partition("\t")
+        parts = meta.split()
+        if path and len(parts) == 3 and parts[1] == "blob":
+            found[path] = parts[2]
+    return found
+
+
+def _recorded_mtimes(git_dir: Path, work_tree: Path, rev: str | None) -> dict[str, int]:
+    """The times recorded in snapshot ``rev``; empty when it has none or they are unusable."""
+    if not rev:
+        return {}
+    proc = git(
+        git_dir, work_tree, ["show", f"{rev}:{mtimes_path()}"], cwd=work_tree, check=False
+    )
+    if proc.returncode != 0:
+        return {}
+    try:
+        data = json.loads(proc.stdout)
+        files = data["files"]
+    except (ValueError, KeyError, TypeError, RecursionError):
+        return {}
+    if not isinstance(files, dict):
+        return {}
+    return {
+        path: value for path, value in files.items()
+        if isinstance(path, str) and isinstance(value, int) and not isinstance(value, bool)
+        and 0 <= value < _MAX_MTIME_NS
+    }
+
+
+def record_mtimes_in_index(git_dir: Path, work_tree: Path, parent: str | None) -> int:
+    """Write ``.seafile-payload/mtimes.json`` into the vault index; return how many times.
+
+    A file whose content is the one the parent snapshot recorded keeps the time
+    recorded there, however it has been touched since.  A touch is not a change
+    (a build that rewrites a generated file with the same bytes must not make a
+    new snapshot every night), so the record means "the modification time when
+    this content was first seen".  A file with new content gets its own.
+    """
+    listing = git(git_dir, work_tree, ["ls-files", "-s", "-z"], cwd=work_tree).stdout
+    current: dict[str, str] = {}
+    for entry in listing.split("\0"):
+        meta, _sep, path = entry.partition("\t")
+        parts = meta.split()
+        if path and len(parts) == 3 and parts[0] != "160000":
+            current[path] = parts[1]
+    previous_blobs = _blobs_of_tree(git_dir, work_tree, parent) if parent else {}
+    previous_times = _recorded_mtimes(git_dir, work_tree, parent)
+
+    times: dict[str, int] = {}
+    for path, blob in current.items():
+        if path == PAYLOAD_RESERVED_DIR or path.startswith(PAYLOAD_RESERVED_DIR + "/"):
+            continue
+        if path in previous_times and previous_blobs.get(path) == blob:
+            times[path] = previous_times[path]
+            continue
+        try:
+            stamp = os.lstat(work_tree / path).st_mtime_ns
+        except OSError:
+            continue
+        if 0 <= stamp < _MAX_MTIME_NS:
+            times[path] = stamp
+    if not times:
+        return 0
+    document = json.dumps(
+        {"format": _MTIMES_FORMAT, "files": times}, sort_keys=True, separators=(",", ":")
+    )
+    blob_id = git(
+        git_dir, work_tree, ["hash-object", "-w", "--no-filters", "--stdin"],
+        cwd=work_tree, stdin=document,
+    ).stdout.strip()
+    git(
+        git_dir, work_tree,
+        ["update-index", "--add", "--cacheinfo", f"100644,{blob_id},{mtimes_path()}"],
+        cwd=work_tree,
+    )
+    return len(times)
+
+
+def apply_recorded_mtimes(into: Path) -> tuple[int, int]:
+    """Set the recorded times on a restored tree; ``(applied, skipped)``.
+
+    Best effort and bounded to *into*: the record came from a remote, so each
+    path goes through the same checks as a manifest path, and a time that does
+    not fit is skipped rather than written.
+    """
+    record = into / PAYLOAD_RESERVED_DIR / _MTIMES_NAME
+    try:
+        data = json.loads(record.read_text(encoding="utf-8"))
+        files = data["files"]
+        if not isinstance(files, dict):
+            return 0, 0
+    except (OSError, ValueError, KeyError, TypeError, RecursionError):
+        return 0, 0
+    root = into.resolve()
+    applied = skipped = 0
+    for rel, stamp in files.items():
+        if (
+            not isinstance(rel, str) or isinstance(stamp, bool) or not isinstance(stamp, int)
+            or not 0 <= stamp < _MAX_MTIME_NS or path_security_problem(rel) is not None
+        ):
+            skipped += 1
+            continue
+        target = into / rel
+        try:
+            if os.path.commonpath([str(root), str(target.parent.resolve())]) != str(root):
+                skipped += 1
+                continue
+            if target.is_symlink():
+                if os.utime in os.supports_follow_symlinks:
+                    os.utime(target, ns=(stamp, stamp), follow_symlinks=False)
+                    applied += 1
+                else:
+                    skipped += 1
+            elif target.is_file():
+                os.utime(target, ns=(stamp, stamp))
+                applied += 1
+            else:
+                skipped += 1
+        except (OSError, ValueError, OverflowError):
+            skipped += 1
+    return applied, skipped
+
+
 # -- Payload manifests and the per-machine hash cache (see 75_payload.py) ----------
 
 # -- manifests ---------------------------------------------------------------
@@ -2567,9 +2779,31 @@ def _is_network_fs(path: Path) -> bool:
         return False
 
 
+#: The probe file's name prefix.  A run killed between creating and removing it
+#: leaves one behind, and the next snapshot would capture it as content.
+_PROBE_PREFIX = ".grs-clock-probe-"
+#: Debris older than this is removed by the next probe (generous: a clock that
+#: is hours off must not make a live probe look stale).
+_PROBE_DEBRIS_AGE_S = 6 * 3600
+
+
+def is_clock_probe_debris(rel: str) -> bool:
+    """True for a probe file at the source root, which never belongs in a snapshot."""
+    return "/" not in rel and rel.startswith(_PROBE_PREFIX)
+
+
 def _probe_fs_clock(directory: Path) -> int | None:
     """The filesystem's own "now", from a file created and removed at once; ``None`` if it cannot be."""
-    name = directory / f".grs-clock-probe-{os.getpid()}-{time.time_ns()}"
+    try:
+        for stale in directory.glob(_PROBE_PREFIX + "*"):
+            try:
+                if abs(time.time() - stale.stat().st_mtime) > _PROBE_DEBRIS_AGE_S:
+                    stale.unlink()
+            except OSError:
+                pass
+    except OSError:
+        pass
+    name = directory / f"{_PROBE_PREFIX}{os.getpid()}-{time.time_ns()}"
     try:
         fd = os.open(name, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
     except OSError:
@@ -2587,7 +2821,11 @@ def _probe_fs_clock(directory: Path) -> int | None:
 
 
 def fs_clock_offset_ns(
-    source: Path, *, is_network: Any = _is_network_fs, probe: Any = _probe_fs_clock
+    source: Path,
+    *,
+    is_network: Any = _is_network_fs,
+    probe: Any = _probe_fs_clock,
+    note: Any = print,
 ) -> int:
     """The source filesystem's clock minus this machine's, in ns; 0 when it is this machine's.
 
@@ -2603,10 +2841,9 @@ def fs_clock_offset_ns(
     before = time.time_ns()
     stamp = probe(source)
     if stamp is None:
-        print("note: the source is on a network share and its clock could not be measured "
-              "(no write access); a file edited right after it was hashed is detected only "
-              "if its size or timestamp differs -- --payload-rehash re-checks everything",
-              flush=True)
+        note("note: the source is on a network share and its clock could not be measured "
+             "(no write access); a file edited right after it was hashed is detected only "
+             "if its size or timestamp differs -- --payload-rehash re-checks everything")
         return 0
     offset = int(stamp) - before
     return 0 if abs(offset) < _CLOCK_SKEW_NOISE_NS else offset
@@ -4026,6 +4263,22 @@ def conversion_warning(candidates: dict[str, Candidate], dry_run: bool) -> str:
     )
 
 
+_CLOCK_NOTE_KEY = "snapshot.clocknote"
+
+
+def _clock_offset_once_noted(git_dir: Path, source: Path) -> int:
+    """The share-clock offset, saying "could not be measured" once per vault, not every run."""
+    messages: list[str] = []
+    offset = fs_clock_offset_ns(source, note=messages.append)
+    if messages and not _read_config_key(git_dir, _CLOCK_NOTE_KEY):
+        print(messages[0], flush=True)
+        _run(
+            ["git", "--git-dir", str(git_dir), "config", _CLOCK_NOTE_KEY, "1"],
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+    return offset
+
+
 def run_payload_step(
     git_dir: Path,
     source: Path,
@@ -4071,7 +4324,7 @@ def run_payload_step(
         print(conversion_warning(candidates, dry_run), flush=True)
     manifest, cache = build_manifest(
         candidates, source, {} if rehash else load_hash_cache(git_dir), min_size, rule=rule,
-        clock_offset_ns=fs_clock_offset_ns(source) if candidates else 0,
+        clock_offset_ns=_clock_offset_once_noted(git_dir, source) if candidates else 0,
     )
     todo = publish_payload(
         remote or "", source, manifest, dry_run=dry_run, jobs=jobs or 3
@@ -4860,6 +5113,14 @@ def restore(
             "remote that survives."
         )
 
+    # Git stores no timestamps; the record the snapshot wrote (if it wrote one)
+    # puts them back.  After the checkout and before the byte check, which
+    # reads content only and so is not affected.
+    applied, skipped = apply_recorded_mtimes(into)
+    if applied or skipped:
+        print(f"restored the modification time of {applied} file(s)"
+              + (f" ({skipped} could not be set)" if skipped else ""))
+
     # A restore that differs from the snapshot is not a restore, and the
     # autocrlf class of bug is invisible to `git status` -- so check the bytes.
     mismatched = verify_restore(into, verified_rev)
@@ -5035,6 +5296,7 @@ def validate_args(args: argparse.Namespace) -> None:
     """
     problems: list[str] = (
         payload_gc_conflicts(args) + payload_conflicts(args) + payload_view_conflicts(args)
+        + mtimes_conflicts(args)
     )
 
     if args.maintain and args.restore:
@@ -5648,6 +5910,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "With --restore: download a payload that does not appear to fit",
     )
     add_payload_groups(parser)
+    add_mtimes_arguments(parser)
     parser.add_argument(
         "--verify",
         action="store_true",
@@ -5742,6 +6005,9 @@ def main(argv: list[str] | None = None) -> int:
         args.payload_min_size, payload_default = resolve_payload_value(
             args.payload_min_size, vault, remote=remote, no_push=args.no_push,
             no_payload=args.no_payload,
+        )
+        record_mtimes = resolve_record_mtimes(
+            args, vault, remote=remote, no_push=args.no_push
         )
         payload_min, payload_candidates, payload_rule = plan_payload(
             args.payload_min_size, remote, source, exclude
@@ -5861,6 +6127,7 @@ def main(argv: list[str] | None = None) -> int:
                 skip_paths=payload_skip or None, manifest=manifest,
                 capture_embedded=not args.no_embedded_repos,
                 embedded_report=embedded_report,
+                record_mtimes=record_mtimes,
             )
             count, size = describe_tree(git_dir, source, tree)
             # The profile was decided from a sample taken before the first
@@ -5995,6 +6262,7 @@ def main(argv: list[str] | None = None) -> int:
         # --remote that failed to push does not become the vault's remote for
         # every scheduled run after it.  A preview never gets here.
         remember_payload_value(vault, args.payload_min_size, dry_run=args.dry_run)
+        remember_record_mtimes(vault, args, dry_run=args.dry_run)
         if manifest is not None and remote and not args.dry_run:
             maybe_report_payload_gc(git_dir, vault, remote, args.payload_report_days)
         remember_settings(
