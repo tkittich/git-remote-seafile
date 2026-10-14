@@ -679,6 +679,9 @@ class PayloadModeTests(unittest.TestCase):
         # The payload vault is refused with the actionable message, not "needs a remote".
         self.assertNotEqual(rc, 0)
         self.assertIn("last snapshot used payload mode", out + err)
+        self.assertIn("for a local-only snapshot use --no-payload", out + err)
+        rc, out, err = self.run_tool(self.src, "--vault", self.vault, "--no-push", "--no-payload")
+        self.assertEqual(rc, 0, out + err)                  # the route the message names
         # A vault that never used payload mode takes the same run without complaint.
         other = self.case / "plain-vault"
         (self.src / "big1.bin").unlink()
