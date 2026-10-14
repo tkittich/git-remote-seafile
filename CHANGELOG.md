@@ -12,6 +12,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **A report-only `--payload-gc` summary after a run that pushes**, at most every `--payload-report-days N` (default 7, `0` off). It deletes nothing and a failing report is a note, not a failed run.
 
 ### Fixed
+- **`gc` could permanently delete the commits of a branch it did not see.** The compactor mirrored each remote ref as a loose file in its scratch repository, so refs whose names collide on the local filesystem (`Feature` and `feature` on Windows and macOS, a device name such as `NUL`, a trailing dot) became one file, and the branch that lost had its objects pruned and its packs deleted. The mirror is now a single `packed-refs` file, and git must read back exactly the refs written before anything is repacked.
+- **A ref that could not be read, or a directory that listed as missing, was skipped silently.** `iter_refs` now names it; `gc` treats it as an error (nothing is deleted), and a fetch or `ls-remote` prints a warning instead of quietly advertising fewer branches.
 - **The payload hash cache's racy rule used this machine's clock on a network share.** A share whose clock ran behind made a freshly edited file look old enough to trust, so a same-size edit within one timestamp granule kept its stale hash. On a network filesystem the share's clock is now measured with a probe file and cache entries are made in that clock; a local source tree is never written to.
 - **Long Windows paths.** The vault and a restored clone set `core.longpaths=true`, and payload files are restored through extended-length paths.
 

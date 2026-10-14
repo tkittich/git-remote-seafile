@@ -23,7 +23,7 @@ import re
 import sys
 from typing import Iterator
 
-from .client import SeafileClient
+from .client import SeafileAPIError, SeafileClient
 
 #: Ref namespaces the helper tracks.  Kept as a tuple so iteration order is
 #: stable (heads before tags), which makes the advertised listing deterministic.
@@ -74,12 +74,43 @@ def is_valid_ref_name(ref_name: str) -> bool:
     return True
 
 
+def _listing(
+    client: SeafileClient, repo_id: str, path: str, *, known_dir: bool, strict: bool
+) -> list:
+    """List *path*; a directory known to exist that lists as missing is not "empty".
+
+    ``list_dir`` answers 404 with ``[]``, which is right for a namespace nobody
+    has created yet and wrong for a directory the parent listing just showed:
+    there, an empty answer is a transient failure (or a directory removed under
+    us), and treating it as "no refs" is how a branch silently falls out of an
+    advertisement or out of ``gc``'s view of what is reachable.  An empty answer
+    for a known directory is therefore asked again, and a confirmed 404 is an
+    error when *strict* and a warning otherwise.
+    """
+    entries = client.list_dir(repo_id, path)
+    if entries or not known_dir:
+        return entries
+    if client.dir_exists(repo_id, path) is False:
+        message = (
+            f"{path} was listed by its parent directory but is now missing (404); "
+            "the refs under it cannot be read"
+        )
+        if strict:
+            raise SeafileAPIError(message)
+        sys.stderr.write(f"Warning: {message}\n")
+        sys.stderr.flush()
+        return []
+    return client.list_dir(repo_id, path)
+
+
 def iter_refs(
     client: SeafileClient,
     repo_id: str,
     base_path: str,
     namespace: str,
     max_workers: int = 8,
+    *,
+    strict: bool = False,
 ) -> Iterator[tuple[str, str]]:
     """Yield ``(ref_name, sha)`` for every ref under ``namespace``.
 
@@ -88,27 +119,40 @@ def iter_refs(
     (``refs/heads/feature/auth``), matching what Git expects to see on the
     wire.
 
-    Entries whose stored content is empty are skipped. Ref file downloads are
+    A ref whose content cannot be read is never dropped *silently*: it is
+    reported on stderr, and with ``strict`` it is an error.  ``gc`` passes
+    ``strict`` because there an omitted ref means its objects are deleted;
+    advertising for a fetch can afford a warning.  Ref file downloads are
     parallelized concurrently across a worker pool up to ``max_workers`` for
     fast enumeration across network latencies, yielding results in deterministic
     sorted order.
     """
     ns = namespace.strip("/")
     root = f"{base_path.rstrip('/')}/{ns}"
+    # A namespace root the repository's own ``refs`` directory lists is known to
+    # exist.  Asked only when strict: it is one more request, worth it where the
+    # answer decides what is deleted.
+    root_known = False
+    if strict and "/" in ns:
+        parent, _, leaf = root.rpartition("/")
+        root_known = any(
+            isinstance(e, dict) and e.get("name") == leaf and e.get("type") == "dir"
+            for e in client.list_dir(repo_id, parent)
+        )
     # Depth-first walk.  The stack holds (remote_dir, ref_prefix) pairs, so a
     # directory contributes its own name to the ref name of everything below it.
-    stack: list[tuple[str, str]] = [(root, "")]
+    stack: list[tuple[str, str, bool]] = [(root, "", root_known)]
     ref_entries: list[tuple[str, str]] = []
 
     while stack:
-        dir_path, prefix = stack.pop()
-        for entry in client.list_dir(repo_id, dir_path):
+        dir_path, prefix, known = stack.pop()
+        for entry in _listing(client, repo_id, dir_path, known_dir=known, strict=strict):
             name = entry.get("name") or ""
             if not name:
                 continue
             kind = entry.get("type")
             if kind == "dir":
-                stack.append((f"{dir_path}/{name}", f"{prefix}{name}/"))
+                stack.append((f"{dir_path}/{name}", f"{prefix}{name}/", True))
             elif kind == "file":
                 ref_name = f"{ns}/{prefix}{name}"
                 if is_conflict_copy(name):
@@ -149,11 +193,23 @@ def iter_refs(
         sha = client.get_file_text(repo_id, ref_path)
         return ref_name, sha.strip() if sha else None
 
+    def _unreadable(ref_name: str) -> None:
+        message = (
+            f"the ref {ref_name} is listed but its content could not be read "
+            "(missing or empty)"
+        )
+        if strict:
+            raise SeafileAPIError(message)
+        sys.stderr.write(f"Warning: {message}; it is not advertised\n")
+        sys.stderr.flush()
+
     if len(ref_entries) == 1 or max_workers <= 1:
         for item in ref_entries:
             ref_name, sha = _fetch_ref(item)
             if sha:
                 yield ref_name, sha
+            else:
+                _unreadable(ref_name)
     else:
         workers = min(max_workers, len(ref_entries))
         # The pool shares one requests.Session.  urllib3's connection pool is
@@ -166,6 +222,8 @@ def iter_refs(
             for ref_name, sha in executor.map(_fetch_ref, ref_entries):
                 if sha:
                     yield ref_name, sha
+                else:
+                    _unreadable(ref_name)
 
 
 __all__ = [

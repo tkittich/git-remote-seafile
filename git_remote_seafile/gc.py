@@ -637,6 +637,31 @@ def tail_merge(
             }
 
 
+def _verify_ref_mirror(
+    bare_repo: Path, expected: dict[str, str], env: dict[str, str], clean_repo: str
+) -> None:
+    """Refuse to repack unless git itself reads back exactly the refs we mirrored.
+
+    The mirror is only a means: what ``repack -a -d`` keeps is whatever *git*
+    sees as a root.  Asking git, rather than trusting what was written, is what
+    catches a file that did not take (line endings, a name git will not honour)
+    before a single object is pruned.
+    """
+    listed = run_git_checked(
+        ["-C", str(bare_repo), "for-each-ref", "--format=%(objectname) %(refname)"],
+        env, capture_output=True, text=True, check=True,
+    ).stdout
+    seen = {line for line in str(listed).splitlines() if line.strip()}
+    want = {f"{sha} {name}" for name, sha in expected.items()}
+    if seen != want:
+        missing = sorted(want - seen)
+        raise RuntimeError(
+            f"refusing to compact {clean_repo}: git reads back {len(seen)} of "
+            f"{len(want)} mirrored refs (first missing: {missing[0] if missing else '?'}). "
+            "Nothing was deleted."
+        )
+
+
 def compact_repository(
     client: SeafileClient,
     repo_id: str,
@@ -793,17 +818,32 @@ def compact_repository(
             # here makes its objects look unreachable, and "repack -a -d" would
             # then delete them from the consolidated packfile -- silently and
             # irreversibly.
-            mirrored_refs = 0
+            #
+            # The mirror is ONE ``packed-refs`` file, not a loose file per ref.
+            # A ref name is a path on the remote, but not a safe local one:
+            # ``Feature`` and ``feature`` are one file on Windows and macOS,
+            # ``NUL`` is a device and ``x./y`` loses its dot, so a loose mirror
+            # silently held fewer refs than the remote -- and the branch it
+            # lost had its commits pruned and its packs deleted.  A single file
+            # has no filesystem to collide on.  ``strict`` makes a ref that
+            # cannot be read an error: skipping it is the same loss.
+            mirrored: dict[str, str] = {}
             for namespace in REF_NAMESPACES:
-                for ref_name, sha in iter_refs(client, repo_id, clean_repo, namespace):
+                for ref_name, sha in iter_refs(
+                    client, repo_id, clean_repo, namespace, strict=True
+                ):
                     if not sha or not sha.strip():
                         raise RuntimeError(
                             f"refusing to compact {clean_repo}: empty SHA for ref '{ref_name}'."
                         )
-                    ref_file = bare_repo / ref_name
-                    ref_file.parent.mkdir(parents=True, exist_ok=True)
-                    ref_file.write_text(f"{sha.strip()}\n", encoding="utf-8")
-                    mirrored_refs += 1
+                    mirrored[ref_name] = sha.strip()
+            mirrored_refs = len(mirrored)
+            if mirrored:
+                (bare_repo / "packed-refs").write_bytes(
+                    "".join(f"{sha} {name}\n" for name, sha in sorted(mirrored.items()))
+                    .encode("utf-8")
+                )
+                _verify_ref_mirror(bare_repo, mirrored, scratch_env, clean_repo)
 
             # Compaction is only safe when we know what is reachable.  With no
             # refs mirrored, "git repack -a -d" treats every object as

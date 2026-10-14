@@ -20,6 +20,23 @@ from git_remote_seafile.gc import (
 from git_remote_seafile.lock import LEASE_LOST
 
 
+_mirror_check = patch.object(gc_module, "_verify_ref_mirror")
+
+
+def setUpModule() -> None:
+    """These tests mock ``subprocess.run`` wholesale, so git cannot read the mirror back.
+
+    The read-back (``_verify_ref_mirror``) is exercised against real git in
+    tests/test_gc_refs.py; here it is the compaction flow around it that is
+    under test.
+    """
+    _mirror_check.start()
+
+
+def tearDownModule() -> None:
+    _mirror_check.stop()
+
+
 def _uploaded_size(content) -> int:
     """The size a fixture should report for an upload argument.
 
@@ -772,7 +789,7 @@ class TestGcRecoveryAndFencing(unittest.TestCase):
         mock_subprocess.return_value = MagicMock(returncode=0)
         with patch(
             "git_remote_seafile.gc.iter_refs",
-            side_effect=lambda client, repo_id, base, ns: iter(
+            side_effect=lambda client, repo_id, base, ns, **kw: iter(
                 [("refs/heads/feature/auth", "sha-a"), ("refs/heads/main", "sha-b")]
             ),
         ):
