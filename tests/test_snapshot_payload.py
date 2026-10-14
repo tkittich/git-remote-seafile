@@ -1017,6 +1017,30 @@ class PayloadModeTests(unittest.TestCase):
         self.assertEqual(rc, 1, out + err)
         self.assertIn("at least 1", err)
 
+    def test_payload_verify_downloads_and_checks_the_objects(self):
+        self.assertEqual(self.snapshot()[0], 0)
+        rc, out, err = self.run_tool("--payload-verify", "all", "--remote", self.remote)
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn("verified 2 object(s)", out)
+        # Damage one object without changing its size, and a missing one.
+        self.stub.files[REPO_ID][self.object_key(self.big1)] = bytes(len(self.big1))
+        rc, out, err = self.run_tool("--payload-verify", "all", "--remote", self.remote)
+        self.assertNotEqual(rc, 0)
+        self.assertIn("1 of 2 sampled object(s) are damaged", out + err)
+        self.assertIn(_sha(self.big1), out + err)
+        del self.stub.files[REPO_ID][self.object_key(self.big2)]
+        rc, out, err = self.run_tool("--payload-verify", "all", "--remote", self.remote)
+        self.assertIn("2 of 2", out + err)
+
+    def test_payload_verify_samples_and_validates_its_argument(self):
+        self.assertEqual(self.snapshot()[0], 0)
+        rc, out, err = self.run_tool("--remote", self.remote, "--payload-verify", "1")
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn("verifying 1 of 2", out)
+        rc, out, err = self.run_tool("--remote", self.remote, "--payload-verify", "lots")
+        self.assertEqual(rc, 1, out + err)
+        self.assertIn("count or 'all'", err)
+
     def test_gc_refuses_to_act_when_it_finds_no_manifest(self):
         self.assertEqual(self.snapshot()[0], 0)
         other = "seafile://testlib/otherrepo"

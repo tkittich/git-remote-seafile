@@ -386,6 +386,11 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         validate_args(args)
+        if args.payload_verify is not None:
+            return payload_verify(
+                args.remote, args.vault.expanduser().resolve() if args.vault else None,
+                count=args.payload_verify,
+            )
         if args.payload_gc:
             return payload_gc(
                 args.remote, args.vault.expanduser().resolve() if args.vault else None,

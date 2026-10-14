@@ -198,6 +198,7 @@ import fnmatch
 import hashlib
 import json
 import os
+import random
 import re
 import shutil
 import socket
@@ -2716,6 +2717,17 @@ def add_payload_gc_arguments(parser: argparse.ArgumentParser) -> None:
         "--vault adds the local vault's refs",
     )
     parser.add_argument(
+        "--payload-verify",
+        nargs="?",
+        const="20",
+        default=None,
+        metavar="N|all",
+        help="download N randomly chosen payload objects (default 20, or 'all') of the newest "
+        "snapshot of the remote and check each against its SHA-256. The server cannot report a "
+        "content hash, so this is the only way to find an object that was damaged after it was "
+        "stored. Needs --remote",
+    )
+    parser.add_argument(
         "--payload-delete",
         action="store_true",
         help="with --payload-gc: act. The first run only marks unreferenced objects; a "
@@ -2743,6 +2755,18 @@ def add_payload_gc_arguments(parser: argparse.ArgumentParser) -> None:
 
 def payload_gc_conflicts(args: argparse.Namespace) -> list[str]:
     problems: list[str] = []
+    if args.payload_verify is not None:
+        for flag, value in (("--restore", args.restore), ("--maintain", args.maintain),
+                            ("--dry-run", args.dry_run), ("--payload-gc", args.payload_gc),
+                            ("--payload-min-size", args.payload_min_size)):
+            if value:
+                problems.append(f"{flag} does not apply to --payload-verify")
+        if not args.remote:
+            problems.append("--payload-verify requires --remote <url>")
+        if args.payload_verify != "all" and not args.payload_verify.isdigit():
+            problems.append("--payload-verify takes a count or 'all'")
+        elif args.payload_verify != "all" and int(args.payload_verify) < 1:
+            problems.append("--payload-verify takes a count of at least 1")
     if args.payload_gc:
         for flag, value in (("--restore", args.restore), ("--maintain", args.maintain),
                             ("--dry-run", args.dry_run), ("--payload-min-size", args.payload_min_size),
@@ -2768,8 +2792,8 @@ def payload_gc_conflicts(args: argparse.Namespace) -> list[str]:
 
 def _hashes_in_history(
     remote: str, vault: Path | None, keep: int | None = None
-) -> tuple[set[str], int, int]:
-    """``(hashes, commits scanned, manifests found)`` over every ref of *remote*
+) -> tuple[dict[str, int], int, int]:
+    """``({hash: size}, commits scanned, manifests found)`` over every ref of *remote*
     and, when given, of the local *vault* (which must be one)."""
     if vault is not None and not (vault / ".git").exists():
         raise SnapshotError(
@@ -2807,14 +2831,14 @@ def _hashes_in_history(
                                 cwd=Path(td)).stdout.split())
             commits = sorted(kept)
         if not commits:
-            return set(), 0, 0
+            return {}, 0, 0
         specs = "".join(f"{c}:{PAYLOAD_MANIFEST}\n" for c in commits)
         checked = git(repo, None, ["cat-file", "--batch-check"], cwd=Path(td), stdin=specs).stdout
         blobs = sorted({
             line.split()[0] for line in checked.splitlines()
             if len(line.split()) == 3 and line.split()[1] == "blob"
         })
-        hashes: set[str] = set()
+        hashes: dict[str, int] = {}
         for oid in blobs:
             body = git(repo, None, ["cat-file", "blob", oid], cwd=Path(td)).stdout
             try:
@@ -2825,7 +2849,7 @@ def _hashes_in_history(
                     "to decide what is unreferenced"
                 ) from None
             for item in check_manifest_shape(data, f"the payload manifest {oid[:12]}"):
-                hashes.add(item["sha256"])
+                hashes[item["sha256"]] = item["size"]
         return hashes, len(commits), len(blobs)
 
 
@@ -2843,6 +2867,36 @@ def _refs_the_helper_cannot_see(client: Any, rid: str, repo_path: str) -> list[s
             elif "(SFConflict" in name:
                 found.append(full)
     return found
+
+
+def payload_verify(remote: str, vault: Path | None, *, count: str) -> int:
+    """Download a sample of the newest snapshot's objects and check their SHA-256."""
+    library, base, server_url = payload_location(remote)
+    client = _api(lambda: _open_client(server_url), "opening the Seafile client")
+    rid = _api(lambda: client.get_repo_id(library), f"finding library {library!r}")
+    sizes, _commits, manifests = _hashes_in_history(remote, vault, 1)
+    if manifests == 0:
+        raise SnapshotError("found no payload manifest in the newest snapshot of the remote")
+    shas = sorted(sizes)
+    chosen = shas if count == "all" else sorted(random.sample(shas, min(int(count), len(shas))))
+    print(f"verifying {len(chosen)} of {len(shas)} object(s) of the newest snapshot ...", flush=True)
+    bad: list[str] = []
+    with tempfile.TemporaryDirectory(prefix="grs-payload-verify-") as td:
+        for index, sha in enumerate(chosen, 1):
+            why = _download_verified(
+                client, rid, f"{base}/{object_dir(sha)}/{sha}", Path(td) / sha,
+                {"size": sizes[sha], "sha256": sha},
+            )
+            (Path(td) / sha).unlink(missing_ok=True)
+            if why is not None:
+                bad.append(f"{sha}: {why}")
+            if index % 10 == 0 or index == len(chosen):
+                print(f"checked [{index}/{len(chosen)}]", flush=True)
+    if bad:
+        shown = "\n  ".join(bad[:20])
+        raise SnapshotError(f"{len(bad)} of {len(chosen)} sampled object(s) are damaged:\n  {shown}")
+    print(f"verified {len(chosen)} object(s): every sampled object matches its SHA-256")
+    return 0
 
 
 def payload_gc(
@@ -2863,7 +2917,8 @@ def payload_gc(
             f"see (first: {conflicts[0]}); a snapshot reachable only from one would look "
             "unreferenced. Resolve them (keep one ref, delete the copies) and run again"
         )
-    referenced, commits, manifests = _hashes_in_history(remote, vault, keep)
+    sizes_by_hash, commits, manifests = _hashes_in_history(remote, vault, keep)
+    referenced = set(sizes_by_hash)
     if keep is not None:
         print(f"--payload-keep {keep}: only the newest {keep} snapshot(s) of each branch and "
               f"tag count as using objects; older ones become unrestorable once their "
@@ -4588,6 +4643,11 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         validate_args(args)
+        if args.payload_verify is not None:
+            return payload_verify(
+                args.remote, args.vault.expanduser().resolve() if args.vault else None,
+                count=args.payload_verify,
+            )
         if args.payload_gc:
             return payload_gc(
                 args.remote, args.vault.expanduser().resolve() if args.vault else None,
