@@ -105,7 +105,8 @@ real data**, even to test. Read-only commands (`--payload-verify`, report-only
 - Make several small commits rather than one large one; each should pass the gates.
 - Release recipe is in CONTRIBUTING.md ("Tagging"): CHANGELOG `[x.y.z]`, release
   notes `.github/release-notes/vX.Y.Z.md`, version bump, gates, push, **wait for CI
-  green on the pushed commit**, then tag and push the tag.
+  green on the pushed commit**, `python tools/release_check.py`,
+  then tag and push the tag.
 - Never edit a published tag's notes to hide a change; add a new release.
 
 ## Conventions

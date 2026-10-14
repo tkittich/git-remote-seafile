@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **`tools/release_check.py`** answers, before the tag exists, what the release job answers after it: version against tag, the release notes' shape and compare-link base, the CHANGELOG section and reference link, a clean tree (and a warning when HEAD is not on a remote branch).
+
+### Fixed
+- **A snapshot of a tree holding a file name that is not UTF-8 stopped at `--exclude`** (`git add` was handed a replacement-character path). Names now round-trip as bytes; messages that print one escape it.
+- **`--restore`'s byte verification refused a snapshot containing a name with a newline, and mis-read one starting with `"`.** Those names are hashed one at a time now.
+- **A vault lock that could not be written** (full disk, failing share) leaked its descriptor and left an empty lock file that blocked the next run for the grace period. It is closed and removed, and the failure is reported.
+- **`--code-remote` together with `--no-push` is an argument error** instead of being ignored.
+
+### Removed
+- **The warning for the retired `seafile.locksettle` / `seafile.gcmaxmib` keys** (retired in 0.8.8). A value still in your git config is ignored without a message, and the helper no longer runs a `git config --get-regexp` for it on every operation.
+
 ## [0.9.2] - 2026-10-14
 
 Two more review rounds, this time on the snapshot tool (Opus twice, GLM and Gemini on its specification), and

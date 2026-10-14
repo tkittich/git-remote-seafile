@@ -77,12 +77,12 @@ earlier and re-verified against v0.8.6, so they are not listed above.
 
 ### 1.3 Found during the v0.8.7 pass
 
-Two gaps the release work itself exposed. Neither is a defect in shipped code, so
-neither belongs in the table above.
+Gaps the release work itself exposed. None is a defect in shipped code, so none
+belongs in the table above. (The release pre-flight, `tools/release_check.py`,
+landed after v0.9.2.)
 
 | ID / Source | Component | Description & Impact | Effort | Risk | Planned Target |
 |---|---|---|---|:---:|:---:|:---:|
-| **Release pre-flight** | `tools/` | A `tools/release_check.py` that answers, *before* the tag exists, every question the release job answers after it: `__version__` ↔ the tag being cut, the notes file's shape, that its compare link's base tag is real, that the CHANGELOG has the matching section *and* its reference link, and that the tree is clean. Today the first feedback on a malformed release is a red tag, which is public. | S | Low | backlog |
 | **`push.followTags`** | — | Not a repository change — a maintainer-side git setting. With it a bare `git push` carries any tag that points at what is being pushed, which is the failure that produced v0.8.6's "pushed, but no tag". `CONTRIBUTING.md` §Tagging now names the tag explicitly and says why, so this is a convenience rather than a fix. | S | None | next touch |
 
 ---
