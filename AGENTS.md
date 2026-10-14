@@ -35,8 +35,10 @@ python tools/run_tests_parallel.py -j 0   # the whole suite; several minutes
 Run the full suite **before a release and when code outside the area you changed
 is touched**. For a change confined to one area, run that area's module(s) plus
 `tests.test_snapshot_build` and `tests.test_docs_consistency` — for the payload
-code that is `python -m unittest tests.test_snapshot_payload` (~5 min). Do not
-re-run the full suite just to be sure.
+code that is `python tools/run_tests_parallel.py -j 0 -k test_snapshot_payload`
+(five classes, about 2 minutes; the class is the unit of parallel work, so keep
+new test classes modest). Do not re-run the full suite just to be sure; it takes
+about 2 minutes now, so run it once before a commit that touches shared code.
 
 Also worth one run per release: the suite with an empty git config
 (`GIT_CONFIG_GLOBAL=<empty file> GIT_CONFIG_NOSYSTEM=1`), because CI runners have no
@@ -44,9 +46,12 @@ identity and the first CI failures of a release have always been environmental.
 
 ## Rules that are enforced by tests (so you will hit them)
 
-- A snapshot-tool part may not exceed **700 lines** (`75_payload.py` is the
-  largest, at about 500; `99_cli.py` holds only `parse_args` and `main`, the
-  argument checks live in `96_cli_checks.py`). All imports live in `10_setup.py`; a top-level
+- A snapshot-tool part may not exceed **700 lines** (`99_cli.py`, with
+  `parse_args` and `main`, is the largest at about 550; `75_payload.py` is about
+  500; the argument checks live in `96_cli_checks.py`, embedded repositories in
+  `71_embedded.py`, modification times in `73_mtimes.py`). A name used as a *default
+  argument* is evaluated at import, so it must come from an earlier part (use
+  `None` and resolve it inside the function). All imports live in `10_setup.py`; a top-level
   name is defined in exactly one part; nothing evaluated at import time may come
   from a later part.
 - A test class that defines `test_*` methods must not be subclassed.
@@ -73,8 +78,13 @@ identity and the first CI failures of a release have always been environmental.
   server; see below.
 - **Line endings are LF** (`.gitattributes`). Edit with tools that preserve them.
 - **Shell quoting.** On Windows, heredocs through the Bash tool collapse
-  backslashes and `\n`; write Python edit scripts to a file and run them, or use
-  the editor tools, when a string contains `\n` or nested quotes.
+  backslashes (a `\n` in a script's string literal becomes a real newline, a
+  `\\0` becomes NUL) and an apostrophe can end the heredoc early. Write edit
+  scripts with the Write tool, to the Windows temp directory (Python's `/tmp`
+  is not Git Bash's), and use the Edit tool for any string containing `\n`.
+  `ruff` finds the damage; a NUL byte in a test file is a SyntaxError.
+- **Check `git status` before `git add -A`.** A scratch file in the root
+  (`empty`, `REVIEW.*.tmp`) is easy to commit.
 
 ## Real-server tests (opt-in)
 

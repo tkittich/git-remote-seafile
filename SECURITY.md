@@ -98,6 +98,22 @@ On Windows the file inherits the ACL of your user profile; no separate check is 
 would rather not keep a long-lived token on disk at all, prefer the desktop client's `accounts.db`
 (the helper reads it read-only) or a CI secret injected as environment variables.
 
+### Transfer links and where the token goes
+
+A download or upload link is server output. The account token is attached to a file transfer only
+when the link's host is the API server's, and that comparison is made with the parser the connection
+itself uses (urllib3), because `urlparse` and urllib3 read `http://other\@api-host/` differently --
+the first sees `api-host`, the second connects to `other`. A link whose authority holds a backslash,
+userinfo or a control character is refused outright, and a link to any other host is sent through a
+session that carries no `Authorization` header. A transfer link's path is itself a short-lived
+bearer token, so a failed transfer is reported by origin only and URL passwords are masked in every
+message that names the URL.
+
+The helper also treats what a repository holds as hostile: pack names are lowercase hex only, a ref
+whose listed size is over 4 KiB is not read, text files declared over 16 MiB are refused, and the
+snapshot tool's restore refuses a manifest path that reaches `.git` or the reserved directory, in any
+spelling (including code points HFS+ ignores) and through a link.
+
 ### Credentials on a shared machine
 
 Anything that can read your environment or your home directory can read your token, and a Seafile

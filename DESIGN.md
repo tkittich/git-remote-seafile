@@ -132,10 +132,13 @@ sequenceDiagram
     Helper->>Helper: acquire the advisory lock
     Helper->>Helper: wait one settlement window, re-scan
     Helper->>API: GET refs/heads/main (post-lock re-read)
+    Helper->>API: GET refs/heads/ and refs/tags/ (what the remote holds now)
     Helper->>Helper: git pack-objects (stage to disk under .git)
     Helper->>API: GET upload-link for objects/pack/
     API-->>Helper: temporary upload URL
     Helper->>API: POST pack-[sha].pack and pack-[sha].idx
+    Helper->>API: GET objects/pack/ (every file listed at its local size)
+    Helper->>Helper: verify the lease, per ref
     Helper->>API: GET refs/heads/main (final CAS read)
     Helper->>API: POST refs/heads/main (new commit SHA)
     Helper->>API: GET refs/heads/main (read-back)
@@ -150,6 +153,7 @@ sequenceDiagram
 | `fetch`, `push` | Advertised | Pack-based; refs are plain files (§4.2) |
 | `option object-format` | Advertised | The format is reported from the refs themselves; an explicit algorithm is accepted and the remote's real format wins |
 | `option dry-run` | Accepted | `git push --dry-run` reports without a lock or a write |
+| `option cas <ref>:<sha>` | Accepted | `git push --force-with-lease`. A push over a lease may rewrite history, but only over the value the user saw (an empty value means "must not exist"); otherwise `stale info`. Updates, deletions and `--dry-run`. A value not of that shape is `unsupported` |
 | `option progress`, `option verbosity` | Accepted | No effect |
 | any other `option` | `unsupported` | Git then proceeds without it |
 | Atomic push (`--atomic`) | Not supported | There is no multi-ref transaction on a file store; refs are written one at a time under the lock, each read back |
@@ -157,7 +161,7 @@ sequenceDiagram
 | Peeled tag lines (`^{}`) | Not advertised | Git peels locally after fetching the objects |
 | `stateless-connect`, `import`/`export` | Not supported | Packs are transferred whole, not negotiated |
 
-The ref is not written with a single request that is itself atomic. Seafile has no compare-and-swap on a path, so the sequence is: re-read the destination ref *after* the lock is taken (bypassing the pre-lock `list` cache), verify the fresh SHA is an ancestor of the local commit (`git merge-base --is-ancestor`), build the pack excluding objects the fresh tips already cover, re-read the ref one final time immediately before writing, write it, and then read it back. A peer that ignores the advisory lock can land between the final read and the write; the read-back is what notices, and the push is reported as `error <dst> fetch first` rather than `ok`.
+The ref is not written with a single request that is itself atomic. Seafile has no compare-and-swap on a path, so the sequence is: re-read the destination ref *after* the lock is taken (bypassing the pre-lock `list` cache), verify the fresh SHA is an ancestor of the local commit (`git merge-base --is-ancestor`), read **every** remote ref again under the lock and build the pack excluding only the objects those *current* tips cover (the listing `list` produced is from before the lock: a branch deleted and compacted away in the window would otherwise take its unique commits with it while the new ref names them; if the refs cannot be read the pack carries everything), upload the pack and **list the pack directory to prove every file landed at its local size** before any ref names it, verify the lease again before *each* ref (a long multi-ref push can outlive its lease), re-read the ref one final time immediately before writing, write it, and then read it back. A peer that ignores the advisory lock can land between the final read and the write; the read-back is what notices, and the push is reported as `error <dst> fetch first` rather than `ok`.
 
 Two details of the write itself are easy to get wrong and are therefore explicit here:
 
@@ -299,6 +303,7 @@ Losing the lease part-way through cleanup stops the remaining deletions and says
 
 Related details:
 
+- **The ref mirror is one `packed-refs` file, read back by git.** A ref name is a path on the remote but not a safe local one (`Feature`/`feature` are one file on Windows and macOS, `NUL` is a device, `x./y` loses its dot), so a loose file per ref silently mirrored fewer refs than the remote had, and `repack -a -d` pruned the loser's commits. A single file has no filesystem to collide on, and `git for-each-ref` must return exactly the refs that were written before anything is repacked. The walk is strict: a ref that cannot be read, or a directory its parent listed that then answers 404, is an error that deletes nothing (a 404 is indistinguishable from "empty" to `list_dir`, which is right for a namespace nobody created and wrong here).
 - **Remote packs are verified before compaction runs**: a pack that fails to download, or whose size disagrees with the directory listing, aborts the operation.
 - **Downloaded `.idx` files are validated with `git verify-pack -v`**; a corrupted or truncated index is discarded and reconstructed locally with `git index-pack`.
 - **The scratch repository is initialised with the *remote's* object format**, and `verify-pack`/`index-pack` are run with `-C <bare-repo>` so they inherit it. Both halves are required, because those commands run with `GIT_DIR` scrubbed and either alone still fails on a SHA-256 remote.
@@ -368,7 +373,7 @@ Implausible values — a negative timeout, a non-positive lease, a sub-1 thresho
 
 A commit carries only what `.gitignore` permits, so the snapshot tool (`git seafile-snapshot`, `git_remote_seafile/snapshot_tool.py`) captures what a commit structurally cannot: the whole tree, including ignored files, into a separate **vault** repository whose `--work-tree` is the source. It is deliberately not a subcommand — it does not extend the protocol and imports nothing from `git_remote_seafile` unconditionally.
 
-Its invariants are stated in §3.4; the full design — the vault, byte-exactness enforcement, restore verification, the cost model, and the options it refuses — is in [SNAPSHOT.md](SNAPSHOT.md), which is the authoritative write-up. Today a nested repository is detected and warned about loudly; its contents are not captured.
+Its invariants are stated in §3.4; the full design — the vault, byte-exactness enforcement, restore verification, the cost model, and the options it refuses — is in [SNAPSHOT.md](SNAPSHOT.md), which is the authoritative write-up. Since 0.9.1 a nested repository is captured as its files (not its `.git`), since 0.9.2 the modification times of git-stored files travel in `.seafile-payload/mtimes.json`, and large immutable files are stored by hash outside git (payload mode, [PAYLOAD.md](PAYLOAD.md)). A directory the tool cannot read stops the run rather than leaving a hole: `git add` only warns about one.
 
 The vault's object store is maintained on the same tiered principle as §4.5, but locally Git performs the mechanics natively:
 
@@ -396,6 +401,9 @@ Specific mappings worth stating:
 - **Errors propagate as exceptions, never as process exits.** The library raises a typed error — `SeafileClientNotFoundError` and friends — and `cli.py` is the only layer that turns one into an exit code and a message. A library that called `sys.exit` directly would terminate before the message was chosen, which is how a subcommand ends up reporting `UnboundLocalError` instead of the failure that actually happened.
 - **A push destination that would delete a directory** is refused; only file refs are deletable. A bare `push :refs/heads/` is refused rather than deleting every branch.
 - **Losing the lock during gc cleanup** stops the remaining deletions and reports them; it does not fail the run, because the new packfiles are already verified — but it reports `status: "incomplete"` and exits non-zero, so a scheduled job can tell it from a compaction that finished.
+- **A ref that cannot be read is never dropped silently.** Fetch and `ls-remote` name it on stderr and do not advertise it (so one planted file cannot make a repository unfetchable); a refs directory that its parent listed and that then answers 404 is retried once and then an error, because advertising the rest as the whole repository is how a fetch quietly loses branches. `gc` and any caller that decides what to *delete* from a fetch sets `SEAFILE_STRICT_REFS=1`, which turns every unreadable ref into an error.
+- **A landed push is never reported rejected.** Failures after the ref was written and verified (the default-HEAD bootstrap) are warnings that name `set-head`.
+- **A remote named like a subcommand** (`gc`, `test`, `unlock`) is routed to the helper when git is driving it: `GIT_DIR` set, stdin not a terminal, and the protocol's first word waiting on it. A person at a terminal, or a hook, still gets the subcommand.
 - **A failed auto-GC after a push** does not fail the push. The push succeeded; compaction is housekeeping.
 - **A stale cached library id is not detected** (`SeafileClient.get_repo_id`). A cache hit is served without a request, so a library deleted server-side since the last lookup fails later, at the point of use, with the server's error rather than a clean not-found. This is a known limitation (§7), not an oversight: the revalidation that existed briefly cost a listing fetch on every lookup.
 - **A malformed port is an invalid URL, on every path.** `parse_seafile_url` and `normalize_netloc()` both report `invalid port '<value>'` and name the URL, rather than letting urllib's bare `ValueError` escape — that message mentions neither the URL nor the fact that the fault is a *URL* fault, which sends the reader looking at the server. The guarded read is on the credential, transfer-session and URL-adjustment paths.
@@ -429,7 +437,11 @@ This section states what the *protocol* assumes and defends against. Deployment 
 | Credentials sent to an unintended host via a crafted URL      | Tokens are adopted only when the URL's host matches the credential's scope; a token is not attached to a plain-HTTP non-loopback destination by default |
 | A launcher that puts the current directory on `sys.path`      | Launchers invoke Python with `-I` (isolated mode) so a file in the working directory cannot shadow an import                                            |
 | A malicious packfile or index installed locally               | Strict name regexes; `verify-pack -v`; size verified against the directory listing; local regeneration of a bad index                                   |
-| A hostile or buggy server answering `2xx` for a failed upload | gc re-lists the remote pack directory and requires every new file at its expected size before deleting anything (§4.5)                                  |
+| A hostile or buggy server answering `2xx` for a failed upload | gc re-lists the remote pack directory and requires every new file at its expected size before deleting anything (§4.5); a push does the same before any ref names the pack (§4.1) |
+| A returned transfer link that picks who gets the account token | The origin is compared with the parser the connection uses (urllib3), and a link whose authority holds a backslash, userinfo or a control character is refused; the file session carries no token for another host |
+| A transfer token in an error message                          | Transfer failures are raised as an error that names only the origin; the request path (a bearer token) never reaches stderr or an `error` line; URL passwords go through `mask_url` |
+| A remote pack that is the case-twin of a local one            | Pack names are accepted only in lowercase; a backslash in a `seafile://` path is refused (it bypassed the working-tree collision guard)                 |
+| A planted multi-megabyte ref, HEAD or ticket                  | A ref listed over 4 KiB is not read; text files declared over 16 MiB are refused                                                                        |
 | A stale lock holder writing inside a live holder's push       | Ownership fencing at every destructive step; the fence detects both takeover and preemption, with distinct messages (§4.4)                              |
 | Information disclosure through the lock queue                 | Documented as readable; no secret is placed in a ticket beyond a token-derived hash                                                                     |
 | A silently truncated backup                                   | The snapshot tool's excludes are opt-in and named; an omitted file is never silent                                                                      |

@@ -1,7 +1,7 @@
 # PAYLOAD.md — specification of the snapshot tool's payload mode
 
-**Status:** the core is implemented on the `feat/payload-mode` branch. This file is
-the specification the implementation is held to: the requirements, the decisions
+**Status:** shipped in 0.9.0 and revised through 0.9.2 (the modification-times
+record, D14, is 0.9.2). This file is the specification the implementation is held to: the requirements, the decisions
 with the evidence behind them, the failure model, and an adversarial pass
 ("Attack") that records every way the design was found wanting and what became of
 it. [SNAPSHOT.md section 15.1](SNAPSHOT.md) keeps the measurements and the
@@ -47,7 +47,7 @@ encryption and retention policy.
 | R6 | A file that changed between hashing and upload is never stored under another content's name. | `test_a_file_that_changes_between_hash_and_upload_is_refused` |
 | R7 | A restore never writes outside its destination, whatever the manifest says. | `test_a_hostile_manifest_cannot_write_outside_the_restore` |
 | R8 | Corruption of a stored object is detected at restore, never accepted. | `test_corrupt_payload_fails_the_restore` |
-| R9 | A run that cannot read a file stops and names it; nothing is skipped silently. | `test_an_unreadable_file_names_itself` |
+| R9 | A run that cannot read a file *or a directory* stops and names it; nothing is skipped silently. (git only warns for a directory, so the tool reads that warning.) | `test_an_unreadable_file_names_itself`, `test_a_directory_that_cannot_be_read_stops_the_run_and_is_named` (POSIX permissions) |
 | R10 | A payload vault never silently starts staging its large files into git. | `test_a_vault_that_used_payload_still_refuses_when_it_cannot_stay_in_it`, `test_a_fresh_vault_on_another_machine_follows_the_default` |
 | R11 | Payload mode is on by default, and a tree with no qualifying file is snapshotted exactly as without it (no manifest, no server directory; since 0.9.2 the tree also holds the times record `.seafile-payload/mtimes.json`, which is not part of payload mode); where it cannot work (no remote, a remote that is not `seafile://`, `--no-push`) the default stays off instead of failing. | `test_a_tree_with_nothing_big_is_snapshotted_as_without_payload_mode`, `test_the_default_stays_off_where_payload_mode_cannot_work` |
 
@@ -181,22 +181,29 @@ before (SNAPSHOT.md section 6).
 ### D8. Restore — **decided**
 
 Clone and check out the snapshot, read its manifest, **validate it**, then for each
-entry download the object to `<name>.part`, verify size and SHA-256, and rename into
-place. Two classes of problem, handled differently:
+entry download the object to a temporary file under `.git/grs-restore/` (never
+beside the destination: a real file named `<name>.part` that git had just restored
+was overwritten and renamed away), verify size and SHA-256, and rename into place.
+The stream is cut off the moment it passes the size the manifest declares, so a
+hostile manifest cannot fill the disk before the sizes are compared. Two classes of
+problem, handled differently:
 
 - **Security** refuses the whole manifest (R7): a path that is empty, absolute,
   or contains `.`, `..` or an empty component (on Windows, split on `\` too); that
   reaches `.git` in any spelling (case, trailing dots and spaces, `git~1`) -- a
   `core.fsmonitor` or a hook there runs code on the next `git status` -- or the
-  reserved `.seafile-payload` directory; that resolves outside the destination
-  (a symlink the tree holds); a hash that is not 64 lowercase hex digits; a bad
+  reserved `.seafile-payload` directory (including through a link the tree holds:
+  `tool -> .git` with `tool/hooks/pre-commit`; and names HFS+ ignores, such as
+  `.git<U+200C>`); that resolves outside the destination (a symlink the tree
+  holds); a hash that is not 64 lowercase hex digits; a bad
   size, mode or mtime; a `format` this tool does not know.
 - **Representability** skips and reports the entry, restores the rest, and then
   fails: a name Windows cannot hold (forbidden characters, trailing dot or space,
   reserved device names), a path something is already at (git's own file, or a
   name the filesystem treats as another entry's -- nothing is ever overwritten), a
-  download or verification that fails after three tries. A rerun into the same
-  directory keeps files that verify.
+  download or verification that fails after three tries. The payload step keeps
+  files that already verify, but the command refuses a non-empty destination
+  (A19), so a rerun goes to a new directory.
 
 ### D9. Retention — **decided** (`--payload-gc`)
 
@@ -210,9 +217,14 @@ reports; with `--payload-delete` it **marks, and later deletes, in two phases**:
   the meantime is referenced again when the second run looks, so it survives;
   nothing depends on the server's timestamps;
 - it reads the manifest of **every commit reachable from every branch and tag of the remote**
-  (fetched into a scratch repository), plus the local vault's refs when `--vault`
+  (fetched into a scratch repository, with `SEAFILE_STRICT_REFS=1` so the helper's
+  listing fails rather than skip a ref it cannot read -- a skipped branch would make
+  its objects look unused), plus the local vault's refs when `--vault`
   is given -- which must be a vault, and whose fetch must succeed -- because an
   un-pushed local snapshot may name objects already uploaded;
+- **immediately before the first deletion it lists the remote's refs again** and stops
+  with nothing deleted if they differ from the ones it decided from: a snapshot pushed
+  in the interval may name an object that was unused when the history was read;
 - a manifest it cannot read, or of a format it does not know, stops it: "cannot
   parse" is never "references nothing";
 - Seafile conflict copies under `refs/` stop it (a snapshot reachable only from one
@@ -292,6 +304,34 @@ Nothing here changes what a snapshot contains; each item is a refusal or a note
 `--vault`, so `git tag keep-2026-q3 <snapshot>` keeps that snapshot's objects alive
 whatever happens to the branch.
 
+### D14. Modification times of git-stored files — **decided** (0.9.2)
+
+Git stores content and a mode, not a time, so a restore gave every git-stored file the
+checkout time (payload files already carry theirs in the manifest). A snapshot that
+pushes to a `seafile://` remote, or is given `--record-mtimes`, writes
+`.seafile-payload/mtimes.json`: one line of ASCII JSON, sorted keys,
+`{"format": 1, "files": {path: mtime_ns}}`, for every file in the snapshot's tree
+except the reserved directory (payload files are in the manifest).
+
+- **The times are the real ones** (`lstat`, so a symlink's own). When nothing in the
+  tree changed since the parent snapshot, the parent's record blob is reused
+  unchanged, so a touch alone neither changes the record nor makes a commit (R4). A
+  per-file "first seen" time was tried and removed: a source reverted to older content
+  kept its old time, which could sort before an object built from the version it
+  replaced, so `make` kept the stale object after a restore.
+- **A restore applies it after the checkout**, with the checks a manifest path gets
+  (D8: no `..`, no `.git`, nothing outside the destination, a time in range); a path
+  that is absent or not a file is skipped. A symlink's own time is set where the
+  platform allows it.
+- **Choice:** the flag as typed, else what the vault remembered (`snapshot.mtimes`,
+  only an explicit choice is written), else on if the parent snapshot has a record,
+  else on for a run that pushes to a `seafile://` remote. A default is not a request:
+  a local-only run on a vault with no record stays as it was.
+- **Cost:** about 60 bytes a file; at 100,000 files about 5 MB raw and 1.5 MB
+  compressed, rewritten whenever any file's content changes, and uploaded whole
+  (the helper does not delta against the remote's copy). Sharding it is a format
+  change and is not done.
+
 ### D12. Privacy and security — **decided**
 
 Objects are readable by anyone with read access to the library; names reveal
@@ -348,6 +388,13 @@ data, or surprise. Disposition is one of **fixed**, **handled**, **specified**
 | A25 | `--payload-jobs` very large on a flaky link | many partial uploads | **handled**: pool is bounded; failure stops the queue |
 | A26 | A report-only `--payload-gc` after every run | cost of listing 256 directories; a failing report failing the run; a history download | **handled**: at most once per `--payload-report-days` (7), last in the run (after the settings are remembered), never fatal, never deletes, and reads the history from the local vault so it downloads nothing; `test_a_failing_report_never_fails_the_run_that_pushed`, `test_the_routine_report_reads_the_local_vault_not_the_remote` |
 | A27 | A restore path over 260 characters on Windows | file skipped or `git checkout` fails | **handled**: payload files use extended-length paths and git runs with `core.longpaths=true`; `test_the_vault_and_the_restored_clone_allow_long_paths` |
+| A28 | A directory the tool cannot open (a permission, an ACL) | `git add` prints a warning and exits 0, so everything under it is silently missing from the snapshot | **fixed** (0.9.2): the run stops and names it, `--exclude` leaves it out on purpose; `test_a_directory_that_cannot_be_read_stops_the_run_and_is_named` |
+| A29 | A real file named `<payload file>.part` beside a payload file | the restore's download overwrote it and renamed it away, then certified the tree | **fixed** (0.9.2): downloads stage under `.git/grs-restore/`; `test_a_git_file_named_like_the_download_temp_file_survives_the_restore` |
+| A30 | A symlink `tool -> .git` and a manifest path `tool/hooks/pre-commit` | an executable hook written into the restored repository | **fixed** (0.9.2): protected directories are refused after links are followed; `test_a_link_to_dot_git_cannot_carry_a_payload_write_into_the_repository` |
+| A31 | A manifest that declares a small size for a huge object | the disk fills before the sizes are compared | **fixed** (0.9.2): the download is cut off at the declared size; `test_download_file_to_stops_at_the_size_the_caller_expects` |
+| A32 | A pid recycled by another process after a crash | the lock reads as held; every later snapshot is refused | **fixed** (0.9.2): the lock records the process start time; `test_a_live_pid_with_a_different_start_time_is_a_dead_holder` |
+| A33 | `--payload-delete` decides from a listing that skipped a branch, or from a decision minutes old | objects of the skipped branch, or of a snapshot pushed meanwhile, look unused | **fixed** (0.9.2): the listing is strict (`SEAFILE_STRICT_REFS`) and the refs are read again before the first deletion; `test_a_push_that_lands_while_gc_is_deciding_stops_the_deletion` |
+| A34 | A file on a mount under the source, or on a share whose clock cannot be probed | the machine-clock racy rule is wrong there | **fixed** (0.9.2): a one-hour margin, and the device and the inode change time are in the cache key; `test_an_unprobed_share_is_trusted_only_for_files_an_hour_older_than_their_hash` |
 
 ### 6.1 The independent review rounds (2026-10-13 and 14)
 
@@ -408,13 +455,17 @@ file name on Linux is not handled by the staging path (a pre-existing limit).
 
 ## 7. Test matrix
 
-`tests/test_snapshot_payload.py` drives the real tool and helper against the
+`tests/test_snapshot_payload.py` (five classes, so the suite parallelises) and
+`tests/test_snapshot_tool.py` drive the real tool and helper against the
 in-process stub. Each fix in 6.1 was verified by mutation: a one-line
-change that removes it makes a named test fail (12 of 12). The real-server soaks
+change that removes it makes a named test fail (12 of 12), and every 0.9.1 and 0.9.2
+fix was checked the same way against the previous source. The real-server soaks
 cover a 1.1 GiB chunked upload, unchanged run, same-size edit, restore and
-older-snapshot restore, `auto` selection and retention, and the 131 GiB flood
-tree end to end. Not yet covered: views (D10), a real-server run with a manifest of 100,000 files
-(the growth is measured, D4, but not the upload), and a macOS or Linux non-UTF-8 run.
+older-snapshot restore, `auto` selection and retention, a view, a verify, a
+100,000-entry manifest pushed and cloned, a 2,000-object report, and the 131 GiB flood
+tree end to end. Not covered: a macOS run (NFD names, HFS+, `utime` on symlinks),
+a Linux or macOS non-UTF-8 name, and an SMB or NFS share with a skewed clock (the
+probe is exercised through its seams).
 
 ## 8. Order of work
 

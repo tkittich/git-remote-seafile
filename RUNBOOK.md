@@ -191,7 +191,9 @@ conflict copy instead of overwriting. This is the failure mode the whole project
 It appears when a *synced* library is used as a Git remote and something writes to it from two
 places at once, and — measured against a real Seafile CE 13.0.28 — also when two *API* writers hit
 one path at the same moment: every upload reports success and the server keeps the losers as
-`<name> (SFConflict <user> <date>)` files beside the path. Through the lock this does not happen
+`<name> (SFConflict <user> <date>)` files beside the path (for a name with a dot the text after the first dot is
+repeated after the marker: `v1.0.0` becomes `v1.0.0 (SFConflict <user> <date>).0.0` and
+`release-2.1` becomes `release-2.1 (SFConflict <user> <date>).1`, measured). Through the lock this does not happen
 (nine concurrent pushers produced none); a client that bypasses the lock, or an older helper that
 predates it, can produce it. The helper now warns after a ref write when a conflict copy of that ref
 appears, and names the copy when it lists refs.

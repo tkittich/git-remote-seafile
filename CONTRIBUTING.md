@@ -54,9 +54,10 @@ link a dated CI run if you need a number.
 The *shape* is stable and is what to remember:
 
 * The wall time is bounded by the slowest single unit of work, not by
-  throughput -- today a snapshot class such as
-  `test_snapshot_tool.ByteExactnessTests`. More workers than there are heavy
-  classes buy nothing.
+  throughput -- today one of the `test_snapshot_payload` classes (each of the
+  five runs one to two minutes; a single 109-test class once made the whole suite
+  six minutes, which is why it was split). More workers than there are heavy
+  classes buy nothing, and a new test class should be sized with that in mind.
 * The unit of work is the test class. Per-test scheduling is measurably worse
   (many more process start-ups for the same work).
 * `-j 1` is slower than `python -m unittest discover tests`, because it pays an

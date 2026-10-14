@@ -607,9 +607,10 @@ retention. The code repository's history is the thing you least want to touch.
 tool refuses it.** Two independent reasons, either of which is disqualifying:
 
 1. `git add -A -f .` runs with `--work-tree=<source>`, so a vault under the
-   source is *inside its own snapshot*. Because it contains a `.git`, it is
-   recorded as a gitlink — a broken directory on restore, plus a permanent
-   warning.
+   source is *inside its own snapshot*. Because it contains a `.git`, it would
+   be captured like any nested repository (its files, since 0.9.1; a bare
+   gitlink and a broken directory on restore before that) -- the vault, copied
+   into itself on every run.
 2. If the source sits in a synced Seafile library, the client would sync the
    vault's `.git` — precisely the corruption the project's Golden Rule exists to
    prevent.
