@@ -9,10 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Upgrading from 0.9.1
 
-- **A snapshot that pushes to a `seafile://` remote now also records the modification time of every git-stored file** in `.seafile-payload/mtimes.json`, and `--restore` puts the times back. Your vault gets one more file in its tree on the next run (about 60 bytes per file, changing only when content changes; git deltas it). `--no-record-mtimes` turns it off and the vault remembers that. Snapshots made before this restore as they did.
+- **A snapshot that pushes to a `seafile://` remote now also records the modification time of every git-stored file** in `.seafile-payload/mtimes.json`, and `--restore` puts the times back. Your vault gets one more file in its tree on the next run (about 60 bytes per file, rewritten whenever any file's content changes; at 100,000 files it is about 5 MB raw and 1.5 MB compressed, and the helper uploads each push's pack whole, so that is what a changed snapshot costs). `--no-record-mtimes` turns it off and the vault remembers that. Snapshots made before this restore as they did.
 
 ### Added
-- **Restoring modification times for git-stored files** (`--record-mtimes` / `--no-record-mtimes`). A file keeps the time recorded when its content was first seen, so touching a file does not make a new snapshot. A restore applies the record with the same path checks as a manifest and skips what does not fit.
+- **Restoring modification times for git-stored files** (`--record-mtimes` / `--no-record-mtimes`). The times are the real ones; when nothing in the tree changed since the last snapshot its record is reused, so touching a file does not make a new snapshot. (A first-seen time carried per file was written and removed: a source reverted to older content kept its old time and could sort before an object built from the version it replaced.) A restore applies the record with the same path checks as a manifest and skips what does not fit.
 - **`git push --force-with-lease` is supported.** The helper accepts git's `cas` option: a push over a lease may rewrite history, but only over the value the user last saw (an empty expectation means "must not exist"), and is refused as `stale info` otherwise, for updates and deletions, in `--dry-run` too. The compare-and-swap re-check under the lock still applies. A malformed `cas` is answered `unsupported`, never guessed at.
 
 ### Fixed
@@ -27,6 +27,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **The weekly report downloaded the remote's whole history** into a temporary repository, was due on the very first run, and ran before the run's settings were remembered. It reads the local vault, and runs last.
 - **A manifest path using a code point HFS+ ignores** (`.git<U+200C>/hooks/pre-commit`) was accepted; the set git strips is now stripped.
 - **Flags that were accepted and ignored:** `--payload-report-days` with `--no-payload`, `--dry-run` or a run without a seafile:// remote; `--no-embedded-repos` with the gc, verify and view tools. A preview no longer writes a clock-probe file into a share.
+
+### Fixed (second review round, Opus on the new code; and the two R4 specification reviews)
+- **`--no-embedded-repos` after a capturing run wrote a gitlink naming the vault's own commit**, not the nested repository's (`git` was run through the vault's `--git-dir`). It now asks the nested repository, refuses a repository with no commit (naming `--exclude`), and records only the outermost repository of a nest (a repository inside another crashed the run).
+- **A junction that is itself a repository** was followed out of the tree; the junction check now includes the path itself.
+- **A `--no-push` run dropped the times record** (and made a commit) on a vault whose last snapshot had one; a run with nothing typed or remembered now follows the last snapshot.
+- **The weekly report copied the whole vault into the temporary directory** to read it; it reads the vault in place, and the first run of a vault only starts the clock.
+- **The payload gc could decide from a listing that had skipped a branch.** The helper's listing for a gc history fetch is strict (`SEAFILE_STRICT_REFS`), so a ref it cannot read stops the run instead of making that branch's objects look unreferenced; and the refs are read again immediately before the first deletion, so a push that landed while the run was deciding stops it.
+- **A restore could be told to write through a link into `.git`:** a symlink `tool -> .git` plus a manifest path `tool/hooks/pre-commit` passed the check that the path stays inside the destination. Protected directories are refused after links are followed.
+- **A hostile manifest could fill the disk before its sizes were compared.** A download is cut off the moment it passes the size the manifest declares.
+- **A share that could not be probed was trusted by the machine's clock** (the rule 0.9.1 had fixed, on exactly the shares where it could not be applied); it now needs a margin of an hour, as does any file on a different device than the source root. The cache key also holds the device and the inode change time, so an in-place edit that restores the old mtime is a new file; and a whole-second mtime is trusted with a doubled margin instead of never (a FAT or HFS+ tree was re-read on every run).
+- **A directory git could not open was silently missing from the snapshot** (`git add` prints a warning and exits 0). The run now stops and names it; `--exclude` leaves it out on purpose.
+- **A pid recycled by an unrelated process blocked every later snapshot** ("another snapshot is running") on Windows. The lock records the process's start time and reclaims a live pid whose start time differs.
+- **A vault whose destination was derived from the code remote** now says, once, that it is the same library as the code and who can read it.
+- **A view warns before it builds** when the snapshot is larger than the library's remaining quota.
+- **Documentation:** the claims that objects are never overwritten, that the source is never written to, that a payload vault can snapshot offline and that `--payload-verify` covers every snapshot are corrected; `--payload-verify` scope, tag pushing, the single-line manifest and the 0.8.8 restore are stated. A test now pins that a tag is a pin under `--payload-keep`.
 
 ### Documentation
 - **A correction to 0.9.1.** Its changelog listed "the conflict-copy warning missed refs with a dot" as fixed. Measured on the real server (CE 13.0.28), Seafile names the loser of a concurrent write `<name> (SFConflict <user> <date>).<last extension>` (`v1.0.0` becomes `v1.0.0 (SFConflict ...).0.0`), which the original prefix match already caught; the report was an inference from two reviews and was wrong. The extra match of the name without its last extension is harmless, and a real-server test now pins the observed naming.

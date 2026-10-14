@@ -47,13 +47,29 @@ def mtimes_conflicts(args: argparse.Namespace) -> list[str]:
     return problems
 
 
-def resolve_record_mtimes(
-    args: argparse.Namespace, vault: Path, *, remote: str | None, no_push: bool
-) -> bool:
-    """The flag as typed, else what the vault remembered, else on for a Seafile push.
+def parent_has_mtimes(git_dir: Path, work_tree: Path, parent: str | None) -> bool:
+    """Whether snapshot ``parent`` carries a times record."""
+    if not parent:
+        return False
+    proc = git(
+        git_dir, work_tree, ["cat-file", "-e", f"{parent}:{mtimes_path()}"],
+        cwd=work_tree, check=False,
+    )
+    return proc.returncode == 0
 
-    A default is not a request: with no seafile:// remote (a local-only
-    snapshot) it stays off, so nothing that worked before changes.
+
+def resolve_record_mtimes(
+    args: argparse.Namespace, vault: Path, *, remote: str | None, no_push: bool,
+    parent_has_record: bool = False,
+) -> bool:
+    """The flag as typed, else what the vault remembered, else what the last snapshot did,
+    else on for a run that pushes to a Seafile remote.
+
+    A default is not a request, and neither is a run's route: a ``--no-push``
+    run on a vault whose last snapshot has a record keeps recording, rather
+    than dropping the record (and committing the difference) until the next
+    pushing run rebuilds it.  With no seafile:// remote and no such history it
+    stays off, so nothing that worked before changes.
     """
     if args.no_record_mtimes:
         return False
@@ -63,7 +79,7 @@ def resolve_record_mtimes(
         remembered = _config(vault, "snapshot.mtimes")
         if remembered in ("0", "1"):
             return remembered == "1"
-    return payload_by_default_possible(remote, no_push)
+    return parent_has_record or payload_by_default_possible(remote, no_push)
 
 
 def remember_record_mtimes(vault: Path, args: argparse.Namespace, *, dry_run: bool) -> None:
@@ -114,11 +130,13 @@ def _recorded_mtimes(git_dir: Path, work_tree: Path, rev: str | None) -> dict[st
 def record_mtimes_in_index(git_dir: Path, work_tree: Path, parent: str | None) -> int:
     """Write ``.seafile-payload/mtimes.json`` into the vault index; return how many times.
 
-    A file whose content is the one the parent snapshot recorded keeps the time
-    recorded there, however it has been touched since.  A touch is not a change
-    (a build that rewrites a generated file with the same bytes must not make a
-    new snapshot every night), so the record means "the modification time when
-    this content was first seen".  A file with new content gets its own.
+    The times are the real ones.  Only when nothing in the tree changed since
+    the parent snapshot is the parent's record reused unchanged: a touch is not
+    a change (a build that rewrites a generated file with the same bytes must
+    not make a new snapshot every night).  Carrying times forward per file was
+    tried and is wrong: a source reverted to an older version kept its old
+    time, which could sort it *before* an object built from the version it
+    replaced, so ``make`` kept the stale object.
     """
     listing = git(git_dir, work_tree, ["ls-files", "-s", "-z"], cwd=work_tree).stdout
     current: dict[str, str] = {}
@@ -127,18 +145,31 @@ def record_mtimes_in_index(git_dir: Path, work_tree: Path, parent: str | None) -
         parts = meta.split()
         if path and len(parts) == 3 and parts[0] != "160000":
             current[path] = parts[1]
-    previous_blobs = _blobs_of_tree(git_dir, work_tree, parent) if parent else {}
-    previous_times = _recorded_mtimes(git_dir, work_tree, parent)
+    wanted = {
+        path: blob for path, blob in current.items()
+        if path != PAYLOAD_RESERVED_DIR and not path.startswith(PAYLOAD_RESERVED_DIR + "/")
+    }
+    if parent and wanted == {
+        path: blob for path, blob in _blobs_of_tree(git_dir, work_tree, parent).items()
+        if path != PAYLOAD_RESERVED_DIR and not path.startswith(PAYLOAD_RESERVED_DIR + "/")
+    }:
+        previous = git(
+            git_dir, work_tree, ["rev-parse", "--verify", "-q", f"{parent}:{mtimes_path()}"],
+            cwd=work_tree, check=False,
+        )
+        if previous.returncode == 0 and previous.stdout.strip():
+            git(
+                git_dir, work_tree,
+                ["update-index", "--add", "--cacheinfo",
+                 f"100644,{previous.stdout.strip()},{mtimes_path()}"],
+                cwd=work_tree,
+            )
+            return len(_recorded_mtimes(git_dir, work_tree, parent))
 
     times: dict[str, int] = {}
-    for path, blob in current.items():
-        if path == PAYLOAD_RESERVED_DIR or path.startswith(PAYLOAD_RESERVED_DIR + "/"):
-            continue
-        if path in previous_times and previous_blobs.get(path) == blob:
-            times[path] = previous_times[path]
-            continue
+    for path in wanted:
         try:
-            stamp = os.lstat(work_tree / path).st_mtime_ns
+            stamp = os.lstat(extended_path(work_tree / path)).st_mtime_ns
         except OSError:
             continue
         if 0 <= stamp < _MAX_MTIME_NS:
@@ -184,17 +215,18 @@ def apply_recorded_mtimes(into: Path) -> tuple[int, int]:
         ):
             skipped += 1
             continue
-        target = into / rel
+        plain = into / rel
+        target = extended_path(plain)  # past 260 characters on Windows too
         try:
-            if os.path.commonpath([str(root), str(target.parent.resolve())]) != str(root):
+            if os.path.commonpath([str(root), str(plain.parent.resolve())]) != str(root):
                 skipped += 1
                 continue
             if target.is_symlink():
+                # A platform that cannot set a link's own time (Windows) is not a
+                # failure to report: the link is restored, only its time is not.
                 if os.utime in os.supports_follow_symlinks:
                     os.utime(target, ns=(stamp, stamp), follow_symlinks=False)
                     applied += 1
-                else:
-                    skipped += 1
             elif target.is_file():
                 os.utime(target, ns=(stamp, stamp))
                 applied += 1

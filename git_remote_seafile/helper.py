@@ -283,8 +283,14 @@ class RemoteHelper:
     def _discover_refs(self, out: list[tuple[str, str]]) -> None:
         """Append every valid remote ref to *out* and record it in the refs cache."""
         for namespace in REF_NAMESPACES:
+            # SEAFILE_STRICT_REFS=1 is set by a caller that decides what to
+            # *delete* from what it fetches (the snapshot tool's payload gc): a
+            # ref this listing would only warn about and omit is, to it, a
+            # branch whose objects look unreferenced.
+            strict = os.environ.get("SEAFILE_STRICT_REFS") == "1"
             for ref_name, sha in iter_refs(
-                self.client, self.repo_id, self.repo_path, namespace, strict_listing=True
+                self.client, self.repo_id, self.repo_path, namespace,
+                strict=strict, strict_listing=True,
             ):
                 if not is_valid_ref_name(ref_name):
                     if is_conflict_copy(ref_name):

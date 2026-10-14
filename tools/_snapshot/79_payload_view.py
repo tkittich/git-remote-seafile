@@ -156,6 +156,11 @@ def payload_view(
         seen.add(shown)
         made.append(("/".join(parts[:-1]), parts[-1], item["sha256"]))
 
+    # A server-side copy adds no blocks, but the library's quota counts each copy
+    # at its full size (measured, SNAPSHOT.md 15.1): a view of a large snapshot
+    # can use what the next backup needs.  Said before anything is built.
+    sizes = {item["sha256"]: item["size"] for item in files}
+    payload_preflight(client, rid, sum(sizes[sha] for _d, _n, sha in made))
     print(f"building {root}: {len(made)} file(s) ...", flush=True)
     _api(lambda: client.mkdir_p(rid, root), f"creating {root}")
     done_dirs: set[str] = set()

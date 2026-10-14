@@ -52,8 +52,8 @@ _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _WIN_RESERVED = re.compile(r"^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$", re.IGNORECASE)
 _MAX_MTIME_NS = 2 ** 62
 
-#: ``(size, mtime_ns, mode, inode)`` for one candidate payload file.
-Candidate = tuple[int, int, str, int]
+#: ``(size, mtime_ns, mode, inode, device, ctime_ns)`` for one candidate payload file.
+Candidate = tuple[int, int, str, int, int, int]
 
 
 def parse_size(text: str) -> int:
@@ -213,7 +213,7 @@ def find_payload_files(
         if auto and size < _AUTO_UPPER and not _incompressible(source / rel, size):
             continue
         mode = "100755" if st.st_mode & stat.S_IXUSR else "100644"
-        found[rel] = (st.st_size, st.st_mtime_ns, mode, st.st_ino)
+        found[rel] = (st.st_size, st.st_mtime_ns, mode, st.st_ino, st.st_dev, st.st_ctime_ns)
     if placeholders:
         shown = ", ".join(placeholders[:5]) + (" ..." if len(placeholders) > 5 else "")
         raise SnapshotError(

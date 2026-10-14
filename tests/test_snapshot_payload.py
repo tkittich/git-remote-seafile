@@ -521,6 +521,18 @@ class PayloadManifestAndSelectionTests(_PayloadFixture):
         with self.assertRaises(snap.SnapshotError):
             snap.validate_manifest({"format": 2, "files": [_good_entry(path="link/evil.bin")]}, into)
 
+    def test_a_link_to_dot_git_cannot_carry_a_payload_write_into_the_repository(self):
+        into = self.case / "linked-git"
+        (into / ".git" / "hooks").mkdir(parents=True)
+        try:
+            os.symlink(into / ".git", into / "tool", target_is_directory=True)
+        except (OSError, NotImplementedError):
+            self.skipTest("cannot create a symlink here")
+        manifest = {"format": 2, "files": [_good_entry(path="tool/hooks/pre-commit", mode="100755")]}
+        with self.assertRaises(snap.SnapshotError) as ctx:
+            snap.validate_manifest(manifest, into)
+        self.assertIn("through a link", str(ctx.exception))
+
     def test_a_restore_never_overwrites_something_already_there(self):
         # A manifest entry whose path is a file git already restored (or a name this
         # filesystem treats as another entry's) is skipped and reported, never
@@ -1040,6 +1052,24 @@ class PayloadRetentionTests(_PayloadFixture):
         self.assertNotIn(orphan, self.server_files())
         self.assertEqual(self.object_count(), 2)
 
+    def test_a_push_that_lands_while_gc_is_deciding_stops_the_deletion(self):
+        self.assertEqual(self.snapshot()[0], 0)
+        orphan = self.orphan()
+        self.assertEqual(self.gc("--payload-delete", "--payload-grace-days", "1")[0], 0)
+        self.backdate_pending(2)
+        real = snap._remote_tips
+
+        def moved(remote):
+            tips = dict(real(remote))
+            tips["refs/heads/snapshot"] = "f" * 40  # somebody pushed since the history was read
+            return tips
+
+        with unittest.mock.patch.object(snap, "_remote_tips", moved):
+            rc, out, err = self.gc("--payload-delete", "--payload-grace-days", "1")
+        self.assertNotEqual(rc, 0, out + err)
+        self.assertIn("nothing was deleted", out + err)
+        self.assertIn(orphan, self.server_files())
+
     def test_an_object_referenced_again_before_the_second_phase_is_kept(self):
         # The object a run reused, between the mark and the delete.
         self.assertEqual(self.snapshot()[0], 0)
@@ -1366,6 +1396,38 @@ class PayloadRememberVerifyViewAndClockTests(_PayloadFixture):
         self.assertNotEqual(rc, 0)
         self.assertIn("not found", out + err)
 
+    def test_a_tag_is_a_pin_whatever_payload_keep_says(self):
+        """D13: a tagged snapshot's objects live, however many snapshots follow it.
+
+        ``--payload-keep N`` counts the newest N commits reachable from each ref,
+        and a tag always reaches at least its own commit.  Pushed, so the remote
+        history the delete decides from holds it.
+        """
+        versions = [self.big1]
+        self.assertEqual(self.snapshot()[0], 0)
+        _git(self.vault, "tag", "keep-this")
+        for _ in range(3):
+            versions.append(os.urandom(6000))
+            (self.src / "big1.bin").write_bytes(versions[-1])
+            self.assertEqual(self.snapshot()[0], 0)
+        # the tag has to be on the remote for the remote's history to hold it
+        proc = subprocess.run(
+            ["git", "-C", str(self.vault), "push", "-q", self.remote, "refs/tags/keep-this"],
+            env={**os.environ, **self.env}, capture_output=True, text=True,
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        args = ("--payload-delete", "--payload-grace-days", "1", "--payload-keep", "1",
+                "--payload-accept-loss")
+        self.assertEqual(self.gc(*args)[0], 0)
+        self.backdate_pending(2)
+        rc, out, err = self.gc(*args)
+        self.assertEqual(rc, 0, out + err)
+        files = self.server_files()
+        self.assertIn(self.object_key(versions[0]), files, "a tagged snapshot's object was deleted")
+        self.assertNotIn(self.object_key(versions[1]), files)
+        self.assertNotIn(self.object_key(versions[2]), files)
+        self.assertIn(self.object_key(versions[3]), files)
+
     def test_payload_keep_only_applies_to_gc_and_must_be_positive(self):
         rc, out, err = self.run_tool(self.src, "--vault", self.vault, "--payload-keep", "2")
         self.assertEqual(rc, 1, out + err)
@@ -1622,6 +1684,9 @@ class PayloadRememberVerifyViewAndClockTests(_PayloadFixture):
             seen.append(remote)
             return real(remote, vault, *a, **kw)
 
+        self.assertEqual(self.bare()[0], 0)   # starts the clock
+        _git(self.vault, "config", "snapshot.payloadgcreport", str(time.time() - 8 * 86400))
+        (self.src / "big1.bin").write_bytes(bytes(b ^ 0x01 for b in self.big1))
         with unittest.mock.patch.object(snap, "_hashes_in_history", spy):
             rc, out, err = self.bare()
         self.assertEqual(rc, 0, out + err)
@@ -1661,6 +1726,98 @@ class PayloadRememberVerifyViewAndClockTests(_PayloadFixture):
         self.assertEqual(rc, 0, out + err)
         offset.assert_not_called()
 
+    # -- the hash cache key and window (R4 round) --------------------------------
+    def _trusted(self, *, cached, now, window=None, root_dev=None, offset=0):
+        """Whether build_manifest reuses the cached hash for one 1 KiB file.
+
+        ``cached`` overrides fields of the cache entry; ``now`` is the candidate
+        tuple.  A trusted entry keeps the cached sha ("a" * 64); a rehash makes
+        the real one.
+        """
+        path = self.case / "cache-unit.bin"
+        path.write_bytes(b"x" * 1024)
+        hashed_at = 1_700_000_000 * 1_000_000_000
+        entry = {"size": 1024, "mtime_ns": now[1], "ino": now[3], "sha256": "a" * 64,
+                 "at": hashed_at, "ctime": now[5], "dev": now[4]}
+        entry.update(cached)
+        kwargs = {"clock_offset_ns": offset, "root_dev": root_dev}
+        if window is not None:
+            kwargs["racy_window_ns"] = window
+        manifest, _ = snap.build_manifest(
+            {"cache-unit.bin": now}, self.case, {"cache-unit.bin": entry}, 1024, quiet=True, **kwargs
+        )
+        return manifest["files"][0]["sha256"] == "a" * 64
+
+    OLD = 1_600_000_000 * 1_000_000_000 + 5_000_000  # well before the hash time, not a whole second
+
+    def test_an_edit_that_puts_the_old_mtime_back_is_still_a_new_file(self):
+        now = (1024, self.OLD, "100644", 7, 3, 111)
+        self.assertTrue(self._trusted(cached={}, now=now))
+        # same size, same mtime, same inode -- but the inode change time moved
+        self.assertFalse(self._trusted(cached={"ctime": 99}, now=now))
+
+    def test_an_entry_written_before_ctime_and_device_were_keyed_is_adopted_not_rehashed(self):
+        now = (1024, self.OLD, "100644", 7, 3, 111)
+        path = self.case / "cache-unit.bin"
+        path.write_bytes(b"x" * 1024)
+        legacy = {"size": 1024, "mtime_ns": self.OLD, "ino": 7, "sha256": "a" * 64,
+                  "at": 1_700_000_000 * 1_000_000_000}
+        manifest, fresh = snap.build_manifest(
+            {"cache-unit.bin": now}, self.case, {"cache-unit.bin": legacy}, 1024, quiet=True
+        )
+        self.assertEqual(manifest["files"][0]["sha256"], "a" * 64)
+        self.assertEqual((fresh["cache-unit.bin"]["ctime"], fresh["cache-unit.bin"]["dev"]), (111, 3))
+
+    def test_a_whole_second_mtime_is_trusted_once_it_is_old_enough(self):
+        whole = 1_600_000_000 * 1_000_000_000
+        now = (1024, whole, "100644", 7, 3, 111)
+        self.assertTrue(self._trusted(cached={}, now=now))
+        # ...but only with twice the margin: 3 s before the hash is inside it
+        near = 1_700_000_000 * 1_000_000_000 - 3_000_000_000
+        self.assertFalse(self._trusted(cached={"mtime_ns": near}, now=(1024, near, "100644", 7, 3, 111)))
+
+    def test_an_unprobed_share_is_trusted_only_for_files_an_hour_older_than_their_hash(self):
+        hashed_at = 1_700_000_000 * 1_000_000_000
+        recent = hashed_at - 600 * 1_000_000_000 + 5_000_000  # 10 minutes before the hash
+        now = (1024, recent, "100644", 7, 3, 111)
+        self.assertTrue(self._trusted(cached={"mtime_ns": recent}, now=now))
+        self.assertFalse(
+            self._trusted(cached={"mtime_ns": recent}, now=now, window=snap._UNPROBED_WINDOW_NS)
+        )
+        self.assertTrue(self._trusted(cached={}, now=(1024, self.OLD, "100644", 7, 3, 111),
+                                      window=snap._UNPROBED_WINDOW_NS))
+
+    def test_a_file_on_another_device_than_the_source_gets_the_wide_window(self):
+        hashed_at = 1_700_000_000 * 1_000_000_000
+        recent = hashed_at - 600 * 1_000_000_000 + 5_000_000
+        on_other = (1024, recent, "100644", 7, 9, 111)
+        self.assertFalse(self._trusted(cached={"mtime_ns": recent, "dev": 9}, now=on_other, root_dev=3))
+        self.assertTrue(self._trusted(cached={"mtime_ns": recent, "dev": 9}, now=on_other, root_dev=9))
+
+    def test_the_gc_history_fetch_asks_the_helper_for_a_strict_listing(self):
+        seen = []
+
+        def fake_git(repo, work_tree, args, **kw):
+            if args and args[0] == "fetch":
+                seen.append(os.environ.get("SEAFILE_STRICT_REFS"))
+            return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+        os.environ.pop("SEAFILE_STRICT_REFS", None)
+        with unittest.mock.patch.object(snap, "git", fake_git):
+            snap._hashes_in_history("seafile://lib/x", None)
+        self.assertEqual(seen, ["1"])
+        self.assertNotIn("SEAFILE_STRICT_REFS", os.environ)
+
+    def test_a_failed_payload_restore_leaves_no_scratch_directory(self):
+        self.assertEqual(self.bare()[0], 0)
+        with unittest.mock.patch.object(
+            snap, "_download_verified", side_effect=snap.SnapshotError("boom")
+        ), unittest.mock.patch.object(snap, "_AUTO_UPPER", 8000), \
+                unittest.mock.patch.object(snap, "_AUTO_LOWER", 2000):
+            rc, out, err, into = self.restore("scratch-gone")
+        self.assertNotEqual(rc, 0)
+        self.assertFalse((into / ".git" / "grs-restore").exists())
+
     def test_a_probe_file_a_killed_run_left_behind_is_not_captured(self):
         (self.src / ".grs-clock-probe-4242-1").write_bytes(b"")
         rc, out, err = self.bare()
@@ -1687,10 +1844,10 @@ class PayloadRememberVerifyViewAndClockTests(_PayloadFixture):
 
         def unmeasurable(source, *, note=print, **kw):
             note("note: the source is on a network share and its clock could not be measured")
-            return 0
+            return 0, True
 
         out = io.StringIO()
-        with unittest.mock.patch.object(snap, "fs_clock_offset_ns", unmeasurable), \
+        with unittest.mock.patch.object(snap, "fs_clock_probe", unmeasurable), \
                 contextlib.redirect_stdout(out):
             snap._clock_offset_once_noted(git_dir, self.src)
             snap._clock_offset_once_noted(git_dir, self.src)
@@ -1714,23 +1871,27 @@ class PayloadRememberVerifyViewAndClockTests(_PayloadFixture):
         self.assertEqual(_git(into, "config", "core.longpaths").strip(), "true")
 
     def test_the_payload_store_is_reported_once_a_week_and_never_changed(self):
-        before = dict(self.server_files())
-        rc, out, err = self.bare()
-        self.assertEqual(rc, 0, out + err)
-        self.assertIn("payload store report (report only", out)
-        self.assertIn("unused :", out)
-        self.assertTrue(_git(self.vault, "config", "snapshot.payloadgcreport").strip())
-        added = {k for k in self.server_files() if k not in before}
-        self.assertFalse(any("pending" in k or "gc" in k.lower() for k in added), added)
+        # The first run of a vault only starts the clock: what a report would
+        # say is what that run just printed.
         rc, out, err = self.bare()
         self.assertEqual(rc, 0, out + err)
         self.assertNotIn("payload store report", out)
-        # Due again: age the stamp past the period.
+        self.assertTrue(_git(self.vault, "config", "snapshot.payloadgcreport").strip())
+        before = dict(self.server_files())
         _git(self.vault, "config", "snapshot.payloadgcreport", str(time.time() - 8 * 86400))
         (self.src / "big1.bin").write_bytes(bytes(b ^ 0x01 for b in self.big1))
         rc, out, err = self.bare()
         self.assertEqual(rc, 0, out + err)
-        self.assertIn("payload store report", out)
+        self.assertIn("payload store report (report only", out)
+        self.assertIn("unused :", out)
+        # report-only: nothing it wrote to the server is gc state
+        added = {k for k in self.server_files() if k not in before}
+        self.assertFalse(any("pending" in k or "gc-" in k.lower() for k in added), added)
+        # and it is not due again
+        (self.src / "big1.bin").write_bytes(bytes(b ^ 0x02 for b in self.big1))
+        rc, out, err = self.bare()
+        self.assertEqual(rc, 0, out + err)
+        self.assertNotIn("payload store report", out)
 
     def test_the_report_can_be_turned_off_and_its_flag_is_validated(self):
         rc, out, err = self.bare("--payload-report-days", "0")
@@ -1746,15 +1907,16 @@ class PayloadRememberVerifyViewAndClockTests(_PayloadFixture):
         self.assertIn("--payload-report-days only applies", err)
 
     def test_a_failing_report_never_fails_the_run_that_pushed(self):
+        self.assertEqual(self.bare()[0], 0)   # starts the clock
+        aged = str(int(time.time() - 8 * 86400))
+        _git(self.vault, "config", "snapshot.payloadgcreport", aged)
+        (self.src / "big1.bin").write_bytes(bytes(b ^ 0x01 for b in self.big1))
         with unittest.mock.patch.object(snap, "payload_gc", side_effect=snap.SnapshotError("boom")):
             rc, out, err = self.bare()
         self.assertEqual(rc, 0, out + err)
         self.assertIn("payload report skipped: boom", out)
-        probe = subprocess.run(
-            ["git", "-C", str(self.vault), "config", "snapshot.payloadgcreport"],
-            capture_output=True, text=True,
-        )
-        self.assertNotEqual(probe.returncode, 0)  # a failed report leaves no stamp
+        # a failed report is retried next time: the stamp is still the aged one
+        self.assertEqual(_git(self.vault, "config", "snapshot.payloadgcreport").strip(), aged)
 
 
 if __name__ == "__main__":

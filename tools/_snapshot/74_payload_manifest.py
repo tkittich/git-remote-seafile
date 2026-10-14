@@ -133,12 +133,25 @@ def validate_manifest(manifest: Any, into: Path) -> list[dict[str, Any]]:
         problem = path_security_problem(rel)
         if problem is not None:
             raise SnapshotError(f"the payload manifest names a path that {problem}: {rel!r}")
+        resolved = (into / rel).resolve()
         try:
-            (into / rel).resolve().relative_to(root)
+            resolved.relative_to(root)
         except ValueError:
             raise SnapshotError(
                 f"the payload manifest names a path outside the restore: {rel!r}"
             ) from None
+        # A symlink the checkout created (``tool -> .git``) makes a path with no
+        # ".git" in it land inside the repository: ``tool/hooks/post-checkout``
+        # would be an executable hook.  Inside the tree is not enough; the
+        # protected directories are refused after links are followed.
+        folded = os.path.normcase(str(resolved))
+        for guarded in (root / ".git", root / PAYLOAD_RESERVED_DIR):
+            prefix = os.path.normcase(str(guarded))
+            if folded == prefix or folded.startswith(prefix + os.sep):
+                raise SnapshotError(
+                    f"the payload manifest names a path that reaches {guarded.name} "
+                    f"through a link: {rel!r}"
+                )
     return files
 
 
@@ -337,6 +350,13 @@ def _probe_fs_clock(directory: Path) -> int | None:
             pass
 
 
+#: The racy window used where the clock cannot be trusted to be this machine's:
+#: a share that cannot be probed, or a different device under the source.  A
+#: file edited within this long of being hashed is hashed again (a cost), so a
+#: clock that is off by less than this cannot hide an edit (a risk).
+_UNPROBED_WINDOW_NS = 3600 * 1_000_000_000
+
+
 def fs_clock_offset_ns(
     source: Path,
     *,
@@ -344,7 +364,22 @@ def fs_clock_offset_ns(
     probe: Any = _probe_fs_clock,
     note: Any = print,
 ) -> int:
-    """The source filesystem's clock minus this machine's, in ns; 0 when it is this machine's.
+    """Just the offset of :func:`fs_clock_probe` (for callers that need nothing else)."""
+    return int(fs_clock_probe(source, is_network=is_network, probe=probe, note=note)[0])
+
+
+def fs_clock_probe(
+    source: Path,
+    *,
+    is_network: Any = _is_network_fs,
+    probe: Any = _probe_fs_clock,
+    note: Any = print,
+) -> tuple[int, bool]:
+    """``(offset_ns, unprobed)``: the source filesystem's clock minus this machine's.
+
+    ``unprobed`` is True on a network share whose clock could not be measured
+    (no write access): the machine-clock rule is then the one thing known to be
+    wrong there, so the caller widens the racy window instead of using it.
 
     The racy rule (D6) needs "now" in the clock that stamps the files.  On a
     local disk that is this machine's; on a share it is the server's, and a
@@ -354,16 +389,16 @@ def fs_clock_offset_ns(
     network filesystem, so a local source tree is never written to.
     """
     if not is_network(source):
-        return 0
+        return 0, False
     before = time.time_ns()
     stamp = probe(source)
     if stamp is None:
         note("note: the source is on a network share and its clock could not be measured "
-             "(no write access); a file edited right after it was hashed is detected only "
-             "if its size or timestamp differs -- --payload-rehash re-checks everything")
-        return 0
+             "(no write access); a file is trusted from the hash cache only when it is more "
+             "than an hour older than its hash, and --payload-rehash re-checks everything")
+        return 0, True
     offset = int(stamp) - before
-    return 0 if -_CLOCK_BEHIND_NOISE_NS < offset < _CLOCK_SKEW_NOISE_NS else offset
+    return (0 if -_CLOCK_BEHIND_NOISE_NS < offset < _CLOCK_SKEW_NOISE_NS else offset), False
 
 
 def build_manifest(
@@ -375,37 +410,62 @@ def build_manifest(
     quiet: bool = False,
     rule: str = "size",
     clock_offset_ns: int = 0,
+    racy_window_ns: int | None = None,
+    root_dev: int | None = None,
 ) -> tuple[dict[str, Any], dict[str, dict[str, int | str]]]:
     """Hash every payload file; return ``(manifest, updated cache)``.
 
     ``clock_offset_ns`` is the source filesystem's clock minus this machine's
     (:func:`fs_clock_offset_ns`).  The racy rule compares a file's mtime with the
     moment it was hashed, and an mtime is written by the *filesystem's* clock, so
-    the moment is recorded in that clock's domain.
+    the moment is recorded in that clock's domain.  ``racy_window_ns`` is how much
+    older than its hash a file must be to be trusted; a file on a device other
+    than ``root_dev`` (a mount under the source) gets the wide window, because
+    its clock was not probed.  The cache key also holds the device and the
+    inode change time, so an in-place edit that puts the old mtime back (which
+    still moves ``ctime``) is a new file, not a trusted one.
     """
     entries: list[dict[str, Any]] = []
     fresh: dict[str, dict[str, int | str]] = {}
     total = len(candidates)
     stale = 0
     for index, rel in enumerate(sorted(candidates), 1):
-        size, mtime_ns, mode, ino = candidates[rel]
+        size, mtime_ns, mode, ino, *rest = candidates[rel]
+        dev = rest[0] if rest else None
+        ctime_ns = rest[1] if len(rest) > 1 else None
         old = cache.get(rel) or {}
         hashed_at = old.get("at")
+        window = _RACY_WINDOW_NS if racy_window_ns is None else racy_window_ns
+        if root_dev is not None and dev is not None and dev != root_dev:
+            window = max(window, _UNPROBED_WINDOW_NS)
+        if mtime_ns % 1_000_000_000 == 0:
+            # A whole second is a coarse clock (FAT's two seconds, HFS+'s one):
+            # an edit can share the stamp of the one that was hashed, so the
+            # margin doubles rather than the entry being distrusted forever,
+            # which re-read the whole tree on every run of such a volume.
+            window *= 2
         trusted = (
             old.get("size") == size
             and old.get("mtime_ns") == mtime_ns
             and old.get("ino") == ino
             and isinstance(old.get("sha256"), str)
             and isinstance(hashed_at, int)
-            and mtime_ns % 1_000_000_000 != 0  # whole-second mtimes: a coarse clock
-            and mtime_ns < hashed_at - _RACY_WINDOW_NS
+            and mtime_ns < hashed_at - window
             # A timestamp taken in this machine's clock says nothing about a
             # skewed share's, so it cannot vouch for a file there.
             and (not clock_offset_ns or old.get("fs") is True)
+            # ctime and device are new to the key: an entry written before them
+            # adopts the current values (below); one that has them must match.
+            and (ctime_ns is None or old.get("ctime") in (None, ctime_ns))
+            and (dev is None or old.get("dev") in (None, dev))
         )
         if trusted:
             digest = str(old["sha256"])
-            fresh[rel] = old
+            fresh[rel] = dict(old)
+            if ctime_ns is not None:
+                fresh[rel]["ctime"] = ctime_ns
+            if dev is not None:
+                fresh[rel]["dev"] = dev
         else:
             stale += isinstance(old.get("sha256"), str)
             if not quiet:
@@ -415,6 +475,10 @@ def build_manifest(
             fresh[rel] = {
                 "size": size, "mtime_ns": mtime_ns, "ino": ino, "sha256": digest, "at": started,
             }
+            if ctime_ns is not None:
+                fresh[rel]["ctime"] = ctime_ns
+            if dev is not None:
+                fresh[rel]["dev"] = dev
             if clock_offset_ns:
                 fresh[rel]["fs"] = True
         entries.append(

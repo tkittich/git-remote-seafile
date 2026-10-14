@@ -126,8 +126,11 @@ def _junction_filter(work_tree: Path) -> Any:
                 cache[directory] = False
         return cache[directory]
 
-    def behind(rel: str) -> bool:
-        parent = rel.rpartition("/")[0]
+    def behind(rel: str, self_too: bool = False) -> bool:
+        # ``self_too`` is for a directory that is itself the thing being
+        # considered (a nested repository): a junction *to* a repository is
+        # followed just as one above it is.
+        parent = rel if self_too else rel.rpartition("/")[0]
         while parent:
             if is_junction(parent):
                 return True
@@ -175,28 +178,52 @@ def handle_embedded_repositories(
     if capture:
         inline_embedded_repositories(git_dir, work_tree, excludes, skip_paths, extra_dirs)
     paths = index_paths(git_dir, work_tree)
-    roots = embedded_roots(paths, work_tree)
-    if not roots:
+    # Outermost repositories only: a repository inside another is part of that
+    # one's files, and its own gitlink would make "a file and a directory".
+    outer: list[str] = []
+    for root in embedded_roots(paths, work_tree):
+        if not any(root.startswith(kept + "/") for kept in outer):
+            outer.append(root)
+    if not outer:
         return
+    under: dict[str, list[str]] = {root: [] for root in outer}
+    outer_set = set(outer)
+    for path in paths:  # one pass: the nearest enclosing root claims the path
+        ancestor = path.rpartition("/")[0]
+        while ancestor:
+            if ancestor in outer_set:
+                under[ancestor].append(path)
+                break
+            ancestor = ancestor.rpartition("/")[0]
     if capture:
         if report is not None:
-            for root in roots:
-                report.append((root, sum(1 for p in paths if p.startswith(root + "/"))))
+            for root in outer:
+                report.append((root, len(under[root])))
         return
-    # Opt-out: gitlink (when there is a commit to name), not files.
-    for root in roots:
-        under = [p for p in paths if p.startswith(root + "/")]
-        if not under:
+    # Opt-out: the commit id, not the files -- of the *nested* repository.  The
+    # vault's own git directory must not be consulted for it: ``git()`` always
+    # passes --git-dir, so a ``-C`` through it names the vault's HEAD.
+    env = dict(os.environ)
+    for var in _REPO_ENV_VARS:
+        env.pop(var, None)
+    for root in outer:
+        if not under[root]:
             continue
-        drop_from_index(git_dir, work_tree, under)
-        head = git(
-            git_dir, work_tree, ["-C", str(work_tree / root), "rev-parse", "--verify", "HEAD"],
-            cwd=work_tree, check=False,
+        head = _run(
+            ["git", "-C", str(work_tree / root), "rev-parse", "--verify", "-q", "HEAD"],
+            text=True, encoding="utf-8", errors="replace",
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=env,
         )
         sha = head.stdout.strip() if head.returncode == 0 else ""
-        if sha:
-            git(
-                git_dir, work_tree,
-                ["update-index", "--add", "--cacheinfo", f"160000,{sha},{root}"],
-                cwd=work_tree,
+        if not sha:
+            raise SnapshotError(
+                f"{root} is a git repository with no commit, which cannot be recorded as a "
+                "commit id (--no-embedded-repos). Leave that flag out to capture its files, "
+                "or --exclude the directory."
             )
+        drop_from_index(git_dir, work_tree, under[root])
+        git(
+            git_dir, work_tree,
+            ["update-index", "--add", "--cacheinfo", f"160000,{sha},{root}"],
+            cwd=work_tree,
+        )

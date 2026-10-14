@@ -270,9 +270,6 @@ def main(argv: list[str] | None = None) -> int:
                 "--payload-report-days needs a run that pushes to a seafile:// remote "
                 "(there is no payload store to report on here)"
             )
-        record_mtimes = resolve_record_mtimes(
-            args, vault, remote=remote, no_push=args.no_push
-        )
         payload_min, payload_candidates, payload_rule = plan_payload(
             args.payload_min_size, remote, source, exclude
         )
@@ -391,7 +388,10 @@ def main(argv: list[str] | None = None) -> int:
                 skip_paths=payload_skip or None, manifest=manifest,
                 capture_embedded=not args.no_embedded_repos,
                 embedded_report=embedded_report,
-                record_mtimes=record_mtimes,
+                record_mtimes=resolve_record_mtimes(
+                    args, vault, remote=remote, no_push=args.no_push,
+                    parent_has_record=parent_has_mtimes(git_dir, source, base),
+                ),
             )
             count, size = describe_tree(git_dir, source, tree)
             # The profile was decided from a sample taken before the first

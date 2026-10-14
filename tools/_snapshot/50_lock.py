@@ -20,8 +20,51 @@ def _win_kernel32():
         )
         kernel32.CloseHandle.restype = ctypes.c_int
         kernel32.CloseHandle.argtypes = (ctypes.c_void_p,)
+        kernel32.GetProcessTimes.restype = ctypes.c_int
+        kernel32.GetProcessTimes.argtypes = (
+            ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_ulonglong),
+            ctypes.POINTER(ctypes.c_ulonglong),
+            ctypes.POINTER(ctypes.c_ulonglong),
+            ctypes.POINTER(ctypes.c_ulonglong),
+        )
         _KERNEL32 = kernel32
     return _KERNEL32
+
+
+def process_start_token(pid: int) -> str | None:
+    """An opaque value that changes if ``pid`` is later given to another process.
+
+    A pid alone cannot say whether the run that took the lock is the process
+    now holding that number: Windows recycles them quickly, so a crashed
+    nightly run's pid soon belongs to something long-lived, which then looked
+    "alive" and blocked every later run.  The process's creation time is what
+    tells them apart.  ``None`` where it cannot be read (the lock then behaves
+    as before).
+    """
+    try:
+        if os.name == "nt":
+            import ctypes
+
+            kernel32 = _win_kernel32()
+            handle = kernel32.OpenProcess(0x1000, False, pid)  # QUERY_LIMITED_INFORMATION
+            if not handle:
+                return None
+            try:
+                created, exited, kernel, user = (ctypes.c_ulonglong() for _ in range(4))
+                ok = kernel32.GetProcessTimes(
+                    handle, ctypes.byref(created), ctypes.byref(exited),
+                    ctypes.byref(kernel), ctypes.byref(user),
+                )
+                return str(created.value) if ok else None
+            finally:
+                kernel32.CloseHandle(handle)
+        stat_line = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
+        # the command name is in parentheses and may hold spaces: split after it
+        fields = stat_line.rpartition(")")[2].split()
+        return fields[19]  # field 22 of proc(5): start time in clock ticks since boot
+    except (OSError, ValueError, IndexError, AttributeError):
+        return None
 
 
 def pid_is_alive(pid: int) -> bool:
@@ -96,14 +139,16 @@ class VaultLock:
         self.path = git_dir / "seafile-snapshot.lock"
         self._fd: int | None = None
 
-    def _holder(self) -> tuple[str, int] | None:
+    def _holder(self) -> tuple[str, int, str | None] | None:
         try:
             text = self.path.read_text(encoding="utf-8").strip()
         except OSError:
             return None
-        host, _, pid_text = text.partition(" ")
+        parts = text.split()
+        if len(parts) < 2:
+            return None
         try:
-            return host, int(pid_text)
+            return parts[0], int(parts[1]), (parts[2] if len(parts) > 2 else None)
         except ValueError:
             return None
 
@@ -131,9 +176,17 @@ class VaultLock:
             print("reclaiming an unparseable lock file left behind earlier "
                   f"(that run is gone): {self.path}")
             return True
-        host, pid = holder
-        if host != socket.gethostname() or pid_is_alive(pid):
+        host, pid, started = holder
+        if host != socket.gethostname():
             return False
+        if pid_is_alive(pid):
+            # A live pid is the holder only if it is the *same process*: one
+            # whose start time differs is a recycled pid, and the run that took
+            # this lock is gone.  Without a recorded or readable start time we
+            # keep the old, cautious answer.
+            now = process_start_token(pid) if started else None
+            if not started or now is None or now == started:
+                return False
         try:
             self.path.unlink()
         except OSError:
@@ -166,7 +219,11 @@ class VaultLock:
                     ) from None
         else:  # pragma: no cover - the loop always breaks or raises
             raise SnapshotError(f"could not take the lock: {self.path}")
-        os.write(self._fd, f"{socket.gethostname()} {os.getpid()}".encode())
+        token = process_start_token(os.getpid())
+        os.write(
+            self._fd,
+            f"{socket.gethostname()} {os.getpid()}{' ' + token if token else ''}".encode(),
+        )
         os.fsync(self._fd)
         return self
 

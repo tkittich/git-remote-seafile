@@ -341,6 +341,7 @@ Every subcommand follows one convention, so scripts can rely on it:
 | `seafile.gcthreshold` | — | `20` | Count of *small* packfiles at which the `gc` tip appears (or auto-GC triggers). Large packs never count toward it. |
 | `seafile.gcmaxpackmib` | — | `1024` | The largest pack the helper writes, in MiB (`pack-objects --max-pack-size`, for pushes, tail merges and full `gc`): a bigger push arrives as several packs. Packs at least half this size count as full and are left where they stand by tail merge. The automatic run's download budget is 2 × this (2 GiB at the default); above it the run defers to a manual `gc`. A single object larger than this still becomes one larger pack (uploaded in chunks); the cap bounds everything else, which keeps each upload and each merge short. One tested server accepted 1.75 GiB in a single request and reset 2 GiB. |
 | `seafile.forcefilehost` | `SEAFILE_FORCE_FILE_HOST` | `false` | Force download/upload links onto your server's **host** (a wrong scheme on the same host is always corrected). |
+| — | `SEAFILE_STRICT_REFS` | unset | Set to `1` by a caller that decides what to *delete* from what it fetches (the snapshot tool's `--payload-gc`): the listing then fails, instead of warning and leaving out a ref whose file cannot be read. Not a setting to put in your shell profile. |
 | `seafile.locktimeout` | — | `15` | Seconds to wait for the remote lock *since the queue last moved*: a waiter whose turn is getting closer keeps waiting, so a push behind several others can wait longer in total (capped at the larger of 10 x this and 120 s). |
 | `seafile.locklease` | — | `60` | Duration in seconds before an inactive lock lease is considered expired. |
 
@@ -867,7 +868,7 @@ These are the places where the tool, Git, or Seafile stops short. None is hidden
 | Secrets are permanent | `.env` and keys are captured by design and Git history is forever. Every run lists the credential-shaped paths; push only to a library only you can read. |
 | File modes and symlinks on Windows | The executable bit is not reliably recorded; symlinks restore as text files unless `core.symlinks` is enabled. The restore verification names a mismatch rather than reporting success. |
 | Embedded git repositories | The files are captured (ignored ones too); the nested `.git` (history, branches, stashes) is not, so back that up separately. `--no-embedded-repos` records only the commit id, as 0.9.0 did. |
-| Timestamps and empty directories | Empty directories are not captured. File times are recorded since 0.9.2 (a run that pushes to a `seafile://` remote, or `--record-mtimes`) in `.seafile-payload/mtimes.json` and applied by a restore, as *the time when that content was first seen*; older snapshots and `--no-record-mtimes` restore the checkout time. Directory times are not recorded. |
+| Timestamps and empty directories | Empty directories are not captured. File times are recorded since 0.9.2 (a run that pushes to a `seafile://` remote, or `--record-mtimes`) in `.seafile-payload/mtimes.json` and applied by a restore; touching a file without changing it makes no new snapshot. Older snapshots and `--no-record-mtimes` restore the checkout time. Directory times are not recorded. |
 | Touching a file produces no commit | A heartbeat record of "a backup ran" is not available. |
 | Case-insensitive filesystems and long Windows paths | `Foo.txt`/`foo.txt` may not both round-trip; a deep restore destination can exceed 260 characters. |
 | Large payloads | The vault turns compression off and raises the big-file threshold after sampling, so a 20 GB tree stages at disk speed. A very large file that *changes* adds its own size to the remote per change until a merge; `seafile.autogc` bounds that. |
@@ -895,7 +896,7 @@ Everything above moves *commits*. That leaves one gap the helper cannot close by
 > read exactly the files the exclude list exists to keep out of the vault.
 
 > [!IMPORTANT]
-> **Keep the Golden Rule (§2).** A snapshot's *source* may be anywhere — including inside a synced library — because the tool never writes to it. The snapshot's *destination* is a Seafile library, and like every other remote in this guide it should be an unsynced one.
+> **Keep the Golden Rule (§2).** A snapshot's *source* may be anywhere — including inside a synced library — because the tool does not write to it (the one exception is a probe file at the root of a source on a network share, created and removed within a moment to read the share's clock). The snapshot's *destination* is a Seafile library, and like every other remote in this guide it should be an unsynced one.
 
 ### 15.1 The vault
 
@@ -1155,8 +1156,24 @@ What to know:
   - *Outside git* the large files are plain files in `<vault path>/payload/objects/` on the server. Git never sees them, so `git gc` and the helper's `gc`, `gc --tail` and `doctor` neither read nor delete them (the helper ignores a foreign `payload/` directory); only `--payload-gc` removes an object, and only one no snapshot references.
   - *A checkout is not a restore.* `git clone`, `git checkout` or `git switch` gives you the manifest, not the files; `--restore` (or `--payload-view` for a browsable copy made on the server) is what produces them, and verifies each by SHA-256.
   - *History rewrites need care.* The manifests are what keep objects alive: `git push --force`, `git filter-repo` or deleting a snapshot branch or tag make older manifests unreachable, and a later `--payload-gc --payload-delete` will then treat their objects as unused.
-- **A snapshot costs nothing to keep.** Objects are never overwritten, so a snapshot
-  is a manifest; a renamed or duplicated file uploads nothing.
+- **A snapshot costs nothing to keep.** Objects are not overwritten (the one exception
+  is an object found with the wrong size, which is replaced), so a snapshot is a
+  manifest; a renamed or duplicated file uploads nothing.
+- **A payload vault cannot take a snapshot without pushing.** The objects must be on the
+  server before a commit names them, so `--no-push` is refused on a vault that uses
+  payload mode (and `--no-push --no-payload` stages the large files into git, which is
+  the cost payload mode exists to avoid). `--dry-run` previews without pushing.
+- **`--payload-verify` audits the newest snapshot only.** Objects that only older or
+  tagged snapshots reference are found damaged at restore time, not before.
+- **Tags are pins, but only if they are on the remote.** `git tag` in the vault is local;
+  push it (`git -C <vault> push <remote> <tag>`) or a retention run on another machine
+  does not see it. A pinned snapshot's own objects are kept whatever `--payload-keep`
+  says.
+- **The manifest is one line of JSON** (so no text filter can alter it): `git diff` and
+  `git show` of it are not readable. Use `--payload-view` for names, or `jq` on the blob.
+- **A machine on 0.8.8 or earlier restores a payload vault's git tree only**, without the
+  large files and without a warning (it does not know manifests). Restore with 0.9.0 or
+  later.
 - **A weekly report, never a deletion.** After a run that pushes, the tool prints the
   report-only `--payload-gc` summary (stored, in use, reclaimable) when none was printed in
   the last 7 days; `--payload-report-days N` changes the period and `0` turns it off. A

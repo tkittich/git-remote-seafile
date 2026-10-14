@@ -99,8 +99,29 @@ def apply_excludes(git_dir: Path, work_tree: Path, excludes: list[str]) -> list[
     return dropped
 
 
+#: What git prints (and exits 0 after) for a directory it cannot read.  An
+#: unreadable *file* is an error and stops the run; an unreadable *directory*
+#: is only this warning, and everything under it silently missing from the
+#: snapshot is exactly the failure a backup must not have.
+_UNREADABLE_DIR = re.compile(r"could not open directory '([^']+)'")
+
+
+def unreadable_directories(*stderr_texts: "str | None") -> list[str]:
+    """Directories git said it could not open, from the stderr of staging commands."""
+    found: list[str] = []
+    for text in stderr_texts:
+        for match in _UNREADABLE_DIR.finditer(text or ""):
+            path = match.group(1).rstrip("/")
+            if path not in found:
+                found.append(path)
+    return found
+
+
 def stageable_paths(
-    git_dir: Path, work_tree: Path, nested_out: "list[str] | None" = None
+    git_dir: Path,
+    work_tree: Path,
+    nested_out: "list[str] | None" = None,
+    warnings_out: "list[str] | None" = None,
 ) -> list[str]:
     """Every path ``git add -A -f .`` would consider, as the index spells it.
 
@@ -117,7 +138,10 @@ def stageable_paths(
     and a pathspec naming a missing file makes ``git add`` fail outright ("did
     not match any files") rather than staging the deletion.
     """
-    listing = git(git_dir, work_tree, ["ls-files", "-z", "-c", "-o"], cwd=work_tree).stdout
+    listed = git(git_dir, work_tree, ["ls-files", "-z", "-c", "-o"], cwd=work_tree)
+    listing = listed.stdout
+    if warnings_out is not None:
+        warnings_out.extend(unreadable_directories(listed.stderr))
     deleted = {
         path.rstrip("/")
         for path in git(
@@ -186,9 +210,10 @@ def build_snapshot(
     behind_junction = _junction_filter(work_tree) if os.name == "nt" else None
     filtered = bool(excludes or skip_paths or reserved or probe_debris or behind_junction)
     excluded: list[str] = []
+    unreadable: list[str] = []
     if not filtered:
         try:
-            git(
+            added = git(
                 git_dir,
                 work_tree,
                 ["add", "-A", "-f", "."],
@@ -196,6 +221,7 @@ def build_snapshot(
                 status="staging the tree",
                 measure_dir=git_dir / "objects",
             )
+            unreadable.extend(unreadable_directories(added.stderr))
         except SnapshotError as exc:
             # A directory with its own .git and no commit cannot be recorded
             # as a commit id; the filtered route captures its files instead.
@@ -205,10 +231,13 @@ def build_snapshot(
     if filtered:
         nested: list[str] = []
         candidates = stageable_paths(
-            git_dir, work_tree, nested_out=nested if capture_embedded else None
+            git_dir, work_tree, nested_out=nested if capture_embedded else None,
+            warnings_out=unreadable,
         )
         if behind_junction is not None:
-            dropped = [p for p in candidates + nested if behind_junction(p)]
+            dropped = [p for p in candidates if behind_junction(p)] + [
+                d for d in nested if behind_junction(d, True)
+            ]
             if dropped:
                 gone = set(dropped)
                 candidates = [p for p in candidates if p not in gone]
@@ -242,7 +271,7 @@ def build_snapshot(
         kept_set = set(kept)
         if kept:
             try:
-                git(
+                added = git(
                     git_dir,
                     work_tree,
                     ["add", "-A", "-f", "--pathspec-from-file=-", "--pathspec-file-nul"],
@@ -251,6 +280,7 @@ def build_snapshot(
                     status="staging the tree",
                     measure_dir=git_dir / "objects",
                 )
+                unreadable.extend(unreadable_directories(added.stderr))
             except SnapshotError as exc:
                 if "does not have a commit checked out" not in str(exc):
                     raise
@@ -280,6 +310,20 @@ def build_snapshot(
         ]
     else:
         extra_dirs = []
+
+    unreadable = [
+        d for d in dict.fromkeys(unreadable)
+        if not any(exclude_matches(d, pat) for pat in excludes)
+    ]
+    if unreadable:
+        raise SnapshotError(
+            f"{len(unreadable)} director{'y' if len(unreadable) == 1 else 'ies'} could not be "
+            "read, so what is under "
+            f"{'it' if len(unreadable) == 1 else 'them'} is not in the snapshot:\n  "
+            + "\n  ".join(unreadable[:10])
+            + (f"\n  ... and {len(unreadable) - 10} more" if len(unreadable) > 10 else "")
+            + "\nMake them readable, or leave them out on purpose with --exclude."
+        )
 
     # Embedded repositories: their files (the default), or their commit id.
     # Decided from the *directories* that hold a .git, not from gitlinks in the

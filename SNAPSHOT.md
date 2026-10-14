@@ -84,7 +84,10 @@ it. The command is `git seafile-snapshot` because that is the verb ("take a
 snapshot"); the flag is `--vault` because that is the object the user points at.
 
 Snapshots are ordinary commits built in the vault's **own** index. The source is
-never written to: not `.gitignore`, not `.git`, not the index. The code
+never written to: not `.gitignore`, not `.git`, not the index -- with one
+exception, a probe file at the source root that is created and removed within a
+moment, **only** when the source is on a network share, to read that share's clock
+(PAYLOAD.md D6). The code
 repository stays small, so `git clone` on a second machine stays fast — the
 snapshot never enters its history.
 
@@ -479,9 +482,10 @@ and a restore into a deeper destination is where it surfaces.
 **File timestamps are recorded in a side file, not by git.** Git records
 content, not mtime, so since 0.9.2 a run that pushes to a `seafile://` remote (or
 that is given `--record-mtimes`) also writes `.seafile-payload/mtimes.json`, and
-a restore sets each file's time from it. The time is *the modification time when
-that content was first seen*: touching a file without changing it neither
-changes the record nor makes a new snapshot. Snapshots made before 0.9.2, or with
+a restore sets each file's time from it. The times are the real ones at the
+snapshot that changed anything; when nothing in the tree changed, the previous
+record is reused, so touching a file without changing it neither changes the
+record nor makes a new snapshot. Snapshots made before 0.9.2, or with
 `--no-record-mtimes`, restore every file with the checkout time, so a build
 system may rebuild everything once. Directory times are not recorded.
 

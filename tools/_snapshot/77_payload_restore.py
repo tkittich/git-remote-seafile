@@ -38,7 +38,7 @@ def _download_verified(
     last = ""
     for _attempt in range(3):
         try:
-            if not client.download_file_to(rid, source_path, part):
+            if not client.download_file_to(rid, source_path, part, max_bytes=item["size"]):
                 part.unlink(missing_ok=True)
                 return "object not found on the server"
             if part.stat().st_size != item["size"]:
@@ -83,6 +83,15 @@ def restore_payload(remote: str, into: Path, *, allow_low_disk: bool = False) ->
     print(f"restoring {len(files)} payload file(s) from {base}/objects ...", flush=True)
     scratch = extended_path(into / ".git" / "grs-restore")
     scratch.mkdir(parents=True, exist_ok=True)
+    try:
+        _restore_payload_files(client, rid, base, files, into, scratch)
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
+
+
+def _restore_payload_files(
+    client: Any, rid: str, base: str, files: list[dict[str, Any]], into: Path, scratch: Path
+) -> None:
     problems: list[str] = []
     done = 0
     for index, item in enumerate(files, 1):
@@ -117,7 +126,6 @@ def restore_payload(remote: str, into: Path, *, allow_low_disk: bool = False) ->
         except (OSError, OverflowError, ValueError):
             pass  # content verified; timestamps and mode are best effort
         done += 1
-    shutil.rmtree(scratch, ignore_errors=True)
     if problems:
         shown = "\n  ".join(problems[:20])
         more = f"\n  ... and {len(problems) - 20} more" if len(problems) > 20 else ""

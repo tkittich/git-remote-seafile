@@ -133,7 +133,19 @@ def resolve_snapshot_settings(
         remote = None
         code_remote = None
     else:
-        remote = args.remote or remembered.get("remote") or derive_vault_remote(source)
+        remote = args.remote or remembered.get("remote")
+        if not remote:
+            remote = derive_vault_remote(source)
+            if remote and not args.dry_run:
+                # Said once: after the first complete run the vault remembers it.
+                print(
+                    f"note: the vault's destination was not given, so it is {remote}, "
+                    "derived from the source's own seafile:// remote -- the same library as "
+                    "your code.  Everyone who can read that library can read this snapshot, "
+                    ".env files and keys included.  Pass --remote to send it somewhere only "
+                    "you can read.",
+                    flush=True,
+                )
         code_remote = args.code_remote or remembered.get("code_remote")
 
     exclude = list(args.exclude) if args.exclude is not None else list(

@@ -200,15 +200,30 @@ def _hashes_in_history(
             "un-pushed snapshots it was meant to protect"
         )
     with tempfile.TemporaryDirectory(prefix="grs-payload-gc-") as td:
-        repo = _scratch_history_repo(td)
+        # Only the vault to read: use it where it is.  Fetching it into a
+        # scratch repository copied the whole vault into the temp directory
+        # (with no free-space check) to answer a question git can ask in place.
+        in_place = remote is None and vault is not None
+        repo = (vault / ".git") if in_place and vault is not None else _scratch_history_repo(td)
         if remote is not None:
-            git(
-                repo, None,
-                ["fetch", "-q", "--no-tags", remote,
-                 "+refs/heads/*:refs/remotes/remote/*", "+refs/tags/*:refs/remotes/remote-tags/*"],
-                cwd=Path(td), status=f"fetching the history of {remote}", stall_limit=None,
-            )
-        if vault is not None:
+            # What is deleted is decided from this fetch, so the helper must not
+            # advertise a subset of the refs: a ref it can only warn about and
+            # skip makes that branch's objects look unreferenced.
+            previous = os.environ.get("SEAFILE_STRICT_REFS")
+            os.environ["SEAFILE_STRICT_REFS"] = "1"
+            try:
+                git(
+                    repo, None,
+                    ["fetch", "-q", "--no-tags", remote,
+                     "+refs/heads/*:refs/remotes/remote/*", "+refs/tags/*:refs/remotes/remote-tags/*"],
+                    cwd=Path(td), status=f"fetching the history of {remote}", stall_limit=None,
+                )
+            finally:
+                if previous is None:
+                    os.environ.pop("SEAFILE_STRICT_REFS", None)
+                else:
+                    os.environ["SEAFILE_STRICT_REFS"] = previous
+        if vault is not None and not in_place:
             git(
                 repo, None,
                 ["fetch", "-q", "--no-tags", str(vault),
@@ -274,6 +289,38 @@ def _hashes_in_history(
             for item in check_manifest_shape(data, f"the payload manifest {oid[:12]}"):
                 hashes[item["sha256"]] = item["size"]
         return _History(hashes, len(commits), len(blobs), tips, dropped, expired)
+
+
+def _remote_tips(remote: str) -> dict[str, str]:
+    """``{ref: object id}`` for every branch and tag of *remote*, via the helper's listing.
+
+    Strict, like the history fetch: a listing that would have skipped a ref is
+    an error here too.
+    """
+    previous = os.environ.get("SEAFILE_STRICT_REFS")
+    os.environ["SEAFILE_STRICT_REFS"] = "1"
+    try:
+        proc = _run(
+            ["git", "ls-remote", "--heads", "--tags", remote],
+            text=True, encoding="utf-8", errors="replace",
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+    finally:
+        if previous is None:
+            os.environ.pop("SEAFILE_STRICT_REFS", None)
+        else:
+            os.environ["SEAFILE_STRICT_REFS"] = previous
+    if proc.returncode != 0:
+        raise SnapshotError(
+            f"could not list the refs of {remote} to re-check them before deleting: "
+            f"{proc.stderr.strip()}"
+        )
+    tips: dict[str, str] = {}
+    for line in proc.stdout.splitlines():
+        oid, _, name = line.partition("	")
+        if name and not name.endswith("^{}"):
+            tips[name] = oid
+    return tips
 
 
 def _refs_the_helper_cannot_see(client: Any, rid: str, repo_path: str) -> list[str]:
@@ -435,6 +482,17 @@ def payload_gc(
             + "if that is intended, run again with --payload-accept-loss. Objects that "
             "only those snapshots need would otherwise be deleted after the grace period"
         )
+    if due:
+        # The decision above is minutes old.  A snapshot pushed since could name
+        # an object that was unreferenced when the history was read, so the refs
+        # are read once more immediately before the first deletion and a change
+        # stops the run with nothing deleted (the next run re-decides).
+        now_tips = _remote_tips(remote)
+        if now_tips != {k: v for k, v in history.tips.items()}:
+            raise SnapshotError(
+                "the remote's branches or tags changed while this run was deciding what is "
+                "unused (another machine pushed); nothing was deleted. Run it again"
+            )
     deleted = 0
     for index, sha in enumerate(sorted(due), 1):
         if not client.delete_entry(rid, f"{base}/{object_dir(sha)}/{sha}"):

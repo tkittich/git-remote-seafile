@@ -1186,7 +1186,14 @@ class SeafileClient:
             )
         return True
 
-    def download_file_to(self, repo_id: str, file_path: str, dest: Any, progress_callback: Any = None) -> bool:
+    def download_file_to(
+        self,
+        repo_id: str,
+        file_path: str,
+        dest: Any,
+        progress_callback: Any = None,
+        max_bytes: int | None = None,
+    ) -> bool:
         """Stream a remote file to *dest* without holding it in memory.
 
         Returns False when the object does not exist.  ``get_file_bytes`` stays
@@ -1203,6 +1210,11 @@ class SeafileClient:
         caller-managed path.  Callers must therefore treat *dest* as untrusted
         after an exception -- every current caller stages into a temp/scratch
         location and verifies the byte count before use.
+
+        ``max_bytes`` is for a caller that already knows how big the object must
+        be (a restore from a manifest): the stream is cut off the moment it goes
+        past that, so a hostile manifest that declares a small size for a huge
+        object cannot fill the disk before the size is compared.
         """
         clean_path = "/" + file_path.strip("/")
         url = f"{self.server_url}/api2/repos/{repo_id}/file/?p={quote(clean_path, safe='/')}"
@@ -1231,10 +1243,20 @@ class SeafileClient:
                     total_size = int(file_resp.headers["Content-Length"])
                 except Exception:
                     total_size = 0
+            if max_bytes is not None and total_size > max_bytes:
+                raise SeafileAPIError(
+                    f"{clean_path} is {total_size} bytes on the server, more than the "
+                    f"{max_bytes} expected; not downloading it"
+                )
             transferred = 0
             with open(dest_path, "wb") as fh:
                 for chunk in file_resp.iter_content(chunk_size=1024 * 1024):
                     if chunk:
+                        if max_bytes is not None and transferred + len(chunk) > max_bytes:
+                            raise SeafileAPIError(
+                                f"{clean_path} is larger than the {max_bytes} bytes expected; "
+                                "download stopped"
+                            )
                         fh.write(chunk)
                         transferred += len(chunk)
                         if progress_callback:

@@ -142,9 +142,14 @@ Hashes are cached **per machine**, in the vault's git directory
 (`payload-cache.json`), never read from a manifest: a manifest comes from a remote
 anyone with write access could have written. An entry is keyed by path and trusted
 only while size, mtime **and inode** are unchanged (a rename keeps size and mtime,
-and tiles extracted from one archive share both), the mtime is not a whole second
-(a coarse clock), and the mtime is older than the moment this machine hashed the
-file by 2 s (git's "racily clean" rule). A file is compared with its recorded size
+and tiles extracted from one archive share both), the device and the inode change
+time (`ctime`) are the ones recorded -- so an in-place edit that puts the old mtime
+back, which still moves `ctime`, is a new file -- and the mtime is older than the
+moment this machine hashed the file by 2 s (git's "racily clean" rule; 4 s for a
+whole-second mtime, a coarse clock, rather than never trusting such a file, which
+re-read a FAT or HFS+ tree on every run). A file on a different device than the
+source root, or anywhere on a share whose clock could not be probed, needs a margin
+of an hour instead. A file is compared with its recorded size
 and mtime before upload, and its bytes are hashed as they are sent (D5), so a
 modification the cache missed cannot put wrong bytes under a name.
 
@@ -155,7 +160,10 @@ NFS, CIFS/SMB, 9p, sshfs, davfs or rclone mount on Linux) the tool creates and
 removes one probe file in the source root to read the share's clock, stores the
 offset's effect in each cache entry (`fs`), and trusts only entries made that way.
 A share *ahead* by under 5 s is treated as in step (that only costs a rehash), and one *behind* by more than 0.25 s is applied (ignoring it is the unsafe side; the racy window is 2 s, so a wider floor let a 4 s skew through); a share that cannot be written to is
-reported and treated as before. A local source tree is never written to. *Known
+reported once per vault and given the one-hour margin above instead of the 2 s one.
+A local source tree is never written to; a share's source root gets the probe file
+(removed at once, swept by the next probe if a run was killed, and never
+captured). *Known
 limit:* a mount type this list does not know is treated as local, so the
 rule there is the machine-clock one; `--payload-rehash` is the audit. (macOS is
 read from `mount`: smbfs, nfs, afpfs and webdav.) A file with a future mtime is
@@ -331,7 +339,7 @@ data, or surprise. Disposition is one of **fixed**, **handled**, **specified**
 | A16 | `--reset-to-remote` drops local-only snapshots | their objects become orphans; the previous-manifest cache disappears | **handled**: harmless; a rehash |
 | A17 | Thousands of objects in one fan-out directory | listing cost | **handled**: 256 directories; list only those touched |
 | A18 | Manifest of 100,000 files committed each run | repository growth | **measured**: delta keeps growth proportional to what changed (D4) |
-| A19 | Disk full or Ctrl-C during restore | partial tree | **specified**: restore needs an empty destination; rerun elsewhere |
+| A19 | Disk full or Ctrl-C during restore | partial tree | **specified**: restore needs an empty destination (the tool refuses a non-empty one); rerun into a new directory. The temporary download directory under `.git` is removed on every exit |
 | A20 | Sparse files, alternate data streams, hard links | sparse read as zeros; ADS dropped; hard links become copies | **specified**: byte content only; documented limit |
 | A21 | Read-only attribute, ACLs, ownership | not preserved | **specified**: mode bits and mtime only |
 | A22 | Clock jumps or future mtimes | a future mtime is never "older than the commit" | **handled**: always rehashed (safe) |

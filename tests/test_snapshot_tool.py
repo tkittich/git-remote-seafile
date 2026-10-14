@@ -435,6 +435,87 @@ class SnapshotGuardTests(_SnapshotFixture):
         self.assertFalse([p for p in self.tree() if p.startswith("linked/")], self.tree())
         self.assertIn("behind a Windows junction", out)
 
+    @unittest.skipIf(
+        os.name == "nt" or (hasattr(os, "geteuid") and os.geteuid() == 0),
+        "needs POSIX permissions that bind the current user",
+    )
+    def test_a_directory_that_cannot_be_read_stops_the_run_and_is_named(self):
+        # git add prints a warning and exits 0 for a directory it cannot open;
+        # everything under it was silently missing from the snapshot.
+        locked = self.code / "locked"
+        locked.mkdir()
+        (locked / "secret.txt").write_bytes(b"x\n")
+        locked.chmod(0)
+        self.addCleanup(locked.chmod, 0o755)
+        rc, out, err = self.snapshot()
+        self.assertEqual(rc, 1, out + err)
+        self.assertIn("could not be read", err)
+        self.assertIn("locked", err)
+        self.assertIn("--exclude", err)
+        # leaving it out on purpose is allowed
+        rc, out, err = self.snapshot("--exclude", "locked")
+        self.assertEqual(rc, 0, out + err)
+
+    def test_the_opt_out_names_the_nested_repositorys_own_head(self):
+        nested = self._nested_repo()
+        want = _git(nested, "rev-parse", "HEAD").stdout.strip()
+        self.assertEqual(self.snapshot()[0], 0)
+        rc, out, err = self.snapshot("--no-embedded-repos")
+        self.assertEqual(rc, 0, out + err)
+        listing = _git(self.vault, "ls-tree", BRANCH, "nested").stdout
+        self.assertIn(f"160000 commit {want}", listing)
+        vault_head = _git(self.vault, "rev-parse", BRANCH).stdout.strip()
+        self.assertNotIn(vault_head, listing, "the gitlink names the vault's own commit")
+
+    def test_the_opt_out_after_capturing_a_commitless_repository_names_the_fix(self):
+        bare = self.code / "fresh"
+        bare.mkdir()
+        _git(bare, "init", "-q", "-b", "main", ".")
+        (bare / "notes.txt").write_bytes(b"uncommitted\n")
+        self.assertEqual(self.snapshot()[0], 0)
+        rc, out, err = self.snapshot("--no-embedded-repos")
+        self.assertEqual(rc, 1, out + err)
+        self.assertIn("--exclude", err)
+
+    def test_a_repository_inside_a_repository_is_one_gitlink_under_the_opt_out(self):
+        nested = self._nested_repo()
+        deep = nested / "deep"
+        deep.mkdir()
+        (deep / "d.txt").write_bytes(b"deep repo\n")
+        _git(deep, "init", "-q", "-b", "main", ".")
+        _git(deep, "config", "user.email", "d@example.com")
+        _git(deep, "config", "user.name", "D")
+        _git(deep, "add", "-A")
+        _git(deep, "commit", "-qm", "deep")
+        self.assertEqual(self.snapshot()[0], 0)
+        self.assertIn("nested/deep/d.txt", self.tree())
+        rc, out, err = self.snapshot("--no-embedded-repos")
+        self.assertEqual(rc, 0, out + err)
+        links = [l for l in _git(self.vault, "ls-tree", "-r", BRANCH).stdout.splitlines() if l.startswith("160000")]
+        self.assertEqual(len(links), 1, links)
+        self.assertTrue(links[0].endswith("\tnested"), links)
+
+    @unittest.skipUnless(os.name == "nt", "a directory junction is a Windows reparse point")
+    def test_a_junction_to_a_repository_outside_the_source_is_not_followed(self):
+        outside = self.tmp / "elsewhere-repo"
+        outside.mkdir()
+        (outside / "secret.txt").write_bytes(b"not mine\n")
+        _git(outside, "init", "-q", "-b", "main", ".")
+        _git(outside, "config", "user.email", "o@example.com")
+        _git(outside, "config", "user.name", "O")
+        _git(outside, "add", "-A")
+        _git(outside, "commit", "-qm", "x")
+        made = subprocess.run(
+            ["cmd", "/c", "mklink", "/J", str(self.code / "lib"), str(outside)],
+            capture_output=True, text=True,
+        )
+        if made.returncode != 0:
+            self.skipTest(f"cannot create a junction here: {made.stderr or made.stdout}")
+        rc, out, err = self.snapshot()
+        self.assertEqual(rc, 0, out + err)
+        self.assertFalse([p for p in self.tree() if p.startswith("lib/")], self.tree())
+        self.assertIn("behind a Windows junction", out)
+
     def test_a_vault_that_holds_a_gitlink_converts_on_the_next_run(self):
         self._nested_repo()
         self.assertEqual(self.snapshot("--no-embedded-repos")[0], 0)
@@ -1469,6 +1550,23 @@ class DefaultsTests(_SnapshotFixture):
             )
         self.assertEqual(rc, 0, err)
         self.assertIn("seafile://code/myproject.git-vault", out)
+
+    def test_a_derived_destination_is_announced_as_the_code_library(self):
+        _git(self.code, "remote", "add", "origin", "seafile://team/app")
+        args = snap.parse_args(["--source", str(self.code), "--vault", str(self.vault)])
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            _src, _vault, remote, *_rest = snap.resolve_snapshot_settings(args)
+        self.assertEqual(remote, "seafile://team/app-vault")
+        self.assertIn("same library as your code", out.getvalue())
+        self.assertIn("--remote", out.getvalue())
+        # an explicit --remote is not second-guessed
+        args = snap.parse_args(["--source", str(self.code), "--vault", str(self.vault),
+                                "--remote", "seafile://private/mine"])
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            snap.resolve_snapshot_settings(args)
+        self.assertNotIn("same library as your code", out.getvalue())
 
     def test_a_second_seafile_remote_makes_derivation_give_up(self):
         # Two is ambiguous; guessing wrong files a whole-tree backup somewhere
@@ -2517,6 +2615,40 @@ class StatusLineTests(unittest.TestCase):
             self.assertEqual(captured["env"]["SEAFILE_GIT_TIMEOUT"], "42")
 
 
+class RecycledPidLockTests(_SnapshotFixture):
+    """A crashed run's pid, later held by something else, must not block every later run."""
+
+    def _write_lock(self, text: str) -> pathlib.Path:
+        self.assertEqual(self.snapshot("--dry-run")[0], 0)  # makes the vault
+        lock = self.vault / ".git" / "seafile-snapshot.lock"
+        lock.write_text(text, encoding="utf-8")
+        return lock
+
+    def test_a_live_pid_with_a_different_start_time_is_a_dead_holder(self):
+        token = snap.process_start_token(os.getpid())
+        if token is None:
+            self.skipTest("no process start time on this platform")
+        self._write_lock(f"{socket.gethostname()} {os.getpid()} {int(token) + 1}")
+        rc, out, err = self.snapshot()
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn("reclaiming a stale lock", out)
+
+    def test_a_live_pid_with_the_same_start_time_is_a_live_holder(self):
+        token = snap.process_start_token(os.getpid())
+        if token is None:
+            self.skipTest("no process start time on this platform")
+        self._write_lock(f"{socket.gethostname()} {os.getpid()} {token}")
+        rc, out, err = self.snapshot()
+        self.assertEqual(rc, 1)
+        self.assertIn("another snapshot is running", err)
+
+    def test_a_lock_written_by_an_older_tool_is_judged_by_the_pid_alone(self):
+        self._write_lock(f"{socket.gethostname()} {os.getpid()}")
+        rc, out, err = self.snapshot()
+        self.assertEqual(rc, 1)
+        self.assertIn("another snapshot is running", err)
+
+
 class ModificationTimeTests(_SnapshotFixture):
     """Git stores no timestamps; the snapshot records them and a restore applies them."""
 
@@ -2560,6 +2692,36 @@ class ModificationTimeTests(_SnapshotFixture):
         rc, out, err = self.restore_to(self.restored)
         self.assertEqual(rc, 0, out + err)
         self.assertEqual((self.restored / "README.md").stat().st_mtime_ns, later)
+
+    def test_a_reverted_source_does_not_sort_before_an_object_built_from_what_it_replaced(self):
+        # s.c: A -> B (s.o rebuilt from B, no snapshot taken) -> A again.  Snapshot 2
+        # sees s.c's content equal to snapshot 1's, and the old per-file "first
+        # seen" rule gave it its original, older time: before s.o, so a restore
+        # made `make` keep an object built from B.
+        (self.code / "s.c").write_bytes(b"A\n")
+        (self.code / "s.o").write_bytes(b"built from A\n")
+        os.utime(self.code / "s.c", ns=(self.WHEN * 10**9,) * 2)
+        os.utime(self.code / "s.o", ns=((self.WHEN + 10) * 10**9,) * 2)
+        self.assertEqual(self.snapshot("--record-mtimes")[0], 0)
+        (self.code / "s.c").write_bytes(b"B\n")
+        (self.code / "s.o").write_bytes(b"built from B\n")
+        os.utime(self.code / "s.o", ns=((self.WHEN + 30) * 10**9,) * 2)
+        (self.code / "s.c").write_bytes(b"A\n")  # reverted: identical to snapshot 1's content
+        reverted = (self.WHEN + 40) * 10**9
+        os.utime(self.code / "s.c", ns=(reverted, reverted))
+        self.assertEqual(self.snapshot("--record-mtimes")[0], 0)
+        record = json.loads(_git(self.vault, "show", f"{BRANCH}:.seafile-payload/mtimes.json").stdout)
+        self.assertEqual(record["files"]["s.c"], reverted)
+        self.assertGreater(record["files"]["s.c"], record["files"]["s.o"])
+
+    def test_a_local_run_keeps_recording_when_the_last_snapshot_did(self):
+        self._age("README.md")
+        self.assertEqual(self.snapshot("--record-mtimes")[0], 0)
+        _git(self.vault, "config", "--unset", "snapshot.mtimes")  # nothing remembered, nothing typed
+        (self.code / "more.txt").write_bytes(b"more\n")
+        rc, out, err = self.snapshot()  # no remote: the default alone would say "off"
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn(".seafile-payload/mtimes.json", self.tree())
 
     def test_the_choice_is_remembered_and_can_be_reversed(self):
         self.assertEqual(self.snapshot("--record-mtimes")[0], 0)

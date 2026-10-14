@@ -1078,6 +1078,37 @@ class TestStreamingTransfers(unittest.TestCase):
         )
         payload.close.assert_called_once()
 
+    def test_download_file_to_stops_at_the_size_the_caller_expects(self):
+        """A restore knows the object's size from the manifest; a lying server cannot fill the disk."""
+        chunks = [b"A" * 10, b"B" * 10, b"C" * 10]
+        payload = MagicMock(status_code=200, headers={})
+        payload.iter_content = MagicMock(side_effect=lambda chunk_size: iter(chunks))
+        self.client.session.get = MagicMock(
+            side_effect=[
+                MagicMock(status_code=200, text='"https://seafile.example.com/seafhttp/files/1/a.bin"'),
+                payload,
+            ]
+        )
+        with tempfile.TemporaryDirectory() as td:
+            dest = Path(td) / "a.bin"
+            with self.assertRaises(SeafileAPIError) as ctx:
+                self.client.download_file_to("repo1", "/a.bin", dest, max_bytes=15)
+            self.assertIn("download stopped", str(ctx.exception))
+            self.assertLessEqual(dest.stat().st_size, 15, "bytes past the expected size were written")
+
+    def test_download_file_to_refuses_a_declared_length_over_the_expected_size(self):
+        payload = MagicMock(status_code=200, headers={"Content-Length": "5000"})
+        payload.iter_content = MagicMock(side_effect=AssertionError("body must not be read"))
+        self.client.session.get = MagicMock(
+            side_effect=[
+                MagicMock(status_code=200, text='"https://seafile.example.com/seafhttp/files/1/a.bin"'),
+                payload,
+            ]
+        )
+        with tempfile.TemporaryDirectory() as td:
+            with self.assertRaises(SeafileAPIError):
+                self.client.download_file_to("repo1", "/a.bin", Path(td) / "a.bin", max_bytes=100)
+
     def test_download_file_to_reports_a_missing_object(self):
         self.client.session.get = MagicMock(return_value=MagicMock(status_code=404))
         with tempfile.TemporaryDirectory() as td:

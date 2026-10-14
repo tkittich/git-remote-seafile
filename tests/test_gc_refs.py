@@ -158,6 +158,19 @@ class TestFetchDoesNotAdvertiseHalfARepository(_GcFixture):
         self.assertNotIn("refs/heads/main", res.stdout)
 
 
+class TestStrictListingForCallersThatDelete(_GcFixture):
+    def test_strict_refs_makes_an_unreadable_ref_an_error_not_a_warning(self):
+        self.repo_with_branches("strictls", ["dev", "wip"])
+        self.stub.faults["file_404_on"] = "refs/heads/dev"
+        lax = run_git(["ls-remote", self.url("strictls")], self.work, self.env, check=False)
+        self.assertEqual(lax.returncode, 0, lax.stderr)
+        self.assertNotIn("refs/heads/dev", lax.stdout)
+        strict_env = {**self.env, "SEAFILE_STRICT_REFS": "1"}
+        strict = run_git(["ls-remote", self.url("strictls")], self.work, strict_env, check=False)
+        self.assertNotEqual(strict.returncode, 0, "a strict listing advertised a subset")
+        self.assertIn("refs/heads/dev", strict.stderr)
+
+
 class TestIterRefsUnit(unittest.TestCase):
     """The walker's contract without a server: strict raises, lax warns."""
 

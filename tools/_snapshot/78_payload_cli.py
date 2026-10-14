@@ -249,7 +249,7 @@ def refuse_flagless_payload_vault(
 def conversion_warning(candidates: dict[str, Candidate], dry_run: bool) -> str:
     """Said *before* any hashing or upload, when the default moves an existing vault's
     large files out of git: a scheduled run cannot be asked, but it can be read."""
-    total = sum(size for size, _mtime, _mode, _ino in candidates.values())
+    total = sum(item[0] for item in candidates.values())
     verb = "would move" if dry_run else "is moving"
     return (
         f"NOTICE: payload mode is on by default and this vault has earlier snapshots that "
@@ -267,17 +267,17 @@ def conversion_warning(candidates: dict[str, Candidate], dry_run: bool) -> str:
 _CLOCK_NOTE_KEY = "snapshot.clocknote"
 
 
-def _clock_offset_once_noted(git_dir: Path, source: Path) -> int:
-    """The share-clock offset, saying "could not be measured" once per vault, not every run."""
+def _clock_offset_once_noted(git_dir: Path, source: Path) -> tuple[int, bool]:
+    """``(offset, unprobed)``, saying "could not be measured" once per vault, not every run."""
     messages: list[str] = []
-    offset = fs_clock_offset_ns(source, note=messages.append)
+    offset, unprobed = fs_clock_probe(source, note=messages.append)
     if messages and not _read_config_key(git_dir, _CLOCK_NOTE_KEY):
         print(messages[0], flush=True)
         _run(
             ["git", "--git-dir", str(git_dir), "config", _CLOCK_NOTE_KEY, "1"],
             text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         )
-    return offset
+    return offset, unprobed
 
 
 def run_payload_step(
@@ -323,12 +323,19 @@ def run_payload_step(
         return None, (0, 0)
     if from_default and previous is None and base is not None:
         print(conversion_warning(candidates, dry_run), flush=True)
+    # A preview writes nothing -- not even a probe file into a share.
+    clock_offset, unprobed = (
+        _clock_offset_once_noted(git_dir, source) if candidates and not dry_run else (0, False)
+    )
+    try:
+        root_dev: int | None = os.stat(source).st_dev
+    except OSError:
+        root_dev = None
     manifest, cache = build_manifest(
         candidates, source, {} if rehash else load_hash_cache(git_dir), min_size, rule=rule,
-        # A preview writes nothing -- not even a probe file into a share.
-        clock_offset_ns=(
-            _clock_offset_once_noted(git_dir, source) if candidates and not dry_run else 0
-        ),
+        clock_offset_ns=clock_offset,
+        racy_window_ns=_UNPROBED_WINDOW_NS if unprobed else _RACY_WINDOW_NS,
+        root_dev=root_dev,
     )
     todo = publish_payload(
         remote or "", source, manifest, dry_run=dry_run, jobs=jobs or 3
@@ -381,6 +388,15 @@ def maybe_report_payload_gc(
         return False
     stamp = _read_config_key(git_dir, _REPORT_KEY)
     current = time.time() if now is None else now
+    if not stamp:
+        # The first run of a vault has just done the heavy part (hashing and
+        # uploading everything), and what a report would say is what that run
+        # printed.  Start the clock; the first report comes a period later.
+        _run(
+            ["git", "--git-dir", str(git_dir), "config", _REPORT_KEY, f"{current:.0f}"],
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        return False
     try:
         if stamp and current - float(stamp) < period * 86400:
             return False
