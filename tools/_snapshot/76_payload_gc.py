@@ -54,6 +54,16 @@ def add_payload_gc_arguments(parser: argparse.ArgumentParser) -> None:
         "later run deletes those still unreferenced after the grace period",
     )
     parser.add_argument(
+        "--payload-keep",
+        type=int,
+        default=None,
+        metavar="N",
+        help="with --payload-gc: count only the newest N snapshots of each branch and tag "
+        "as using objects. Objects only older snapshots need become unused and, with "
+        "--payload-delete, are removed after the grace period -- those older snapshots can "
+        "then no longer be restored. Default: keep every snapshot",
+    )
+    parser.add_argument(
         "--payload-grace-days",
         type=float,
         default=DEFAULT_GRACE_DAYS,
@@ -76,15 +86,21 @@ def payload_gc_conflicts(args: argparse.Namespace) -> list[str]:
             problems.append("--payload-gc requires --remote <url>")
         if args.payload_grace_days < _MIN_GRACE_DAYS:
             problems.append(f"--payload-grace-days must be at least {_MIN_GRACE_DAYS:g}")
+        if args.payload_keep is not None and args.payload_keep < 1:
+            problems.append("--payload-keep must be at least 1")
     else:
         if args.payload_delete:
             problems.append("--payload-delete only applies to --payload-gc")
+        if args.payload_keep is not None:
+            problems.append("--payload-keep only applies to --payload-gc")
         if args.payload_grace_days != DEFAULT_GRACE_DAYS:
             problems.append("--payload-grace-days only applies to --payload-gc")
     return problems
 
 
-def _hashes_in_history(remote: str, vault: Path | None) -> tuple[set[str], int, int]:
+def _hashes_in_history(
+    remote: str, vault: Path | None, keep: int | None = None
+) -> tuple[set[str], int, int]:
     """``(hashes, commits scanned, manifests found)`` over every ref of *remote*
     and, when given, of the local *vault* (which must be one)."""
     if vault is not None and not (vault / ".git").exists():
@@ -113,7 +129,15 @@ def _hashes_in_history(remote: str, vault: Path | None) -> tuple[set[str], int, 
                  "+refs/heads/*:refs/remotes/local/*", "+refs/tags/*:refs/remotes/local-tags/*"],
                 cwd=Path(td),
             )
-        commits = [c for c in git(repo, None, ["rev-list", "--all"], cwd=Path(td)).stdout.split() if c]
+        if keep is None:
+            commits = [c for c in git(repo, None, ["rev-list", "--all"], cwd=Path(td)).stdout.split() if c]
+        else:
+            refs = git(repo, None, ["for-each-ref", "--format=%(refname)"], cwd=Path(td)).stdout.split()
+            kept: set[str] = set()
+            for ref in refs:
+                kept.update(git(repo, None, ["rev-list", f"--max-count={keep}", ref],
+                                cwd=Path(td)).stdout.split())
+            commits = sorted(kept)
         if not commits:
             return set(), 0, 0
         specs = "".join(f"{c}:{PAYLOAD_MANIFEST}\n" for c in commits)
@@ -154,7 +178,7 @@ def _refs_the_helper_cannot_see(client: Any, rid: str, repo_path: str) -> list[s
 
 
 def payload_gc(
-    remote: str, vault: Path | None, *, delete: bool, grace_days: float
+    remote: str, vault: Path | None, *, delete: bool, grace_days: float, keep: int | None = None
 ) -> int:
     """Report, and with *delete* mark and later remove, unreferenced payload objects."""
     if grace_days < _MIN_GRACE_DAYS:
@@ -171,7 +195,11 @@ def payload_gc(
             f"see (first: {conflicts[0]}); a snapshot reachable only from one would look "
             "unreferenced. Resolve them (keep one ref, delete the copies) and run again"
         )
-    referenced, commits, manifests = _hashes_in_history(remote, vault)
+    referenced, commits, manifests = _hashes_in_history(remote, vault, keep)
+    if keep is not None:
+        print(f"--payload-keep {keep}: only the newest {keep} snapshot(s) of each branch and "
+              f"tag count as using objects; older ones become unrestorable once their "
+              f"objects are deleted")
     print(f"history: {commits} commit(s), {manifests} distinct manifest(s), "
           f"{len(referenced)} referenced object(s)")
 

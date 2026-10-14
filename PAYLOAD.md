@@ -202,6 +202,11 @@ reports; with `--payload-delete` it **marks, and later deletes, in two phases**:
   strangers are reported and left alone);
 - it reports any object a manifest names that is **missing** from the server.
 
+`--payload-keep N` is the expiry policy: only the newest N snapshots of each branch
+and tag count as using objects, so older snapshots' exclusive objects become
+unused and go through the same two phases (those snapshots then fail to restore,
+naming the missing object). Without it every snapshot is kept for ever.
+
 Deleting frees quota at once; disk is freed only after the library's history
 expires and the server's GC runs (measured). Recommended library setting: a short
 history (days), as a safety net for a mistaken delete.

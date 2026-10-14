@@ -983,6 +983,40 @@ class PayloadModeTests(unittest.TestCase):
         self.assertNotIn("payload:", out)
         self.assertIn("big1.bin", _git(self.vault, "ls-tree", "-r", "--name-only", "snapshot"))
 
+    def test_payload_keep_lets_older_snapshots_expire(self):
+        versions = [self.big1]
+        self.assertEqual(self.snapshot()[0], 0)
+        for _ in range(2):
+            versions.append(os.urandom(6000))
+            (self.src / "big1.bin").write_bytes(versions[-1])
+            self.assertEqual(self.snapshot()[0], 0)
+        # Without --payload-keep every snapshot's objects are referenced.
+        rc, out, err = self.gc("--payload-grace-days", "1")
+        self.assertIn("unused : 0 object(s)", out)
+        args = ("--payload-delete", "--payload-grace-days", "1", "--payload-keep", "1")
+        self.assertEqual(self.gc(*args)[0], 0)
+        self.backdate_pending(2)
+        rc, out, err = self.gc(*args)
+        self.assertEqual(rc, 0, out + err)
+        files = self.server_files()
+        self.assertNotIn(self.object_key(versions[0]), files)
+        self.assertNotIn(self.object_key(versions[1]), files)
+        self.assertIn(self.object_key(versions[2]), files)
+        self.assertIn(self.object_key(self.big2), files)   # shared with the newest: kept
+        rc, out, err, into = self.restore("newest")
+        self.assertEqual(rc, 0, out + err)
+        rc, out, err, _ = self.restore("expired", "--ref", "snapshot~2")
+        self.assertNotEqual(rc, 0)
+        self.assertIn("not found", out + err)
+
+    def test_payload_keep_only_applies_to_gc_and_must_be_positive(self):
+        rc, out, err = self.run_tool(self.src, "--vault", self.vault, "--payload-keep", "2")
+        self.assertEqual(rc, 1, out + err)
+        self.assertIn("--payload-keep only applies", err)
+        rc, out, err = self.gc("--payload-keep", "0")
+        self.assertEqual(rc, 1, out + err)
+        self.assertIn("at least 1", err)
+
     def test_gc_refuses_to_act_when_it_finds_no_manifest(self):
         self.assertEqual(self.snapshot()[0], 0)
         other = "seafile://testlib/otherrepo"

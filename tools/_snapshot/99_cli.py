@@ -390,6 +390,7 @@ def main(argv: list[str] | None = None) -> int:
             return payload_gc(
                 args.remote, args.vault.expanduser().resolve() if args.vault else None,
                 delete=args.payload_delete, grace_days=args.payload_grace_days,
+                keep=args.payload_keep,
             )
         if args.restore:
             if not args.remote:
