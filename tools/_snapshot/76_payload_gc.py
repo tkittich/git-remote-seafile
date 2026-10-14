@@ -89,7 +89,8 @@ def payload_gc_conflicts(args: argparse.Namespace) -> list[str]:
     if args.payload_verify is not None:
         for flag, value in (("--restore", args.restore), ("--maintain", args.maintain),
                             ("--dry-run", args.dry_run), ("--payload-gc", args.payload_gc),
-                            ("--payload-min-size", args.payload_min_size)):
+                            ("--payload-min-size", args.payload_min_size),
+                            ("--no-payload", args.no_payload)):
             if value:
                 problems.append(f"{flag} does not apply to --payload-verify")
         if not args.remote:
@@ -101,6 +102,7 @@ def payload_gc_conflicts(args: argparse.Namespace) -> list[str]:
     if args.payload_gc:
         for flag, value in (("--restore", args.restore), ("--maintain", args.maintain),
                             ("--dry-run", args.dry_run), ("--payload-min-size", args.payload_min_size),
+                            ("--no-payload", args.no_payload),
                             ("--payload-jobs", args.payload_jobs), ("--exclude", args.exclude),
                             ("--no-push", args.no_push)):
             if value:

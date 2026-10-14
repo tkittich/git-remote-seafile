@@ -791,19 +791,19 @@ Borg, and changes nothing for the helper or the vault.
 - **Keep the secrets report a warning, not a refusal.** A backup that refuses to
   back up is a backup that gets switched off.
 
-### 15.1 Payload mode: large files by hash, behind `--payload-min-size`
+### 15.1 Payload mode: large files by hash (`--payload-min-size`, on by default)
 
-**Status.** Implemented on the `feat/payload-mode` branch. The contract the
+**Status.** Shipped in v0.9.0, **on by default** (`auto`) for runs that push to a
+`seafile://` remote; `--no-payload` turns it off. The contract the
 implementation is held to -- requirements, decisions, failure model and an
 adversarial review -- is [PAYLOAD.md](PAYLOAD.md); this section keeps the
 measurements and the reasoning for the layout. Files at or above the
 given size are hashed, stored on the server under their SHA-256, and listed in a
 manifest the vault commit carries; `--restore` downloads and verifies every one.
-The selection rule (`auto`) and a retention helper (`--payload-gc`) are
-implemented too. **Not implemented yet:** named, browsable *views* of a snapshot
-(below), a remembered setting (the flag must be repeated on every run, and a vault
-that used it refuses a run without it), a force-rehash switch, and a payload
-location in a different library from the vault.
+The selection rule (`auto`), a retention helper (`--payload-gc`), a remembered
+setting, a force-rehash switch and named, browsable *views* of a snapshot are
+implemented too. **Not implemented:** a payload location in a different library
+from the vault.
 
 **The problem it answers.** A vault carries every file *through git*: each blob
 is hashed, written as a loose object, packed, uploaded as a pack. For a tree

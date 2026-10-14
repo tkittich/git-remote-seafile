@@ -48,19 +48,20 @@ encryption and retention policy.
 | R7 | A restore never writes outside its destination, whatever the manifest says. | `test_a_hostile_manifest_cannot_write_outside_the_restore` |
 | R8 | Corruption of a stored object is detected at restore, never accepted. | `test_corrupt_payload_fails_the_restore` |
 | R9 | A run that cannot read a file stops and names it; nothing is skipped silently. | `test_an_unreadable_file_names_itself` |
-| R10 | A payload vault never silently starts staging its large files into git. | `test_a_vault_that_used_payload_refuses_a_run_without_the_flag` |
-| R11 | Payload mode is opt-in and changes nothing for a run without the flag. | the existing snapshot suite |
+| R10 | A payload vault never silently starts staging its large files into git. | `test_a_vault_that_used_payload_still_refuses_when_it_cannot_stay_in_it`, `test_a_fresh_vault_on_another_machine_follows_the_default` |
+| R11 | Payload mode is on by default, and a tree with no qualifying file is snapshotted exactly as without it (no manifest, no server directory); where it cannot work (no remote, a remote that is not `seafile://`, `--no-push`) the default stays off instead of failing. | `test_a_tree_with_nothing_big_is_snapshotted_as_without_payload_mode`, `test_the_default_stays_off_where_payload_mode_cannot_work` |
 
 ## 4. Decisions
 
 ### D1. Which files are payload — **decided** (`auto`)
 
-`--payload-min-size` takes `auto` (also what a bare flag means) or a size. A size
+`--payload-min-size` takes `auto` (the default; also what a bare flag means) or a size. A size
 selects on size alone. **`auto` selects a file when it is at least 64 MiB, or when
 it is at least 4 MiB and a sample of it does not compress** (zlib level 1 over three
 256 KiB chunks, ratio ≥ 0.9). Everything else stays in git, where batching,
 compression and delta apply. The manifest records which rule produced it, and a
-vault that used payload mode refuses a run without the flag, naming the value.
+vault that used payload mode refuses a run that would have to turn it off by
+accident, naming the value.
 
 Why those numbers (flood tree, 6,853 files, 130.7 GiB):
 
@@ -226,16 +227,19 @@ faithful path. It lives beside the vault, never inside the helper's directory.
 
 ### D11. Flags — **decided**
 
-`--payload-min-size [SIZE|auto]` (`0` = off; a bare flag means `auto`),
+`--payload-min-size [SIZE|auto]` (`0` = off; a bare flag means `auto`), `--no-payload`
+(off, remembered),
 `--payload-jobs N` (default 3; measured: one upload 32 MiB/s, three 53 MiB/s, five
 no better), `--payload-gc`, `--payload-delete`, `--payload-grace-days N`.
-Combinations that would be silently ignored are refused. Incompatible with
-`--no-push`. A vault whose last snapshot has a manifest refuses a run that omits
-the flag (R10), naming the value -- unless the vault remembered it: a complete real
-run stores `--payload-min-size` in the vault's config (`snapshot.payload`, `0`
-included, a preview never), so a scheduled bare command keeps its behaviour, and the
-refusal covers a fresh vault on another machine. `--payload-rehash` ignores the hash
-cache for one run. The `.seafile-payload` directory of a source is never staged.
+Combinations that would be silently ignored are refused. An explicit
+`--payload-min-size` is incompatible with `--no-push`.
+
+
+Nothing here changes what a snapshot contains; each item is a refusal or a note
+*before* something expensive or destructive starts.
+
+| Hazard | Safeguard | Test |
+| :--- | :--- | :--- |
 
 ### D12. Privacy and security — **decided**
 

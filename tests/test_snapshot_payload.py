@@ -243,13 +243,23 @@ class PayloadModeTests(unittest.TestCase):
         self.assertIn("not found", out + err)
         self.assertEqual((into / "big1.bin").read_bytes(), self.big1)
 
-    def test_a_vault_that_used_payload_refuses_a_run_without_the_flag(self):
+    def test_a_fresh_vault_on_another_machine_follows_the_default(self):
+        self.assertEqual(self.bare()[0], 0)
+        # Payload mode is on by default, so a vault that remembered nothing -- a
+        # fresh one on another machine -- carries on in payload mode rather than
+        # staging the large files into git.
+        rc, out, err = self.bare(vault=self.case / "fresh-vault")
+        self.assertEqual(rc, 0, out + err)
+        tree = _git(self.case / "fresh-vault", "ls-tree", "-r", "--name-only", "snapshot")
+        self.assertNotIn("big1.bin", tree)
+        self.assertIn(".seafile-payload/manifest.json", tree)
+
+    def test_a_vault_that_used_payload_still_refuses_when_it_cannot_stay_in_it(self):
         self.assertEqual(self.snapshot()[0], 0)
-        # A vault that remembered the setting just carries on (see the next tests);
-        # one that did not -- a fresh vault on another machine -- is refused, because
-        # the remote's last snapshot used payload mode.
-        rc, out, err = self.run_tool(self.src, "--vault", self.case / "fresh-vault",
-                                     "--remote", self.remote)
+        _git(self.vault, "config", "--unset", "snapshot.payload")
+        # --no-push cannot use payload mode, so the default quietly stays off -- and
+        # that must not stage the large files of a payload vault into git.
+        rc, out, err = self.run_tool(self.src, "--vault", self.vault, "--no-push")
         self.assertNotEqual(rc, 0)
         self.assertIn("payload mode", out + err)
 
@@ -584,10 +594,6 @@ class PayloadModeTests(unittest.TestCase):
         tree = _git(self.vault, "ls-tree", "-r", "--name-only", "snapshot")
         self.assertIn("mid_text.bin", tree)
         self.assertNotIn("mid_random.bin", tree)
-        rc, out, err = self.run_tool(self.src, "--vault", self.case / "fresh-vault",
-                                     "--remote", self.remote)
-        self.assertNotEqual(rc, 0)
-        self.assertIn("--payload-min-size auto", out + err)
 
     def test_a_bare_flag_means_auto(self):
         rc, out, err = self.run_tool(
@@ -595,6 +601,106 @@ class PayloadModeTests(unittest.TestCase):
         )
         self.assertEqual(rc, 0, out + err)
         self.assertNotIn("payload:", out)
+
+    # -- payload mode is on by default ------------------------------------------
+    def bare(self, *extra: object, vault: pathlib.Path | None = None,
+             remote: str | None = None) -> tuple[int, str, str]:
+        """A run with no payload flag at all, the auto thresholds scaled to the fixture."""
+        with unittest.mock.patch.object(snap, "_AUTO_UPPER", 8000), \
+                unittest.mock.patch.object(snap, "_AUTO_LOWER", 2000):
+            return self.run_tool(self.src, "--vault", vault or self.vault,
+                                 "--remote", remote or self.remote, *extra)
+
+    def test_payload_mode_is_on_without_any_flag_and_says_so(self):
+        rc, out, err = self.bare()
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn("payload: on by default", out)
+        self.assertIn("--no-payload", out)
+        tree = _git(self.vault, "ls-tree", "-r", "--name-only", "snapshot")
+        self.assertNotIn("big1.bin", tree)
+        self.assertIn(".seafile-payload/manifest.json", tree)
+        self.assertEqual(_git(self.vault, "config", "snapshot.payload").strip(), "auto")
+        self.assertEqual(self.object_count(), 2)
+        # The second run is not "by default" any more: the vault remembered it.
+        rc, out, err = self.bare()
+        self.assertEqual(rc, 0, out + err)
+        self.assertNotIn("on by default", out)
+
+    def test_the_vault_carries_a_note_on_how_to_read_it(self):
+        self.assertEqual(self.bare()[0], 0)
+        note = _git(self.vault, "show", "snapshot:.seafile-payload/README.txt")
+        self.assertIn("--restore", note)
+        self.assertIn("manifest.json", note)
+        raw = subprocess.run(
+            ["git", "-C", str(self.vault), "show", "snapshot:.seafile-payload/README.txt"],
+            capture_output=True, check=True,
+        ).stdout
+        self.assertNotIn(b"\r", raw)       # the same blob on every platform
+
+    def test_no_payload_stages_into_git_and_is_remembered(self):
+        rc, out, err = self.bare("--no-payload")
+        self.assertEqual(rc, 0, out + err)
+        self.assertNotIn("payload:", out)
+        tree = _git(self.vault, "ls-tree", "-r", "--name-only", "snapshot")
+        self.assertIn("big1.bin", tree)
+        self.assertNotIn(".seafile-payload", tree)
+        self.assertEqual(self.object_count(), 0)
+        self.assertEqual(_git(self.vault, "config", "snapshot.payload").strip(), "0")
+        rc, out, err = self.bare()
+        self.assertEqual(rc, 0, out + err)
+        self.assertEqual(self.object_count(), 0)
+
+    def test_a_tree_with_nothing_big_is_snapshotted_as_without_payload_mode(self):
+        (self.src / "big1.bin").unlink()
+        (self.src / "sub" / "big2.bin").unlink()
+        rc, out, err = self.bare()
+        self.assertEqual(rc, 0, out + err)
+        self.assertNotIn("payload:", out)
+        tree = _git(self.vault, "ls-tree", "-r", "--name-only", "snapshot")
+        self.assertNotIn(".seafile-payload", tree)
+        self.assertFalse(any(k.startswith(self.base) for k in self.server_files()))
+
+    def test_the_default_stays_off_where_payload_mode_cannot_work(self):
+        # No remote at all: a purely local snapshot.
+        with unittest.mock.patch.object(snap, "_AUTO_UPPER", 8000), \
+                unittest.mock.patch.object(snap, "_AUTO_LOWER", 2000):
+            rc, out, err = self.run_tool(self.src, "--vault", self.vault, "--no-push")
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn("big1.bin", _git(self.vault, "ls-tree", "-r", "--name-only", "snapshot"))
+        # --no-push: the explicit flag is an error (see the combinations test), the
+        # default just stays off.
+        with unittest.mock.patch.object(snap, "_AUTO_UPPER", 8000), \
+                unittest.mock.patch.object(snap, "_AUTO_LOWER", 2000):
+            rc, out, err = self.run_tool(self.src, "--vault", self.case / "v2", "--no-push")
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn("big1.bin",
+                      _git(self.case / "v2", "ls-tree", "-r", "--name-only", "snapshot"))
+        # A remote that is not a Seafile library cannot hold a payload.
+        bare_remote = self.case / "plain.git"
+        _git(self.case, "init", "-q", "--bare", str(bare_remote))
+        rc, out, err = self.bare(vault=self.case / "v3", remote=str(bare_remote))
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn("big1.bin",
+                      _git(self.case / "v3", "ls-tree", "-r", "--name-only", "snapshot"))
+        # Nothing was remembered from the runs that could not use it.
+        for name in ("v2", "v3"):
+            probe = subprocess.run(
+                ["git", "-C", str(self.case / name), "config", "snapshot.payload"],
+                capture_output=True, text=True,
+            )
+            self.assertNotEqual(probe.returncode, 0, name)
+
+    def test_jobs_alone_no_longer_needs_the_size_flag(self):
+        rc, out, err = self.bare("--payload-jobs", "2")
+        self.assertEqual(rc, 0, out + err)
+        self.assertEqual(self.object_count(), 2)
+
+    def test_the_store_line_reports_what_the_server_holds(self):
+        rc, out, err = self.bare()
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn("payload store: 2 object(s)", out)
+        rc, out, err = self.bare()          # nothing new uploaded: no line
+        self.assertNotIn("payload store:", out)
 
     def test_parse_size_is_strict(self):
         self.assertEqual(snap.parse_size("64M"), 64 * 1024 ** 2)
@@ -621,7 +727,12 @@ class PayloadModeTests(unittest.TestCase):
     def test_flag_combinations_that_would_be_ignored_are_refused(self):
         cases = (
             (("--vault", self.vault, "--payload-min-size", "1000", "--no-push"), "--no-push"),
-            (("--vault", self.vault, "--payload-jobs", "4"), "--payload-jobs only applies"),
+            (("--vault", self.vault, "--no-payload", "--payload-jobs", "4"),
+             "--payload-jobs only applies when payload mode is on"),
+            (("--vault", self.vault, "--no-payload", "--payload-min-size", "1000"),
+             "contradict each other"),
+            (("--restore", "--remote", self.remote, "--into", self.case / "x",
+              "--no-payload"), "does not apply"),
             (("--vault", self.vault, "--payload-delete"), "--payload-delete only applies"),
             (("--vault", self.vault, "--payload-grace-days", "3"), "--payload-grace-days only applies"),
             (("--payload-gc",), "requires --remote"),

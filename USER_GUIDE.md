@@ -1074,6 +1074,9 @@ The full design — the alternatives that do not work, the nested-repository ana
 
 ### 15.9 Large payloads: payload mode
 
+> [!WARNING]
+> **Upgrading to 0.9.0: payload mode is on by default.** A vault that holds files of 64 MiB or more (or 4 MiB or more that do not compress) in git moves them out of git on its **next** snapshot: one full hash-and-upload pass, the large files stored twice on the server (the old blobs stay in the vault's history, the new objects sit under `payload/`), and they show as deleted in `git diff`. Snapshots taken before the switch restore as before; later ones need the payload, **and 0.8.8 cannot restore them completely** -- it has no manifest support and restores the tree without the large files. A plain `git clone` of a payload vault does not contain the large files either. A vault with no such file is unaffected. To keep a vault exactly as it was, run once with `--no-payload`; it is remembered.
+
 A vault carries every file *through git*: each is hashed, written as a loose object,
 packed, uploaded. For a tree that is mostly large, immutable, already-compressed
 data -- rasters, archives, arrays, video -- that is pure overhead: a second local
@@ -1085,13 +1088,16 @@ tree (633 payload files, 124.6 GB) snapshotted in 38 minutes and restored
 byte-exact.
 
 ```bash
-# Take a snapshot. A bare --payload-min-size means 'auto': files of 64 MiB or more,
-# plus files of 4 MiB or more that do not compress (a size, e.g. 100M, works too).
-# Put the source first, or write --payload-min-size=auto.
-git seafile-snapshot C:/code/flood --payload-min-size=auto --default-excludes
+# Take a snapshot. Payload mode is on by default ('auto'): files of 64 MiB or more,
+# plus files of 4 MiB or more that do not compress, go to the server by hash. A size
+# works too (--payload-min-size=100M); put the source first, or use the = form.
+git seafile-snapshot C:/code/flood --default-excludes
 
 # The vault remembers the setting; a bare run keeps using it.
 git seafile-snapshot C:/code/flood
+
+# Turn it off (remembered): every file goes through git, as in 0.8.8.
+git seafile-snapshot C:/code/flood --no-payload
 
 # Restore is the same command as always; it downloads and verifies the payload.
 git seafile-snapshot --restore --remote seafile://code/flood-vault --into D:/restored --verify
@@ -1099,10 +1105,16 @@ git seafile-snapshot --restore --remote seafile://code/flood-vault --into D:/res
 
 What to know:
 
-- **It is opt-in and remembered.** Without `--payload-min-size` nothing changes. A
-  complete real run stores the setting in the vault (`0` turns it off, and is
-  remembered too); a preview never writes it. A fresh vault on another machine is
-  *refused* a flagless run, because the remote's last snapshot used payload mode.
+- **A plain `git clone` of a payload vault does not contain the large files.** It
+  holds the manifest and `.seafile-payload/README.txt`; get the tree back with
+  `--restore`.
+- **The store only grows** until you run `--payload-gc` (and `--payload-keep`); a run
+  that uploaded objects prints how many and how large the store is.
+- **How it meets git.** The vault is still an ordinary repository; payload files are simply never staged.
+  - *Inside git* a payload snapshot is the small files plus two ordinary blobs, `.seafile-payload/manifest.json` (one line of JSON, sorted keys) and `README.txt`. `git log`, `git show`, `git fsck`, `git gc`, `git repack` and `git clone` work as on any vault; a manifest change shows in `git diff` as one long line, so read it with `git show snapshot:.seafile-payload/manifest.json | python -m json.tool`.
+  - *Outside git* the large files are plain files in `<vault path>/payload/objects/` on the server. Git never sees them, so `git gc` and the helper's `gc`, `gc --tail` and `doctor` neither read nor delete them (the helper ignores a foreign `payload/` directory); only `--payload-gc` removes an object, and only one no snapshot references.
+  - *A checkout is not a restore.* `git clone`, `git checkout` or `git switch` gives you the manifest, not the files; `--restore` (or `--payload-view` for a browsable copy made on the server) is what produces them, and verifies each by SHA-256.
+  - *History rewrites need care.* The manifests are what keep objects alive: `git push --force`, `git filter-repo` or deleting a snapshot branch or tag make older manifests unreachable, and a later `--payload-gc --payload-delete` will then treat their objects as unused.
 - **A snapshot costs nothing to keep.** Objects are never overwritten, so a snapshot
   is a manifest; a renamed or duplicated file uploads nothing.
 - **Uploads are parallel and verified.** `--payload-jobs N` (default 3). Each object

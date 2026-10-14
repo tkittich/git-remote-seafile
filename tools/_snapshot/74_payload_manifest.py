@@ -140,19 +140,48 @@ def manifest_bytes(manifest: dict[str, Any]) -> bytes:
     return json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode("ascii")
 
 
+# What someone finds when they clone a vault with plain git: the large files are
+# not in it, and nothing else says where they are.  Recorded beside the manifest.
+PAYLOAD_README_TEXT = (
+    "This snapshot keeps its large files outside git.\n"
+    "\n"
+    "manifest.json lists each of them (path, size, SHA-256); the bytes are stored on\n"
+    "the Seafile server by hash, in the payload/objects directory next to this vault's\n"
+    "remote. A plain `git clone` or `git checkout` therefore does not contain them.\n"
+    "\n"
+    "To get the complete tree back, verified file by file:\n"
+    "\n"
+    "    git seafile-snapshot --restore --remote <the vault's seafile:// URL> --into <dir>\n"
+    "\n"
+    "Do not edit or delete this directory; a restore and the payload tools read it.\n"
+)
+
+
 def add_manifest_to_index(
     git_dir: Path, work_tree: Path, manifest: dict[str, Any]
 ) -> None:
-    """Record the manifest in the vault index (and so in the snapshot tree)."""
+    """Record the manifest, and a note on reading it, in the vault index."""
+    # The note has newlines, which a text-mode pipe would translate on Windows and
+    # so give the same tree a different blob on each platform; hand git a file.
+    note = git_dir / "payload-readme.tmp"
+    note.write_bytes(PAYLOAD_README_TEXT.encode("ascii"))
+    try:
+        readme = git(
+            git_dir, work_tree, ["hash-object", "-w", "--no-filters", str(note)],
+            cwd=work_tree,
+        ).stdout.strip()
+    finally:
+        note.unlink(missing_ok=True)
     blob = git(
         git_dir, work_tree, ["hash-object", "-w", "--no-filters", "--stdin"],
         cwd=work_tree, stdin=manifest_bytes(manifest).decode("ascii"),
     ).stdout.strip()
-    git(
-        git_dir, work_tree,
-        ["update-index", "--add", "--cacheinfo", f"100644,{blob},{PAYLOAD_MANIFEST}"],
-        cwd=work_tree,
-    )
+    for path, sha in ((PAYLOAD_MANIFEST, blob), (PAYLOAD_README, readme)):
+        git(
+            git_dir, work_tree,
+            ["update-index", "--add", "--cacheinfo", f"100644,{sha},{path}"],
+            cwd=work_tree,
+        )
 
 
 # -- the per-machine hash cache ------------------------------------------------

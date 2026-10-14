@@ -163,7 +163,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="stage even when the estimate says the vault's volume cannot hold "
         "the tree. The estimate is an upper bound (tree size, scaled by the "
         "sampled compressibility, minus what the vault already stores); this "
-        "is for data you know is more compressible than the sample suggests",
+        "is for data you know is more compressible than the sample suggests. "
+        "With --restore: download a payload that does not appear to fit",
     )
     add_payload_groups(parser)
     parser.add_argument(
@@ -426,7 +427,10 @@ def main(argv: list[str] | None = None) -> int:
         if args.dry_run and remote:
             print(f"dry run -- would push the vault to {remote}")
 
-        args.payload_min_size = resolve_payload_value(args.payload_min_size, vault)
+        args.payload_min_size, payload_default = resolve_payload_value(
+            args.payload_min_size, vault, remote=remote, no_push=args.no_push,
+            no_payload=args.no_payload,
+        )
         payload_min, payload_candidates, payload_rule = plan_payload(
             args.payload_min_size, remote, source, exclude
         )
@@ -559,7 +563,10 @@ def main(argv: list[str] | None = None) -> int:
             print(f"files  : {count} ({human_bytes(size)})")
             print(f"base   : {base[:12] if base else '(first snapshot)'}")
             if manifest is not None:
-                print(payload_summary(manifest, payload_todo, args.dry_run))
+                print(payload_summary(
+                    manifest, payload_todo, args.dry_run,
+                    remote=remote, from_default=payload_default,
+                ))
             if excluded:
                 print(f"excluded: {len(excluded)} path(s) left out")
 

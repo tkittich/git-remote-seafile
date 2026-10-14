@@ -50,7 +50,8 @@ def payload_view_conflicts(args: argparse.Namespace) -> list[str]:
         for flag, value in (("--restore", args.restore), ("--maintain", args.maintain),
                             ("--dry-run", args.dry_run), ("--payload-gc", args.payload_gc),
                             ("--payload-verify", args.payload_verify),
-                            ("--payload-min-size", args.payload_min_size)):
+                            ("--payload-min-size", args.payload_min_size),
+                            ("--no-payload", args.no_payload)):
             if value:
                 problems.append(f"{flag} does not apply to --payload-view")
         if not args.remote:

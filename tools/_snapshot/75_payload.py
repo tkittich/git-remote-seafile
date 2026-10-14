@@ -29,6 +29,7 @@
 #: nothing under it is ever staged from the source.
 PAYLOAD_RESERVED_DIR = ".seafile-payload"
 PAYLOAD_MANIFEST = PAYLOAD_RESERVED_DIR + "/manifest.json"
+PAYLOAD_README = PAYLOAD_RESERVED_DIR + "/README.txt"
 PAYLOAD_FORMAT = 2
 _PAYLOAD_HASH_BLOCK = 8 * 1024 * 1024
 #: A cached hash is trusted only if the file's mtime is at least this much older
@@ -354,6 +355,33 @@ def _upload_all(
         raise SnapshotError(
             f"{len(failed)} payload upload(s) failed (the next run resumes); first: {failed[0]}"
         )
+
+
+def payload_store_line(remote: str) -> str:
+    """One line on what the payload store holds, or ``""`` if it cannot be listed.
+
+    Informational: a run is never failed for it.  Snapshots never delete an object,
+    so the number only grows until ``--payload-gc`` / ``--payload-keep`` is used.
+    """
+    try:
+        library, base, server_url = payload_location(remote)
+        client = _open_client(server_url)
+        rid = client.get_repo_id(library)
+        count = total = 0
+        for entry in client.list_dir(rid, f"{base}/objects"):
+            name = entry.get("name")
+            if entry.get("type") != "dir" or not isinstance(name, str):
+                continue
+            for obj in client.list_dir(rid, f"{base}/objects/{name}"):
+                oname, size = obj.get("name"), obj.get("size")
+                if (obj.get("type") != "dir" and isinstance(oname, str)
+                        and len(oname) == 64 and isinstance(size, int)):
+                    count += 1
+                    total += size
+    except Exception:  # informational only
+        return ""
+    return (f"payload store: {count} object(s), {human_bytes(total)} on the server "
+            "(snapshots never delete one; --payload-gc reports what no snapshot uses)")
 
 
 def publish_payload(

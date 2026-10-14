@@ -2097,19 +2097,48 @@ def manifest_bytes(manifest: dict[str, Any]) -> bytes:
     return json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode("ascii")
 
 
+# What someone finds when they clone a vault with plain git: the large files are
+# not in it, and nothing else says where they are.  Recorded beside the manifest.
+PAYLOAD_README_TEXT = (
+    "This snapshot keeps its large files outside git.\n"
+    "\n"
+    "manifest.json lists each of them (path, size, SHA-256); the bytes are stored on\n"
+    "the Seafile server by hash, in the payload/objects directory next to this vault's\n"
+    "remote. A plain `git clone` or `git checkout` therefore does not contain them.\n"
+    "\n"
+    "To get the complete tree back, verified file by file:\n"
+    "\n"
+    "    git seafile-snapshot --restore --remote <the vault's seafile:// URL> --into <dir>\n"
+    "\n"
+    "Do not edit or delete this directory; a restore and the payload tools read it.\n"
+)
+
+
 def add_manifest_to_index(
     git_dir: Path, work_tree: Path, manifest: dict[str, Any]
 ) -> None:
-    """Record the manifest in the vault index (and so in the snapshot tree)."""
+    """Record the manifest, and a note on reading it, in the vault index."""
+    # The note has newlines, which a text-mode pipe would translate on Windows and
+    # so give the same tree a different blob on each platform; hand git a file.
+    note = git_dir / "payload-readme.tmp"
+    note.write_bytes(PAYLOAD_README_TEXT.encode("ascii"))
+    try:
+        readme = git(
+            git_dir, work_tree, ["hash-object", "-w", "--no-filters", str(note)],
+            cwd=work_tree,
+        ).stdout.strip()
+    finally:
+        note.unlink(missing_ok=True)
     blob = git(
         git_dir, work_tree, ["hash-object", "-w", "--no-filters", "--stdin"],
         cwd=work_tree, stdin=manifest_bytes(manifest).decode("ascii"),
     ).stdout.strip()
-    git(
-        git_dir, work_tree,
-        ["update-index", "--add", "--cacheinfo", f"100644,{blob},{PAYLOAD_MANIFEST}"],
-        cwd=work_tree,
-    )
+    for path, sha in ((PAYLOAD_MANIFEST, blob), (PAYLOAD_README, readme)):
+        git(
+            git_dir, work_tree,
+            ["update-index", "--add", "--cacheinfo", f"100644,{sha},{path}"],
+            cwd=work_tree,
+        )
 
 
 # -- the per-machine hash cache ------------------------------------------------
@@ -2221,6 +2250,7 @@ def build_manifest(
 #: nothing under it is ever staged from the source.
 PAYLOAD_RESERVED_DIR = ".seafile-payload"
 PAYLOAD_MANIFEST = PAYLOAD_RESERVED_DIR + "/manifest.json"
+PAYLOAD_README = PAYLOAD_RESERVED_DIR + "/README.txt"
 PAYLOAD_FORMAT = 2
 _PAYLOAD_HASH_BLOCK = 8 * 1024 * 1024
 #: A cached hash is trusted only if the file's mtime is at least this much older
@@ -2548,6 +2578,33 @@ def _upload_all(
         )
 
 
+def payload_store_line(remote: str) -> str:
+    """One line on what the payload store holds, or ``""`` if it cannot be listed.
+
+    Informational: a run is never failed for it.  Snapshots never delete an object,
+    so the number only grows until ``--payload-gc`` / ``--payload-keep`` is used.
+    """
+    try:
+        library, base, server_url = payload_location(remote)
+        client = _open_client(server_url)
+        rid = client.get_repo_id(library)
+        count = total = 0
+        for entry in client.list_dir(rid, f"{base}/objects"):
+            name = entry.get("name")
+            if entry.get("type") != "dir" or not isinstance(name, str):
+                continue
+            for obj in client.list_dir(rid, f"{base}/objects/{name}"):
+                oname, size = obj.get("name"), obj.get("size")
+                if (obj.get("type") != "dir" and isinstance(oname, str)
+                        and len(oname) == 64 and isinstance(size, int)):
+                    count += 1
+                    total += size
+    except Exception:  # informational only
+        return ""
+    return (f"payload store: {count} object(s), {human_bytes(total)} on the server "
+            "(snapshots never delete one; --payload-gc reports what no snapshot uses)")
+
+
 def publish_payload(
     remote: str,
     source: Path,
@@ -2749,7 +2806,8 @@ def payload_gc_conflicts(args: argparse.Namespace) -> list[str]:
     if args.payload_verify is not None:
         for flag, value in (("--restore", args.restore), ("--maintain", args.maintain),
                             ("--dry-run", args.dry_run), ("--payload-gc", args.payload_gc),
-                            ("--payload-min-size", args.payload_min_size)):
+                            ("--payload-min-size", args.payload_min_size),
+                            ("--no-payload", args.no_payload)):
             if value:
                 problems.append(f"{flag} does not apply to --payload-verify")
         if not args.remote:
@@ -2761,6 +2819,7 @@ def payload_gc_conflicts(args: argparse.Namespace) -> list[str]:
     if args.payload_gc:
         for flag, value in (("--restore", args.restore), ("--maintain", args.maintain),
                             ("--dry-run", args.dry_run), ("--payload-min-size", args.payload_min_size),
+                            ("--no-payload", args.no_payload),
                             ("--payload-jobs", args.payload_jobs), ("--exclude", args.exclude),
                             ("--no-push", args.no_push)):
             if value:
@@ -3114,11 +3173,18 @@ def portable_name_warning(paths: list[str]) -> str | None:
 
 
 PAYLOAD_EPILOG = (
-    "\npayload mode (large files): off unless --payload-min-size is given;\n"
-    "'auto' sends files of 64 MiB or more, and 4 MiB or more that do not\n"
-    "compress, to Seafile by hash instead of through git. A complete real\n"
-    "run remembers the setting. --restore, --payload-verify, --payload-gc\n"
-    "and --payload-view act on a remote's payload; see PAYLOAD.md.\n"
+    "\npayload mode (large files): on by default ('auto') when the vault has a\n"
+    "seafile:// remote. Files of 64 MiB or more, and 4 MiB or more that do not\n"
+    "compress, go to Seafile by hash instead of through git; a tree with no such\n"
+    "file is snapshotted exactly as without it. --no-payload turns it off, and a\n"
+    "complete real run remembers the setting. --restore, --payload-verify,\n"
+    "--payload-gc and --payload-view act on a remote's payload; see PAYLOAD.md.\n"
+)
+
+
+PAYLOAD_DEFAULT_NOTICE = (
+    "payload: on by default (auto: files of 64 MiB or more, or 4 MiB or more that do not "
+    "compress, bypass git); --no-payload turns it off and is remembered"
 )
 
 
@@ -3126,8 +3192,9 @@ def add_payload_groups(parser: argparse.ArgumentParser) -> None:
     """Every payload option, in two help groups: taking a snapshot, and tools."""
     mode_group = parser.add_argument_group(
         "payload mode: large files stored by hash instead of through git",
-        "Off unless --payload-min-size is given (a bare flag means auto). A complete "
-        "real run remembers it in the vault. See PAYLOAD.md.",
+        "On by default (auto) when there is a seafile:// remote and the run pushes; "
+        "--no-payload turns it off. A complete real run remembers the setting in the "
+        "vault. See PAYLOAD.md.",
     )
     add_payload_arguments(mode_group)
     add_payload_jobs_argument(mode_group)
@@ -3151,8 +3218,16 @@ def add_payload_arguments(parser: Any) -> None:
         "Seafile by hash under <path>/payload/objects, and the snapshot records a manifest "
         "instead. With no value, or 'auto': files of 64 MiB or more, plus files of 4 MiB or "
         "more that do not compress. With SIZE (e.g. 64M, 1G): files of at least SIZE. "
-        "Needs a remote; a restore downloads and verifies them. Default: off (every file "
-        "goes through git), or what the vault remembered; 0 turns it off",
+        "Needs a seafile:// remote; a restore downloads and verifies them. Default: what "
+        "the vault remembered, else auto; 0 (or --no-payload) turns it off",
+    )
+    parser.add_argument(
+        "--no-payload",
+        action="store_true",
+        help="payload mode: off for this run, and remembered (the same as "
+        "--payload-min-size 0, without its argument parsing); a vault whose last "
+        "snapshot used payload mode keeps its large files out of git until it is "
+        "turned back on, so this stages them into git instead",
     )
 
 
@@ -3176,6 +3251,10 @@ def add_payload_jobs_argument(parser: Any) -> None:
 
 def payload_conflicts(args: argparse.Namespace) -> list[str]:
     problems: list[str] = []
+    if args.no_payload and args.payload_min_size is not None:
+        problems.append("--no-payload and --payload-min-size contradict each other")
+    # Only a flag typed on this command line is checked here: a default or a
+    # remembered setting must never turn a run that worked into an error.
     if args.payload_min_size is not None and args.no_push:
         problems.append(
             "--payload-min-size cannot be combined with --no-push: payload files exist "
@@ -3185,28 +3264,66 @@ def payload_conflicts(args: argparse.Namespace) -> list[str]:
     if args.payload_jobs is not None:
         if args.payload_jobs < 1:
             problems.append("--payload-jobs must be at least 1")
-        if not args.payload_min_size:
-            problems.append("--payload-jobs only applies with --payload-min-size")
-    if args.payload_min_size is not None and (args.restore or args.maintain):
-        problems.append("--payload-min-size does not apply to --restore or --maintain")
+        if args.no_payload or (
+            args.payload_min_size is not None and not _explicit_size(args.payload_min_size)
+        ):
+            problems.append("--payload-jobs only applies when payload mode is on")
+    if args.restore or args.maintain:
+        for flag, given in (("--payload-min-size", args.payload_min_size is not None),
+                            ("--no-payload", args.no_payload)):
+            if given:
+                problems.append(f"{flag} does not apply to --restore or --maintain")
     if args.payload_rehash and (args.restore or args.maintain or args.payload_gc):
         problems.append("--payload-rehash only applies to a snapshot run")
     return problems
 
 
-def resolve_payload_value(value: str | None, vault: Path) -> str | None:
-    """The flag as given, else what this vault remembered from its last real run.
+def _explicit_size(value: str) -> bool:
+    """True unless the value is a size of zero, which means "off"."""
+    text = value.strip().lower()
+    if text == "auto":
+        return True
+    try:
+        return parse_size(value) > 0
+    except SnapshotError:
+        return True  # a malformed size is reported by plan_payload with its own message
+
+
+def payload_by_default_possible(remote: str | None, no_push: bool) -> bool:
+    """Whether payload mode may come on by default: the run pushes to a seafile:// remote."""
+    if not remote or no_push:
+        return False
+    try:
+        payload_location(remote)
+    except SnapshotError:
+        return False
+    return True
+
+
+def resolve_payload_value(
+    value: str | None, vault: Path, *, remote: str | None = None, no_push: bool = False,
+    no_payload: bool = False,
+) -> tuple[str | None, bool]:
+    """``(value, from_default)``: the flag as given, else what this vault remembered
+    from its last real run, else ``auto`` when the run pushes to a seafile:// remote.
 
     So a scheduled bare ``seafile_snapshot.py`` keeps using payload mode (or keeps
     deliberately not using it, if ``0`` was remembered) the way the remote and the
-    excludes are kept.
+    excludes are kept.  The default quietly stays off where payload mode cannot work
+    (no remote, a remote that is not seafile://, ``--no-push``): a default must not
+    make a run fail that worked before.
     """
+    if no_payload:
+        return "0", False
     if value is not None:
-        return value
-    if not (vault / ".git").exists():
-        return None
-    remembered = _config(vault, "snapshot.payload")
-    return remembered or None
+        return value, False
+    if (vault / ".git").exists():
+        remembered = _config(vault, "snapshot.payload")
+        if remembered:
+            return remembered, False
+    if payload_by_default_possible(remote, no_push):
+        return "auto", True
+    return None, False
 
 
 def remember_payload_value(vault: Path, value: str | None, *, dry_run: bool) -> None:
@@ -3272,6 +3389,7 @@ def run_payload_step(
     jobs: int | None = None,
     rule: str = "size",
     rehash: bool = False,
+    from_default: bool = False,
 ) -> tuple[dict[str, Any] | None, tuple[int, int]]:
     """Hash and upload the payload; ``(manifest, (objects, bytes) to upload)``."""
     previous = load_manifest(git_dir, source, base)
@@ -3301,7 +3419,10 @@ def run_payload_step(
     return manifest, todo
 
 
-def payload_summary(manifest: dict[str, Any], todo: tuple[int, int], dry_run: bool) -> str:
+def payload_summary(
+    manifest: dict[str, Any], todo: tuple[int, int], dry_run: bool,
+    *, remote: str | None = None, from_default: bool = False,
+) -> str:
     total = sum(item["size"] for item in manifest["files"])
     verb = "to upload" if dry_run else "uploaded"
     line = (
@@ -3309,7 +3430,15 @@ def payload_summary(manifest: dict[str, Any], todo: tuple[int, int], dry_run: bo
         f"snapshot {manifest['snapshot']}; {verb} {todo[0]} object(s) ({human_bytes(todo[1])})"
     )
     warning = portable_name_warning([item["path"] for item in manifest["files"]])
-    return line + (warning or "")
+    text = line + (warning or "")
+    if from_default:
+        text = PAYLOAD_DEFAULT_NOTICE + "\n" + text
+    if remote and todo[0] and not dry_run:
+        # Nothing here ever deletes an object, so say how big the store has become.
+        store = payload_store_line(remote)
+        if store:
+            text += "\n" + store
+    return text
 
 
 # -- Payload views -------------------------------------------------------------
@@ -3362,7 +3491,8 @@ def payload_view_conflicts(args: argparse.Namespace) -> list[str]:
         for flag, value in (("--restore", args.restore), ("--maintain", args.maintain),
                             ("--dry-run", args.dry_run), ("--payload-gc", args.payload_gc),
                             ("--payload-verify", args.payload_verify),
-                            ("--payload-min-size", args.payload_min_size)):
+                            ("--payload-min-size", args.payload_min_size),
+                            ("--no-payload", args.no_payload)):
             if value:
                 problems.append(f"{flag} does not apply to --payload-view")
         if not args.remote:
@@ -4641,7 +4771,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="stage even when the estimate says the vault's volume cannot hold "
         "the tree. The estimate is an upper bound (tree size, scaled by the "
         "sampled compressibility, minus what the vault already stores); this "
-        "is for data you know is more compressible than the sample suggests",
+        "is for data you know is more compressible than the sample suggests. "
+        "With --restore: download a payload that does not appear to fit",
     )
     add_payload_groups(parser)
     parser.add_argument(
@@ -4904,7 +5035,10 @@ def main(argv: list[str] | None = None) -> int:
         if args.dry_run and remote:
             print(f"dry run -- would push the vault to {remote}")
 
-        args.payload_min_size = resolve_payload_value(args.payload_min_size, vault)
+        args.payload_min_size, payload_default = resolve_payload_value(
+            args.payload_min_size, vault, remote=remote, no_push=args.no_push,
+            no_payload=args.no_payload,
+        )
         payload_min, payload_candidates, payload_rule = plan_payload(
             args.payload_min_size, remote, source, exclude
         )
@@ -5037,7 +5171,10 @@ def main(argv: list[str] | None = None) -> int:
             print(f"files  : {count} ({human_bytes(size)})")
             print(f"base   : {base[:12] if base else '(first snapshot)'}")
             if manifest is not None:
-                print(payload_summary(manifest, payload_todo, args.dry_run))
+                print(payload_summary(
+                    manifest, payload_todo, args.dry_run,
+                    remote=remote, from_default=payload_default,
+                ))
             if excluded:
                 print(f"excluded: {len(excluded)} path(s) left out")
 
