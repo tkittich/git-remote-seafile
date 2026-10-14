@@ -244,6 +244,8 @@ git pull
 pip install -e .
 ```
 
+**Upgrading to v0.9.2 from v0.9.1** changes behaviour in four places: a directory the snapshot tool cannot read stops the run and is named (it used to be silently left out; `--exclude` it on purpose); a snapshot that pushes to a `seafile://` remote also records the modification time of every git-stored file, and `--restore` puts the times back (`--no-record-mtimes` turns it off); `git push --force-with-lease` works; and `--payload-gc` stops, deleting nothing, if a branch's ref cannot be read or a push landed while it was deciding. No file format changed.
+
 **Upgrading to v0.9.1 from v0.9.0** changes behaviour in four places: `gc` stops (deleting nothing) when a ref or refs directory cannot be read, so re-run it after a transient failure; a push lists the pack directory and re-reads the refs under the lock (two more requests); a nested git repository in a snapshot source is captured as its files (`--no-embedded-repos` keeps the old record); pack names must be lowercase. No file format changed.
 
 **Upgrading to v0.8.8 from v0.8.7 or earlier changes four defaults you may notice:**

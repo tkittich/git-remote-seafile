@@ -7,7 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.2] - 2026-10-14
+
+Two more review rounds, this time on the snapshot tool (Opus twice, GLM and Gemini on its specification), and
+the two things 0.9.1 listed as known gaps: modification times of git-stored files now survive a restore, and
+`git push --force-with-lease` works. The most important fix: a directory the tool could not read used to be
+silently missing from the snapshot.
+
 ### Upgrading from 0.9.1
+
+- **A directory that cannot be read now stops the run** and is named (`git add` only warned and carried on, so everything under it was missing from the snapshot with exit 0). Make it readable, or `--exclude` it on purpose. A scheduled job that had been silently skipping one will start to fail.
+- **`--payload-gc` is stricter**: its history fetch fails if the helper cannot read a ref (`SEAFILE_STRICT_REFS`), and the refs are read again just before the first deletion; a push that landed meanwhile stops the run with nothing deleted. Re-run it.
+- **`--no-embedded-repos` means the same on every run**, and a nested repository with no commit is captured (or, with that flag, refused with a message naming `--exclude`).
+- **Windows: paths behind a junction are left out and reported**, so git, the payload walk and the embedded-repository walk agree about what the tree is.
+- **The hash cache gains the device and the inode change time.** An existing cache adopts them on its first run (no rehash); a file whose `ctime` later differs is hashed again.
+- **A weekly report starts its clock on a vault's first run** and reads the vault in place; nothing is downloaded for it.
 
 - **A snapshot that pushes to a `seafile://` remote now also records the modification time of every git-stored file** in `.seafile-payload/mtimes.json`, and `--restore` puts the times back. Your vault gets one more file in its tree on the next run (about 60 bytes per file, rewritten whenever any file's content changes; at 100,000 files it is about 5 MB raw and 1.5 MB compressed, and the helper uploads each push's pack whole, so that is what a changed snapshot costs). `--no-record-mtimes` turns it off and the vault remembers that. Snapshots made before this restore as they did.
 
@@ -1565,6 +1579,7 @@ Data-loss and silent-failure fixes, and the Python floor raised to 3.9.
   with zero-config desktop-client token discovery, distributed locking, remote
   packfile compaction, and a Git LFS custom transfer agent.
 
+[0.9.2]: https://github.com/tkittich/git-remote-seafile/compare/v0.9.1...v0.9.2
 [0.9.1]: https://github.com/tkittich/git-remote-seafile/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/tkittich/git-remote-seafile/compare/v0.8.8...v0.9.0
 [0.8.8]: https://github.com/tkittich/git-remote-seafile/compare/v0.8.7...v0.8.8
