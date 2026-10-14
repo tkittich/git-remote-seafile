@@ -658,6 +658,28 @@ class TestLintIsWired(unittest.TestCase):
         )
 
 
+class TestSpecTablesNameRealTests(unittest.TestCase):
+    """A requirement row that names a test must name one that exists.
+
+    AGENTS.md has always said so and nothing checked it: PAYLOAD.md's R7 and R8
+    named tests that had been renamed, so "how it is checked" pointed at
+    nothing while every guard stayed green.
+    """
+
+    def test_every_test_a_document_names_exists(self):
+        defined: set[str] = set()
+        for path in (_ROOT / "tests").glob("*.py"):
+            defined |= set(re.findall(r"def (test_\w+)\(", path.read_text(encoding="utf-8")))
+        modules = {path.stem for path in (_ROOT / "tests").glob("*.py")}
+        missing: list[str] = []
+        for name in _DOC_NAMES:
+            text = _read(name)
+            for test in sorted(set(re.findall(r"`(test_\w+)`", text))):
+                if test not in defined and test not in modules:
+                    missing.append(f"{name}: {test}")
+        self.assertEqual(missing, [], "documents name tests that do not exist")
+
+
 class TestDocumentationIndex(unittest.TestCase):
     def test_linked_documents_exist(self):
         """A rename that misses the index leaves a dead link, not an error."""

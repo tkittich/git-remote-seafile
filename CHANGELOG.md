@@ -10,6 +10,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - **`tools/release_check.py`** answers, before the tag exists, what the release job answers after it: version against tag, the release notes' shape and compare-link base, the CHANGELOG section and reference link, a clean tree (and a warning when HEAD is not on a remote branch).
 
+### Upgrading from 0.9.2
+
+- **Windows: every large payload file is hashed once more on the first run.** The hash cache's "ctime" was Windows' *creation* time, which never moves, so a same-size in-place edit with the modification time put back was trusted and the old hash recorded (reproduced on NTFS, Python 3.14). The key now holds NTFS's real change time; entries written before differ in that field and are re-hashed once. POSIX is unchanged.
+- **`unlock` without `--force` refuses a ticket held by a live process on this machine** (it used to delete it, and that run failed at its next fence). A dead holder is released as before.
+- **`--payload-gc --payload-delete` re-reads the remote's refs every 25 deletions or 10 seconds**, and a change stops the run (exit 1, the remainder stays marked).
+
+### Fixed (review round 3)
+- **Full `gc` deleted the old packs without re-reading the refs.** A writer that ignored the lock and pushed while `gc` was repacking had its pack deleted and its ref left naming nothing (reproduced). The refs are read again after the upload is verified; a change deletes nothing and says so.
+- **A reaped-but-present expired lock ticket was resurrected by `renew()`**, putting the stalled holder back ahead of the peer that took over. An expired ticket with a live peer behind it is now `LEASE_LOST`; a slow holder with nobody waiting still renews.
+- **`get_file_bytes` enforced its size cap only against a declared `Content-Length`**, so a chunked body of any size was buffered whole (every ref, HEAD and lock ticket is read this way). The body is bounded as it is read.
+- **A ref file whose content is an option (`--stdin`) reached `git merge-base`'s argv.** Such a value is "fetch first" now.
+- **Deleting a nested ref could remove a sibling created a moment earlier**: the empty-parent prune is recursive and listed once. It lists again immediately before the delete.
+- **The unreadable-directory stop and the index-lock hint read git's English stderr**; under another locale they silently stopped firing. Git now runs with `LANGUAGE`/`LC_MESSAGES` set to `C`.
+- **`_SHA256_RE` used `match`**, which accepts a trailing newline; `fullmatch` now.
+- **A failed branch-delete rollback was reported as "(deleted)"**; it says the branch moved.
+- **Documents named tests that did not exist** (PAYLOAD R7, R8) and nothing checked; a guard now fails on any `test_...` a document names that is not defined. The hash-while-sending guard, which the whole suite passed without, has a test that fails without it.
+- **Documentation said more than the code does**: the read-back catches only a peer that writes after us; the pack upload is a size check, not a content proof; a token is warned about, not withheld, over plain HTTP; Trap 2's failure direction; LFS objects are never reclaimed; directory listings are unpaged (measured at 130 entries).
+
 ### Fixed
 - **A snapshot of a tree holding a file name that is not UTF-8 stopped at `--exclude`** (`git add` was handed a replacement-character path). Names now round-trip as bytes; messages that print one escape it.
 - **`--restore`'s byte verification refused a snapshot containing a name with a newline, and mis-read one starting with `"`.** Those names are hashed one at a time now.

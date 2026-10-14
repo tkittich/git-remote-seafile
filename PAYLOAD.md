@@ -45,8 +45,8 @@ encryption and retention policy.
 | R4 | An unchanged tree uploads nothing and commits nothing. | `test_an_unchanged_tree_uploads_nothing_and_commits_nothing` |
 | R5 | A rename or duplicate uploads nothing. | `test_a_rename_uploads_nothing`, `test_duplicate_content_is_one_object` |
 | R6 | A file that changed between hashing and upload is never stored under another content's name. | `test_a_file_that_changes_between_hash_and_upload_is_refused` |
-| R7 | A restore never writes outside its destination, whatever the manifest says. | `test_a_hostile_manifest_cannot_write_outside_the_restore` |
-| R8 | Corruption of a stored object is detected at restore, never accepted. | `test_corrupt_payload_fails_the_restore` |
+| R7 | A restore never writes outside its destination, whatever the manifest says. | `test_manifest_paths_that_could_escape_or_run_code_are_refused` |
+| R8 | Corruption of a stored object is detected at restore, never accepted. | `test_corrupt_payload_fails_the_restore_and_leaves_nothing_behind` |
 | R9 | A run that cannot read a file *or a directory* stops and names it; nothing is skipped silently. (git only warns for a directory, so the tool reads that warning.) | `test_an_unreadable_file_names_itself`, `test_a_directory_that_cannot_be_read_stops_the_run_and_is_named` (POSIX permissions) |
 | R10 | A payload vault never silently starts staging its large files into git. | `test_a_vault_that_used_payload_still_refuses_when_it_cannot_stay_in_it`, `test_a_fresh_vault_on_another_machine_follows_the_default` |
 | R11 | Payload mode is on by default, and a tree with no qualifying file is snapshotted exactly as without it (no manifest, no server directory; since 0.9.2 the tree also holds the times record `.seafile-payload/mtimes.json`, which is not part of payload mode); where it cannot work (no remote, a remote that is not `seafile://`, `--no-push`) the default stays off instead of failing. | `test_a_tree_with_nothing_big_is_snapshotted_as_without_payload_mode`, `test_the_default_stays_off_where_payload_mode_cannot_work` |
@@ -144,14 +144,21 @@ anyone with write access could have written. An entry is keyed by path and trust
 only while size, mtime **and inode** are unchanged (a rename keeps size and mtime,
 and tiles extracted from one archive share both), the device and the inode change
 time (`ctime`) are the ones recorded -- so an in-place edit that puts the old mtime
-back, which still moves `ctime`, is a new file -- and the mtime is older than the
+back, which still moves `ctime`, is a new file (on Windows `st_ctime` is the *creation*
+time and never moves; the key there is NTFS's own change time, read with
+`GetFileInformationByHandleEx`, which the 0.9.2 review round showed is the only field
+that does) -- and the mtime is older than the
 moment this machine hashed the file by 2 s (git's "racily clean" rule; 4 s for a
 whole-second mtime, a coarse clock, rather than never trusting such a file, which
 re-read a FAT or HFS+ tree on every run). A file on a different device than the
 source root, or anywhere on a share whose clock could not be probed, needs a margin
 of an hour instead. A file is compared with its recorded size
 and mtime before upload, and its bytes are hashed as they are sent (D5), so a
-modification the cache missed cannot put wrong bytes under a name.
+modification the cache missed cannot put wrong bytes under a *new* name. It cannot
+catch the case where the object is already stored: nothing is sent, so a change the
+cache missed there records the old hash, and a restore returns the old bytes.
+The key above is what stands between that and a wrong restore; `--payload-rehash`
+is the audit.
 
 *Clock domain.* An mtime is written by the clock of the machine that owns the
 filesystem, so "the moment it was hashed" is recorded in that clock, not this
@@ -364,7 +371,7 @@ data, or surprise. Disposition is one of **fixed**, **handled**, **specified**
 | A1 | A manifest with `../../x` or `/etc/x` (a library writer alters it) | the first implementation wrote wherever the manifest said | **fixed**: D8 validation, R7 |
 | A2 | A manifest hash like `../../other` becomes part of a server path | same | **fixed**: hash must be 64 hex |
 | A3 | File edited after hashing, before upload | bytes under another content's name | **fixed** (the first handling was wrong, see 6.1): D5 hashes the bytes as they are sent |
-| A4 | Same-size edit within the timestamp granularity | cached hash would be trusted | **handled**: D6 racy rule against the filesystem's hash time (a share's own clock, measured by a probe file), plus inode; `test_a_share_whose_clock_is_behind_does_not_vouch_for_a_fresh_edit` |
+| A4 | Same-size edit within the timestamp granularity | cached hash would be trusted | **handled**: D6 racy rule against the filesystem's hash time (a share's own clock, measured by a probe file), plus inode, device and the change time (on NTFS the real one, not `st_ctime`, which is the creation time); `test_a_file_edited_within_the_racy_window_is_rehashed`, `test_a_share_whose_clock_is_behind_does_not_vouch_for_a_fresh_edit`, `test_the_change_time_in_the_key_moves_on_a_real_in_place_edit` |
 | A5 | mtime restored by a copy tool (`cp -p`, `robocopy`) | cache trusted, content differs | **handled**: inode in the cache key catches most; `--payload-rehash` for the rest |
 | A6 | Another machine's un-pushed snapshot references an object; retention deletes it | data loss | **handled within the grace period**: D9 two-phase, every branch and tag of the remote plus the local vault's (which must be one). Another machine's objects that are uploaded but not pushed are invisible to this machine's retention; they survive `--payload-grace-days`, after which that machine's next run re-uploads them (source unchanged) or refuses to push. Run retention from one machine |
 | A7 | Run interrupted after upload, before push | orphan objects | **handled**: harmless, reused (D5) |
@@ -393,7 +400,7 @@ data, or surprise. Disposition is one of **fixed**, **handled**, **specified**
 | A30 | A symlink `tool -> .git` and a manifest path `tool/hooks/pre-commit` | an executable hook written into the restored repository | **fixed** (0.9.2): protected directories are refused after links are followed; `test_a_link_to_dot_git_cannot_carry_a_payload_write_into_the_repository` |
 | A31 | A manifest that declares a small size for a huge object | the disk fills before the sizes are compared | **fixed** (0.9.2): the download is cut off at the declared size; `test_download_file_to_stops_at_the_size_the_caller_expects` |
 | A32 | A pid recycled by another process after a crash | the lock reads as held; every later snapshot is refused | **fixed** (0.9.2): the lock records the process start time; `test_a_live_pid_with_a_different_start_time_is_a_dead_holder` |
-| A33 | `--payload-delete` decides from a listing that skipped a branch, or from a decision minutes old | objects of the skipped branch, or of a snapshot pushed meanwhile, look unused | **fixed** (0.9.2): the listing is strict (`SEAFILE_STRICT_REFS`) and the refs are read again before the first deletion; `test_a_push_that_lands_while_gc_is_deciding_stops_the_deletion` |
+| A33 | `--payload-delete` decides from a listing that skipped a branch, or from a decision minutes old | objects of the skipped branch, or of a snapshot pushed meanwhile, look unused | **fixed** (0.9.2): the listing is strict (`SEAFILE_STRICT_REFS`) and the refs are read again before the first deletion; `test_a_push_that_lands_while_gc_is_deciding_stops_the_deletion`. **Narrowed further** (0.9.3): they are read again every 25 deletions or 10 s, and a change stops the run (`test_a_push_that_lands_during_the_deletion_loop_stops_it`). *Residual:* a push that verified an object, then lands after that object was deleted, still names it; the retention run takes no remote lock, and a lock would not close this either, because the push checks the objects before it takes the lock. The next snapshot re-uploads what is missing while the file exists, and `--payload-verify` names what is not |
 | A34 | A file on a mount under the source, or on a share whose clock cannot be probed | the machine-clock racy rule is wrong there | **fixed** (0.9.2): a one-hour margin, and the device and the inode change time are in the cache key; `test_an_unprobed_share_is_trusted_only_for_files_an_hour_older_than_their_hash` |
 
 ### 6.1 The independent review rounds (2026-10-13 and 14)
@@ -448,10 +455,23 @@ marked the object, so two machines that both run retention shift the effective w
 their skew (bounded by the one-day floor); a non-UTF-8 name from a POSIX source cannot be
 restored on Windows; `SeafileClient.copy_entries` was removed until views need it.
 
+*Round 3 (0.9.3), recorded:* the probe file is `.grs-clock-probe-<pid>-<ns>`, created
+with `O_EXCL`, so it cannot overwrite a user's file; a watcher on the share (a build
+daemon, an indexer, a sync client) can react to its creation and removal, which
+nothing here can prevent; view paths are validated with the same class of checks as
+restore paths (D8) and `--payload-view-name` is validated; the default conversion of
+an existing vault is announced and not refused, because a remembered or default
+setting must never turn a run that worked into an error -- a scheduled job that must
+not convert passes `--no-payload`, which is remembered.
+
 *Not changed, recorded (round 1):* the racy rule uses this machine's clock (D6, F9/F15); a
 snapshot is never expired by itself -- there is no `--keep-snapshots` yet, so a
 file that changes daily grows the store until history is rewritten; a non-UTF-8
 file name on Linux is not handled by the staging path (a pre-existing limit).
+*Superseded in 0.9.3:* git output is decoded with `surrogateescape`, so a name that is
+not UTF-8 stages, excludes, verifies and restores on POSIX; it still cannot be
+restored on Windows, and the manifest and mtime record (ASCII JSON) refuse to carry
+it.
 
 ## 7. Test matrix
 
