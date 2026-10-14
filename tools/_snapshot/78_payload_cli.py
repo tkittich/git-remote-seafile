@@ -99,6 +99,12 @@ def add_payload_report_argument(parser: Any) -> None:
 def payload_conflicts(args: argparse.Namespace) -> list[str]:
     problems: list[str] = []
     if args.payload_report_days is not None:
+        if args.no_payload or (
+            args.payload_min_size is not None and not _explicit_size(args.payload_min_size)
+        ):
+            problems.append("--payload-report-days only applies when payload mode is on")
+        if args.dry_run:
+            problems.append("--payload-report-days does not apply to --dry-run (nothing is pushed)")
         if args.payload_report_days < 0:
             problems.append("--payload-report-days must be 0 or more")
         if args.restore or args.maintain or args.payload_gc or args.no_push:
@@ -319,7 +325,10 @@ def run_payload_step(
         print(conversion_warning(candidates, dry_run), flush=True)
     manifest, cache = build_manifest(
         candidates, source, {} if rehash else load_hash_cache(git_dir), min_size, rule=rule,
-        clock_offset_ns=_clock_offset_once_noted(git_dir, source) if candidates else 0,
+        # A preview writes nothing -- not even a probe file into a share.
+        clock_offset_ns=(
+            _clock_offset_once_noted(git_dir, source) if candidates and not dry_run else 0
+        ),
     )
     todo = publish_payload(
         remote or "", source, manifest, dry_run=dry_run, jobs=jobs or 3
@@ -379,7 +388,7 @@ def maybe_report_payload_gc(
         pass  # an unreadable stamp means "due"
     print("\npayload store report (report only; nothing is deleted):", flush=True)
     try:
-        payload_gc(remote, vault, delete=False, grace_days=1.0)
+        payload_gc(remote, vault, delete=False, grace_days=1.0, from_vault=True)
     except Exception as exc:  # a report must never cost the run that already pushed
         print(f"payload report skipped: {exc}", flush=True)
         return False

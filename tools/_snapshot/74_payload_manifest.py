@@ -68,8 +68,15 @@ def load_manifest(git_dir: Path, work_tree: Path, rev: str | None) -> dict[str, 
     return data
 
 
+#: Code points HFS+ ignores in a name (the set git's own ``.git`` check strips):
+#: ``.git<U+200C>`` is ``.git`` there.
+_HFS_IGNORABLE = dict.fromkeys(
+    [*range(0x200C, 0x2010), *range(0x202A, 0x202F), *range(0x206A, 0x2070), 0xFEFF]
+)
+
+
 def _component_is_git(part: str) -> bool:
-    folded = part.rstrip(". ").casefold()
+    folded = part.translate(_HFS_IGNORABLE).rstrip(". ").casefold()
     return folded == ".git" or folded.startswith("git~")
 
 
@@ -90,7 +97,7 @@ def path_security_problem(rel: str) -> str | None:
             return "is absolute or has an empty, '.' or '..' component"
         if _component_is_git(part):
             return "reaches .git"
-    if parts[0].rstrip(". ").casefold() == PAYLOAD_RESERVED_DIR:
+    if parts[0].translate(_HFS_IGNORABLE).rstrip(". ").casefold() == PAYLOAD_RESERVED_DIR:
         return f"is inside the reserved {PAYLOAD_RESERVED_DIR} directory"
     if re.match(r"^[A-Za-z]:", parts[0]) and os.name == "nt":
         return "names a drive"
@@ -217,8 +224,13 @@ _NETWORK_FS_TYPES = frozenset(
     {"nfs", "nfs4", "cifs", "smb3", "smbfs", "afpfs", "webdav", "9p", "davfs", "fuse.sshfs",
      "fuse.rclone"}
 )
-#: A smaller offset is noise (a probe is one round trip), not a skewed clock.
+#: A share whose clock is *ahead* by less than this is treated as in step: its
+#: files then look newer than they are, which only costs a rehash.
 _CLOCK_SKEW_NOISE_NS = 5_000_000_000
+#: A share *behind* by more than this is applied.  Ignoring it is the unsafe
+#: side (an edit looks older than it is), and the racy window is 2 s, so a
+#: floor wider than a small fraction of it let a 4 s skew through.
+_CLOCK_BEHIND_NOISE_NS = 250_000_000
 
 
 _DARWIN_MOUNT_LINE = re.compile(r"^(?P<src>.+?) on (?P<mp>/.*) \((?P<opts>[^)]*)\)\s*$")
@@ -351,7 +363,7 @@ def fs_clock_offset_ns(
              "if its size or timestamp differs -- --payload-rehash re-checks everything")
         return 0
     offset = int(stamp) - before
-    return 0 if abs(offset) < _CLOCK_SKEW_NOISE_NS else offset
+    return 0 if -_CLOCK_BEHIND_NOISE_NS < offset < _CLOCK_SKEW_NOISE_NS else offset
 
 
 def build_manifest(

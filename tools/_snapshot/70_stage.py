@@ -99,7 +99,9 @@ def apply_excludes(git_dir: Path, work_tree: Path, excludes: list[str]) -> list[
     return dropped
 
 
-def stageable_paths(git_dir: Path, work_tree: Path) -> list[str]:
+def stageable_paths(
+    git_dir: Path, work_tree: Path, nested_out: "list[str] | None" = None
+) -> list[str]:
     """Every path ``git add -A -f .`` would consider, as the index spells it.
 
     ``ls-files -c -o`` *without* ``--exclude-standard``: ``-c`` is what is
@@ -123,9 +125,16 @@ def stageable_paths(git_dir: Path, work_tree: Path) -> list[str]:
         ).stdout.split("\0")
         if path
     }
+    entries = [entry for entry in listing.split("\0") if entry]
+    if nested_out is not None:
+        # A trailing slash marks a directory with its own .git.  The caller
+        # captures those by walking them; handing them to ``git add`` is what
+        # failed for one with no commit.
+        nested_out.extend(e.rstrip("/") for e in entries if e.endswith("/"))
+        entries = [e for e in entries if not e.endswith("/")]
     return [
         path
-        for path in (entry.rstrip("/") for entry in listing.split("\0") if entry)
+        for path in (entry.rstrip("/") for entry in entries)
         if path not in deleted
     ]
 
@@ -170,8 +179,46 @@ def build_snapshot(
     reserved = (work_tree / PAYLOAD_RESERVED_DIR).exists()
     # A clock probe a killed run left at the root must not be captured.
     probe_debris = any(True for _ in work_tree.glob(_PROBE_PREFIX + "*"))
-    if excludes or skip_paths or reserved or probe_debris:
-        candidates = stageable_paths(git_dir, work_tree)
+    # Windows: git follows a junction and the walks that decide payload and
+    # embedded-repository capture do not, so the three would disagree about
+    # what the tree is.  Paths behind a junction are left out and reported; that
+    # needs the candidate list, hence the filtered route on Windows.
+    behind_junction = _junction_filter(work_tree) if os.name == "nt" else None
+    filtered = bool(excludes or skip_paths or reserved or probe_debris or behind_junction)
+    excluded: list[str] = []
+    if not filtered:
+        try:
+            git(
+                git_dir,
+                work_tree,
+                ["add", "-A", "-f", "."],
+                cwd=work_tree,
+                status="staging the tree",
+                measure_dir=git_dir / "objects",
+            )
+        except SnapshotError as exc:
+            # A directory with its own .git and no commit cannot be recorded
+            # as a commit id; the filtered route captures its files instead.
+            if "does not have a commit checked out" not in str(exc):
+                raise
+            filtered = True
+    if filtered:
+        nested: list[str] = []
+        candidates = stageable_paths(
+            git_dir, work_tree, nested_out=nested if capture_embedded else None
+        )
+        if behind_junction is not None:
+            dropped = [p for p in candidates + nested if behind_junction(p)]
+            if dropped:
+                gone = set(dropped)
+                candidates = [p for p in candidates if p not in gone]
+                nested = [p for p in nested if p not in gone]
+                print(
+                    f"\nNOTE: {len(dropped)} path(s) are behind a Windows junction and were not "
+                    f"captured (git would follow the junction, the payload walk does not, so "
+                    f"neither is done):\n  " + "\n  ".join(dropped[:10])
+                    + (f"\n  ... and {len(dropped) - 10} more" if len(dropped) > 10 else "")
+                )
         excluded = [
             path
             for path in candidates
@@ -194,15 +241,24 @@ def build_snapshot(
         ]
         kept_set = set(kept)
         if kept:
-            git(
-                git_dir,
-                work_tree,
-                ["add", "-A", "-f", "--pathspec-from-file=-", "--pathspec-file-nul"],
-                cwd=work_tree,
-                stdin="\0".join(kept) + "\0",
-                status="staging the tree",
-                measure_dir=git_dir / "objects",
-            )
+            try:
+                git(
+                    git_dir,
+                    work_tree,
+                    ["add", "-A", "-f", "--pathspec-from-file=-", "--pathspec-file-nul"],
+                    cwd=work_tree,
+                    stdin="\0".join(kept) + "\0",
+                    status="staging the tree",
+                    measure_dir=git_dir / "objects",
+                )
+            except SnapshotError as exc:
+                if "does not have a commit checked out" not in str(exc):
+                    raise
+                raise SnapshotError(
+                    "a directory in the source is a git repository with no commit, which cannot "
+                    "be recorded as a commit id (--no-embedded-repos). Leave that flag out to "
+                    "capture its files, or --exclude the directory.\n" + str(exc)
+                ) from None
         # `git add` stages no deletion through a pathspec, and this index
         # persists between runs, so anything it still holds that is not in
         # `kept` -- a file deleted from the source, or one an exclude now
@@ -218,21 +274,21 @@ def build_snapshot(
         missed = apply_excludes(git_dir, work_tree, excludes)
         if missed:
             excluded = sorted(set(excluded) | set(missed))
+        extra_dirs = [
+            d for d in nested
+            if not any(exclude_matches(d, pat) for pat in excludes)
+        ]
     else:
-        git(
-            git_dir,
-            work_tree,
-            ["add", "-A", "-f", "."],
-            cwd=work_tree,
-            status="staging the tree",
-            measure_dir=git_dir / "objects",
-        )
-        excluded = []
+        extra_dirs = []
 
-    if capture_embedded:
-        captured = inline_embedded_repositories(git_dir, work_tree, excludes, skip_paths)
-        if embedded_report is not None:
-            embedded_report.extend(captured)
+    # Embedded repositories: their files (the default), or their commit id.
+    # Decided from the *directories* that hold a .git, not from gitlinks in the
+    # index: from the second run on the index already holds the files, so a
+    # gitlink-based test saw nothing and silently ignored the flag.
+    handle_embedded_repositories(
+        git_dir, work_tree, excludes, skip_paths,
+        capture=capture_embedded, extra_dirs=extra_dirs, report=embedded_report,
+    )
 
     if record_mtimes:
         record_mtimes_in_index(git_dir, work_tree, parent)

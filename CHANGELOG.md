@@ -18,6 +18,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - **The clock probe's debris and noise.** A probe file left at the source root by a killed run is no longer captured as content and is removed by the next probe once it is old; "the clock could not be measured" is said once per vault, not on every run.
 
+### Fixed (review of the 0.9.1 snapshot-tool code, Opus)
+- **A restore deleted a git file named `<payload file>.part`.** The download staged as `<name>.part` beside the payload file, so a real file of that name that git had just restored was overwritten and renamed away, and the restore still reported "verified byte-exact". Downloads now stage under `.git/grs-restore/`.
+- **A share whose clock was 2 to 5 s behind kept a stale hash.** The 5 s "noise" floor was wider than the 2 s racy window on the unsafe side. A share behind by more than 0.25 s is now applied; only a share ahead (which costs a rehash, not a stale hash) is ignored below 5 s.
+- **A nested repository with no commit failed every run** ("does not have a commit checked out"). Its files are captured; with `--no-embedded-repos` the error says so and names `--exclude`.
+- **`--no-embedded-repos` was silently ignored from the second run on**, and the note that a nested repository's history is not backed up was printed on the first run only. Both are decided from the directories that hold a `.git`, on every run.
+- **Windows junctions.** Git for Windows follows them and the payload and embedded walks did not, so a large file behind a junction went into git. Paths behind a junction are left out and reported, so all three walks agree.
+- **The weekly report downloaded the remote's whole history** into a temporary repository, was due on the very first run, and ran before the run's settings were remembered. It reads the local vault, and runs last.
+- **A manifest path using a code point HFS+ ignores** (`.git<U+200C>/hooks/pre-commit`) was accepted; the set git strips is now stripped.
+- **Flags that were accepted and ignored:** `--payload-report-days` with `--no-payload`, `--dry-run` or a run without a seafile:// remote; `--no-embedded-repos` with the gc, verify and view tools. A preview no longer writes a clock-probe file into a share.
+
 ### Documentation
 - **A correction to 0.9.1.** Its changelog listed "the conflict-copy warning missed refs with a dot" as fixed. Measured on the real server (CE 13.0.28), Seafile names the loser of a concurrent write `<name> (SFConflict <user> <date>).<last extension>` (`v1.0.0` becomes `v1.0.0 (SFConflict ...).0.0`), which the original prefix match already caught; the report was an inference from two reviews and was wrong. The extra match of the name without its last extension is harmless, and a real-server test now pins the observed naming.
 

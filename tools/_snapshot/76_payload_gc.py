@@ -187,12 +187,13 @@ def _scratch_history_repo(td: str) -> Path:
 
 
 def _hashes_in_history(
-    remote: str, vault: Path | None, keep: int | None = None,
+    remote: str | None, vault: Path | None, keep: int | None = None,
     seen: dict[str, str] | None = None,
 ) -> _History:
     """Every payload object referenced from every ref of *remote* and, when given, of
     the local *vault* (which must be one).  *seen* is the ref tips the last
-    --payload-delete run saw: any that the remote no longer contains are reported."""
+    --payload-delete run saw: any that the remote no longer contains are reported.
+    With ``remote=None`` only the vault is read: nothing is downloaded."""
     if vault is not None and not (vault / ".git").exists():
         raise SnapshotError(
             f"--vault {vault} is not a vault (it has no .git); refusing to run without the "
@@ -200,12 +201,13 @@ def _hashes_in_history(
         )
     with tempfile.TemporaryDirectory(prefix="grs-payload-gc-") as td:
         repo = _scratch_history_repo(td)
-        git(
-            repo, None,
-            ["fetch", "-q", "--no-tags", remote,
-             "+refs/heads/*:refs/remotes/remote/*", "+refs/tags/*:refs/remotes/remote-tags/*"],
-            cwd=Path(td), status=f"fetching the history of {remote}", stall_limit=None,
-        )
+        if remote is not None:
+            git(
+                repo, None,
+                ["fetch", "-q", "--no-tags", remote,
+                 "+refs/heads/*:refs/remotes/remote/*", "+refs/tags/*:refs/remotes/remote-tags/*"],
+                cwd=Path(td), status=f"fetching the history of {remote}", stall_limit=None,
+            )
         if vault is not None:
             git(
                 repo, None,
@@ -307,7 +309,7 @@ def payload_verify(remote: str, vault: Path | None, *, count: str) -> int:
         for index, sha in enumerate(chosen, 1):
             why = _download_verified(
                 client, rid, f"{base}/{object_dir(sha)}/{sha}", Path(td) / sha,
-                {"size": sizes[sha], "sha256": sha},
+                {"size": sizes[sha], "sha256": sha}, Path(td),
             )
             (Path(td) / sha).unlink(missing_ok=True)
             if why is not None:
@@ -324,9 +326,17 @@ def payload_verify(remote: str, vault: Path | None, *, count: str) -> int:
 
 def payload_gc(
     remote: str, vault: Path | None, *, delete: bool, grace_days: float, keep: int | None = None,
-    accept_loss: bool = False,
+    accept_loss: bool = False, from_vault: bool = False,
 ) -> int:
-    """Report, and with *delete* mark and later remove, unreferenced payload objects."""
+    """Report, and with *delete* mark and later remove, unreferenced payload objects.
+
+    ``from_vault`` is for the routine report that follows a push: the history is
+    read from the local vault (which a pushing run has just made equal to the
+    remote's tip) instead of being downloaded again, and nothing is marked or
+    deleted.  It must not be combined with *delete*.
+    """
+    if from_vault and delete:
+        raise SnapshotError("internal error: a vault-only history cannot back a deletion")
     if grace_days < _MIN_GRACE_DAYS:
         raise SnapshotError(f"the grace period must be at least {_MIN_GRACE_DAYS:g} day(s)")
     library, base, server_url = payload_location(remote)
@@ -341,8 +351,8 @@ def payload_gc(
             f"see (first: {conflicts[0]}); a snapshot reachable only from one would look "
             "unreferenced. Resolve them (keep one ref, delete the copies) and run again"
         )
-    seen = read_seen_tips(client, rid, base)
-    history = _hashes_in_history(remote, vault, keep, seen)
+    seen = {} if from_vault else read_seen_tips(client, rid, base)
+    history = _hashes_in_history(None if from_vault else remote, vault, keep, seen)
     sizes_by_hash, commits, manifests = history.hashes, history.commits, history.manifests
     referenced = set(sizes_by_hash)
     if keep is not None:

@@ -379,6 +379,62 @@ class SnapshotGuardTests(_SnapshotFixture):
         self.assertIn("WARNING: these paths are embedded", out)
         self.assertNotIn("nested/inner.txt", self.tree())
 
+    def test_a_repository_with_no_commit_is_captured_not_a_crash(self):
+        bare = self.code / "fresh"
+        bare.mkdir()
+        _git(bare, "init", "-q", "-b", "main", ".")
+        (bare / "notes.txt").write_bytes(b"uncommitted\n")
+        rc, out, err = self.snapshot()
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn("fresh/notes.txt", self.tree())
+
+    def test_no_embedded_repos_with_a_commitless_repository_names_the_fix(self):
+        bare = self.code / "fresh"
+        bare.mkdir()
+        _git(bare, "init", "-q", "-b", "main", ".")
+        (bare / "notes.txt").write_bytes(b"uncommitted\n")
+        rc, out, err = self.snapshot("--no-embedded-repos")
+        self.assertEqual(rc, 1)
+        self.assertIn("--exclude", err)
+        self.assertIn("no commit", err)
+
+    def test_the_flag_means_the_same_on_the_second_run_as_on_the_first(self):
+        self._nested_repo()
+        self.assertEqual(self.snapshot()[0], 0)
+        self.assertIn("nested/inner.txt", self.tree())
+        rc, out, err = self.snapshot("--no-embedded-repos")
+        self.assertEqual(rc, 0, out + err)
+        self.assertNotIn("nested/inner.txt", self.tree())
+        self.assertIn("160000", _git(self.vault, "ls-tree", "-r", BRANCH).stdout)
+        self.assertIn("WARNING: these paths are embedded", out)
+
+    def test_the_history_note_is_printed_on_every_capturing_run(self):
+        nested = self._nested_repo()
+        rc, first, err = self.snapshot()
+        self.assertEqual(rc, 0, first + err)
+        (nested / "more.txt").write_bytes(b"more\n")
+        rc, second, err = self.snapshot()
+        self.assertEqual(rc, 0, second + err)
+        self.assertIn("embedded git repositories", first)
+        self.assertIn("embedded git repositories", second)
+        self.assertIn("nested (", second)
+
+    @unittest.skipUnless(os.name == "nt", "a directory junction is a Windows reparse point")
+    def test_paths_behind_a_junction_are_left_out_and_reported(self):
+        target = self.tmp / "outside"
+        target.mkdir()
+        (target / "elsewhere.txt").write_bytes(b"not part of the source\n")
+        link = self.code / "linked"
+        made = subprocess.run(
+            ["cmd", "/c", "mklink", "/J", str(link), str(target)], capture_output=True, text=True
+        )
+        if made.returncode != 0:
+            self.skipTest(f"cannot create a junction here: {made.stderr or made.stdout}")
+        rc, out, err = self.snapshot()
+        self.assertEqual(rc, 0, out + err)
+        self.assertFalse([p for p in self.tree() if p.startswith("linked/")], self.tree())
+        self.assertIn("behind a Windows junction", out)
+
     def test_a_vault_that_holds_a_gitlink_converts_on_the_next_run(self):
         self._nested_repo()
         self.assertEqual(self.snapshot("--no-embedded-repos")[0], 0)

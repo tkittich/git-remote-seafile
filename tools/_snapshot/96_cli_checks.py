@@ -71,6 +71,11 @@ def validate_args(args: argparse.Namespace) -> None:
     if not args.maintain and args.full_repack:
         problems.append("--full-repack only applies to --maintain")
 
+    if args.no_embedded_repos and (
+        args.payload_gc or args.payload_verify is not None or args.payload_view is not None
+    ):
+        problems.append("--no-embedded-repos only applies to a snapshot run")
+
     if args.no_push and args.remote:
         problems.append("--no-push and --remote contradict each other")
     if (

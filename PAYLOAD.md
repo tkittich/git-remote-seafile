@@ -154,7 +154,7 @@ machine's. On a network share (a UNC path or a mapped remote drive on Windows; a
 NFS, CIFS/SMB, 9p, sshfs, davfs or rclone mount on Linux) the tool creates and
 removes one probe file in the source root to read the share's clock, stores the
 offset's effect in each cache entry (`fs`), and trusts only entries made that way.
-An offset under 5 s is noise and ignored; a share that cannot be written to is
+A share *ahead* by under 5 s is treated as in step (that only costs a rehash), and one *behind* by more than 0.25 s is applied (ignoring it is the unsafe side; the racy window is 2 s, so a wider floor let a 4 s skew through); a share that cannot be written to is
 reported and treated as before. A local source tree is never written to. *Known
 limit:* a mount type this list does not know is treated as local, so the
 rule there is the machine-clock one; `--payload-rehash` is the audit. (macOS is
@@ -338,7 +338,7 @@ data, or surprise. Disposition is one of **fixed**, **handled**, **specified**
 | A23 | An encrypted library | the client refuses it | **handled** |
 | A24 | A server that rewrites object names | would break "listing proves presence" | **handled**: names are lowercase hex; verified on the real server |
 | A25 | `--payload-jobs` very large on a flaky link | many partial uploads | **handled**: pool is bounded; failure stops the queue |
-| A26 | A report-only `--payload-gc` after every run | cost of listing 256 directories and the history; a failing report failing the run | **handled**: at most once per `--payload-report-days` (7), after the push, never fatal, never deletes; `test_a_failing_report_never_fails_the_run_that_pushed` |
+| A26 | A report-only `--payload-gc` after every run | cost of listing 256 directories; a failing report failing the run; a history download | **handled**: at most once per `--payload-report-days` (7), last in the run (after the settings are remembered), never fatal, never deletes, and reads the history from the local vault so it downloads nothing; `test_a_failing_report_never_fails_the_run_that_pushed`, `test_the_routine_report_reads_the_local_vault_not_the_remote` |
 | A27 | A restore path over 260 characters on Windows | file skipped or `git checkout` fails | **handled**: payload files use extended-length paths and git runs with `core.longpaths=true`; `test_the_vault_and_the_restored_clone_allow_long_paths` |
 
 ### 6.1 The independent review rounds (2026-10-13 and 14)
@@ -363,7 +363,7 @@ one-line mutations, none survive).
 | A bad or mistyped `--vault` is silently ignored by GC (F11, F4, F13) | LOSS | D9: must be a vault, fetch must succeed |
 | Seafile conflict copies of refs hide a snapshot from GC (suspicion) | LOSS | D9 stops when any exist |
 | A restored payload tree reused as a source breaks a plain vault (F6, F7) | SURPRISE | the reserved directory is never staged |
-| Windows junctions are walked, so a junction to a drive root hashes the drive (F7) | WRONG | the walk skips reparse points |
+| Windows junctions are walked, so a junction to a drive root hashes the drive (F7) | WRONG | the walk skips reparse points -- but git for Windows follows them, so before 0.9.2 a large file behind a junction went into git and the three walks disagreed; staging now leaves paths behind a junction out and reports them (`test_paths_behind_a_junction_are_left_out_and_reported`) |
 | Server and network errors, bad manifests and odd inputs escape as tracebacks (F9, F8) | SURPRISE | wrapped; restore catches per entry |
 | `parse_size("-1")` selects every file; a bare flag swallows a directory name (F10, F14) | SURPRISE | strict sizes; a digits-only value that is a directory is questioned |
 | Partial files left at their real name after a failed download (F14) | SURPRISE | `.part` and rename; reruns keep verified files |

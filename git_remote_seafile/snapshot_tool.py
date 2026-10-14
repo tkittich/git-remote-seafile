@@ -1690,7 +1690,9 @@ def apply_excludes(git_dir: Path, work_tree: Path, excludes: list[str]) -> list[
     return dropped
 
 
-def stageable_paths(git_dir: Path, work_tree: Path) -> list[str]:
+def stageable_paths(
+    git_dir: Path, work_tree: Path, nested_out: "list[str] | None" = None
+) -> list[str]:
     """Every path ``git add -A -f .`` would consider, as the index spells it.
 
     ``ls-files -c -o`` *without* ``--exclude-standard``: ``-c`` is what is
@@ -1714,9 +1716,16 @@ def stageable_paths(git_dir: Path, work_tree: Path) -> list[str]:
         ).stdout.split("\0")
         if path
     }
+    entries = [entry for entry in listing.split("\0") if entry]
+    if nested_out is not None:
+        # A trailing slash marks a directory with its own .git.  The caller
+        # captures those by walking them; handing them to ``git add`` is what
+        # failed for one with no commit.
+        nested_out.extend(e.rstrip("/") for e in entries if e.endswith("/"))
+        entries = [e for e in entries if not e.endswith("/")]
     return [
         path
-        for path in (entry.rstrip("/") for entry in listing.split("\0") if entry)
+        for path in (entry.rstrip("/") for entry in entries)
         if path not in deleted
     ]
 
@@ -1761,8 +1770,46 @@ def build_snapshot(
     reserved = (work_tree / PAYLOAD_RESERVED_DIR).exists()
     # A clock probe a killed run left at the root must not be captured.
     probe_debris = any(True for _ in work_tree.glob(_PROBE_PREFIX + "*"))
-    if excludes or skip_paths or reserved or probe_debris:
-        candidates = stageable_paths(git_dir, work_tree)
+    # Windows: git follows a junction and the walks that decide payload and
+    # embedded-repository capture do not, so the three would disagree about
+    # what the tree is.  Paths behind a junction are left out and reported; that
+    # needs the candidate list, hence the filtered route on Windows.
+    behind_junction = _junction_filter(work_tree) if os.name == "nt" else None
+    filtered = bool(excludes or skip_paths or reserved or probe_debris or behind_junction)
+    excluded: list[str] = []
+    if not filtered:
+        try:
+            git(
+                git_dir,
+                work_tree,
+                ["add", "-A", "-f", "."],
+                cwd=work_tree,
+                status="staging the tree",
+                measure_dir=git_dir / "objects",
+            )
+        except SnapshotError as exc:
+            # A directory with its own .git and no commit cannot be recorded
+            # as a commit id; the filtered route captures its files instead.
+            if "does not have a commit checked out" not in str(exc):
+                raise
+            filtered = True
+    if filtered:
+        nested: list[str] = []
+        candidates = stageable_paths(
+            git_dir, work_tree, nested_out=nested if capture_embedded else None
+        )
+        if behind_junction is not None:
+            dropped = [p for p in candidates + nested if behind_junction(p)]
+            if dropped:
+                gone = set(dropped)
+                candidates = [p for p in candidates if p not in gone]
+                nested = [p for p in nested if p not in gone]
+                print(
+                    f"\nNOTE: {len(dropped)} path(s) are behind a Windows junction and were not "
+                    f"captured (git would follow the junction, the payload walk does not, so "
+                    f"neither is done):\n  " + "\n  ".join(dropped[:10])
+                    + (f"\n  ... and {len(dropped) - 10} more" if len(dropped) > 10 else "")
+                )
         excluded = [
             path
             for path in candidates
@@ -1785,15 +1832,24 @@ def build_snapshot(
         ]
         kept_set = set(kept)
         if kept:
-            git(
-                git_dir,
-                work_tree,
-                ["add", "-A", "-f", "--pathspec-from-file=-", "--pathspec-file-nul"],
-                cwd=work_tree,
-                stdin="\0".join(kept) + "\0",
-                status="staging the tree",
-                measure_dir=git_dir / "objects",
-            )
+            try:
+                git(
+                    git_dir,
+                    work_tree,
+                    ["add", "-A", "-f", "--pathspec-from-file=-", "--pathspec-file-nul"],
+                    cwd=work_tree,
+                    stdin="\0".join(kept) + "\0",
+                    status="staging the tree",
+                    measure_dir=git_dir / "objects",
+                )
+            except SnapshotError as exc:
+                if "does not have a commit checked out" not in str(exc):
+                    raise
+                raise SnapshotError(
+                    "a directory in the source is a git repository with no commit, which cannot "
+                    "be recorded as a commit id (--no-embedded-repos). Leave that flag out to "
+                    "capture its files, or --exclude the directory.\n" + str(exc)
+                ) from None
         # `git add` stages no deletion through a pathspec, and this index
         # persists between runs, so anything it still holds that is not in
         # `kept` -- a file deleted from the source, or one an exclude now
@@ -1809,21 +1865,21 @@ def build_snapshot(
         missed = apply_excludes(git_dir, work_tree, excludes)
         if missed:
             excluded = sorted(set(excluded) | set(missed))
+        extra_dirs = [
+            d for d in nested
+            if not any(exclude_matches(d, pat) for pat in excludes)
+        ]
     else:
-        git(
-            git_dir,
-            work_tree,
-            ["add", "-A", "-f", "."],
-            cwd=work_tree,
-            status="staging the tree",
-            measure_dir=git_dir / "objects",
-        )
-        excluded = []
+        extra_dirs = []
 
-    if capture_embedded:
-        captured = inline_embedded_repositories(git_dir, work_tree, excludes, skip_paths)
-        if embedded_report is not None:
-            embedded_report.extend(captured)
+    # Embedded repositories: their files (the default), or their commit id.
+    # Decided from the *directories* that hold a .git, not from gitlinks in the
+    # index: from the second run on the index already holds the files, so a
+    # gitlink-based test saw nothing and silently ignored the flag.
+    handle_embedded_repositories(
+        git_dir, work_tree, excludes, skip_paths,
+        capture=capture_embedded, extra_dirs=extra_dirs, report=embedded_report,
+    )
 
     if record_mtimes:
         record_mtimes_in_index(git_dir, work_tree, parent)
@@ -2028,6 +2084,7 @@ def inline_embedded_repositories(
     work_tree: Path,
     excludes: list[str],
     skip_paths: "frozenset[str] | None" = None,
+    extra_dirs: "list[str] | None" = None,
 ) -> list[tuple[str, int]]:
     """Replace each gitlink in the index by the files under it; ``[(path, files)]``.
 
@@ -2043,6 +2100,9 @@ def inline_embedded_repositories(
     ``add`` goes through the same directory scan that refuses to look inside.
     """
     links = embedded_repositories(git_dir, work_tree)
+    for extra in extra_dirs or ():
+        if extra not in links:
+            links.append(extra)  # a repository with no commit has no gitlink
     if not links:
         return []
     skipped = {unicodedata.normalize("NFC", p) for p in (skip_paths or ())}
@@ -2079,6 +2139,102 @@ def embedded_note(report: list[tuple[str, int]]) -> str:
     lines.append("  Back the history up separately, or pass --no-embedded-repos to record "
                  "only each repository's commit id.")
     return "\n".join(lines)
+
+
+def _junction_filter(work_tree: Path) -> Any:
+    """A predicate: is this index path behind a Windows junction (a reparse-point directory)?
+
+    Symlinks are not junctions (git stores a symlink as itself); only a
+    directory reparse point that is not a symlink is followed by git for
+    Windows and by nothing else here.
+    """
+    cache: dict[str, bool] = {}
+
+    def is_junction(directory: str) -> bool:
+        if directory not in cache:
+            try:
+                st = os.lstat(work_tree / directory)
+                cache[directory] = bool(
+                    getattr(st, "st_file_attributes", 0) & 0x400 and not stat.S_ISLNK(st.st_mode)
+                )
+            except OSError:
+                cache[directory] = False
+        return cache[directory]
+
+    def behind(rel: str) -> bool:
+        parent = rel.rpartition("/")[0]
+        while parent:
+            if is_junction(parent):
+                return True
+            parent = parent.rpartition("/")[0]
+        return False
+
+    return behind
+
+
+def embedded_roots(paths: list[str], work_tree: Path) -> list[str]:
+    """The directories (never the source root) that hold their own ``.git`` and contain *paths*."""
+    exists: dict[str, bool] = {}
+    roots: set[str] = set()
+    for path in paths:
+        prefix = ""
+        for part in path.split("/")[:-1]:
+            prefix = f"{prefix}/{part}" if prefix else part
+            if prefix not in exists:
+                exists[prefix] = os.path.lexists(work_tree / prefix / ".git")
+            if exists[prefix]:
+                roots.add(prefix)
+    return sorted(roots)
+
+
+def handle_embedded_repositories(
+    git_dir: Path,
+    work_tree: Path,
+    excludes: list[str],
+    skip_paths: "frozenset[str] | None",
+    *,
+    capture: bool,
+    extra_dirs: "list[str] | None" = None,
+    report: "list[tuple[str, int]] | None" = None,
+) -> None:
+    """Leave the index holding every embedded repository the way the run asked.
+
+    With ``capture`` (the default) the files go in, gitlinks and repositories
+    with no commit included.  Without it each embedded repository is recorded
+    as its commit id again, and any files an earlier run captured are removed,
+    so the flag means the same on the second run as on the first.  ``report``
+    receives ``(directory, files)`` for every embedded repository whose files
+    are in the snapshot, on every run (the note that their history is not
+    captured used to be printed on the first run only).
+    """
+    if capture:
+        inline_embedded_repositories(git_dir, work_tree, excludes, skip_paths, extra_dirs)
+    paths = index_paths(git_dir, work_tree)
+    roots = embedded_roots(paths, work_tree)
+    if not roots:
+        return
+    if capture:
+        if report is not None:
+            for root in roots:
+                report.append((root, sum(1 for p in paths if p.startswith(root + "/"))))
+        return
+    # Opt-out: gitlink (when there is a commit to name), not files.
+    for root in roots:
+        under = [p for p in paths if p.startswith(root + "/")]
+        if not under:
+            continue
+        drop_from_index(git_dir, work_tree, under)
+        head = git(
+            git_dir, work_tree, ["-C", str(work_tree / root), "rev-parse", "--verify", "HEAD"],
+            cwd=work_tree, check=False,
+        )
+        sha = head.stdout.strip() if head.returncode == 0 else ""
+        if sha:
+            git(
+                git_dir, work_tree,
+                ["update-index", "--add", "--cacheinfo", f"160000,{sha},{root}"],
+                cwd=work_tree,
+            )
 
 
 # -- Payload safeguards: provenance, preflight, markers (see PAYLOAD.md D13) --------
@@ -2563,8 +2719,15 @@ def load_manifest(git_dir: Path, work_tree: Path, rev: str | None) -> dict[str, 
     return data
 
 
+#: Code points HFS+ ignores in a name (the set git's own ``.git`` check strips):
+#: ``.git<U+200C>`` is ``.git`` there.
+_HFS_IGNORABLE = dict.fromkeys(
+    [*range(0x200C, 0x2010), *range(0x202A, 0x202F), *range(0x206A, 0x2070), 0xFEFF]
+)
+
+
 def _component_is_git(part: str) -> bool:
-    folded = part.rstrip(". ").casefold()
+    folded = part.translate(_HFS_IGNORABLE).rstrip(". ").casefold()
     return folded == ".git" or folded.startswith("git~")
 
 
@@ -2585,7 +2748,7 @@ def path_security_problem(rel: str) -> str | None:
             return "is absolute or has an empty, '.' or '..' component"
         if _component_is_git(part):
             return "reaches .git"
-    if parts[0].rstrip(". ").casefold() == PAYLOAD_RESERVED_DIR:
+    if parts[0].translate(_HFS_IGNORABLE).rstrip(". ").casefold() == PAYLOAD_RESERVED_DIR:
         return f"is inside the reserved {PAYLOAD_RESERVED_DIR} directory"
     if re.match(r"^[A-Za-z]:", parts[0]) and os.name == "nt":
         return "names a drive"
@@ -2712,8 +2875,13 @@ _NETWORK_FS_TYPES = frozenset(
     {"nfs", "nfs4", "cifs", "smb3", "smbfs", "afpfs", "webdav", "9p", "davfs", "fuse.sshfs",
      "fuse.rclone"}
 )
-#: A smaller offset is noise (a probe is one round trip), not a skewed clock.
+#: A share whose clock is *ahead* by less than this is treated as in step: its
+#: files then look newer than they are, which only costs a rehash.
 _CLOCK_SKEW_NOISE_NS = 5_000_000_000
+#: A share *behind* by more than this is applied.  Ignoring it is the unsafe
+#: side (an edit looks older than it is), and the racy window is 2 s, so a
+#: floor wider than a small fraction of it let a 4 s skew through.
+_CLOCK_BEHIND_NOISE_NS = 250_000_000
 
 
 _DARWIN_MOUNT_LINE = re.compile(r"^(?P<src>.+?) on (?P<mp>/.*) \((?P<opts>[^)]*)\)\s*$")
@@ -2846,7 +3014,7 @@ def fs_clock_offset_ns(
              "if its size or timestamp differs -- --payload-rehash re-checks everything")
         return 0
     offset = int(stamp) - before
-    return 0 if abs(offset) < _CLOCK_SKEW_NOISE_NS else offset
+    return 0 if -_CLOCK_BEHIND_NOISE_NS < offset < _CLOCK_SKEW_NOISE_NS else offset
 
 
 def build_manifest(
@@ -3611,12 +3779,13 @@ def _scratch_history_repo(td: str) -> Path:
 
 
 def _hashes_in_history(
-    remote: str, vault: Path | None, keep: int | None = None,
+    remote: str | None, vault: Path | None, keep: int | None = None,
     seen: dict[str, str] | None = None,
 ) -> _History:
     """Every payload object referenced from every ref of *remote* and, when given, of
     the local *vault* (which must be one).  *seen* is the ref tips the last
-    --payload-delete run saw: any that the remote no longer contains are reported."""
+    --payload-delete run saw: any that the remote no longer contains are reported.
+    With ``remote=None`` only the vault is read: nothing is downloaded."""
     if vault is not None and not (vault / ".git").exists():
         raise SnapshotError(
             f"--vault {vault} is not a vault (it has no .git); refusing to run without the "
@@ -3624,12 +3793,13 @@ def _hashes_in_history(
         )
     with tempfile.TemporaryDirectory(prefix="grs-payload-gc-") as td:
         repo = _scratch_history_repo(td)
-        git(
-            repo, None,
-            ["fetch", "-q", "--no-tags", remote,
-             "+refs/heads/*:refs/remotes/remote/*", "+refs/tags/*:refs/remotes/remote-tags/*"],
-            cwd=Path(td), status=f"fetching the history of {remote}", stall_limit=None,
-        )
+        if remote is not None:
+            git(
+                repo, None,
+                ["fetch", "-q", "--no-tags", remote,
+                 "+refs/heads/*:refs/remotes/remote/*", "+refs/tags/*:refs/remotes/remote-tags/*"],
+                cwd=Path(td), status=f"fetching the history of {remote}", stall_limit=None,
+            )
         if vault is not None:
             git(
                 repo, None,
@@ -3731,7 +3901,7 @@ def payload_verify(remote: str, vault: Path | None, *, count: str) -> int:
         for index, sha in enumerate(chosen, 1):
             why = _download_verified(
                 client, rid, f"{base}/{object_dir(sha)}/{sha}", Path(td) / sha,
-                {"size": sizes[sha], "sha256": sha},
+                {"size": sizes[sha], "sha256": sha}, Path(td),
             )
             (Path(td) / sha).unlink(missing_ok=True)
             if why is not None:
@@ -3748,9 +3918,17 @@ def payload_verify(remote: str, vault: Path | None, *, count: str) -> int:
 
 def payload_gc(
     remote: str, vault: Path | None, *, delete: bool, grace_days: float, keep: int | None = None,
-    accept_loss: bool = False,
+    accept_loss: bool = False, from_vault: bool = False,
 ) -> int:
-    """Report, and with *delete* mark and later remove, unreferenced payload objects."""
+    """Report, and with *delete* mark and later remove, unreferenced payload objects.
+
+    ``from_vault`` is for the routine report that follows a push: the history is
+    read from the local vault (which a pushing run has just made equal to the
+    remote's tip) instead of being downloaded again, and nothing is marked or
+    deleted.  It must not be combined with *delete*.
+    """
+    if from_vault and delete:
+        raise SnapshotError("internal error: a vault-only history cannot back a deletion")
     if grace_days < _MIN_GRACE_DAYS:
         raise SnapshotError(f"the grace period must be at least {_MIN_GRACE_DAYS:g} day(s)")
     library, base, server_url = payload_location(remote)
@@ -3765,8 +3943,8 @@ def payload_gc(
             f"see (first: {conflicts[0]}); a snapshot reachable only from one would look "
             "unreferenced. Resolve them (keep one ref, delete the copies) and run again"
         )
-    seen = read_seen_tips(client, rid, base)
-    history = _hashes_in_history(remote, vault, keep, seen)
+    seen = {} if from_vault else read_seen_tips(client, rid, base)
+    history = _hashes_in_history(None if from_vault else remote, vault, keep, seen)
     sizes_by_hash, commits, manifests = history.hashes, history.commits, history.manifests
     referenced = set(sizes_by_hash)
     if keep is not None:
@@ -3897,10 +4075,16 @@ def extended_path(path: Path) -> Path:
 
 
 def _download_verified(
-    client: Any, rid: str, source_path: str, dest: Path, item: dict[str, Any]
+    client: Any, rid: str, source_path: str, dest: Path, item: dict[str, Any], scratch: Path
 ) -> str | None:
-    """Fetch one object to ``dest`` via a ``.part`` file; ``None`` on success, else why not."""
-    part = dest.with_name(dest.name + ".part")
+    """Fetch one object to ``dest`` via a temporary file; ``None`` on success, else why not.
+
+    The temporary file is under ``.git`` (``scratch``), never beside ``dest``: a
+    ``<name>.part`` next to the payload file collided with a real file of that
+    name that git had just restored, which was overwritten and then renamed
+    away -- and the restore went on to certify the tree.
+    """
+    part = scratch / f"{item['sha256']}.{os.getpid()}.part"
     last = ""
     for _attempt in range(3):
         try:
@@ -3947,6 +4131,8 @@ def restore_payload(remote: str, into: Path, *, allow_low_disk: bool = False) ->
     client = _api(lambda: _open_client(server_url), "opening the Seafile client")
     rid = _api(lambda: client.get_repo_id(library), f"finding library {library!r}")
     print(f"restoring {len(files)} payload file(s) from {base}/objects ...", flush=True)
+    scratch = extended_path(into / ".git" / "grs-restore")
+    scratch.mkdir(parents=True, exist_ok=True)
     problems: list[str] = []
     done = 0
     for index, item in enumerate(files, 1):
@@ -3970,7 +4156,7 @@ def restore_payload(remote: str, into: Path, *, allow_low_disk: bool = False) ->
                             "this filesystem treats as the same as another file's)")
             continue
         print(f"downloading [{index}/{len(files)}] {rel} ({human_bytes(item['size'])})", flush=True)
-        why = _download_verified(client, rid, f"{base}/{object_dir(sha)}/{sha}", dest, item)
+        why = _download_verified(client, rid, f"{base}/{object_dir(sha)}/{sha}", dest, item, scratch)
         if why is not None:
             problems.append(f"{rel}: {why}")
             continue
@@ -3981,6 +4167,7 @@ def restore_payload(remote: str, into: Path, *, allow_low_disk: bool = False) ->
         except (OSError, OverflowError, ValueError):
             pass  # content verified; timestamps and mode are best effort
         done += 1
+    shutil.rmtree(scratch, ignore_errors=True)
     if problems:
         shown = "\n  ".join(problems[:20])
         more = f"\n  ... and {len(problems) - 20} more" if len(problems) > 20 else ""
@@ -4104,6 +4291,12 @@ def add_payload_report_argument(parser: Any) -> None:
 def payload_conflicts(args: argparse.Namespace) -> list[str]:
     problems: list[str] = []
     if args.payload_report_days is not None:
+        if args.no_payload or (
+            args.payload_min_size is not None and not _explicit_size(args.payload_min_size)
+        ):
+            problems.append("--payload-report-days only applies when payload mode is on")
+        if args.dry_run:
+            problems.append("--payload-report-days does not apply to --dry-run (nothing is pushed)")
         if args.payload_report_days < 0:
             problems.append("--payload-report-days must be 0 or more")
         if args.restore or args.maintain or args.payload_gc or args.no_push:
@@ -4324,7 +4517,10 @@ def run_payload_step(
         print(conversion_warning(candidates, dry_run), flush=True)
     manifest, cache = build_manifest(
         candidates, source, {} if rehash else load_hash_cache(git_dir), min_size, rule=rule,
-        clock_offset_ns=_clock_offset_once_noted(git_dir, source) if candidates else 0,
+        # A preview writes nothing -- not even a probe file into a share.
+        clock_offset_ns=(
+            _clock_offset_once_noted(git_dir, source) if candidates and not dry_run else 0
+        ),
     )
     todo = publish_payload(
         remote or "", source, manifest, dry_run=dry_run, jobs=jobs or 3
@@ -4384,7 +4580,7 @@ def maybe_report_payload_gc(
         pass  # an unreadable stamp means "due"
     print("\npayload store report (report only; nothing is deleted):", flush=True)
     try:
-        payload_gc(remote, vault, delete=False, grace_days=1.0)
+        payload_gc(remote, vault, delete=False, grace_days=1.0, from_vault=True)
     except Exception as exc:  # a report must never cost the run that already pushed
         print(f"payload report skipped: {exc}", flush=True)
         return False
@@ -5359,6 +5555,11 @@ def validate_args(args: argparse.Namespace) -> None:
     if not args.maintain and args.full_repack:
         problems.append("--full-repack only applies to --maintain")
 
+    if args.no_embedded_repos and (
+        args.payload_gc or args.payload_verify is not None or args.payload_view is not None
+    ):
+        problems.append("--no-embedded-repos only applies to a snapshot run")
+
     if args.no_push and args.remote:
         problems.append("--no-push and --remote contradict each other")
     if (
@@ -6006,6 +6207,13 @@ def main(argv: list[str] | None = None) -> int:
             args.payload_min_size, vault, remote=remote, no_push=args.no_push,
             no_payload=args.no_payload,
         )
+        if args.payload_report_days is not None and not payload_by_default_possible(
+            remote, args.no_push
+        ):
+            raise SnapshotError(
+                "--payload-report-days needs a run that pushes to a seafile:// remote "
+                "(there is no payload store to report on here)"
+            )
         record_mtimes = resolve_record_mtimes(
             args, vault, remote=remote, no_push=args.no_push
         )
@@ -6263,8 +6471,6 @@ def main(argv: list[str] | None = None) -> int:
         # every scheduled run after it.  A preview never gets here.
         remember_payload_value(vault, args.payload_min_size, dry_run=args.dry_run)
         remember_record_mtimes(vault, args, dry_run=args.dry_run)
-        if manifest is not None and remote and not args.dry_run:
-            maybe_report_payload_gc(git_dir, vault, remote, args.payload_report_days)
         remember_settings(
             vault,
             source,
@@ -6274,6 +6480,10 @@ def main(argv: list[str] | None = None) -> int:
             branch=branch,
             vault_config=vault_config,
         )
+        # Last, after everything the run must keep: the report is optional, and
+        # an interrupt during it must not lose the settings this run earned.
+        if manifest is not None and remote and not args.dry_run:
+            maybe_report_payload_gc(git_dir, vault, remote, args.payload_report_days)
         return 0
 
     except SnapshotError as exc:

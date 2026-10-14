@@ -263,6 +263,13 @@ def main(argv: list[str] | None = None) -> int:
             args.payload_min_size, vault, remote=remote, no_push=args.no_push,
             no_payload=args.no_payload,
         )
+        if args.payload_report_days is not None and not payload_by_default_possible(
+            remote, args.no_push
+        ):
+            raise SnapshotError(
+                "--payload-report-days needs a run that pushes to a seafile:// remote "
+                "(there is no payload store to report on here)"
+            )
         record_mtimes = resolve_record_mtimes(
             args, vault, remote=remote, no_push=args.no_push
         )
@@ -520,8 +527,6 @@ def main(argv: list[str] | None = None) -> int:
         # every scheduled run after it.  A preview never gets here.
         remember_payload_value(vault, args.payload_min_size, dry_run=args.dry_run)
         remember_record_mtimes(vault, args, dry_run=args.dry_run)
-        if manifest is not None and remote and not args.dry_run:
-            maybe_report_payload_gc(git_dir, vault, remote, args.payload_report_days)
         remember_settings(
             vault,
             source,
@@ -531,6 +536,10 @@ def main(argv: list[str] | None = None) -> int:
             branch=branch,
             vault_config=vault_config,
         )
+        # Last, after everything the run must keep: the report is optional, and
+        # an interrupt during it must not lose the settings this run earned.
+        if manifest is not None and remote and not args.dry_run:
+            maybe_report_payload_gc(git_dir, vault, remote, args.payload_report_days)
         return 0
 
     except SnapshotError as exc:

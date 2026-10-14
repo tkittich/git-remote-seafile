@@ -1580,6 +1580,87 @@ class PayloadRememberVerifyViewAndClockTests(_PayloadFixture):
         self.assertEqual(rc, 0, out + err)
         self.assertEqual((into / "small.txt").stat().st_mtime_ns, want)
 
+    def test_a_git_file_named_like_the_download_temp_file_survives_the_restore(self):
+        # big1.bin is payload (ignored by git); big1.bin.part is an ordinary file
+        # that git restores beside it.  The download used to stage as
+        # "<name>.part" and so overwrote and then renamed away the real file.
+        decoy = b"a real file that happens to end in .part\n"
+        (self.src / "big1.bin.part").write_bytes(decoy)
+        rc, out, err = self.bare()
+        self.assertEqual(rc, 0, out + err)
+        with unittest.mock.patch.object(snap, "_AUTO_UPPER", 8000), \
+                unittest.mock.patch.object(snap, "_AUTO_LOWER", 2000):
+            rc, out, err, into = self.restore("decoy")
+        self.assertEqual(rc, 0, out + err)
+        self.assertEqual((into / "big1.bin.part").read_bytes(), decoy)
+        self.assertEqual((into / "big1.bin").read_bytes(), self.big1)
+        self.assertFalse((into / ".git" / "grs-restore").exists())
+
+    def test_a_share_a_few_seconds_behind_is_not_mistaken_for_noise(self):
+        def behind(seconds):
+            return lambda _d: time.time_ns() - int(seconds * 1_000_000_000)
+
+        off = snap.fs_clock_offset_ns(self.case, is_network=lambda _p: True, probe=behind(4))
+        self.assertLess(off, -3_000_000_000, "a 4 s skew was swallowed as noise")
+        ahead = snap.fs_clock_offset_ns(
+            self.case, is_network=lambda _p: True, probe=lambda _d: time.time_ns() + 3_000_000_000
+        )
+        self.assertEqual(ahead, 0)  # ahead is the safe side: it only costs a rehash
+
+    def test_names_hfs_ignores_cannot_smuggle_a_dot_git(self):
+        ignorable = chr(0x200C)
+        for rel in (f".git{ignorable}/hooks/pre-commit", f".git/{ignorable}hooks/x",
+                    f".seafile-payload{ignorable}/x"):
+            self.assertIsNotNone(snap.path_security_problem(rel), rel)
+        self.assertIsNone(snap.path_security_problem("docs/notes.txt"))
+
+    def test_the_routine_report_reads_the_local_vault_not_the_remote(self):
+        seen = []
+        real = snap._hashes_in_history
+
+        def spy(remote, vault, *a, **kw):
+            seen.append(remote)
+            return real(remote, vault, *a, **kw)
+
+        with unittest.mock.patch.object(snap, "_hashes_in_history", spy):
+            rc, out, err = self.bare()
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn("payload store report", out)
+        self.assertEqual(seen, [None], "the report downloaded the remote's history")
+
+    def test_an_interrupt_during_the_report_keeps_what_the_run_earned(self):
+        with unittest.mock.patch.object(snap, "maybe_report_payload_gc", side_effect=KeyboardInterrupt):
+            with self.assertRaises(KeyboardInterrupt):
+                self.bare()
+        self.assertEqual(_git(self.vault, "config", "snapshot.payload").strip(), "auto")
+        # remember_settings (the remote, the branch) runs before the report too
+        self.assertEqual(_git(self.vault, "config", "snapshot.remote").strip(), self.remote)
+
+    def test_report_days_is_refused_where_it_cannot_apply(self):
+        base = (self.src, "--vault", self.vault, "--remote", self.remote, "--payload-report-days", "3")
+        for extra, text in (
+            (("--no-payload",), "only applies when payload mode is on"),
+            (("--dry-run",), "does not apply to --dry-run"),
+        ):
+            rc, out, err = self.run_tool(*base, *extra)
+            self.assertEqual(rc, 1, out + err)
+            self.assertIn(text, err)
+        rc, out, err = self.run_tool(
+            self.src, "--vault", self.vault, "--remote", str(self.case / "plain.git"),
+            "--payload-report-days", "3",
+        )
+        self.assertEqual(rc, 1, out + err)
+        self.assertIn("seafile:// remote", err)
+        rc, out, err = self.run_tool("--payload-gc", "--remote", self.remote, "--no-embedded-repos")
+        self.assertEqual(rc, 1, out + err)
+        self.assertIn("--no-embedded-repos only applies to a snapshot run", err)
+
+    def test_a_preview_does_not_write_a_probe_file_into_the_source(self):
+        with unittest.mock.patch.object(snap, "fs_clock_offset_ns", return_value=0) as offset:
+            rc, out, err = self.bare("--dry-run")
+        self.assertEqual(rc, 0, out + err)
+        offset.assert_not_called()
+
     def test_a_probe_file_a_killed_run_left_behind_is_not_captured(self):
         (self.src / ".grs-clock-probe-4242-1").write_bytes(b"")
         rc, out, err = self.bare()

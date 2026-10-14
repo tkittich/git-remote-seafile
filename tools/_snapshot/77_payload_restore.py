@@ -25,10 +25,16 @@ def extended_path(path: Path) -> Path:
 
 
 def _download_verified(
-    client: Any, rid: str, source_path: str, dest: Path, item: dict[str, Any]
+    client: Any, rid: str, source_path: str, dest: Path, item: dict[str, Any], scratch: Path
 ) -> str | None:
-    """Fetch one object to ``dest`` via a ``.part`` file; ``None`` on success, else why not."""
-    part = dest.with_name(dest.name + ".part")
+    """Fetch one object to ``dest`` via a temporary file; ``None`` on success, else why not.
+
+    The temporary file is under ``.git`` (``scratch``), never beside ``dest``: a
+    ``<name>.part`` next to the payload file collided with a real file of that
+    name that git had just restored, which was overwritten and then renamed
+    away -- and the restore went on to certify the tree.
+    """
+    part = scratch / f"{item['sha256']}.{os.getpid()}.part"
     last = ""
     for _attempt in range(3):
         try:
@@ -75,6 +81,8 @@ def restore_payload(remote: str, into: Path, *, allow_low_disk: bool = False) ->
     client = _api(lambda: _open_client(server_url), "opening the Seafile client")
     rid = _api(lambda: client.get_repo_id(library), f"finding library {library!r}")
     print(f"restoring {len(files)} payload file(s) from {base}/objects ...", flush=True)
+    scratch = extended_path(into / ".git" / "grs-restore")
+    scratch.mkdir(parents=True, exist_ok=True)
     problems: list[str] = []
     done = 0
     for index, item in enumerate(files, 1):
@@ -98,7 +106,7 @@ def restore_payload(remote: str, into: Path, *, allow_low_disk: bool = False) ->
                             "this filesystem treats as the same as another file's)")
             continue
         print(f"downloading [{index}/{len(files)}] {rel} ({human_bytes(item['size'])})", flush=True)
-        why = _download_verified(client, rid, f"{base}/{object_dir(sha)}/{sha}", dest, item)
+        why = _download_verified(client, rid, f"{base}/{object_dir(sha)}/{sha}", dest, item, scratch)
         if why is not None:
             problems.append(f"{rel}: {why}")
             continue
@@ -109,6 +117,7 @@ def restore_payload(remote: str, into: Path, *, allow_low_disk: bool = False) ->
         except (OSError, OverflowError, ValueError):
             pass  # content verified; timestamps and mode are best effort
         done += 1
+    shutil.rmtree(scratch, ignore_errors=True)
     if problems:
         shown = "\n  ".join(problems[:20])
         more = f"\n  ... and {len(problems) - 20} more" if len(problems) > 20 else ""
