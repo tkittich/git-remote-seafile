@@ -108,9 +108,13 @@ One line of ASCII JSON, keys sorted, no trailing newline (so no text-mode pipe o
 filter can alter it). Fields: `format`, `snapshot` (a digest of the entries),
 `min_size`, `files[]` of `{path, size, mode, sha256, mtime_ns}`. `mode` is
 `100644` or `100755`. A reader must reject an unknown `format` greater than the one
-it knows. *Open:* manifest growth — a single blob of ~150 bytes per file is
-~15 MB at 100,000 files, stored in full for every snapshot that changes any file;
-git's binary delta should absorb most of it, but this is unmeasured.
+it knows. *Measured (2026-10-14, synthetic):* a manifest of 100,000 files is
+~19 MB (about 190 bytes an entry) and ~6.2 MB in a pack. After a `repack -ad`, a
+snapshot that changes 0.1% of the entries adds ~10 kB, 1% adds ~110 kB, and one
+that changes every entry (the hash and mtime of each) adds ~6 MB, because the new
+hashes are incompressible. git's delta absorbs the unchanged lines, so growth
+follows what changed, not the size of the tree. The cost is a full-manifest
+rewrite only when every file changed.
 
 ### D5. Ordering and failure model — **decided**
 
@@ -319,7 +323,7 @@ data, or surprise. Disposition is one of **fixed**, **handled**, **specified**
 | A15 | A payload file becomes a symlink or shrinks below the threshold | falls to git | **handled** |
 | A16 | `--reset-to-remote` drops local-only snapshots | their objects become orphans; the previous-manifest cache disappears | **handled**: harmless; a rehash |
 | A17 | Thousands of objects in one fan-out directory | listing cost | **handled**: 256 directories; list only those touched |
-| A18 | Manifest of 100,000 files committed each run | repository growth | **open**: measure delta compression (D4) |
+| A18 | Manifest of 100,000 files committed each run | repository growth | **measured**: delta keeps growth proportional to what changed (D4) |
 | A19 | Disk full or Ctrl-C during restore | partial tree | **specified**: restore needs an empty destination; rerun elsewhere |
 | A20 | Sparse files, alternate data streams, hard links | sparse read as zeros; ADS dropped; hard links become copies | **specified**: byte content only; documented limit |
 | A21 | Read-only attribute, ACLs, ownership | not preserved | **specified**: mode bits and mtime only |
@@ -392,8 +396,8 @@ in-process stub. Each fix in 6.1 was verified by mutation: a one-line
 change that removes it makes a named test fail (12 of 12). The real-server soaks
 cover a 1.1 GiB chunked upload, unchanged run, same-size edit, restore and
 older-snapshot restore, `auto` selection and retention, and the 131 GiB flood
-tree end to end. Not yet covered: views (D10), manifests at 100,000 files (D4), and a macOS or Linux
-non-UTF-8 run.
+tree end to end. Not yet covered: views (D10), a real-server run with a manifest of 100,000 files
+(the growth is measured, D4, but not the upload), and a macOS or Linux non-UTF-8 run.
 
 ## 8. Order of work
 
