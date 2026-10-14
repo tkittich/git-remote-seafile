@@ -637,6 +637,36 @@ class TestConcurrencyAndLocking(unittest.TestCase):
         self.assertTrue(lock.maybe_renew(interval=20.0))
         self.assertEqual(mock_client.upload_file.call_count, upload_count + 1)
 
+    def test_a_failed_renewal_is_not_retried_on_every_progress_callback(self):
+        """After one failed attempt the next is a full interval away.
+
+        The upload progress callback fires per 16 KiB block.  Pacing on success
+        only made a lock that could not be renewed re-check its ticket (and
+        print a warning) for every block of every transfer.
+        """
+        mock_client = MagicMock()
+        mock_client.token = "token123"
+        mock_client.get_file_text.return_value = None
+        lock = RemoteLock(mock_client, "repo1", "/path", timeout=5, lease=60, settle=0)
+        lock.acquire()
+        lock._last_renewed = time.monotonic() - 25.0
+        with patch.object(lock, "renew", return_value=False) as renew:
+            for _ in range(500):
+                lock.maybe_renew(20.0)
+        self.assertEqual(renew.call_count, 1)
+
+    def test_a_short_lease_is_renewed_at_a_third_of_it(self):
+        mock_client = MagicMock()
+        mock_client.token = "token123"
+        mock_client.get_file_text.return_value = None
+        lock = RemoteLock(mock_client, "repo1", "/path", timeout=5, lease=9, settle=0)
+        lock.acquire()
+        mock_client.get_file_text.return_value = mock_client.upload_file.call_args[0][3].decode("utf-8")
+        lock._last_renewed = time.monotonic() - 4.0  # past 9/3, well inside the caller's 20 s
+        with patch.object(lock, "renew", return_value=True) as renew:
+            lock.maybe_renew(20.0)
+        self.assertEqual(renew.call_count, 1)
+
     def test_lock_status_and_unlock(self):
         """get_status and unlock inspect and clear ticket state."""
         store = _SharedLockStore()

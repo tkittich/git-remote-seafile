@@ -688,8 +688,16 @@ class RemoteLock:
         """Renew the held lock lease if at least `interval` seconds have elapsed."""
         if not self.acquired or not self._nonce:
             return False
+        # Never slower than a third of the lease: a lease shorter than the
+        # caller's 20 s would otherwise lapse between renewals.
+        interval = min(interval, max(1.0, self.lease / 3.0))
         now_mono = time.monotonic()
         if now_mono - self._last_renewed >= interval:
+            # The attempt is what is paced, not the success.  Recording only a
+            # success meant that after a failed or LOST renewal *every* upload
+            # block (one per 16 KiB) re-checked the ticket and printed a
+            # warning -- hundreds of requests and lines for one transfer.
+            self._last_renewed = now_mono
             return self.renew()
         return False
 

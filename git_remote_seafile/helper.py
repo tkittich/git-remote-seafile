@@ -482,7 +482,12 @@ class RemoteHelper:
             try:
                 # Branch deletion: report it, delete nothing.
                 if not src:
-                    sys.stdout.write(f"ok {dst}\n")
+                    # The same question the real deletion asks first, so the
+                    # preview does not say "ok" to what git would refuse.
+                    if not self.client.get_file_text(self.repo_id, self._full_path(dst)):
+                        _proto_error(dst, "remote ref does not exist")
+                    else:
+                        sys.stdout.write(f"ok {dst}\n")
                     continue
                 verdict = self._decide_update(src, dst, force)
                 if isinstance(verdict, str):

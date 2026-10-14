@@ -13,6 +13,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - **`gc` could permanently delete the commits of a branch it did not see.** The compactor mirrored each remote ref as a loose file in its scratch repository, so refs whose names collide on the local filesystem (`Feature` and `feature` on Windows and macOS, a device name such as `NUL`, a trailing dot) became one file, and the branch that lost had its objects pruned and its packs deleted. The mirror is now a single `packed-refs` file, and git must read back exactly the refs written before anything is repacked.
+- **A lock that could not be renewed warned on every 16 KiB upload block.** Renewal attempts are now paced by attempt, not by success, and a lease shorter than 60 s is renewed at a third of its length (a `seafile.locklease` under 20 s used to lapse mid-transfer).
+- **The conflict-copy warning missed refs with a dot** (`v1.0.0`, `release-2.1`): Seafile puts its marker before the extension, so both forms are matched.
+- **`git push --dry-run :ref` said `ok` for a ref that is not there**; it now answers as the real push does. DESIGN.md said a missing deletion was a no-op, which was never what the code did; the text now matches the code.
+- **A bare host segment containing `?`** was reported as a server name that was not the one requests went to; it is refused.
+- **`--force-with-lease`** is documented as unsupported (it was rejected as non-fast-forward with no explanation), and the lock-wait wording in the guide now says what the code does.
 - **A remote named like a subcommand ran that subcommand.** git runs `git-remote-seafile <remote name> <url>`, so `git fetch gc` ran a full compaction (`test`, `unlock` and `doctor` broke fetch the same way). The call is routed to the helper when `GIT_DIR` is set, stdin is not a terminal and the protocol's first word is waiting on it.
 - **Scratch directories were never removed on Windows.** Git marks pack files read-only, so `rmtree(ignore_errors=True)` left every `grs-push-*` directory behind and the stale sweeper still counted it as removed. They are removed (read-only included) and counted only when gone.
 - **A listing entry without a name crashed `gc` with `KeyError: 'name'`.** `list_dir` drops such entries once.

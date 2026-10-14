@@ -392,7 +392,7 @@ Every failure the helper can detect maps to exactly one of three responses. The 
 
 Specific mappings worth stating:
 
-- **Deleting a ref that does not exist** is a no-op, not an error.
+- **Deleting a ref that does not exist** is reported as git's own `remote ref does not exist`, as it is for any remote, and `--dry-run` says the same. The ref is read first so that the target is proven to be a file (a delete of `refs/heads/` would otherwise take every branch) and so the lease can be fenced before the deletion.
 - **Errors propagate as exceptions, never as process exits.** The library raises a typed error — `SeafileClientNotFoundError` and friends — and `cli.py` is the only layer that turns one into an exit code and a message. A library that called `sys.exit` directly would terminate before the message was chosen, which is how a subcommand ends up reporting `UnboundLocalError` instead of the failure that actually happened.
 - **A push destination that would delete a directory** is refused; only file refs are deletable. A bare `push :refs/heads/` is refused rather than deleting every branch.
 - **Losing the lock during gc cleanup** stops the remaining deletions and reports them; it does not fail the run, because the new packfiles are already verified — but it reports `status: "incomplete"` and exits non-zero, so a scheduled job can tell it from a compaction that finished.

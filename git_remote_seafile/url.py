@@ -174,6 +174,10 @@ def _path_components(raw: str, url: str) -> list[str]:
 def _server_url_from_bare_host(segment: str) -> str:
     """Build a server URL from a bare ``host[:port]`` segment.
 
+    A segment carrying ``?``, ``#``, a backslash or whitespace is not a host and
+    is refused: it would be reported (by ``doctor`` and in errors) as a server
+    name that is not the one a request goes to.
+
     The bare form carries no scheme, so one must be chosen.  A port, when given,
     is an explicit instruction and is honoured -- including the scheme it
     implies, so ``host:80`` stays plain HTTP rather than being forced onto HTTPS
@@ -186,6 +190,11 @@ def _server_url_from_bare_host(segment: str) -> str:
     works -- guessing would produce a nonsense authority that fails far from
     where the URL was written.
     """
+    if any(ch in segment for ch in "?# \t\\"):
+        raise ValueError(
+            f"Invalid Seafile URL format: '{segment}' is not a host name "
+            "(it contains a '?', '#', backslash or whitespace)"
+        )
     host = segment.split("@")[-1]
     if host.startswith("["):
         close = host.find("]")

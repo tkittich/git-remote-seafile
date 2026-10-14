@@ -236,6 +236,27 @@ class TestOversizedRefFiles(unittest.TestCase):
             list(iter_refs(self._Client(self.TREE), "rid", "/r", "refs/heads", strict=True))
 
 
+
+class TestConflictCopiesOfDottedRefs(unittest.TestCase):
+    def test_the_marker_before_the_extension_is_recognised(self):
+        from git_remote_seafile.refs import conflict_copies_of
+
+        entries = [
+            {"name": "v1.0.0"},
+            {"name": "v1.0 (SFConflict alice 2026-10-14).0"},
+            {"name": "release-2.1"},
+            {"name": "release-2 (SFConflict bob 2026-10-14).1"},
+            {"name": "other (SFConflict bob 2026-10-14)"},
+        ]
+        self.assertEqual(
+            conflict_copies_of(entries, "v1.0.0"), ["v1.0 (SFConflict alice 2026-10-14).0"]
+        )
+        self.assertEqual(
+            conflict_copies_of(entries, "release-2.1"), ["release-2 (SFConflict bob 2026-10-14).1"]
+        )
+        self.assertEqual(conflict_copies_of(entries, "main"), [])
+
+
 if __name__ == "__main__":
     unittest.main()
 

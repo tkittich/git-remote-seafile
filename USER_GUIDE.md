@@ -339,7 +339,7 @@ Every subcommand follows one convention, so scripts can rely on it:
 | `seafile.gcthreshold` | — | `20` | Count of *small* packfiles at which the `gc` tip appears (or auto-GC triggers). Large packs never count toward it. |
 | `seafile.gcmaxpackmib` | — | `1024` | The largest pack the helper writes, in MiB (`pack-objects --max-pack-size`, for pushes, tail merges and full `gc`): a bigger push arrives as several packs. Packs at least half this size count as full and are left where they stand by tail merge. The automatic run's download budget is 2 × this (2 GiB at the default); above it the run defers to a manual `gc`. A single object larger than this still becomes one larger pack (uploaded in chunks); the cap bounds everything else, which keeps each upload and each merge short. One tested server accepted 1.75 GiB in a single request and reset 2 GiB. |
 | `seafile.forcefilehost` | `SEAFILE_FORCE_FILE_HOST` | `false` | Force download/upload links onto your server's **host** (a wrong scheme on the same host is always corrected). |
-| `seafile.locktimeout` | — | `15` | Maximum seconds to wait when acquiring the remote lock during push. |
+| `seafile.locktimeout` | — | `15` | Seconds to wait for the remote lock *since the queue last moved*: a waiter whose turn is getting closer keeps waiting, so a push behind several others can wait longer in total (capped at the larger of 10 x this and 120 s). |
 | `seafile.locklease` | — | `60` | Duration in seconds before an inactive lock lease is considered expired. |
 
 ```bash
@@ -711,7 +711,7 @@ For teams where multiple developers or automated CI/CD runners push simultaneous
 - **Legacy Note**: The v0.1–v0.3 single-file `.git-lock.json` mirror was removed in v0.7.0. The ticket queue in `.git-lock.d/` is the only lock protocol; a leftover mirror on the remote is ignored (delete it by hand if you like). Do not mix this version with a v0.1–v0.3 helper on the same repository.
 - **Dead Local PID Fast-Reclaim**: If an active lock belongs to the current machine (verified via hostname and machine hardware/container network identifier) and the holding process has crashed or exited, the helper detects the dead PID and immediately reclaims the lock without waiting for the timeout. (The machine identifier derives from the hardware MAC: in VMs or containers that randomize it per boot, a rebooted holder is no longer recognized as local, so reclaim falls back to normal lease expiry — safe, just slower.)
 - **In-Transfer Lease Renewal**: During active multi-gigabyte packfile uploads, packfile downloads, and remote compaction, `git-remote-seafile` automatically refreshes the lock lease every 20 seconds of sustained transfer progress without spawning background daemon threads. Purely local compute phases (pack generation and `git repack`) renew before and after rather than during; before any destructive step (ref writes, ref deletion, obsolete pack deletion) the client re-validates its hold two ways — that its lock ticket is still its own, and that no other active ticket has been granted the lock ahead of it. A lease that lapsed and was taken over is refused as `another client took over the lock`; a ticket that was overtaken while still alive is refused as `another client was granted the lock while this ticket was still held`.
-- If another developer is pushing, subsequent pushes wait and retry for up to 15 seconds (configurable via `seafile.locktimeout`).
+- If another developer is pushing, subsequent pushes wait in a queue. The wait is `seafile.locktimeout` (15 s) counted from the last time the queue moved, so a push that is moving up is not told "locked" while the queue drains; a queue stuck behind one holder still times out after that, and nothing waits past the larger of 10 x the timeout and 120 s.
 - **Lease Safety**: If a client crashes or loses power mid-push, the lock automatically expires after 60 seconds (configurable via `seafile.locklease`), preventing permanent repository deadlocks.
 
 ### Inspecting Lock Status (`lock-status`)
@@ -852,6 +852,7 @@ These are the places where the tool, Git, or Seafile stops short. None is hidden
 | Feature | Status |
 | :--- | :--- |
 | `--atomic`, push options (`-o`), signed pushes, `followtags` | Not supported; git refuses them before the push. |
+| `--force-with-lease` | Not supported: the helper answers `unsupported` to git's `cas` option, git then continues without force, and the push is rejected as non-fast-forward. Use `--force` (the lock and the compare-and-swap re-check still apply), or fetch and integrate first. |
 | Shallow (`--depth`) or partial (`--filter`) clones | The helper installs every remote pack whatever git asked for, so these options do not reduce what is downloaded. |
 | `git lfs` | Supported through the custom transfer agent; `lfs.standalonetransferagent` is not scoped per remote, so a dual-remote setup splits objects (see §8.5 and §11.1). |
 | Hostile repository config | `seafile.skipsafetychecks` and `seafile.gittimeout` are read only from system/global git config and the environment; a repository's own config cannot weaken them. |

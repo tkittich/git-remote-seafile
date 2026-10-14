@@ -453,6 +453,7 @@ class TestRemoteHelper(unittest.TestCase):
         h.repo_id = "repo1"
         h.repo_path = "/git-repo"
         h._refs_cache = {"refs/heads/old-branch": "stale-sha"}
+        h.client.get_file_text.return_value = "stale-sha"  # the ref is there
         h.dry_run = True
 
         out = io.StringIO()
@@ -464,6 +465,23 @@ class TestRemoteHelper(unittest.TestCase):
         # _refs_cache is a push exclusion list, and nothing was pushed.
         self.assertIn("refs/heads/old-branch", h._refs_cache)
         mock_lock.assert_not_called()
+
+    def test_dry_run_answers_a_missing_deletion_as_a_real_push_does(self):
+        h = make_helper()
+        h.client = MagicMock()
+        h.repo_id = "repo1"
+        h.repo_path = "/git-repo"
+        h._refs_cache = {}
+        h.client.get_file_text.return_value = None
+        h.dry_run = True
+
+        out = io.StringIO()
+        with patch("sys.stdout", out), patch("git_remote_seafile.helper.RemoteLock"):
+            h.cmd_push([":refs/heads/never-existed"])
+
+        self.assertIn("error refs/heads/never-existed remote ref does not exist", out.getvalue())
+        self.assertNotIn("ok refs/heads/never-existed", out.getvalue())
+        h.client.delete_entry.assert_not_called()
 
     def test_dry_run_still_refuses_a_disallowed_namespace(self):
         """It previews a push, so it refuses exactly what a push would refuse."""

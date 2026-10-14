@@ -354,5 +354,13 @@ class TestBackslashesInThePath(unittest.TestCase):
         self.assertEqual(parse_seafile_url("seafile://lib/sub/repo").repo_path, "/sub/repo")
 
 
+
+class TestBareHostIsAHost(unittest.TestCase):
+    def test_url_metacharacters_in_the_host_segment_are_refused(self):
+        for url in ("seafile://evil.example?.corp.com:443/code/repo",):
+            with self.assertRaises(ValueError, msg=url):
+                parse_seafile_url(url)
+
+
 if __name__ == "__main__":
     unittest.main()

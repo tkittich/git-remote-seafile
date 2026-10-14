@@ -49,12 +49,22 @@ def is_conflict_copy(name: str) -> bool:
 
 
 def conflict_copies_of(entries: list, filename: str) -> list[str]:
-    """Names in a directory listing that are conflict copies of *filename*."""
-    prefix = filename + CONFLICT_MARKER
+    """Names in a directory listing that are conflict copies of *filename*.
+
+    Seafile puts the marker before the extension (``notes (SFConflict u 2026-10-12).txt``),
+    and a ref such as ``v1.0.0`` or ``release-2.1`` has one as far as it is
+    concerned, so both ``<name> (SFConflict ...`` and ``<stem> (SFConflict ...``
+    are matched.  A false positive costs a warning; a miss was a silent
+    conflict.
+    """
+    prefixes = {filename + CONFLICT_MARKER}
+    stem, dot, _ext = filename.rpartition(".")
+    if dot and stem:
+        prefixes.add(stem + CONFLICT_MARKER)
     return sorted(
         str(e.get("name"))
         for e in entries
-        if isinstance(e, dict) and str(e.get("name", "")).startswith(prefix)
+        if isinstance(e, dict) and str(e.get("name", "")).startswith(tuple(prefixes))
     )
 
 
