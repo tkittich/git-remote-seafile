@@ -44,8 +44,9 @@ identity and the first CI failures of a release have always been environmental.
 
 ## Rules that are enforced by tests (so you will hit them)
 
-- A snapshot-tool part may not exceed **700 lines** (`99_cli.py` is near the cap:
-  move code out, do not add to it). All imports live in `10_setup.py`; a top-level
+- A snapshot-tool part may not exceed **700 lines** (`75_payload.py` is the
+  largest, at about 500; `99_cli.py` holds only `parse_args` and `main`, the
+  argument checks live in `96_cli_checks.py`). All imports live in `10_setup.py`; a top-level
   name is defined in exactly one part; nothing evaluated at import time may come
   from a later part.
 - A test class that defines `test_*` methods must not be subclassed.
