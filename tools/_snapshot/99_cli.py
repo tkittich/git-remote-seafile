@@ -167,6 +167,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     add_payload_arguments(parser)
     add_payload_jobs_argument(parser)
     add_payload_gc_arguments(parser)
+    add_payload_view_arguments(parser)
     parser.add_argument(
         "--verify",
         action="store_true",
@@ -215,7 +216,9 @@ def validate_args(args: argparse.Namespace) -> None:
     signal either way.  ``--ref`` without ``--restore`` is the sharpest -- a run
     meant to restore an *old* snapshot quietly takes a *new* one instead.
     """
-    problems: list[str] = payload_gc_conflicts(args) + payload_conflicts(args)
+    problems: list[str] = (
+        payload_gc_conflicts(args) + payload_conflicts(args) + payload_view_conflicts(args)
+    )
 
     if args.maintain and args.restore:
         problems.append("--maintain and --restore are different modes")
@@ -386,17 +389,9 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         validate_args(args)
-        if args.payload_verify is not None:
-            return payload_verify(
-                args.remote, args.vault.expanduser().resolve() if args.vault else None,
-                count=args.payload_verify,
-            )
-        if args.payload_gc:
-            return payload_gc(
-                args.remote, args.vault.expanduser().resolve() if args.vault else None,
-                delete=args.payload_delete, grace_days=args.payload_grace_days,
-                keep=args.payload_keep,
-            )
+        payload_rc = payload_command(args)
+        if payload_rc is not None:
+            return payload_rc
         if args.restore:
             if not args.remote:
                 raise SnapshotError("--restore requires --remote <url>")

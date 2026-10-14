@@ -1041,6 +1041,76 @@ class PayloadModeTests(unittest.TestCase):
         self.assertEqual(rc, 1, out + err)
         self.assertIn("count or 'all'", err)
 
+    # -- views (D10) ------------------------------------------------------------
+    def view(self, *extra: object) -> tuple[int, str, str]:
+        return self.run_tool("--payload-view", "--remote", self.remote, *extra)
+
+    def test_a_view_has_real_names_and_moves_no_data(self):
+        self.assertEqual(self.snapshot()[0], 0)
+        before = {k for k in self.server_files() if k.startswith(self.objects)}
+        rc, out, err = self.view("--payload-view-name", "current")
+        self.assertEqual(rc, 0, out + err)
+        files = self.server_files()
+        self.assertEqual(files["/pvault-view/current/big1.bin"], self.big1)
+        self.assertEqual(files["/pvault-view/current/sub/big2.bin"], self.big2)
+        self.assertEqual({k for k in files if k.startswith(self.objects)}, before)
+        self.assertFalse(any(k.startswith("/pvault-view/current/") and len(k.rsplit("/", 1)[-1]) == 64
+                             for k in files), "an object name was left in the view")
+
+    def test_a_view_of_an_older_snapshot_shows_the_older_bytes(self):
+        self.assertEqual(self.snapshot()[0], 0)
+        (self.src / "big1.bin").write_bytes(os.urandom(6000))
+        self.assertEqual(self.snapshot()[0], 0)
+        rc, out, err = self.run_tool("--payload-view=snapshot~1", "--remote", self.remote,
+                                     "--payload-view-name", "old")
+        self.assertEqual(rc, 0, out + err)
+        self.assertEqual(self.server_files()["/pvault-view/old/big1.bin"], self.big1)
+
+    def test_an_existing_view_is_refused_unless_replaced(self):
+        self.assertEqual(self.snapshot()[0], 0)
+        self.assertEqual(self.view("--payload-view-name", "current")[0], 0)
+        rc, out, err = self.view("--payload-view-name", "current")
+        self.assertNotEqual(rc, 0)
+        self.assertIn("already exists", out + err)
+        (self.src / "big1.bin").write_bytes(os.urandom(6000))
+        self.assertEqual(self.snapshot()[0], 0)
+        rc, out, err = self.view("--payload-view-name", "current", "--payload-view-replace")
+        self.assertEqual(rc, 0, out + err)
+        self.assertNotEqual(self.server_files()["/pvault-view/current/big1.bin"], self.big1)
+
+    def test_identical_files_in_one_directory_are_both_named(self):
+        (self.src / "twin.bin").write_bytes(self.big1)
+        self.assertEqual(self.snapshot()[0], 0)
+        self.assertEqual(self.view("--payload-view-name", "v")[0], 0)
+        files = self.server_files()
+        self.assertEqual(files["/pvault-view/v/big1.bin"], self.big1)
+        self.assertEqual(files["/pvault-view/v/twin.bin"], self.big1)
+
+    def test_a_view_reports_what_the_server_cannot_name(self):
+        long_name = "\u0e01" * 86 + ".bin"        # 262 bytes of UTF-8
+        (self.src / long_name).write_bytes(os.urandom(3000))
+        self.assertEqual(self.snapshot()[0], 0)
+        rc, out, err = self.view("--payload-view-name", "v")
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn("1 file(s) were left out", out)
+        self.assertIn("cannot be held", out)
+
+    def test_a_view_is_refused_when_objects_are_missing(self):
+        self.assertEqual(self.snapshot()[0], 0)
+        del self.stub.files[REPO_ID][self.object_key(self.big2)]
+        rc, out, err = self.view("--payload-view-name", "v")
+        self.assertNotEqual(rc, 0)
+        self.assertIn("missing from the server", out + err)
+        self.assertFalse(any(k.startswith("/pvault-view/") for k in self.server_files()))
+
+    def test_view_flags_only_apply_to_a_view(self):
+        rc, out, err = self.run_tool(self.src, "--vault", self.vault, "--payload-view-name", "x")
+        self.assertEqual(rc, 1, out + err)
+        self.assertIn("--payload-view-name only applies", err)
+        rc, out, err = self.run_tool("--payload-view", "--payload-view-name", "a/b", "--remote", self.remote)
+        self.assertEqual(rc, 1, out + err)
+        self.assertIn("plain directory name", err)
+
     def test_gc_refuses_to_act_when_it_finds_no_manifest(self):
         self.assertEqual(self.snapshot()[0], 0)
         other = "seafile://testlib/otherrepo"

@@ -1541,5 +1541,30 @@ class TestClientFailsLoudly(unittest.TestCase):
             self.assertEqual(dest.stat().st_size, 123)
 
 
+class TestDeleteForgetsDirectories(unittest.TestCase):
+    """``mkdir_p`` remembers directories it has seen; a delete must make it forget.
+
+    Without this a directory deleted and then re-created through ``mkdir_p`` in the
+    same session was skipped as "known", and the next upload or copy into it was
+    refused by a real server (found rebuilding a payload view in place).
+    """
+
+    def test_a_deleted_directory_and_its_children_are_forgotten(self):
+        client = SeafileClient(server_url="https://seafile.example.com", token="test-tok")
+        client._known_dirs = {("r1", "/a"), ("r1", "/a/b"), ("r1", "/ab"), ("r2", "/a/b")}
+        client.session = MagicMock()
+        client.session.delete.return_value = MagicMock(status_code=200)
+        self.assertTrue(client.delete_entry("r1", "/a"))
+        self.assertEqual(client._known_dirs, {("r1", "/ab"), ("r2", "/a/b")})
+
+    def test_a_refused_delete_keeps_what_it_knew(self):
+        client = SeafileClient(server_url="https://seafile.example.com", token="test-tok")
+        client._known_dirs = {("r1", "/a")}
+        client.session = MagicMock()
+        client.session.delete.return_value = MagicMock(status_code=500)
+        self.assertFalse(client.delete_entry("r1", "/a"))
+        self.assertEqual(client._known_dirs, {("r1", "/a")})
+
+
 if __name__ == "__main__":
     unittest.main()

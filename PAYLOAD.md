@@ -211,13 +211,18 @@ Deleting frees quota at once; disk is freed only after the library's history
 expires and the server's GC runs (measured). Recommended library setting: a short
 history (days), as a safety net for a mistaken delete.
 
-### D10. Views — **proposed**
+### D10. Views — **decided** (`--payload-view`)
 
-`--payload-view <snapshot-ref>` builds, on demand, a directory of real file names
-by server-side copy and rename of objects (about two API calls per file, no data
-moved). Names go through the server's rules, so a view reports files it cannot
-name (over 255 bytes) rather than failing. A view is a convenience: deleting it
-loses nothing.
+`--payload-view[=REF] --remote URL [--payload-view-name NAME] [--payload-view-replace]`
+builds `<vault path>-view/<NAME>` (default NAME: the snapshot id) in the same
+library: for each manifest entry the object is copied server-side into the right
+directory, keeping its hash name, and renamed to the file's name (two calls per
+file, no data moved, and measured to add no blocks). It refuses when any object is
+missing, refuses an existing view unless `--payload-view-replace`, and reports
+files the server cannot name (a component over 255 bytes, or two names that
+collapse to one) instead of failing. A view is a convenience: no mode, no mtime,
+the server's name rules apply, and deleting it loses nothing. `--restore` is the
+faithful path. It lives beside the vault, never inside the helper's directory.
 
 ### D11. Flags — **decided**
 
