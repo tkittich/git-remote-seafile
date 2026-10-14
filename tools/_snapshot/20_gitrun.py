@@ -273,7 +273,13 @@ def git(
         env=env,
         text=True,
         encoding="utf-8",
-        errors="replace",
+        # Not "replace": a file name that is not UTF-8 (legal on POSIX) came
+        # back from `ls-files` as U+FFFD, and the exclude pass and the
+        # pathspec file then named a path that does not exist -- `git add`
+        # stopped with "did not match any files" (reproduced in Debian with
+        # `bad_\xff.txt` and `--exclude`).  surrogateescape round-trips the
+        # raw bytes through str and back to git's stdin unchanged.
+        errors="surrogateescape",
         input=stdin,
         stdin=subprocess.DEVNULL if stdin is None else None,
         stdout=subprocess.PIPE,

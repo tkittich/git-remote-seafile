@@ -220,11 +220,25 @@ class VaultLock:
         else:  # pragma: no cover - the loop always breaks or raises
             raise SnapshotError(f"could not take the lock: {self.path}")
         token = process_start_token(os.getpid())
-        os.write(
-            self._fd,
-            f"{socket.gethostname()} {os.getpid()}{' ' + token if token else ''}".encode(),
-        )
-        os.fsync(self._fd)
+        try:
+            os.write(
+                self._fd,
+                f"{socket.gethostname()} {os.getpid()}{' ' + token if token else ''}".encode(),
+            )
+            os.fsync(self._fd)
+        except OSError as exc:
+            # A full disk or a failing share: without this the descriptor
+            # leaked and an empty lock file stayed behind until its grace
+            # period ran out, blocking the next run for that long.
+            os.close(self._fd)
+            self._fd = None
+            try:
+                self.path.unlink()
+            except OSError:
+                pass
+            raise SnapshotError(
+                f"could not record the lock holder in {self.path}: {exc}"
+            ) from exc
         return self
 
     def __exit__(self, *exc: object) -> None:

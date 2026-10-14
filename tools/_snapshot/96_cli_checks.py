@@ -78,6 +78,13 @@ def validate_args(args: argparse.Namespace) -> None:
 
     if args.no_push and args.remote:
         problems.append("--no-push and --remote contradict each other")
+    if args.no_push and args.code_remote and not (args.maintain or args.restore):
+        # Only the typed flag: a remembered code remote under --no-push is a
+        # default, and is skipped without complaint.
+        problems.append(
+            "--code-remote pushes the source repository, which --no-push "
+            "forbids; drop one of them"
+        )
     if (
         args.source is not None
         and args.source_positional is not None

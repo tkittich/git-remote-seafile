@@ -215,6 +215,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # A path that is not UTF-8 reaches us as lone surrogates (see git()); the
+    # default strict stdout would turn naming it into a UnicodeEncodeError.
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            try:
+                stream.reconfigure(errors="backslashreplace")
+            except (OSError, ValueError):
+                pass
     args = parse_args(argv)
 
     try:

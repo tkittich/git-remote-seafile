@@ -2773,5 +2773,59 @@ class ModificationTimeTests(_SnapshotFixture):
         self.assertNotIn("modification time", out)
 
 
+class OddNameAndLockFailureTests(_SnapshotFixture):
+    """ROADMAP T-5..T-8: names git quotes, an unwritable lock, a dead flag."""
+
+    def test_a_lock_that_cannot_be_written_leaves_nothing_behind(self):
+        self.snapshot()
+        lock = self.vault / ".git" / "seafile-snapshot.lock"
+        with unittest.mock.patch("os.fsync", side_effect=OSError(28, "no space left")):
+            with self.assertRaises(snap.SnapshotError) as ctx:
+                snap.VaultLock(self.vault / ".git").__enter__()
+        self.assertIn("could not record the lock holder", str(ctx.exception))
+        # Unlinking an open file fails on Windows, so this also proves the
+        # descriptor was closed.
+        self.assertFalse(lock.exists())
+        rc, _, err = self.snapshot("--dry-run")
+        self.assertEqual(rc, 0, err)
+
+    def test_code_remote_with_no_push_is_refused(self):
+        rc, _, err = self.snapshot("--no-push", "--code-remote", "origin")
+        self.assertEqual(rc, 1)
+        self.assertIn("--code-remote", err)
+        self.assertIn("--no-push", err)
+
+    @unittest.skipIf(os.name == "nt", "NTFS cannot hold these names")
+    def test_verify_restore_hashes_names_that_start_with_a_quote_or_hold_a_newline(self):
+        repo = self.tmp / "oddnames"
+        repo.mkdir()
+        _git(repo, "init", "-q", "-b", "main", ".")
+        names = ['"quoted.txt', "two\nlines.txt", "-dash.txt", "plain.txt"]
+        for name in names:
+            (repo / name).write_bytes(b"data " + name.encode() + b"\n")
+        _git(repo, "add", "-A", "--", ".")
+        _git(repo, "-c", "user.email=e@x", "-c", "user.name=v", "commit", "-qm", "odd")
+        self.assertEqual(snap.verify_restore(repo, "HEAD"), [])
+        (repo / '"quoted.txt').write_bytes(b"changed\n")
+        (repo / "two\nlines.txt").write_bytes(b"changed\n")
+        self.assertEqual(
+            sorted(snap.verify_restore(repo, "HEAD")), sorted(['"quoted.txt', "two\nlines.txt"])
+        )
+
+    @unittest.skipIf(os.name == "nt", "NTFS cannot hold a non-UTF-8 name")
+    def test_a_non_utf8_name_survives_an_exclude_run(self):
+        raw = os.fsencode(self.code) + b"/bad_\xff_name.txt"
+        try:
+            with open(raw, "wb") as fh:
+                fh.write(b"latin1\n")
+        except OSError:
+            self.skipTest("this filesystem refuses non-UTF-8 names")
+        rc, out, err = self.snapshot("--no-push", "--exclude", "dist")
+        self.assertEqual(rc, 0, out + err)
+        names = _git(self.vault, "ls-tree", "-r", "--name-only", "-z", BRANCH).stdout
+        self.assertTrue(any(n.startswith("bad_") for n in names.split("\0")))
+        self.assertNotIn("dist/bundle.js", names)
+
+
 if __name__ == "__main__":
     unittest.main()

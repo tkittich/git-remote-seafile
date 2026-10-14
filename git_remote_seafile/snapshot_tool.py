@@ -515,7 +515,13 @@ def git(
         env=env,
         text=True,
         encoding="utf-8",
-        errors="replace",
+        # Not "replace": a file name that is not UTF-8 (legal on POSIX) came
+        # back from `ls-files` as U+FFFD, and the exclude pass and the
+        # pathspec file then named a path that does not exist -- `git add`
+        # stopped with "did not match any files" (reproduced in Debian with
+        # `bad_\xff.txt` and `--exclude`).  surrogateescape round-trips the
+        # raw bytes through str and back to git's stdin unchanged.
+        errors="surrogateescape",
         input=stdin,
         stdin=subprocess.DEVNULL if stdin is None else None,
         stdout=subprocess.PIPE,
@@ -1440,11 +1446,25 @@ class VaultLock:
         else:  # pragma: no cover - the loop always breaks or raises
             raise SnapshotError(f"could not take the lock: {self.path}")
         token = process_start_token(os.getpid())
-        os.write(
-            self._fd,
-            f"{socket.gethostname()} {os.getpid()}{' ' + token if token else ''}".encode(),
-        )
-        os.fsync(self._fd)
+        try:
+            os.write(
+                self._fd,
+                f"{socket.gethostname()} {os.getpid()}{' ' + token if token else ''}".encode(),
+            )
+            os.fsync(self._fd)
+        except OSError as exc:
+            # A full disk or a failing share: without this the descriptor
+            # leaked and an empty lock file stayed behind until its grace
+            # period ran out, blocking the next run for that long.
+            os.close(self._fd)
+            self._fd = None
+            try:
+                self.path.unlink()
+            except OSError:
+                pass
+            raise SnapshotError(
+                f"could not record the lock holder in {self.path}: {exc}"
+            ) from exc
         return self
 
     def __exit__(self, *exc: object) -> None:
@@ -5400,16 +5420,35 @@ def verify_restore(repo: Path, rev: str) -> list[str]:
         expected.append(fields[2])
     if not paths and not symlinks:
         return []
-    if any(b"\n" in path for path in paths):
-        # --stdin-paths is newline-separated and cannot express a path that
-        # contains one; refuse loudly rather than verify a subset silently.
-        raise SnapshotError(
-            "a filename in the snapshot contains a newline, so the byte "
-            "verification cannot hash every path; refusing to certify the "
-            "restore"
+    # --stdin-paths is newline-separated, and git reads a line that starts with
+    # a double quote as a C-quoted string -- so a name containing a newline, or
+    # starting with `"`, cannot ride in the batch.  Those few are hashed one at
+    # a time, as argv, where no quoting rule applies.
+    odd = [
+        (path, sha) for path, sha in zip(paths, expected, strict=True)
+        if b"\n" in path or path.startswith(b'"')
+    ]
+    if odd:
+        keep = [
+            (path, sha) for path, sha in zip(paths, expected, strict=True)
+            if not (b"\n" in path or path.startswith(b'"'))
+        ]
+        paths = [path for path, _ in keep]
+        expected = [sha for _, sha in keep]
+    odd_mismatched: list[str] = []
+    for path, sha in odd:
+        # `--` and a path relative to -C: a name starting with `-` is a path.
+        one = _run(
+            ["git", "-C", str(repo), "hash-object", "--no-filters", "--",
+             os.fsdecode(path)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
         )
+        if one.returncode != 0 or one.stdout.strip() != sha:
+            odd_mismatched.append(path.decode("utf-8", errors="surrogateescape"))
 
-    mismatched_symlinks: list[str] = []
+    # Reported after the batch's own mismatches, with the links.
+    mismatched_symlinks: list[str] = list(odd_mismatched)
     for link in symlinks:
         link_path = repo / link
         try:
@@ -5873,6 +5912,13 @@ def validate_args(args: argparse.Namespace) -> None:
 
     if args.no_push and args.remote:
         problems.append("--no-push and --remote contradict each other")
+    if args.no_push and args.code_remote and not (args.maintain or args.restore):
+        # Only the typed flag: a remembered code remote under --no-push is a
+        # default, and is skipped without complaint.
+        problems.append(
+            "--code-remote pushes the source repository, which --no-push "
+            "forbids; drop one of them"
+        )
     if (
         args.source is not None
         and args.source_positional is not None
@@ -6482,6 +6528,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # A path that is not UTF-8 reaches us as lone surrogates (see git()); the
+    # default strict stdout would turn naming it into a UnicodeEncodeError.
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            try:
+                stream.reconfigure(errors="backslashreplace")
+            except (OSError, ValueError):
+                pass
     args = parse_args(argv)
 
     try:

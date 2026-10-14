@@ -91,16 +91,35 @@ def verify_restore(repo: Path, rev: str) -> list[str]:
         expected.append(fields[2])
     if not paths and not symlinks:
         return []
-    if any(b"\n" in path for path in paths):
-        # --stdin-paths is newline-separated and cannot express a path that
-        # contains one; refuse loudly rather than verify a subset silently.
-        raise SnapshotError(
-            "a filename in the snapshot contains a newline, so the byte "
-            "verification cannot hash every path; refusing to certify the "
-            "restore"
+    # --stdin-paths is newline-separated, and git reads a line that starts with
+    # a double quote as a C-quoted string -- so a name containing a newline, or
+    # starting with `"`, cannot ride in the batch.  Those few are hashed one at
+    # a time, as argv, where no quoting rule applies.
+    odd = [
+        (path, sha) for path, sha in zip(paths, expected, strict=True)
+        if b"\n" in path or path.startswith(b'"')
+    ]
+    if odd:
+        keep = [
+            (path, sha) for path, sha in zip(paths, expected, strict=True)
+            if not (b"\n" in path or path.startswith(b'"'))
+        ]
+        paths = [path for path, _ in keep]
+        expected = [sha for _, sha in keep]
+    odd_mismatched: list[str] = []
+    for path, sha in odd:
+        # `--` and a path relative to -C: a name starting with `-` is a path.
+        one = _run(
+            ["git", "-C", str(repo), "hash-object", "--no-filters", "--",
+             os.fsdecode(path)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
         )
+        if one.returncode != 0 or one.stdout.strip() != sha:
+            odd_mismatched.append(path.decode("utf-8", errors="surrogateescape"))
 
-    mismatched_symlinks: list[str] = []
+    # Reported after the batch's own mismatches, with the links.
+    mismatched_symlinks: list[str] = list(odd_mismatched)
     for link in symlinks:
         link_path = repo / link
         try:
