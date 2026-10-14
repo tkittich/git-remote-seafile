@@ -210,6 +210,24 @@ def refuse_flagless_payload_vault(
         )
 
 
+def conversion_warning(candidates: dict[str, Candidate], dry_run: bool) -> str:
+    """Said *before* any hashing or upload, when the default moves an existing vault's
+    large files out of git: a scheduled run cannot be asked, but it can be read."""
+    total = sum(size for size, _mtime, _mode, _ino in candidates.values())
+    verb = "would move" if dry_run else "is moving"
+    return (
+        f"NOTICE: payload mode is on by default and this vault has earlier snapshots that "
+        f"did not use it. This run {verb} {len(candidates)} file(s) "
+        f"({human_bytes(total)}) out of git and uploads them as payload objects (one full "
+        f"pass).\n"
+        f"  - Copies already in the vault's history stay there, so the server holds them "
+        f"twice; the vault does not shrink.\n"
+        f"  - Snapshots taken before this one restore as before; this one and later ones "
+        f"need the payload (0.8.8 cannot restore them completely).\n"
+        f"  - To keep this vault as it was: stop now and run with --no-payload (remembered)."
+    )
+
+
 def run_payload_step(
     git_dir: Path,
     source: Path,
@@ -241,6 +259,8 @@ def run_payload_step(
         # so a tree that merely *could* grow payload files is not locked into
         # needing the flag.
         return None, (0, 0)
+    if from_default and previous is None and base is not None:
+        print(conversion_warning(candidates, dry_run), flush=True)
     manifest, cache = build_manifest(
         candidates, source, {} if rehash else load_hash_cache(git_dir), min_size, rule=rule
     )

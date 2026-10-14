@@ -1105,6 +1105,18 @@ git seafile-snapshot --restore --remote seafile://code/flood-vault --into D:/res
 
 What to know:
 
+- **It is on by default, and remembered.** With a `seafile://` remote and a push, a
+  run uses `auto` unless the vault remembered something else. A tree with no file
+  that big is snapshotted exactly as before: no manifest, no server directory. A run
+  that cannot use it (no remote, a remote that is not `seafile://`, `--no-push`)
+  simply does not. A complete real run stores the setting in the vault
+  (`--no-payload`, or `--payload-min-size 0`, turns it off and is remembered too); a
+  preview never writes it. A vault whose last snapshot used payload mode refuses a
+  run that would put its large files back into git by accident. When the default is
+  about to move an *existing* vault's large files out of git, the run prints a
+  `NOTICE` saying how many files and bytes, **before** it hashes or uploads anything
+  (a preview says "would move"); interrupt the run and use `--no-payload` to keep
+  the vault as it was.
 - **A plain `git clone` of a payload vault does not contain the large files.** It
   holds the manifest and `.seafile-payload/README.txt`; get the tree back with
   `--restore`.

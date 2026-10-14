@@ -234,6 +234,23 @@ no better), `--payload-gc`, `--payload-delete`, `--payload-grace-days N`.
 Combinations that would be silently ignored are refused. An explicit
 `--payload-min-size` is incompatible with `--no-push`.
 
+**On by default.** With no flag, the value is what the vault remembered, else `auto`
+-- but only when the run pushes to a `seafile://` remote; otherwise the default stays
+off rather than turning a working run into an error. A complete real run stores the
+value in the vault's config (`snapshot.payload`, `0` included, a preview never), so a
+scheduled bare command keeps its behaviour even if the default later changes. A fresh
+vault on another machine therefore adopts `auto`, not the threshold the remote's last
+snapshot happened to use. A run that ends up with payload mode off in a vault whose
+last snapshot has a manifest (R10) is refused, naming the value, so large files are
+never staged into git by accident; `--no-payload` / `--payload-min-size 0` is the
+deliberate way out. A tree with nothing at or above the threshold writes no manifest
+and makes no payload call, so the default costs a small tree nothing. The first run
+that takes the default says so, an existing vault's conversion is announced with a
+`NOTICE` before anything is hashed or uploaded, and a run that uploaded objects prints the size of
+the store (nothing deletes an object until `--payload-gc`). The vault's tree carries
+`.seafile-payload/README.txt` beside the manifest, so a plain `git clone` explains
+itself. `--payload-rehash` ignores the hash cache for one run. The `.seafile-payload` directory of a source is never staged.
+
 
 Nothing here changes what a snapshot contains; each item is a refusal or a note
 *before* something expensive or destructive starts.

@@ -540,7 +540,7 @@ def main(argv: list[str] | None = None) -> int:
             manifest, payload_todo = run_payload_step(
                 git_dir, source, base, remote, payload_min, payload_candidates,
                 dry_run=args.dry_run, jobs=args.payload_jobs, rule=payload_rule,
-                rehash=args.payload_rehash,
+                rehash=args.payload_rehash, from_default=payload_default,
             )
             tree, commit, excluded = build_snapshot(
                 git_dir, source, base, exclude, message,

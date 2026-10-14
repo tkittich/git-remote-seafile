@@ -690,6 +690,56 @@ class PayloadModeTests(unittest.TestCase):
             )
             self.assertNotEqual(probe.returncode, 0, name)
 
+    def _existing_vault_without_payload(self) -> None:
+        """A vault with an earlier snapshot taken before payload mode was the default."""
+        with unittest.mock.patch.object(snap, "_AUTO_UPPER", 8000), \
+                unittest.mock.patch.object(snap, "_AUTO_LOWER", 2000):
+            rc, out, err = self.run_tool(self.src, "--vault", self.vault, "--no-push")
+        self.assertEqual(rc, 0, out + err)
+        (self.src / "small.txt").write_bytes(b"changed\n")      # a new snapshot is due
+
+    def test_converting_an_existing_vault_warns_before_anything_is_uploaded(self):
+        self._existing_vault_without_payload()
+        rc, out, err = self.bare()
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn("NOTICE: payload mode is on by default", out)
+        self.assertIn("2 file(s)", out)
+        self.assertIn("--no-payload", out)
+        self.assertLess(out.index("NOTICE: payload mode"), out.index("payload: 2 file(s)"))
+        # The warning is said once: the vault now remembers the setting.
+        (self.src / "small.txt").write_bytes(b"changed again\n")
+        rc, out, err = self.bare()
+        self.assertEqual(rc, 0, out + err)
+        self.assertNotIn("NOTICE: payload mode", out)
+
+    def test_the_conversion_warning_is_also_in_a_preview_and_changes_nothing(self):
+        self._existing_vault_without_payload()
+        rc, out, err = self.bare("--dry-run")
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn("NOTICE: payload mode", out)
+        self.assertIn("would move 2 file(s)", out)
+        self.assertEqual(self.server_files(), {})
+
+    def test_a_first_snapshot_and_an_explicit_flag_do_not_get_the_conversion_warning(self):
+        rc, out, err = self.bare()                       # nothing to convert yet
+        self.assertEqual(rc, 0, out + err)
+        self.assertNotIn("NOTICE: payload mode", out)
+        self.assertIn("payload: on by default", out)
+        self._existing_vault_without_payload_other()
+
+    def _existing_vault_without_payload_other(self) -> None:
+        other = self.case / "other-vault"
+        with unittest.mock.patch.object(snap, "_AUTO_UPPER", 8000), \
+                unittest.mock.patch.object(snap, "_AUTO_LOWER", 2000):
+            self.assertEqual(
+                self.run_tool(self.src, "--vault", other, "--no-push")[0], 0)
+            (self.src / "small.txt").write_bytes(b"other\n")
+            rc, out, err = self.run_tool(
+                self.src, "--vault", other, "--remote", "seafile://testlib/pvault2",
+                "--payload-min-size", "auto")
+        self.assertEqual(rc, 0, out + err)
+        self.assertNotIn("NOTICE: payload mode", out)    # the user asked for it
+
     def test_jobs_alone_no_longer_needs_the_size_flag(self):
         rc, out, err = self.bare("--payload-jobs", "2")
         self.assertEqual(rc, 0, out + err)

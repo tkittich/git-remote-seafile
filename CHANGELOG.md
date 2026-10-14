@@ -34,6 +34,7 @@ The snapshot tool grows up: it installs with the package, and it can carry a 131
 
 ### Changed
 - **Payload mode is on by default** (see Upgrading). A fresh vault on another machine adopts `auto` rather than being refused; a vault that used payload mode is still refused a run that would put its large files into git by accident.
+- **A conversion is announced before it starts.** When the default is about to move an existing vault's large files out of git, the run prints how many files and bytes, and how to keep the vault as it was, before hashing or uploading anything (a preview says "would move").
 - **`--payload-jobs` no longer needs `--payload-min-size`**; it is refused only when payload mode is explicitly off.
 - **The vault carries `.seafile-payload/README.txt`** beside the manifest, saying where the large files are and how to restore.
 - **A run that uploaded payload objects prints the size of the store** (they are never deleted until `--payload-gc`).
