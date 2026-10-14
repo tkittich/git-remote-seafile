@@ -3395,7 +3395,7 @@ def _manifest_at(remote: str, ref: str) -> dict[str, Any]:
         except (ValueError, RecursionError):
             raise SnapshotError(f"the payload manifest of {ref!r} is unreadable") from None
     check_manifest_shape(data, f"the payload manifest of {ref!r}")
-    return data  # type: ignore[no-any-return]
+    return data
 
 
 def _view_name(rel: str) -> str:
