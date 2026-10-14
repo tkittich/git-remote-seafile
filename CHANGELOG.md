@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Long Windows paths.** The vault and a restored clone set `core.longpaths=true`, and payload files are restored through extended-length paths.
 
 ### Documentation
+- **Library history setting.** README quick start and USER_GUIDE 8.0.1 recommend a period of history (7 to 30 days) for a library that holds remotes, vaults or payload objects, and say why neither full nor no history is right.
 - Manifest growth at 100,000 files is measured (PAYLOAD.md D4): about 10 kB per snapshot at 0.1% changed, 110 kB at 1%, 6 MB when every entry changes.
 - SNAPSHOT.md no longer lists a snapshot-time `gc` step as future work: the helper's `seafile.autogc` already does it.
 

@@ -422,7 +422,29 @@ Before pushing your first repository to Seafile:
 1. Log into your Seafile Web UI (`https://seafile.example.com`).
 2. Click **New Library** and choose any name you like (such as `code`, `git-repos`, or `projects`). We will use `code` in the examples below.
 3. **Important**: Leave this library **unsynced** in your Seafile desktop client applet. Do not sync it to your local drive.
+4. **Set the library's history to a few days** (see [8.0.1](#801-library-history-setting)); full history keeps every pack the tool later removes.
 *(Alternatively, if storing within an existing synced library like `Documents`, store under an ignored subfolder such as `seafile-git/` and add it to `<library-root>/seafile-ignore.txt` before pushing, noting that `seafile-ignore.txt` only applies at the library root and cannot retroactively ignore already-synced folders).*
+
+### 8.0.1 Library history setting
+
+A Seafile library keeps a history of every change to its files, and has a setting for how long (Library settings -> **History Setting**: *Keep full history*, *Don't keep history*, or *Only keep a period of history* with a number of days). It decides how much disk a Git remote costs and what you can undo on the server. **Recommended for a library that holds remotes, snapshot vaults or payload objects: keep a period of history, 7 to 30 days.**
+
+| Setting | What it means here | When to use it |
+| :--- | :--- | :--- |
+| **A period of history (7 to 30 days)** | A pack, ref or payload object that is deleted or overwritten can be restored from the web UI for that long, then its blocks are reclaimed. | The default choice, and the right one for a vault you cannot recreate. |
+| **Don't keep history** | Nothing can be recovered on the server. Deleted blocks are reclaimed at the next server GC. | Scratch and test libraries, or a remote that is a pure mirror of a repository you still have elsewhere. |
+| **Keep full history** | Every deleted pack, merged-away pack and removed payload object stays on the server's disk forever. | Avoid for remotes: the history view is also noisy, because each push is about 13 entries (ticket create/renew/delete, pack, index, ref). |
+
+Why not full history: Git already records the history of what you store, so the library's own history only duplicates it. What it *does* keep is everything the tool later removes. A tail merge or `gc` deletes the packs it merged; `--payload-gc --payload-delete` deletes unreferenced objects; a snapshot vault that rewrites history leaves old packs behind. With full history none of that space comes back, however many times you compact.
+
+Why not no history, for data you care about: the server's history is the only undo for an operation that went wrong *outside* Git: a `gc` interrupted at the wrong moment, a `--payload-delete` run against the wrong remote, a client that ignored the lock and overwrote a ref, or an `unlock`/web-UI delete by mistake. Seven days costs little and covers a weekend and a slow reaction.
+
+Things to know:
+
+- **The setting is per library, and changing it is not retroactive on disk.** Space is reclaimed when the history it protected has expired *and* the server's garbage collection (`seaf-gc`) has run, which is an administrator task. Deleting data frees the library's *quota* at once; the disk follows later.
+- **It does not replace backups.** It is a safety net for days, not a retention policy. Payload retention (`--payload-gc`, `--payload-grace-days`, `--payload-keep`) is separate and works at the application level.
+- **A server administrator may restrict the choices**, or set a default for new libraries. Check an existing library before first use; a library created long ago may be on full history.
+- **Encrypted libraries** are refused by the tool whatever their history setting.
 
 ### 8.1 Push an Existing Project to Seafile
 ```bash
