@@ -28,6 +28,11 @@
 # Deleting frees quota at once; disk is freed only after the library's history
 # expires and the server's GC runs (SNAPSHOT.md section 15.1).
 
+#: How often the deletion loop looks at the remote's refs again: every this many
+#: objects, or this many seconds, whichever comes first.
+_RECHECK_EVERY = 25
+_RECHECK_SECONDS = 10.0
+
 _OBJECT_NAME = re.compile(r"^[0-9a-f]{64}$")
 #: An object, or the temporary an interrupted upload left beside it.
 _COLLECTABLE_NAME = re.compile(r"^[0-9a-f]{64}(\.part-[0-9a-f]+)?$")
@@ -494,21 +499,42 @@ def payload_gc(
                 "unused (another machine pushed); nothing was deleted. Run it again"
             )
     deleted = 0
+    gone: set[str] = set()
+    stopped_early = False
+    last_check = time.monotonic()
     for index, sha in enumerate(sorted(due), 1):
+        # The loop can run for many minutes.  A push that lands in it is noticed
+        # at the next look and stops the run, so the damage is bounded to what
+        # was deleted before the push's ref became visible (and a snapshot
+        # taken later re-uploads anything missing while its file still exists).
+        if index > 1 and (index % _RECHECK_EVERY == 0
+                          or time.monotonic() - last_check >= _RECHECK_SECONDS):
+            if _remote_tips(remote) != {k: v for k, v in history.tips.items()}:
+                stopped_early = True
+                break
+            last_check = time.monotonic()
         if not client.delete_entry(rid, f"{base}/{object_dir(sha)}/{sha}"):
             raise SnapshotError(f"the server refused to delete {sha}")
         deleted += 1
+        gone.add(sha)
         if index % 100 == 0 or index == len(due):
             print(f"deleted [{index}/{len(due)}]", flush=True)
     # The new state: everything still unused keeps its first-seen time (or gets
     # now); anything that became referenced again, or was deleted, drops out.
-    fresh = {sha: pending.get(sha, now) for sha in waiting}
+    fresh = {sha: pending.get(sha, now) for sha in waiting | (due - gone)}
     marked = len(set(fresh) - set(pending))
     if fresh != pending:
         _api(lambda: client.mkdir_p(rid, base), f"creating {base}")
         _api(lambda: client.upload_file(
             rid, base, _PENDING_NAME, json.dumps(fresh, sort_keys=True).encode("ascii")
         ), "writing gc state")
+    if stopped_early:
+        raise SnapshotError(
+            f"the remote's branches or tags changed while objects were being deleted (another "
+            f"machine pushed); stopped after {deleted} of {len(due)}. Run it again; if a "
+            "restore then names a missing object, take a new snapshot from a tree that still "
+            "has the file, or run --payload-verify"
+        )
     write_seen_tips(client, rid, base, history.tips)
     print(f"marked {marked} newly unreferenced object(s); deleted {deleted} object(s), "
           f"{total(due)}; quota is released at once, disk after the library's history "

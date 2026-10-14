@@ -33,7 +33,7 @@ def check_manifest_shape(manifest: Any, where: str = "the payload manifest") -> 
         rel, sha, size, mtime = item.get("path"), item.get("sha256"), item.get("size"), item.get("mtime_ns")
         if not isinstance(rel, str) or not rel:
             raise SnapshotError(f"{where} has an entry with no path")
-        if not isinstance(sha, str) or not _SHA256_RE.match(sha):
+        if not isinstance(sha, str) or not _SHA256_RE.fullmatch(sha):
             raise SnapshotError(f"{where} has a bad SHA-256 for {rel!r}")
         if isinstance(size, bool) or not isinstance(size, int) or size < 0:
             raise SnapshotError(f"{where} has a bad size for {rel!r}")

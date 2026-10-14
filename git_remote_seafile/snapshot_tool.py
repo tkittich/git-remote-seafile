@@ -503,6 +503,14 @@ def git(
     # mistakes -- and a mistake here means an excluded file's bytes reaching the
     # vault, which is the one thing the pre-filter exists to prevent.
     env["GIT_LITERAL_PATHSPECS"] = "1"
+    # Two guards read git's English stderr (an unreadable directory, an index
+    # lock).  git translates its messages, so under another locale those
+    # matches would silently stop firing -- the very hole they close.  LC_ALL
+    # outranks LC_MESSAGES, so it is overridden only when the user set it.
+    env["LANGUAGE"] = "C"
+    env["LC_MESSAGES"] = "C"
+    if "LC_ALL" in env:
+        env["LC_ALL"] = "C"
     # A child that runs the remote helper (push, fetch, clone) inherits the
     # helper's own per-command ceiling, which defaults to 300 s and is meant for
     # an interactive `git push`.  This tool's no-progress watchdog is the guard
@@ -1535,14 +1543,21 @@ def set_branch(
     git(git_dir, work_tree, args, cwd=work_tree)
 
 
-def delete_branch(git_dir: Path, work_tree: Path, branch: str, expected: str) -> None:
-    git(
+def delete_branch(git_dir: Path, work_tree: Path, branch: str, expected: str) -> bool:
+    """Delete the branch only if it still points at *expected*; say whether it did.
+
+    A compare-and-swap that lost (the branch moved) leaves the branch where it
+    is and exits non-zero; that is not an error here, but a caller that reports
+    the rollback must not claim a deletion that did not happen.
+    """
+    proc = git(
         git_dir,
         work_tree,
         ["update-ref", "-d", f"refs/heads/{branch}", expected],
         cwd=work_tree,
         check=False,
     )
+    return proc.returncode == 0
 
 
 def fetch_remote_tip(
@@ -2594,6 +2609,64 @@ def write_seen_tips(client: Any, rid: str, base: str, tips: dict[str, str]) -> N
     _write_json_marker(client, rid, base, _SEEN_NAME, tips)
 
 
+def change_time_ns(path: Path, st: os.stat_result) -> int:
+    """The inode's change time, which an in-place edit moves even when the
+    modification time is put back.
+
+    On POSIX that is ``st_ctime``.  On Windows ``st_ctime`` is the *creation*
+    time (Python 3.12 deprecated it for exactly that reason): it never moves, so
+    a same-size in-place write followed by ``utime`` left size, mtime, inode and
+    "ctime" all unchanged and the cache vouched for the old hash (measured on
+    NTFS, Python 3.14).  NTFS keeps a real change time, reachable through
+    ``GetFileInformationByHandleEx(FileBasicInfo)``; it moved in the same
+    experiment.  Where it cannot be read the creation time is returned, which is
+    what the key held before -- a cache entry written then differs in this field
+    and is hashed once more, deliberately.
+    """
+    if os.name != "nt":
+        return st.st_ctime_ns
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class _Basic(ctypes.Structure):
+            _fields_ = [
+                ("CreationTime", ctypes.c_longlong), ("LastAccessTime", ctypes.c_longlong),
+                ("LastWriteTime", ctypes.c_longlong), ("ChangeTime", ctypes.c_longlong),
+                ("FileAttributes", wintypes.DWORD),
+            ]
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined,unused-ignore]
+        kernel32.CreateFileW.restype = wintypes.HANDLE
+        kernel32.CreateFileW.argtypes = [
+            wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, wintypes.LPVOID,
+            wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE,
+        ]
+        kernel32.GetFileInformationByHandleEx.argtypes = [
+            wintypes.HANDLE, ctypes.c_int, wintypes.LPVOID, wintypes.DWORD,
+        ]
+        kernel32.GetFileInformationByHandleEx.restype = wintypes.BOOL
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        # FILE_READ_ATTRIBUTES, all sharing, OPEN_EXISTING, BACKUP_SEMANTICS |
+        # OPEN_REPARSE_POINT (the file itself, as lstat saw it).
+        handle = kernel32.CreateFileW(
+            str(extended_path(path)), 0x80, 7, None, 3, 0x02000000 | 0x00200000, None
+        )
+        if handle is None or handle == wintypes.HANDLE(-1).value:
+            return st.st_ctime_ns
+        try:
+            info = _Basic()
+            if not kernel32.GetFileInformationByHandleEx(
+                handle, 0, ctypes.byref(info), ctypes.sizeof(info)
+            ):
+                return st.st_ctime_ns
+            return int(info.ChangeTime) * 100
+        finally:
+            kernel32.CloseHandle(handle)
+    except Exception:
+        return st.st_ctime_ns
+
+
 # -- Modification times of the files git stores (see 70_stage.py) ------------------
 #
 # Git records content and a mode, not a timestamp, so a restore used to give
@@ -2864,7 +2937,7 @@ def check_manifest_shape(manifest: Any, where: str = "the payload manifest") -> 
         rel, sha, size, mtime = item.get("path"), item.get("sha256"), item.get("size"), item.get("mtime_ns")
         if not isinstance(rel, str) or not rel:
             raise SnapshotError(f"{where} has an entry with no path")
-        if not isinstance(sha, str) or not _SHA256_RE.match(sha):
+        if not isinstance(sha, str) or not _SHA256_RE.fullmatch(sha):
             raise SnapshotError(f"{where} has a bad SHA-256 for {rel!r}")
         if isinstance(size, bool) or not isinstance(size, int) or size < 0:
             raise SnapshotError(f"{where} has a bad size for {rel!r}")
@@ -3384,7 +3457,7 @@ _AUTO_INCOMPRESSIBLE = 0.9
 _AUTO_SAMPLE_CHUNK = 256 * 1024
 _SIZE_RE = re.compile(r"^\s*(\d+)\s*([kmgt]?)(?:i?b)?\s*$", re.IGNORECASE)
 _SIZE_UNITS = {"": 1, "k": 1024, "m": 1024 ** 2, "g": 1024 ** 3, "t": 1024 ** 4}
-_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+_SHA256_RE = re.compile(r"[0-9a-f]{64}")
 _WIN_RESERVED = re.compile(r"^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$", re.IGNORECASE)
 _MAX_MTIME_NS = 2 ** 62
 
@@ -3549,7 +3622,8 @@ def find_payload_files(
         if auto and size < _AUTO_UPPER and not _incompressible(source / rel, size):
             continue
         mode = "100755" if st.st_mode & stat.S_IXUSR else "100644"
-        found[rel] = (st.st_size, st.st_mtime_ns, mode, st.st_ino, st.st_dev, st.st_ctime_ns)
+        found[rel] = (st.st_size, st.st_mtime_ns, mode, st.st_ino, st.st_dev,
+                      change_time_ns(source / rel, st))
     if placeholders:
         shown = ", ".join(placeholders[:5]) + (" ..." if len(placeholders) > 5 else "")
         raise SnapshotError(
@@ -3863,6 +3937,11 @@ def verify_payload_before_push(
 #
 # Deleting frees quota at once; disk is freed only after the library's history
 # expires and the server's GC runs (SNAPSHOT.md section 15.1).
+
+#: How often the deletion loop looks at the remote's refs again: every this many
+#: objects, or this many seconds, whichever comes first.
+_RECHECK_EVERY = 25
+_RECHECK_SECONDS = 10.0
 
 _OBJECT_NAME = re.compile(r"^[0-9a-f]{64}$")
 #: An object, or the temporary an interrupted upload left beside it.
@@ -4330,21 +4409,42 @@ def payload_gc(
                 "unused (another machine pushed); nothing was deleted. Run it again"
             )
     deleted = 0
+    gone: set[str] = set()
+    stopped_early = False
+    last_check = time.monotonic()
     for index, sha in enumerate(sorted(due), 1):
+        # The loop can run for many minutes.  A push that lands in it is noticed
+        # at the next look and stops the run, so the damage is bounded to what
+        # was deleted before the push's ref became visible (and a snapshot
+        # taken later re-uploads anything missing while its file still exists).
+        if index > 1 and (index % _RECHECK_EVERY == 0
+                          or time.monotonic() - last_check >= _RECHECK_SECONDS):
+            if _remote_tips(remote) != {k: v for k, v in history.tips.items()}:
+                stopped_early = True
+                break
+            last_check = time.monotonic()
         if not client.delete_entry(rid, f"{base}/{object_dir(sha)}/{sha}"):
             raise SnapshotError(f"the server refused to delete {sha}")
         deleted += 1
+        gone.add(sha)
         if index % 100 == 0 or index == len(due):
             print(f"deleted [{index}/{len(due)}]", flush=True)
     # The new state: everything still unused keeps its first-seen time (or gets
     # now); anything that became referenced again, or was deleted, drops out.
-    fresh = {sha: pending.get(sha, now) for sha in waiting}
+    fresh = {sha: pending.get(sha, now) for sha in waiting | (due - gone)}
     marked = len(set(fresh) - set(pending))
     if fresh != pending:
         _api(lambda: client.mkdir_p(rid, base), f"creating {base}")
         _api(lambda: client.upload_file(
             rid, base, _PENDING_NAME, json.dumps(fresh, sort_keys=True).encode("ascii")
         ), "writing gc state")
+    if stopped_early:
+        raise SnapshotError(
+            f"the remote's branches or tags changed while objects were being deleted (another "
+            f"machine pushed); stopped after {deleted} of {len(due)}. Run it again; if a "
+            "restore then names a missing object, take a new snapshot from a tree that still "
+            "has the file, or run --payload-verify"
+        )
     write_seen_tips(client, rid, base, history.tips)
     print(f"marked {marked} newly unreferenced object(s); deleted {deleted} object(s), "
           f"{total(due)}; quota is released at once, disk after the library's history "
@@ -5311,8 +5411,10 @@ def push_snapshot(
             set_branch(git_dir, work_tree, branch, base, current)
             rolled_back = base[:12]
         else:
-            delete_branch(git_dir, work_tree, branch, current)
-            rolled_back = "(deleted)"
+            if delete_branch(git_dir, work_tree, branch, current):
+                rolled_back = "(deleted)"
+            else:
+                rolled_back = f"(not deleted: the branch moved and is no longer at {current[:12]})"
     except SnapshotError as rollback_failure:
         raise SnapshotError(
             f"push to {remote} failed, and the rollback failed too "

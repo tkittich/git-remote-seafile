@@ -261,6 +261,14 @@ def git(
     # mistakes -- and a mistake here means an excluded file's bytes reaching the
     # vault, which is the one thing the pre-filter exists to prevent.
     env["GIT_LITERAL_PATHSPECS"] = "1"
+    # Two guards read git's English stderr (an unreadable directory, an index
+    # lock).  git translates its messages, so under another locale those
+    # matches would silently stop firing -- the very hole they close.  LC_ALL
+    # outranks LC_MESSAGES, so it is overridden only when the user set it.
+    env["LANGUAGE"] = "C"
+    env["LC_MESSAGES"] = "C"
+    if "LC_ALL" in env:
+        env["LC_ALL"] = "C"
     # A child that runs the remote helper (push, fetch, clone) inherits the
     # helper's own per-command ceiling, which defaults to 300 s and is meant for
     # an interactive `git push`.  This tool's no-progress watchdog is the guard

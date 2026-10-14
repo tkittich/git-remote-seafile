@@ -207,3 +207,61 @@ def read_seen_tips(client: Any, rid: str, base: str) -> dict[str, str]:
 
 def write_seen_tips(client: Any, rid: str, base: str, tips: dict[str, str]) -> None:
     _write_json_marker(client, rid, base, _SEEN_NAME, tips)
+
+
+def change_time_ns(path: Path, st: os.stat_result) -> int:
+    """The inode's change time, which an in-place edit moves even when the
+    modification time is put back.
+
+    On POSIX that is ``st_ctime``.  On Windows ``st_ctime`` is the *creation*
+    time (Python 3.12 deprecated it for exactly that reason): it never moves, so
+    a same-size in-place write followed by ``utime`` left size, mtime, inode and
+    "ctime" all unchanged and the cache vouched for the old hash (measured on
+    NTFS, Python 3.14).  NTFS keeps a real change time, reachable through
+    ``GetFileInformationByHandleEx(FileBasicInfo)``; it moved in the same
+    experiment.  Where it cannot be read the creation time is returned, which is
+    what the key held before -- a cache entry written then differs in this field
+    and is hashed once more, deliberately.
+    """
+    if os.name != "nt":
+        return st.st_ctime_ns
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class _Basic(ctypes.Structure):
+            _fields_ = [
+                ("CreationTime", ctypes.c_longlong), ("LastAccessTime", ctypes.c_longlong),
+                ("LastWriteTime", ctypes.c_longlong), ("ChangeTime", ctypes.c_longlong),
+                ("FileAttributes", wintypes.DWORD),
+            ]
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined,unused-ignore]
+        kernel32.CreateFileW.restype = wintypes.HANDLE
+        kernel32.CreateFileW.argtypes = [
+            wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, wintypes.LPVOID,
+            wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE,
+        ]
+        kernel32.GetFileInformationByHandleEx.argtypes = [
+            wintypes.HANDLE, ctypes.c_int, wintypes.LPVOID, wintypes.DWORD,
+        ]
+        kernel32.GetFileInformationByHandleEx.restype = wintypes.BOOL
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        # FILE_READ_ATTRIBUTES, all sharing, OPEN_EXISTING, BACKUP_SEMANTICS |
+        # OPEN_REPARSE_POINT (the file itself, as lstat saw it).
+        handle = kernel32.CreateFileW(
+            str(extended_path(path)), 0x80, 7, None, 3, 0x02000000 | 0x00200000, None
+        )
+        if handle is None or handle == wintypes.HANDLE(-1).value:
+            return st.st_ctime_ns
+        try:
+            info = _Basic()
+            if not kernel32.GetFileInformationByHandleEx(
+                handle, 0, ctypes.byref(info), ctypes.sizeof(info)
+            ):
+                return st.st_ctime_ns
+            return int(info.ChangeTime) * 100
+        finally:
+            kernel32.CloseHandle(handle)
+    except Exception:
+        return st.st_ctime_ns

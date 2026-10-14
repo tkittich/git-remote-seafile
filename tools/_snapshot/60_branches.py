@@ -50,14 +50,21 @@ def set_branch(
     git(git_dir, work_tree, args, cwd=work_tree)
 
 
-def delete_branch(git_dir: Path, work_tree: Path, branch: str, expected: str) -> None:
-    git(
+def delete_branch(git_dir: Path, work_tree: Path, branch: str, expected: str) -> bool:
+    """Delete the branch only if it still points at *expected*; say whether it did.
+
+    A compare-and-swap that lost (the branch moved) leaves the branch where it
+    is and exits non-zero; that is not an error here, but a caller that reports
+    the rollback must not claim a deletion that did not happen.
+    """
+    proc = git(
         git_dir,
         work_tree,
         ["update-ref", "-d", f"refs/heads/{branch}", expected],
         cwd=work_tree,
         check=False,
     )
+    return proc.returncode == 0
 
 
 def fetch_remote_tip(

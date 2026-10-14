@@ -190,8 +190,10 @@ def push_snapshot(
             set_branch(git_dir, work_tree, branch, base, current)
             rolled_back = base[:12]
         else:
-            delete_branch(git_dir, work_tree, branch, current)
-            rolled_back = "(deleted)"
+            if delete_branch(git_dir, work_tree, branch, current):
+                rolled_back = "(deleted)"
+            else:
+                rolled_back = f"(not deleted: the branch moved and is no longer at {current[:12]})"
     except SnapshotError as rollback_failure:
         raise SnapshotError(
             f"push to {remote} failed, and the rollback failed too "

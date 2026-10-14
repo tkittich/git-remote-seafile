@@ -1070,6 +1070,33 @@ class PayloadRetentionTests(_PayloadFixture):
         self.assertIn("nothing was deleted", out + err)
         self.assertIn(orphan, self.server_files())
 
+    def test_a_push_that_lands_during_the_deletion_loop_stops_it(self):
+        """The refs are read once before the loop and again every few objects:
+        a snapshot pushed mid-loop used to be noticed by nobody."""
+        self.assertEqual(self.snapshot()[0], 0)
+        keys = [self.orphan(os.urandom(2500 + i)) for i in range(30)]
+        self.assertEqual(self.gc("--payload-delete", "--payload-grace-days", "1")[0], 0)
+        self.backdate_pending(2)
+        real = snap._remote_tips
+        calls = {"n": 0}
+
+        def moved_after_the_first_look(remote):
+            calls["n"] += 1
+            tips = dict(real(remote))
+            if calls["n"] > 1:
+                tips["refs/heads/snapshot"] = "f" * 40
+            return tips
+
+        with unittest.mock.patch.object(snap, "_remote_tips", moved_after_the_first_look):
+            rc, out, err = self.gc("--payload-delete", "--payload-grace-days", "1")
+        self.assertNotEqual(rc, 0, out + err)
+        self.assertIn("stopped after", out + err)
+        left = [k for k in keys if k in self.server_files()]
+        self.assertTrue(left, "the loop did not stop")
+        self.assertLess(len(left), len(keys), "nothing was deleted before the recheck")
+        # What was not deleted stays marked, so the next run decides it afresh.
+        self.assertIn(f"{self.base}/gc-pending.json", self.server_files())
+
     def test_an_object_referenced_again_before_the_second_phase_is_kept(self):
         # The object a run reused, between the mark and the delete.
         self.assertEqual(self.snapshot()[0], 0)
@@ -1181,6 +1208,31 @@ class PayloadRetentionTests(_PayloadFixture):
         with unittest.mock.patch.object(SeafileClient, "upload_file", read_edit_then_upload):
             rc, out, err = self.snapshot("--payload-jobs", "1")
         self.assertNotEqual(rc, 0)
+        self.assertIn("changed while it was being uploaded", out + err)
+        self.assertNotIn(self.object_key(self.big1), self.server_files())
+
+    def test_a_same_size_edit_with_the_mtime_put_back_cannot_land_under_the_old_name(self):
+        """The one case the stat check cannot see, so the guard is the hash of
+        the bytes actually sent.  Mutation check: with `clean = True` in
+        `_upload_all` the earlier tests all stayed green, because they mock the
+        stat check or truncate the file instead."""
+        original = SeafileClient.upload_file
+        target = self.src / "big1.bin"
+        stat = target.stat()
+        altered = bytes(b ^ 0x55 for b in self.big1)
+        state = {"done": False}
+
+        def edit_then_read(client, rid, parent, name, content, *a, **kw):
+            if not state["done"] and name.startswith(_sha(self.big1)):
+                state["done"] = True
+                # after the stat check, before the first read
+                target.write_bytes(altered)
+                os.utime(target, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+            return original(client, rid, parent, name, content, *a, **kw)
+
+        with unittest.mock.patch.object(SeafileClient, "upload_file", edit_then_read):
+            rc, out, err = self.snapshot("--payload-jobs", "1")
+        self.assertNotEqual(rc, 0, out + err)
         self.assertIn("changed while it was being uploaded", out + err)
         self.assertNotIn(self.object_key(self.big1), self.server_files())
 
@@ -1755,6 +1807,22 @@ class PayloadRememberVerifyViewAndClockTests(_PayloadFixture):
         self.assertTrue(self._trusted(cached={}, now=now))
         # same size, same mtime, same inode -- but the inode change time moved
         self.assertFalse(self._trusted(cached={"ctime": 99}, now=now))
+
+    def test_the_change_time_in_the_key_moves_on_a_real_in_place_edit(self):
+        """Not a synthetic tuple: a file on this filesystem, rewritten in place
+        with the same size, the old mtime put back.  On NTFS ``st_ctime`` is the
+        creation time and does not move; the key must use the change time."""
+        target = self.case / "inplace.bin"
+        target.write_bytes(b"A" * 4096)
+        before = snap.find_payload_files(self.case, [], 1024)["inplace.bin"]
+        st = target.stat()
+        time.sleep(0.05)
+        with open(target, "r+b") as fh:
+            fh.write(b"B" * 4096)
+        os.utime(target, ns=(st.st_atime_ns, st.st_mtime_ns))
+        after = snap.find_payload_files(self.case, [], 1024)["inplace.bin"]
+        self.assertEqual(before[:5], after[:5], "size, mtime, mode, inode, device must all be unchanged")
+        self.assertNotEqual(before[5], after[5], "the change time did not move")
 
     def test_an_entry_written_before_ctime_and_device_were_keyed_is_adopted_not_rehashed(self):
         now = (1024, self.OLD, "100644", 7, 3, 111)

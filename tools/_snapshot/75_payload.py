@@ -48,7 +48,7 @@ _AUTO_INCOMPRESSIBLE = 0.9
 _AUTO_SAMPLE_CHUNK = 256 * 1024
 _SIZE_RE = re.compile(r"^\s*(\d+)\s*([kmgt]?)(?:i?b)?\s*$", re.IGNORECASE)
 _SIZE_UNITS = {"": 1, "k": 1024, "m": 1024 ** 2, "g": 1024 ** 3, "t": 1024 ** 4}
-_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+_SHA256_RE = re.compile(r"[0-9a-f]{64}")
 _WIN_RESERVED = re.compile(r"^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$", re.IGNORECASE)
 _MAX_MTIME_NS = 2 ** 62
 
@@ -213,7 +213,8 @@ def find_payload_files(
         if auto and size < _AUTO_UPPER and not _incompressible(source / rel, size):
             continue
         mode = "100755" if st.st_mode & stat.S_IXUSR else "100644"
-        found[rel] = (st.st_size, st.st_mtime_ns, mode, st.st_ino, st.st_dev, st.st_ctime_ns)
+        found[rel] = (st.st_size, st.st_mtime_ns, mode, st.st_ino, st.st_dev,
+                      change_time_ns(source / rel, st))
     if placeholders:
         shown = ", ".join(placeholders[:5]) + (" ..." if len(placeholders) > 5 else "")
         raise SnapshotError(
