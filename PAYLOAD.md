@@ -146,7 +146,8 @@ modification the cache missed cannot put wrong bytes under a name.
 *Known limits:* the racy rule compares the file's mtime with this machine's clock,
 which is the right domain for a local disk and not for a network share whose clock
 differs; a file with a future mtime is rehashed on every run (a cost, not a risk).
-There is no force-rehash switch yet.
+`--payload-rehash` ignores the cache for one run (a tree whose timestamps a copy tool
+restored, or a periodic audit).
 
 ### D7. Concurrency — **decided**
 
@@ -213,16 +214,18 @@ moved). Names go through the server's rules, so a view reports files it cannot
 name (over 255 bytes) rather than failing. A view is a convenience: deleting it
 loses nothing.
 
-### D11. Flags — **decided**, remembered setting **open**
+### D11. Flags — **decided**
 
 `--payload-min-size [SIZE|auto]` (`0` = off; a bare flag means `auto`),
 `--payload-jobs N` (default 3; measured: one upload 32 MiB/s, three 53 MiB/s, five
 no better), `--payload-gc`, `--payload-delete`, `--payload-grace-days N`.
 Combinations that would be silently ignored are refused. Incompatible with
 `--no-push`. A vault whose last snapshot has a manifest refuses a run that omits
-the flag (R10), naming the value. The `.seafile-payload` directory of a source is
-never staged. *Open:* remembering the setting in the vault the way the remote and
-excludes are, so a scheduled bare command keeps working.
+the flag (R10), naming the value -- unless the vault remembered it: a complete real
+run stores `--payload-min-size` in the vault's config (`snapshot.payload`, `0`
+included, a preview never), so a scheduled bare command keeps its behaviour, and the
+refusal covers a fresh vault on another machine. `--payload-rehash` ignores the hash
+cache for one run. The `.seafile-payload` directory of a source is never staged.
 
 ### D12. Privacy and security — **decided**
 
@@ -257,7 +260,7 @@ data, or surprise. Disposition is one of **fixed**, **handled**, **specified**
 | A2 | A manifest hash like `../../other` becomes part of a server path | same | **fixed**: hash must be 64 hex |
 | A3 | File edited after hashing, before upload | bytes under another content's name | **fixed** (the first handling was wrong, see 6.1): D5 hashes the bytes as they are sent |
 | A4 | Same-size edit within the timestamp granularity | cached hash would be trusted | **handled**: D6 racy rule against this machine's hash time, plus inode |
-| A5 | mtime restored by a copy tool (`cp -p`, `robocopy`) | cache trusted, content differs | **open**: force-rehash switch |
+| A5 | mtime restored by a copy tool (`cp -p`, `robocopy`) | cache trusted, content differs | **handled**: inode in the cache key catches most; `--payload-rehash` for the rest |
 | A6 | Another machine's un-pushed snapshot references an object; retention deletes it | data loss | **handled within the grace period**: D9 two-phase, every branch and tag of the remote plus the local vault's (which must be one). Another machine's objects that are uploaded but not pushed are invisible to this machine's retention; they survive `--payload-grace-days`, after which that machine's next run re-uploads them (source unchanged) or refuses to push. Run retention from one machine |
 | A7 | Run interrupted after upload, before push | orphan objects | **handled**: harmless, reused (D5) |
 | A8 | An object is truncated or altered on the server, same size | upload skipped as "present"; backup silently bad until a restore | **open**: only a restore drill detects it; the tool no longer creates this state itself (D5); consider `--payload-verify` sampling |
@@ -343,14 +346,13 @@ in-process stub. Each fix in 6.1 was verified by mutation: a one-line
 change that removes it makes a named test fail (12 of 12). The real-server soaks
 cover a 1.1 GiB chunked upload, unchanged run, same-size edit, restore and
 older-snapshot restore, `auto` selection and retention, and the 131 GiB flood
-tree end to end. Not yet covered: views (D10), a force-rehash switch (D6), a
-remembered setting (D11), manifests at 100,000 files (D4), and a macOS or Linux
+tree end to end. Not yet covered: views (D10), manifests at 100,000 files (D4), and a macOS or Linux
 non-UTF-8 run.
 
 ## 8. Order of work
 
 1. ~~Decide D1 (selection rule).~~ Done: `auto`.
 2. ~~Retention helper (D9).~~ Done.
-3. The 131 GiB flood run, as the acceptance test.
-4. Remembered setting and force-rehash (D11, D6).
-5. Views (D10).
+3. ~~The 131 GiB flood run, as the acceptance test.~~ Done: 633 files, 124.6 GB, restored and verified.
+4. ~~Remembered setting and force-rehash (D11, D6).~~ Done.
+5. Snapshot expiry (`--payload-keep N`), sampled verification (`--payload-verify`), views (D10).
