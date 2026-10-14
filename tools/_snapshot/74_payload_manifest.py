@@ -268,7 +268,7 @@ def build_manifest(
         "format": PAYLOAD_FORMAT,
         "snapshot": "p-" + ident.hexdigest()[:16],
         "min_size": min_size,
-        "min_tool": PAYLOAD_MIN_TOOL,
+        "min_git_remote_seafile": PAYLOAD_MIN_TOOL,
         "rule": rule,
         "files": entries,
     }

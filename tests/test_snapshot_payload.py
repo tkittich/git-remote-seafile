@@ -755,7 +755,7 @@ class PayloadModeTests(unittest.TestCase):
         message = _git(self.vault, "log", "-1", "--format=%B", "snapshot")
         self.assertIn(f"{snap.TOOL_TRAILER}: {snap.tool_version()}", message)
         manifest = json.loads(_git(self.vault, "show", "snapshot:.seafile-payload/manifest.json"))
-        self.assertEqual(manifest["min_tool"], snap.PAYLOAD_MIN_TOOL)
+        self.assertEqual(manifest["min_git_remote_seafile"], snap.PAYLOAD_MIN_TOOL)
 
     def test_a_snapshot_by_a_newer_tool_is_warned_about(self):
         self.assertEqual(self.snapshot()[0], 0)
@@ -763,12 +763,12 @@ class PayloadModeTests(unittest.TestCase):
             (self.src / "small.txt").write_bytes(b"newer tool\n")
             rc, out, err = self.snapshot()
         self.assertEqual(rc, 0, out + err)
-        self.assertIn("was written by tool 99.1.0", err)
+        self.assertIn("was written by git-remote-seafile 99.1.0", err)
 
     def test_a_manifest_that_needs_a_newer_tool_is_refused(self):
         with self.assertRaises(snap.SnapshotError) as ctx:
-            snap.check_manifest_shape({"format": 2, "min_tool": "99.0.0", "files": []})
-        self.assertIn("needs tool 99.0.0", str(ctx.exception))
+            snap.check_manifest_shape({"format": 2, "min_git_remote_seafile": "99.0.0", "files": []})
+        self.assertIn("needs git-remote-seafile 99.0.0", str(ctx.exception))
         snap.check_manifest_shape({"format": 2, "files": []})        # an older manifest is fine
 
     def test_delete_needs_a_vault_or_an_explicit_no_vault(self):
@@ -807,6 +807,19 @@ class PayloadModeTests(unittest.TestCase):
         rc, out, err = self.gc("--payload-keep", "1")      # a report never needs it
         self.assertEqual(rc, 0, out + err)
         self.assertIn("older snapshot(s) become unrestorable", out)
+
+    def test_keep_does_not_count_snapshots_that_never_used_payload(self):
+        # Found on the real server: a snapshot taken before payload mode is whole in
+        # git, so expiring it loses nothing and needs no acknowledgement.
+        self.assertEqual(self.run_tool(self.src, "--vault", self.vault, "--remote", self.remote,
+                                       "--no-payload")[0], 0)
+        (self.src / "small.txt").write_bytes(b"second\n")
+        self.assertEqual(self.snapshot()[0], 0)
+        rc, out, err = self.gc("--payload-keep", "1")
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn("0 older snapshot(s) become unrestorable", out)
+        rc, out, err = self.gc("--payload-delete", "--payload-keep", "1")
+        self.assertEqual(rc, 0, out + err)
 
     def test_verify_leaves_a_marker_the_store_line_and_gc_report_show(self):
         self.assertEqual(self.snapshot()[0], 0)

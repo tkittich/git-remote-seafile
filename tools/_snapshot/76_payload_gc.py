@@ -227,7 +227,14 @@ def _hashes_in_history(
                                 cwd=Path(td)).stdout.split())
             commits = sorted(kept)
             everything = set(git(repo, None, ["rev-list", "--all"], cwd=Path(td)).stdout.split())
-            expired = len(everything - kept)
+            # Only a snapshot that has a manifest can become unrestorable: one taken
+            # before payload mode is whole in git and stays restorable.
+            older = "".join(f"{c}:{PAYLOAD_MANIFEST}\n" for c in sorted(everything - kept))
+            if older:
+                listed = git(repo, None, ["cat-file", "--batch-check"], cwd=Path(td),
+                             stdin=older).stdout.splitlines()
+                expired = sum(1 for line in listed
+                              if len(line.split()) == 3 and line.split()[1] == "blob")
         if not commits:
             return _History({}, 0, 0, tips, dropped, expired)
         specs = "".join(f"{c}:{PAYLOAD_MANIFEST}\n" for c in commits)

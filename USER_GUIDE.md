@@ -1151,7 +1151,7 @@ What to know:
   than your remaining quota, or into a library this machine syncs, is warned about
   first; a fresh vault is refused when the remote's snapshots use another threshold
   than the default (repeat that flag, or pass `--payload-min-size auto` to switch).
-  Every snapshot commit records the tool's version in a `Seafile-Snapshot-Tool:`
+  Every snapshot commit records the tool's version in a `Git-Remote-Seafile:`
   trailer, and a run warns when it builds on a snapshot written by a newer tool.
   The store line and the gc report say when `--payload-verify` last ran.
 - **What it does not do:** no encryption, no delta between versions of one file (a

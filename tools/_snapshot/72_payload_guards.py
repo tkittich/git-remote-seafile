@@ -7,7 +7,7 @@
 # version goes in the commit message (a trailer), never in the tree, so a tree
 # that did not change still commits nothing after an upgrade.
 
-TOOL_TRAILER = "Seafile-Snapshot-Tool"
+TOOL_TRAILER = "Git-Remote-Seafile"
 #: The oldest tool that reads the payload manifests this tool writes correctly.
 #: Raised only when a change to the manifest's meaning needs it, never per release.
 PAYLOAD_MIN_TOOL = "0.9.0"
@@ -54,7 +54,7 @@ def warn_if_newer_tool(git_dir: Path, work_tree: Path, rev: str | None) -> None:
     a, b = _version_tuple(theirs), _version_tuple(ours)
     if a is not None and b is not None and a > b:
         print(
-            f"warning: the snapshot this run builds on was written by tool {theirs}; this is "
+            f"warning: the snapshot this run builds on was written by git-remote-seafile {theirs}; this is "
             f"{ours}. A newer tool may have changed what a vault holds -- upgrade before "
             "relying on this run.",
             file=sys.stderr,
@@ -64,12 +64,12 @@ def warn_if_newer_tool(git_dir: Path, work_tree: Path, rev: str | None) -> None:
 
 def check_min_tool(manifest: dict[str, Any], where: str) -> None:
     """Refuse a manifest that says it needs a newer tool than this one."""
-    needed = manifest.get("min_tool")
+    needed = manifest.get("min_git_remote_seafile")
     need, have = _version_tuple(needed if isinstance(needed, str) else None), \
         _version_tuple(tool_version())
     if need is not None and have is not None and need > have:
         raise SnapshotError(
-            f"{where} needs tool {needed} or newer (this is {tool_version()}). "
+            f"{where} needs git-remote-seafile {needed} or newer (this is {tool_version()}). "
             "Upgrade it before restoring or running retention"
         )
 
