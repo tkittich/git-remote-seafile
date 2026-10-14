@@ -947,7 +947,20 @@ class SeafileClient:
                         f"{clean_path} is {declared} bytes, more than the {max_bytes} this "
                         "file may hold; refusing to read it"
                     )
-            return file_resp.content
+            if max_bytes is None:
+                return file_resp.content
+            # The declared length is the server's word.  A chunked body has
+            # none, and a lying one is the server's to tell: bound what is
+            # actually read, one byte past the cap being proof enough.
+            body = bytearray()
+            for chunk in file_resp.iter_content(chunk_size=65536):
+                body.extend(chunk)
+                if len(body) > max_bytes:
+                    raise SeafileAPIError(
+                        f"{clean_path} is larger than the {max_bytes} bytes this "
+                        "file may hold; refusing to read it"
+                    )
+            return bytes(body)
         finally:
             if max_bytes is not None:
                 try:

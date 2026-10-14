@@ -238,6 +238,11 @@ class RemoteHelper:
                     isinstance(entries, list)
                     and len(entries) == 0
                     and self.client.dir_exists(self.repo_id, full_parent)
+                    # The delete is recursive, and a peer may have created a
+                    # sibling ref in the round trips since the listing above:
+                    # look once more, as close to the delete as one request
+                    # allows, and leave the directory if it is no longer empty.
+                    and self.client.list_dir(self.repo_id, full_parent) == []
                 ):
                     self.client.delete_entry(self.repo_id, full_parent)
                     # The directory cache must forget this path or it will
@@ -491,6 +496,12 @@ class RemoteHelper:
                 return "stale info"
             return local_sha, remote_sha
         if remote_sha and not force:
+            # A ref file's content is whatever the server returned.  It reaches
+            # git's argv below, where `--stdin` or `--help` is an option, not a
+            # revision.  Only that shape is refused here: any other non-object
+            # name already fails inside git and gets the same answer.
+            if isinstance(remote_sha, str) and remote_sha.startswith("-"):
+                return "fetch first"
             try:
                 if not is_ancestor(remote_sha, local_sha):
                     return "non-fast-forward"

@@ -636,7 +636,11 @@ class TestClientAPI(unittest.TestCase):
                 return MagicMock(status_code=200, text=link)
             return transfer["resp"]
 
-        transfer["resp"] = MagicMock(status_code=200, content=b"Hello World\n")
+        transfer["resp"] = MagicMock(
+            status_code=200,
+            content=b"Hello World\n",
+            iter_content=lambda chunk_size=65536: iter([b"Hello World\n"]),
+        )
         self.client.session.get = MagicMock(side_effect=route)
 
         with patch("requests.get") as bare_get:
@@ -1665,7 +1669,44 @@ class TestTextFilesAreBounded(unittest.TestCase):
         )
 
     def _body(self, declared, content=b"abc"):
-        return MagicMock(status_code=200, headers={"Content-Length": str(declared)}, content=content)
+        return MagicMock(
+            status_code=200,
+            headers={"Content-Length": str(declared)},
+            content=content,
+            iter_content=lambda chunk_size=65536: iter([content]),
+        )
+
+    def _stream(self, chunks, headers=None):
+        return MagicMock(
+            status_code=200,
+            headers=headers or {},
+            iter_content=lambda chunk_size=65536: iter(chunks),
+        )
+
+    def test_a_chunked_body_with_no_length_is_bounded_while_it_is_read(self):
+        # No Content-Length: the cap used to be enforced only against a declared
+        # length, so a chunked body of any size was buffered whole.
+        resp = self._stream([b"x" * 600, b"x" * 600])
+        self.client.session.get = MagicMock(
+            side_effect=[
+                MagicMock(status_code=200, text='"http://api-host:8000/seafhttp/files/t/ref"'),
+                resp,
+            ]
+        )
+        with self.assertRaises(SeafileAPIError) as ctx:
+            self.client.get_file_bytes("repo1", "/refs/heads/main", max_bytes=1024)
+        self.assertIn("refusing to read", str(ctx.exception))
+
+    def test_a_body_longer_than_it_declared_is_still_bounded(self):
+        resp = self._stream([b"x" * 4096], headers={"Content-Length": "10"})
+        self.client.session.get = MagicMock(
+            side_effect=[
+                MagicMock(status_code=200, text='"http://api-host:8000/seafhttp/files/t/ref"'),
+                resp,
+            ]
+        )
+        with self.assertRaises(SeafileAPIError):
+            self.client.get_file_bytes("repo1", "/refs/heads/main", max_bytes=1024)
 
     def test_a_body_declared_larger_than_the_cap_is_not_read(self):
         resp = self._body(200 * 1024 * 1024)

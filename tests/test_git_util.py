@@ -173,6 +173,9 @@ class TestGitUtilWithRealGit(unittest.TestCase):
         "exclude nothing", and it should not reach a subprocess at all.
         """
         self.assertEqual(filter_existing_objects(["not-a-sha", "", "zzzz"]), [])
+        # `$` also matches before a trailing newline, so `match` would take
+        # this: 40 hex digits and a newline is not an object name (A12.2).
+        self.assertEqual(filter_existing_objects(["a" * 40 + "\n"]), [])
 
     def test_create_and_install_packfile(self):
         c1 = rev_parse("HEAD")

@@ -510,6 +510,58 @@ class TestConcurrencyAndLocking(unittest.TestCase):
             [f"/path/.git-lock.d/{b._nonce}.json"],
         )
 
+    def test_an_expired_unreaped_ticket_is_not_resurrected_over_a_live_peer(self):
+        """The reap can fail (a transient delete error), leaving A's expired
+        ticket in place next to B's live one.  A rewriting it with a fresh
+        timestamp and the grant marker would put A back ahead of B."""
+        store = _SharedLockStore()
+        a = RemoteLock(store.client("token-A"), "repo1", "/path", timeout=5, lease=60, settle=0)
+        a.acquire()
+        store.expire_all(120)
+        a_path = f"/path/.git-lock.d/{a._nonce}.json"
+        before = store.files[a_path]
+        store.put_ticket(
+            "/path/.git-lock.d/b-nonce.json",
+            json.loads(_ticket("b-nonce", owner="bob", machine="nodeB", holding=True)),
+        )
+        with patch("sys.stderr", io.StringIO()) as err:
+            state = a.renew_state()
+        self.assertEqual(state, LEASE_LOST)
+        self.assertIn("expired", err.getvalue())
+        self.assertEqual(store.files[a_path], before, "the expired ticket was rewritten")
+
+    def test_an_expired_ticket_with_nobody_waiting_still_renews(self):
+        """A slow holder that nobody is queued behind is not punished."""
+        store = _SharedLockStore()
+        a = RemoteLock(store.client("token-A"), "repo1", "/path", timeout=5, lease=60, settle=0)
+        a.acquire()
+        store.expire_all(120)
+        self.assertEqual(a.renew_state(), LEASE_HELD)
+
+    def test_plain_unlock_leaves_a_live_local_holder_alone_and_clears_a_dead_one(self):
+        store = _SharedLockStore()
+        lock = RemoteLock(store.client("token-U"), "repo1", "/path", timeout=1, lease=60, settle=0)
+        mine = dict(owner=lock._owner_id(), machine=socket.gethostname())
+
+        # os.getppid() is a live process other than this one.
+        store.put_ticket(
+            "/path/.git-lock.d/live.json",
+            json.loads(_ticket("live", pid=os.getppid(), **mine)),
+        )
+        with self.assertRaises(RepositoryLockedError) as ctx:
+            lock.unlock()
+        self.assertIn("live process", str(ctx.exception))
+        self.assertIn("/path/.git-lock.d/live.json", store.files)
+
+        # The same ticket from a process that is gone is the stale lock the
+        # command exists for.
+        store.put_ticket(
+            "/path/.git-lock.d/live.json",
+            json.loads(_ticket("live", pid=4294967295, **mine)),
+        )
+        self.assertTrue(lock.unlock())
+        self.assertNotIn("/path/.git-lock.d/live.json", store.files)
+
     def test_lock_lease_renew(self):
         """Lease renewal rewrites the ticket with a fresh timestamp."""
         mock_client = MagicMock()

@@ -827,16 +827,20 @@ def compact_repository(
             # lost had its commits pruned and its packs deleted.  A single file
             # has no filesystem to collide on.  ``strict`` makes a ref that
             # cannot be read an error: skipping it is the same loss.
-            mirrored: dict[str, str] = {}
-            for namespace in REF_NAMESPACES:
-                for ref_name, sha in iter_refs(
-                    client, repo_id, clean_repo, namespace, strict=True
-                ):
-                    if not sha or not sha.strip():
-                        raise RuntimeError(
-                            f"refusing to compact {clean_repo}: empty SHA for ref '{ref_name}'."
-                        )
-                    mirrored[ref_name] = sha.strip()
+            def read_mirror() -> dict[str, str]:
+                found: dict[str, str] = {}
+                for namespace in REF_NAMESPACES:
+                    for ref_name, sha in iter_refs(
+                        client, repo_id, clean_repo, namespace, strict=True
+                    ):
+                        if not sha or not sha.strip():
+                            raise RuntimeError(
+                                f"refusing to compact {clean_repo}: empty SHA for ref '{ref_name}'."
+                            )
+                        found[ref_name] = sha.strip()
+                return found
+
+            mirrored = read_mirror()
             mirrored_refs = len(mirrored)
             if mirrored:
                 (bare_repo / "packed-refs").write_bytes(
@@ -907,6 +911,22 @@ def compact_repository(
                 client, repo_id, pack_dir, new_packs,
                 old_adj="obsolete", new_desc="consolidated packfiles", plural=True,
             )
+
+            # 6c. The mirror was read before a repack that can take minutes.  A
+            # writer that ignores the lock (a pre-0.8.4 client, a script) may
+            # have pushed meanwhile: its objects were not in the mirror, so the
+            # consolidated pack does not carry them, and step 7 would delete the
+            # only pack that does -- leaving its ref naming nothing.  Read the
+            # refs again, and delete nothing if they are not what the
+            # reachability was computed from (the payload retention run does the
+            # same before its first deletion).
+            if read_mirror() != mirrored:
+                raise RuntimeError(
+                    "refusing to delete obsolete packfiles: the remote's refs changed while "
+                    "the repository was being compacted (a writer that did not take the lock). "
+                    "The consolidated packfiles were uploaded and the old ones left untouched; "
+                    "run gc again."
+                )
 
             # 7. Delete obsolete old packs from Seafile
             if verbose:

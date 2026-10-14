@@ -1214,6 +1214,38 @@ class TestRemoteHelper(unittest.TestCase):
         # future D/F ref conflict can never be recreated.
         h.client.evict_known_dir.assert_called_once_with("repo1", "/git-repo/refs/heads/feature")
 
+    def test_a_sibling_created_before_the_prune_keeps_its_directory(self):
+        """The directory delete is recursive; the last listing before it
+        decides.  A peer's `feature/beta` appearing in between must survive."""
+        h = make_helper()
+        h.client = MagicMock()
+        h.repo_id = "repo1"
+        h.repo_path = "/git-repo"
+        h._refs_cache = {"refs/heads/feature/auth": "sha123"}
+        h.client.delete_entry.return_value = True
+        h.client.dir_exists.return_value = True
+        listings = iter([[], [{"name": "beta", "type": "file"}]])
+        h.client.list_dir.side_effect = lambda repo_id, path: next(listings)
+
+        with patch("sys.stdout", io.StringIO()), patch("git_remote_seafile.helper.RemoteLock"):
+            h.cmd_push([":refs/heads/feature/auth"])
+
+        deleted = [c.args[1] for c in h.client.delete_entry.call_args_list]
+        self.assertNotIn("/git-repo/refs/heads/feature", deleted)
+
+    @patch("git_remote_seafile.helper.rev_parse", return_value="a" * 40)
+    @patch("git_remote_seafile.helper.is_ancestor")
+    def test_a_remote_ref_that_looks_like_a_git_option_never_reaches_git(self, mock_ancestor, _rev):
+        h = make_helper()
+        h.client = MagicMock()
+        h.client.get_file_text.return_value = "--stdin"
+        h.repo_id = "repo1"
+        h.repo_path = "/git-repo"
+        self.assertEqual(
+            h._decide_update("refs/heads/main", "refs/heads/main", force=False), "fetch first"
+        )
+        mock_ancestor.assert_not_called()
+
     def test_cmd_push_delete_does_not_prune_on_an_unconfirmed_listing(self):
         # list_dir answers [] for both "empty" and "missing/unreachable"; a
         # transient failure used to read as "prune it" -- a destructive call

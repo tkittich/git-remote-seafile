@@ -160,6 +160,10 @@ def _is_pid_alive(pid: int) -> bool:
             return False
         except PermissionError:
             return True
+        except (OverflowError, ValueError):
+            # A pid beyond the OS's pid_t cannot name a live process; reading
+            # it as "alive" kept such a ticket (and my fixtures) unreclaimable.
+            return False
         except Exception:
             return True
 
@@ -652,6 +656,36 @@ class RemoteLock:
             return LEASE_LOST
 
         now = self._get_server_time()
+        # An expired ticket nobody reaped is not a lease.  Rewriting it with a
+        # fresh timestamp and the grant marker would put the stalled holder back
+        # ahead of a peer that lawfully took over (its order_ts is older), and
+        # the peer would be fenced out while the zombie carried on.  A holder
+        # that merely ran long with nobody waiting still renews: only a *live*
+        # foreign ticket makes the expiry decisive.
+        try:
+            own = json.loads(current)
+            expired = not self._is_lock_active(own, now, quiet=True)
+        except Exception:
+            expired = False
+        if expired:
+            try:
+                others = [
+                    t for t in self._scan_tickets(now, reap=False)
+                    if t.get("nonce") != self._nonce and self._is_lock_active(t, now, quiet=True)
+                ]
+            except Exception as ex:
+                sys.stderr.write(
+                    f"Warning: lease expired and the queue could not be read ({ex}); ownership unproven.\n"
+                )
+                sys.stderr.flush()
+                return LEASE_UNKNOWN
+            if others:
+                sys.stderr.write(
+                    "Warning: this lease expired and another client is queued behind it; "
+                    "not renewing.\n"
+                )
+                sys.stderr.flush()
+                return LEASE_LOST
         # Built by the one builder, with `holding` carried through.  A renewal
         # that rewrote this ticket without the marker would quietly un-grant the
         # lock while we still hold it, and the next newcomer's scan would be
@@ -911,6 +945,27 @@ class RemoteLock:
                 raise RepositoryLockedError(
                     f"Repository is locked by '{status.get('owner')}' on '{status.get('machine')}'. "
                     "Use --force to break the lock."
+                )
+            # "Release a stale lock" is the promise; acquire() reclaims a
+            # ticket whose local process is gone, and so must this.  A live
+            # holder on this machine (a scheduled push mid-flight) loses its
+            # ticket to a plain unlock otherwise, and fails at its next fence.
+            try:
+                holder_pid = int(status.get("pid") or 0)
+            except (TypeError, ValueError):
+                holder_pid = 0
+            holder_mid = status.get("machine_id")
+            same_machine = holder_mid is None or str(holder_mid) == _LOCAL_MACHINE_ID
+            if (
+                not status.get("stale")
+                and same_machine
+                and holder_pid > 0
+                and holder_pid != os.getpid()
+                and _is_pid_alive(holder_pid)
+            ):
+                raise RepositoryLockedError(
+                    f"The lock is held by a live process (PID {holder_pid}) on this machine, "
+                    "so it is not stale. Wait for it, stop it, or use --force to break the lock."
                 )
             # Owner proven: delete only the winning ticket, not the queue.
             winner_nonce = status.get("nonce")

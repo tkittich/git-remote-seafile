@@ -539,6 +539,34 @@ class TestGcRecoveryAndFencing(unittest.TestCase):
         self.assertTrue(regenerated, "the truncated index was never rebuilt")
 
     @patch("subprocess.run")
+    def test_a_ref_that_moves_during_the_repack_stops_every_deletion(self, mock_subprocess):
+        """A writer that ignores the lock pushed while gc was repacking.
+
+        The consolidated pack was computed from the refs read before the
+        repack, so it does not carry the newcomer's objects; deleting the old
+        packs would delete the only ones that do, and the ref would survive,
+        naming nothing (reproduced against the stub by an independent review).
+        """
+        client = self._client([{"name": "pack-1.pack"}, {"name": "pack-2.pack"}])
+        original = client.get_file_text.side_effect
+
+        def moved_after_upload(repo_id, path):
+            if ".git-lock" not in path and client.uploaded_sizes:
+                return "sha-pushed-meanwhile"
+            return original(repo_id, path)
+
+        client.get_file_text.side_effect = moved_after_upload
+        mock_subprocess.side_effect = self._subprocess_fake()
+
+        with patch("pathlib.Path.glob") as mock_glob:
+            self._one_new_pack(mock_glob)
+            with self.assertRaises(RuntimeError) as ctx:
+                compact_repository(client, "repo1", "/path", min_packs=2, verbose=False)
+        self.assertIn("refs changed while", str(ctx.exception))
+        packs = [p for p in self._deleted_paths(client) if "objects/pack" in p]
+        self.assertEqual(packs, [], "an old pack was deleted")
+
+    @patch("subprocess.run")
     def test_gc_regenerates_an_index_that_fails_verification(self, mock_subprocess):
         """A present-but-corrupt .idx is rebuilt, not trusted.
 
