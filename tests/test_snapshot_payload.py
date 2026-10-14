@@ -57,7 +57,9 @@ def _good_entry(**over):
     return entry
 
 
-class PayloadModeTests(unittest.TestCase):
+class _PayloadFixture(unittest.TestCase):
+    """Stub server, a small source tree and the helpers; holds no tests."""
+
     @classmethod
     def setUpClass(cls):
         cls.stub = SeafileStub().start()
@@ -140,6 +142,64 @@ class PayloadModeTests(unittest.TestCase):
         key = f"{self.objects}/{sha[:2]}/{sha}"
         self.stub.files.setdefault(REPO_ID, {})[key] = content
         return key
+
+    # -- change detection (R4, R6, D6) --------------------------------------------
+    def _tiles(self):
+        a, b, c = (os.urandom(4000) for _ in range(3))
+        for name, data in (("tile_1.bin", a), ("tile_2.bin", b), ("tile_3.bin", c)):
+            path = self.src / name
+            path.write_bytes(data)
+            os.utime(path, ns=(OLD_NS, OLD_NS))
+        return a, b, c
+
+    # -- payload mode is on by default ------------------------------------------
+    def bare(self, *extra: object, vault: pathlib.Path | None = None,
+             remote: str | None = None) -> tuple[int, str, str]:
+        """A run with no payload flag at all, the auto thresholds scaled to the fixture."""
+        with unittest.mock.patch.object(snap, "_AUTO_UPPER", 8000), \
+                unittest.mock.patch.object(snap, "_AUTO_LOWER", 2000):
+            return self.run_tool(self.src, "--vault", vault or self.vault,
+                                 "--remote", remote or self.remote, *extra)
+
+    def _existing_vault_without_payload(self) -> None:
+        """A vault with an earlier snapshot taken before payload mode was the default."""
+        with unittest.mock.patch.object(snap, "_AUTO_UPPER", 8000), \
+                unittest.mock.patch.object(snap, "_AUTO_LOWER", 2000):
+            rc, out, err = self.run_tool(self.src, "--vault", self.vault, "--no-push")
+        self.assertEqual(rc, 0, out + err)
+        (self.src / "small.txt").write_bytes(b"changed\n")      # a new snapshot is due
+
+    def _existing_vault_without_payload_other(self) -> None:
+        other = self.case / "other-vault"
+        with unittest.mock.patch.object(snap, "_AUTO_UPPER", 8000), \
+                unittest.mock.patch.object(snap, "_AUTO_LOWER", 2000):
+            self.assertEqual(
+                self.run_tool(self.src, "--vault", other, "--no-push")[0], 0)
+            (self.src / "small.txt").write_bytes(b"other\n")
+            rc, out, err = self.run_tool(
+                self.src, "--vault", other, "--remote", "seafile://testlib/pvault2",
+                "--payload-min-size", "auto")
+        self.assertEqual(rc, 0, out + err)
+        self.assertNotIn("NOTICE: payload mode", out)    # the user asked for it
+
+    # -- views (D10) ------------------------------------------------------------
+    def view(self, *extra: object) -> tuple[int, str, str]:
+        return self.run_tool("--payload-view", "--remote", self.remote, *extra)
+
+    # -- clock domain of the racy rule, long paths, the periodic report ----------
+    def _cache_case(self, *, behind_ns: int):
+        """One 1 MiB candidate, hashed once, with an mtime ``behind_ns`` before 'now'."""
+        path = self.case / "racy-unit.bin"
+        path.write_bytes(b"x" * 1024)
+        now = time.time_ns()
+        mtime = now - behind_ns
+        stale = {"size": 1024, "mtime_ns": mtime, "ino": 7, "sha256": "a" * 64, "at": now}
+        return path, {"racy-unit.bin": (1024, mtime, "100644", 7)}, stale
+
+
+class PayloadBasicsTests(_PayloadFixture):
+    """Landing by hash, restore, naming, change detection."""
+
 
     # -- the basics (R1, R4, R5, R8, R10) ---------------------------------------
     def test_payload_bypasses_git_and_lands_by_hash(self):
@@ -351,15 +411,6 @@ class PayloadModeTests(unittest.TestCase):
         self.assertIn("missing from the server", out + err)
         self.assertIn("Not pushing", out + err)
 
-    # -- change detection (R4, R6, D6) --------------------------------------------
-    def _tiles(self):
-        a, b, c = (os.urandom(4000) for _ in range(3))
-        for name, data in (("tile_1.bin", a), ("tile_2.bin", b), ("tile_3.bin", c)):
-            path = self.src / name
-            path.write_bytes(data)
-            os.utime(path, ns=(OLD_NS, OLD_NS))
-        return a, b, c
-
     def test_renumbered_same_size_same_mtime_files_are_not_given_their_predecessors_hash(self):
         (self.src / "big1.bin").unlink()
         (self.src / "sub" / "big2.bin").unlink()
@@ -420,6 +471,11 @@ class PayloadModeTests(unittest.TestCase):
         rc, out, err = self.snapshot()
         self.assertEqual(rc, 0, out + err)
         self.assertEqual(out.count("hashing ["), 2)
+
+
+class PayloadManifestAndSelectionTests(_PayloadFixture):
+    """Hostile manifests, names, and what qualifies as payload."""
+
 
     # -- hostile and unusual manifests (R7, D4, D8, D12) ----------------------------
     def test_manifest_paths_that_could_escape_or_run_code_are_refused(self):
@@ -608,14 +664,10 @@ class PayloadModeTests(unittest.TestCase):
         self.assertEqual(rc, 0, out + err)
         self.assertNotIn("payload:", out)
 
-    # -- payload mode is on by default ------------------------------------------
-    def bare(self, *extra: object, vault: pathlib.Path | None = None,
-             remote: str | None = None) -> tuple[int, str, str]:
-        """A run with no payload flag at all, the auto thresholds scaled to the fixture."""
-        with unittest.mock.patch.object(snap, "_AUTO_UPPER", 8000), \
-                unittest.mock.patch.object(snap, "_AUTO_LOWER", 2000):
-            return self.run_tool(self.src, "--vault", vault or self.vault,
-                                 "--remote", remote or self.remote, *extra)
+
+class PayloadDefaultAndSafeguardTests(_PayloadFixture):
+    """On by default, the conversion warning, safeguards, flags, parallel uploads."""
+
 
     def test_payload_mode_is_on_without_any_flag_and_says_so(self):
         rc, out, err = self.bare()
@@ -722,14 +774,6 @@ class PayloadModeTests(unittest.TestCase):
             )
             self.assertNotEqual(probe.returncode, 0, name)
 
-    def _existing_vault_without_payload(self) -> None:
-        """A vault with an earlier snapshot taken before payload mode was the default."""
-        with unittest.mock.patch.object(snap, "_AUTO_UPPER", 8000), \
-                unittest.mock.patch.object(snap, "_AUTO_LOWER", 2000):
-            rc, out, err = self.run_tool(self.src, "--vault", self.vault, "--no-push")
-        self.assertEqual(rc, 0, out + err)
-        (self.src / "small.txt").write_bytes(b"changed\n")      # a new snapshot is due
-
     def test_converting_an_existing_vault_warns_before_anything_is_uploaded(self):
         self._existing_vault_without_payload()
         rc, out, err = self.bare()
@@ -758,19 +802,6 @@ class PayloadModeTests(unittest.TestCase):
         self.assertNotIn("NOTICE: payload mode", out)
         self.assertIn("payload: on by default", out)
         self._existing_vault_without_payload_other()
-
-    def _existing_vault_without_payload_other(self) -> None:
-        other = self.case / "other-vault"
-        with unittest.mock.patch.object(snap, "_AUTO_UPPER", 8000), \
-                unittest.mock.patch.object(snap, "_AUTO_LOWER", 2000):
-            self.assertEqual(
-                self.run_tool(self.src, "--vault", other, "--no-push")[0], 0)
-            (self.src / "small.txt").write_bytes(b"other\n")
-            rc, out, err = self.run_tool(
-                self.src, "--vault", other, "--remote", "seafile://testlib/pvault2",
-                "--payload-min-size", "auto")
-        self.assertEqual(rc, 0, out + err)
-        self.assertNotIn("NOTICE: payload mode", out)    # the user asked for it
 
     # -- safeguards (PAYLOAD.md D13) ----------------------------------------------
     def test_a_fresh_vault_is_refused_when_the_remote_used_another_rule(self):
@@ -976,6 +1007,11 @@ class PayloadModeTests(unittest.TestCase):
         rc, out, err = self.snapshot("--payload-jobs", "3")
         self.assertEqual(rc, 0, out + err)
         self.assertEqual(self.object_count(), 6)
+
+
+class PayloadRetentionTests(_PayloadFixture):
+    """gc and the second-round findings."""
+
 
     # -- retention (D9) ----------------------------------------------------------
     def test_gc_reports_and_changes_nothing_by_default(self):
@@ -1255,6 +1291,11 @@ class PayloadModeTests(unittest.TestCase):
         self.assertTrue(snap._commit_object(fake, "r", "/d", "h" * 64 + ".part-1", "h" * 64, 10))
         self.assertEqual(fake.deleted, ["/d/" + "h" * 64 + ".part-1"])
 
+
+class PayloadRememberVerifyViewAndClockTests(_PayloadFixture):
+    """The remembered setting, verify, views, the clock domain, the report."""
+
+
     # -- the remembered setting and the force-rehash switch ---------------------
     def test_payload_rehash_ignores_the_cache_for_one_run(self):
         (self.src / "big1.bin").unlink()
@@ -1357,10 +1398,6 @@ class PayloadModeTests(unittest.TestCase):
         self.assertEqual(rc, 1, out + err)
         self.assertIn("count or 'all'", err)
 
-    # -- views (D10) ------------------------------------------------------------
-    def view(self, *extra: object) -> tuple[int, str, str]:
-        return self.run_tool("--payload-view", "--remote", self.remote, *extra)
-
     def test_a_view_has_real_names_and_moves_no_data(self):
         self.assertEqual(self.snapshot()[0], 0)
         before = {k for k in self.server_files() if k.startswith(self.objects)}
@@ -1446,16 +1483,6 @@ class PayloadModeTests(unittest.TestCase):
         self.assertEqual(
             len([k for k in self.server_files() if k.startswith("/otherrepo/payload/objects")]), 2
         )
-
-    # -- clock domain of the racy rule, long paths, the periodic report ----------
-    def _cache_case(self, *, behind_ns: int):
-        """One 1 MiB candidate, hashed once, with an mtime ``behind_ns`` before 'now'."""
-        path = self.case / "racy-unit.bin"
-        path.write_bytes(b"x" * 1024)
-        now = time.time_ns()
-        mtime = now - behind_ns
-        stale = {"size": 1024, "mtime_ns": mtime, "ino": 7, "sha256": "a" * 64, "at": now}
-        return path, {"racy-unit.bin": (1024, mtime, "100644", 7)}, stale
 
     def test_a_share_whose_clock_is_behind_does_not_vouch_for_a_fresh_edit(self):
         # The share's clock is an hour behind, so a file edited this instant carries
