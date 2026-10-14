@@ -164,6 +164,28 @@ class _History(NamedTuple):
     expired: int                 #: commits --payload-keep leaves out of the count
 
 
+def _scratch_history_repo(td: str) -> Path:
+    """A bare scratch repository in *td* that git will not run maintenance in.
+
+    ``git fetch`` otherwise may start ``gc --auto`` / ``maintenance`` in the
+    background, which races with the directory being removed (seen on Linux and
+    macOS as "Directory not empty").
+    """
+    repo = Path(td) / "history.git"
+    made = _run(
+        ["git", "init", "-q", "--bare", str(repo)],
+        text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    )
+    if made.returncode != 0:
+        raise SnapshotError(f"could not create a scratch repository: {made.stderr.strip()}")
+    for key, value in (("gc.auto", "0"), ("maintenance.auto", "false")):
+        _run(
+            ["git", f"--git-dir={repo}", "config", key, value],
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+    return repo
+
+
 def _hashes_in_history(
     remote: str, vault: Path | None, keep: int | None = None,
     seen: dict[str, str] | None = None,
@@ -177,13 +199,7 @@ def _hashes_in_history(
             "un-pushed snapshots it was meant to protect"
         )
     with tempfile.TemporaryDirectory(prefix="grs-payload-gc-") as td:
-        repo = Path(td) / "history.git"
-        made = _run(
-            ["git", "init", "-q", "--bare", str(repo)],
-            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        )
-        if made.returncode != 0:
-            raise SnapshotError(f"could not create a scratch repository: {made.stderr.strip()}")
+        repo = _scratch_history_repo(td)
         git(
             repo, None,
             ["fetch", "-q", "--no-tags", remote,

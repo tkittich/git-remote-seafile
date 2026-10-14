@@ -126,6 +126,10 @@ def payload_by_default_possible(remote: str | None, no_push: bool) -> bool:
     """Whether payload mode may come on by default: the run pushes to a seafile:// remote."""
     if not remote or no_push:
         return False
+    # parse_seafile_url is lenient (it reads a plain path as library/path), so the
+    # scheme is checked first: a local path or an ssh URL is never a Seafile remote.
+    if not remote.lower().startswith("seafile://"):
+        return False
     try:
         payload_location(remote)
     except SnapshotError:
@@ -150,11 +154,18 @@ def resolve_payload_value(
         return "0", False
     if value is not None:
         return value, False
+    possible = payload_by_default_possible(remote, no_push)
     if (vault / ".git").exists():
         remembered = _config(vault, "snapshot.payload")
-        if remembered:
+        # A remembered value is not a request for *this* run: a vault that
+        # remembered payload mode still takes a local --no-push snapshot, or one
+        # without a seafile:// remote, without an error (explicit flags are
+        # checked in payload_conflicts and plan_payload).
+        if remembered and possible:
             return remembered, False
-    if payload_by_default_possible(remote, no_push):
+        if remembered:
+            return None, False
+    if possible:
         return "auto", True
     return None, False
 

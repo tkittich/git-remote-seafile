@@ -72,13 +72,7 @@ def _manifest_at(remote: str, ref: str) -> dict[str, Any]:
     cut = min((i for i, ch in enumerate(ref) if ch in "~^@:"), default=len(ref))
     branch, suffix = ref[:cut] or "snapshot", ref[cut:]
     with tempfile.TemporaryDirectory(prefix="grs-payload-view-") as td:
-        repo = Path(td) / "history.git"
-        made = _run(
-            ["git", "init", "-q", "--bare", str(repo)],
-            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        )
-        if made.returncode != 0:
-            raise SnapshotError(f"could not create a scratch repository: {made.stderr.strip()}")
+        repo = _scratch_history_repo(td)
         git(
             repo, None,
             ["fetch", "-q", "--no-tags", remote, "+refs/heads/*:refs/remotes/remote/*"],

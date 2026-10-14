@@ -507,9 +507,13 @@ class PayloadModeTests(unittest.TestCase):
 
     def test_names_need_no_special_handling(self):
         nfd = unicodedata.normalize("NFD", "café") + ".bin"
-        long_name = "ก" * 86 + ".bin"  # 262 bytes of UTF-8: refused as a server name
-        content = {nfd: os.urandom(3000), long_name: os.urandom(3100)}
-        if os.name != "nt":
+        content = {nfd: os.urandom(3000)}
+        if os.name == "nt":
+            # 262 bytes of UTF-8: refused as a server name.  A POSIX filesystem
+            # cannot hold a name that long at all (255 bytes), so only NTFS can
+            # make this file.
+            content["ก" * 86 + ".bin"] = os.urandom(3100)
+        else:
             content['say "hi".bin'] = os.urandom(3200)
         for name, data in content.items():
             (self.src / name).write_bytes(data)
@@ -661,6 +665,29 @@ class PayloadModeTests(unittest.TestCase):
         tree = _git(self.vault, "ls-tree", "-r", "--name-only", "snapshot")
         self.assertNotIn(".seafile-payload", tree)
         self.assertFalse(any(k.startswith(self.base) for k in self.server_files()))
+
+    def test_a_remembered_setting_does_not_break_a_local_no_push_run(self):
+        # Found by CI: every vault now remembers `auto`, and a --no-push run (no
+        # remote to upload to) failed with "payload mode needs a remote".  A
+        # remembered value is not a request for this run.
+        self.assertEqual(self.bare()[0], 0)
+        self.assertEqual(_git(self.vault, "config", "snapshot.payload").strip(), "auto")
+        (self.src / "small.txt").write_bytes(b"local only\n")
+        with unittest.mock.patch.object(snap, "_AUTO_UPPER", 8000), \
+                unittest.mock.patch.object(snap, "_AUTO_LOWER", 2000):
+            rc, out, err = self.run_tool(self.src, "--vault", self.vault, "--no-push")
+        # The payload vault is refused with the actionable message, not "needs a remote".
+        self.assertNotEqual(rc, 0)
+        self.assertIn("last snapshot used payload mode", out + err)
+        # A vault that never used payload mode takes the same run without complaint.
+        other = self.case / "plain-vault"
+        (self.src / "big1.bin").unlink()
+        (self.src / "sub" / "big2.bin").unlink()
+        self.assertEqual(self.bare(vault=other, remote="seafile://testlib/plain")[0], 0)
+        self.assertEqual(_git(other, "config", "snapshot.payload").strip(), "auto")
+        (self.src / "small.txt").write_bytes(b"local again\n")
+        rc, out, err = self.run_tool(self.src, "--vault", other, "--no-push")
+        self.assertEqual(rc, 0, out + err)
 
     def test_the_default_stays_off_where_payload_mode_cannot_work(self):
         # No remote at all: a purely local snapshot.
@@ -1372,6 +1399,7 @@ class PayloadModeTests(unittest.TestCase):
         self.assertEqual(files["/pvault-view/v/big1.bin"], self.big1)
         self.assertEqual(files["/pvault-view/v/twin.bin"], self.big1)
 
+    @unittest.skipIf(os.name != "nt", "needs a filesystem that allows names over 255 bytes")
     def test_a_view_reports_what_the_server_cannot_name(self):
         long_name = "\u0e01" * 86 + ".bin"        # 262 bytes of UTF-8
         (self.src / long_name).write_bytes(os.urandom(3000))
