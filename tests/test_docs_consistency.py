@@ -154,7 +154,10 @@ def _all_docs() -> dict[str, str]:
 
 def _source_text() -> str:
     return "\n".join(
-        path.read_text(encoding="utf-8") for path in sorted(_SOURCE.glob("*.py"))
+        path.read_text(encoding="utf-8")
+        for path in sorted(_SOURCE.glob("*.py"))
+        # generated from tools/_snapshot/*.py, which _env_source_text reads directly
+        if path.name != "snapshot_tool.py"
     )
 
 

@@ -33,7 +33,7 @@ class TestGeneratedFileMatchesTheParts(unittest.TestCase):
         self.assertEqual(
             _generated_text(),
             build_snapshot.build(),
-            "tools/seafile_snapshot.py is stale: edit tools/_snapshot/*.py, then run "
+            "git_remote_seafile/snapshot_tool.py is stale: edit tools/_snapshot/*.py, then run "
             "`python tools/build_snapshot.py` and commit the result",
         )
 

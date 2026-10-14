@@ -17,7 +17,7 @@
 _VIEW_NAME_BYTES = 255
 
 
-def add_payload_view_arguments(parser: argparse.ArgumentParser) -> None:
+def add_payload_view_arguments(parser: Any) -> None:
     parser.add_argument(
         "--payload-view",
         nargs="?",

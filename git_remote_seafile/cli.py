@@ -52,6 +52,9 @@ _COMMANDS: tuple[tuple[str, str, str, tuple[tuple[str, str], ...]], ...] = (
      (("--force", "Clear the lock even when another machine holds it"),)),
     ("desktop-url", "git-remote-seafile desktop-url <path>",
      "Generate seafile:// URL from local path", ()),
+    ("snapshot", "git-remote-seafile snapshot [SOURCE] [options]",
+     "Snapshot a whole tree, ignored files included, into a vault on Seafile "
+     "(also installed as git-seafile-snapshot; see its own --help)", ()),
     ("version", "git-remote-seafile version", "Display version", ()),
 )
 
@@ -624,6 +627,15 @@ def _cmd_desktop_url(rest: list[str]) -> int:
         return _error(f"Error resolving path: {ex}")
 
 
+def _cmd_snapshot(rest: list[str]) -> int:
+    # Imported here: the snapshot tool is large and a `git push` never needs it.
+    from .snapshot_tool import main as snapshot_main
+    try:
+        return int(snapshot_main(rest))
+    except SystemExit as exc:  # argparse: --help, or a usage error
+        return int(exc.code) if isinstance(exc.code, int) else (0 if exc.code is None else 2)
+
+
 def _cmd_version(rest: list[str]) -> int:
     from . import __version__
     print(f"git-remote-seafile v{__version__}")
@@ -641,6 +653,7 @@ _HANDLERS = {
     "lock-status": _cmd_lock_status,
     "unlock": _cmd_unlock,
     "desktop-url": _cmd_desktop_url,
+    "snapshot": _cmd_snapshot,
     "version": _cmd_version,
 }
 
@@ -698,7 +711,9 @@ def main() -> int:
 
     command = args[0]
     if command in _HANDLERS:
-        if any(arg in ("-h", "--help") for arg in args[1:]):
+        # `snapshot` has a full help of its own; every other command is rendered
+        # from the table above.
+        if command != "snapshot" and any(arg in ("-h", "--help") for arg in args[1:]):
             print_command_help(command)
             return 0
         return _HANDLERS[command](args[1:])

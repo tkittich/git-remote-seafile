@@ -188,12 +188,12 @@ git clone seafile://seafile.example.com/code/myproject
 - [Code of Conduct (CODE_OF_CONDUCT.md)](CODE_OF_CONDUCT.md): The standard this project adopts, and how to report a problem.
 - [Engineering Roadmap (ROADMAP.md)](ROADMAP.md): Prioritized features, architectural backlog, and version milestones.
 
-### Whole-tree snapshots: `tools/seafile_snapshot.py`
+### Whole-tree snapshots: `git seafile-snapshot`
 
-A `.gitignore`d file never enters a commit, so **no remote helper can carry it** — `.env`, a local database, build output. `tools/seafile_snapshot.py` closes that gap: it captures the working tree **as it lies on disk**, ignored files and all, into versioned, byte-exact snapshots in a Seafile library, over the same transport the helper uses.
+A `.gitignore`d file never enters a commit, so **no remote helper can carry it** — `.env`, a local database, build output. `git seafile-snapshot` closes that gap: it captures the working tree **as it lies on disk**, ignored files and all, into versioned, byte-exact snapshots in a Seafile library, over the same transport the helper uses.
 
 > [!NOTE]
-> **The tools ship with the source, not with the wheel.** `pip install` gives you the helper (`git-remote-seafile`) and nothing else — no wheel contains `tools/`, so `python tools/seafile_snapshot.py` fails for a plain `pip install git+…`. To get the snapshot tool (or `tools/seafile_doctor.py` below), clone the repository, or unpack the sdist attached to a [GitHub Release](https://github.com/tkittich/git-remote-seafile/releases). The sdist ships `tools/`, and the script locates the package itself, so it runs from any directory inside that checkout without installing anything; `pip install -e .` from a clone gives you both at once.
+> **Installed with the package.** `pip install git-remote-seafile` provides the helper (`git-remote-seafile`) *and* the snapshot tool as `git-seafile-snapshot` — so `git seafile-snapshot` works anywhere git finds it on `PATH` — and as `git-remote-seafile snapshot`. From a source checkout, `git seafile-snapshot` runs the same program (the file is a thin wrapper around `git_remote_seafile/snapshot_tool.py`, so existing commands and scheduled jobs keep working). (`git seafile-snapshot --help` is intercepted by git, which looks for a man page: ask with `-h`, or run `git-seafile-snapshot --help`.) The diagnostics script `tools/seafile_doctor.py` below still ships with the source and the sdist only.
 
 > [!WARNING]
 > **A snapshot copies the whole tree, so it holds what you would never commit.** The vault will contain `.env`, keys and local databases — that is the point — so push it to a library whose access matches the secrets it carries. Nested Git repositories are recorded only as gitlinks: a restore rebuilds the directory but not its contents. Symlinks are stored faithfully (a `120000` entry holding the target path), but a restore onto Windows without Developer Mode turns each one back into a text file containing that path. The byte-for-byte check that runs after **every** restore (not only under `--verify`) then names it as a mismatch and **aborts the restore** — the vault is intact, so re-running with `core.symlinks` enabled reproduces the links.
@@ -205,18 +205,20 @@ cd C:/code/myproject
 
 # Snapshot into C:/code/myproject-vault and push it to Seafile, inferring the
 # destination from the source repo's own seafile:// remote
-python tools/seafile_snapshot.py
+git seafile-snapshot
 
 # Preview it: the vault is initialised if missing and the snapshot staged into
 # its index, so the diff you see is real -- nothing is pushed and no setting changes
-python tools/seafile_snapshot.py --dry-run
+git seafile-snapshot --dry-run
 
 # Restore into a fresh directory, verifying byte-exactness on the way
-python tools/seafile_snapshot.py --restore --remote seafile://code/myproject-vault \
+git seafile-snapshot --restore --remote seafile://code/myproject-vault \
     --into C:/restore/myproject
 ```
 
-The destination, branch and exclusions are **remembered in the vault** after the first run, so a scheduled job can be nothing more than `python tools/seafile_snapshot.py`. It maintains a **separate vault repository** whose `--work-tree` is the source, so the source stays read-only and untouched. Byte-exactness is enforced with `core.autocrlf=false` plus `* -text -filter -ident` in the vault's own `info/attributes` — a plain `git clone` of the vault silently loses that, which is why `--restore` exists. Recommended junk exclusions are **never applied silently**: the tool captures everything and tells you what it noticed, because a backup that quietly omits a file is worse than a large one. See [USER_GUIDE.md §15](USER_GUIDE.md) for the walkthrough and [SNAPSHOT.md](SNAPSHOT.md) for the full design.
+**Large trees:** `--payload-min-size` (bare = `auto`) stores big, already-compressed files on the server by hash instead of through git — no second local copy, no staging pass, and a snapshot that costs nothing to keep. A 131 GiB tree took 38 minutes and restored byte-exact. See [USER_GUIDE.md §15.9](USER_GUIDE.md) and [PAYLOAD.md](PAYLOAD.md).
+
+The destination, branch and exclusions are **remembered in the vault** after the first run, so a scheduled job can be nothing more than `git seafile-snapshot`. It maintains a **separate vault repository** whose `--work-tree` is the source, so the source stays read-only and untouched. Byte-exactness is enforced with `core.autocrlf=false` plus `* -text -filter -ident` in the vault's own `info/attributes` — a plain `git clone` of the vault silently loses that, which is why `--restore` exists. Recommended junk exclusions are **never applied silently**: the tool captures everything and tells you what it noticed, because a backup that quietly omits a file is worse than a large one. See [USER_GUIDE.md §15](USER_GUIDE.md) for the walkthrough and [SNAPSHOT.md](SNAPSHOT.md) for the full design.
 
 ### Diagnostics for the Seafile desktop client
 

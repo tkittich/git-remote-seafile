@@ -38,7 +38,7 @@ _MIN_GRACE_DAYS = 1.0
 _PENDING_NAME = "gc-pending.json"
 
 
-def add_payload_gc_arguments(parser: argparse.ArgumentParser) -> None:
+def add_payload_gc_arguments(parser: Any) -> None:
     parser.add_argument(
         "--payload-gc",
         action="store_true",

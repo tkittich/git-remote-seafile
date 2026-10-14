@@ -23,15 +23,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, TypedDict
 
-# Running as documented from a bare source checkout -- `python
-# tools/seafile_snapshot.py` -- puts only tools/ on sys.path, so the
-# git_remote_seafile package (whose safety module this tool consults below)
-# would be unimportable and the synced-folder guard silently off.  The doctor
-# solves the same problem the same way; do this before any library import.
-_REPO_ROOT = Path(__file__).resolve().parent.parent
-if str(_REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(_REPO_ROOT))
-
 DEFAULT_BRANCH = "snapshot"
 
 #: How old an unparseable lock file must be before it is reclaimed: a live run

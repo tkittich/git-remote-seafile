@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build ``tools/seafile_snapshot.py`` from the parts in ``tools/_snapshot/``.
+"""Build ``git_remote_seafile/snapshot_tool.py`` from the parts in ``tools/_snapshot/``.
 
 Why this exists
 ===============
@@ -27,7 +27,7 @@ Rules for the parts
 
 Usage::
 
-    python tools/build_snapshot.py            # (re)write tools/seafile_snapshot.py
+    python tools/build_snapshot.py            # (re)write git_remote_seafile/snapshot_tool.py
     python tools/build_snapshot.py --check    # exit 1 if the generated file is stale
 
 The generated file is committed, so a clone or the sdist runs without a build
@@ -43,7 +43,10 @@ from pathlib import Path
 
 _TOOLS = Path(__file__).resolve().parent
 PARTS_DIR = _TOOLS / "_snapshot"
-OUTPUT = _TOOLS / "seafile_snapshot.py"
+#: The generated module is part of the package, so it ships in the wheel and
+#: runs as `git-seafile-snapshot` / `git-remote-seafile snapshot`.  The file
+#: tools/seafile_snapshot.py is a thin wrapper around it.
+OUTPUT = _TOOLS.parent / "git_remote_seafile" / "snapshot_tool.py"
 
 
 def part_paths() -> list[Path]:
@@ -74,7 +77,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--check",
         action="store_true",
-        help="do not write; exit 1 if tools/seafile_snapshot.py differs from the parts",
+        help="do not write; exit 1 if git_remote_seafile/snapshot_tool.py differs from the parts",
     )
     args = parser.parse_args(argv)
 

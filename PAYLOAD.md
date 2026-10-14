@@ -14,7 +14,7 @@ Each decision carries a status: **decided** (implemented and tested), **proposed
 
 ## 1. Purpose and non-goals
 
-Payload mode lets `tools/seafile_snapshot.py` capture a tree that is mostly large,
+Payload mode lets `git seafile-snapshot` capture a tree that is mostly large,
 immutable, already-compressed data (rasters, archives, arrays, video) without
 pushing that data through git: no second local copy, no staging pass, no pack cap,
 and a snapshot that costs nothing to keep.

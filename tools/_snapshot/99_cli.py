@@ -2,7 +2,7 @@
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        prog="seafile_snapshot",
+        prog="git-seafile-snapshot",
         description=(
             "Snapshot a working tree (gitignored files included) into a separate "
             "vault repository and push it to Seafile. The source directory is "
@@ -27,7 +27,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             + "\n\nA pattern with no slash matches that name at ANY depth, so\n"
             "--exclude node_modules also drops packages/*/node_modules.\n"
             "Quote wildcards so your own shell does not expand them first.\n"
-            "\nnote: neither the source nor the vault may live inside a\n"
+            + PAYLOAD_EPILOG
+            + "\nnote: neither the source nor the vault may live inside a\n"
             "Seafile-synced folder -- the sync client rewrites files underneath\n"
             "it and competes with git for every path. Checked at startup.\n"
             "The guard lets a synced path through when that library's auto sync\n"
@@ -164,10 +165,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "sampled compressibility, minus what the vault already stores); this "
         "is for data you know is more compressible than the sample suggests",
     )
-    add_payload_arguments(parser)
-    add_payload_jobs_argument(parser)
-    add_payload_gc_arguments(parser)
-    add_payload_view_arguments(parser)
+    add_payload_groups(parser)
     parser.add_argument(
         "--verify",
         action="store_true",

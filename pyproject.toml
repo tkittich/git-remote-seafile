@@ -56,6 +56,8 @@ Issues = "https://github.com/tkittich/git-remote-seafile/issues"
 
 [project.scripts]
 git-remote-seafile = "git_remote_seafile.cli:main"
+# `git seafile-snapshot ...` works anywhere git finds this on PATH.
+git-seafile-snapshot = "git_remote_seafile.snapshot_tool:main"
 
 [tool.setuptools.packages.find]
 include = ["git_remote_seafile*"]
@@ -67,7 +69,7 @@ include = ["git_remote_seafile*"]
 version = {attr = "git_remote_seafile.__version__"}
 
 [tool.ruff]
-# tools/_snapshot/*.py are *fragments* of tools/seafile_snapshot.py (see
+# tools/_snapshot/*.py are *fragments* of git_remote_seafile/snapshot_tool.py (see
 # tools/build_snapshot.py): each one uses names defined in another, so linted
 # alone they are a wall of F821.  The generated file is linted instead -- it is
 # the same text, and it is what ships.

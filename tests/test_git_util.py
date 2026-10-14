@@ -772,7 +772,7 @@ class SnapshotEnvScrubListTests(unittest.TestCase):
 
         from git_remote_seafile.git_util import _GIT_REPO_ENV_VARS
 
-        path = Path(__file__).resolve().parent.parent / "tools" / "seafile_snapshot.py"
+        path = Path(__file__).resolve().parent.parent / "git_remote_seafile" / "snapshot_tool.py"
         spec = importlib.util.spec_from_file_location("_snapshot_for_env_test", path)
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)

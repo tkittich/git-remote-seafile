@@ -128,6 +128,10 @@ class TestCLICommandHelp(unittest.TestCase):
             with self.subTest(command=name):
                 code, output = self._run([name, "--help"])
                 self.assertEqual(code, 0)
+                if name == "snapshot":
+                    # The snapshot tool renders its own (much longer) help.
+                    self.assertIn("--payload-min-size", output)
+                    continue
                 self.assertTrue(
                     output.startswith(f"Usage: {usage}\n"),
                     f"{name} --help printed {output!r}",

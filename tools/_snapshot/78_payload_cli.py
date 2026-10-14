@@ -5,7 +5,34 @@
 # -- command line ----------------------------------------------------------------
 
 
-def add_payload_arguments(parser: argparse.ArgumentParser) -> None:
+PAYLOAD_EPILOG = (
+    "\npayload mode (large files): off unless --payload-min-size is given;\n"
+    "'auto' sends files of 64 MiB or more, and 4 MiB or more that do not\n"
+    "compress, to Seafile by hash instead of through git. A complete real\n"
+    "run remembers the setting. --restore, --payload-verify, --payload-gc\n"
+    "and --payload-view act on a remote's payload; see PAYLOAD.md.\n"
+)
+
+
+def add_payload_groups(parser: argparse.ArgumentParser) -> None:
+    """Every payload option, in two help groups: taking a snapshot, and tools."""
+    mode_group = parser.add_argument_group(
+        "payload mode: large files stored by hash instead of through git",
+        "Off unless --payload-min-size is given (a bare flag means auto). A complete "
+        "real run remembers it in the vault. See PAYLOAD.md.",
+    )
+    add_payload_arguments(mode_group)
+    add_payload_jobs_argument(mode_group)
+    tools_group = parser.add_argument_group(
+        "payload tools: act on a remote's payload (no snapshot is taken)",
+        "Each needs --remote. Reports and verification change nothing; "
+        "--payload-delete and --payload-view write only what they say.",
+    )
+    add_payload_gc_arguments(tools_group)
+    add_payload_view_arguments(tools_group)
+
+
+def add_payload_arguments(parser: Any) -> None:
     parser.add_argument(
         "--payload-min-size",
         metavar="SIZE|auto",
@@ -16,18 +43,18 @@ def add_payload_arguments(parser: argparse.ArgumentParser) -> None:
         "Seafile by hash under <path>/payload/objects, and the snapshot records a manifest "
         "instead. With no value, or 'auto': files of 64 MiB or more, plus files of 4 MiB or "
         "more that do not compress. With SIZE (e.g. 64M, 1G): files of at least SIZE. "
-        "Needs a remote; a restore downloads and verifies them. 0 turns it off. A vault "
-        "that has used it needs the flag on every run (PAYLOAD.md)",
+        "Needs a remote; a restore downloads and verifies them. Default: off (every file "
+        "goes through git), or what the vault remembered; 0 turns it off",
     )
 
 
-def add_payload_jobs_argument(parser: argparse.ArgumentParser) -> None:
+def add_payload_jobs_argument(parser: Any) -> None:
     parser.add_argument(
         "--payload-rehash",
         action="store_true",
         help="payload mode: ignore the hash cache for this run and hash every payload file "
-        "again (for a tree whose timestamps were restored by a copy tool, or as a periodic "
-        "audit)",
+        "again (default: use the cache), e.g. for a tree whose timestamps were restored by a "
+        "copy tool, or as a periodic audit",
     )
     parser.add_argument(
         "--payload-jobs",

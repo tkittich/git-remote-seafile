@@ -1,6 +1,8 @@
 # SNAPSHOT.md — full-tree backup to Seafile, `.gitignore`d files included
 
-> **Status: shipped in v0.8.0.** The implementation is `tools/seafile_snapshot.py`;
+> **Status: shipped in v0.8.0; payload mode and the installed command in v0.9.0.**
+> The implementation is `git_remote_seafile/snapshot_tool.py` (generated from
+> `tools/_snapshot/`; `tools/seafile_snapshot.py` is a wrapper);
 > the tests are `tests/test_snapshot_tool.py` (101 cases across 24 classes), and
 > the tool is documented in `USER_GUIDE.md` §15, `DESIGN.md` §4.10 and
 > `CHANGELOG.md`'s 0.8.0 entry. Everything below describes the tool **as it
@@ -78,7 +80,7 @@ source dir  --(--work-tree)-->  vault repo  --git push-->  seafile://code/<name>
 
 **Two words, two different things.** A **vault** is the *repository*: one
 directory, one `.git`, one remote. A **snapshot** is a single *commit* inside
-it. The script is `seafile_snapshot.py` because that is the verb ("take a
+it. The command is `git seafile-snapshot` because that is the verb ("take a
 snapshot"); the flag is `--vault` because that is the object the user points at.
 
 Snapshots are ordinary commits built in the vault's **own** index. The source is
@@ -105,16 +107,16 @@ Every option has a default, so a bare run is a complete run:
 # Snapshot C:/code/myproject into C:/code/myproject-vault and push it to
 # Seafile, inferring the destination from the source repo's own remote
 cd C:/code/myproject
-python tools/seafile_snapshot.py
+git seafile-snapshot
 
 # From elsewhere; the vault defaults to '<source>-vault'
-python tools/seafile_snapshot.py C:/code/myproject
+git seafile-snapshot C:/code/myproject
 
 # Preview: nothing is pushed, the branch does not move, no setting changes
-python tools/seafile_snapshot.py C:/code/myproject --dry-run
+git seafile-snapshot C:/code/myproject --dry-run
 
 # Snapshot + push, and push the code repo first in the same command
-python tools/seafile_snapshot.py --source C:/code/myproject \
+git seafile-snapshot --source C:/code/myproject \
     --vault C:/code/myproject-vault \
     --code-remote origin \
     --remote seafile://code/myproject-vault \
@@ -332,7 +334,7 @@ snapshot 2026-10-10T21:45:46+02:00 on laptop-b
 ## 7. Restore
 
 ```bash
-python tools/seafile_snapshot.py --restore \
+git seafile-snapshot --restore \
     --remote seafile://code/myproject-vault \
     --into C:/restore/myproject
 

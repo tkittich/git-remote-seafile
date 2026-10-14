@@ -834,7 +834,7 @@ These are the places where the tool, Git, or Seafile stops short. None is hidden
 | `git lfs` | Supported through the custom transfer agent; `lfs.standalonetransferagent` is not scoped per remote, so a dual-remote setup splits objects (see §8.5 and §11.1). |
 | Hostile repository config | `seafile.skipsafetychecks` and `seafile.gittimeout` are read only from system/global git config and the environment; a repository's own config cannot weaken them. |
 
-#### Whole-tree snapshots (`tools/seafile_snapshot.py`)
+#### Whole-tree snapshots (`git seafile-snapshot`)
 
 | Limitation | What it means for you |
 | :--- | :--- |
@@ -851,14 +851,14 @@ The full snapshot caveat list, with the reasoning, is in [SNAPSHOT.md](SNAPSHOT.
 
 ---
 
-## 15. Whole-Tree Snapshots (`tools/seafile_snapshot.py`)
+## 15. Whole-Tree Snapshots (`git seafile-snapshot`)
 
 Everything above moves *commits*. That leaves one gap the helper cannot close by construction: **a file your `.gitignore` excludes never enters a commit, so no remote helper can ever carry it.** `.env`, a local database, an editor's state directory, build output you would rather not rebuild — none of it reaches Seafile through a push, however many remotes you add.
 
-`tools/seafile_snapshot.py` closes that gap. It captures the working tree **as it lies on disk** — ignored files and all — into versioned, byte-exact snapshots stored in a Seafile library, over the same transport the helper already uses. It is a script, not a subcommand, and it needs no credentials of its own: it reaches Seafile the way `git push` does.
+`git seafile-snapshot` closes that gap. It captures the working tree **as it lies on disk** — ignored files and all — into versioned, byte-exact snapshots stored in a Seafile library, over the same transport the helper already uses. It is its own command (installed with the package; `git-remote-seafile snapshot` is an alias), and it needs no credentials of its own: it reaches Seafile the way `git push` does.
 
 > [!NOTE]
-> **Getting the tool: it comes with the source, not the wheel.** `pip install git-remote-seafile` installs the *helper* only — `tools/` is not part of the installed package, and no wheel contains it, so the `python tools/seafile_snapshot.py` commands below would fail on a plain `pip install git+…`. Clone the repository, or unpack the sdist attached to a [GitHub Release](https://github.com/tkittich/git-remote-seafile/releases); the sdist ships `tools/`, and the script locates the package itself, so it runs from any directory inside that checkout with nothing installed. `pip install -e .` from a clone gives you both at once. The same applies to `tools/seafile_doctor.py` (README, *Diagnostics for the Seafile desktop client*).
+> **Installed with the package.** `pip install git-remote-seafile` provides the helper (`git-remote-seafile`) *and* the snapshot tool as `git-seafile-snapshot` — so `git seafile-snapshot` works anywhere git finds it on `PATH` — and as `git-remote-seafile snapshot`. From a source checkout, `git seafile-snapshot` runs the same program (the file is a thin wrapper around `git_remote_seafile/snapshot_tool.py`, so existing commands and scheduled jobs keep working). (`git seafile-snapshot --help` is intercepted by git, which looks for a man page: ask with `-h`, or run `git-seafile-snapshot --help`.) The diagnostics script `tools/seafile_doctor.py` (README, *Diagnostics for the Seafile desktop client*) still ships with the source and the sdist only.
 
 > [!NOTE]
 > **Git 2.25+ if you use exclusions.** The tool stages the surviving paths through
@@ -892,16 +892,16 @@ Every option has a default, so the first run is the only one that needs an argum
 # The whole thing: snapshot C:/code/myproject into C:/code/myproject-vault
 # and push it to Seafile, inferring the destination from the source repo
 cd C:/code/myproject
-python tools/seafile_snapshot.py
+git seafile-snapshot
 
 # From elsewhere, naming the tree. The vault defaults to '<source>-vault'.
-python tools/seafile_snapshot.py C:/code/myproject
+git seafile-snapshot C:/code/myproject
 
 # What that would do, without writing anything
-python tools/seafile_snapshot.py C:/code/myproject --dry-run
+git seafile-snapshot C:/code/myproject --dry-run
 
 # The same, said explicitly
-python tools/seafile_snapshot.py --source C:/code/myproject \
+git seafile-snapshot --source C:/code/myproject \
     --vault C:/code/myproject-vault \
     --remote seafile://code/myproject-vault
 ```
@@ -985,16 +985,16 @@ and writes this into its own `info/attributes`:
 
 ```bash
 # Rebuild a tree into a target directory, verifying byte-exactness
-python tools/seafile_snapshot.py --restore \
+git seafile-snapshot --restore \
     --remote seafile://backups/myproject \
     --into ~/restored
 
 # Any revision works -- e.g. roll back three snapshots
-python tools/seafile_snapshot.py --restore \
+git seafile-snapshot --restore \
     --remote seafile://backups/myproject --into ~/restored --ref snapshot~3
 
 # Additionally run `git fsck` over the vault
-python tools/seafile_snapshot.py --restore \
+git seafile-snapshot --restore \
     --remote seafile://backups/myproject --into ~/restored --verify
 ```
 
@@ -1071,6 +1071,58 @@ Before the first staging the tool samples the tree (a few chunks from each of up
 **The vault's remote is a remote.** Every push adds one small packfile there, so the §10 threshold warning and tail merge apply to it exactly as to any other — and SNAPSHOT.md §8's large-files caveat is the reason to watch it.
 
 The full design — the alternatives that do not work, the nested-repository analysis (today the tool warns; the measured capture is future work), the own-review findings, and a comparison with restic and Borg — is in [SNAPSHOT.md](SNAPSHOT.md).
+
+### 15.9 Large payloads: payload mode
+
+A vault carries every file *through git*: each is hashed, written as a loose object,
+packed, uploaded. For a tree that is mostly large, immutable, already-compressed
+data -- rasters, archives, arrays, video -- that is pure overhead: a second local
+copy, a long staging pass, and a pack cap. **Payload mode** keeps such files out of
+git. Each is hashed (SHA-256) and stored on the server under that hash, inside the
+vault's own remote directory (`<path>/payload/objects/`); the snapshot records a
+manifest (path, mode, size, hash, mtime) instead. Measured on a real server: a 131 GiB
+tree (633 payload files, 124.6 GB) snapshotted in 38 minutes and restored
+byte-exact.
+
+```bash
+# Take a snapshot. A bare --payload-min-size means 'auto': files of 64 MiB or more,
+# plus files of 4 MiB or more that do not compress (a size, e.g. 100M, works too).
+# Put the source first, or write --payload-min-size=auto.
+git seafile-snapshot C:/code/flood --payload-min-size=auto --default-excludes
+
+# The vault remembers the setting; a bare run keeps using it.
+git seafile-snapshot C:/code/flood
+
+# Restore is the same command as always; it downloads and verifies the payload.
+git seafile-snapshot --restore --remote seafile://code/flood-vault --into D:/restored --verify
+```
+
+What to know:
+
+- **It is opt-in and remembered.** Without `--payload-min-size` nothing changes. A
+  complete real run stores the setting in the vault (`0` turns it off, and is
+  remembered too); a preview never writes it. A fresh vault on another machine is
+  *refused* a flagless run, because the remote's last snapshot used payload mode.
+- **A snapshot costs nothing to keep.** Objects are never overwritten, so a snapshot
+  is a manifest; a renamed or duplicated file uploads nothing.
+- **Uploads are parallel and verified.** `--payload-jobs N` (default 3). Each object
+  goes up under a temporary name, is hashed as it is sent, and is renamed to its hash
+  only if the bytes match; the whole set is re-checked just before the vault is pushed.
+- **Look at it, or audit it.** `--payload-view` builds a browsable directory of real
+  names by server-side copy (no data moves); `--payload-verify [N|all]` downloads and
+  hashes a sample, which is the only way to find an object damaged after it was stored.
+- **Retention is explicit.** `--payload-gc` reports what no snapshot references;
+  `--payload-delete` marks it and a later run deletes it after `--payload-grace-days`;
+  `--payload-keep N` lets older snapshots expire (they then cannot be restored). Run it
+  from one machine, and set the library's history to keep a few days as a safety net.
+- **What it does not do:** no encryption, no delta between versions of one file (a
+  changed file is a whole new object; the server shares unchanged blocks), and a
+  file's name must be restorable on the platform you restore to (Windows names it
+  cannot hold are skipped and reported).
+
+The specification, the requirements and the review that shaped it are
+[PAYLOAD.md](PAYLOAD.md); the measurements are in
+[SNAPSHOT.md section 15.1](SNAPSHOT.md).
 
 ---
 

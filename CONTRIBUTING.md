@@ -94,17 +94,19 @@ and whenever the stub's `do_DELETE`/`do_POST` semantics are changed.
 
 ---
 
-## The snapshot tool is one file to users and several parts to maintainers
+## The snapshot tool is one module to users and several parts to maintainers
 
-`tools/seafile_snapshot.py` is **generated**. Its source is a handful of cohesive
-parts in `tools/_snapshot/` (`10_setup.py`, `20_gitrun.py`, ...), concatenated in
-name order by `tools/build_snapshot.py` -- no import rewriting, no bundler. Users
-still get a single file they can `curl` and run; maintainers get units a reader can
-hold.
+`git_remote_seafile/snapshot_tool.py` is **generated**. Its source is a handful of
+cohesive parts in `tools/_snapshot/` (`10_setup.py`, `20_gitrun.py`, ...),
+concatenated in name order by `tools/build_snapshot.py` -- no import rewriting, no
+bundler. It lives in the package so it ships in the wheel and installs as
+`git-seafile-snapshot` (and `git-remote-seafile snapshot`); maintainers get units a
+reader can hold. `tools/seafile_snapshot.py` is a hand-written wrapper that runs it
+from a checkout and stands in for it when imported.
 
 ```bash
 # edit tools/_snapshot/<part>.py, then:
-python tools/build_snapshot.py           # rewrite tools/seafile_snapshot.py
+python tools/build_snapshot.py           # rewrite git_remote_seafile/snapshot_tool.py
 python tools/build_snapshot.py --check   # exit 1 if it is stale (the test suite does this too)
 ```
 
@@ -114,7 +116,7 @@ defined in exactly one part; anything evaluated at import time must come from an
 earlier part; no part grows past 700 lines. `tests/test_snapshot_build.py`
 enforces each of these. Ruff and mypy check the generated file (the parts cannot
 be linted alone -- each uses names another defines). **Never edit
-`tools/seafile_snapshot.py` directly**: the next build overwrites it.
+`git_remote_seafile/snapshot_tool.py` directly**: the next build overwrites it.
 
 ---
 

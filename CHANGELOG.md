@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-10-14
+
+The snapshot tool grows up: it installs with the package, and it can carry a 131 GiB tree.
+
+### Upgrading from 0.8.8
+
+- **The snapshot tool ships in the wheel.** `pip install git-remote-seafile` now provides `git-seafile-snapshot` (so `git seafile-snapshot` works) and `git-remote-seafile snapshot`. `python tools/seafile_snapshot.py` keeps working from a checkout (it is a wrapper). The generated module is `git_remote_seafile/snapshot_tool.py`; edit `tools/_snapshot/*.py` and run `tools/build_snapshot.py` as before.
+- **`--help` is grouped.** The payload options are in two groups; nothing was renamed or removed.
+- **Payload mode is opt-in.** A run without `--payload-min-size` behaves exactly as in 0.8.8.
+
 ### Added
 - **Snapshot tool, payload mode (`--payload-min-size SIZE`).** Files of at least SIZE bypass git: each is SHA-256-hashed and uploaded **by hash** to `<path>/payload/objects/<xx>/<sha256>` inside the vault's remote directory, and the vault commit carries `.seafile-payload/manifest.json`. `--restore` downloads every file and verifies size and SHA-256. Objects are never overwritten or deleted, so a snapshot costs nothing to keep, a rename or duplicate uploads nothing, and no server name rule applies. Removes the local object copy and the staging pass for large immutable data. Opt-in; design and measurements in SNAPSHOT.md section 15.1.
 - **`--payload-min-size auto`** (also a bare `--payload-min-size`): payload when a file is at least 64 MiB, or at least 4 MiB and a sample of it does not compress. Measured on a 131 GiB tree: 7 GiB of incompressible files between 4 and 64 MiB join the payload; compressible ones stay in git.
@@ -16,7 +26,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`--payload-keep N`** (with `--payload-gc`): only the newest N snapshots of each branch and tag count as using objects, so older ones expire through the same two-phase deletion.
 - **Payload mode remembers its setting** in the vault after a complete real run (`0` included); **`--payload-rehash`** ignores the hash cache for one run.
 - **`--payload-jobs N`** uploads N payload files at once (default 3; measured 30 s -> 19.7 s for six 128 MiB files, no gain at 5).
-- **`SeafileClient.copy_entries`**: server-side copy of files or directories within a library.
+- **`SeafileClient.copy_entries` and `rename_entry`**: server-side copy and in-place rename within a library.
+- **The snapshot tool in the wheel**: console script `git-seafile-snapshot` and the `git-remote-seafile snapshot` subcommand.
+
+### Changed
+- **`SeafileClient.delete_entry` forgets the directories under a deleted path**, so `mkdir_p` re-creates a directory that was deleted in the same session (found rebuilding a view in place).
+- **`--help` groups the payload options** and says what each defaults to.
 
 ### Fixed
 - **`--restore --ref <rev>` failed** (`a branch named 'snapshot' already exists`) against any remote whose HEAD is the vault branch, which is what the helper advertises.
@@ -1446,6 +1461,7 @@ Data-loss and silent-failure fixes, and the Python floor raised to 3.9.
   with zero-config desktop-client token discovery, distributed locking, remote
   packfile compaction, and a Git LFS custom transfer agent.
 
+[0.9.0]: https://github.com/tkittich/git-remote-seafile/compare/v0.8.8...v0.9.0
 [0.8.8]: https://github.com/tkittich/git-remote-seafile/compare/v0.8.7...v0.8.8
 [0.8.7]: https://github.com/tkittich/git-remote-seafile/compare/v0.8.6...v0.8.7
 [0.8.6]: https://github.com/tkittich/git-remote-seafile/compare/v0.8.5...v0.8.6

@@ -366,7 +366,7 @@ Implausible values — a negative timeout, a non-positive lease, a sub-1 thresho
 
 ### 4.10 The Snapshot Complement
 
-A commit carries only what `.gitignore` permits, so `tools/seafile_snapshot.py` captures what a commit structurally cannot: the whole tree, including ignored files, into a separate **vault** repository whose `--work-tree` is the source. It is deliberately not a subcommand — it does not extend the protocol and imports nothing from `git_remote_seafile` unconditionally.
+A commit carries only what `.gitignore` permits, so the snapshot tool (`git seafile-snapshot`, `git_remote_seafile/snapshot_tool.py`) captures what a commit structurally cannot: the whole tree, including ignored files, into a separate **vault** repository whose `--work-tree` is the source. It is deliberately not a subcommand — it does not extend the protocol and imports nothing from `git_remote_seafile` unconditionally.
 
 Its invariants are stated in §3.4; the full design — the vault, byte-exactness enforcement, restore verification, the cost model, and the options it refuses — is in [SNAPSHOT.md](SNAPSHOT.md), which is the authoritative write-up. Today a nested repository is detected and warned about loudly; its contents are not captured.
 
