@@ -32,7 +32,7 @@ def _download_verified(
     return last
 
 
-def restore_payload(remote: str, into: Path) -> None:
+def restore_payload(remote: str, into: Path, *, allow_low_disk: bool = False) -> None:
     """Download and verify the payload a restored snapshot's manifest names.
 
     A security problem in the manifest refuses it whole.  An entry this platform
@@ -49,6 +49,9 @@ def restore_payload(remote: str, into: Path) -> None:
     except (ValueError, RecursionError) as exc:
         raise SnapshotError(f"the snapshot's payload manifest is unreadable: {exc}") from None
     files = validate_manifest(manifest, into)
+    problem = restore_space_problem(files, into, allow_low_disk=allow_low_disk)
+    if problem is not None:
+        raise SnapshotError(problem)
     library, base, server_url = payload_location(remote)
     client = _api(lambda: _open_client(server_url), "opening the Seafile client")
     rid = _api(lambda: client.get_repo_id(library), f"finding library {library!r}")

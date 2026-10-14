@@ -112,6 +112,8 @@ class PayloadModeTests(unittest.TestCase):
         return rc, out, err, into
 
     def gc(self, *extra: object) -> tuple[int, str, str]:
+        if "--payload-delete" in extra and not {"--vault", "--payload-no-vault"} & set(extra):
+            extra = (*extra, "--payload-no-vault")
         return self.run_tool("--payload-gc", "--remote", self.remote, *extra)
 
     def server_files(self) -> dict[str, bytes]:
@@ -740,6 +742,115 @@ class PayloadModeTests(unittest.TestCase):
         self.assertEqual(rc, 0, out + err)
         self.assertNotIn("NOTICE: payload mode", out)    # the user asked for it
 
+    # -- safeguards (PAYLOAD.md D13) ----------------------------------------------
+    def test_a_fresh_vault_is_refused_when_the_remote_used_another_rule(self):
+        self.assertEqual(self.snapshot()[0], 0)               # explicit size 1000
+        rc, out, err = self.bare(vault=self.case / "fresh-vault")
+        self.assertNotEqual(rc, 0)
+        self.assertIn("--payload-min-size 1000", out + err)
+        self.assertIn("auto", out + err)
+
+    def test_every_snapshot_carries_the_tool_version_as_a_trailer(self):
+        self.assertEqual(self.snapshot()[0], 0)
+        message = _git(self.vault, "log", "-1", "--format=%B", "snapshot")
+        self.assertIn(f"{snap.TOOL_TRAILER}: {snap.tool_version()}", message)
+        manifest = json.loads(_git(self.vault, "show", "snapshot:.seafile-payload/manifest.json"))
+        self.assertEqual(manifest["min_tool"], snap.PAYLOAD_MIN_TOOL)
+
+    def test_a_snapshot_by_a_newer_tool_is_warned_about(self):
+        self.assertEqual(self.snapshot()[0], 0)
+        with unittest.mock.patch.object(snap, "tool_of_commit", lambda *a: "99.1.0"):
+            (self.src / "small.txt").write_bytes(b"newer tool\n")
+            rc, out, err = self.snapshot()
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn("was written by tool 99.1.0", err)
+
+    def test_a_manifest_that_needs_a_newer_tool_is_refused(self):
+        with self.assertRaises(snap.SnapshotError) as ctx:
+            snap.check_manifest_shape({"format": 2, "min_tool": "99.0.0", "files": []})
+        self.assertIn("needs tool 99.0.0", str(ctx.exception))
+        snap.check_manifest_shape({"format": 2, "files": []})        # an older manifest is fine
+
+    def test_delete_needs_a_vault_or_an_explicit_no_vault(self):
+        self.assertEqual(self.snapshot()[0], 0)
+        rc, out, err = self.run_tool("--payload-gc", "--remote", self.remote, "--payload-delete")
+        self.assertEqual(rc, 1, out + err)
+        self.assertIn("--payload-delete needs --vault", err)
+        rc, out, err = self.run_tool("--payload-gc", "--remote", self.remote,
+                                     "--payload-no-vault")
+        self.assertEqual(rc, 1, out + err)
+        self.assertIn("only applies to --payload-gc --payload-delete", err)
+
+    def test_a_rewritten_history_stops_a_delete_until_it_is_accepted(self):
+        self.assertEqual(self.snapshot()[0], 0)
+        self.assertEqual(self.gc("--payload-delete", "--payload-grace-days", "1")[0], 0)
+        # What the last run saw is a tip the remote no longer contains.
+        self.stub.files.setdefault(REPO_ID, {})[f"{self.base}/gc-seen.json"] = json.dumps(
+            {"refs/heads/snapshot": "1" * 40}).encode("ascii")
+        rc, out, err = self.gc("--payload-delete", "--payload-grace-days", "1")
+        self.assertEqual(rc, 1, out + err)
+        self.assertIn("history was rewritten", err)
+        self.assertIn("--payload-accept-loss", err)
+        rc, out, err = self.gc("--payload-delete", "--payload-grace-days", "1")
+        self.assertEqual(rc, 1)                        # still refused: nothing was marked
+        rc, out, err = self.gc("--payload-delete", "--payload-grace-days", "1",
+                               "--payload-accept-loss")
+        self.assertEqual(rc, 0, out + err)
+
+    def test_keep_that_expires_snapshots_needs_the_acknowledgement(self):
+        for _ in range(2):
+            (self.src / "big1.bin").write_bytes(os.urandom(6000))
+            self.assertEqual(self.snapshot()[0], 0)
+        rc, out, err = self.gc("--payload-delete", "--payload-keep", "1")
+        self.assertEqual(rc, 1, out + err)
+        self.assertIn("unrestorable", err)
+        rc, out, err = self.gc("--payload-keep", "1")      # a report never needs it
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn("older snapshot(s) become unrestorable", out)
+
+    def test_verify_leaves_a_marker_the_store_line_and_gc_report_show(self):
+        self.assertEqual(self.snapshot()[0], 0)
+        rc, out, err = self.gc()
+        self.assertIn("last --payload-verify: never", out)
+        rc, out, err = self.run_tool("--payload-verify", "all", "--remote", self.remote)
+        self.assertEqual(rc, 0, out + err)
+        rc, out, err = self.gc()
+        self.assertIn("last --payload-verify: 0 day(s) ago", out)
+
+    def test_an_upload_that_cannot_fit_the_quota_is_warned_about_first(self):
+        with unittest.mock.patch.object(snap, "_account_quota", lambda c: (990, 1000)):
+            rc, out, err = self.snapshot()
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn("quota left", err)
+        self.assertIn("will probably fail", err)
+
+    def test_a_synced_payload_library_is_warned_about(self):
+        fake = [{"repo_id": REPO_ID, "worktree": "C:/sync/lib", "auto_sync": True}]
+        with unittest.mock.patch("git_remote_seafile.safety.discover_local_synced_libraries",
+                                 lambda: fake):
+            rc, out, err = self.snapshot()
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn("library holding the payload is synced", err)
+
+    def test_a_restore_that_cannot_fit_is_refused_before_downloading(self):
+        self.assertEqual(self.snapshot()[0], 0)
+        free = type("U", (), {"free": 100})()
+        with unittest.mock.patch("shutil.disk_usage", lambda p: free):
+            rc, out, err, into = self.restore("tight")
+        self.assertNotEqual(rc, 0)
+        self.assertIn("free space", out + err)
+        self.assertIn("--allow-low-disk", out + err)
+
+    def test_files_hashed_again_are_explained(self):
+        self.assertEqual(self.snapshot()[0], 0)
+        target = self.src / "big1.bin"
+        stat = target.stat()
+        os.utime(target, ns=(stat.st_atime_ns, stat.st_mtime_ns + 5_000_000_000))
+        (self.src / "small.txt").write_bytes(b"force a new snapshot\n")
+        rc, out, err = self.snapshot()
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn("hashed again because their size, timestamp or inode changed", out)
+
     def test_jobs_alone_no_longer_needs_the_size_flag(self):
         rc, out, err = self.bare("--payload-jobs", "2")
         self.assertEqual(rc, 0, out + err)
@@ -1154,7 +1265,8 @@ class PayloadModeTests(unittest.TestCase):
         # Without --payload-keep every snapshot's objects are referenced.
         rc, out, err = self.gc("--payload-grace-days", "1")
         self.assertIn("unused : 0 object(s)", out)
-        args = ("--payload-delete", "--payload-grace-days", "1", "--payload-keep", "1")
+        args = ("--payload-delete", "--payload-grace-days", "1", "--payload-keep", "1",
+                "--payload-accept-loss")
         self.assertEqual(self.gc(*args)[0], 0)
         self.backdate_pending(2)
         rc, out, err = self.gc(*args)
@@ -1282,7 +1394,8 @@ class PayloadModeTests(unittest.TestCase):
             self.run_tool(self.src, "--vault", self.case / "v2", "--remote", other)[0], 0
         )
         rc, out, err = self.run_tool(
-            "--payload-gc", "--remote", other, "--payload-grace-days", "1", "--payload-delete"
+            "--payload-gc", "--remote", other, "--payload-grace-days", "1", "--payload-delete",
+            "--payload-no-vault",
         )
         self.assertNotEqual(rc, 0)
         self.assertIn("found no payload manifest", out + err)

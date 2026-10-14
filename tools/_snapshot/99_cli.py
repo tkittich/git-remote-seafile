@@ -411,6 +411,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.ref,
                 verify=args.verify,
                 branch_explicit=bool(args.branch),
+                allow_low_disk=args.allow_low_disk,
             )
             return 0
 

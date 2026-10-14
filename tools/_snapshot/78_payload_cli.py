@@ -243,6 +243,7 @@ def run_payload_step(
     from_default: bool = False,
 ) -> tuple[dict[str, Any] | None, tuple[int, int]]:
     """Hash and upload the payload; ``(manifest, (objects, bytes) to upload)``."""
+    warn_if_newer_tool(git_dir, source, base)
     previous = load_manifest(git_dir, source, base)
     if previous is not None and min_size is None:
         raise SnapshotError(
@@ -254,6 +255,15 @@ def run_payload_step(
         )
     if not min_size:
         return None, (0, 0)
+    if from_default and previous is not None and previous.get("rule") != "auto":
+        # Two machines on different thresholds would move files between git and
+        # the payload on every alternate run: the default must not choose one.
+        raise SnapshotError(
+            "this remote's snapshots use payload rule --payload-min-size "
+            f"{previous.get('min_size', 'SIZE')}, but this vault has no setting yet and the "
+            "default is auto. Repeat the flag the remote uses, or pass --payload-min-size "
+            "auto to switch deliberately"
+        )
     if not candidates and previous is None:
         # Nothing qualifies and the vault never used payload mode: no manifest,
         # so a tree that merely *could* grow payload files is not locked into

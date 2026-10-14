@@ -378,10 +378,12 @@ def payload_store_line(remote: str) -> str:
                         and len(oname) == 64 and isinstance(size, int)):
                     count += 1
                     total += size
+        checked = verification_note(client, rid, base)
     except Exception:  # informational only
         return ""
     return (f"payload store: {count} object(s), {human_bytes(total)} on the server "
-            "(snapshots never delete one; --payload-gc reports what no snapshot uses)")
+            "(snapshots never delete one; --payload-gc reports what no snapshot uses); "
+            + checked)
 
 
 def publish_payload(
@@ -410,6 +412,8 @@ def publish_payload(
     held = _remote_objects(client, rid, base, set(by_sha))
     todo = {sha: item for sha, item in by_sha.items() if held.get(sha) != item["size"]}
     todo_bytes = sum(item["size"] for item in todo.values())
+    if todo:
+        payload_preflight(client, rid, todo_bytes)
     if dry_run:
         return len(todo), todo_bytes
     if todo:

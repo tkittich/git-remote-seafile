@@ -234,7 +234,7 @@ def build_snapshot(
         if parent_tree == tree:
             return tree, None, excluded
 
-    return tree, commit_tree(git_dir, work_tree, tree, parent, message), excluded
+    return tree, commit_tree(git_dir, work_tree, tree, parent, with_tool_trailer(message)), excluded
 
 
 def describe_tree(git_dir: Path, work_tree: Path, tree: str) -> tuple[int, int]:

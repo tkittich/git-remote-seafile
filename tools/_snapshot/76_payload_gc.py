@@ -75,6 +75,21 @@ def add_payload_gc_arguments(parser: Any) -> None:
         "then no longer be restored. Default: keep every snapshot",
     )
     parser.add_argument(
+        "--payload-no-vault",
+        action="store_true",
+        help="with --payload-gc --payload-delete: delete without --vault. Snapshots that "
+        "exist only in a vault on some machine (not yet pushed) would then count as "
+        "unreferenced, so this must be said out loud",
+    )
+    parser.add_argument(
+        "--payload-accept-loss",
+        action="store_true",
+        help="with --payload-gc --payload-delete: go on although snapshots would become "
+        "unrestorable -- the remote's history was rewritten since the last --payload-delete "
+        "run (a branch or tag deleted, a force push), or --payload-keep expires older "
+        "snapshots",
+    )
+    parser.add_argument(
         "--payload-grace-days",
         type=float,
         default=DEFAULT_GRACE_DAYS,
@@ -113,7 +128,24 @@ def payload_gc_conflicts(args: argparse.Namespace) -> list[str]:
             problems.append(f"--payload-grace-days must be at least {_MIN_GRACE_DAYS:g}")
         if args.payload_keep is not None and args.payload_keep < 1:
             problems.append("--payload-keep must be at least 1")
+        if args.payload_delete and not args.vault and not args.payload_no_vault:
+            problems.append(
+                "--payload-delete needs --vault <the long-lived vault>: a snapshot that is "
+                "only in a vault and was never pushed would look unreferenced. Pass "
+                "--payload-no-vault if the remote really is the only copy"
+            )
+        if not args.payload_delete:
+            for flag, value in (("--payload-no-vault", args.payload_no_vault),
+                                ("--payload-accept-loss", args.payload_accept_loss)):
+                if value:
+                    problems.append(f"{flag} only applies to --payload-gc --payload-delete")
+        elif args.payload_no_vault and args.vault:
+            problems.append("--payload-no-vault and --vault contradict each other")
     else:
+        for flag, value in (("--payload-no-vault", args.payload_no_vault),
+                            ("--payload-accept-loss", args.payload_accept_loss)):
+            if value:
+                problems.append(f"{flag} only applies to --payload-gc")
         if args.payload_delete:
             problems.append("--payload-delete only applies to --payload-gc")
         if args.payload_keep is not None:
@@ -123,11 +155,22 @@ def payload_gc_conflicts(args: argparse.Namespace) -> list[str]:
     return problems
 
 
+class _History(NamedTuple):
+    hashes: dict[str, int]       #: every referenced object and its size
+    commits: int                 #: commits scanned
+    manifests: int               #: distinct manifests found
+    tips: dict[str, str]         #: the remote's refs now: ``refs/heads/x`` -> commit
+    dropped: list[str]           #: refs seen by the last --payload-delete that lost history
+    expired: int                 #: commits --payload-keep leaves out of the count
+
+
 def _hashes_in_history(
-    remote: str, vault: Path | None, keep: int | None = None
-) -> tuple[dict[str, int], int, int]:
-    """``({hash: size}, commits scanned, manifests found)`` over every ref of *remote*
-    and, when given, of the local *vault* (which must be one)."""
+    remote: str, vault: Path | None, keep: int | None = None,
+    seen: dict[str, str] | None = None,
+) -> _History:
+    """Every payload object referenced from every ref of *remote* and, when given, of
+    the local *vault* (which must be one).  *seen* is the ref tips the last
+    --payload-delete run saw: any that the remote no longer contains are reported."""
     if vault is not None and not (vault / ".git").exists():
         raise SnapshotError(
             f"--vault {vault} is not a vault (it has no .git); refusing to run without the "
@@ -154,6 +197,26 @@ def _hashes_in_history(
                  "+refs/heads/*:refs/remotes/local/*", "+refs/tags/*:refs/remotes/local-tags/*"],
                 cwd=Path(td),
             )
+        tips: dict[str, str] = {}
+        for line in git(
+            repo, None, ["for-each-ref", "--format=%(objectname) %(refname)",
+                         "refs/remotes/remote/", "refs/remotes/remote-tags/"], cwd=Path(td),
+        ).stdout.splitlines():
+            oid, _, name = line.partition(" ")
+            if name.startswith("refs/remotes/remote-tags/"):
+                tips["refs/tags/" + name[len("refs/remotes/remote-tags/"):]] = oid
+            elif name.startswith("refs/remotes/remote/"):
+                tips["refs/heads/" + name[len("refs/remotes/remote/"):]] = oid
+        dropped: list[str] = []
+        for ref, old in sorted((seen or {}).items()):
+            now = tips.get(ref)
+            if now is None:
+                dropped.append(f"{ref} was deleted")
+            elif now != old and git(
+                repo, None, ["merge-base", "--is-ancestor", old, now], cwd=Path(td), check=False,
+            ).returncode != 0:
+                dropped.append(f"{ref} no longer contains {old[:12]}")
+        expired = 0
         if keep is None:
             commits = [c for c in git(repo, None, ["rev-list", "--all"], cwd=Path(td)).stdout.split() if c]
         else:
@@ -163,8 +226,10 @@ def _hashes_in_history(
                 kept.update(git(repo, None, ["rev-list", f"--max-count={keep}", ref],
                                 cwd=Path(td)).stdout.split())
             commits = sorted(kept)
+            everything = set(git(repo, None, ["rev-list", "--all"], cwd=Path(td)).stdout.split())
+            expired = len(everything - kept)
         if not commits:
-            return {}, 0, 0
+            return _History({}, 0, 0, tips, dropped, expired)
         specs = "".join(f"{c}:{PAYLOAD_MANIFEST}\n" for c in commits)
         checked = git(repo, None, ["cat-file", "--batch-check"], cwd=Path(td), stdin=specs).stdout
         blobs = sorted({
@@ -183,7 +248,7 @@ def _hashes_in_history(
                 ) from None
             for item in check_manifest_shape(data, f"the payload manifest {oid[:12]}"):
                 hashes[item["sha256"]] = item["size"]
-        return hashes, len(commits), len(blobs)
+        return _History(hashes, len(commits), len(blobs), tips, dropped, expired)
 
 
 def _refs_the_helper_cannot_see(client: Any, rid: str, repo_path: str) -> list[str]:
@@ -207,7 +272,8 @@ def payload_verify(remote: str, vault: Path | None, *, count: str) -> int:
     library, base, server_url = payload_location(remote)
     client = _api(lambda: _open_client(server_url), "opening the Seafile client")
     rid = _api(lambda: client.get_repo_id(library), f"finding library {library!r}")
-    sizes, _commits, manifests = _hashes_in_history(remote, vault, 1)
+    history = _hashes_in_history(remote, vault, 1)
+    sizes, manifests = history.hashes, history.manifests
     if manifests == 0:
         raise SnapshotError("found no payload manifest in the newest snapshot of the remote")
     shas = sorted(sizes)
@@ -229,11 +295,13 @@ def payload_verify(remote: str, vault: Path | None, *, count: str) -> int:
         shown = "\n  ".join(bad[:20])
         raise SnapshotError(f"{len(bad)} of {len(chosen)} sampled object(s) are damaged:\n  {shown}")
     print(f"verified {len(chosen)} object(s): every sampled object matches its SHA-256")
+    record_verification(client, rid, base, len(chosen), len(shas))
     return 0
 
 
 def payload_gc(
-    remote: str, vault: Path | None, *, delete: bool, grace_days: float, keep: int | None = None
+    remote: str, vault: Path | None, *, delete: bool, grace_days: float, keep: int | None = None,
+    accept_loss: bool = False,
 ) -> int:
     """Report, and with *delete* mark and later remove, unreferenced payload objects."""
     if grace_days < _MIN_GRACE_DAYS:
@@ -250,12 +318,18 @@ def payload_gc(
             f"see (first: {conflicts[0]}); a snapshot reachable only from one would look "
             "unreferenced. Resolve them (keep one ref, delete the copies) and run again"
         )
-    sizes_by_hash, commits, manifests = _hashes_in_history(remote, vault, keep)
+    seen = read_seen_tips(client, rid, base)
+    history = _hashes_in_history(remote, vault, keep, seen)
+    sizes_by_hash, commits, manifests = history.hashes, history.commits, history.manifests
     referenced = set(sizes_by_hash)
     if keep is not None:
         print(f"--payload-keep {keep}: only the newest {keep} snapshot(s) of each branch and "
-              f"tag count as using objects; older ones become unrestorable once their "
-              f"objects are deleted")
+              f"tag count as using objects; {history.expired} older snapshot(s) become "
+              f"unrestorable once their objects are deleted")
+    if history.dropped:
+        print("WARNING: the remote's history changed since the last --payload-delete run:\n  "
+              + "\n  ".join(history.dropped)
+              + "\n  snapshots only reachable from there no longer count as using objects")
     print(f"history: {commits} commit(s), {manifests} distinct manifest(s), "
           f"{len(referenced)} referenced object(s)")
 
@@ -305,6 +379,7 @@ def payload_gc(
     if missing:
         print(f"WARNING: {len(missing)} object(s) named by a manifest are NOT on the server; "
               f"the snapshots that need them cannot be restored")
+    print(verification_note(client, rid, base))
 
     if not delete:
         if unused:
@@ -316,6 +391,16 @@ def payload_gc(
             "found no payload manifest anywhere in the history, so every object would look "
             "unreferenced; refusing to mark or delete (wrong remote, or a fetch that "
             "returned nothing?)"
+        )
+    if (history.dropped or (keep is not None and history.expired)) and not accept_loss:
+        raise SnapshotError(
+            "refusing to mark or delete: "
+            + ("the remote's history was rewritten since the last --payload-delete run "
+               f"({len(history.dropped)} ref(s)); " if history.dropped else "")
+            + (f"--payload-keep {keep} would make {history.expired} older snapshot(s) "
+               "unrestorable; " if keep is not None and history.expired else "")
+            + "if that is intended, run again with --payload-accept-loss. Objects that "
+            "only those snapshots need would otherwise be deleted after the grace period"
         )
     deleted = 0
     for index, sha in enumerate(sorted(due), 1):
@@ -333,6 +418,7 @@ def payload_gc(
         _api(lambda: client.upload_file(
             rid, base, _PENDING_NAME, json.dumps(fresh, sort_keys=True).encode("ascii")
         ), "writing gc state")
+    write_seen_tips(client, rid, base, history.tips)
     print(f"marked {marked} newly unreferenced object(s); deleted {deleted} object(s), "
           f"{total(due)}; quota is released at once, disk after the library's history "
           f"expires and the server's GC runs")

@@ -191,6 +191,7 @@ def restore(
     ref: str | None,
     verify: bool = False,
     branch_explicit: bool = True,
+    allow_low_disk: bool = False,
 ) -> None:
     """Materialise a snapshot into a new directory, byte-for-byte.
 
@@ -343,7 +344,7 @@ def restore(
             )
         print("git fsck: object store intact")
 
-    restore_payload(remote, into)
+    restore_payload(remote, into, allow_low_disk=allow_low_disk)
 
     files = sum(1 for p in into.rglob("*") if p.is_file() and ".git" not in p.parts)
     print(f"restored {files} files from {target} into {into}")

@@ -251,12 +251,27 @@ the store (nothing deletes an object until `--payload-gc`). The vault's tree car
 `.seafile-payload/README.txt` beside the manifest, so a plain `git clone` explains
 itself. `--payload-rehash` ignores the hash cache for one run. The `.seafile-payload` directory of a source is never staged.
 
+### D13. Safeguards — **decided** (v0.9.0)
 
 Nothing here changes what a snapshot contains; each item is a refusal or a note
 *before* something expensive or destructive starts.
 
 | Hazard | Safeguard | Test |
 | :--- | :--- | :--- |
+| A newer tool wrote the snapshot this run builds on | every snapshot commit carries a `Seafile-Snapshot-Tool: <version>` trailer (never in the tree, so an unchanged tree still commits nothing after an upgrade); a run warns when the base was written by a newer tool. A manifest carries `min_tool`, and a tool older than that refuses it | `test_every_snapshot_carries_the_tool_version_as_a_trailer`, `test_a_snapshot_by_a_newer_tool_is_warned_about`, `test_a_manifest_that_needs_a_newer_tool_is_refused` |
+| Two machines on different thresholds move files between git and payload on alternate runs | a vault with no remembered setting that finds the remote's manifest on another rule refuses, naming the flag; the default never silently picks | `test_a_fresh_vault_is_refused_when_the_remote_used_another_rule` |
+| `--payload-delete` from a machine that lacks snapshots which were never pushed | needs `--vault`, or `--payload-no-vault` said out loud | `test_delete_needs_a_vault_or_an_explicit_no_vault` |
+| The remote's history was rewritten (force push, deleted branch or tag) and a delete would then free objects those snapshots need | each `--payload-delete` run stores the ref tips it saw (`payload/gc-seen.json`); a later run that finds one no longer contained refuses to mark or delete until `--payload-accept-loss`. A report only prints it | `test_a_rewritten_history_stops_a_delete_until_it_is_accepted` |
+| `--payload-keep N` makes older snapshots unrestorable | the report says how many; a delete needs `--payload-accept-loss` | `test_keep_that_expires_snapshots_needs_the_acknowledgement` |
+| The payload library is synced by the desktop client | warning before the upload | `test_a_synced_payload_library_is_warned_about` |
+| An upload larger than the account's remaining quota | warning before the upload (a warning, not a refusal: the quota that counts is the library owner's) | `test_an_upload_that_cannot_fit_the_quota_is_warned_about_first` |
+| A restore with too little free disk | refused before the first download (`--allow-low-disk` overrides) | `test_a_restore_that_cannot_fit_is_refused_before_downloading` |
+| Stored objects that rot unnoticed | `--payload-verify` leaves `payload/verified.json`; the gc report and the store line say when it last ran | `test_verify_leaves_a_marker_the_store_line_and_gc_report_show` |
+| A long hashing pass nobody explains (a copy tool reset every timestamp) | the run says how many files were hashed again and why | `test_files_hashed_again_are_explained` |
+
+**A tag is a pin.** `--payload-gc` reads every branch and tag of the remote and of
+`--vault`, so `git tag keep-2026-q3 <snapshot>` keeps that snapshot's objects alive
+whatever happens to the branch.
 
 ### D12. Privacy and security — **decided**
 

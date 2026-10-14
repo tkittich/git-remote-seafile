@@ -23,6 +23,7 @@ def check_manifest_shape(manifest: Any, where: str = "the payload manifest") -> 
             f"{where} is format {fmt}; this tool understands up to {PAYLOAD_FORMAT}. "
             "Upgrade it before restoring or running retention"
         )
+    check_min_tool(manifest, where)
     files = manifest.get("files")
     if not isinstance(files, list):
         raise SnapshotError(f"{where} has no file list")
@@ -224,6 +225,7 @@ def build_manifest(
     entries: list[dict[str, Any]] = []
     fresh: dict[str, dict[str, int | str]] = {}
     total = len(candidates)
+    stale = 0
     for index, rel in enumerate(sorted(candidates), 1):
         size, mtime_ns, mode, ino = candidates[rel]
         old = cache.get(rel) or {}
@@ -241,6 +243,7 @@ def build_manifest(
             digest = str(old["sha256"])
             fresh[rel] = old
         else:
+            stale += isinstance(old.get("sha256"), str)
             if not quiet:
                 print(f"hashing [{index}/{total}] {rel} ({human_bytes(size)})", flush=True)
             started = time.time_ns()
@@ -251,6 +254,13 @@ def build_manifest(
         entries.append(
             {"path": rel, "size": size, "mode": mode, "sha256": digest, "mtime_ns": mtime_ns}
         )
+    if stale and not quiet:
+        print(
+            f"note: {stale} file(s) were hashed again because their size, timestamp or inode "
+            "changed since the last run (or are too recent to trust); a copy tool that resets "
+            "timestamps does this to every file",
+            flush=True,
+        )
     ident = hashlib.sha256()
     for item in entries:
         ident.update(f"{item['path']}\0{item['size']}\0{item['mode']}\0{item['sha256']}\n".encode())
@@ -258,6 +268,7 @@ def build_manifest(
         "format": PAYLOAD_FORMAT,
         "snapshot": "p-" + ident.hexdigest()[:16],
         "min_size": min_size,
+        "min_tool": PAYLOAD_MIN_TOOL,
         "rule": rule,
         "files": entries,
     }

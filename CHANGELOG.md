@@ -27,12 +27,14 @@ The snapshot tool grows up: it installs with the package, and it can carry a 131
 - **`--payload-verify [N|all]`**: download a sample (or all) of the newest snapshot's payload objects and check their SHA-256, to find an object damaged after it was stored.
 - **`--payload-keep N`** (with `--payload-gc`): only the newest N snapshots of each branch and tag count as using objects, so older ones expire through the same two-phase deletion.
 - **`--no-payload`**: payload mode off for this run and remembered.
+- **`--payload-no-vault` and `--payload-accept-loss`** for `--payload-gc --payload-delete` (see Changed).
 - **Payload mode remembers its setting** in the vault after a complete real run (`0` included); **`--payload-rehash`** ignores the hash cache for one run.
 - **`--payload-jobs N`** uploads N payload files at once (default 3; measured 30 s -> 19.7 s for six 128 MiB files, no gain at 5).
 - **`SeafileClient.copy_entries` and `rename_entry`**: server-side copy and in-place rename within a library.
 - **The snapshot tool in the wheel**: console script `git-seafile-snapshot` and the `git-remote-seafile snapshot` subcommand.
 
 ### Changed
+- **Safeguards around payload mode** (PAYLOAD.md D13): every snapshot commit carries a `Seafile-Snapshot-Tool: <version>` trailer and a manifest carries `min_tool`, so a run warns when it builds on a newer tool's snapshot and an old tool refuses a manifest it cannot read; `--payload-delete` needs `--vault` (or `--payload-no-vault`) and stops with `--payload-accept-loss` when the remote's history was rewritten since the last delete run or `--payload-keep` would expire snapshots; a fresh vault is refused when the remote's manifests use another threshold than the default; a restore that would not fit the disk is refused before downloading; an upload that exceeds the quota or goes into a library this machine syncs is warned about first; `--payload-verify` leaves a marker that the store line and the gc report show; files hashed again are explained.
 - **Payload mode is on by default** (see Upgrading). A fresh vault on another machine adopts `auto` rather than being refused; a vault that used payload mode is still refused a run that would put its large files into git by accident.
 - **A conversion is announced before it starts.** When the default is about to move an existing vault's large files out of git, the run prints how many files and bytes, and how to keep the vault as it was, before hashing or uploading anything (a preview says "would move").
 - **`--payload-jobs` no longer needs `--payload-min-size`**; it is refused only when payload mode is explicitly off.

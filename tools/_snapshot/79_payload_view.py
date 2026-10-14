@@ -200,5 +200,6 @@ def payload_command(args: argparse.Namespace) -> int | None:
         return payload_gc(
             args.remote, vault, delete=args.payload_delete,
             grace_days=args.payload_grace_days, keep=args.payload_keep,
+            accept_loss=args.payload_accept_loss,
         )
     return None

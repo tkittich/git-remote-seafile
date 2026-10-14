@@ -1139,6 +1139,21 @@ What to know:
   `--payload-delete` marks it and a later run deletes it after `--payload-grace-days`;
   `--payload-keep N` lets older snapshots expire (they then cannot be restored). Run it
   from one machine, and set the library's history to keep a few days as a safety net.
+  Deleting needs `--vault <your long-lived vault>` (or `--payload-no-vault`, if the
+  remote really is the only copy), because a snapshot that was never pushed would
+  otherwise look unused. If the remote's history was rewritten since the last delete
+  run -- a force push, a deleted branch or tag -- or `--payload-keep` would expire
+  snapshots, the run refuses until you pass `--payload-accept-loss`. **A tag is a
+  pin:** `git tag keep-2026-q3 <snapshot>` keeps that snapshot's objects whatever
+  happens to the branch.
+- **What it checks before it starts.** A restore that would not fit the free disk is
+  refused before the first download (`--allow-low-disk` overrides); an upload larger
+  than your remaining quota, or into a library this machine syncs, is warned about
+  first; a fresh vault is refused when the remote's snapshots use another threshold
+  than the default (repeat that flag, or pass `--payload-min-size auto` to switch).
+  Every snapshot commit records the tool's version in a `Seafile-Snapshot-Tool:`
+  trailer, and a run warns when it builds on a snapshot written by a newer tool.
+  The store line and the gc report say when `--payload-verify` last ran.
 - **What it does not do:** no encryption, no delta between versions of one file (a
   changed file is a whole new object; the server shares unchanged blocks), and a
   file's name must be restorable on the platform you restore to (Windows names it
