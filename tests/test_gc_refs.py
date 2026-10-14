@@ -149,6 +149,15 @@ class TestListingSaysWhatItCouldNotRead(_GcFixture):
         self.assertIn("refs/heads/wip", res.stdout)
 
 
+class TestFetchDoesNotAdvertiseHalfARepository(_GcFixture):
+    def test_a_vanished_refs_directory_fails_the_listing_after_one_retry(self):
+        self.repo_with_branches("vanish", ["feature/auth", "feature/ui"])
+        self.stub.faults["dir_404"] = "refs/heads/feature"
+        res = run_git(["ls-remote", self.url("vanish")], self.work, self.env, check=False)
+        self.assertNotEqual(res.returncode, 0, "ls-remote advertised a repository missing its feature/ branches")
+        self.assertNotIn("refs/heads/main", res.stdout)
+
+
 class TestIterRefsUnit(unittest.TestCase):
     """The walker's contract without a server: strict raises, lax warns."""
 

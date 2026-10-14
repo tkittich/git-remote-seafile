@@ -854,7 +854,7 @@ These are the places where the tool, Git, or Seafile stops short. None is hidden
 | Feature | Status |
 | :--- | :--- |
 | `--atomic`, push options (`-o`), signed pushes, `followtags` | Not supported; git refuses them before the push. |
-| `--force-with-lease` | Not supported: the helper answers `unsupported` to git's `cas` option, git then continues without force, and the push is rejected as non-fast-forward. Use `--force` (the lock and the compare-and-swap re-check still apply), or fetch and integrate first. |
+| `--force-with-lease` | Supported (from the release after 0.9.1; 0.9.1 and earlier rejected it as non-fast-forward). The helper accepts git's `cas` option, so a push may rewrite history over exactly the value you last saw and is refused as `stale info` if the remote moved; the lock and the re-check under it still apply. |
 | Shallow (`--depth`) or partial (`--filter`) clones | The helper installs every remote pack whatever git asked for, so these options do not reduce what is downloaded. |
 | `git lfs` | Supported through the custom transfer agent; `lfs.standalonetransferagent` is not scoped per remote, so a dual-remote setup splits objects (see §8.5 and §11.1). |
 | Hostile repository config | `seafile.skipsafetychecks` and `seafile.gittimeout` are read only from system/global git config and the environment; a repository's own config cannot weaken them. |

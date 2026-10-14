@@ -466,6 +466,68 @@ class TestRemoteHelper(unittest.TestCase):
         self.assertIn("refs/heads/old-branch", h._refs_cache)
         mock_lock.assert_not_called()
 
+    def _with_lease(self, remote_sha, expected, local_sha="local_new"):
+        h = make_helper()
+        h.client = MagicMock()
+        h.repo_id = "repo1"
+        h.repo_path = "/git-repo"
+        h._refs_cache = {}
+        h.client.get_file_text.return_value = remote_sha
+        h.cas_expect = {"refs/heads/main": expected}
+        return h
+
+    def test_a_lease_that_matches_permits_a_non_fast_forward(self):
+        h = self._with_lease("remote_sha", "remote_sha")
+        with patch("git_remote_seafile.helper.rev_parse", return_value="local_new"), \
+                patch("git_remote_seafile.helper.is_ancestor", return_value=False) as anc:
+            verdict = h._decide_update("refs/heads/main", "refs/heads/main", False)
+        self.assertEqual(verdict, ("local_new", "remote_sha"))
+        anc.assert_not_called()
+
+    def test_a_lease_that_does_not_match_is_stale_info(self):
+        h = self._with_lease("moved_sha", "remote_sha")
+        with patch("git_remote_seafile.helper.rev_parse", return_value="local_new"):
+            verdict = h._decide_update("refs/heads/main", "refs/heads/main", False)
+        self.assertEqual(verdict, "stale info")
+
+    def test_an_empty_lease_means_the_ref_must_not_exist(self):
+        h = self._with_lease(None, "")
+        with patch("git_remote_seafile.helper.rev_parse", return_value="local_new"):
+            self.assertEqual(
+                h._decide_update("refs/heads/main", "refs/heads/main", False), ("local_new", None)
+            )
+        h = self._with_lease("exists", "")
+        with patch("git_remote_seafile.helper.rev_parse", return_value="local_new"):
+            self.assertEqual(h._decide_update("refs/heads/main", "refs/heads/main", False), "stale info")
+
+    def test_option_cas_is_accepted_and_recorded(self):
+        h = make_helper()
+        sha = "a" * 40
+        out = io.StringIO()
+        with patch("sys.stdin", io.StringIO(f"option cas refs/heads/main:{sha}\noption cas refs/heads/x:\n")), \
+                patch("sys.stdout", out):
+            h.run()
+        self.assertEqual(out.getvalue().split(), ["ok", "ok"])
+        self.assertEqual(h.cas_expect, {"refs/heads/main": sha, "refs/heads/x": ""})
+
+    def test_a_malformed_cas_is_unsupported_not_guessed_at(self):
+        h = make_helper()
+        out = io.StringIO()
+        with patch("sys.stdin", io.StringIO("option cas main\noption cas refs/heads/m:nothex\n")), \
+                patch("sys.stdout", out):
+            h.run()
+        self.assertEqual(out.getvalue().split(), ["unsupported", "unsupported"])
+        self.assertEqual(h.cas_expect, {})
+
+    def test_a_deletion_under_a_stale_lease_is_refused(self):
+        h = self._with_lease("moved_sha", "remote_sha")
+        lock = MagicMock()
+        out = io.StringIO()
+        with patch("sys.stdout", out):
+            h._delete_remote_ref(lock, "refs/heads/main")
+        self.assertIn("error refs/heads/main stale info", out.getvalue())
+        h.client.delete_entry.assert_not_called()
+
     def test_dry_run_answers_a_missing_deletion_as_a_real_push_does(self):
         h = make_helper()
         h.client = MagicMock()
@@ -1243,10 +1305,44 @@ class TestRemoteHelper(unittest.TestCase):
         h.client.get_file_text.side_effect = SeafileAPIError("HEAD read: HTTP 503")
         out = io.StringIO()
         with patch("git_remote_seafile.helper.iter_refs",
-                   side_effect=lambda c, r, p, ns: iter([(f"{ns}/main", "a" * 40)] if ns == "refs/heads" else [])),              patch("sys.stdout", out), patch("sys.stderr", io.StringIO()):
+                   side_effect=lambda c, r, p, ns, **kw: iter([(f"{ns}/main", "a" * 40)] if ns == "refs/heads" else [])),              patch("sys.stdout", out), patch("sys.stderr", io.StringIO()):
             with self.assertRaises(SeafileAPIError):
                 h.cmd_list()
         self.assertEqual(out.getvalue(), "", "git must not receive a partial advertisement")
+
+    def test_listing_retries_once_when_a_refs_directory_vanishes_and_then_succeeds(self):
+        h = make_helper()
+        h.client = MagicMock()
+        h.client.get_file_text.return_value = None
+        h.repo_id = "repo1"
+        h.repo_path = "/git-repo"
+        calls = {"n": 0}
+
+        def flaky(c, r, p, ns, **kw):
+            if ns == "refs/heads":
+                calls["n"] += 1
+                if calls["n"] == 1:
+                    raise SeafileAPIError("/git-repo/refs/heads/feature was listed by its parent but is now missing")
+                return iter([(f"{ns}/main", "a" * 40)])
+            return iter([])
+
+        out, err = io.StringIO(), io.StringIO()
+        with patch("git_remote_seafile.helper.iter_refs", side_effect=flaky),                 patch("git_remote_seafile.helper.time.sleep"),                 patch("sys.stdout", out), patch("sys.stderr", err):
+            h.cmd_list()
+        self.assertIn(f"{'a' * 40} refs/heads/main", out.getvalue())
+        self.assertIn("retrying once", err.getvalue())
+
+    def test_listing_fails_rather_than_advertise_part_of_the_repository(self):
+        h = make_helper()
+        h.client = MagicMock()
+        h.repo_id = "repo1"
+        h.repo_path = "/git-repo"
+        out = io.StringIO()
+        with patch("git_remote_seafile.helper.iter_refs",
+                   side_effect=SeafileAPIError("a refs directory is now missing")),                 patch("git_remote_seafile.helper.time.sleep"),                 patch("sys.stdout", out), patch("sys.stderr", io.StringIO()):
+            with self.assertRaises(SeafileAPIError):
+                h.cmd_list()
+        self.assertEqual(out.getvalue(), "")
 
     def test_deleting_the_branch_head_points_at_says_so(self):
         h = make_helper()

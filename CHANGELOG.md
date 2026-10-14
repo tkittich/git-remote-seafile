@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **`git push --force-with-lease` is supported.** The helper accepts git's `cas` option: a push over a lease may rewrite history, but only over the value the user last saw (an empty expectation means "must not exist"), and is refused as `stale info` otherwise, for updates and deletions, in `--dry-run` too. The compare-and-swap re-check under the lock still applies. A malformed `cas` is answered `unsupported`, never guessed at.
+
+### Changed
+- **Listing the remote for a fetch no longer advertises half a repository.** A refs directory that the parent listing showed and that then answers 404 is retried once and then an error, instead of a warning followed by an advertisement without those branches. A ref file with unusable content is still only a warning, so one planted file cannot make a repository unfetchable.
+- **The clock probe recognises macOS network mounts** (`smbfs`, `nfs`, `afpfs`, `webdav`, read from `mount`).
+- **The payload test class is split in five** so the suite's wall time is about 1.5 minutes shorter than a single 109-test target (no behaviour change).
+
 ## [0.9.1] - 2026-10-14
 
 A review release: three independent code reviews of the Git remote helper, and every finding that was a

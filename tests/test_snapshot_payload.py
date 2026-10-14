@@ -1551,6 +1551,19 @@ class PayloadRememberVerifyViewAndClockTests(_PayloadFixture):
         self.assertEqual(rc, 0, out + err)
         probe.assert_not_called()
 
+    def test_macos_mount_output_identifies_a_network_volume(self):
+        mount = (
+            "/dev/disk3s1s1 on / (apfs, sealed, local, read-only, journaled)\n"
+            "//tk@nas.local/media on /Volumes/media (smbfs, nodev, nosuid, mounted by tk)\n"
+            "nas:/export/data on /Volumes/data (nfs, nodev, nosuid)\n"
+            "/dev/disk4s2 on /Volumes/USB DRIVE (msdos, local, nodev, nosuid)\n"
+        )
+        net = snap._darwin_mount_is_network
+        self.assertTrue(net("/Volumes/media/projects/x", mount))
+        self.assertTrue(net("/Volumes/data", mount))
+        self.assertFalse(net("/Users/tk/code", mount))
+        self.assertFalse(net("/Volumes/USB DRIVE/x", mount))
+
     def test_restore_paths_are_extended_on_windows_and_untouched_elsewhere(self):
         long_dir = self.case.joinpath(*(["d" * 40] * 8))
         got = snap.extended_path(long_dir / "f.bin")

@@ -179,6 +179,11 @@ class RemoteHelper:
     #: Set from ``option dry-run true``, which git sends for ``git push
     #: --dry-run``.
     dry_run: bool
+    #: ``{ref: expected remote sha}`` from ``option cas <ref>:<sha>``, which
+    #: git sends for ``--force-with-lease``.  An empty expectation means "the
+    #: ref must not exist".  Replaced, never mutated, so the class default is
+    #: safe to share.
+    cas_expect: dict[str, str] = {}
 
     def __init__(self, remote_name: str, url: str, client: SeafileClient | None = None):
         self.remote_name = remote_name
@@ -275,17 +280,12 @@ class RemoteHelper:
                 return "sha1"
         return "sha1"
 
-    def cmd_list(self, for_push: bool = False) -> None:
-        """List references on the remote Seafile repository."""
-        self._refs_cache.clear()
-
-        # 1. Discover branches and tags.  iter_refs walks recursively, so refs
-        # whose names contain a slash ("refs/heads/feature/auth") are included.
-        # A single-level listing would hide them -- and a hidden ref is not just
-        # missing from the advert, it is also treated as garbage by compaction.
-        discovered_refs: list[tuple[str, str]] = []
+    def _discover_refs(self, out: list[tuple[str, str]]) -> None:
+        """Append every valid remote ref to *out* and record it in the refs cache."""
         for namespace in REF_NAMESPACES:
-            for ref_name, sha in iter_refs(self.client, self.repo_id, self.repo_path, namespace):
+            for ref_name, sha in iter_refs(
+                self.client, self.repo_id, self.repo_path, namespace, strict_listing=True
+            ):
                 if not is_valid_ref_name(ref_name):
                     if is_conflict_copy(ref_name):
                         sys.stderr.write(
@@ -301,7 +301,36 @@ class RemoteHelper:
                     sys.stderr.flush()
                     continue
                 self._refs_cache[ref_name] = sha
-                discovered_refs.append((ref_name, sha))
+                out.append((ref_name, sha))
+
+    def cmd_list(self, for_push: bool = False) -> None:
+        """List references on the remote Seafile repository."""
+        self._refs_cache.clear()
+
+        # 1. Discover branches and tags.  iter_refs walks recursively, so refs
+        # whose names contain a slash ("refs/heads/feature/auth") are included.
+        # A single-level listing would hide them -- and a hidden ref is not just
+        # missing from the advert, it is also treated as garbage by compaction.
+        discovered_refs: list[tuple[str, str]] = []
+        for attempt in (1, 2):
+            self._refs_cache.clear()
+            discovered_refs = []
+            try:
+                self._discover_refs(discovered_refs)
+                break
+            except SeafileAPIError as ex:
+                # A refs directory that its parent listed and that then 404s is
+                # a branch deleted between the two requests (the second listing
+                # is consistent) or a server failing -- and advertising the
+                # rest as if it were the whole repository is how a fetch quietly
+                # loses branches.  One retry, then say so.
+                if attempt == 2:
+                    raise
+                sys.stderr.write(
+                    f"Warning: listing the remote refs failed ({_flatten(ex)}); retrying once.\n"
+                )
+                sys.stderr.flush()
+                time.sleep(0.5)
 
         # HEAD is read *before* anything is written.  A transient failure here
         # used to surface after the ref lines were already on stdout, leaving
@@ -448,6 +477,13 @@ class RemoteHelper:
             self._refs_cache[dst] = remote_sha
         else:
             self._refs_cache.pop(dst, None)
+        if dst in self.cas_expect:
+            # --force-with-lease: the push may rewrite history, but only over
+            # exactly the value the user last saw.  Git sends no ``+`` for it,
+            # so the lease is what permits the non-fast-forward.
+            if (remote_sha or "") != self.cas_expect[dst]:
+                return "stale info"
+            return local_sha, remote_sha
         if remote_sha and not force:
             try:
                 if not is_ancestor(remote_sha, local_sha):
@@ -455,6 +491,18 @@ class RemoteHelper:
             except GitError:
                 return "fetch first"
         return local_sha, remote_sha
+
+    def _accept_cas(self, value: str) -> bool:
+        """Record one ``option cas <ref>:<sha>``; False if it is not that shape.
+
+        Refused (answered ``unsupported``) rather than guessed at: a lease the
+        helper cannot read must not become a push that ignores it.
+        """
+        ref, sep, sha = value.strip().partition(":")
+        if not sep or not ref.startswith("refs/") or (sha and not HEX_SHA_RE.fullmatch(sha)):
+            return False
+        self.cas_expect = {**self.cas_expect, ref: sha}
+        return True
 
     def _push_dry_run(self, push_specs: list[str]) -> None:
         """Report what cmd_push() *would* do, and write nothing.
@@ -484,8 +532,11 @@ class RemoteHelper:
                 if not src:
                     # The same question the real deletion asks first, so the
                     # preview does not say "ok" to what git would refuse.
-                    if not self.client.get_file_text(self.repo_id, self._full_path(dst)):
+                    current = self.client.get_file_text(self.repo_id, self._full_path(dst))
+                    if not current:
                         _proto_error(dst, "remote ref does not exist")
+                    elif dst in self.cas_expect and current != self.cas_expect[dst]:
+                        _proto_error(dst, "stale info")
                     else:
                         sys.stdout.write(f"ok {dst}\n")
                     continue
@@ -528,6 +579,8 @@ class RemoteHelper:
             existing = self.client.get_file_text(self.repo_id, ref_file)
             if not existing:
                 _proto_error(dst, "remote ref does not exist")
+            elif dst in self.cas_expect and existing != self.cas_expect[dst]:
+                _proto_error(dst, "stale info")
             elif not lock.verify_ownership():
                 state = lock.ownership_state()
                 _proto_error(
@@ -1230,6 +1283,8 @@ class RemoteHelper:
                     # command.  So accepting the option is what makes the flag
                     # usable at all; cmd_push() then reports without writing.
                     self.dry_run = val == "true"
+                    sys.stdout.write("ok\n")
+                elif opt == "cas" and self._accept_cas(val):
                     sys.stdout.write("ok\n")
                 elif opt in ("progress", "verbosity"):
                     sys.stdout.write("ok\n")

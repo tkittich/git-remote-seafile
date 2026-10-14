@@ -125,6 +125,7 @@ def iter_refs(
     max_workers: int = 8,
     *,
     strict: bool = False,
+    strict_listing: bool = False,
 ) -> Iterator[tuple[str, str]]:
     """Yield ``(ref_name, sha)`` for every ref under ``namespace``.
 
@@ -135,8 +136,11 @@ def iter_refs(
 
     A ref whose content cannot be read is never dropped *silently*: it is
     reported on stderr, and with ``strict`` it is an error.  ``gc`` passes
-    ``strict`` because there an omitted ref means its objects are deleted;
-    advertising for a fetch can afford a warning.  Ref file downloads are
+    ``strict`` because there an omitted ref means its objects are deleted.  A
+    listing for fetch passes ``strict_listing``: a directory the parent listed
+    that then answers 404 is an error (the caller may retry), while a ref file
+    with unusable *content* stays a warning, so one planted file cannot make a
+    repository unfetchable.  Ref file downloads are
     parallelized concurrently across a worker pool up to ``max_workers`` for
     fast enumeration across network latencies, yielding results in deterministic
     sorted order.
@@ -160,7 +164,9 @@ def iter_refs(
 
     while stack:
         dir_path, prefix, known = stack.pop()
-        for entry in _listing(client, repo_id, dir_path, known_dir=known, strict=strict):
+        for entry in _listing(
+            client, repo_id, dir_path, known_dir=known, strict=strict or strict_listing
+        ):
             name = entry.get("name") or ""
             if not name:
                 continue

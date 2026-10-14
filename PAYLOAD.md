@@ -156,8 +156,9 @@ removes one probe file in the source root to read the share's clock, stores the
 offset's effect in each cache entry (`fs`), and trusts only entries made that way.
 An offset under 5 s is noise and ignored; a share that cannot be written to is
 reported and treated as before. A local source tree is never written to. *Known
-limit:* macOS network mounts are not detected, so the rule there is the
-machine-clock one; `--payload-rehash` is the audit. A file with a future mtime is
+limit:* a mount type this list does not know is treated as local, so the
+rule there is the machine-clock one; `--payload-rehash` is the audit. (macOS is
+read from `mount`: smbfs, nfs, afpfs and webdav.) A file with a future mtime is
 rehashed on every run (a cost, not a risk).
 
 ### D7. Concurrency — **decided**

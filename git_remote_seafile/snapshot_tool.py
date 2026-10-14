@@ -2497,10 +2497,40 @@ def save_hash_cache(git_dir: Path, cache: dict[str, dict[str, int | str]]) -> No
 
 #: Filesystem types whose clock is another machine's.
 _NETWORK_FS_TYPES = frozenset(
-    {"nfs", "nfs4", "cifs", "smb3", "smbfs", "9p", "davfs", "fuse.sshfs", "fuse.rclone"}
+    {"nfs", "nfs4", "cifs", "smb3", "smbfs", "afpfs", "webdav", "9p", "davfs", "fuse.sshfs",
+     "fuse.rclone"}
 )
 #: A smaller offset is noise (a probe is one round trip), not a skewed clock.
 _CLOCK_SKEW_NOISE_NS = 5_000_000_000
+
+
+_DARWIN_MOUNT_LINE = re.compile(r"^(?P<src>.+?) on (?P<mp>/.*) \((?P<opts>[^)]*)\)\s*$")
+
+
+def _darwin_mount_is_network(resolved: str, mount_output: str | None = None) -> bool:
+    """Whether the longest mount point containing *resolved* is a network filesystem.
+
+    macOS has no ``/proc``; ``mount`` prints ``//user@host/share on /Volumes/x
+    (smbfs, nodev, ...)``, the filesystem type being the first option.
+    """
+    if mount_output is None:
+        try:
+            mount_output = subprocess.run(
+                [shutil.which("mount") or "/sbin/mount"],
+                capture_output=True, text=True, timeout=5, check=False,
+            ).stdout
+        except (OSError, subprocess.SubprocessError):
+            return False
+    best, kind = "", ""
+    for line in mount_output.splitlines():
+        m = _DARWIN_MOUNT_LINE.match(line)
+        if not m:
+            continue
+        mount = m.group("mp")
+        inside = resolved == mount or resolved.startswith(mount.rstrip("/") + "/")
+        if inside and len(mount) >= len(best):
+            best, kind = mount, m.group("opts").split(",")[0].strip()
+    return kind in _NETWORK_FS_TYPES
 
 
 def _is_network_fs(path: Path) -> bool:
@@ -2518,6 +2548,8 @@ def _is_network_fs(path: Path) -> bool:
             return bool(anchor) and kernel32.GetDriveTypeW(anchor) == 4
         except (OSError, AttributeError, ValueError):
             return False
+    if sys.platform == "darwin":
+        return _darwin_mount_is_network(os.path.realpath(text))
     try:
         best, kind = "", ""
         resolved = os.path.realpath(text)

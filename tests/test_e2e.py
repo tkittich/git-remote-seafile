@@ -605,6 +605,48 @@ class TestForcePushOverDivergedHistory(E2ETestCase):
         self.assertIn(a_head, ls.stdout, f"remote main is not A's HEAD:\n{ls.stdout}")
 
 
+class TestForceWithLease(E2ETestCase):
+    """``--force-with-lease`` rewrites history over exactly the value the user saw."""
+
+    def _diverged(self, name):
+        src = init_repo(self.work / f"src_{name}", self.env)
+        commit_file(src, "a.txt", "base\n", "base commit", self.env)
+        run_git(["remote", "add", "origin", self.url(name)], src, self.env)
+        run_git(["push", "-u", "origin", "main"], src, self.env)
+        commit_file(src, "b.txt", "second\n", "second", self.env)
+        run_git(["push", "origin", "main"], src, self.env)
+        # amend: same parent, different commit -- a non-fast-forward over origin/main
+        run_git(["commit", "--amend", "-q", "-m", "second, amended"], src, self.env)
+        return src
+
+    def _remote_main(self, name):
+        out = run_git(["ls-remote", self.url(name), "refs/heads/main"], self.work, self.env).stdout
+        return out.split()[0]
+
+    def test_a_plain_push_of_rewritten_history_is_still_refused(self):
+        src = self._diverged("lease_plain")
+        proc = run_git(["push", "origin", "main"], src, self.env, check=False)
+        self.assertNotEqual(proc.returncode, 0)
+
+    def test_force_with_lease_over_the_value_the_user_saw_succeeds(self):
+        src = self._diverged("lease_ok")
+        proc = run_git(["push", "--force-with-lease", "origin", "main"], src, self.env, check=False)
+        self.assertEqual(proc.returncode, 0, f"{proc.stdout}\n{proc.stderr}")
+        head = run_git(["rev-parse", "HEAD"], src, self.env).stdout.strip()
+        self.assertEqual(self._remote_main("lease_ok"), head)
+
+    def test_force_with_lease_against_a_moved_remote_is_rejected(self):
+        src = self._diverged("lease_stale")
+        other = self.work / "clone_lease_stale"
+        run_git(["clone", self.url("lease_stale"), str(other)], self.work, self.env)
+        commit_file(other, "c.txt", "elsewhere\n", "someone else", self.env)
+        run_git(["push", "origin", "main"], other, self.env)
+        moved = self._remote_main("lease_stale")
+        proc = run_git(["push", "--force-with-lease", "origin", "main"], src, self.env, check=False)
+        self.assertNotEqual(proc.returncode, 0, f"{proc.stdout}\n{proc.stderr}")
+        self.assertEqual(self._remote_main("lease_stale"), moved, "the lease did not protect the remote")
+
+
 class TestHarnessDoesNotNeedAmbientGitIdentity(E2ETestCase):
     """`commit_file` must not depend on the machine's git identity.
 
