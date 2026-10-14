@@ -73,14 +73,21 @@ class TestConfigModule(unittest.TestCase):
         with patch.dict("os.environ", {"SEAFILE_TEST_LOCK_SETTLE": "not-a-number"}):
             self.assertEqual(RemoteConfig.load().lock_settle, 1)
 
-    def test_retired_keys_are_reported_not_silently_ignored(self):
-        out = b"seafile.locksettle 0\nseafile.gcmaxmib 4096\n"
-        with patch("git_remote_seafile.config.run_git", return_value=(out, b"", 0)):
+    def test_retired_keys_are_neither_read_nor_reported(self):
+        """0.8.8 retired them with a warning; the warning cost a `git config`
+        call per operation and has had four releases to be read."""
+        asked: list[str] = []
+
+        def mock_get(key: str, default: str | None = None) -> str | None:
+            asked.append(key)
+            return {"seafile.locksettle": "0", "seafile.gcmaxmib": "4096"}.get(key, default)
+
+        with patch("git_remote_seafile.git_util.get_git_config", side_effect=mock_get):
             with patch("sys.stderr", new_callable=io.StringIO) as err:
                 cfg = RemoteConfig.load()
-        text = err.getvalue()
-        self.assertIn("seafile.locksettle is no longer a setting", text)
-        self.assertIn("seafile.gcmaxmib is no longer a setting", text)
+        self.assertNotIn("seafile.locksettle", asked)
+        self.assertNotIn("seafile.gcmaxmib", asked)
+        self.assertNotIn("no longer a setting", err.getvalue())
         self.assertEqual(cfg.lock_settle, 1)
         self.assertEqual(cfg.gc_max_mib, 2 * cfg.gc_max_pack_mib)
 

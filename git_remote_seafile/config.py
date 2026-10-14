@@ -11,13 +11,7 @@ from .git_util import (
     get_git_config,
     get_git_config_bool,
     get_git_config_int,
-    run_git,
 )
-
-#: Keys that used to be settings and are not any more.  A value still present in
-#: someone's git config is reported once per load rather than silently ignored,
-#: so nobody's configuration changes meaning without a word.
-RETIRED_KEYS = ("seafile.locksettle", "seafile.gcmaxmib")
 
 #: The automatic tail merge's download budget, as a multiple of the largest
 #: pack the helper creates (`seafile.gcmaxpackmib`): 2 GiB at the default 1 GiB.
@@ -51,23 +45,6 @@ def default_lock_settle() -> int:
         return max(0, int(raw))
     except ValueError:
         return DEFAULT_LOCK_SETTLE
-
-
-def _warn_about_retired_keys() -> None:
-    """Say so, once, when a key that no longer does anything is set."""
-    out, _, code = run_git(["config", "--get-regexp", r"^seafile\.(locksettle|gcmaxmib)$"])
-    if code != 0 or not out:
-        return
-    for line in out.decode("utf-8", errors="replace").splitlines():
-        key = line.split(None, 1)[0] if line.strip() else ""
-        if key in RETIRED_KEYS:
-            sys.stderr.write(
-                f"Warning: {key} is no longer a setting and is ignored"
-                + (" (the settlement window is fixed at 1 s)." if key.endswith("locksettle")
-                   else f" (the budget is {GC_BUDGET_FACTOR} x seafile.gcmaxpackmib).")
-                + "\n"
-            )
-    sys.stderr.flush()
 
 
 __all__ = [
@@ -158,7 +135,6 @@ class RemoteConfig:
             fallbacks.append(f"seafile.gcmaxpackmib={values['gc_max_pack_mib']} -> 1024")
             values["gc_max_pack_mib"] = 1024
         values["gc_max_mib"] = GC_BUDGET_FACTOR * values["gc_max_pack_mib"]
-        _warn_about_retired_keys()
         if fallbacks:
             sys.stderr.write(
                 "Warning: implausible seafile.* config ignored ("
