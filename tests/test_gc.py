@@ -7,7 +7,7 @@ import io
 import subprocess
 import unittest
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import DEFAULT, MagicMock, patch
 
 from git_remote_seafile import gc as gc_module
 from git_remote_seafile.config import RemoteConfig
@@ -52,6 +52,25 @@ def _uploaded_size(content) -> int:
         return content.stat().st_size
     except AttributeError:
         return len(content)
+
+
+def _remember_bytes(store: dict[str, bytes], name: str, content) -> None:
+    """What the remote now holds under *name*, for the read-back check."""
+    try:
+        store[name] = content.read_bytes()
+    except AttributeError:
+        store[name] = bytes(content)
+
+
+def _read_back(store: dict[str, bytes]):
+    """A ``download_file_to`` that serves what was uploaded and nothing else."""
+    def download(repo_id, path, dest, *args, **kwargs):
+        name = str(path).rsplit("/", 1)[-1]
+        if name in store:
+            Path(dest).write_bytes(store[name])
+            return True
+        return DEFAULT
+    return download
 
 
 def _pack_listing(base_entries: list[dict], uploaded_sizes: dict[str, int]) -> list[dict]:
@@ -442,6 +461,8 @@ class TestGcRecoveryAndFencing(unittest.TestCase):
 
         lock_payloads: list[str] = []
         uploaded_sizes: dict[str, int] = {}
+        uploaded_bytes: dict[str, bytes] = {}
+        client.download_file_to.side_effect = _read_back(uploaded_bytes)
 
         client.list_dir.side_effect = lambda repo_id, path: (
             _pack_listing(entries, uploaded_sizes)
@@ -456,6 +477,7 @@ class TestGcRecoveryAndFencing(unittest.TestCase):
                 lock_payloads.append(content.decode("utf-8"))
             else:
                 uploaded_sizes[filename] = _uploaded_size(content)
+                _remember_bytes(uploaded_bytes, filename, content)
             return True
 
         client.upload_file.side_effect = fake_upload
@@ -1247,6 +1269,8 @@ class TestTailMerge(unittest.TestCase):
 
         lock_payloads: list[str] = []
         uploaded_sizes: dict[str, int] = {}
+        uploaded_bytes: dict[str, bytes] = {}
+        client.download_file_to.side_effect = _read_back(uploaded_bytes)
         hidden = {"v": False}
 
         def fake_upload(repo_id, parent, filename, content, replace=True, progress_callback=None):
@@ -1254,6 +1278,7 @@ class TestTailMerge(unittest.TestCase):
                 lock_payloads.append(content.decode("utf-8"))
             else:
                 uploaded_sizes[filename] = _uploaded_size(content)
+                _remember_bytes(uploaded_bytes, filename, content)
                 if drop_uploads:
                     hidden["v"] = True
             return True
@@ -1415,6 +1440,35 @@ class TestTailMerge(unittest.TestCase):
         )
         merged = [n for n in client.uploaded_sizes if "tail" in n]
         self.assertEqual(len(merged), 2, "the merged .pack and its .idx were uploaded")
+
+    @patch("subprocess.run")
+    def test_tail_merge_keeps_the_old_packs_when_the_new_one_has_the_right_size_and_other_bytes(
+        self, mock_subprocess
+    ):
+        """The listing proves a size.  A same-length substitution (a padded
+        partial write, a damaged block, a hostile operator) used to pass it and
+        the originals were deleted (reproduced in the third review round)."""
+        small = [{"name": "pack-1.pack", "size": len(b"PACK-DATA")},
+                 {"name": "pack-2.pack", "size": len(b"PACK-DATA")}]
+        client = self._client(small)
+        served = client.download_file_to.side_effect
+
+        def damaged(repo_id, path, dest, *args, **kwargs):
+            ok = served(repo_id, path, dest, *args, **kwargs)
+            if ok is True:
+                data = Path(dest).read_bytes()
+                Path(dest).write_bytes(b"\x00" * len(data))
+            return ok
+
+        client.download_file_to.side_effect = damaged
+        mock_subprocess.side_effect = self._subprocess_fake()
+
+        with self.assertRaises(RuntimeError) as ctx:
+            tail_merge(client, "repo1", "/path", config=self._cfg(threshold=2), verbose=False)
+        self.assertIn("different content", str(ctx.exception))
+        self.assertEqual(
+            [p for p in self._deleted_pack_paths(client) if "pack-1" in p or "pack-2" in p], []
+        )
 
     @patch("subprocess.run")
     def test_tail_merge_deletes_nothing_when_the_tail_holds_no_objects(self, mock_subprocess):

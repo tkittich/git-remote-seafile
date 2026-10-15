@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
 import sys
 import tempfile
@@ -300,6 +301,64 @@ def _verify_upload(
         )
 
 
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for block in iter(lambda: fh.read(1 << 20), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _verify_content(
+    client: SeafileClient,
+    repo_id: str,
+    pack_dir: str,
+    new_packs: list[Path],
+    scratch: Path,
+    *,
+    old_adj: str,
+    new_desc: str,
+) -> None:
+    """Read the new packfiles back and compare them with what was uploaded.
+
+    The listing proves a *size*, and the server reports no hash.  A same-length
+    substitution -- a padded partial write, a damaged block, a hostile operator
+    -- passes it, and the deletions that follow would remove the only intact
+    copy.  Downloading the new pack once and comparing digests turns the proof
+    into a content proof, at the cost of one more transfer of what was just
+    uploaded (about 0.015 s per MiB at the measured 64 MiB/s), under the lock
+    already held.  Anything that cannot be read back leaves the old packs alone.
+    """
+    for np in new_packs:
+        if not isinstance(np, Path) or not np.is_file():
+            continue
+        for local in (np, np.with_suffix(".idx")):
+            if not local.is_file():
+                continue
+            probe = scratch / f"verify-{local.name}"
+            try:
+                present = client.download_file_to(repo_id, f"{pack_dir}/{local.name}", probe)
+                same = (
+                    present is True
+                    and probe.stat().st_size == local.stat().st_size
+                    and _file_sha256(probe) == _file_sha256(local)
+                )
+            except Exception as ex:
+                raise RuntimeError(
+                    f"refusing to delete {old_adj} packfiles: could not read the {new_desc} "
+                    f"back to check its content ({ex}). Nothing was deleted."
+                ) from ex
+            finally:
+                probe.unlink(missing_ok=True)
+            if not same:
+                raise RuntimeError(
+                    f"refusing to delete {old_adj} packfiles: {local.name} on the remote has "
+                    f"the right size but different content from what was uploaded. The old "
+                    f"packfiles were left untouched; delete the damaged {local.name} by hand "
+                    "and run gc again."
+                )
+
+
 def _delete_superseded(
     client: SeafileClient,
     repo_id: str,
@@ -590,6 +649,10 @@ def tail_merge(
             _verify_upload(
                 client, repo_id, pack_dir, new_pack_paths,
                 old_adj="superseded", new_desc="merged packfile", plural=False,
+            )
+            _verify_content(
+                client, repo_id, pack_dir, new_pack_paths, Path(td),
+                old_adj="superseded", new_desc="merged packfile",
             )
 
             # 7. Delete the superseded movable packs.  Frozen packs were never
@@ -910,6 +973,10 @@ def compact_repository(
             _verify_upload(
                 client, repo_id, pack_dir, new_packs,
                 old_adj="obsolete", new_desc="consolidated packfiles", plural=True,
+            )
+            _verify_content(
+                client, repo_id, pack_dir, new_packs, Path(td),
+                old_adj="obsolete", new_desc="consolidated packfiles",
             )
 
             # 6c. The mirror was read before a repack that can take minutes.  A

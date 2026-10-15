@@ -607,6 +607,11 @@ class RemoteHelper:
                 )
             elif not self.client.delete_entry(self.repo_id, ref_file):
                 _proto_error(dst, "failed to delete ref on remote")
+            elif self._still_there(ref_file, existing):
+                # Seafile answers 200 to a delete it did not perform (a missing
+                # file measured so; a broken or hostile server could do it for
+                # a present one).  The write path reads back; so does this.
+                _proto_error(dst, "the server accepted the delete but the ref is still there")
             else:
                 # Forget it here as well.  The cache is read back as a push
                 # exclusion list, and it is only truthful while the ref still
@@ -618,6 +623,18 @@ class RemoteHelper:
                 sys.stdout.write(f"ok {dst}\n")
         except Exception as ex:
             _proto_error(dst, ex)
+
+    def _still_there(self, ref_file: str, before: str) -> bool:
+        """True only when a read-back returns the very value that was deleted.
+
+        A read that fails proves nothing either way and is not an error: the
+        delete itself was acknowledged.
+        """
+        try:
+            after = self.client.get_file_text(self.repo_id, ref_file)
+        except Exception:
+            return False
+        return isinstance(after, str) and isinstance(before, str) and after == before
 
     def _warn_if_head_dangles(self, deleted_ref: str) -> None:
         """Say so when the branch just deleted is the one remote HEAD names.

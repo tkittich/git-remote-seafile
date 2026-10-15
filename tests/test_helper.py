@@ -1168,6 +1168,12 @@ class TestRemoteHelper(unittest.TestCase):
 
         # Now delete the tag -- which the push above has just created.
         created["tag"] = True
+        # ...and it is gone once the delete is acknowledged (the helper reads
+        # the ref back, so a double that keeps serving it models a server that
+        # lied).
+        h.client.delete_entry.side_effect = lambda repo, path: (
+            created.__setitem__("tag", False) or True
+        )
         out_del = io.StringIO()
         with patch("sys.stdout", out_del), patch("git_remote_seafile.helper.RemoteLock"):
             h.cmd_push([":refs/tags/v1.0.0"])
@@ -1213,6 +1219,23 @@ class TestRemoteHelper(unittest.TestCase):
         # The directory cache must forget the deleted path (public API), or a
         # future D/F ref conflict can never be recreated.
         h.client.evict_known_dir.assert_called_once_with("repo1", "/git-repo/refs/heads/feature")
+
+    def test_a_delete_the_server_acknowledged_but_did_not_perform_is_not_ok(self):
+        h = make_helper()
+        h.client = MagicMock()
+        h.repo_id = "repo1"
+        h.repo_path = "/git-repo"
+        h._refs_cache = {"refs/heads/gone": "a" * 40}
+        h.client.get_file_text.return_value = "a" * 40  # before and after the delete
+        h.client.delete_entry.return_value = True
+
+        out = io.StringIO()
+        with patch("sys.stdout", out), patch("git_remote_seafile.helper.RemoteLock"):
+            h.cmd_push([":refs/heads/gone"])
+
+        self.assertIn("error refs/heads/gone", out.getvalue())
+        self.assertIn("still there", out.getvalue())
+        self.assertNotIn("ok refs/heads/gone", out.getvalue())
 
     def test_a_sibling_created_before_the_prune_keeps_its_directory(self):
         """The directory delete is recursive; the last listing before it
@@ -1384,11 +1407,15 @@ class TestRemoteHelper(unittest.TestCase):
         h.raw_url = "seafile://lib/git-repo"
         h._refs_cache = {}
 
+        deleted: set[str] = set()
+
         def text(repo, path):
-            return "ref: refs/heads/main" if path.endswith("/HEAD") else "a" * 40
+            if path.endswith("/HEAD"):
+                return "ref: refs/heads/main"
+            return None if path in deleted else "a" * 40
 
         h.client.get_file_text.side_effect = text
-        h.client.delete_entry.return_value = True
+        h.client.delete_entry.side_effect = lambda repo, path: deleted.add(path) or True
         lock = MagicMock()
         lock.verify_ownership.return_value = True
         err, out = io.StringIO(), io.StringIO()
