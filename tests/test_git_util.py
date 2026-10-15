@@ -132,7 +132,9 @@ class TestGitUtilWithRealGit(unittest.TestCase):
         # pack-objects --stdin splits a line longer than 40 + PATH_MAX on
         # git for Windows ("expected object ID, got garbage"); 100 Thai
         # characters are 300 bytes of path.
-        name = "โ" * 100 + ".jpg"
+        # Two components: one 300-byte name cannot exist on POSIX (255-byte limit).
+        name = "/".join(["โ" * 60, "โ" * 40 + ".jpg"])
+        Path(name).parent.mkdir()
         Path(name).write_text("long", encoding="utf-8")
         subprocess.run(["git", "add", "--", name], check=True)
         subprocess.run(["git", "commit", "-m", "long name"], check=True)
