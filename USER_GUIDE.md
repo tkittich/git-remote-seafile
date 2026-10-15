@@ -244,6 +244,8 @@ git pull
 pip install -e .
 ```
 
+**Upgrading to v0.9.4 from v0.9.3** changes two timings and nothing else: `gc` and the tail merge read the new pack back and compare its SHA-256 before deleting (one more download of that pack under the lock), and a snapshot lists its payload objects once more after the push. Neither changes what is stored.
+
 **Upgrading to v0.9.3 from v0.9.2** changes behaviour in three places: on Windows every large payload file is hashed once more on the first run (the cache key now uses NTFS's change time, which catches a same-size in-place edit that put the modification time back); plain `unlock` refuses a ticket held by a live process on this machine (`--force` still breaks it); and `--payload-gc --payload-delete` re-reads the remote's refs while it deletes and stops if another machine pushed. Nothing else changes for a working setup.
 
 **Upgrading to v0.9.2 from v0.9.1** changes behaviour in four places: a directory the snapshot tool cannot read stops the run and is named (it used to be silently left out; `--exclude` it on purpose); a snapshot that pushes to a `seafile://` remote also records the modification time of every git-stored file, and `--restore` puts the times back (`--no-record-mtimes` turns it off); `git push --force-with-lease` works; and `--payload-gc` stops, deleting nothing, if a branch's ref cannot be read or a push landed while it was deciding. No file format changed.

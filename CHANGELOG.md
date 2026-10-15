@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.4] - 2026-10-15
+
+The remaining items of the 0.9.3 review round, all of them about trusting what a server says. Checked on the
+stub, on Linux, and against a real server (CE 13.0.28, scratch library): the opt-in test tier, a payload
+snapshot with restore and verify, and a full `gc` followed by a clone and `fsck`.
+
+### Upgrading from 0.9.3
+
+- **`gc` and the tail merge take longer by one download of the new pack** (about 0.015 s per MiB) while the lock is held: they now read it back and compare SHA-256 before deleting anything.
+- **A snapshot run lists its payload objects once more after the push.** An object a `--payload-delete` on another machine removed meanwhile is uploaded again when the source file is unchanged; otherwise the run exits 1 naming it (the snapshot is already pushed).
+
 ### Added
 - **`gc` and the tail merge read the new pack back and compare SHA-256** before deleting anything. The listing only proves a size, and a same-length substitution passed it. Costs one more transfer of the new pack under the lock already held.
 - **A snapshot that pushed lists its payload objects once more afterwards**, re-uploads any a `--payload-delete` on another machine removed meanwhile, and fails naming those it cannot restore.
@@ -1626,6 +1637,7 @@ Data-loss and silent-failure fixes, and the Python floor raised to 3.9.
   with zero-config desktop-client token discovery, distributed locking, remote
   packfile compaction, and a Git LFS custom transfer agent.
 
+[0.9.4]: https://github.com/tkittich/git-remote-seafile/compare/v0.9.3...v0.9.4
 [0.9.3]: https://github.com/tkittich/git-remote-seafile/compare/v0.9.2...v0.9.3
 [0.9.2]: https://github.com/tkittich/git-remote-seafile/compare/v0.9.1...v0.9.2
 [0.9.1]: https://github.com/tkittich/git-remote-seafile/compare/v0.9.0...v0.9.1

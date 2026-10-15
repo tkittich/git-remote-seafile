@@ -1,6 +1,6 @@
 # Engineering Roadmap & Backlog
 
-**Baseline:** v0.9.3 (v0.9.0: the snapshot tool ships in the wheel and gains payload mode: large files stored by SHA-256, with gc, verify, retention and browsable views; on top of 0.8.8's measured pack cap, chunked upload, autogc, `doctor`, `gc --tail` and one output/exit convention)  
+**Baseline:** v0.9.4 (v0.9.0: the snapshot tool ships in the wheel and gains payload mode: large files stored by SHA-256, with gc, verify, retention and browsable views; on top of 0.8.8's measured pack cap, chunked upload, autogc, `doctor`, `gc --tail` and one output/exit convention)  
 **Scope:** What shipped in each release line, the active backlog, and the v1.0.0 horizon.  
 **Test Suite:** all green on `tools/run_tests_parallel.py` (the runner prints the current count; it is deliberately not repeated here). **Python:** 3.10+ (3.9 EOL).
 
@@ -183,6 +183,9 @@ One line per capability — see [CHANGELOG.md](CHANGELOG.md) for the full detail
 
 **v0.9.3 (2026-10-15) — the third review round.**
 - `gc` re-reads the refs before deleting and the payload retention loop re-reads them as it runs; an expired unreaped lock ticket is not resurrected; ref and lock reads are bounded as they are read; the payload cache key uses NTFS's change time; non-UTF-8 names, quoted names and a failing lock write are handled; `tools/release_check.py`. Decided: no grace period for unreachable objects (a lock-ignoring writer's lost race stays documented); the payload conversion of an existing vault is announced again at the end of the run.
+
+**v0.9.4 (2026-10-15) — trust, then verify.**
+- `gc` and the tail merge compare the uploaded pack's SHA-256 before deleting; a ref deletion is read back; a snapshot lists its payload objects again after the push; the unreadable-directory guard and the English-messages environment have tests that run on Windows. Rejected: bounding the server's `Date` offset.
 
 ---
 

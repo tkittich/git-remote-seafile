@@ -1,6 +1,6 @@
 # PAYLOAD.md — specification of the snapshot tool's payload mode
 
-**Status:** shipped in 0.9.0 and revised through 0.9.3 (the modification-times
+**Status:** shipped in 0.9.0 and revised through 0.9.4 (the modification-times
 record, D14, is 0.9.2). This file is the specification the implementation is held to: the requirements, the decisions
 with the evidence behind them, the failure model, and an adversarial pass
 ("Attack") that records every way the design was found wanting and what became of
