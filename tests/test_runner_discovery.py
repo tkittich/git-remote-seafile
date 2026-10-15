@@ -112,5 +112,94 @@ class RunnerDiscoveryTests(unittest.TestCase):
         )
 
 
+class RunnerRobustnessTests(unittest.TestCase):
+    """The runner must not leave processes behind, hang silently, or leak a handle.
+
+    All three happened: a worker that wedged held the whole run open with no
+    output for ten minutes; Ctrl-C orphaned workers (and the git they started);
+    and a failed spawn leaked the log handle that pinned the temp directory.
+    """
+
+    def setUp(self):
+        self.runner = _load_runner()
+        self.tmp = pathlib.Path(tempfile.mkdtemp(prefix="grs-runner-"))
+        self.addCleanup(lambda: __import__("shutil").rmtree(self.tmp, ignore_errors=True))
+
+    def _sleeper(self):
+        log = open(self.tmp / "job.log", "wb")
+        proc = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(120)"],
+            stdout=log, stderr=subprocess.STDOUT,
+            start_new_session=(os.name != "nt"),
+        )
+        self.addCleanup(lambda: proc.poll() is None and proc.kill())
+        return ("tests.fake.Target", proc, log, self.tmp / "job.log", self.tmp / "job.json",
+                __import__("time").monotonic())
+
+    def test_a_failed_spawn_closes_the_log_it_opened(self):
+        import unittest.mock
+
+        opened = []
+        real_open = open
+
+        def spy(*args, **kwargs):
+            handle = real_open(*args, **kwargs)
+            opened.append(handle)
+            return handle
+
+        with unittest.mock.patch("builtins.open", spy), \
+                unittest.mock.patch.object(self.runner.subprocess, "Popen", side_effect=OSError("no")):
+            with self.assertRaises(OSError):
+                self.runner._start_worker("tests.x.Y", self.tmp, 0)
+        logs = [h for h in opened if str(self.tmp) in str(getattr(h, "name", ""))]
+        self.assertTrue(logs)
+        self.assertTrue(all(h.closed for h in logs))
+
+    def test_kill_tree_stops_the_worker(self):
+        entry = self._sleeper()
+        self.assertIsNone(entry[1].poll())
+        self.runner._kill_tree(entry[1])
+        entry[1].wait(timeout=15)
+        self.assertIsNotNone(entry[1].poll())
+        entry[2].close()
+
+    def test_a_timed_out_worker_is_named_not_reported_as_no_result(self):
+        entry = self._sleeper()
+        self.runner._kill_tree(entry[1])
+        result = self.runner._reap(entry, timed_out_after=30)
+        self.assertTrue(any("timed out after 30s" in e for e in result["errors"]), result)
+        self.assertEqual(self.runner._status_of(result), "FAIL")
+
+    def test_an_interrupt_stops_every_running_worker_and_propagates(self):
+        import unittest.mock
+
+        entry = self._sleeper()
+        real_sleep = self.runner.time.sleep
+        calls = {"n": 0}
+
+        def interrupt_once(seconds):
+            # time is the process-wide module: later sleeps (inside
+            # Popen.wait on POSIX) must be real, or the cleanup is what breaks.
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise KeyboardInterrupt
+            real_sleep(seconds)
+
+        with unittest.mock.patch.object(self.runner, "_collect_targets", return_value=["tests.fake.Target"]), \
+                unittest.mock.patch.object(self.runner, "_start_worker", return_value=entry), \
+                unittest.mock.patch.object(self.runner.time, "sleep", side_effect=interrupt_once), \
+                unittest.mock.patch("sys.stderr", new_callable=__import__("io").StringIO) as err:
+            with self.assertRaises(KeyboardInterrupt):
+                self.runner.main(["-j", "1"])
+        self.assertIsNotNone(entry[1].poll(), "the worker outlived the runner")
+        self.assertIn("interrupted: stopped 1 running worker", err.getvalue())
+
+    def test_the_log_directory_cleanup_cannot_fail_a_finished_run(self):
+        # ignore_cleanup_errors is what keeps a stray handle on Windows from
+        # turning green results into a traceback after they were printed.
+        text = _RUNNER.read_text(encoding="utf-8")
+        self.assertIn("ignore_cleanup_errors=True", text)
+
+
 if __name__ == "__main__":
     unittest.main()

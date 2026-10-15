@@ -77,6 +77,13 @@ Usage::
     python tools/run_tests_parallel.py -j 1         # one worker (not a baseline)
     python tools/run_tests_parallel.py --list       # show the units of work
     python tools/run_tests_parallel.py -k safety    # only matching targets
+    python tools/run_tests_parallel.py --timeout 600  # kill a target after 10 minutes
+
+A worker that runs longer than ``--timeout`` (30 minutes by default) is killed with
+everything it started and reported as a failure naming the target.  Without it one
+wedged ``git`` held the whole run open with no output and no way to tell why.  Ctrl-C
+stops every worker (and the processes *they* started) before the runner exits 130, so
+an interrupted run leaves nothing behind to hold a temporary directory open.
 """
 
 from __future__ import annotations
@@ -84,6 +91,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import signal
 import subprocess
 import sys
 import tempfile
@@ -220,24 +228,52 @@ def _start_worker(target: str, log_dir: Path, job_index: int) -> tuple:
         entries.append(existing)
     env["PYTHONPATH"] = os.pathsep.join(entries)
 
-    proc = subprocess.Popen(
-        [
-            sys.executable,
-            str(Path(__file__).resolve()),
-            "--_worker",
-            target,
-            "--out",
-            str(result_path),
-        ],
-        cwd=str(_ROOT),
-        env=env,
-        stdout=log_file,
-        stderr=subprocess.STDOUT,
-    )
+    try:
+        proc = subprocess.Popen(
+            [
+                sys.executable,
+                str(Path(__file__).resolve()),
+                "--_worker",
+                target,
+                "--out",
+                str(result_path),
+            ],
+            cwd=str(_ROOT),
+            env=env,
+            stdout=log_file,
+            stderr=subprocess.STDOUT,
+            # Its own process group on POSIX, so a stop can reach what the worker
+            # started (git, helpers, the stub's threads' children) in one call.
+            start_new_session=(os.name != "nt"),
+        )
+    except BaseException:
+        log_file.close()  # an unclosed handle here pinned the temp directory
+        raise
     return target, proc, log_file, log_path, result_path, time.monotonic()
 
 
-def _reap(entry) -> dict:
+def _kill_tree(proc: subprocess.Popen) -> None:
+    """Stop *proc* and everything it started; harmless if it already exited."""
+    if proc.poll() is not None:
+        return
+    try:
+        if os.name == "nt":
+            subprocess.run(
+                ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False,
+            )
+        else:
+            # getattr: neither name exists on Windows, and this branch never
+            # runs there.
+            getattr(os, "killpg")(proc.pid, getattr(signal, "SIGKILL"))  # noqa: B009
+    except Exception:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+
+
+def _reap(entry, timed_out_after: float | None = None) -> dict:
     """Wait for one worker, close its log, and return its result."""
     target, proc, log_file, log_path, result_path, started = entry
     proc.wait()
@@ -247,7 +283,14 @@ def _reap(entry) -> dict:
     try:
         result = json.loads(Path(result_path).read_text(encoding="utf-8"))
     except Exception:
-        result = {"target": target, "tests": 0, "failures": [], "errors": [f"{target} <no result>"]}
+        why = (
+            f"<timed out after {timed_out_after:.0f}s and was killed>"
+            if timed_out_after is not None else "<no result>"
+        )
+        result = {
+            "target": target, "tests": 0, "failures": [], "errors": [f"{target} {why}"],
+            "skipped": 0, "unexpected_successes": [],
+        }
 
     result["elapsed"] = elapsed
     result["log"] = log_path.read_text(encoding="utf-8", errors="replace")
@@ -274,6 +317,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--granularity", choices=("class", "test"), default="class",
                         help="unit of work: a whole test class (default), or one "
                              "test at a time (better balance, more start-ups)")
+    parser.add_argument("--timeout", type=float, default=1800.0,
+                        help="seconds one target may run before it is killed and reported "
+                             "(default 1800; 0 disables)")
     parser.add_argument("--list", action="store_true", help="list targets and exit")
     parser.add_argument("--_worker", dest="worker_target", default=None,
                         help=argparse.SUPPRESS)
@@ -309,42 +355,64 @@ def main(argv: list[str] | None = None) -> int:
     job_index = 0
     started_at = time.monotonic()
 
-    with tempfile.TemporaryDirectory(prefix="grs-parallel-") as tmp:
+    # ignore_cleanup_errors: on Windows a stray child can still hold a file in
+    # the log directory when the run is over; that must not turn a finished,
+    # green run into a traceback and a non-zero exit.
+    with tempfile.TemporaryDirectory(prefix="grs-parallel-", ignore_cleanup_errors=True) as tmp:
         log_dir = Path(tmp)
         done = 0
         total = len(targets)
 
-        while pending or running:
-            while pending and len(running) < jobs:
-                target = pending.pop(0)
-                running.append(_start_worker(target, log_dir, job_index))
-                job_index += 1
+        try:
+            while pending or running:
+                while pending and len(running) < jobs:
+                    target = pending.pop(0)
+                    running.append(_start_worker(target, log_dir, job_index))
+                    job_index += 1
 
-            # Poll rather than use multiprocessing.connection.wait: the poll
-            # interval is 50 ms against a ~25 s run, and it behaves identically
-            # on Windows and POSIX without depending on handle semantics.
-            entry = None
-            while entry is None:
-                for candidate in running:
-                    if candidate[1].poll() is not None:
-                        entry = candidate
-                        break
-                if entry is None:
-                    time.sleep(0.05)
+                # Poll rather than use multiprocessing.connection.wait: the poll
+                # interval is 50 ms against a ~25 s run, and it behaves identically
+                # on Windows and POSIX without depending on handle semantics.
+                entry = None
+                timed_out: float | None = None
+                while entry is None:
+                    for candidate in running:
+                        if candidate[1].poll() is not None:
+                            entry = candidate
+                            break
+                        if args.timeout and time.monotonic() - candidate[5] > args.timeout:
+                            _kill_tree(candidate[1])
+                            entry, timed_out = candidate, args.timeout
+                            break
+                    if entry is None:
+                        time.sleep(0.05)
 
-            running.remove(entry)
-            result = _reap(entry)
-            results.append(result)
-            done += 1
+                running.remove(entry)
+                result = _reap(entry, timed_out)
+                results.append(result)
+                done += 1
 
-            status = _status_of(result)
-            count = result["tests"]
-            plural = "test" if count == 1 else "tests"
-            print(
-                f"[{done:>3}/{total}] {status:<4} {result['target']:<52} "
-                f"{count:>3} {plural:<5} {result['elapsed']:6.1f}s",
-                flush=True,
-            )
+                status = _status_of(result)
+                count = result["tests"]
+                plural = "test" if count == 1 else "tests"
+                print(
+                    f"[{done:>3}/{total}] {status:<4} {result['target']:<52} "
+                    f"{count:>3} {plural:<5} {result['elapsed']:6.1f}s",
+                    flush=True,
+                )
+        except BaseException:
+            # Ctrl-C, or anything else escaping the loop: stop every worker and
+            # what it started, so none outlives the runner.
+            for _target, proc, log_file, *_rest in running:
+                _kill_tree(proc)
+                try:
+                    proc.wait(timeout=10)
+                except Exception:
+                    pass
+                log_file.close()
+            print(f"\ninterrupted: stopped {len(running)} running worker(s), "
+                  f"{len(pending)} target(s) never started", file=sys.stderr, flush=True)
+            raise
 
     elapsed = time.monotonic() - started_at
 
@@ -366,6 +434,9 @@ def main(argv: list[str] | None = None) -> int:
         f"Ran {tests} tests across {total} targets in {elapsed:.1f}s "
         f"({jobs} worker{'s' if jobs != 1 else ''})"
     )
+    empty = [r["target"] for r in results if r["tests"] == 0 and not r["errors"] and not r["failures"]]
+    if empty:
+        print(f"warning: {len(empty)} target(s) ran no tests: {', '.join(sorted(empty)[:5])}")
     if skipped:
         print(f"skipped: {skipped}")
 
@@ -380,4 +451,7 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except KeyboardInterrupt:
+        sys.exit(130)

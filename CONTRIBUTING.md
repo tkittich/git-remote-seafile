@@ -43,6 +43,7 @@ python tools/run_tests_parallel.py          # one worker per CPU
 python tools/run_tests_parallel.py -j 8     # a specific worker count
 python tools/run_tests_parallel.py -k e2e   # only matching classes
 python tools/run_tests_parallel.py --list   # show the units of work
+python tools/run_tests_parallel.py --timeout 600  # kill a target after 10 minutes (default 1800)
 ```
 
 Wall time depends on the machine far more than on the suite, so no figure is
