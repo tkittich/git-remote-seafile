@@ -25,6 +25,7 @@ usage error.  Standard library only.
 from __future__ import annotations
 
 import re
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -181,7 +182,8 @@ def main(argv: list[str] | None = None) -> int:
     version = package_version(root)
     notes = root / ".github" / "release-notes" / f"v{version}.md"
     title = notes.read_text(encoding="utf-8").splitlines()[0][2:].strip()
-    print(f'\nReady. Tag with:\n  git tag -a v{version} -m "{title}"\n'
+    # Titles carry backticks, which a double-quoted shell argument would run.
+    print(f"\nReady. Tag with:\n  git tag -a v{version} -m {shlex.quote(title)}\n"
           f"  git push origin v{version}\n  git push origin\n  git push mirror")
     return 0
 
