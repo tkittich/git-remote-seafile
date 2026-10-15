@@ -475,7 +475,7 @@ def init_repo(path: Path, env: dict) -> Path:
     # settlement re-scan (RemoteLock.acquire) has nothing to settle: it would
     # only add a second to each of the ~25 pushes here.  It is exercised for
     # real in tests/test_lock.py, and once end-to-end in
-    # TestGcSha256Repositories.test_the_default_settlement_window_does_not_block.
+    # TestDefaultSettlementWindow in tests/test_e2e.py.
     return path
 
 

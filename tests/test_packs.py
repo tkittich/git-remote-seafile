@@ -67,6 +67,26 @@ class TestPacksModule(unittest.TestCase):
         client.list_dir.return_value = None
         self.assertFalse(check_remote_has_packs(client, "r1", "/git-repo/objects/pack"))
 
+    def test_a_download_that_wrote_zero_bytes_is_reported_empty(self):
+        import tempfile
+        from pathlib import Path
+
+        from git_remote_seafile.packs import fetch_pack_artifact
+
+        client = MagicMock()
+
+        def wrote_nothing(repo_id, remote_path, dest, *args, **kwargs):
+            Path(dest).write_bytes(b"")
+            return True
+
+        client.download_file_to.side_effect = wrote_nothing
+        with tempfile.TemporaryDirectory() as td:
+            reason = fetch_pack_artifact(
+                client, "r1", "/git-repo/objects/pack/pack-1.pack", Path(td) / "pack-1.pack",
+                expected_size=10,
+            )
+        self.assertEqual(reason, "empty")
+
     def test_fetch_and_install_pack_with_none_git_dir(self):
         from git_remote_seafile.packs import fetch_and_install_pack
         client = MagicMock()

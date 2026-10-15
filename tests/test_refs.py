@@ -99,16 +99,22 @@ class TestIterRefs(unittest.TestCase):
     def test_parallel_ref_enumeration_concurrency(self):
         """Multiple refs are fetched concurrently across threads."""
         import threading
-        import time
 
         seen_threads = set()
         lock = threading.Lock()
+        # Two reads must be in flight at the same moment, or the barrier
+        # breaks: a serial walk fails deterministically here instead of
+        # passing or failing on a loaded runner's scheduling.
+        barrier = threading.Barrier(2, timeout=10)
 
         class ConcurrentClient(FakeClient):
             def get_file_text(self, repo_id, path):
                 with lock:
                     seen_threads.add(threading.get_ident())
-                time.sleep(0.01)
+                try:
+                    barrier.wait()
+                except threading.BrokenBarrierError:
+                    pass  # the later reads (fewer than a pair left) just go through
                 return super().get_file_text(repo_id, path)
 
         tree = {
@@ -117,6 +123,7 @@ class TestIterRefs(unittest.TestCase):
         got = dict(iter_refs(ConcurrentClient(tree), "rid", "/git-repo", "refs/heads", max_workers=4))
         self.assertEqual(len(got), 8)
         self.assertGreater(len(seen_threads), 1)
+        self.assertFalse(barrier.broken and len(seen_threads) < 2)
 
     def test_parallel_ref_enumeration_propagates_fetch_exception(self):
         """Exceptions during individual ref fetches propagate rather than being swallowed."""

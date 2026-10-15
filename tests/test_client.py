@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import sqlite3
 import tempfile
 import time
@@ -1744,6 +1745,86 @@ class TestListingsAreNormalised(unittest.TestCase):
             )
         )
         self.assertEqual(client.list_dir("repo1", "/d"), [{"name": "ok", "type": "file"}])
+
+
+class TestCredentialBranches(unittest.TestCase):
+    """The ``_load_credentials`` branches the suite never reached (G-5)."""
+
+    def _home_with(self, td, *, config=None, accounts=None, schema=None):
+        home = Path(td)
+        if config is not None:
+            path = home / ".git-seafile.json"
+            path.write_text(json.dumps(config), encoding="utf-8")
+        if accounts is not None:
+            (home / "ccnet").mkdir()
+            con = sqlite3.connect(str(home / "ccnet" / "accounts.db"))
+            if schema is not None:
+                con.execute(schema)
+                for row in accounts:
+                    con.execute(f"INSERT INTO Accounts VALUES ({','.join('?' * len(row))})", row)
+            con.commit()
+            con.close()
+        return home
+
+    def test_the_config_files_username_is_adopted(self):
+        with tempfile.TemporaryDirectory() as td:
+            home = self._home_with(
+                td, config={"server": "https://c.example.com", "token": "t", "username": "alice"}
+            )
+            with patch.dict("os.environ", {}, clear=True), patch("pathlib.Path.home", return_value=home):
+                client = SeafileClient()
+        self.assertEqual(client.username, "alice")
+
+    def test_the_config_files_user_key_is_the_fallback(self):
+        with tempfile.TemporaryDirectory() as td:
+            home = self._home_with(
+                td, config={"server": "https://c.example.com", "token": "t", "user": "bob"}
+            )
+            with patch.dict("os.environ", {}, clear=True), patch("pathlib.Path.home", return_value=home):
+                client = SeafileClient()
+        self.assertEqual(client.username, "bob")
+
+    def test_an_accounts_db_with_no_accounts_table_is_not_a_crash(self):
+        with tempfile.TemporaryDirectory() as td:
+            home = self._home_with(td, accounts=[], schema=None)
+            with patch.dict("os.environ", {}, clear=True), patch("pathlib.Path.home", return_value=home):
+                with self.assertRaises(SeafileAuthError):
+                    SeafileClient()
+
+    def test_the_accounts_username_is_adopted(self):
+        with tempfile.TemporaryDirectory() as td:
+            home = self._home_with(
+                td,
+                accounts=[("https://a.example.com", "tok", "carol", 1)],
+                schema="CREATE TABLE Accounts (url TEXT, token TEXT, username TEXT, lastVisited INTEGER)",
+            )
+            with patch.dict("os.environ", {}, clear=True), patch("pathlib.Path.home", return_value=home):
+                client = SeafileClient()
+        self.assertEqual((client.token, client.username), ("tok", "carol"))
+
+    def test_a_token_less_account_serves_a_command_that_needs_no_token(self):
+        with tempfile.TemporaryDirectory() as td:
+            home = self._home_with(
+                td,
+                accounts=[("https://a.example.com", None, 1)],
+                schema="CREATE TABLE Accounts (url TEXT, token TEXT, lastVisited INTEGER)",
+            )
+            with patch.dict("os.environ", {}, clear=True), patch("pathlib.Path.home", return_value=home):
+                client = SeafileClient(require_credentials=False)
+                with self.assertRaises(SeafileAuthError):
+                    SeafileClient()  # ... but a command that authenticates still refuses
+        self.assertEqual(client.server_url, "https://a.example.com")
+
+    @unittest.skipIf(os.name == "nt", "POSIX permission bits")
+    def test_a_world_readable_config_file_is_warned_about(self):
+        with tempfile.TemporaryDirectory() as td:
+            home = self._home_with(td, config={"server": "https://c.example.com", "token": "t"})
+            os.chmod(home / ".git-seafile.json", 0o644)
+            with patch.dict("os.environ", {}, clear=True), \
+                    patch("pathlib.Path.home", return_value=home), \
+                    patch("sys.stderr", new_callable=io.StringIO) as err:
+                SeafileClient()
+        self.assertIn("accessible by others", err.getvalue())
 
 
 class TestServerUnderAPath(unittest.TestCase):

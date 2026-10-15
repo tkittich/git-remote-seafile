@@ -1732,7 +1732,7 @@ class TestFetchSafety(unittest.TestCase):
         ):
             with patch("sys.stderr", new_callable=io.StringIO):
                 with self.assertRaises(RuntimeError):
-                    h.cmd_fetch(["refs/heads/main"])
+                    h.cmd_fetch([f"{'a' * 40} refs/heads/main"])
 
         self.assertIs(
             seen["push_mode"], False,
@@ -1781,7 +1781,7 @@ class TestFetchSafety(unittest.TestCase):
                 ):
                     with patch("sys.stderr", new_callable=io.StringIO):
                         with self.assertRaises(SafetyError) as ctx:
-                            h.cmd_fetch(["refs/heads/main"])
+                            h.cmd_fetch([f"{'a' * 40} refs/heads/main"])
             finally:
                 os.chdir(original_cwd)
 
@@ -1838,7 +1838,7 @@ class TestFetchSafety(unittest.TestCase):
                 ):
                     with patch("sys.stderr", new_callable=io.StringIO):
                         with self.assertRaises(RuntimeError):
-                            h.cmd_fetch(["refs/heads/main"])
+                            h.cmd_fetch([f"{'a' * 40} refs/heads/main"])
 
                 self.assertEqual(
                     modes_seen, [False],
@@ -1877,7 +1877,7 @@ class TestFetchFailureIsLoud(unittest.TestCase):
             with patch("git_remote_seafile.helper.get_git_dir", return_value=local_git):
                 with patch("sys.stdout", out), patch("sys.stderr", new_callable=io.StringIO):
                     with self.assertRaises(SeafileAPIError):
-                        h.cmd_fetch(["refs/heads/main"])
+                        h.cmd_fetch([f"{'a' * 40} refs/heads/main"])
 
             self.assertEqual(
                 out.getvalue(), "",
@@ -1901,7 +1901,7 @@ class TestFetchFailureIsLoud(unittest.TestCase):
                 with patch("sys.stdout", new_callable=io.StringIO):
                     with patch("sys.stderr", new_callable=io.StringIO):
                         with self.assertRaises(SeafileAPIError) as ctx:
-                            h.cmd_fetch(["refs/heads/main"])
+                            h.cmd_fetch([f"{'a' * 40} refs/heads/main"])
 
             self.assertIn("pack-ffffffffffffffffffffffffffffffffffffffff.pack", str(ctx.exception))
 
@@ -1921,7 +1921,7 @@ class TestFetchFailureIsLoud(unittest.TestCase):
             with patch("git_remote_seafile.helper.get_git_dir", return_value=local_git):
                 with patch("git_remote_seafile.helper.install_packfile") as install:
                     with patch("sys.stdout", out), patch("sys.stderr", new_callable=io.StringIO):
-                        h.cmd_fetch(["refs/heads/main"])
+                        h.cmd_fetch([f"{'a' * 40} refs/heads/main"])
 
             install.assert_called_once()
             self.assertEqual(out.getvalue(), "\n")
@@ -1940,7 +1940,7 @@ class TestFetchFailureIsLoud(unittest.TestCase):
 
             with patch("git_remote_seafile.helper.get_git_dir", return_value=local_git):
                 with patch("sys.stdout", new_callable=io.StringIO) as out, patch("sys.stderr", new_callable=io.StringIO) as err:
-                    h.cmd_fetch(["refs/heads/main"])
+                    h.cmd_fetch([f"{'a' * 40} refs/heads/main"])
 
             self.assertEqual(out.getvalue(), "\n")
             self.assertIn("ignoring invalid remote packfile name", err.getvalue())
@@ -1981,7 +1981,7 @@ class TestFetchFailureIsLoud(unittest.TestCase):
             with patch("git_remote_seafile.helper.get_git_dir", return_value=local_git):
                 with patch("sys.stdout", new_callable=io.StringIO), patch("sys.stderr", new_callable=io.StringIO):
                     with self.assertRaises(SeafileAPIError) as ctx:
-                        h.cmd_fetch(["refs/heads/main"])
+                        h.cmd_fetch([f"{'a' * 40} refs/heads/main"])
 
             self.assertIn("truncated", str(ctx.exception))
 
@@ -2002,7 +2002,7 @@ class TestFetchFailureIsLoud(unittest.TestCase):
             with patch("git_remote_seafile.helper.get_git_dir", return_value=local_git):
                 with patch("git_remote_seafile.helper.install_packfile") as install:
                     with patch("sys.stdout", out), patch("sys.stderr", new_callable=io.StringIO):
-                        h.cmd_fetch(["refs/heads/main"])
+                        h.cmd_fetch([f"{'a' * 40} refs/heads/main"])
 
             client.download_file_to.assert_called()
             install.assert_called_once()

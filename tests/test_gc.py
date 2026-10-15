@@ -381,6 +381,16 @@ class TestRemoteGC(unittest.TestCase):
             repack_called = any("repack" in cmd for cmd, _ in [(c.args[0], c) for c in mock_subprocess.call_args_list if c.args])
             self.assertTrue(repack_called)
 
+            # What "preserves all branches and tags" has to mean: every one of
+            # them is in the mirror the repack computed reachability from.  A
+            # ref missing here is a branch whose commits the repack prunes.
+            mirrored = gc_module._verify_ref_mirror.call_args.args[1]
+            self.assertEqual(
+                sorted(mirrored),
+                ["refs/heads/dev", "refs/heads/feature", "refs/heads/main",
+                 "refs/tags/v1.0", "refs/tags/v2.0"],
+            )
+
     @patch("subprocess.run")
     def test_gc_aborts_and_preserves_packs_if_lock_lost_before_cleanup(self, mock_subprocess):
         """GC must verify lock ownership before deleting old remote packs and abort if lost (N-4)."""
