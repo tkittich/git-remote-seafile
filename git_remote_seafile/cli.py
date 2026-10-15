@@ -622,6 +622,20 @@ def _cmd_desktop_url(rest: list[str]) -> int:
             scheme, sep, rest_url = server_url.partition("://")
             if not sep:
                 scheme, rest_url = "https", server_url
+            host, slash, context = rest_url.partition("/")
+            if slash and context:
+                # A server under a path has no spelling in a seafile:// URL
+                # (the first segment after the host would be read as the
+                # library), so the short form is printed and the server named
+                # where it can be set.
+                print(
+                    f"note: this server is served under /{context}; a seafile:// URL cannot "
+                    f"carry that, so set SEAFILE_SERVER={scheme.lower()}://{rest_url} "
+                    "(or let the desktop client's account supply it)",
+                    file=sys.stderr,
+                )
+                print(f"seafile://{quote(lib['repo_id'], safe='')}{_url_path(rel)}")
+                return 0
             print(f"seafile://{scheme.lower()}://{rest_url}/{quote(lib['repo_id'], safe='')}{_url_path(rel)}")
             return 0
         return _error(f"Could not match '{target_path}' to any local Seafile library worktree.")

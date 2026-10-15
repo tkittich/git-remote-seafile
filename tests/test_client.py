@@ -1746,5 +1746,75 @@ class TestListingsAreNormalised(unittest.TestCase):
         self.assertEqual(client.list_dir("repo1", "/d"), [{"name": "ok", "type": "file"}])
 
 
+class TestServerUnderAPath(unittest.TestCase):
+    """H-13: Seafile behind a reverse proxy under ``https://host/seafile``.
+
+    A ``seafile://`` URL cannot carry the path (its first segment after the
+    host is the library), so the server setting does: ``SEAFILE_SERVER``, the
+    credentials file's ``server`` and the desktop client's account URL.
+    """
+
+    PREFIXED = "https://corp.example.com/seafile"
+
+    def test_the_environment_server_keeps_its_path_and_every_api_call_uses_it(self):
+        env = {"SEAFILE_SERVER": self.PREFIXED, "SEAFILE_TOKEN": "tok"}
+        with patch.dict("os.environ", env, clear=True):
+            # the URL on the command line names only the authority
+            client = SeafileClient(server_url="https://corp.example.com")
+        self.assertEqual(client.server_url, self.PREFIXED)
+        client.session.get = MagicMock(return_value=MagicMock(status_code=200, json=lambda: []))
+        with self.assertRaises(SeafileAPIError):
+            client.get_repo_id("nothing")
+        called = client.session.get.call_args.args[0]
+        self.assertEqual(called, f"{self.PREFIXED}/api2/repos/")
+
+    def test_the_token_is_still_scoped_to_the_authority_not_the_path(self):
+        env = {"SEAFILE_SERVER": self.PREFIXED, "SEAFILE_TOKEN": "tok"}
+        with tempfile.TemporaryDirectory() as td, \
+                patch.dict("os.environ", env, clear=True), \
+                patch("pathlib.Path.home", return_value=Path(td)):
+            with self.assertRaises(SeafileAuthError):
+                SeafileClient(server_url="https://elsewhere.example.com")
+
+    def test_the_desktop_clients_account_url_supplies_the_path(self):
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td)
+            (home / "ccnet").mkdir()
+            con = sqlite3.connect(str(home / "ccnet" / "accounts.db"))
+            con.execute("CREATE TABLE Accounts (url TEXT, token TEXT, lastVisited INTEGER)")
+            con.execute(f"INSERT INTO Accounts VALUES ('{self.PREFIXED}/', 'db-tok', 1)")
+            con.commit()
+            con.close()
+            with patch.dict("os.environ", {}, clear=True), \
+                    patch("pathlib.Path.home", return_value=home):
+                client = SeafileClient(server_url="https://corp.example.com")
+        self.assertEqual(client.server_url, self.PREFIXED)
+        self.assertEqual(client.token, "db-tok")
+
+    def test_a_relative_transfer_link_is_completed_under_the_path(self):
+        client = SeafileClient(server_url=self.PREFIXED, token="t")
+        self.assertEqual(
+            client._adjust_url("/seafhttp/files/abc/f"),
+            f"{self.PREFIXED}/seafhttp/files/abc/f",
+        )
+        # already prefixed: not doubled
+        self.assertEqual(
+            client._adjust_url("/seafile/seafhttp/files/abc/f"),
+            f"{self.PREFIXED}/seafhttp/files/abc/f",
+        )
+
+    def test_an_absolute_transfer_link_is_left_alone(self):
+        client = SeafileClient(server_url=self.PREFIXED, token="t")
+        link = "https://corp.example.com/seafile/seafhttp/files/abc/f"
+        self.assertEqual(client._adjust_url(link), link)
+
+    def test_a_server_without_a_path_behaves_as_before(self):
+        client = SeafileClient(server_url="https://corp.example.com", token="t")
+        self.assertEqual(
+            client._adjust_url("/seafhttp/files/abc/f"),
+            "https://corp.example.com/seafhttp/files/abc/f",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

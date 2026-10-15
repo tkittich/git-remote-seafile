@@ -84,6 +84,11 @@ lost race is *loud*. See [DESIGN.md](DESIGN.md) §4.4.
 
 ## 2. The Push Fails Without a Lock Error
 
+> **HTTP 404 on `/api2/...` for a server you can open in a browser** is almost always a Seafile
+> served under a path (`https://host/seafile/`). Set `SEAFILE_SERVER` to the prefixed URL, or
+> let the desktop client's account supply it; `git-remote-seafile doctor` prints the server it
+> resolved. See [USER_GUIDE.md](USER_GUIDE.md) section 7.1.
+
 **Symptom.** `error <dst> fetch first`, `error <dst> non-fast-forward`, or
 `error <dst> safety check failed: …`.
 

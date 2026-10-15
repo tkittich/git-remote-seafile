@@ -59,6 +59,10 @@ Nothing else is consulted, and no credential is ever written by the helper.
 
 This is the single most important property here, and it is enforced rather than advised:
 
+- **Scope is the authority (host and port), not the path.** A server set as
+  `https://corp.example.com/seafile` (a Seafile behind a reverse proxy under a path, see
+  [USER_GUIDE.md](USER_GUIDE.md) section 7.1) receives the token for requests under that path;
+  a different host or port never does.
 - **`SEAFILE_TOKEN` is used only when `SEAFILE_SERVER` is also set**, and only when that server
   matches the server in the remote URL. A bare `SEAFILE_TOKEN` is **ignored**, with a message on
   `stderr` naming the omission.

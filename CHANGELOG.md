@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **A Seafile served under a path** (`https://corp.example.com/seafile/`) works: `SEAFILE_SERVER`, the credentials file's `server` and the desktop client's account URL may carry the path. API calls and relative transfer links go under it; the token stays scoped to host and port. The desktop client's account URL is now adopted when the remote URL names the same authority (it used to supply only the token, which left the path off). `desktop-url` prints the short form and names the setting for such a server. USER_GUIDE 7.1 documents it and the no-code alternative (a proxy host of its own).
+
 ### Fixed
 - **A synced-folder check that could not read the desktop client's `repo.db` said nothing.** A copy torn by a concurrent write read as "no libraries" and the guard did not run. The read is retried (three times, a quarter second apart) and, if the file is there and still unreadable, one warning names it.
 - **A restore that failed after the clone left a partial tree and the retry stopped with "destination is not empty".** The failure now says where the partial restore was left and that it has to be deleted first; it is not deleted for you.

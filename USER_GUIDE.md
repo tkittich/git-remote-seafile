@@ -422,6 +422,65 @@ Remotes use the `seafile://` URL scheme:
 - **Path**: Path inside the library where bare repository objects will reside. Omitting it is allowed and means `git-repo`, so `seafile://code` and `seafile://code/` are the same remote as `seafile://code/git-repo`. No `seafile://` URL reduces to the bare library root: a path that normalises away — `seafile://code/%2F`, `seafile://code//` — falls back to `git-repo`. The root refusal is a backstop for a destination that arrives empty by some other route, not something a URL can reach. A percent-encoded separator is decoded **before** the path is split, so `%2F` acts as a separator and a `..` hiding behind one is refused like any other.
 - **Scheme and port**: When the host carries a port, the scheme follows it — `:80` means `http`, `:443` means `https`, and **any other port keeps its number and uses `https`**. So `seafile://seafile.example.com:8080/code/repo` talks to `https://seafile.example.com:8080`, and a plain-HTTP server on a non-standard port needs the explicit form: `seafile://http://seafile.example.com:8080/code/repo`. A port that is not a number is refused with `Invalid Seafile URL format`, naming the host it could not parse — in the bare *and* the explicit form (`seafile://https://seafile.example.com:abc/code/repo`). An IPv6 literal must be bracketed — `seafile://[::1]/code/repo` works (scheme inferred: https, or http on `:80`) — while an unbracketed colon-bearing host is refused, with the bracketed spelling named.
 
+### 7.1 Seafile Behind a Reverse Proxy Under a Path
+
+Some deployments serve Seafile at `https://corp.example.com/seafile/` rather than at the root. A
+`seafile://` URL cannot say so: the segment after the host is the **library**, so
+`seafile://corp.example.com/seafile/code/app` asks for a library named `seafile`. The path belongs
+to the *server*, and the server is set in one of three places, in this order of precedence:
+
+```bash
+# 1. the environment (the usual choice)
+export SEAFILE_SERVER="https://corp.example.com/seafile"
+export SEAFILE_TOKEN="<your token>"
+git remote add origin seafile://code/myproject
+```
+
+```json
+// 2. ~/.git-seafile.json
+{ "server": "https://corp.example.com/seafile", "token": "<your token>" }
+```
+
+3. **The Seafile desktop client's account.** If the client works against that server, its stored
+   account URL already includes the path, and nothing needs typing: `git remote add origin
+   seafile://code/myproject` finds it. A URL that names only the host
+   (`seafile://https://corp.example.com/code/myproject`) also picks the path up from the account
+   or from `SEAFILE_SERVER`, because both name the same host and port.
+
+What the path changes, and what it does not:
+
+- Every API call goes under it (`https://corp.example.com/seafile/api2/...`), and a *relative*
+  transfer link from the server is completed under it. An absolute link is used as the server
+  gave it, so the server's `FILE_SERVER_ROOT` / `SERVICE_URL` must be set to the prefixed form
+  (`https://corp.example.com/seafile/seafhttp`).
+- **The token is still scoped by host and port, not by path.** A token for
+  `https://corp.example.com/seafile` is sent to that authority and nowhere else.
+- `git-remote-seafile desktop-url` cannot spell the path either: for such a server it prints the
+  short form (`seafile://<library id>/<path>`) and names the `SEAFILE_SERVER` value on `stderr`.
+- `doctor` shows the server it resolved, path included, which is the first thing to check when a
+  request returns 404.
+
+**The no-code alternative: give the server a host name of its own.** If you control the proxy, or
+can ask whoever does, terminate the path there, so that the helper never sees one:
+
+```nginx
+server {
+    listen 443 ssl;
+    server_name seafile-api.corp.example.com;
+    location / {
+        proxy_pass https://seafile-backend/seafile/;
+    }
+}
+```
+
+```bash
+git remote add origin seafile://seafile-api.corp.example.com/code/myproject
+```
+
+This needs no setting and no special-casing anywhere, and it is the better choice when the
+server is shared by many users, because nobody has to remember an environment variable. The
+server's own `SERVICE_URL` and `FILE_SERVER_ROOT` must then name the new host.
+
 ---
 
 ## 8. Daily Workflows

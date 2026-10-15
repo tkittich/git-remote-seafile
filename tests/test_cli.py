@@ -665,6 +665,17 @@ class TestCLIDesktopUrl(unittest.TestCase):
                         self.assertEqual(code, 0)
                         self.assertIn("seafile://https://seafile.example.com/r1/subdir", mock_out.getvalue())
 
+                # A server served under a path cannot be spelled in a
+                # seafile:// URL (the segment after the host is the library),
+                # so the short form is printed and the note names the setting.
+                mock_client.server_url = "https://corp.example.com/seafile"
+                with patch.object(sys, "argv", ["git-remote-seafile", "desktop-url", str(worktree_dir / "subdir")]):
+                    with patch("sys.stdout", new_callable=io.StringIO) as mock_out,                             patch("sys.stderr", new_callable=io.StringIO) as mock_err:
+                        code = main()
+                        self.assertEqual(code, 0)
+                        self.assertEqual(mock_out.getvalue().strip(), "seafile://r1/subdir")
+                        self.assertIn("SEAFILE_SERVER=https://corp.example.com/seafile", mock_err.getvalue())
+
                 # Matched with plain HTTP server
                 mock_client.server_url = "http://seafile.local:8000"
                 with patch.object(sys, "argv", ["git-remote-seafile", "desktop-url", str(worktree_dir / "subdir")]):

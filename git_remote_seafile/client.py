@@ -548,7 +548,13 @@ class SeafileClient:
                 except LookupError:
                     continue
             if row and row[0] and (row[1] or not require_token):
-                if not self.server_url:
+                # The account's URL is the one the desktop client works with,
+                # path included when the server sits under one; the URL on the
+                # command line can only name host and port.  Same authority, so
+                # the token's scope is unchanged -- only the path is learned.
+                if not self.server_url or normalize_netloc(row[0]) == normalize_netloc(
+                    self.server_url
+                ):
                     self.server_url = row[0].rstrip("/")
                 self._adopt_token(row[1], "the token in the Seafile client's accounts.db")
                 if row[2] and not self.username:
@@ -697,8 +703,15 @@ class SeafileClient:
         tgt = urlparse(raw_url)
 
         if not tgt.netloc or self.force_file_host:
+            path = tgt.path
+            # A server served under a path (``https://host/seafile``) completes
+            # a relative link under that path too: the proxy only routes the
+            # prefixed form.  A link that already carries the prefix is left.
+            prefix = srv.path.rstrip("/")
+            if prefix and not (path == prefix or path.startswith(prefix + "/")):
+                path = prefix + (path if path.startswith("/") else "/" + path)
             return urlunparse(
-                (srv.scheme, srv.netloc, tgt.path, tgt.params, tgt.query, tgt.fragment)
+                (srv.scheme, srv.netloc, path, tgt.params, tgt.query, tgt.fragment)
             )
 
         if (
