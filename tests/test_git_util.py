@@ -112,6 +112,35 @@ class TestGitUtilWithRealGit(unittest.TestCase):
         multi_objs = get_objects_to_push([c1, c2])
         self.assertEqual(set(all_objs), set(multi_objs))
 
+    def test_get_objects_to_push_unicode_line_separator_in_path(self):
+        # str.splitlines() breaks on U+2028 / U+0085 / \x0b, all legal in a file
+        # name; the tail of the path then reached pack-objects as "garbage".
+        names = ["a  โค.jpg", "b\u0085 x.jpg"]
+        if os.name != "nt":
+            names.append("c\x0b d.jpg")  # a control character Windows refuses
+        for i, name in enumerate(names):
+            p = Path(name)
+            p.write_text(f"content {i}", encoding="utf-8")
+            subprocess.run(["git", "add", "--", name], check=True)
+        subprocess.run(["git", "commit", "-m", "odd names"], check=True)
+        objs = get_objects_to_push(rev_parse("HEAD"))
+        for line in objs:
+            self.assertRegex(line, r"^[0-9a-f]{40}( |$)")
+        create_packfile(objs)
+
+    def test_create_packfile_overlong_path_hint(self):
+        # pack-objects --stdin splits a line longer than 40 + PATH_MAX on
+        # git for Windows ("expected object ID, got garbage"); 100 Thai
+        # characters are 300 bytes of path.
+        name = "โ" * 100 + ".jpg"
+        Path(name).write_text("long", encoding="utf-8")
+        subprocess.run(["git", "add", "--", name], check=True)
+        subprocess.run(["git", "commit", "-m", "long name"], check=True)
+        objs = get_objects_to_push(rev_parse("HEAD"))
+        self.assertTrue(any(len(o.encode("utf-8")) > 302 for o in objs))
+        pack_sha, _, _ = create_packfile(objs)
+        self.assertTrue(pack_sha)
+
     def test_get_objects_to_push_multiple_exclusions(self):
         # Base commit
         c1 = rev_parse("HEAD")

@@ -47,6 +47,9 @@ GIT_TIMEOUT = 300
 #: staging behaviour and a later full ``gc`` are untouched.
 PACK_BIG_FILE_THRESHOLD = "50m"
 
+#: Longest "<id> <path>" line (bytes) that git for Windows' pack-objects reads whole.
+_STDIN_LINE_MAX = 300
+
 
 class _TimeoutUnset:
     """Type of :data:`_UNSET`, the sentinel for :func:`run_git`'s ``timeout``.
@@ -512,8 +515,20 @@ def get_objects_to_push(local_sha: list[str] | str, exclude_shas: list[str] | st
     if code != 0:
         raise GitError(f"Failed to list objects to push: {err.decode('utf-8', errors='replace')}")
 
-    lines = out.decode("utf-8", errors="surrogateescape").splitlines()
-    objects = [line.strip() for line in lines if line.strip()]
+    # Split on "\n" only: str.splitlines() also breaks on \x0b, \x0c, \x1c-\x1e,
+    # NEL, the Unicode line and paragraph separators, which are legal in a file name, and the tail of
+    # such a path then reached 'pack-objects' as a line that is not an object
+    # id ("expected object ID, got garbage").  A path containing a real newline
+    # leaves the same kind of tail; a line that does not start with an object
+    # id is only the rest of a path hint, so it is dropped.
+    objects = []
+    for line in out.decode("utf-8", errors="surrogateescape").split("\n"):
+        line = line.strip()
+        if not line:
+            continue
+        head = line.split(None, 1)[0]
+        if len(head) in (40, 64) and all(c in "0123456789abcdef" for c in head):
+            objects.append(line)
     return objects
 
 
@@ -529,7 +544,15 @@ def _generate_pack_in_dir(
     tmp_dir.mkdir(parents=True, exist_ok=True)
     pack_prefix = tmp_dir / "pack"
 
-    input_data = ("\n".join(object_shas) + "\n").encode("utf-8", errors="surrogateescape")
+    # 'pack-objects --stdin' reads a line into a "40 + PATH_MAX + 2" buffer
+    # (302 bytes where PATH_MAX is 260, i.e. git for Windows) and takes the rest
+    # of an over-long line for the next one: "expected object ID, got garbage".
+    # Thai paths are 3 bytes per character, so a 100-character name overflows.
+    # The path is only a delta-window hint; such a line goes in as a bare id.
+    encoded = [s.encode("utf-8", errors="surrogateescape") for s in object_shas]
+    input_data = b"\n".join(
+        b[: b.index(b" ")] if len(b) > _STDIN_LINE_MAX and b" " in b else b for b in encoded
+    ) + b"\n"
     cmd = ["-c", f"core.bigFileThreshold={PACK_BIG_FILE_THRESHOLD}", "pack-objects"]
     if max_pack_bytes:
         cmd.append(f"--max-pack-size={max_pack_bytes}")
