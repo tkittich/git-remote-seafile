@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **The parallel test runner no longer hangs silently or leaves processes behind.** A worker past `--timeout` (30 minutes by default) is killed with what it started and reported by name; Ctrl-C stops every worker's whole process tree and exits 130; a failed spawn closes its log; a held temporary directory on Windows cannot turn a finished run into a traceback; a target that ran no tests is warned about.
+- **Six suite gaps closed.** Credential branches (`username`, the permission warning, a database with no `Accounts` table, a token-less account); `cmd_fetch` is fed `<sha> <ref>` as git sends it; the "empty" pack outcome is produced; the concurrent ref walk is asserted with a barrier rather than a sleep; the gc "preserves all branches and tags" test inspects the mirror it computed.
+- **The server-under-a-path support (below) was checked against the real server** through a local proxy that serves Seafile only under `/seafile` (push, clone, lock-status: 75 requests, none outside the prefix).
+
 ### Added
 - **A Seafile served under a path** (`https://corp.example.com/seafile/`) works: `SEAFILE_SERVER`, the credentials file's `server` and the desktop client's account URL may carry the path. API calls and relative transfer links go under it; the token stays scoped to host and port. The desktop client's account URL is now adopted when the remote URL names the same authority (it used to supply only the token, which left the path off). `desktop-url` prints the short form and names the setting for such a server. USER_GUIDE 7.1 documents it and the no-code alternative (a proxy host of its own).
 
