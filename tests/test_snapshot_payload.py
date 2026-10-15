@@ -794,6 +794,9 @@ class PayloadDefaultAndSafeguardTests(_PayloadFixture):
         self.assertIn("2 file(s)", out)
         self.assertIn("--no-payload", out)
         self.assertLess(out.index("NOTICE: payload mode"), out.index("payload: 2 file(s)"))
+        # ...and again as the last line, on both streams, where a log ends.
+        self.assertTrue(out.rstrip().splitlines()[-1].startswith("NOTICE: this run moved 2 large"))
+        self.assertIn("NOTICE: this run moved 2 large", err)
         # The warning is said once: the vault now remembers the setting.
         (self.src / "small.txt").write_bytes(b"changed again\n")
         rc, out, err = self.bare()

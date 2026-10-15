@@ -246,6 +246,12 @@ def refuse_flagless_payload_vault(
         )
 
 
+#: Lines printed again as the last thing a successful run says, so a scheduler's
+#: log ends with them (the NOTICE above scrolls past; the end of a log is read).
+#: ``main`` clears it at the start of every run.
+END_OF_RUN_NOTES: list[str] = []
+
+
 def conversion_warning(candidates: dict[str, Candidate], dry_run: bool) -> str:
     """Said *before* any hashing or upload, when the default moves an existing vault's
     large files out of git: a scheduled run cannot be asked, but it can be read."""
@@ -323,6 +329,12 @@ def run_payload_step(
         return None, (0, 0)
     if from_default and previous is None and base is not None:
         print(conversion_warning(candidates, dry_run), flush=True)
+        if not dry_run:
+            END_OF_RUN_NOTES.append(
+                f"NOTICE: this run moved {len(candidates)} large file(s) of an existing vault "
+                "out of git into payload mode (on by default). To stay as before, "
+                "run once with --no-payload; it is remembered. See PAYLOAD.md D11."
+            )
     # A preview writes nothing -- not even a probe file into a share.
     clock_offset, unprobed = (
         _clock_offset_once_noted(git_dir, source) if candidates and not dry_run else (0, False)

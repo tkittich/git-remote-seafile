@@ -224,6 +224,7 @@ def main(argv: list[str] | None = None) -> int:
             except (OSError, ValueError):
                 pass
     args = parse_args(argv)
+    END_OF_RUN_NOTES.clear()
 
     try:
         validate_args(args)
@@ -548,6 +549,9 @@ def main(argv: list[str] | None = None) -> int:
         # an interrupt during it must not lose the settings this run earned.
         if manifest is not None and remote and not args.dry_run:
             maybe_report_payload_gc(git_dir, vault, remote, args.payload_report_days)
+        for note in END_OF_RUN_NOTES:
+            print(note, flush=True)
+            print(note, file=sys.stderr, flush=True)
         return 0
 
     except SnapshotError as exc:
