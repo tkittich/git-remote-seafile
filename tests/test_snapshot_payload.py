@@ -1073,6 +1073,26 @@ class PayloadRetentionTests(_PayloadFixture):
         self.assertIn("nothing was deleted", out + err)
         self.assertIn(orphan, self.server_files())
 
+    def test_an_object_deleted_between_the_check_and_the_push_is_put_back(self):
+        """A retention run on another machine removes an object after this run
+        verified it and before the ref landed; the snapshot just pushed would
+        name nothing.  One more look after the push re-uploads it."""
+        self.assertEqual(self.snapshot()[0], 0)
+        victim = self.object_key(self.big1)
+        (self.src / "note.txt").write_bytes(b"a change so there is something to push\n")
+        real_push = snap.push_snapshot
+
+        def push_then_lose_an_object(*args, **kwargs):
+            result = real_push(*args, **kwargs)
+            self.stub.files[REPO_ID].pop(victim, None)
+            return result
+
+        with unittest.mock.patch.object(snap, "push_snapshot", push_then_lose_an_object):
+            rc, out, err = self.snapshot()
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn("went missing during the push", out)
+        self.assertIn(victim, self.server_files())
+
     def test_a_push_that_lands_during_the_deletion_loop_stops_it(self):
         """The refs are read once before the loop and again every few objects:
         a snapshot pushed mid-loop used to be noticed by nobody."""

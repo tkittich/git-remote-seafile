@@ -529,6 +529,10 @@ def main(argv: list[str] | None = None) -> int:
                     base,
                     message,
                 )
+                if manifest is not None:
+                    verify_payload_after_push(
+                        source, remote, manifest, jobs=args.payload_jobs or 3,
+                    )
 
         # Remember only a run that got all the way through, so the first
         # successful run leaves the next one with nothing to type -- and a typo'd

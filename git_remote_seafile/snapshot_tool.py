@@ -3910,6 +3910,52 @@ def verify_payload_before_push(
         )
 
 
+def verify_payload_after_push(
+    source: Path,
+    remote: str,
+    manifest: dict[str, Any] | None,
+    jobs: int = 3,
+) -> None:
+    """Look once more, after the push, for the objects the new manifest names.
+
+    The check before the push cannot see a ``--payload-delete`` on another
+    machine that removes an object between that listing and the ref landing: the
+    retention run takes no remote lock, and a lock would not help, because the
+    push verifies before it takes the lock.  The window is a few minutes at
+    most, so one more listing here finds what it took.  An object the source
+    still holds as it was is uploaded again; anything else is reported, because
+    the snapshot just pushed cannot be restored without it.
+    """
+    files = (manifest or {}).get("files") or []
+    if not files:
+        return
+    needed = {item["sha256"]: item for item in files}
+    library, base, server_url = payload_location(remote)
+    client = _api(lambda: _open_client(server_url), "opening the Seafile client")
+    rid = _api(lambda: client.get_repo_id(library), f"finding library {library!r}")
+    held = _remote_objects(client, rid, base, set(needed))
+    missing = {sha for sha, item in needed.items() if held.get(sha) != item["size"]}
+    if not missing:
+        return
+    redo = {
+        sha: needed[sha] for sha in missing
+        if _unchanged(source, needed[sha]["path"], needed[sha]["size"], needed[sha]["mtime_ns"])
+    }
+    if redo:
+        print(f"re-uploading {len(redo)} payload object(s) that went missing during the push "
+              "(a --payload-delete on another machine?)", flush=True)
+        _upload_all(client, rid, server_url, base, source, redo, jobs)
+        after = _remote_objects(client, rid, base, set(redo))
+        missing -= {sha for sha, item in redo.items() if after.get(sha) == item["size"]}
+    if missing:
+        sample = ", ".join(sorted(needed[sha]["path"] for sha in missing)[:5])
+        raise SnapshotError(
+            f"the snapshot was pushed, but {len(missing)} payload object(s) it names are missing "
+            f"from the server and the source no longer has them as they were (e.g. {sample}); "
+            "a restore of this snapshot would fail. Take a new snapshot once the files are back"
+        )
+
+
 # -- Payload retention ---------------------------------------------------------
 #
 # A snapshot run never deletes an object.  This is the one place that does, and
@@ -6956,6 +7002,10 @@ def main(argv: list[str] | None = None) -> int:
                     base,
                     message,
                 )
+                if manifest is not None:
+                    verify_payload_after_push(
+                        source, remote, manifest, jobs=args.payload_jobs or 3,
+                    )
 
         # Remember only a run that got all the way through, so the first
         # successful run leaves the next one with nothing to type -- and a typo'd

@@ -456,6 +456,47 @@ class SnapshotGuardTests(_SnapshotFixture):
         rc, out, err = self.snapshot("--exclude", "locked")
         self.assertEqual(rc, 0, out + err)
 
+    def test_an_unreadable_directory_warning_from_git_stops_the_run_on_every_platform(self):
+        """The test above needs POSIX permissions and is skipped on Windows,
+        leaving the guard unexercised there.  This feeds git's own warning."""
+        real_git = snap.git
+
+        def git_with_a_warning(git_dir, work_tree, args, **kw):
+            proc = real_git(git_dir, work_tree, args, **kw)
+            staging = args[:1] == ["add"] or (
+                args[:1] == ["ls-files"] and "-o" in args and "-z" in args
+            )
+            if staging:
+                return subprocess.CompletedProcess(
+                    proc.args, proc.returncode, proc.stdout,
+                    "warning: could not open directory 'locked/': Permission denied\n",
+                )
+            return proc
+
+        with unittest.mock.patch.object(snap, "git", git_with_a_warning):
+            rc, out, err = self.snapshot()
+        self.assertEqual(rc, 1, out + err)
+        self.assertIn("could not be read", err)
+        self.assertIn("locked", err)
+
+    def test_git_is_asked_for_english_messages(self):
+        seen: list[dict[str, str]] = []
+        real_run = snap._run
+
+        def spy(cmd, *a, **kw):
+            seen.append(dict(kw.get("env") or {}))
+            return real_run(cmd, *a, **kw)
+
+        with unittest.mock.patch.dict(os.environ, {"LC_ALL": "de_DE.UTF-8"}):
+            with unittest.mock.patch.object(snap, "_run", spy):
+                self.assertEqual(self.snapshot("--dry-run")[0], 0)
+        gits = [e for e in seen if "GIT_LITERAL_PATHSPECS" in e]
+        self.assertTrue(gits)
+        for env in gits:
+            self.assertEqual(env.get("LC_MESSAGES"), "C")
+            self.assertEqual(env.get("LANGUAGE"), "C")
+            self.assertEqual(env.get("LC_ALL"), "C")
+
     def test_the_opt_out_names_the_nested_repositorys_own_head(self):
         nested = self._nested_repo()
         want = _git(nested, "rev-parse", "HEAD").stdout.strip()
