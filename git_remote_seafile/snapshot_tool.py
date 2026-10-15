@@ -5701,6 +5701,35 @@ def restore(
     branch_explicit: bool = True,
     allow_low_disk: bool = False,
 ) -> None:
+    """Materialise a snapshot into a new directory; say what a failure leaves behind.
+
+    A run that fails after the clone leaves a partial tree, and the retry then
+    stops with "destination is not empty" -- naming nothing about why it is
+    not.  The failure says where the partial restore is and that it has to go
+    before trying again.  It is not deleted for the user: a restore that failed
+    its byte check is the evidence worth looking at.
+    """
+    was_empty = not into.exists() or not any(into.iterdir())
+    try:
+        _restore(remote, into, branch, ref, verify, branch_explicit, allow_low_disk)
+    except SnapshotError as exc:
+        if was_empty and into.exists() and any(into.iterdir()):
+            raise SnapshotError(
+                f"{exc}\nThe partial restore was left in {into} for inspection; "
+                "delete it before running the restore again."
+            ) from exc
+        raise
+
+
+def _restore(
+    remote: str,
+    into: Path,
+    branch: str,
+    ref: str | None,
+    verify: bool = False,
+    branch_explicit: bool = True,
+    allow_low_disk: bool = False,
+) -> None:
     """Materialise a snapshot into a new directory, byte-for-byte.
 
     ``branch_explicit`` is False when the caller only assumed the default

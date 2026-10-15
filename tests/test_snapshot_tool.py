@@ -1329,6 +1329,16 @@ class RestoreVerificationTests(_SnapshotFixture):
         self.assertIn("embedded git repositories", out)
         self.assertIn("vendor-lib", out)
 
+    def test_a_restore_that_fails_after_the_clone_says_where_it_left_the_tree(self):
+        """The retry used to stop with "destination is not empty" and no reason."""
+        self.snapshot("--remote", str(self.remote))
+        with unittest.mock.patch.object(snap, "verify_restore", return_value=["README.md"]):
+            rc, out, err = self.restore_to(self.restored)
+        self.assertEqual(rc, 1, out + err)
+        self.assertIn("left in", err)
+        self.assertIn("delete it before running the restore again", err)
+        self.assertTrue(any(self.restored.iterdir()))
+
     def test_verify_also_runs_fsck(self):
         self.snapshot("--remote", str(self.remote))
         rc, out, err = self.restore_to(self.restored, "--verify")

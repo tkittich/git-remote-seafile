@@ -5,6 +5,7 @@ from __future__ import annotations
 import fnmatch
 import os
 import sys
+import time
 from pathlib import Path
 
 from .git_util import get_trusted_git_config_bool, run_git
@@ -96,6 +97,13 @@ def safe_relative_to(target: Path, base: Path) -> Path | None:
     return Path(*remainder) if remainder else Path(".")
 
 
+#: A torn copy of a live database is usually whole a moment later.
+_DISCOVERY_ATTEMPTS = 3
+_DISCOVERY_RETRY_SECONDS = 0.25
+#: Paths already warned about in this process; discovery runs several times a push.
+_UNREADABLE_WARNED: set[str] = set()
+
+
 def discover_local_synced_libraries() -> list[dict]:
     """Find all libraries actively synced by the local Seafile desktop client.
     
@@ -111,14 +119,40 @@ def discover_local_synced_libraries() -> list[dict]:
 
     for rdb in candidates:
         props: dict[str, dict[str, str]] = {}
-        with open_live_sqlite_ro(rdb) as con:
-            if con is None:
-                continue
-            try:
-                for rid, k, v in con.execute("SELECT repo_id, key, value FROM RepoProperty"):
-                    props.setdefault(rid, {})[k] = v
-            except Exception:
-                continue
+        if not Path(rdb).is_file():
+            # Most candidate locations do not exist on any one machine; there
+            # is nothing to retry and nothing to warn about.
+            continue
+        # A copy taken while the desktop client is writing can be torn, and then
+        # reads as "no database" -- exactly when the guard matters.  Try again a
+        # few times, and say so if the file is there and still cannot be read:
+        # a silent empty result means the synced-folder check did not run.
+        readable = False
+        for attempt in range(_DISCOVERY_ATTEMPTS):
+            if attempt:
+                time.sleep(_DISCOVERY_RETRY_SECONDS)
+            attempt_props: dict[str, dict[str, str]] = {}
+            with open_live_sqlite_ro(rdb) as con:
+                if con is None:
+                    continue
+                try:
+                    for rid, k, v in con.execute("SELECT repo_id, key, value FROM RepoProperty"):
+                        attempt_props.setdefault(rid, {})[k] = v
+                except Exception:
+                    continue
+            props = attempt_props
+            readable = True
+            break
+        if not readable:
+            if Path(rdb).is_file() and str(rdb) not in _UNREADABLE_WARNED:
+                _UNREADABLE_WARNED.add(str(rdb))
+                sys.stderr.write(
+                    f"Warning: could not read the Seafile client's database {rdb} (it may be "
+                    "being written); the synced-library check cannot see libraries from it "
+                    "this run.\n"
+                )
+                sys.stderr.flush()
+            continue
 
         for rid, kv in props.items():
             if rid in seen_ids:

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **A synced-folder check that could not read the desktop client's `repo.db` said nothing.** A copy torn by a concurrent write read as "no libraries" and the guard did not run. The read is retried (three times, a quarter second apart) and, if the file is there and still unreadable, one warning names it.
+- **A restore that failed after the clone left a partial tree and the retry stopped with "destination is not empty".** The failure now says where the partial restore was left and that it has to be deleted first; it is not deleted for you.
+
 ## [0.9.4] - 2026-10-15
 
 The remaining items of the 0.9.3 review round, all of them about trusting what a server says. Checked on the

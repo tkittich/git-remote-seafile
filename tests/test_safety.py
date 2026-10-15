@@ -820,6 +820,73 @@ class TestDiscoverLocalSyncedLibraries(unittest.TestCase):
             finally:
                 con.close()
 
+    def test_a_database_that_cannot_be_read_is_said_once_not_silently_skipped(self):
+        """H-23: a torn or damaged repo.db used to read as "no libraries", so
+        the synced-folder guard did not run, with no word about it."""
+        import io
+
+        from git_remote_seafile import safety
+
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td) / "home"
+            con = self._seed(home, Path(td) / "Lib", "delete")
+            con.close()
+            (home / "ccnet" / "repo.db").write_bytes(b"this is not a database" * 50)
+            err = io.StringIO()
+            with patch("pathlib.Path.home", return_value=home), \
+                    patch.object(safety, "_UNREADABLE_WARNED", set()), \
+                    patch.object(safety, "_DISCOVERY_RETRY_SECONDS", 0), \
+                    patch("sys.stderr", err):
+                self.assertEqual(discover_local_synced_libraries(), [])
+                discover_local_synced_libraries()  # a second look is not a second warning
+        self.assertEqual(err.getvalue().count("could not read the Seafile client's database"), 1)
+
+    def test_a_missing_candidate_is_not_retried(self):
+        """Seven of the eight candidate paths are absent on any machine; the
+        retry loop once slept on each of them (3.5 s per discovery)."""
+        import time
+
+        from git_remote_seafile import safety
+
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td) / "empty-home"
+            home.mkdir()
+            started = time.monotonic()
+            with patch("pathlib.Path.home", return_value=home), \
+                    patch.object(safety, "_DISCOVERY_RETRY_SECONDS", 1.0):
+                self.assertEqual(discover_local_synced_libraries(), [])
+        self.assertLess(time.monotonic() - started, 0.9)
+
+    def test_a_torn_first_read_is_retried(self):
+        from contextlib import contextmanager
+
+        from git_remote_seafile import safety
+
+        real = safety.open_live_sqlite_ro
+        calls = {"n": 0}
+
+        @contextmanager
+        def torn_once(path):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                yield None
+                return
+            with real(path) as con:
+                yield con
+
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td) / "home"
+            con = self._seed(home, Path(td) / "Lib", "delete")
+            try:
+                with patch("pathlib.Path.home", return_value=home), \
+                        patch.object(safety, "open_live_sqlite_ro", torn_once), \
+                        patch.object(safety, "_DISCOVERY_RETRY_SECONDS", 0):
+                    libs = discover_local_synced_libraries()
+            finally:
+                con.close()
+        self.assertEqual([lib["repo_id"] for lib in libs], ["repo-1"])
+        self.assertGreaterEqual(calls["n"], 2)
+
     def test_a_library_with_auto_sync_disabled_is_reported_as_such(self):
         # The desktop client persists a per-library "auto sync" disable as
         # RepoProperty('auto-sync', 'false') (seaf-daemon repo-mgr.c, key
