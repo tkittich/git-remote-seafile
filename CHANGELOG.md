@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.3] - 2026-10-15
+
+A third independent review round (GLM-5.3, Gemini, DeepSeek) on 0.9.2, every finding reproduced or refuted
+before anything was changed, plus the small snapshot-tool backlog and a release pre-flight. The two that
+mattered: full `gc` deleted old packs without re-reading the refs, and on Windows the payload hash cache
+could vouch for a same-size in-place edit.
+
+### Decided
+- **A lock-ignoring writer that loses a last-writer-wins race is not rescued by a `gc` grace period.** Both pushes report `ok` and the loser's commits are pruned by the next full `gc`; keeping unreachable objects would close that at the price of a store that never shrinks. It stays documented (DESIGN 4.1, USER_GUIDE limitations): every writer must use the helper.
+- **The default conversion of an existing vault to payload mode is announced, not refused**, and is now said again as the last line of the run on stdout and stderr, so a scheduler's log ends with it.
+
 ### Added
 - **`tools/release_check.py`** answers, before the tag exists, what the release job answers after it: version against tag, the release notes' shape and compare-link base, the CHANGELOG section and reference link, a clean tree (and a warning when HEAD is not on a remote branch).
 
@@ -1609,6 +1620,7 @@ Data-loss and silent-failure fixes, and the Python floor raised to 3.9.
   with zero-config desktop-client token discovery, distributed locking, remote
   packfile compaction, and a Git LFS custom transfer agent.
 
+[0.9.3]: https://github.com/tkittich/git-remote-seafile/compare/v0.9.2...v0.9.3
 [0.9.2]: https://github.com/tkittich/git-remote-seafile/compare/v0.9.1...v0.9.2
 [0.9.1]: https://github.com/tkittich/git-remote-seafile/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/tkittich/git-remote-seafile/compare/v0.8.8...v0.9.0

@@ -1,6 +1,6 @@
 # PAYLOAD.md — specification of the snapshot tool's payload mode
 
-**Status:** shipped in 0.9.0 and revised through 0.9.2 (the modification-times
+**Status:** shipped in 0.9.0 and revised through 0.9.3 (the modification-times
 record, D14, is 0.9.2). This file is the specification the implementation is held to: the requirements, the decisions
 with the evidence behind them, the failure model, and an adversarial pass
 ("Attack") that records every way the design was found wanting and what became of
@@ -461,8 +461,10 @@ daemon, an indexer, a sync client) can react to its creation and removal, which
 nothing here can prevent; view paths are validated with the same class of checks as
 restore paths (D8) and `--payload-view-name` is validated; the default conversion of
 an existing vault is announced and not refused, because a remembered or default
-setting must never turn a run that worked into an error -- a scheduled job that must
-not convert passes `--no-payload`, which is remembered.
+setting must never turn a run that worked into an error. Since 0.9.3 the notice is
+repeated as the last line of the run, on stdout and stderr, so a scheduler's log ends
+with it; a scheduled job that must not convert passes `--no-payload`, which is
+remembered.
 
 *Not changed, recorded (round 1):* the racy rule uses this machine's clock (D6, F9/F15); a
 snapshot is never expired by itself -- there is no `--keep-snapshots` yet, so a
