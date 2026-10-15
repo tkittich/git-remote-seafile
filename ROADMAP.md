@@ -1,6 +1,6 @@
 # Engineering Roadmap & Backlog
 
-**Baseline:** v0.9.5 (v0.9.0: the snapshot tool ships in the wheel and gains payload mode: large files stored by SHA-256, with gc, verify, retention and browsable views; on top of 0.8.8's measured pack cap, chunked upload, autogc, `doctor`, `gc --tail` and one output/exit convention)  
+**Baseline:** v0.9.6 (v0.9.0: the snapshot tool ships in the wheel and gains payload mode: large files stored by SHA-256, with gc, verify, retention and browsable views; on top of 0.8.8's measured pack cap, chunked upload, autogc, `doctor`, `gc --tail` and one output/exit convention)  
 **Scope:** What shipped in each release line, the active backlog, and the v1.0.0 horizon.  
 **Test Suite:** all green on `tools/run_tests_parallel.py` (the runner prints the current count; it is deliberately not repeated here). **Python:** 3.10+ (3.9 EOL).
 
@@ -182,6 +182,9 @@ One line per capability — see [CHANGELOG.md](CHANGELOG.md) for the full detail
 
 **v0.9.5 (2026-10-15) — a server under a path, and a runner that does not hang.**
 - A Seafile behind a reverse proxy under a path works through the server setting (USER_GUIDE 7.1; the no-code alternative is a proxy host of its own), verified against a real server; a torn `repo.db` is retried and said once; a failed restore names the partial tree; the six suite gaps are closed; the parallel runner kills a wedged target and stops its workers on Ctrl-C.
+
+**v0.9.6 (2026-10-15) — long paths on Windows.**
+- A push no longer fails with "expected object ID, got garbage" when a path exceeds git for Windows' 302-byte `pack-objects --stdin` line; the path hint is dropped for such a line.
 
 ---
 

@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.6] - 2026-10-15
+
+A push of a repository with long non-ASCII paths no longer fails on Windows. Nothing in how a snapshot or a
+push is stored changes.
+
+### Fixed
+- **A push failed with `git pack-objects failed: fatal: expected object ID, got garbage` when a path was long.** `pack-objects --stdin` on git for Windows reads each `<id> <path>` line into a 302-byte buffer and takes the overflow for the next line; a Thai path is three bytes a character, so a 100-character name overflowed it. The path is only a delta-compression hint, so a line over 300 bytes is now sent as the bare object id. The pack is the same set of objects.
+- **A path containing U+0085, U+2028 or U+2029 (or `\x0b`, `\x0c`, `\x1c`-`\x1e`) was cut in two** by the object listing, because it was split with `str.splitlines()`. It is now split on `\n` only.
+
 ## [0.9.5] - 2026-10-15
 
 A Seafile served under a path now works (checked against a real server through a prefix-only proxy), the
@@ -1661,6 +1670,7 @@ Data-loss and silent-failure fixes, and the Python floor raised to 3.9.
   with zero-config desktop-client token discovery, distributed locking, remote
   packfile compaction, and a Git LFS custom transfer agent.
 
+[0.9.6]: https://github.com/tkittich/git-remote-seafile/compare/v0.9.5...v0.9.6
 [0.9.5]: https://github.com/tkittich/git-remote-seafile/compare/v0.9.4...v0.9.5
 [0.9.4]: https://github.com/tkittich/git-remote-seafile/compare/v0.9.3...v0.9.4
 [0.9.3]: https://github.com/tkittich/git-remote-seafile/compare/v0.9.2...v0.9.3

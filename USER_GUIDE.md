@@ -244,6 +244,8 @@ git pull
 pip install -e .
 ```
 
+**Upgrading to v0.9.6 from v0.9.5** changes nothing for a setup that works: a push of a repository with very long (non-ASCII) paths on Windows no longer fails with "expected object ID, got garbage". Nothing about what is stored changes.
+
 **Upgrading to v0.9.5 from v0.9.4** changes nothing for a setup that works: a server under a path (`https://host/seafile`) can now be named in `SEAFILE_SERVER`, the credentials file or the desktop client's account (section 7.1), and that account's URL is used when the remote names the same host and port. Nothing about what is stored changes.
 
 **Upgrading to v0.9.4 from v0.9.3** changes two timings and nothing else: `gc` and the tail merge read the new pack back and compare its SHA-256 before deleting (one more download of that pack under the lock), and a snapshot lists its payload objects once more after the push. Neither changes what is stored.
