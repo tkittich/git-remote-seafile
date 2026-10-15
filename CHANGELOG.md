@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **`gc` and the tail merge read the new pack back and compare SHA-256** before deleting anything. The listing only proves a size, and a same-length substitution passed it. Costs one more transfer of the new pack under the lock already held.
+- **A snapshot that pushed lists its payload objects once more afterwards**, re-uploads any a `--payload-delete` on another machine removed meanwhile, and fails naming those it cannot restore.
+- **A ref deletion is read back**: a server that answers 200 without deleting is reported as an error, not `ok`.
+- The unreadable-directory guard and the forced English git messages have tests that run on Windows.
+
 ## [0.9.3] - 2026-10-15
 
 A third independent review round (GLM-5.3, Gemini, DeepSeek) on 0.9.2, every finding reproduced or refuted
