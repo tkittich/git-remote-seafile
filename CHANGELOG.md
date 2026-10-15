@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.5] - 2026-10-15
+
+A Seafile served under a path now works (checked against a real server through a prefix-only proxy), the
+synced-folder check no longer goes silent on a torn database, and the test runner stops hanging. Nothing in
+how a snapshot or a push is stored changes.
+
+### Upgrading from 0.9.4
+
+- **A server under a path is set with `SEAFILE_SERVER`, the credentials file's `server`, or the desktop client's account** (see USER_GUIDE 7.1). A `seafile://` URL still cannot carry the path. A server without a path behaves exactly as before.
+- **The desktop client's account URL is adopted when the remote URL names the same host and port**, so a path stored in the account is used. Previously only its token was.
+- **`tools/run_tests_parallel.py` kills a target after `--timeout` seconds (default 1800)**; pass `--timeout 0` to restore the old unlimited wait.
+
 ### Changed
 - **The parallel test runner no longer hangs silently or leaves processes behind.** A worker past `--timeout` (30 minutes by default) is killed with what it started and reported by name; Ctrl-C stops every worker's whole process tree and exits 130; a failed spawn closes its log; a held temporary directory on Windows cannot turn a finished run into a traceback; a target that ran no tests is warned about.
 - **Six suite gaps closed.** Credential branches (`username`, the permission warning, a database with no `Accounts` table, a token-less account); `cmd_fetch` is fed `<sha> <ref>` as git sends it; the "empty" pack outcome is produced; the concurrent ref walk is asserted with a barrier rather than a sleep; the gc "preserves all branches and tags" test inspects the mirror it computed.
@@ -1649,6 +1661,7 @@ Data-loss and silent-failure fixes, and the Python floor raised to 3.9.
   with zero-config desktop-client token discovery, distributed locking, remote
   packfile compaction, and a Git LFS custom transfer agent.
 
+[0.9.5]: https://github.com/tkittich/git-remote-seafile/compare/v0.9.4...v0.9.5
 [0.9.4]: https://github.com/tkittich/git-remote-seafile/compare/v0.9.3...v0.9.4
 [0.9.3]: https://github.com/tkittich/git-remote-seafile/compare/v0.9.2...v0.9.3
 [0.9.2]: https://github.com/tkittich/git-remote-seafile/compare/v0.9.1...v0.9.2

@@ -244,6 +244,8 @@ git pull
 pip install -e .
 ```
 
+**Upgrading to v0.9.5 from v0.9.4** changes nothing for a setup that works: a server under a path (`https://host/seafile`) can now be named in `SEAFILE_SERVER`, the credentials file or the desktop client's account (section 7.1), and that account's URL is used when the remote names the same host and port. Nothing about what is stored changes.
+
 **Upgrading to v0.9.4 from v0.9.3** changes two timings and nothing else: `gc` and the tail merge read the new pack back and compare its SHA-256 before deleting (one more download of that pack under the lock), and a snapshot lists its payload objects once more after the push. Neither changes what is stored.
 
 **Upgrading to v0.9.3 from v0.9.2** changes behaviour in three places: on Windows every large payload file is hashed once more on the first run (the cache key now uses NTFS's change time, which catches a same-size in-place edit that put the modification time back); plain `unlock` refuses a ticket held by a live process on this machine (`--force` still breaks it); and `--payload-gc --payload-delete` re-reads the remote's refs while it deletes and stops if another machine pushed. Nothing else changes for a working setup.
