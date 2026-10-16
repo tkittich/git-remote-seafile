@@ -9,6 +9,7 @@ import socket
 import sys
 import time
 import uuid
+from pathlib import Path
 from typing import Any
 from .client import SeafileClient
 from .config import RemoteConfig, default_lock_settle, get_git_config_int
@@ -168,6 +169,58 @@ def _is_pid_alive(pid: int) -> bool:
             return True
 
 
+def _process_creation_time(pid: int) -> str | None:
+    """Creation time of process *pid*, or None if unavailable/unreadable.
+
+    Differentiates an active process from a recycled PID: on Windows, a killed
+    process's PID may soon belong to an unrelated long-lived process.
+    """
+    if pid <= 0:
+        return None
+    try:
+        if sys.platform == "win32":
+            import ctypes
+            from ctypes import wintypes
+            PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            kernel32.OpenProcess.restype = ctypes.c_void_p
+            kernel32.OpenProcess.argtypes = (
+                wintypes.DWORD, wintypes.BOOL, wintypes.DWORD,
+            )
+            kernel32.GetProcessTimes.restype = wintypes.BOOL
+            kernel32.GetProcessTimes.argtypes = (
+                ctypes.c_void_p,
+                ctypes.POINTER(ctypes.c_ulonglong),
+                ctypes.POINTER(ctypes.c_ulonglong),
+                ctypes.POINTER(ctypes.c_ulonglong),
+                ctypes.POINTER(ctypes.c_ulonglong),
+            )
+            kernel32.CloseHandle.restype = wintypes.BOOL
+            kernel32.CloseHandle.argtypes = (ctypes.c_void_p,)
+            handle = kernel32.OpenProcess(
+                PROCESS_QUERY_LIMITED_INFORMATION, False, wintypes.DWORD(pid)
+            )
+            if not handle:
+                return None
+            try:
+                created, exited, kernel, user = (ctypes.c_ulonglong() for _ in range(4))
+                ok = kernel32.GetProcessTimes(
+                    handle,
+                    ctypes.byref(created),
+                    ctypes.byref(exited),
+                    ctypes.byref(kernel),
+                    ctypes.byref(user),
+                )
+                return str(created.value) if ok else None
+            finally:
+                kernel32.CloseHandle(handle)
+        stat_line = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
+        fields = stat_line.rpartition(")")[2].split()
+        return fields[19]
+    except (OSError, ValueError, IndexError, AttributeError):
+        return None
+
+
 class RemoteLock:
     """Cooperative distributed lease lock stored on Seafile.
 
@@ -266,7 +319,7 @@ class RemoteLock:
         owner, machine = (
             self._identity if self._identity else (self._owner_id(), socket.gethostname())
         )
-        return {
+        payload = {
             "owner": owner,
             "machine": machine,
             "machine_id": _LOCAL_MACHINE_ID,
@@ -278,6 +331,10 @@ class RemoteLock:
             "holding": holding,
             "held_since": now if holding else 0.0,
         }
+        start_time = _process_creation_time(os.getpid())
+        if start_time is not None:
+            payload["start_time"] = start_time
+        return payload
 
     def _is_lock_active(self, info: dict[str, Any], now: float, quiet: bool = False) -> bool:
         """Check if lock payload is active. Returns False if expired or dead local PID.
@@ -297,15 +354,16 @@ class RemoteLock:
             lock_pid_int = 0
 
         # Reclaim a lock whose owner is provably gone: same machine, and a PID
-        # that is no longer alive.  Both the hostname *and* machine_id (when
-        # available) are checked, so a container, or a fleet of machines sharing
-        # a default hostname, cannot make another host's live lock look dead
-        # here.
+        # that is no longer alive or has been recycled by the OS. Both the hostname
+        # *and* machine_id (when available) are checked, so a container, or a fleet
+        # of machines sharing a default hostname, cannot make another host's live lock
+        # look dead here.
         same_machine = (lock_machine == socket.gethostname())
         if same_machine and lock_machine_id is not None:
             same_machine = (str(lock_machine_id) == _LOCAL_MACHINE_ID)
 
         if same_machine and lock_pid_int > 0:
+            lock_start_time = info.get("start_time")
             if not _is_pid_alive(lock_pid_int):
                 if not quiet:
                     sys.stderr.write(
@@ -313,6 +371,15 @@ class RemoteLock:
                     )
                     sys.stderr.flush()
                 return False
+            elif lock_start_time is not None:
+                cur_start = _process_creation_time(lock_pid_int)
+                if cur_start is not None and cur_start != str(lock_start_time):
+                    if not quiet:
+                        sys.stderr.write(
+                            f"Reclaiming stale lock from dead local process with recycled PID {lock_pid_int}.\n"
+                        )
+                        sys.stderr.flush()
+                    return False
 
         try:
             lock_time = float(info.get("timestamp", 0))

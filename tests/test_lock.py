@@ -380,6 +380,27 @@ class TestConcurrencyAndLocking(unittest.TestCase):
             with self.assertRaises(RepositoryLockedError):
                 lock.acquire()
 
+    def test_recycled_pid_on_local_machine_reclaims(self):
+        """A lock held by the same machine where PID is alive but start_time differs is reclaimed."""
+        store = _SharedLockStore()
+        store.put_ticket("/path/.git-lock.d/recycled-nonce.json", json.loads(_ticket(
+            "recycled-nonce",
+            owner="old-local-user",
+            machine=socket.gethostname(),
+            pid=12345,
+            start_time="1000",
+        )))
+
+        lock = RemoteLock(store.client("token123"), "repo1", "/path", timeout=0, lease=60, settle=0)
+        err = io.StringIO()
+        with patch("git_remote_seafile.lock._is_pid_alive", return_value=True):
+            with patch("git_remote_seafile.lock._process_creation_time", return_value="2000"):
+                with patch("sys.stderr", err):
+                    lock.acquire()
+
+        self.assertTrue(lock.acquired)
+        self.assertIn("recycled PID 12345", err.getvalue())
+
     def test_dead_pid_fast_reclaim_ignores_different_machine_id(self):
         """When machine hostname matches but machine_id differs (e.g. container fleet), lock is not stolen."""
         store = _SharedLockStore()
