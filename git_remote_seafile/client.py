@@ -632,7 +632,7 @@ class SeafileClient:
             status_forcelist=(429, 500, 502, 503, 504),
             raise_on_status=False,
         )
-        adapter = HTTPAdapter(max_retries=retry, pool_connections=16, pool_maxsize=16)
+        adapter = HTTPAdapter(max_retries=retry, pool_connections=64, pool_maxsize=64)
         session.mount("http://", adapter)
         session.mount("https://", adapter)
 
@@ -749,6 +749,13 @@ class SeafileClient:
         url = f"{self.server_url}/api2/repos/"
         resp = self.session.get(url, timeout=self.timeout)
         if resp.status_code != 200:
+            if resp.status_code in (401, 403):
+                detail = resp.text.strip() or "Unauthorized"
+                raise SeafileAPIError(
+                    f"Failed to list repos: HTTP {resp.status_code} ({detail}).\n"
+                    "Hint: check or refresh your token with 'git-remote-seafile config' "
+                    "or log in via the Seafile desktop client."
+                )
             raise SeafileAPIError(f"Failed to list repos: HTTP {resp.status_code} {resp.text}")
 
         repos = resp.json()
@@ -1071,59 +1078,95 @@ class SeafileClient:
                     repo_id, clean_parent, filename, payload, file_size, replace,
                     upload_url, progress_callback,
                 )
-            mp = StreamingMultipartFile(
-                fields={"parent_dir": clean_parent, "replace": "1" if replace else "0"},
-                file_field="file",
-                filename=filename,
-                file_obj=payload,
-                file_size=file_size,
-                progress_callback=progress_callback,
-            )
-            headers = {
-                "Content-Type": mp.content_type,
-                "Content-Length": str(len(mp)),
-            }
-            up_resp = self._xfer(
-                "post", upload_url, data=mp, headers=headers, timeout=self._upload_timeout()
-            )
-        elif isinstance(payload, (bytes, bytearray)) and progress_callback is not None:
-            bio = io.BytesIO(payload)
-            mp = StreamingMultipartFile(
-                fields={"parent_dir": clean_parent, "replace": "1" if replace else "0"},
-                file_field="file",
-                filename=filename,
-                file_obj=bio,
-                file_size=len(payload),
-                progress_callback=progress_callback,
-            )
-            headers = {
-                "Content-Type": mp.content_type,
-                "Content-Length": str(len(mp)),
-            }
-            up_resp = self._xfer(
-                "post", upload_url, data=mp, headers=headers, timeout=self._upload_timeout()
-            )
-        else:
-            files = {"file": (filename, payload)}
-            data = {"parent_dir": clean_parent, "replace": "1" if replace else "0"}
-            up_resp = self._xfer(
-                "post", upload_url, files=files, data=data, timeout=self._upload_timeout()
-            )
-            if progress_callback:
-                try:
-                    payload_len = len(payload) if hasattr(payload, "__len__") else 0
-                    progress_callback(payload_len, payload_len)
-                except Exception:
-                    pass
-        if up_resp.status_code not in (200, 201):
-            # Name the endpoint that was actually hit.  A wrong scheme or host
-            # here is the difference between a working push and an opaque
-            # "HTTP 400", and the origin is enough to see it -- the path is
-            # deliberately omitted because it carries the upload token.
+
+        is_rewindable = (hasattr(payload, "read") and hasattr(payload, "seek")) or isinstance(
+            payload, (bytes, bytearray)
+        )
+        max_attempts = UPLOAD_CHUNK_ATTEMPTS if is_rewindable else 1
+        start_cur = payload.tell() if hasattr(payload, "tell") else 0
+
+        up_resp = None
+        last_error = ""
+        for attempt in range(max_attempts):
+            if attempt:
+                time.sleep(0.3 * attempt)
+            if hasattr(payload, "seek"):
+                payload.seek(start_cur)
+
+            try:
+                if hasattr(payload, "read") and hasattr(payload, "seek"):
+                    mp = StreamingMultipartFile(
+                        fields={"parent_dir": clean_parent, "replace": "1" if replace else "0"},
+                        file_field="file",
+                        filename=filename,
+                        file_obj=payload,
+                        file_size=file_size,
+                        progress_callback=progress_callback,
+                    )
+                    headers = {
+                        "Content-Type": mp.content_type,
+                        "Content-Length": str(len(mp)),
+                    }
+                    up_resp = self._xfer(
+                        "post", upload_url, data=mp, headers=headers, timeout=self._upload_timeout()
+                    )
+                elif isinstance(payload, (bytes, bytearray)) and progress_callback is not None:
+                    bio = io.BytesIO(payload)
+                    mp = StreamingMultipartFile(
+                        fields={"parent_dir": clean_parent, "replace": "1" if replace else "0"},
+                        file_field="file",
+                        filename=filename,
+                        file_obj=bio,
+                        file_size=len(payload),
+                        progress_callback=progress_callback,
+                    )
+                    headers = {
+                        "Content-Type": mp.content_type,
+                        "Content-Length": str(len(mp)),
+                    }
+                    up_resp = self._xfer(
+                        "post", upload_url, data=mp, headers=headers, timeout=self._upload_timeout()
+                    )
+                else:
+                    files = {"file": (filename, payload)}
+                    data = {"parent_dir": clean_parent, "replace": "1" if replace else "0"}
+                    up_resp = self._xfer(
+                        "post", upload_url, files=files, data=data, timeout=self._upload_timeout()
+                    )
+                    if progress_callback:
+                        try:
+                            payload_len = len(payload) if hasattr(payload, "__len__") else 0
+                            progress_callback(payload_len, payload_len)
+                        except Exception:
+                            pass
+            except SeafileAPIError as ex:
+                last_error = str(ex)
+                continue
+
+            if up_resp is not None:
+                if up_resp.status_code in (200, 201):
+                    return True
+                last_error = (
+                    f"HTTP {up_resp.status_code} "
+                    f"(POST {self._error_origin(upload_url)}) {up_resp.text}"
+                )
+                if up_resp.status_code < 500:
+                    break
+
+        if up_resp is None or up_resp.status_code not in (200, 201):
+            if up_resp is not None:
+                # Name the endpoint that was actually hit.  A wrong scheme or host
+                # here is the difference between a working push and an opaque
+                # "HTTP 400", and the origin is enough to see it -- the path is
+                # deliberately omitted because it carries the upload token.
+                raise SeafileAPIError(
+                    f"Failed to upload {filename} to {clean_parent}: "
+                    f"HTTP {up_resp.status_code} "
+                    f"(POST {self._error_origin(upload_url)}) {up_resp.text}"
+                )
             raise SeafileAPIError(
-                f"Failed to upload {filename} to {clean_parent}: "
-                f"HTTP {up_resp.status_code} "
-                f"(POST {self._error_origin(upload_url)}) {up_resp.text}"
+                f"Failed to upload {filename} to {clean_parent}: {last_error} "
+                f"(POST {self._error_origin(upload_url)})"
             )
         return True
 

@@ -498,6 +498,12 @@ class TestClientAPI(unittest.TestCase):
         with self.assertRaises(SeafileAPIError):
             self.client.get_repo_id("myrepo")
 
+        # HTTP 401 unauthorized gives actionable hint
+        self.client.session.get = MagicMock(return_value=MagicMock(status_code=401, text='{"detail":"Token invalid"}'))
+        with self.assertRaises(SeafileAPIError) as ctx:
+            self.client.get_repo_id("myrepo")
+        self.assertIn("Hint: check or refresh your token", str(ctx.exception))
+
         # Not found
         mock_resp = MagicMock(status_code=200)
         mock_resp.json.return_value = [{"id": "id-1", "name": "Documents"}]
@@ -782,6 +788,19 @@ class TestClientAPI(unittest.TestCase):
         self.client.session.get = MagicMock(return_value=MagicMock(status_code=403, text="Forbidden"))
         with self.assertRaises(SeafileAPIError):
             self.client.upload_file("repo1", "/seafile", "test.txt", b"content")
+
+    def test_upload_file_retries_on_transient_error_and_succeeds(self):
+        self.client.dir_exists = MagicMock(return_value=True)
+        link = '"https://seafile.example.com/seafhttp/upload/xyz"'
+        self.client.session.get = MagicMock(return_value=MagicMock(status_code=200, text=link))
+        # First attempt returns 502, second attempt returns 200
+        resp_fail = MagicMock(status_code=502, text="Bad Gateway")
+        resp_ok = MagicMock(status_code=200)
+        self.client.session.post = MagicMock(side_effect=[resp_fail, resp_ok])
+
+        bio = io.BytesIO(b"hello rewindable")
+        self.assertTrue(self.client.upload_file("repo1", "/test", "file.txt", bio))
+        self.assertEqual(self.client.session.post.call_count, 2)
 
     def test_upload_file_with_string_payload_encoded_to_utf8(self):
         self.client.session.get = MagicMock(return_value=MagicMock(status_code=200, text='"https://seafile.example.com/seafhttp/upload-api/123"'))
