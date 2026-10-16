@@ -44,13 +44,14 @@ from git_remote_seafile.lock import (
 #: windows-latest 3.10/3.11/3.12 legs only.  One second is far wider than any
 #: tick and still leaves the 60 s lease well inside its window.
 _FIXTURE_TICKET_AGE = 1.0
+_FOREIGN_MACHINE = f"foreign-{socket.gethostname()}"
 
 
-def _ticket(nonce: str, owner: str = "alice", machine: str = "nodeA", **overrides) -> str:
+def _ticket(nonce: str, owner: str = "alice", machine: str | None = None, **overrides) -> str:
     stamped = time.time() - _FIXTURE_TICKET_AGE
     payload = {
         "owner": owner,
-        "machine": machine,
+        "machine": machine if machine is not None else _FOREIGN_MACHINE,
         "nonce": nonce,
         "timestamp": stamped,
         "order_ts": stamped,
