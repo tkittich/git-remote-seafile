@@ -802,6 +802,24 @@ class TestClientAPI(unittest.TestCase):
         self.assertTrue(self.client.upload_file("repo1", "/test", "file.txt", bio))
         self.assertEqual(self.client.session.post.call_count, 2)
 
+    def test_upload_file_retries_refreshes_upload_link(self):
+        self.client.dir_exists = MagicMock(return_value=True)
+        link1 = '"https://seafile.example.com/seafhttp/upload/link1"'
+        link2 = '"https://seafile.example.com/seafhttp/upload/link2"'
+        self.client.session.get = MagicMock(side_effect=[
+            MagicMock(status_code=200, text=link1),
+            MagicMock(status_code=200, text=link2),
+        ])
+        resp_fail = MagicMock(status_code=500, text="Internal Error")
+        resp_ok = MagicMock(status_code=200)
+        self.client.session.post = MagicMock(side_effect=[resp_fail, resp_ok])
+
+        bio = io.BytesIO(b"payload")
+        self.assertTrue(self.client.upload_file("repo1", "/test", "file.txt", bio))
+        self.assertEqual(self.client.session.post.call_count, 2)
+        second_post_url = self.client.session.post.call_args_list[1][0][0]
+        self.assertIn("link2", second_post_url)
+
     def test_upload_file_with_string_payload_encoded_to_utf8(self):
         self.client.session.get = MagicMock(return_value=MagicMock(status_code=200, text='"https://seafile.example.com/seafhttp/upload-api/123"'))
         with patch.object(self.client, "_upload") as mock_upload:

@@ -753,7 +753,7 @@ class SeafileClient:
                 detail = resp.text.strip() or "Unauthorized"
                 raise SeafileAPIError(
                     f"Failed to list repos: HTTP {resp.status_code} ({detail}).\n"
-                    "Hint: check or refresh your token with 'git-remote-seafile config' "
+                    "Hint: check or refresh your token with 'git-remote-seafile check-auth' "
                     "or log in via the Seafile desktop client."
                 )
             raise SeafileAPIError(f"Failed to list repos: HTTP {resp.status_code} {resp.text}")
@@ -1057,12 +1057,14 @@ class SeafileClient:
         self.mkdir_p(repo_id, clean_parent)
 
         # 1. Get upload link
-        link_url = f"{self.server_url}/api2/repos/{repo_id}/upload-link/?p={quote(clean_parent, safe='/')}"
-        resp = self.session.get(link_url, timeout=self.timeout)
-        if resp.status_code != 200:
-            raise SeafileAPIError(f"Failed to get upload link for {clean_parent}: HTTP {resp.status_code} {resp.text}")
+        def _get_upload_url() -> str:
+            link_url = f"{self.server_url}/api2/repos/{repo_id}/upload-link/?p={quote(clean_parent, safe='/')}"
+            resp = self.session.get(link_url, timeout=self.timeout)
+            if resp.status_code != 200:
+                raise SeafileAPIError(f"Failed to get upload link for {clean_parent}: HTTP {resp.status_code} {resp.text}")
+            return self._adjust_url(resp.text.strip().strip('"'))
 
-        upload_url = self._adjust_url(resp.text.strip().strip('"'))
+        upload_url = _get_upload_url()
 
         # 2. Post file.
         # If payload is a file object with .read and .seek, stream it via StreamingMultipartFile
@@ -1090,6 +1092,11 @@ class SeafileClient:
         for attempt in range(max_attempts):
             if attempt:
                 time.sleep(0.3 * attempt)
+                try:
+                    upload_url = _get_upload_url()
+                except Exception as ex:
+                    last_error = f"Failed to refresh upload link: {ex}"
+                    continue
             if hasattr(payload, "seek"):
                 payload.seek(start_cur)
 
