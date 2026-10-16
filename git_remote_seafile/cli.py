@@ -629,7 +629,7 @@ def _cmd_desktop_url(rest: list[str]) -> int:
                 # library), so the short form is printed and the server named
                 # where it can be set.
                 print(
-                    f"note: this server is served under /{context}; a seafile:// URL cannot "
+                    f"Note: this server is served under /{context}; a seafile:// URL cannot "
                     f"carry that, so set SEAFILE_SERVER={scheme.lower()}://{rest_url} "
                     "(or let the desktop client's account supply it)",
                     file=sys.stderr,

@@ -175,7 +175,7 @@ def ensure_byte_exact(
     Both levers are pulled: the config, and an ``info/attributes`` override that
     outranks any ``.gitattributes`` in the source tree.
 
-    The two config values are only written when they are not already correct,
+    The config values are only written when they are not already correct,
     so a vault that has been snapshotted before costs no *writes* here (one
     config read -- see :func:`_read_local_config_map`).  Reading the *local*
     config is what makes that safe: a global ``core.autocrlf`` is irrelevant,
@@ -187,8 +187,11 @@ def ensure_byte_exact(
     # over 260 characters unless it is set, and a deep source tree (or a restore
     # into a deep destination) would otherwise fail for a reason unrelated to
     # the data.  Harmless where the limit does not exist.
+    # core.quotepath=false ensures international / UTF-8 filenames (e.g. Thai,
+    # CJK, accented Latin) are displayed cleanly in git status and diff output
+    # rather than C-quoted with octal escapes (\340\270...).
     for key, wanted in (("core.autocrlf", "false"), ("core.safecrlf", "false"),
-                        ("core.longpaths", "true")):
+                        ("core.longpaths", "true"), ("core.quotepath", "false")):
         have = (vault_config.get(key) or [""])[0]
         if have == wanted:
             continue

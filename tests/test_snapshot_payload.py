@@ -1957,9 +1957,11 @@ class PayloadRememberVerifyViewAndClockTests(_PayloadFixture):
     def test_the_vault_and_the_restored_clone_allow_long_paths(self):
         self.assertEqual(self.bare()[0], 0)
         self.assertEqual(_git(self.vault, "config", "core.longpaths").strip(), "true")
+        self.assertEqual(_git(self.vault, "config", "core.quotepath").strip(), "false")
         rc, out, err, into = self.restore("longpaths")
         self.assertEqual(rc, 0, out + err)
         self.assertEqual(_git(into, "config", "core.longpaths").strip(), "true")
+        self.assertEqual(_git(into, "config", "core.quotepath").strip(), "false")
 
     def test_the_payload_store_is_reported_once_a_week_and_never_changed(self):
         # The first run of a vault only starts the clock: what a report would

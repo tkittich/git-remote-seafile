@@ -54,7 +54,7 @@ def warn_if_newer_tool(git_dir: Path, work_tree: Path, rev: str | None) -> None:
     a, b = _version_tuple(theirs), _version_tuple(ours)
     if a is not None and b is not None and a > b:
         print(
-            f"warning: the snapshot this run builds on was written by git-remote-seafile {theirs}; this is "
+            f"Warning: the snapshot this run builds on was written by git-remote-seafile {theirs}; this is "
             f"{ours}. A newer tool may have changed what a vault holds -- upgrade before "
             "relying on this run.",
             file=sys.stderr,
@@ -108,7 +108,7 @@ def quota_note(client: Any, need_bytes: int) -> str | None:
     if need_bytes <= free:
         return None
     return (
-        f"warning: this run uploads {human_bytes(need_bytes)} but the account has "
+        f"Warning: this run uploads {human_bytes(need_bytes)} but the account has "
         f"{human_bytes(max(free, 0))} of quota left ({human_bytes(usage)} of "
         f"{human_bytes(total)} used); the upload will probably fail partway. Free space, or "
         "ask for more, first -- already stored objects are kept and the next run resumes."
@@ -125,7 +125,7 @@ def synced_payload_library_note(rid: str) -> str | None:
     for lib in libraries:
         if lib.get("repo_id") == rid and lib.get("auto_sync", True):
             return (
-                f"warning: the library holding the payload is synced on this machine "
+                f"Warning: the library holding the payload is synced on this machine "
                 f"({lib.get('worktree')}). The desktop client will download every payload "
                 "object and fight over the vault directory. Sync a different library, turn "
                 "auto sync off for this one, or add the vault's path to seafile-ignore.txt."
@@ -181,7 +181,7 @@ def _write_json_marker(client: Any, rid: str, base: str, name: str, data: dict[s
         client.mkdir_p(rid, base)
         client.upload_file(rid, base, name, json.dumps(data, sort_keys=True).encode("ascii"))
     except Exception as exc:  # a marker must never fail the run that has just succeeded
-        print(f"warning: could not write {name}: {type(exc).__name__}: {exc}",
+        print(f"Warning: could not write {name}: {type(exc).__name__}: {exc}",
               file=sys.stderr, flush=True)
 
 

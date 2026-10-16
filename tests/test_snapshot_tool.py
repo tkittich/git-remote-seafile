@@ -571,6 +571,8 @@ class ByteExactnessTests(_SnapshotFixture):
         self.snapshot()
         proc = _git(self.vault, "config", "--get", "core.autocrlf")
         self.assertEqual(proc.stdout.strip(), "false")
+        proc_qp = _git(self.vault, "config", "--get", "core.quotepath")
+        self.assertEqual(proc_qp.stdout.strip(), "false")
         attrs = (self.vault / ".git" / "info" / "attributes").read_text(
             encoding="utf-8"
         )

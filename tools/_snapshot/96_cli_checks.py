@@ -146,7 +146,7 @@ def resolve_snapshot_settings(
             if remote and not args.dry_run:
                 # Said once: after the first complete run the vault remembers it.
                 print(
-                    f"note: the vault's destination was not given, so it is {remote}, "
+                    f"Note: the vault's destination was not given, so it is {remote}, "
                     "derived from the source's own seafile:// remote -- the same library as "
                     "your code.  Everyone who can read that library can read this snapshot, "
                     ".env files and keys included.  Pass --remote to send it somewhere only "

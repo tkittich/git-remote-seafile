@@ -728,7 +728,7 @@ def ensure_byte_exact(
     Both levers are pulled: the config, and an ``info/attributes`` override that
     outranks any ``.gitattributes`` in the source tree.
 
-    The two config values are only written when they are not already correct,
+    The config values are only written when they are not already correct,
     so a vault that has been snapshotted before costs no *writes* here (one
     config read -- see :func:`_read_local_config_map`).  Reading the *local*
     config is what makes that safe: a global ``core.autocrlf`` is irrelevant,
@@ -740,8 +740,11 @@ def ensure_byte_exact(
     # over 260 characters unless it is set, and a deep source tree (or a restore
     # into a deep destination) would otherwise fail for a reason unrelated to
     # the data.  Harmless where the limit does not exist.
+    # core.quotepath=false ensures international / UTF-8 filenames (e.g. Thai,
+    # CJK, accented Latin) are displayed cleanly in git status and diff output
+    # rather than C-quoted with octal escapes (\340\270...).
     for key, wanted in (("core.autocrlf", "false"), ("core.safecrlf", "false"),
-                        ("core.longpaths", "true")):
+                        ("core.longpaths", "true"), ("core.quotepath", "false")):
         have = (vault_config.get(key) or [""])[0]
         if have == wanted:
             continue
@@ -818,7 +821,7 @@ def auto_incremental_repack(git_dir: Path, work_tree: Path) -> None:
             status="packing the vault's loose objects", measure_dir=git_dir / "objects")
         git(git_dir, None, ["prune"], cwd=work_tree)
     except SnapshotError as exc:
-        print(f"note: incremental repack failed ({str(exc).splitlines()[0]}); "
+        print(f"Note: incremental repack failed ({str(exc).splitlines()[0]}); "
               f"the snapshot itself succeeded", file=sys.stderr)
 
 
@@ -1159,7 +1162,7 @@ def sweep_temp_packs(git_dir: Path, *, min_age: float = _TEMP_PACK_MIN_AGE_SECON
         print(f"removed leftover temporary pack file(s) from an interrupted run "
               f"({_fmt_bytes(freed)} freed)")
     if failed:
-        print("warning: could not remove leftover temporary pack file(s): " + "; ".join(failed))
+        print("Warning: could not remove leftover temporary pack file(s): " + "; ".join(failed))
     return freed
 
 
@@ -1192,7 +1195,7 @@ def maintain_vault(vault: Path, *, full_repack: bool = False) -> int:
           f"{_fmt_bytes(loose_kb * 1024)} loose, {_fmt_bytes(packed_kb * 1024)} "
           f"in {stats.get('packs', 0)} packfile(s)")
     if stats.get("garbage", 0):
-        print(f"note: {stats['garbage']} leftover temporary file(s) from an interrupted run "
+        print(f"Note: {stats['garbage']} leftover temporary file(s) from an interrupted run "
               f"hold {_fmt_bytes(stats.get('size-garbage', 0) * 1024)} in objects/pack; "
               "a snapshot run (or --maintain --full-repack) removes them")
 
@@ -2454,7 +2457,7 @@ def warn_if_newer_tool(git_dir: Path, work_tree: Path, rev: str | None) -> None:
     a, b = _version_tuple(theirs), _version_tuple(ours)
     if a is not None and b is not None and a > b:
         print(
-            f"warning: the snapshot this run builds on was written by git-remote-seafile {theirs}; this is "
+            f"Warning: the snapshot this run builds on was written by git-remote-seafile {theirs}; this is "
             f"{ours}. A newer tool may have changed what a vault holds -- upgrade before "
             "relying on this run.",
             file=sys.stderr,
@@ -2508,7 +2511,7 @@ def quota_note(client: Any, need_bytes: int) -> str | None:
     if need_bytes <= free:
         return None
     return (
-        f"warning: this run uploads {human_bytes(need_bytes)} but the account has "
+        f"Warning: this run uploads {human_bytes(need_bytes)} but the account has "
         f"{human_bytes(max(free, 0))} of quota left ({human_bytes(usage)} of "
         f"{human_bytes(total)} used); the upload will probably fail partway. Free space, or "
         "ask for more, first -- already stored objects are kept and the next run resumes."
@@ -2525,7 +2528,7 @@ def synced_payload_library_note(rid: str) -> str | None:
     for lib in libraries:
         if lib.get("repo_id") == rid and lib.get("auto_sync", True):
             return (
-                f"warning: the library holding the payload is synced on this machine "
+                f"Warning: the library holding the payload is synced on this machine "
                 f"({lib.get('worktree')}). The desktop client will download every payload "
                 "object and fight over the vault directory. Sync a different library, turn "
                 "auto sync off for this one, or add the vault's path to seafile-ignore.txt."
@@ -2581,7 +2584,7 @@ def _write_json_marker(client: Any, rid: str, base: str, name: str, data: dict[s
         client.mkdir_p(rid, base)
         client.upload_file(rid, base, name, json.dumps(data, sort_keys=True).encode("ascii"))
     except Exception as exc:  # a marker must never fail the run that has just succeeded
-        print(f"warning: could not write {name}: {type(exc).__name__}: {exc}",
+        print(f"Warning: could not write {name}: {type(exc).__name__}: {exc}",
               file=sys.stderr, flush=True)
 
 
@@ -3297,7 +3300,7 @@ def fs_clock_probe(
     before = time.time_ns()
     stamp = probe(source)
     if stamp is None:
-        note("note: the source is on a network share and its clock could not be measured "
+        note("Note: the source is on a network share and its clock could not be measured "
              "(no write access); a file is trusted from the hash cache only when it is more "
              "than an hour older than its hash, and --payload-rehash re-checks everything")
         return 0, True
@@ -3390,7 +3393,7 @@ def build_manifest(
         )
     if stale and not quiet:
         print(
-            f"note: {stale} file(s) were hashed again because their size, timestamp or inode "
+            f"Note: {stale} file(s) were hashed again because their size, timestamp or inode "
             "changed since the last run (or are too recent to trust); a copy tool that resets "
             "timestamps does this to every file",
             flush=True,
@@ -5364,7 +5367,7 @@ def diff_stat(git_dir: Path, work_tree: Path, parent: str, tree: str) -> str:
     proc = git(
         git_dir,
         work_tree,
-        ["diff", "--stat", "--no-color", parent, tree],
+        ["diff", "--stat", "--stat-count=35", "--no-color", parent, tree],
         cwd=work_tree,
         check=False,
     )
@@ -5684,7 +5687,7 @@ def _resolve_assumed_branch(clone: Path, assumed: str) -> str:
     if assumed in names or not names:
         return assumed
     if len(names) == 1:
-        print(f"note: the remote has no branch '{assumed}'; restoring its only branch '{names[0]}'")
+        print(f"Note: the remote has no branch '{assumed}'; restoring its only branch '{names[0]}'")
         return names[0]
     raise SnapshotError(
         f"the remote has no branch '{assumed}' and holds several: {', '.join(sorted(names))}. "
@@ -5991,7 +5994,7 @@ def check_paths_are_unsynced(*paths: tuple[str, Path], allow_synced: bool = Fals
 
         if allow_synced:
             print(
-                f"warning: --allow-synced overrides the synced-folder guard for "
+                f"Warning: --allow-synced overrides the synced-folder guard for "
                 f"{label} ({path}); library {names} can still rewrite files under it",
                 file=sys.stderr,
             )
@@ -6003,7 +6006,7 @@ def check_paths_are_unsynced(*paths: tuple[str, Path], allow_synced: bool = Fals
                 reason = (f"covered by seafile-ignore.txt rule {m['ignore_rule']!r}"
                           if m["auto_sync"] else "its auto sync is disabled")
                 print(
-                    f"note: {label} ({path}) is inside synced library "
+                    f"Note: {label} ({path}) is inside synced library "
                     f"{m['name']} ({m['worktree']}), but the client will not touch it: "
                     f"{reason}. Re-enabling auto sync, or removing that ignore rule, "
                     f"makes this guard refuse again.",
@@ -6169,7 +6172,7 @@ def resolve_snapshot_settings(
             if remote and not args.dry_run:
                 # Said once: after the first complete run the vault remembers it.
                 print(
-                    f"note: the vault's destination was not given, so it is {remote}, "
+                    f"Note: the vault's destination was not given, so it is {remote}, "
                     "derived from the source's own seafile:// remote -- the same library as "
                     "your code.  Everyone who can read that library can read this snapshot, "
                     ".env files and keys included.  Pass --remote to send it somewhere only "
@@ -6530,7 +6533,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "--exclude node_modules also drops packages/*/node_modules.\n"
             "Quote wildcards so your own shell does not expand them first.\n"
             + PAYLOAD_EPILOG
-            + "\nnote: neither the source nor the vault may live inside a\n"
+            + "\nNote: neither the source nor the vault may live inside a\n"
             "Seafile-synced folder -- the sync client rewrites files underneath\n"
             "it and competes with git for every path. Checked at startup.\n"
             "The guard lets a synced path through when that library's auto sync\n"

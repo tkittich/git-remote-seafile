@@ -61,7 +61,7 @@ def auto_incremental_repack(git_dir: Path, work_tree: Path) -> None:
             status="packing the vault's loose objects", measure_dir=git_dir / "objects")
         git(git_dir, None, ["prune"], cwd=work_tree)
     except SnapshotError as exc:
-        print(f"note: incremental repack failed ({str(exc).splitlines()[0]}); "
+        print(f"Note: incremental repack failed ({str(exc).splitlines()[0]}); "
               f"the snapshot itself succeeded", file=sys.stderr)
 
 
@@ -402,7 +402,7 @@ def sweep_temp_packs(git_dir: Path, *, min_age: float = _TEMP_PACK_MIN_AGE_SECON
         print(f"removed leftover temporary pack file(s) from an interrupted run "
               f"({_fmt_bytes(freed)} freed)")
     if failed:
-        print("warning: could not remove leftover temporary pack file(s): " + "; ".join(failed))
+        print("Warning: could not remove leftover temporary pack file(s): " + "; ".join(failed))
     return freed
 
 
@@ -435,7 +435,7 @@ def maintain_vault(vault: Path, *, full_repack: bool = False) -> int:
           f"{_fmt_bytes(loose_kb * 1024)} loose, {_fmt_bytes(packed_kb * 1024)} "
           f"in {stats.get('packs', 0)} packfile(s)")
     if stats.get("garbage", 0):
-        print(f"note: {stats['garbage']} leftover temporary file(s) from an interrupted run "
+        print(f"Note: {stats['garbage']} leftover temporary file(s) from an interrupted run "
               f"hold {_fmt_bytes(stats.get('size-garbage', 0) * 1024)} in objects/pack; "
               "a snapshot run (or --maintain --full-repack) removes them")
 

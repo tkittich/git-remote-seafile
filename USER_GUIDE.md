@@ -1075,6 +1075,9 @@ The vault therefore pins, for itself:
 
 ```
 core.autocrlf=false
+core.safecrlf=false
+core.longpaths=true
+core.quotepath=false
 ```
 
 and writes this into its own `info/attributes`:
@@ -1083,9 +1086,10 @@ and writes this into its own `info/attributes`:
 * -text -filter -ident
 ```
 
-`info/attributes` **outranks** any `.gitattributes` copied from the source, which is what makes the pin hold. Two details worth knowing, because both were learned the hard way:
+`info/attributes` **outranks** any `.gitattributes` copied from the source, which is what makes the pin hold. Three details worth knowing, because all were learned the hard way:
 
 - **An attributes override must name *every* attribute class it means to neutralise.** `* -text` alone does **not** disable `filter`: a source `.gitattributes` carrying `filter=lfs` still applies, and the vault silently stored a **130-byte LFS pointer** while the real bytes went nowhere.
+- **Paths over 260 characters and non-ASCII names are pinned.** `core.longpaths=true` allows deep directory structures on Windows, while `core.quotepath=false` ensures multi-byte international filenames (such as Thai, CJK, or accented Latin) remain legible in snapshot diffs and status output instead of being C-quoted as octal escapes (e.g. `\340\270...`). (If your source repository's own `git status` shows octal escapes, set `git config core.quotepath false` or `git config --global core.quotepath false`).
 - **A plain `git clone` of the vault is lossy.** `info/attributes` is not carried by a clone; the source's `.gitattributes` is. Restoring by cloning the vault by hand can therefore hand you the wrong bytes. That is why `--restore` exists.
 
 ### 15.4 Restoring and verifying

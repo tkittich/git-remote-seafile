@@ -436,7 +436,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     empty = [r["target"] for r in results if r["tests"] == 0 and not r["errors"] and not r["failures"]]
     if empty:
-        print(f"warning: {len(empty)} target(s) ran no tests: {', '.join(sorted(empty)[:5])}")
+        print(f"Warning: {len(empty)} target(s) ran no tests: {', '.join(sorted(empty)[:5])}")
     if skipped:
         print(f"skipped: {skipped}")
 

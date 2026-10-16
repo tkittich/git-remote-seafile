@@ -393,7 +393,7 @@ def fs_clock_probe(
     before = time.time_ns()
     stamp = probe(source)
     if stamp is None:
-        note("note: the source is on a network share and its clock could not be measured "
+        note("Note: the source is on a network share and its clock could not be measured "
              "(no write access); a file is trusted from the hash cache only when it is more "
              "than an hour older than its hash, and --payload-rehash re-checks everything")
         return 0, True
@@ -486,7 +486,7 @@ def build_manifest(
         )
     if stale and not quiet:
         print(
-            f"note: {stale} file(s) were hashed again because their size, timestamp or inode "
+            f"Note: {stale} file(s) were hashed again because their size, timestamp or inode "
             "changed since the last run (or are too recent to trust); a copy tool that resets "
             "timestamps does this to every file",
             flush=True,

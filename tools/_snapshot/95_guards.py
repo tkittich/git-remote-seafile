@@ -95,7 +95,7 @@ def check_paths_are_unsynced(*paths: tuple[str, Path], allow_synced: bool = Fals
 
         if allow_synced:
             print(
-                f"warning: --allow-synced overrides the synced-folder guard for "
+                f"Warning: --allow-synced overrides the synced-folder guard for "
                 f"{label} ({path}); library {names} can still rewrite files under it",
                 file=sys.stderr,
             )
@@ -107,7 +107,7 @@ def check_paths_are_unsynced(*paths: tuple[str, Path], allow_synced: bool = Fals
                 reason = (f"covered by seafile-ignore.txt rule {m['ignore_rule']!r}"
                           if m["auto_sync"] else "its auto sync is disabled")
                 print(
-                    f"note: {label} ({path}) is inside synced library "
+                    f"Note: {label} ({path}) is inside synced library "
                     f"{m['name']} ({m['worktree']}), but the client will not touch it: "
                     f"{reason}. Re-enabling auto sync, or removing that ignore rule, "
                     f"makes this guard refuse again.",

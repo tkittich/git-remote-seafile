@@ -195,7 +195,7 @@ def _resolve_assumed_branch(clone: Path, assumed: str) -> str:
     if assumed in names or not names:
         return assumed
     if len(names) == 1:
-        print(f"note: the remote has no branch '{assumed}'; restoring its only branch '{names[0]}'")
+        print(f"Note: the remote has no branch '{assumed}'; restoring its only branch '{names[0]}'")
         return names[0]
     raise SnapshotError(
         f"the remote has no branch '{assumed}' and holds several: {', '.join(sorted(names))}. "

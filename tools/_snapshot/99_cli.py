@@ -28,7 +28,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "--exclude node_modules also drops packages/*/node_modules.\n"
             "Quote wildcards so your own shell does not expand them first.\n"
             + PAYLOAD_EPILOG
-            + "\nnote: neither the source nor the vault may live inside a\n"
+            + "\nNote: neither the source nor the vault may live inside a\n"
             "Seafile-synced folder -- the sync client rewrites files underneath\n"
             "it and competes with git for every path. Checked at startup.\n"
             "The guard lets a synced path through when that library's auto sync\n"

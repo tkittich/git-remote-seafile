@@ -85,7 +85,7 @@ def diff_stat(git_dir: Path, work_tree: Path, parent: str, tree: str) -> str:
     proc = git(
         git_dir,
         work_tree,
-        ["diff", "--stat", "--no-color", parent, tree],
+        ["diff", "--stat", "--stat-count=35", "--no-color", parent, tree],
         cwd=work_tree,
         check=False,
     )
