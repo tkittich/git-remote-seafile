@@ -32,6 +32,7 @@ import io
 import os
 import re
 import sys
+import time
 from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -115,39 +116,58 @@ def load_libs(ccnet: Path):
     telling a script "safe" for a state nobody checked.
     """
     data = seafile_data(ccnet)
+    repo_db = data / "repo.db"
+    if not repo_db.is_file():
+        # The database file itself is absent: on a machine without the
+        # desktop client this is genuinely "no libraries".
+        return data, [], False
+
     libs = []
-    with open_live_sqlite_ro(data / "repo.db") as con:
-        if con is None:
-            # The database file itself is absent: on a machine without the
-            # desktop client this is genuinely "no libraries".
-            return data, [], (data / "repo.db").is_file()
-        props: dict[str, dict[str, str]] = {}
-        try:
-            for repo_id, key, value in con.execute("select repo_id, key, value from RepoProperty"):
-                props.setdefault(repo_id, {})[key] = value
-        except Exception as ex:
-            # A schema the client changed (or a torn copy) surfaces here as a
-            # raw traceback instead of a diagnosis; say what happened and
-            # report no libraries rather than die.
-            # stderr, not stdout: report mode prints structured sections, and
-            # a diagnosis interleaved with data reads as one of them (and as
-            # contradictory with the "no synced libraries" line that follows).
-            print("could not read repo.db's RepoProperty table: %s" % ex, file=sys.stderr)
-            return data, [], False
-        for repo_id, kv in props.items():
-            wt = kv.get("worktree")
-            if not wt:
+    props: dict[str, dict[str, str]] = {}
+    read_ok = False
+    last_ex: Exception | None = None
+    for attempt in range(3):
+        if attempt:
+            time.sleep(0.25)
+        attempt_props: dict[str, dict[str, str]] = {}
+        with open_live_sqlite_ro(repo_db) as con:
+            if con is None:
                 continue
-            libs.append(
-                {
-                    "repo_id": repo_id,
-                    "worktree": Path(wt),
-                    # NB: the RepoProperty key "sync-worktree-name" is a boolean
-                    # flag ("true"), not a name - the library name is not stored
-                    # client-side.  Use the worktree folder name.
-                    "name": Path(wt).name,
-                    "server": kv.get("server-url", ""),
-                    "user": kv.get("username", ""),
+            try:
+                for repo_id, key, value in con.execute("select repo_id, key, value from RepoProperty"):
+                    attempt_props.setdefault(repo_id, {})[key] = value
+                props = attempt_props
+                read_ok = True
+                break
+            except Exception as ex:
+                last_ex = ex
+                continue
+
+    if not read_ok:
+        # A schema the client changed (or a persistently torn copy) surfaces here as a
+        # raw traceback instead of a diagnosis; say what happened and
+        # report no libraries rather than die.
+        # stderr, not stdout: report mode prints structured sections, and
+        # a diagnosis interleaved with data reads as one of them (and as
+        # contradictory with the "no synced libraries" line that follows).
+        if last_ex is not None:
+            print("could not read repo.db's RepoProperty table: %s" % last_ex, file=sys.stderr)
+        return data, [], False
+
+    for repo_id, kv in props.items():
+        wt = kv.get("worktree")
+        if not wt:
+            continue
+        libs.append(
+            {
+                "repo_id": repo_id,
+                "worktree": Path(wt),
+                # NB: the RepoProperty key "sync-worktree-name" is a boolean
+                # flag ("true"), not a name - the library name is not stored
+                # client-side.  Use the worktree folder name.
+                "name": Path(wt).name,
+                "server": kv.get("server-url", ""),
+                "user": kv.get("username", ""),
                 }
             )
     return data, libs, True
@@ -211,25 +231,42 @@ def cmd_where(args, ccnet):
 
 def cmd_errors(args, ccnet):
     data = seafile_data(ccnet)
-    with open_live_sqlite_ro(data / "repo.db") as con:
-        if con is None:
-            print("repo.db not readable")
-            return 1
-        cutoff = None
-        if args.days:
-            cutoff = dt.datetime.now().timestamp() - args.days * 86400
-        try:
-            rows = list(
-                con.execute(
-                    "select repo_name, path, err_id, timestamp from FileSyncError order by timestamp"
+    repo_db = data / "repo.db"
+    if not repo_db.is_file():
+        print("repo.db not readable")
+        return 1
+
+    rows = None
+    total = 0
+    last_ex: Exception | None = None
+    for attempt in range(3):
+        if attempt:
+            time.sleep(0.25)
+        with open_live_sqlite_ro(repo_db) as con:
+            if con is None:
+                continue
+            try:
+                rows = list(
+                    con.execute(
+                        "select repo_name, path, err_id, timestamp from FileSyncError order by timestamp"
+                    )
                 )
-            )
-            total = list(con.execute("select count(*) from FileSyncError"))[0][0]
-        except Exception as ex:
-            # Same contract as load_libs: a schema the client changed is a
-            # diagnosis ("cannot read the error table"), not a traceback.
-            print("could not read repo.db's FileSyncError table: %s" % ex, file=sys.stderr)
-            return 1
+                total = list(con.execute("select count(*) from FileSyncError"))[0][0]
+                break
+            except Exception as ex:
+                last_ex = ex
+                continue
+
+    if rows is None:
+        if last_ex is not None:
+            print("could not read repo.db's FileSyncError table: %s" % last_ex, file=sys.stderr)
+        else:
+            print("repo.db not readable")
+        return 1
+
+    cutoff = None
+    if args.days:
+        cutoff = dt.datetime.now().timestamp() - args.days * 86400
         if cutoff:
             rows = [r for r in rows if (r[3] or 0) >= cutoff]
         print("%d sync errors in the client's table (%d shown)" % (total, len(rows)))
