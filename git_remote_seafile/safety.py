@@ -5,12 +5,11 @@ from __future__ import annotations
 import fnmatch
 import os
 import sys
-import time
 from pathlib import Path
 
 from .git_util import get_trusted_git_config_bool, run_git
 from .seafile_paths import get_candidate_db_paths
-from .sqlite_read import open_live_sqlite_ro
+from .sqlite_read import open_live_sqlite_ro, read_repo_properties
 
 
 class SafetyError(Exception):
@@ -118,7 +117,6 @@ def discover_local_synced_libraries() -> list[dict]:
     seen_ids = set()
 
     for rdb in candidates:
-        props: dict[str, dict[str, str]] = {}
         if not Path(rdb).is_file():
             # Most candidate locations do not exist on any one machine; there
             # is nothing to retry and nothing to warn about.
@@ -127,22 +125,12 @@ def discover_local_synced_libraries() -> list[dict]:
         # reads as "no database" -- exactly when the guard matters.  Try again a
         # few times, and say so if the file is there and still cannot be read:
         # a silent empty result means the synced-folder check did not run.
-        readable = False
-        for attempt in range(_DISCOVERY_ATTEMPTS):
-            if attempt:
-                time.sleep(_DISCOVERY_RETRY_SECONDS)
-            attempt_props: dict[str, dict[str, str]] = {}
-            with open_live_sqlite_ro(rdb) as con:
-                if con is None:
-                    continue
-                try:
-                    for rid, k, v in con.execute("SELECT repo_id, key, value FROM RepoProperty"):
-                        attempt_props.setdefault(rid, {})[k] = v
-                except Exception:
-                    continue
-            props = attempt_props
-            readable = True
-            break
+        props, readable, _ = read_repo_properties(
+            rdb,
+            attempts=_DISCOVERY_ATTEMPTS,
+            retry_delay=_DISCOVERY_RETRY_SECONDS,
+            open_fn=open_live_sqlite_ro,
+        )
         if not readable:
             if Path(rdb).is_file() and str(rdb) not in _UNREADABLE_WARNED:
                 _UNREADABLE_WARNED.add(str(rdb))

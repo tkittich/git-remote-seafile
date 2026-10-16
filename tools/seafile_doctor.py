@@ -44,7 +44,7 @@ from git_remote_seafile.seafile_paths import (
     ccnet_dir,
     seafile_data,
 )
-from git_remote_seafile.sqlite_read import open_live_sqlite_ro
+from git_remote_seafile.sqlite_read import open_live_sqlite_ro, read_repo_properties
 from git_remote_seafile.safety import safe_relative_to
 
 # --------------------------------------------------------------------------
@@ -123,25 +123,9 @@ def load_libs(ccnet: Path):
         return data, [], False
 
     libs = []
-    props: dict[str, dict[str, str]] = {}
-    read_ok = False
-    last_ex: Exception | None = None
-    for attempt in range(3):
-        if attempt:
-            time.sleep(0.25)
-        attempt_props: dict[str, dict[str, str]] = {}
-        with open_live_sqlite_ro(repo_db) as con:
-            if con is None:
-                continue
-            try:
-                for repo_id, key, value in con.execute("select repo_id, key, value from RepoProperty"):
-                    attempt_props.setdefault(repo_id, {})[key] = value
-                props = attempt_props
-                read_ok = True
-                break
-            except Exception as ex:
-                last_ex = ex
-                continue
+    props, read_ok, last_ex = read_repo_properties(
+        repo_db, attempts=3, retry_delay=0.25, open_fn=open_live_sqlite_ro
+    )
 
     if not read_ok:
         # A schema the client changed (or a persistently torn copy) surfaces here as a
@@ -167,9 +151,12 @@ def load_libs(ccnet: Path):
                 # client-side.  Use the worktree folder name.
                 "name": Path(wt).name,
                 "server": kv.get("server-url", ""),
+                "server_url": kv.get("server-url", ""),
                 "user": kv.get("username", ""),
-                }
-            )
+                "username": kv.get("username", ""),
+                "auto_sync": kv.get("auto-sync", "").strip().lower() != "false",
+            }
+        )
     return data, libs, True
 
 
@@ -264,31 +251,30 @@ def cmd_errors(args, ccnet):
             print("repo.db not readable")
         return 1
 
-    cutoff = None
     if args.days:
         cutoff = dt.datetime.now().timestamp() - args.days * 86400
-        if cutoff:
-            rows = [r for r in rows if (r[3] or 0) >= cutoff]
-        print("%d sync errors in the client's table (%d shown)" % (total, len(rows)))
-        if not rows:
-            return 0
-        by_code: dict[int, list] = {}
-        for r in rows:
-            by_code.setdefault(r[2], []).append(r)
+        rows = [r for r in rows if (r[3] or 0) >= cutoff]
+
+    print("%d sync errors in the client's table (%d shown)" % (total, len(rows)))
+    if not rows:
+        return 0
+    by_code: dict[int, list] = {}
+    for r in rows:
+        by_code.setdefault(r[2], []).append(r)
+    print()
+    for code, group in sorted(by_code.items(), key=lambda kv: -len(kv[1])):
+        print("%s  (%d files)  err_id=%d" % (err_name(code), len(group), code))
+        print("    %s" % err_text(code))
+        days: dict[str, int] = {}
+        for _, _, _, ts in group:
+            key = _day_key(ts)
+            days[key] = days.get(key, 0) + 1
+        print("    when: %s" % ", ".join("%s x%d" % (d, n) for d, n in sorted(days.items())))
+        for _, path, _, ts in group[: args.limit]:
+            print("      %s  %s" % (path or "<library level>", _ts(ts)))
+        if len(group) > args.limit:
+            print("      ... %d more" % (len(group) - args.limit))
         print()
-        for code, group in sorted(by_code.items(), key=lambda kv: -len(kv[1])):
-            print("%s  (%d files)  err_id=%d" % (err_name(code), len(group), code))
-            print("    %s" % err_text(code))
-            days: dict[str, int] = {}
-            for _, _, _, ts in group:
-                key = _day_key(ts)
-                days[key] = days.get(key, 0) + 1
-            print("    when: %s" % ", ".join("%s x%d" % (d, n) for d, n in sorted(days.items())))
-            for _, path, _, ts in group[: args.limit]:
-                print("      %s  %s" % (path or "<library level>", _ts(ts)))
-            if len(group) > args.limit:
-                print("      ... %d more" % (len(group) - args.limit))
-            print()
     return 0
 
 

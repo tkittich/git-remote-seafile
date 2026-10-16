@@ -20,7 +20,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from git_remote_seafile.sqlite_read import open_live_sqlite_ro
+from git_remote_seafile.sqlite_read import open_live_sqlite_ro, read_repo_properties
 
 ROWS = [("r1", "worktree", "/tmp/wt"), ("r1", "server-url", "https://s.example")]
 
@@ -145,6 +145,56 @@ class TestOpenLiveSqliteReadOnly(unittest.TestCase):
                     list(scratch.iterdir()), [],
                     "the temporary copy of the database was not cleaned up",
                 )
+            finally:
+                live.close()
+
+
+class TestReadRepoProperties(unittest.TestCase):
+    def test_reads_repo_properties_from_live_db(self):
+        with tempfile.TemporaryDirectory() as td:
+            db = Path(td) / "repo.db"
+            live = _make_db(db, "wal")
+            try:
+                props, ok, err = read_repo_properties(db)
+                self.assertTrue(ok)
+                self.assertIsNone(err)
+                self.assertIn("r1", props)
+                self.assertEqual(props["r1"]["worktree"], "/tmp/wt")
+                self.assertEqual(props["r1"]["server-url"], "https://s.example")
+            finally:
+                live.close()
+
+    def test_missing_db_returns_empty_and_false(self):
+        with tempfile.TemporaryDirectory() as td:
+            props, ok, err = read_repo_properties(Path(td) / "missing.db")
+            self.assertEqual(props, {})
+            self.assertFalse(ok)
+            self.assertIsNone(err)
+
+    def test_torn_read_retries_and_succeeds(self):
+        calls = {"n": 0}
+
+        from contextlib import contextmanager
+        @contextmanager
+        def torn_once(path):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                yield None
+                return
+            with open_live_sqlite_ro(path) as con:
+                yield con
+
+        with tempfile.TemporaryDirectory() as td:
+            db = Path(td) / "repo.db"
+            live = _make_db(db, "wal")
+            try:
+                props, ok, err = read_repo_properties(
+                    db, attempts=3, retry_delay=0.01, open_fn=torn_once
+                )
+                self.assertTrue(ok)
+                self.assertIsNone(err)
+                self.assertEqual(calls["n"], 2)
+                self.assertIn("r1", props)
             finally:
                 live.close()
 

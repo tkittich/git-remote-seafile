@@ -22,9 +22,10 @@ from __future__ import annotations
 import shutil
 import sqlite3
 import tempfile
+import time
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Iterator
+from typing import Any, Iterator
 from urllib.parse import quote
 
 # Everything SQLite may keep beside the database.  ``-wal``/``-shm`` for WAL
@@ -86,3 +87,33 @@ def open_live_sqlite_ro(db_path: Path) -> Iterator[sqlite3.Connection | None]:
             yield con
         finally:
             con.close()
+
+
+def read_repo_properties(
+    db_path: Path, attempts: int = 3, retry_delay: float = 0.25, open_fn: Any = None
+) -> tuple[dict[str, dict[str, str]], bool, Exception | None]:
+    """Read RepoProperty from a live repo.db SQLite database.
+
+    Retries on torn WAL snapshots. Returns ``(properties_by_repo_id, success, last_exception)``.
+    """
+    props: dict[str, dict[str, str]] = {}
+    last_ex: Exception | None = None
+    if not Path(db_path).is_file():
+        return props, False, None
+
+    opener = open_fn if open_fn is not None else open_live_sqlite_ro
+    for attempt in range(max(1, attempts)):
+        if attempt:
+            time.sleep(retry_delay)
+        attempt_props: dict[str, dict[str, str]] = {}
+        with opener(db_path) as con:
+            if con is None:
+                continue
+            try:
+                for rid, k, v in con.execute("SELECT repo_id, key, value FROM RepoProperty"):
+                    attempt_props.setdefault(rid, {})[k] = v
+                return attempt_props, True, None
+            except Exception as ex:
+                last_ex = ex
+                continue
+    return props, False, last_ex

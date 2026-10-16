@@ -212,6 +212,15 @@ class TestErrors(DoctorFixture):
         self.assertIn("0 shown", out)
         self.assertNotIn("old.txt", out)
 
+    def test_errors_with_default_zero_days_displays_all_errors(self):
+        self._repo_db(errors=self._two_errors())
+
+        out = self._run(doc.cmd_errors, days=0)
+
+        self.assertIn("3 sync errors in the client's table (3 shown)", out)
+        self.assertIn("CONFLICT", out)
+        self.assertIn("a/b.txt", out)
+
     def test_a_missing_repo_db_is_reported(self):
         out = self._run(doc.cmd_errors)
         self.assertEqual(self.rc, 1)
