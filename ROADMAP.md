@@ -1,6 +1,6 @@
 # Engineering Roadmap & Backlog
 
-**Baseline:** v0.9.6 (v0.9.0: the snapshot tool ships in the wheel and gains payload mode: large files stored by SHA-256, with gc, verify, retention and browsable views; on top of 0.8.8's measured pack cap, chunked upload, autogc, `doctor`, `gc --tail` and one output/exit convention)  
+**Baseline:** v0.9.7 (v0.9.0: the snapshot tool ships in the wheel and gains payload mode: large files stored by SHA-256, with gc, verify, retention and browsable views; on top of 0.8.8's measured pack cap, chunked upload, autogc, `doctor`, `gc --tail` and one output/exit convention)  
 **Scope:** What shipped in each release line, the active backlog, and the v1.0.0 horizon.  
 **Test Suite:** all green on `tools/run_tests_parallel.py` (the runner prints the current count; it is deliberately not repeated here). **Python:** 3.10+ (3.9 EOL).
 
@@ -25,8 +25,7 @@ Findings from `archive/REVIEW.*-v0.8.0.md` judged not worth their churn during t
 | ID / Source | Component | Description & Impact | Effort | Risk | Planned Target |
 |---|---|---|:---:|:---:|:---:|
 | **De-glob test_gc** | `tests/test_gc.py` | 12 sites patch `pathlib.Path.glob` process-wide; a shared `_lock_aware_client()`-style helper returning staged packs would stop masking unrelated glob users inside `compact_repository`. | S | Low | backlog |
-| **PROPOSALS.md numbers** | `PROPOSALS.md` | Still says "Seafile Web API v2.1" (×3) and "400+ automated tests". Gitignored local file, so it cannot drift into a release — fix opportunistically. | S | None | next touch |
-| **Fixture hostname robustness** | `tests/test_lock.py` | `_ticket` defaults to `machine="nodeA"`/`pid=1234`; a CI host literally named `nodeA` with pid 1234 alive would flip the foreign-host premise. Use a name no host can have (e.g. read the hostname and negate it). | S | Low | backlog |
+| **PROPOSALS.md numbers** | `PROPOSALS.md` | Fixed: updated "Seafile Web API v2.1" references to Seafile Web API and test count to 1,100+ tests across 200+ targets. | S | None | done (unreleased) |
 | **Settlement-window coverage** | `tests/e2e_harness.py` | The harness sets `SEAFILE_TEST_LOCK_SETTLE=0` for every e2e run, so the shipped 1 s default is exercised by exactly one e2e test (`TestDefaultSettlementWindow`). Either add a guard that fails if that test disappears, or run one class with the default. | S | Low | backlog |
 
 ### 1.2 Backlog from the v0.8.2 verification and the r2 reviews
@@ -45,9 +44,7 @@ re-probe before fixing.
 | ID / Source | Component | Description & Impact | Verified | Effort | Risk | Planned Target |
 |---|---|---|---|:---:|:---:|:---:|
 | **H-20 / qwen** | `lock.py` | Mixed ticket formats force the mtime fallback, and waiters re-upload on every poll, so the "winner" can flip each round while neither lease expires. Needs a legacy client in contention. | transcribed | M | Low | backlog |
-| **A12.6 / H-10** | `lock.py` | The machine identity is `hex(uuid.getnode())` plus the hostname — no boot id, no PID-namespace inode — so a PID recycled across a reboot on the same host reads as live. | probed | S | Low | backlog |
 | **C-05 / qwen** | `client.py` | The shared `requests.Session` across threads is an unenforced invariant: safe only because the read paths do not mutate it and the one shared mutation (the `Date` hook's list) is GIL-atomic. Nothing states or tests that. | probed | S | Low | backlog |
-| **T-4** | `seafile_doctor.py`, `safety.py` | Two copies of the `repo.db` schema knowledge, already drifted. | transcribed | S | Low | backlog |
 | **R3-5** | `client.py` | Bounding the server's `Date` offset (say to an hour) was **rejected, not deferred**: the offset exists to absorb a client clock that is wrong, and a machine off by more than the bound would then fail every lock for a reason the user cannot see, to defend against a hostile server that can already do worse. | — | — | won't do |
 | **C9** | `README.md`, `USER_GUIDE.md` | The two overlap heavily — the comparison tables are near-duplicates. **Partly done:** USER_GUIDE §3–§4 moved to ALTERNATIVES.md and the AI-disclosure paragraph appears once; the README comparison tables remain. | transcribed | M | None | v1.0.0 |
 | **T1 / T2** | `tests/` | **Partly done:** `tests/test_realserver.py` (opt-in, `SEAFILE_TEST_LIBRARY`) runs the API semantics, the SHA-1/SHA-256 round trip, concurrent pushers and the conflict-copy observation against a real server (CE 13.0.28). Concurrency is covered (nine pushers through the lock; twelve same-path uploads) and a 4 GiB soak was run by hand. Still missing: Pro, clustered/object-store deployments, a scheduled CI job against a container. | probed | M | Low | v1.0.0 |
@@ -67,7 +64,7 @@ names `backlog`, v1.0.0 or `won't do`. `A12.1` (multipart values refuse CR/LF), 
 commits per push, 6.5 s on the 20th with autogc) landed after v0.8.7, together with
 the pack-size cap found by the 4 GiB soak. `T-5` (the vault lock's descriptor and half-written file on a failed write), `T-6` (a non-UTF-8 file name aborting an `--exclude` run, reproduced in Debian), `T-7` (a name starting with `"` or holding a newline now verified one at a time) and `T-8` (`--code-remote` with `--no-push` is refused) landed after v0.9.2; `T-11` was already fixed (SNAP-06) and only its row was stale. `H-23` (a torn or damaged `repo.db` read as "no libraries", so the synced-folder guard silently did not run: now retried, and said once), the R1/R2/R4/P group (the "matches the remote" message no longer exists, the rollback message is truthful since 0.9.3, a failed restore names the partial tree it left; the vault lock covering the push is by design, since it is per vault and the rollback depends on it) and `A12.7` (a force unlock that swept nothing because the tickets were already gone reports "released", which is the true state) were probed against 0.9.4 and closed after it. `H-13` / `C-01` (a reverse-proxy context path: the server setting carries it, see USER_GUIDE 7.1; a `seafile://` URL still cannot) landed after v0.9.4. `G-5…G-10` (the six suite gaps: untested credential branches, `cmd_fetch` fed a spec the helper never produces, the unreached "empty" pack outcome, a scheduling-dependent concurrency assertion, a gc test that asserted less than its name, a stale cross-reference), `T-14`/`T-02` (the parallel runner now stops its workers and everything they started on Ctrl-C and tolerates a held temp directory) and `T-15`/`T-21` (a failed spawn closed its log; a worker that runs past `--timeout` is killed and named; a target that ran nothing is warned about) landed after v0.9.4. `T-17` / `SNAP-01` (the vault's `git()`
 inheriting an ambient `GIT_DIR`) and `C-08` (bracketed IPv6 netloc) were fixed
-earlier and re-verified against v0.8.6, so they are not listed above.
+earlier and re-verified against v0.8.6, so they are not listed above. `A12.6 / H-10` (the lock ticket records process start time on Windows and Linux, so a PID recycled after reboot is recognized as dead and fast-reclaimed), `T-4` (the `repo.db` schema reader and live-database retry logic consolidated in `sqlite_read.read_repo_properties`), and the `test_lock` fixture hostname robustness row (`_ticket` machine defaults to `foreign-<hostname>`) landed after v0.9.6.
 
 ### 1.3 Found during the v0.8.7 pass
 
@@ -185,6 +182,9 @@ One line per capability — see [CHANGELOG.md](CHANGELOG.md) for the full detail
 
 **v0.9.6 (2026-10-15) — long paths on Windows.**
 - A push no longer fails with "expected object ID, got garbage" when a path exceeds git for Windows' 302-byte `pack-objects --stdin` line; the path hint is dropped for such a line.
+
+**v0.9.7 (2026-10-16) — hardened upload retries, recycled PID reclaim, and Unicode CLI polish.**
+- Upload retries obtain a fresh single-use upload link, preventing HTTP 400 errors on transiently dropped connections; `seafile-doctor errors` displays all records under default `--days 0`; stale remote locks from recycled local PIDs are fast-reclaimed by matching process start times; `repo.db` SQLite properties access is consolidated (`T-4`); snapshot staging pins `core.quotepath = false` to preserve UTF-8/Thai paths verbatim.
 
 ---
 

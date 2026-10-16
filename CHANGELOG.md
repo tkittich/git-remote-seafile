@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.7] - 2026-10-16
+
+Upload retries obtain a fresh single-use upload link, stale remote locks from recycled local PIDs are fast-reclaimed,
+and snapshot vaults display UTF-8/Thai paths cleanly on Windows. Nothing in how a snapshot or a push is stored changes.
+
+### Fixed
+- **Upload retries in `client.py` refresh the upload link.** On transient connection failures and 5xx errors, rewindable uploads obtain a fresh upload link before retrying, preventing immediate `HTTP 400 Bad Request` failures on Seafile fileservers that consume tokens on interrupted connections.
+- **`seafile_doctor.py errors` printed nothing with default `--days 0`.** The summary and error-group formatting logic was indented inside `if args.days:`, producing blank output when run with the default CLI setting.
+- **Stale remote locks from recycled local PIDs are fast-reclaimed.** A local lock ticket records process creation timestamps on Windows and Linux; `_is_pid_alive` verifies that an active PID matches the ticket's start time, reclaiming abandoned locks immediately even if the operating system reused the PID.
+- **Doctor SQLite reads survive concurrent client syncing.** Reading `repo.db` retries up to 3 times on torn WAL snapshots.
+- **Snapshot tool outputs clean UTF-8 paths on Windows.** Staging repositories and restores pin `core.quotepath = false`, preventing multi-byte UTF-8 filenames (e.g., Thai characters) from being octal-escaped in Git command outputs.
+
+### Changed
+- **Consolidated `repo.db` SQLite schema reading (T-4).** Factored `read_repo_properties` into `sqlite_read.py` with shared retry logic for torn live WAL databases, eliminating schema drift across `safety.py` and `tools/seafile_doctor.py`.
+- **HTTP connection pool scaled.** Configured HTTP client session with `pool_connections=64` and `pool_maxsize=64` to prevent pool exhaustion warnings during parallel payload transfers.
+- **Remediation hints on HTTP 401/403.** When resolving repository IDs fails due to authentication or permission errors, client outputs an actionable suggestion pointing to `git-remote-seafile check-auth` and desktop client login status.
+- **Diff stat truncation.** Passed `--stat-count=35` in snapshot diff summaries to prevent large file listings from flooding console logs.
+- **Standardized notification prefixes.** Unified user-facing notifications across snapshot tools and CLI with title-case prefixes (`Warning:`, `Note:`, `Notice:`, `Hint:`).
+- **Hardened lock test fixture hostname.** Defaulted `_ticket` machine name in test fixtures to `foreign-<hostname>` so CI hosts named `nodeA` cannot accidentally flip foreign-ticket assertions.
+
 ## [0.9.6] - 2026-10-15
 
 A push of a repository with long non-ASCII paths no longer fails on Windows. Nothing in how a snapshot or a
@@ -1670,6 +1690,7 @@ Data-loss and silent-failure fixes, and the Python floor raised to 3.9.
   with zero-config desktop-client token discovery, distributed locking, remote
   packfile compaction, and a Git LFS custom transfer agent.
 
+[0.9.7]: https://github.com/tkittich/git-remote-seafile/compare/v0.9.6...v0.9.7
 [0.9.6]: https://github.com/tkittich/git-remote-seafile/compare/v0.9.5...v0.9.6
 [0.9.5]: https://github.com/tkittich/git-remote-seafile/compare/v0.9.4...v0.9.5
 [0.9.4]: https://github.com/tkittich/git-remote-seafile/compare/v0.9.3...v0.9.4

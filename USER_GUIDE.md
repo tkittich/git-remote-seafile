@@ -244,6 +244,8 @@ git pull
 pip install -e .
 ```
 
+**Upgrading to v0.9.7 from v0.9.6** changes nothing for a setup that works: upload retries obtain a fresh single-use upload link to prevent HTTP 400 errors, `seafile-doctor errors` displays all errors under the default `--days 0` filter, stale lock tickets from recycled local PIDs are fast-reclaimed via process start time verification, `repo.db` access is consolidated, and snapshot vaults pin `core.quotepath = false` to display UTF-8/Thai paths without octal escaping. Nothing about what is stored changes.
+
 **Upgrading to v0.9.6 from v0.9.5** changes nothing for a setup that works: a push of a repository with very long (non-ASCII) paths on Windows no longer fails with "expected object ID, got garbage". Nothing about what is stored changes.
 
 **Upgrading to v0.9.5 from v0.9.4** changes nothing for a setup that works: a server under a path (`https://host/seafile`) can now be named in `SEAFILE_SERVER`, the credentials file or the desktop client's account (section 7.1), and that account's URL is used when the remote names the same host and port. Nothing about what is stored changes.
