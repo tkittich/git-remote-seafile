@@ -124,6 +124,26 @@ def resolve_snapshot_settings(
     vault = (args.vault or default_vault_for(source)).expanduser().resolve()
     source, vault = resolve_paths(source, vault)
 
+    # A snapshot backs up a repository, as `git push` does: from a subfolder the
+    # vault's chain would otherwise be a different tree under the same remote
+    # (a 6807-file "deletion" diff on top of the whole repository's vault).
+    # A vault that already remembers this very subfolder keeps working -- that
+    # is a default, and a default must not turn a run that worked into an error.
+    root = repo_toplevel(source)
+    if root is not None and root != source and not _vault_remembers(vault, source):
+        if explicit:
+            raise SnapshotError(
+                f"{source} is a subfolder of the repository at {root}.\n"
+                f"A snapshot is of the whole repository: give the repository root "
+                f"(--source {root}) or run it without --source from inside the "
+                f"repository."
+            )
+        print(f"Note: {source} is inside the repository at {root}; snapshotting "
+              f"the whole repository.", flush=True)
+        source = root
+        vault = (args.vault or default_vault_for(source)).expanduser().resolve()
+        source, vault = resolve_paths(source, vault)
+
     # A vault may not exist yet, so the bottom of the chain is remembered-first:
     # there is nothing to remember until a first run has happened.
     remembered = remembered_settings(vault, source)

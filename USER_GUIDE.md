@@ -1020,13 +1020,13 @@ Defaults are resolved most-specific-first:
 | 1 | The flag you passed | `--remote seafile://backups/app` |
 | 2 | What the vault remembered | the remote from the last run |
 | 3 | The source repository | `seafile://code/app` → `seafile://code/app-vault` |
-| 4 | The current directory | source = `.`, vault = `<source>-vault` |
+| 4 | The current directory | source = `.` (inside a git repository: the repository root), vault = `<source>-vault` |
 
 `--no-push` overrides the remembered or derived remote *for that run* — it pushes nothing (neither the vault nor the code repo) and leaves the vault's memory alone, so a one-off local run does not unhook a scheduled job. `--dry-run` previews the run — the vault is initialised if missing and the snapshot is built into its index, so the diff is real — without moving the branch, pushing, or touching the remembered settings.
 
 | Flag | Effect |
 | :--- | :--- |
-| `SOURCE` (positional) or `--source <dir>` | The tree to snapshot. Default: the current directory. |
+| `SOURCE` (positional) or `--source <dir>` | The tree to snapshot. Default: the current directory, or the repository root when that is inside a git repository. A subfolder of a repository is refused: a snapshot is of the whole repository. |
 | `--vault <dir>` | Where the vault repository lives. Default: `<source>-vault` beside the source. |
 | `--remote <url>` | The Seafile destination. Default: remembered, else derived from the source's own `seafile://` remote. |
 | `--branch <branch>` | The vault branch holding the snapshots. Default: `snapshot` — one shared chain across machines (§15.6). `--branch snapshot-<host>` gives per-machine chains instead. |

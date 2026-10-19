@@ -133,6 +133,10 @@ specific first:
    destination (``seafile://code/app`` -> ``seafile://code/app-vault``);
 4. **the current directory** for the source, ``'<source>-vault'`` for the vault.
 
+A snapshot is of a whole repository, as ``git push`` is.  Run from a subfolder
+of a git repository, the source becomes the repository root (with a note); an
+explicit ``--source`` that is a subfolder is refused, naming the root.
+
 So the first run is the only one that needs an argument, and every explicit flag
 is written back to the vault for next time.  ``--no-push`` overrides the
 remembered or derived remote *for that run* -- it pushes nothing (the vault and
@@ -6150,6 +6154,26 @@ def resolve_snapshot_settings(
     vault = (args.vault or default_vault_for(source)).expanduser().resolve()
     source, vault = resolve_paths(source, vault)
 
+    # A snapshot backs up a repository, as `git push` does: from a subfolder the
+    # vault's chain would otherwise be a different tree under the same remote
+    # (a 6807-file "deletion" diff on top of the whole repository's vault).
+    # A vault that already remembers this very subfolder keeps working -- that
+    # is a default, and a default must not turn a run that worked into an error.
+    root = repo_toplevel(source)
+    if root is not None and root != source and not _vault_remembers(vault, source):
+        if explicit:
+            raise SnapshotError(
+                f"{source} is a subfolder of the repository at {root}.\n"
+                f"A snapshot is of the whole repository: give the repository root "
+                f"(--source {root}) or run it without --source from inside the "
+                f"repository."
+            )
+        print(f"Note: {source} is inside the repository at {root}; snapshotting "
+              f"the whole repository.", flush=True)
+        source = root
+        vault = (args.vault or default_vault_for(source)).expanduser().resolve()
+        source, vault = resolve_paths(source, vault)
+
     # A vault may not exist yet, so the bottom of the chain is remembered-first:
     # there is nothing to remember until a first run has happened.
     remembered = remembered_settings(vault, source)
@@ -6370,6 +6394,14 @@ def remembered_settings(vault: Path, source: Path) -> _Remembered:
     return remembered
 
 
+def _vault_remembers(vault: Path, source: Path) -> bool:
+    """Whether ``vault`` already exists and records exactly ``source`` as its tree."""
+    if not (vault / ".git").is_dir():
+        return False
+    stored = _read_local_config_map(vault).get("snapshot.source") or []
+    return bool(stored) and _same_config_value(stored[0], str(source))
+
+
 def remember_settings(
     vault: Path,
     source: Path,
@@ -6499,10 +6531,38 @@ def derive_vault_remote(source: Path) -> str | None:
     library and path, suffixed, so the backup sits beside the thing it backs up
     and is recognisably related to it.
     """
+    # `git -C <subdir> config --local` finds the enclosing repository's remotes,
+    # so a subfolder of /code/app would derive app-vault -- the vault of the
+    # WHOLE tree -- adopt its chain as the base and push a snapshot of the
+    # subfolder on top of it (seen: a 6807-file "deletion" diff).  The remote
+    # names the repository's root, so only the root may derive from it.
+    if not (source / ".git").exists():
+        return None
     code = source_seafile_remote(source)
     if not code:
         return None
     return f"{code.rstrip('/') or code}-vault"
+
+
+def repo_toplevel(path: Path) -> Path | None:
+    """The root of the git work tree that contains ``path``, or None.
+
+    ``rev-parse --show-toplevel`` rather than looking for ``.git`` upwards: a
+    linked worktree and a submodule keep ``.git`` as a file, and for a submodule
+    the answer must be the submodule's own root, not the outer repository's.
+    """
+    proc = _run(
+        ["git", "-C", str(path), "rev-parse", "--show-toplevel"],
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+    )
+    top = proc.stdout.strip() if proc.returncode == 0 else ""
+    if not top:
+        return None
+    return Path(top).resolve()
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -6526,6 +6586,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "  3. the source repository (a seafile:// remote names the vault's\n"
             "     destination: seafile://code/app -> seafile://code/app-vault)\n"
             "  4. the current directory (--source) / '<source>-vault' (--vault)\n"
+            "     (inside a git repository, the repository root: a snapshot is of the\n"
+            "     whole repository, and --source naming a subfolder is refused)\n"
             "\nrecommended exclusions (never applied silently -- this is what\n"
             "--default-excludes adds):\n  "
             + " ".join(f"--exclude '{p}'" for p in RECOMMENDED_EXCLUDES)

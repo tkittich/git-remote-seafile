@@ -21,6 +21,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "  3. the source repository (a seafile:// remote names the vault's\n"
             "     destination: seafile://code/app -> seafile://code/app-vault)\n"
             "  4. the current directory (--source) / '<source>-vault' (--vault)\n"
+            "     (inside a git repository, the repository root: a snapshot is of the\n"
+            "     whole repository, and --source naming a subfolder is refused)\n"
             "\nrecommended exclusions (never applied silently -- this is what\n"
             "--default-excludes adds):\n  "
             + " ".join(f"--exclude '{p}'" for p in RECOMMENDED_EXCLUDES)

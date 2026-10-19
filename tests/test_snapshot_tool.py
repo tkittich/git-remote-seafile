@@ -1632,6 +1632,59 @@ class DefaultsTests(_SnapshotFixture):
         _git(self.code, "remote", "add", "origin", "https://github.com/x/y.git")
         self.assertIsNone(snap.derive_vault_remote(self.code))
 
+    def test_a_subfolder_of_the_repository_derives_nothing(self):
+        # git finds the enclosing repo's remote from a subfolder; deriving from
+        # it would push a snapshot of the folder onto the whole repo's vault.
+        _git(self.code, "remote", "add", "origin", "seafile://code/app")
+        sub = self.code / "report"
+        sub.mkdir()
+        self.assertEqual(snap.derive_vault_remote(self.code), "seafile://code/app-vault")
+        self.assertIsNone(snap.derive_vault_remote(sub))
+
+
+class SubfolderSourceTests(_SnapshotFixture):
+    """A snapshot is of the repository, wherever in it the command is run."""
+
+    def setUp(self):
+        super().setUp()
+        self.sub = self.code / "report"
+        self.sub.mkdir()
+        (self.sub / "r.txt").write_text("r", encoding="utf-8")
+
+    def test_the_toplevel_is_the_repository_root(self):
+        self.assertEqual(snap.repo_toplevel(self.sub), self.code.resolve())
+        self.assertEqual(snap.repo_toplevel(self.code), self.code.resolve())
+        self.assertIsNone(snap.repo_toplevel(self.tmp))
+
+    def test_running_from_a_subfolder_snapshots_the_whole_repository(self):
+        previous = os.getcwd()
+        os.chdir(self.sub)
+        try:
+            args = snap.parse_args(["--dry-run"])
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                source, vault, *_rest = snap.resolve_snapshot_settings(args)
+        finally:
+            os.chdir(previous)
+        self.assertEqual(source, self.code.resolve())
+        self.assertEqual(vault, self.code.resolve().with_name(self.code.name + "-vault"))
+        self.assertIn("snapshotting the whole repository", out.getvalue())
+
+    def test_an_explicit_subfolder_source_is_refused(self):
+        rc, _out, err = self.run_tool("--source", self.sub, "--vault", self.vault)
+        self.assertEqual(rc, 1)
+        self.assertIn("subfolder of the repository", err)
+        self.assertIn(str(self.code.resolve()), err)
+
+    def test_a_vault_that_remembers_a_subfolder_keeps_working(self):
+        # Made before roots were resolved: the vault's own memory is a default
+        # that worked, so it is honoured rather than turned into an error.
+        _git(self.vault.parent, "init", "-q", str(self.vault))
+        _git(self.vault, "config", "--local", "snapshot.source", str(self.sub.resolve()))
+        args = snap.parse_args(["--source", str(self.sub), "--vault", str(self.vault)])
+        source, _vault, *_rest = snap.resolve_snapshot_settings(args)
+        self.assertEqual(source, self.sub.resolve())
+
 
 class VaultMemoryTests(_SnapshotFixture):
     """The vault is where the second run's defaults come from."""

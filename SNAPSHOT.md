@@ -138,6 +138,12 @@ Resolved most specific first:
    remotes are ambiguous and derive nothing;
 4. **the current directory** for the source, `'<source>-vault'` for the vault.
 
+A snapshot is of a whole repository, as `git push` is. Run from a subfolder of a
+git repository, the source becomes the repository root (with a note), so the
+vault and its remote are the repository's, never a second chain of a partial
+tree. An explicit `--source` that is a subfolder is refused, naming the root. A
+vault that already remembers a subfolder as its source keeps working.
+
 So a scheduled job is the bare command, and an explicit flag is written back for
 next time. Two overrides are deliberately *per-run* and leave the vault's memory
 alone:

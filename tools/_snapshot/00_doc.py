@@ -133,6 +133,10 @@ specific first:
    destination (``seafile://code/app`` -> ``seafile://code/app-vault``);
 4. **the current directory** for the source, ``'<source>-vault'`` for the vault.
 
+A snapshot is of a whole repository, as ``git push`` is.  Run from a subfolder
+of a git repository, the source becomes the repository root (with a note); an
+explicit ``--source`` that is a subfolder is refused, naming the root.
+
 So the first run is the only one that needs an argument, and every explicit flag
 is written back to the vault for next time.  ``--no-push`` overrides the
 remembered or derived remote *for that run* -- it pushes nothing (the vault and
