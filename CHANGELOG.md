@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.8] - 2026-10-20
+
+`git seafile-snapshot` run from a subfolder of a repository no longer files a partial tree on the repository's vault. Nothing in how a snapshot or a push is stored changes.
+
 ### Fixed
 - **`git seafile-snapshot` from a subfolder of a repository no longer snapshots the subfolder onto the repository's vault.** The source's `seafile://` remote was found from the subfolder, so the folder's files were committed on top of the whole repository's `-vault` chain (a diff of thousands of deleted files). A snapshot is now of the whole repository: from a subfolder the source becomes the repository root, with a note, and an explicit `--source` naming a subfolder is refused. A vault that already remembers a subfolder keeps working.
 
@@ -1693,6 +1697,7 @@ Data-loss and silent-failure fixes, and the Python floor raised to 3.9.
   with zero-config desktop-client token discovery, distributed locking, remote
   packfile compaction, and a Git LFS custom transfer agent.
 
+[0.9.8]: https://github.com/tkittich/git-remote-seafile/compare/v0.9.7...v0.9.8
 [0.9.7]: https://github.com/tkittich/git-remote-seafile/compare/v0.9.6...v0.9.7
 [0.9.6]: https://github.com/tkittich/git-remote-seafile/compare/v0.9.5...v0.9.6
 [0.9.5]: https://github.com/tkittich/git-remote-seafile/compare/v0.9.4...v0.9.5
