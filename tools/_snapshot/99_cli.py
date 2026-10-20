@@ -282,7 +282,9 @@ def main(argv: list[str] | None = None) -> int:
                 "(there is no payload store to report on here)"
             )
         payload_min, payload_candidates, payload_rule = plan_payload(
-            args.payload_min_size, remote, source, exclude
+            args.payload_min_size, remote, source, exclude,
+            ratio=resolve_payload_ratio(args.payload_auto_ratio, vault),
+            ratio_typed=args.payload_auto_ratio is not None,
         )
         payload_skip = frozenset(payload_candidates)
         git_dir = ensure_vault(vault, branch)
@@ -532,6 +534,7 @@ def main(argv: list[str] | None = None) -> int:
         # --remote that failed to push does not become the vault's remote for
         # every scheduled run after it.  A preview never gets here.
         remember_payload_value(vault, args.payload_min_size, dry_run=args.dry_run)
+        remember_payload_ratio(vault, args.payload_auto_ratio, dry_run=args.dry_run)
         remember_record_mtimes(vault, args, dry_run=args.dry_run)
         remember_settings(
             vault,

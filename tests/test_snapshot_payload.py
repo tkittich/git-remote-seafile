@@ -669,6 +669,59 @@ class PayloadManifestAndSelectionTests(_PayloadFixture):
         self.assertIn("mid_text.bin", tree)
         self.assertNotIn("mid_random.bin", tree)
 
+    def test_the_auto_ratio_flag_moves_moderately_compressible_files_and_is_remembered(self):
+        (self.src / "big1.bin").unlink()
+        (self.src / "sub" / "big2.bin").unlink()
+        # Half noise, half zeros: deflate keeps about half of it, so the default
+        # cut-off (0.9) leaves it in git and a cut-off of 0.3 sends it to payload.
+        (self.src / "half.bin").write_bytes(os.urandom(1500) + b"\0" * 1500)
+        (self.src / "noise.bin").write_bytes(os.urandom(3000))
+
+        def paid():
+            manifest = json.loads(_git(self.vault, "show", "snapshot:.seafile-payload/manifest.json"))
+            return {f["path"] for f in manifest["files"]}
+
+        with unittest.mock.patch.object(snap, "_AUTO_UPPER", 8000), \
+                unittest.mock.patch.object(snap, "_AUTO_LOWER", 2000):
+            rc, out, err = self.run_tool(
+                self.src, "--vault", self.vault, "--remote", self.remote, "--payload-min-size", "auto",
+            )
+            self.assertEqual(rc, 0, out + err)
+            self.assertEqual(paid(), {"noise.bin"})  # unchanged default
+            self.assertEqual(snap._config(self.vault, "snapshot.payloadratio"), "")
+
+            rc, out, err = self.run_tool(
+                self.src, "--vault", self.vault, "--remote", self.remote,
+                "--payload-min-size", "auto", "--payload-auto-ratio", "0.3",
+            )
+            self.assertEqual(rc, 0, out + err)
+            self.assertEqual(paid(), {"noise.bin", "half.bin"})
+            self.assertEqual(snap._config(self.vault, "snapshot.payloadratio"), "0.3")
+
+            # A bare run keeps the tuned cut-off, as it keeps the payload value.
+            (self.src / "extra.txt").write_text("a change, so there is a new snapshot")
+            rc, out, err = self.run_tool(self.src, "--vault", self.vault, "--remote", self.remote)
+            self.assertEqual(rc, 0, out + err)
+            self.assertEqual(paid(), {"noise.bin", "half.bin"})
+
+    def test_a_remembered_ratio_that_is_not_a_ratio_is_the_default_not_an_error(self):
+        vault = self.vault
+        snap.ensure_vault(vault, "snapshot")
+        for junk in ("", "abc", "0", "-1", "1.5"):
+            with self.subTest(junk=junk):
+                if junk:
+                    _git(vault, "config", "snapshot.payloadratio", junk)
+                self.assertEqual(snap.resolve_payload_ratio(None, vault), snap._AUTO_INCOMPRESSIBLE)
+        _git(vault, "config", "snapshot.payloadratio", "0.5")
+        self.assertEqual(snap.resolve_payload_ratio(None, vault), 0.5)
+        self.assertEqual(snap.resolve_payload_ratio(0.7, vault), 0.7)  # typed beats remembered
+
+    def test_a_typed_ratio_with_a_remembered_size_rule_says_so(self):
+        with self.assertRaises(snap.SnapshotError) as caught:
+            snap.plan_payload("64M", self.remote, self.src, [], ratio=0.5, ratio_typed=True)
+        self.assertIn("--payload-auto-ratio", str(caught.exception))
+        snap.plan_payload("64M", self.remote, self.src, [], ratio=0.5)  # remembered alone: quiet
+
     def test_a_bare_flag_means_auto(self):
         rc, out, err = self.run_tool(
             self.src, "--vault", self.vault, "--remote", self.remote, "--payload-min-size"
@@ -985,6 +1038,16 @@ class PayloadDefaultAndSafeguardTests(_PayloadFixture):
               "--no-payload"), "does not apply"),
             (("--vault", self.vault, "--payload-delete"), "--payload-delete only applies"),
             (("--vault", self.vault, "--payload-grace-days", "3"), "--payload-grace-days only applies"),
+            (("--vault", self.vault, "--payload-auto-ratio", "0"), "above 0 and at most 1"),
+            (("--vault", self.vault, "--payload-auto-ratio", "1.5"), "above 0 and at most 1"),
+            (("--vault", self.vault, "--payload-min-size", "1000", "--payload-auto-ratio", "0.5"),
+             "only applies to the auto rule"),
+            (("--vault", self.vault, "--no-payload", "--payload-auto-ratio", "0.5"),
+             "only applies to the auto rule"),
+            (("--restore", "--remote", self.remote, "--into", self.case / "x",
+              "--payload-auto-ratio", "0.5"), "only applies to a snapshot run"),
+            (("--payload-verify", "--remote", self.remote, "--payload-auto-ratio", "0.5"),
+             "does not apply to --payload-verify"),
             (("--payload-gc",), "requires --remote"),
             (("--payload-gc", "--remote", self.remote, "--payload-grace-days", "0"), "at least"),
             (("--restore", "--remote", self.remote, "--into", self.case / "x",

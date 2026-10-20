@@ -51,6 +51,7 @@ def payload_view_conflicts(args: argparse.Namespace) -> list[str]:
                             ("--dry-run", args.dry_run), ("--payload-gc", args.payload_gc),
                             ("--payload-verify", args.payload_verify),
                             ("--payload-min-size", args.payload_min_size),
+                            ("--payload-auto-ratio", args.payload_auto_ratio is not None),
                             ("--no-payload", args.no_payload)):
             if value:
                 problems.append(f"{flag} does not apply to --payload-view")

@@ -164,8 +164,9 @@ class _HashingFile:
         return self._hash.hexdigest()
 
 
-def _incompressible(path: Path, size: int) -> bool:
-    """Whether three sampled chunks of *path* barely shrink under a fast deflate."""
+def _incompressible(path: Path, size: int, ratio: float = _AUTO_INCOMPRESSIBLE) -> bool:
+    """Whether three sampled chunks of *path* keep at least *ratio* of their size
+    under a fast deflate (``--payload-auto-ratio``; 0.9 unless tuned)."""
     raw = comp = 0
     try:
         with open(path, "rb") as fh:
@@ -177,14 +178,15 @@ def _incompressible(path: Path, size: int) -> bool:
                 comp += len(zlib.compress(chunk, 1))
     except OSError:
         return False  # unreadable here is unreadable later: git reports it
-    return raw > 0 and comp / raw >= _AUTO_INCOMPRESSIBLE
+    return raw > 0 and comp / raw >= ratio
 
 
 _CLOUD_PLACEHOLDER_ATTRS = 0x1000 | 0x400000  # OFFLINE | RECALL_ON_DATA_ACCESS
 
 
 def find_payload_files(
-    source: Path, excludes: list[str], min_size: int, auto: bool = False
+    source: Path, excludes: list[str], min_size: int, auto: bool = False,
+    ratio: float = _AUTO_INCOMPRESSIBLE,
 ) -> dict[str, Candidate]:
     """``{relative path: (size, mtime_ns, mode, inode)}`` for every payload file.
 
@@ -210,7 +212,7 @@ def find_payload_files(
         if getattr(st, "st_file_attributes", 0) & _CLOUD_PLACEHOLDER_ATTRS:
             placeholders.append(rel)
             continue
-        if auto and size < _AUTO_UPPER and not _incompressible(source / rel, size):
+        if auto and size < _AUTO_UPPER and not _incompressible(source / rel, size, ratio):
             continue
         mode = "100755" if st.st_mode & stat.S_IXUSR else "100644"
         found[rel] = (st.st_size, st.st_mtime_ns, mode, st.st_ino, st.st_dev,

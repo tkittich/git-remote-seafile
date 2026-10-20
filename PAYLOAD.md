@@ -83,8 +83,13 @@ the sample detects: of the 12.1 GiB between 1 and 64 MiB, about 7.0 GiB is
 incompressible and 4.6 GiB compresses (json, xml) and stays in git. A file whose
 class changes between runs simply moves (A14).
 
-The bounds are constants (`_AUTO_UPPER`, `_AUTO_LOWER`) and the sample ratio is
-`_AUTO_INCOMPRESSIBLE`; none is a setting. *Caveat:* a bare `--payload-min-size`
+The bounds are constants (`_AUTO_UPPER`, `_AUTO_LOWER`). The sample ratio defaults to
+`_AUTO_INCOMPRESSIBLE` (0.9) and is tunable with `--payload-auto-ratio R` (0 < R ≤ 1),
+remembered like the payload value: a lower R sends moderately compressible data to payload
+instead of deflating it through git, which pays when deflate (about 48 MiB/s per core on
+the measuring machine) is slow next to the link, and gives up git's delta between
+snapshots. Whether it pays depends on the machine and the link, so the default is not
+changed on one tree's evidence. *Caveat:* a bare `--payload-min-size`
 swallows the next argument, so write the source first or `--payload-min-size=auto`.
 
 ### D2. Object identity and layout — **decided**
@@ -266,7 +271,8 @@ faithful path. It lives beside the vault, never inside the helper's directory.
 ### D11. Flags — **decided**
 
 `--payload-min-size [SIZE|auto]` (`0` = off; a bare flag means `auto`), `--no-payload`
-(off, remembered),
+(off, remembered), `--payload-auto-ratio R` (the `auto` sample cut-off, default 0.9,
+remembered),
 `--payload-jobs N` (default 3; measured: one upload 32 MiB/s, three 53 MiB/s, five
 no better), `--payload-gc`, `--payload-delete`, `--payload-grace-days N`.
 Combinations that would be silently ignored are refused. An explicit

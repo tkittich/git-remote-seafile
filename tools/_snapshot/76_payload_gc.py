@@ -110,6 +110,7 @@ def payload_gc_conflicts(args: argparse.Namespace) -> list[str]:
         for flag, value in (("--restore", args.restore), ("--maintain", args.maintain),
                             ("--dry-run", args.dry_run), ("--payload-gc", args.payload_gc),
                             ("--payload-min-size", args.payload_min_size),
+                            ("--payload-auto-ratio", args.payload_auto_ratio is not None),
                             ("--no-payload", args.no_payload)):
             if value:
                 problems.append(f"{flag} does not apply to --payload-verify")

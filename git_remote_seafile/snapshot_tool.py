@@ -3584,8 +3584,9 @@ class _HashingFile:
         return self._hash.hexdigest()
 
 
-def _incompressible(path: Path, size: int) -> bool:
-    """Whether three sampled chunks of *path* barely shrink under a fast deflate."""
+def _incompressible(path: Path, size: int, ratio: float = _AUTO_INCOMPRESSIBLE) -> bool:
+    """Whether three sampled chunks of *path* keep at least *ratio* of their size
+    under a fast deflate (``--payload-auto-ratio``; 0.9 unless tuned)."""
     raw = comp = 0
     try:
         with open(path, "rb") as fh:
@@ -3597,14 +3598,15 @@ def _incompressible(path: Path, size: int) -> bool:
                 comp += len(zlib.compress(chunk, 1))
     except OSError:
         return False  # unreadable here is unreadable later: git reports it
-    return raw > 0 and comp / raw >= _AUTO_INCOMPRESSIBLE
+    return raw > 0 and comp / raw >= ratio
 
 
 _CLOUD_PLACEHOLDER_ATTRS = 0x1000 | 0x400000  # OFFLINE | RECALL_ON_DATA_ACCESS
 
 
 def find_payload_files(
-    source: Path, excludes: list[str], min_size: int, auto: bool = False
+    source: Path, excludes: list[str], min_size: int, auto: bool = False,
+    ratio: float = _AUTO_INCOMPRESSIBLE,
 ) -> dict[str, Candidate]:
     """``{relative path: (size, mtime_ns, mode, inode)}`` for every payload file.
 
@@ -3630,7 +3632,7 @@ def find_payload_files(
         if getattr(st, "st_file_attributes", 0) & _CLOUD_PLACEHOLDER_ATTRS:
             placeholders.append(rel)
             continue
-        if auto and size < _AUTO_UPPER and not _incompressible(source / rel, size):
+        if auto and size < _AUTO_UPPER and not _incompressible(source / rel, size, ratio):
             continue
         mode = "100755" if st.st_mode & stat.S_IXUSR else "100644"
         found[rel] = (st.st_size, st.st_mtime_ns, mode, st.st_ino, st.st_dev,
@@ -4077,6 +4079,7 @@ def payload_gc_conflicts(args: argparse.Namespace) -> list[str]:
         for flag, value in (("--restore", args.restore), ("--maintain", args.maintain),
                             ("--dry-run", args.dry_run), ("--payload-gc", args.payload_gc),
                             ("--payload-min-size", args.payload_min_size),
+                            ("--payload-auto-ratio", args.payload_auto_ratio is not None),
                             ("--no-payload", args.no_payload)):
             if value:
                 problems.append(f"{flag} does not apply to --payload-verify")
@@ -4722,6 +4725,18 @@ def add_payload_arguments(parser: Any) -> None:
         "snapshot used payload mode keeps its large files out of git until it is "
         "turned back on, so this stages them into git instead",
     )
+    parser.add_argument(
+        "--payload-auto-ratio",
+        type=float,
+        default=None,
+        metavar="R",
+        help="payload mode, auto rule: a file of 4-64 MiB goes to payload when a sample of it "
+        "keeps at least R of its size under a fast deflate (default 0.9, i.e. only data that "
+        "barely compresses). Lower it (e.g. 0.5) to send moderately compressible data to "
+        "payload instead of deflating it through git: that is faster when deflate is slow "
+        "next to the link, and gives up git's delta compression between snapshots. "
+        "0 < R <= 1; remembered by a complete real run like --payload-min-size",
+    )
 
 
 def add_payload_jobs_argument(parser: Any) -> None:
@@ -4778,6 +4793,16 @@ def payload_conflicts(args: argparse.Namespace) -> list[str]:
             "only on the server, so a snapshot that is not pushed would reference files "
             "that were never uploaded"
         )
+    if args.payload_auto_ratio is not None:
+        if not 0 < args.payload_auto_ratio <= 1:
+            problems.append("--payload-auto-ratio must be above 0 and at most 1")
+        if args.no_payload or (
+            args.payload_min_size is not None and args.payload_min_size.strip().lower() != "auto"
+        ):
+            problems.append("--payload-auto-ratio only applies to the auto rule "
+                            "(--payload-min-size auto)")
+        if args.restore or args.maintain or args.payload_gc:
+            problems.append("--payload-auto-ratio only applies to a snapshot run")
     if args.payload_jobs is not None:
         if args.payload_jobs < 1:
             problems.append("--payload-jobs must be at least 1")
@@ -4864,11 +4889,45 @@ def remember_payload_value(vault: Path, value: str | None, *, dry_run: bool) -> 
     )
 
 
+def resolve_payload_ratio(value: float | None, vault: Path) -> float:
+    """The auto rule's compressibility cut-off: the flag, else what this vault
+    remembered, else the default.  A remembered value that is not a usable ratio
+    (a hand edit) is the default, not an error: a default is not a request."""
+    if value is not None:
+        return value
+    if (vault / ".git").exists():
+        try:
+            remembered = float(_config(vault, "snapshot.payloadratio"))
+        except ValueError:
+            return _AUTO_INCOMPRESSIBLE
+        if 0 < remembered <= 1:
+            return remembered
+    return _AUTO_INCOMPRESSIBLE
+
+
+def remember_payload_ratio(vault: Path, value: float | None, *, dry_run: bool) -> None:
+    """Write a ratio that was typed, after a *complete* real run; never a default."""
+    if value is None or dry_run:
+        return
+    _run(
+        ["git", "-C", str(vault), "config", "snapshot.payloadratio", repr(value)],
+        text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    )
+
+
 def plan_payload(
-    value: str | None, remote: str | None, source: Path, excludes: list[str]
+    value: str | None, remote: str | None, source: Path, excludes: list[str],
+    ratio: float = _AUTO_INCOMPRESSIBLE, ratio_typed: bool = False,
 ) -> tuple[int | None, dict[str, Candidate], str]:
     """``(min_size, candidates, rule)``; ``(None, {}, "size")`` when payload mode is off."""
     auto = value is not None and value.strip().lower() == "auto"
+    if ratio_typed and not auto and value is not None and value.strip() != "0":
+        # The vault remembers a size rule and this run typed only the ratio: the
+        # flag would do nothing, and a flag that does nothing should say so.
+        raise SnapshotError(
+            "--payload-auto-ratio tunes the auto rule, but this vault uses "
+            f"--payload-min-size {value}. Pass --payload-min-size auto to switch deliberately"
+        )
     if value is not None and not auto and value.strip().isdigit() and Path(value).is_dir():
         raise SnapshotError(
             f"--payload-min-size took {value!r} as its size, but that is also a directory: "
@@ -4883,7 +4942,7 @@ def plan_payload(
             "payload mode needs a remote to upload to: pass --remote "
             "seafile://<library>/<path> (or run from a source with a seafile:// remote)"
         )
-    return min_size, find_payload_files(source, excludes, min_size, auto), rule
+    return min_size, find_payload_files(source, excludes, min_size, auto, ratio), rule
 
 
 def refuse_flagless_payload_vault(
@@ -5137,6 +5196,7 @@ def payload_view_conflicts(args: argparse.Namespace) -> list[str]:
                             ("--dry-run", args.dry_run), ("--payload-gc", args.payload_gc),
                             ("--payload-verify", args.payload_verify),
                             ("--payload-min-size", args.payload_min_size),
+                            ("--payload-auto-ratio", args.payload_auto_ratio is not None),
                             ("--no-payload", args.no_payload)):
             if value:
                 problems.append(f"{flag} does not apply to --payload-view")
@@ -6851,7 +6911,9 @@ def main(argv: list[str] | None = None) -> int:
                 "(there is no payload store to report on here)"
             )
         payload_min, payload_candidates, payload_rule = plan_payload(
-            args.payload_min_size, remote, source, exclude
+            args.payload_min_size, remote, source, exclude,
+            ratio=resolve_payload_ratio(args.payload_auto_ratio, vault),
+            ratio_typed=args.payload_auto_ratio is not None,
         )
         payload_skip = frozenset(payload_candidates)
         git_dir = ensure_vault(vault, branch)
@@ -7101,6 +7163,7 @@ def main(argv: list[str] | None = None) -> int:
         # --remote that failed to push does not become the vault's remote for
         # every scheduled run after it.  A preview never gets here.
         remember_payload_value(vault, args.payload_min_size, dry_run=args.dry_run)
+        remember_payload_ratio(vault, args.payload_auto_ratio, dry_run=args.dry_run)
         remember_record_mtimes(vault, args, dry_run=args.dry_run)
         remember_settings(
             vault,
