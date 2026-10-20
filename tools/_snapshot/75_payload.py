@@ -164,9 +164,13 @@ class _HashingFile:
         return self._hash.hexdigest()
 
 
-def _incompressible(path: Path, size: int, ratio: float = _AUTO_INCOMPRESSIBLE) -> bool:
-    """Whether three sampled chunks of *path* keep at least *ratio* of their size
-    under a fast deflate (``--payload-auto-ratio``; 0.9 unless tuned)."""
+def _sample_ratio(path: Path, size: int) -> float | None:
+    """Compressed / raw over three 256 KiB chunks of *path* under a fast deflate.
+
+    ``None`` when nothing could be read: unreadable here is unreadable later, and
+    git reports it.  Incompressible data comes out a little *above* 1 (stored
+    blocks cost bytes), up to about 1.06.
+    """
     raw = comp = 0
     try:
         with open(path, "rb") as fh:
@@ -177,8 +181,21 @@ def _incompressible(path: Path, size: int, ratio: float = _AUTO_INCOMPRESSIBLE) 
                 raw += len(chunk)
                 comp += len(zlib.compress(chunk, 1))
     except OSError:
-        return False  # unreadable here is unreadable later: git reports it
-    return raw > 0 and comp / raw >= ratio
+        return None
+    return comp / raw if raw > 0 else None
+
+
+def _incompressible(path: Path, size: int, ratio: float = _AUTO_INCOMPRESSIBLE) -> bool:
+    """Whether a sample of *path* keeps at least *ratio* of its size under deflate
+    (``--payload-auto-ratio``; 0.9 unless tuned)."""
+    measured = _sample_ratio(path, size)
+    return measured is not None and measured >= ratio
+
+
+def new_survey() -> dict[str, Any]:
+    """An empty record for :func:`find_payload_files`: ``small`` and ``big`` are
+    ``[count, bytes]``; ``mid`` is ``(size, sample ratio, path)`` per 4-64 MiB file."""
+    return {"small": [0, 0], "big": [0, 0], "mid": []}
 
 
 _CLOUD_PLACEHOLDER_ATTRS = 0x1000 | 0x400000  # OFFLINE | RECALL_ON_DATA_ACCESS
@@ -186,7 +203,7 @@ _CLOUD_PLACEHOLDER_ATTRS = 0x1000 | 0x400000  # OFFLINE | RECALL_ON_DATA_ACCESS
 
 def find_payload_files(
     source: Path, excludes: list[str], min_size: int, auto: bool = False,
-    ratio: float = _AUTO_INCOMPRESSIBLE,
+    ratio: float = _AUTO_INCOMPRESSIBLE, survey: dict[str, Any] | None = None,
 ) -> dict[str, Candidate]:
     """``{relative path: (size, mtime_ns, mode, inode)}`` for every payload file.
 
@@ -196,12 +213,22 @@ def find_payload_files(
     them exactly), as does everything the rule leaves out.  A Windows cloud
     placeholder (OneDrive "files on demand") is refused by name: reading it would
     download it.
+
+    With *auto* and a *survey* (see :func:`new_survey`) it also records what the
+    rule saw -- the files under the floor and the sample of every file in the
+    4-64 MiB band, not only those it kept -- so the placement report and its
+    what-if cost no second pass over the tree.
     """
     found: dict[str, Candidate] = {}
     placeholders: list[str] = []
     floor = _AUTO_LOWER if auto else min_size
     for size, rel in _walk_sizes(source, excludes):
-        if size < floor or rel == PAYLOAD_RESERVED_DIR or rel.startswith(PAYLOAD_RESERVED_DIR + "/"):
+        if rel == PAYLOAD_RESERVED_DIR or rel.startswith(PAYLOAD_RESERVED_DIR + "/"):
+            continue
+        if size < floor:
+            if survey is not None and auto:
+                survey["small"][0] += 1
+                survey["small"][1] += size
             continue
         try:
             st = os.lstat(source / rel)
@@ -212,8 +239,15 @@ def find_payload_files(
         if getattr(st, "st_file_attributes", 0) & _CLOUD_PLACEHOLDER_ATTRS:
             placeholders.append(rel)
             continue
-        if auto and size < _AUTO_UPPER and not _incompressible(source / rel, size, ratio):
-            continue
+        if auto and size < _AUTO_UPPER:
+            measured = _sample_ratio(source / rel, size)
+            if survey is not None and measured is not None:
+                survey["mid"].append((size, measured, rel))
+            if measured is None or measured < ratio:
+                continue
+        if survey is not None and auto and size >= _AUTO_UPPER:
+            survey["big"][0] += 1
+            survey["big"][1] += size
         mode = "100755" if st.st_mode & stat.S_IXUSR else "100644"
         found[rel] = (st.st_size, st.st_mtime_ns, mode, st.st_ino, st.st_dev,
                       change_time_ns(source / rel, st))

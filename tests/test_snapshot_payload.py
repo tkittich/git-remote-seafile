@@ -704,6 +704,62 @@ class PayloadManifestAndSelectionTests(_PayloadFixture):
             self.assertEqual(rc, 0, out + err)
             self.assertEqual(paid(), {"noise.bin", "half.bin"})
 
+    # -- the placement report ------------------------------------------------------
+    def test_the_survey_records_what_the_auto_rule_saw(self):
+        (self.src / "big1.bin").unlink()
+        (self.src / "sub" / "big2.bin").unlink()
+        for name, content in {
+            "huge.bin": os.urandom(9000), "noise.bin": os.urandom(3000),
+            "half.bin": os.urandom(1500) + b"\0" * 1500, "tiny.bin": b"x" * 100,
+        }.items():
+            (self.src / name).write_bytes(content)
+        survey = snap.new_survey()
+        with unittest.mock.patch.object(snap, "_AUTO_UPPER", 8000), \
+                unittest.mock.patch.object(snap, "_AUTO_LOWER", 2000):
+            found = snap.find_payload_files(self.src, [], 8000, True, 0.9, survey)
+        self.assertEqual(set(found), {"huge.bin", "noise.bin"})
+        self.assertEqual(survey["big"][0], 1)
+        self.assertGreaterEqual(survey["small"][0], 1)  # tiny.bin, and whatever the fixture holds
+        band = {rel: ratio for _size, ratio, rel in survey["mid"]}
+        self.assertEqual(set(band), {"noise.bin", "half.bin"})  # kept and left out alike
+        self.assertGreater(band["noise.bin"], 0.9)
+        self.assertLess(band["half.bin"], 0.9)
+
+    def test_the_placement_tip_appears_only_when_a_lower_cutoff_clearly_pays(self):
+        gib = 1024 ** 3
+        band = [(gib, 0.8, f"f{i}") for i in range(4)] + [(gib, 0.2, "c0")]
+        survey = {"small": [10, 5 * gib], "big": [1, 9 * gib], "mid": band}
+        payload = {"huge": (9 * gib, 0, "100644", 0, 0, 0)}
+        with unittest.mock.patch.object(snap, "measure_deflate_mibs", return_value=40.0):
+            lines = snap.placement_lines(survey, payload, 0.9, self.src, {})
+            self.assertEqual(len(lines), 2, lines)
+            self.assertIn("--payload-auto-ratio 0.5", lines[1])
+            self.assertIn("assumed", lines[1])  # no measured link yet
+            self.assertIn("Not applied", lines[1])
+            # measured rates are used, and said to be
+            measured = {"snapshot.uplink": ["53"], "snapshot.uplink1": ["32"]}
+            self.assertNotIn("assumed", snap.placement_lines(survey, payload, 0.9, self.src, measured)[1])
+            # nothing to gain at or below the what-if cut-off, or when the band is small
+            self.assertEqual(len(snap.placement_lines(survey, payload, 0.5, self.src, {})), 1)
+            small = {**survey, "mid": [(10 * 1024 ** 2, 0.8, "f")]}
+            self.assertEqual(len(snap.placement_lines(small, payload, 0.9, self.src, {})), 1)
+        # a fast deflate (it beats the link) leaves nothing to suggest
+        with unittest.mock.patch.object(snap, "measure_deflate_mibs", return_value=5000.0):
+            self.assertEqual(len(snap.placement_lines(survey, payload, 0.9, self.src, {})), 1)
+
+    def test_a_run_reports_its_placement(self):
+        (self.src / "big1.bin").unlink()
+        (self.src / "sub" / "big2.bin").unlink()
+        (self.src / "huge.bin").write_bytes(os.urandom(9000))
+        (self.src / "half.bin").write_bytes(os.urandom(1500) + b"\0" * 1500)
+        with unittest.mock.patch.object(snap, "_AUTO_UPPER", 8000), \
+                unittest.mock.patch.object(snap, "_AUTO_LOWER", 2000):
+            rc, out, err = self.run_tool(
+                self.src, "--vault", self.vault, "--remote", self.remote, "--payload-min-size", "auto",
+            )
+        self.assertEqual(rc, 0, out + err)
+        self.assertRegex(out, r"placement: 1 file\(s\) \(.*\) go to payload; \d+ \(.*\) stay in git")
+
     def test_a_remembered_ratio_that_is_not_a_ratio_is_the_default_not_an_error(self):
         vault = self.vault
         snap.ensure_vault(vault, "snapshot")

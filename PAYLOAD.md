@@ -89,7 +89,10 @@ remembered like the payload value: a lower R sends moderately compressible data 
 instead of deflating it through git, which pays when deflate (about 48 MiB/s per core on
 the measuring machine) is slow next to the link, and gives up git's delta between
 snapshots. Whether it pays depends on the machine and the link, so the default is not
-changed on one tree's evidence. *Caveat:* a bare `--payload-min-size`
+changed on one tree's evidence; instead every `auto` run prints a `placement:` line and,
+when a cut-off of 0.5 would save a minute or more at the measured (or, until a run has
+measured them, assumed) deflate and upload rates, a `tip:` line that changes nothing.
+*Caveat:* a bare `--payload-min-size`
 swallows the next argument, so write the source first or `--payload-min-size=auto`.
 
 ### D2. Object identity and layout — **decided**

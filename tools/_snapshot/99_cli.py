@@ -281,10 +281,12 @@ def main(argv: list[str] | None = None) -> int:
                 "--payload-report-days needs a run that pushes to a seafile:// remote "
                 "(there is no payload store to report on here)"
             )
+        payload_ratio = resolve_payload_ratio(args.payload_auto_ratio, vault)
+        payload_survey = new_survey()
         payload_min, payload_candidates, payload_rule = plan_payload(
             args.payload_min_size, remote, source, exclude,
-            ratio=resolve_payload_ratio(args.payload_auto_ratio, vault),
-            ratio_typed=args.payload_auto_ratio is not None,
+            ratio=payload_ratio, ratio_typed=args.payload_auto_ratio is not None,
+            survey=payload_survey,
         )
         payload_skip = frozenset(payload_candidates)
         git_dir = ensure_vault(vault, branch)
@@ -292,6 +294,11 @@ def main(argv: list[str] | None = None) -> int:
         # the remembered settings below: none of them writes a key another one
         # compares against, so the map cannot go stale between the three.
         vault_config = _read_local_config_map(vault)
+        if payload_rule == "auto" and payload_min and (payload_candidates or payload_survey["mid"]):
+            for line in placement_lines(
+                payload_survey, payload_candidates, payload_ratio, source, vault_config
+            ):
+                print(line, flush=True)
         if not args.dry_run:
             # A preview writes nothing -- not even the byte-exactness config
             # and the inherited identity.  Those writes were safe-looking but

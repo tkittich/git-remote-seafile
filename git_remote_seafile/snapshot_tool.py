@@ -3584,9 +3584,13 @@ class _HashingFile:
         return self._hash.hexdigest()
 
 
-def _incompressible(path: Path, size: int, ratio: float = _AUTO_INCOMPRESSIBLE) -> bool:
-    """Whether three sampled chunks of *path* keep at least *ratio* of their size
-    under a fast deflate (``--payload-auto-ratio``; 0.9 unless tuned)."""
+def _sample_ratio(path: Path, size: int) -> float | None:
+    """Compressed / raw over three 256 KiB chunks of *path* under a fast deflate.
+
+    ``None`` when nothing could be read: unreadable here is unreadable later, and
+    git reports it.  Incompressible data comes out a little *above* 1 (stored
+    blocks cost bytes), up to about 1.06.
+    """
     raw = comp = 0
     try:
         with open(path, "rb") as fh:
@@ -3597,8 +3601,21 @@ def _incompressible(path: Path, size: int, ratio: float = _AUTO_INCOMPRESSIBLE) 
                 raw += len(chunk)
                 comp += len(zlib.compress(chunk, 1))
     except OSError:
-        return False  # unreadable here is unreadable later: git reports it
-    return raw > 0 and comp / raw >= ratio
+        return None
+    return comp / raw if raw > 0 else None
+
+
+def _incompressible(path: Path, size: int, ratio: float = _AUTO_INCOMPRESSIBLE) -> bool:
+    """Whether a sample of *path* keeps at least *ratio* of its size under deflate
+    (``--payload-auto-ratio``; 0.9 unless tuned)."""
+    measured = _sample_ratio(path, size)
+    return measured is not None and measured >= ratio
+
+
+def new_survey() -> dict[str, Any]:
+    """An empty record for :func:`find_payload_files`: ``small`` and ``big`` are
+    ``[count, bytes]``; ``mid`` is ``(size, sample ratio, path)`` per 4-64 MiB file."""
+    return {"small": [0, 0], "big": [0, 0], "mid": []}
 
 
 _CLOUD_PLACEHOLDER_ATTRS = 0x1000 | 0x400000  # OFFLINE | RECALL_ON_DATA_ACCESS
@@ -3606,7 +3623,7 @@ _CLOUD_PLACEHOLDER_ATTRS = 0x1000 | 0x400000  # OFFLINE | RECALL_ON_DATA_ACCESS
 
 def find_payload_files(
     source: Path, excludes: list[str], min_size: int, auto: bool = False,
-    ratio: float = _AUTO_INCOMPRESSIBLE,
+    ratio: float = _AUTO_INCOMPRESSIBLE, survey: dict[str, Any] | None = None,
 ) -> dict[str, Candidate]:
     """``{relative path: (size, mtime_ns, mode, inode)}`` for every payload file.
 
@@ -3616,12 +3633,22 @@ def find_payload_files(
     them exactly), as does everything the rule leaves out.  A Windows cloud
     placeholder (OneDrive "files on demand") is refused by name: reading it would
     download it.
+
+    With *auto* and a *survey* (see :func:`new_survey`) it also records what the
+    rule saw -- the files under the floor and the sample of every file in the
+    4-64 MiB band, not only those it kept -- so the placement report and its
+    what-if cost no second pass over the tree.
     """
     found: dict[str, Candidate] = {}
     placeholders: list[str] = []
     floor = _AUTO_LOWER if auto else min_size
     for size, rel in _walk_sizes(source, excludes):
-        if size < floor or rel == PAYLOAD_RESERVED_DIR or rel.startswith(PAYLOAD_RESERVED_DIR + "/"):
+        if rel == PAYLOAD_RESERVED_DIR or rel.startswith(PAYLOAD_RESERVED_DIR + "/"):
+            continue
+        if size < floor:
+            if survey is not None and auto:
+                survey["small"][0] += 1
+                survey["small"][1] += size
             continue
         try:
             st = os.lstat(source / rel)
@@ -3632,8 +3659,15 @@ def find_payload_files(
         if getattr(st, "st_file_attributes", 0) & _CLOUD_PLACEHOLDER_ATTRS:
             placeholders.append(rel)
             continue
-        if auto and size < _AUTO_UPPER and not _incompressible(source / rel, size, ratio):
-            continue
+        if auto and size < _AUTO_UPPER:
+            measured = _sample_ratio(source / rel, size)
+            if survey is not None and measured is not None:
+                survey["mid"].append((size, measured, rel))
+            if measured is None or measured < ratio:
+                continue
+        if survey is not None and auto and size >= _AUTO_UPPER:
+            survey["big"][0] += 1
+            survey["big"][1] += size
         mode = "100755" if st.st_mode & stat.S_IXUSR else "100644"
         found[rel] = (st.st_size, st.st_mtime_ns, mode, st.st_ino, st.st_dev,
                       change_time_ns(source / rel, st))
@@ -4918,6 +4952,7 @@ def remember_payload_ratio(vault: Path, value: float | None, *, dry_run: bool) -
 def plan_payload(
     value: str | None, remote: str | None, source: Path, excludes: list[str],
     ratio: float = _AUTO_INCOMPRESSIBLE, ratio_typed: bool = False,
+    survey: dict[str, Any] | None = None,
 ) -> tuple[int | None, dict[str, Candidate], str]:
     """``(min_size, candidates, rule)``; ``(None, {}, "size")`` when payload mode is off."""
     auto = value is not None and value.strip().lower() == "auto"
@@ -4942,7 +4977,7 @@ def plan_payload(
             "payload mode needs a remote to upload to: pass --remote "
             "seafile://<library>/<path> (or run from a source with a seafile:// remote)"
         )
-    return min_size, find_payload_files(source, excludes, min_size, auto, ratio), rule
+    return min_size, find_payload_files(source, excludes, min_size, auto, ratio, survey), rule
 
 
 def refuse_flagless_payload_vault(
@@ -5558,6 +5593,121 @@ def push_snapshot(
         f"of that point (it moved during the retry), so re-run to reconcile "
         f"with its tip; the tree itself was never modified."
     )
+
+
+# -- Where files go: the placement report and its what-if -----------------------------
+#
+# The auto payload rule (PAYLOAD.md D1) sorts a tree three ways: files under 4 MiB
+# stay in git, files of 64 MiB or more go to payload, and the band between is decided
+# by how well a sample of the file deflates.  Which side of that last line a band
+# file falls on is a *speed* question -- deflating it through git against uploading
+# it as it is -- and the answer depends on this machine and this link, so the run
+# says what it did and, when a lower cut-off would plainly be faster here, says so
+# without doing it.  A default is not a request: nothing moves because of this text.
+
+#: Rates used until a run has measured them (``snapshot.uplink`` / ``snapshot.uplink1``
+#: in the vault).  Measured on one server: 3 uploads at once ~53 MiB/s, one ~32 MiB/s;
+#: SHA-256 on one core ~2 GiB/s.
+_ASSUMED_UPLOAD_MIBS = 53.0
+_ASSUMED_GIT_PUSH_MIBS = 32.0
+_ASSUMED_HASH_MIBS = 2000.0
+#: The cut-off the what-if tries, and how much it must save to be worth a line.
+_WHATIF_RATIO = 0.5
+_WHATIF_MIN_SECONDS = 60.0
+_WHATIF_MIN_BYTES = 1024 ** 3
+_DEFLATE_PROBE_FILES = 8
+
+
+def link_rates(vault_config: dict[str, list[str]]) -> tuple[float, float, bool]:
+    """``(upload MiB/s with the default jobs, one stream MiB/s, assumed)``.
+
+    Measured values are what an earlier run stored in the vault; either one
+    missing or unusable falls back to the assumed rate for that number.
+    """
+    def stored(key: str, fallback: float) -> tuple[float, bool]:
+        try:
+            value = float((vault_config.get(key) or [""])[0])
+        except ValueError:
+            return fallback, True
+        return (value, False) if value > 0 else (fallback, True)
+
+    upload, a1 = stored("snapshot.uplink", _ASSUMED_UPLOAD_MIBS)
+    single, a2 = stored("snapshot.uplink1", _ASSUMED_GIT_PUSH_MIBS)
+    return upload, single, a1 or a2
+
+
+def measure_deflate_mibs(source: Path, band: list[tuple[int, float, str]]) -> float | None:
+    """Deflate speed (zlib level 6, git's default) on real data from *band*.
+
+    Reads the first 256 KiB of up to eight files spread across the band, so the
+    figure is for the data in question and not for a synthetic block; about 2 MiB
+    and a few hundredths of a second.  ``None`` when nothing could be read.
+    """
+    if not band:
+        return None
+    step = max(1, len(band) // _DEFLATE_PROBE_FILES)
+    raw = 0
+    spent = 0.0
+    for _size, _ratio, rel in band[::step][:_DEFLATE_PROBE_FILES]:
+        try:
+            with open(source / rel, "rb") as fh:
+                chunk = fh.read(_AUTO_SAMPLE_CHUNK)
+        except OSError:
+            continue
+        started = time.perf_counter()
+        zlib.compress(chunk, 6)
+        spent += time.perf_counter() - started
+        raw += len(chunk)
+    if not raw or spent <= 0:
+        return None
+    return raw / 1024 ** 2 / spent
+
+
+def placement_lines(
+    survey: dict[str, Any], payload: dict[str, Candidate], ratio: float, source: Path,
+    vault_config: dict[str, list[str]],
+) -> list[str]:
+    """What the auto rule did with this tree, and a cheaper cut-off if there is one."""
+    small_n, small_b = survey["small"]
+    band = survey["mid"]
+    in_git = [m for m in band if m[1] < ratio]
+    git_n = small_n + len(in_git)
+    git_b = small_b + sum(m[0] for m in in_git)
+    pay_b = sum(item[0] for item in payload.values())
+    lines = [
+        f"placement: {len(payload)} file(s) ({human_bytes(pay_b)}) go to payload; {git_n} "
+        f"({human_bytes(git_b)}) stay in git -- {small_n} under {human_bytes(_AUTO_LOWER)} and "
+        f"{len(in_git)} of {human_bytes(_AUTO_LOWER)}-{human_bytes(_AUTO_UPPER)} that compress "
+        f"(sample keeps under {ratio:g} of its size)"
+    ]
+    if ratio <= _WHATIF_RATIO:
+        return lines
+    moved = [m for m in band if _WHATIF_RATIO <= m[1] < ratio]
+    moved_b = sum(m[0] for m in moved)
+    if moved_b < _WHATIF_MIN_BYTES:
+        return lines
+    deflate = measure_deflate_mibs(source, in_git)
+    if not deflate:
+        return lines
+    upload, single, assumed = link_rates(vault_config)
+    mib = 1024 ** 2
+    # Per MiB: through git it is deflated and the compressed bytes go up one stream
+    # at a time; as payload it is hashed and goes up as it is, jobs at once.
+    seconds = sum(
+        (size / mib) * (1 / deflate + r / single - 1 / upload - 1 / _ASSUMED_HASH_MIBS)
+        for size, r, _rel in moved
+    )
+    if seconds < _WHATIF_MIN_SECONDS:
+        return lines
+    extra = sum(size * (1 - r) for size, r, _rel in moved)
+    lines.append(
+        f"tip: --payload-auto-ratio {_WHATIF_RATIO:g} would move {len(moved)} file(s) "
+        f"({human_bytes(moved_b)}) from git to payload: about {seconds / 60:.0f} min faster "
+        f"here ({deflate:.0f} MiB/s deflate, {upload:.0f} MiB/s upload"
+        f"{', assumed' if assumed else ''}), for about {human_bytes(int(extra))} more on the "
+        f"server and without git's delta between snapshots. Not applied."
+    )
+    return lines
 
 
 def _checkout(repo: Path, rev: str, *, detach: bool = False) -> None:
@@ -6910,10 +7060,12 @@ def main(argv: list[str] | None = None) -> int:
                 "--payload-report-days needs a run that pushes to a seafile:// remote "
                 "(there is no payload store to report on here)"
             )
+        payload_ratio = resolve_payload_ratio(args.payload_auto_ratio, vault)
+        payload_survey = new_survey()
         payload_min, payload_candidates, payload_rule = plan_payload(
             args.payload_min_size, remote, source, exclude,
-            ratio=resolve_payload_ratio(args.payload_auto_ratio, vault),
-            ratio_typed=args.payload_auto_ratio is not None,
+            ratio=payload_ratio, ratio_typed=args.payload_auto_ratio is not None,
+            survey=payload_survey,
         )
         payload_skip = frozenset(payload_candidates)
         git_dir = ensure_vault(vault, branch)
@@ -6921,6 +7073,11 @@ def main(argv: list[str] | None = None) -> int:
         # the remembered settings below: none of them writes a key another one
         # compares against, so the map cannot go stale between the three.
         vault_config = _read_local_config_map(vault)
+        if payload_rule == "auto" and payload_min and (payload_candidates or payload_survey["mid"]):
+            for line in placement_lines(
+                payload_survey, payload_candidates, payload_ratio, source, vault_config
+            ):
+                print(line, flush=True)
         if not args.dry_run:
             # A preview writes nothing -- not even the byte-exactness config
             # and the inherited identity.  Those writes were safe-looking but

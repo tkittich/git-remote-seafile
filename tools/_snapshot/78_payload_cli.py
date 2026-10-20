@@ -256,6 +256,7 @@ def remember_payload_ratio(vault: Path, value: float | None, *, dry_run: bool) -
 def plan_payload(
     value: str | None, remote: str | None, source: Path, excludes: list[str],
     ratio: float = _AUTO_INCOMPRESSIBLE, ratio_typed: bool = False,
+    survey: dict[str, Any] | None = None,
 ) -> tuple[int | None, dict[str, Candidate], str]:
     """``(min_size, candidates, rule)``; ``(None, {}, "size")`` when payload mode is off."""
     auto = value is not None and value.strip().lower() == "auto"
@@ -280,7 +281,7 @@ def plan_payload(
             "payload mode needs a remote to upload to: pass --remote "
             "seafile://<library>/<path> (or run from a source with a seafile:// remote)"
         )
-    return min_size, find_payload_files(source, excludes, min_size, auto, ratio), rule
+    return min_size, find_payload_files(source, excludes, min_size, auto, ratio, survey), rule
 
 
 def refuse_flagless_payload_vault(

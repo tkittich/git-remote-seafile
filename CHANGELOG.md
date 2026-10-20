@@ -10,6 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - **`--payload-auto-ratio R` tunes the `auto` payload rule.** A file of 4–64 MiB goes to payload when a sample of it keeps at least *R* of its size under a fast deflate; the default stays 0.9 (nothing moves unless the flag is typed). A lower value sends moderately compressible data to payload instead of deflating it through git, which pays when deflate is slow next to the link and gives up git's delta between snapshots. It is remembered in the vault like `--payload-min-size`; a remembered value that is not a ratio is the default, not an error.
 
+- **A run with the `auto` payload rule says where its files went.** A `placement:` line (files and bytes to payload and in git, and why) is printed on every run and on `--dry-run`, from the sample the rule already takes. When a cut-off of 0.5 would save a minute or more at this machine's deflate speed and the link's upload rate (measured from the data itself; the rates are assumed until a run has measured them), a `tip:` line names the flag and what it would move. It changes nothing.
+
 ### Fixed
 - **A vault that outgrew its `default` storage profile now switches to `raw` before it stages, not after.** The doubling check ran after staging, so the run that grew the tree (on a real 30 GB git-bound tree, 8 minutes of deflating) still used the slow settings and only the next run got the verdict. The check now runs first, from the same stat walk the sample uses, and the post-staging block is gone.
 
