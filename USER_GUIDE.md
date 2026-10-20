@@ -1182,7 +1182,7 @@ Every snapshot commit writes new objects into the vault's local object store, an
 
 Before the first staging the tool samples the tree (a few chunks from each of up to 32 of the largest files — about 24 MiB of reads however large the tree is). When the tree is at least 2 GiB, big files (≥ 1 MiB) hold at least half of it, and the sample keeps ≥ 50 % of its size under a fast deflate (compressing on one core costs more time than the bytes it saves cost on the wire, so only data that shrinks to under half is left on the slow path), the vault is switched to the **raw profile**: `core.compression=0` and `core.bigFileThreshold=50m` in the vault's own config, with one line saying so and how to undo it. Nothing about the *content* changes — only storage encoding and packing strategy, which are safe to flip at any time.
 
-- The decision is remembered (`snapshot.profile`) and not repeated. A vault that began small and grew past 2 GiB is sampled again once per doubling of the tree.
+- The decision is remembered (`snapshot.profile`) and not repeated. A vault that began small and grew past 2 GiB is sampled again once per doubling of the tree, before the run stages (so the run that grew the tree already uses the verdict).
 - A vault where you have set `core.compression` yourself is never second-guessed.
 - `--no-object-compression` applies the raw profile unconditionally.
 - `--dry-run` takes the sample and reports what a real run would do, without writing it.
@@ -1226,6 +1226,17 @@ git seafile-snapshot --restore --remote seafile://code/flood-vault --into D:/res
 
 What to know:
 
+- **Each run says where its files went, and the cut-off is tunable.** With the `auto`
+  rule, files of 4 MiB or more are decided by a sample of how well they deflate, and the
+  run prints a `placement:` line (files and bytes to payload and in git) and, when a
+  lower cut-off would plainly be faster on your machine and link, a `tip:` line. The
+  default cut-off is `0.9` (only data that barely compresses leaves git);
+  `--payload-auto-ratio R` changes it, and is remembered. A **new** vault with a
+  gigabyte or more of compressible 4--64 MiB files measures your deflate speed and
+  link once on its first real run (four 8 MiB probe files, uploaded and deleted;
+  a crash can leave one, named `probe-*` directly under `payload/objects/`, which is safe
+  to delete) and remembers a cut-off between `0.5` and `0.9`. An existing vault is
+  never re-tuned on its own; `--payload-auto-ratio measure` measures again.
 - **It is on by default, and remembered.** With a `seafile://` remote and a push, a
   run uses `auto` unless the vault remembered something else. A tree with no file
   that big is snapshotted exactly as before: no manifest, no server directory. A run

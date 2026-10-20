@@ -5769,7 +5769,9 @@ def probe_link(remote: str, *, force: bool = False) -> dict[str, Any] | None:
     """Upload speed to the payload store: ``{"single", "upload", "in_use"}`` in MiB/s.
 
     One stream, then ``_PROBE_STREAMS`` at once, each of ``_PROBE_BYTES`` random
-    bytes under a ``.part-`` name that payload tools ignore, all deleted again.
+    bytes named ``probe-*`` directly in ``objects/``, outside the 256 fan-out
+    directories that gc, verify, view and restore read, so no payload tool ever
+    sees one; all are deleted again (a crash can leave one, which is safe to delete).
     ``in_use`` is whether the store already holds objects; unless *force*, that
     is reported without uploading anything.  Any failure is ``None``: a
     measurement must never fail a run.

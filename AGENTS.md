@@ -47,9 +47,10 @@ identity and the first CI failures of a release have always been environmental.
 ## Rules that are enforced by tests (so you will hit them)
 
 - A snapshot-tool part may not exceed **700 lines** (`99_cli.py`, with
-  `parse_args` and `main`, is the largest at about 550; `75_payload.py` is about
-  500; the argument checks live in `96_cli_checks.py`, embedded repositories in
-  `71_embedded.py`, modification times in `73_mtimes.py`). A name used as a *default
+  `parse_args` and `main`, is the largest at about 600; `75_payload.py` is about
+  560; the argument checks live in `96_cli_checks.py`, embedded repositories in
+  `71_embedded.py`, modification times in `73_mtimes.py`, the placement report and
+  the machine/link measurement in `81_placement.py`). A name used as a *default
   argument* is evaluated at import, so it must come from an earlier part (use
   `None` and resolve it inside the function). All imports live in `10_setup.py`; a top-level
   name is defined in exactly one part; nothing evaluated at import time may come

@@ -291,8 +291,11 @@ it.
 The maintenance pass adds on top of that floor, and only when it fires: the
 first run that has not yet decided the storage profile samples the tree (stat
 calls plus about 24 MiB of reads, no git processes) and, for a large raw
-payload, writes two config values; and a push whose loose tier has passed
-256 MiB takes an incremental `repack -d` + prune pair.
+payload, writes two config values (a vault decided `default` repeats the stat
+walk each run to see whether its tree has doubled); a *new* vault with a
+gigabyte or more of compressible 4--64 MiB files also measures its link once
+(four 8 MiB uploads, deleted again; PAYLOAD.md D1); and a push whose loose tier
+has passed 256 MiB takes an incremental `repack -d` + prune pair.
 
 > **Watch the remote's packfile count.** The helper counts only *small* packs (below half of seafile.gcmaxpackmib, default 1 GiB) and warns once their number reaches the threshold (seafile.gcthreshold, default 20). With `seafile.autogc` on (the default), a bounded tail merge consolidates them inline after each qualifying push — large packs are frozen where they stand; with it off, run `git-remote-seafile gc <url>` deliberately. A remote that is never compacted grows in bytes without bound — see the
 > large-files section below for how fast that can be.
