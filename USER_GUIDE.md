@@ -244,6 +244,8 @@ git pull
 pip install -e .
 ```
 
+**Upgrading to v0.9.9** is the same as upgrading to v0.9.8, which was tagged but never released: `git seafile-snapshot` run from a subfolder of a repository now snapshots the whole repository (with a note), and an explicit `--source` naming a subfolder is refused; a vault that already remembers a subfolder keeps working. Nothing about what is stored changes.
+
 **Upgrading to v0.9.8 from v0.9.7** changes nothing for a setup that works, except that `git seafile-snapshot` run from a subfolder of a repository now snapshots the whole repository (with a note), and an explicit `--source` naming a subfolder is refused; a vault that already remembers a subfolder keeps working. Nothing about what is stored changes.
 
 **Upgrading to v0.9.7 from v0.9.6** changes nothing for a setup that works: upload retries obtain a fresh single-use upload link to prevent HTTP 400 errors, `seafile-doctor errors` displays all errors under the default `--days 0` filter, stale lock tickets from recycled local PIDs are fast-reclaimed via process start time verification, `repo.db` access is consolidated, and snapshot vaults pin `core.quotepath = false` to display UTF-8/Thai paths without octal escaping. Nothing about what is stored changes.

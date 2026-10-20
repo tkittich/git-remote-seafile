@@ -7,15 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.9] - 2026-10-20
+
+`v0.9.8` was tagged but never released: its release job failed on one test, which is fixed here. Everything in 0.9.8 is in this release, so a snapshot run from a subfolder no longer files a partial tree on the repository's vault. Nothing in how a snapshot or a push is stored changes.
+
+### Fixed
+- **The Windows access-denied pid test no longer depends on the runner's process list.** It stubs `OpenProcess` instead of probing a fixed pid against the real API, so a runner that happens to run a process with that pid cannot fail it (it failed the `v0.9.8` release job on windows-latest 3.12, twice). Test only; no tool behaviour changes.
+- **Everything in 0.9.8** (a snapshot of a subfolder is of the whole repository); see that section below.
+
 ## [0.9.8] - 2026-10-20
 
 `git seafile-snapshot` run from a subfolder of a repository no longer files a partial tree on the repository's vault. Nothing in how a snapshot or a push is stored changes.
 
 ### Fixed
 - **`git seafile-snapshot` from a subfolder of a repository no longer snapshots the subfolder onto the repository's vault.** The source's `seafile://` remote was found from the subfolder, so the folder's files were committed on top of the whole repository's `-vault` chain (a diff of thousands of deleted files). A snapshot is now of the whole repository: from a subfolder the source becomes the repository root, with a note, and an explicit `--source` naming a subfolder is refused. A vault that already remembers a subfolder keeps working.
-
-### Changed
-- **Test fixture hardened.** The Windows access-denied pid test stubs `OpenProcess` instead of probing a fixed pid against the real API, so a runner that happens to run a process with that pid cannot fail it (it failed the first `v0.9.8` release job on windows-latest 3.12).
 
 ## [0.9.7] - 2026-10-16
 
@@ -1700,6 +1705,7 @@ Data-loss and silent-failure fixes, and the Python floor raised to 3.9.
   with zero-config desktop-client token discovery, distributed locking, remote
   packfile compaction, and a Git LFS custom transfer agent.
 
+[0.9.9]: https://github.com/tkittich/git-remote-seafile/compare/v0.9.8...v0.9.9
 [0.9.8]: https://github.com/tkittich/git-remote-seafile/compare/v0.9.7...v0.9.8
 [0.9.7]: https://github.com/tkittich/git-remote-seafile/compare/v0.9.6...v0.9.7
 [0.9.6]: https://github.com/tkittich/git-remote-seafile/compare/v0.9.5...v0.9.6
