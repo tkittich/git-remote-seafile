@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.10] - 2026-10-20
+
+A snapshot with the `auto` payload rule now says where each file went, can be tuned with `--payload-auto-ratio`, and a new vault measures its own machine and link once to choose the cut-off. An existing vault changes nothing: nothing moves between git and payload unless you type the flag. The storage profile for a vault that outgrew its first verdict is now decided before staging instead of after.
+
 ### Added
 - **`--payload-auto-ratio R` tunes the `auto` payload rule.** A file of 4–64 MiB goes to payload when a sample of it keeps at least *R* of its size under a fast deflate; the default stays 0.9 for an existing vault (nothing moves unless the flag is typed; a new vault measures, below). A lower value sends moderately compressible data to payload instead of deflating it through git, which pays when deflate is slow next to the link and gives up git's delta between snapshots. It is remembered in the vault like `--payload-min-size`; a remembered value that is not a ratio is the default, not an error.
 
@@ -1715,6 +1719,7 @@ Data-loss and silent-failure fixes, and the Python floor raised to 3.9.
   with zero-config desktop-client token discovery, distributed locking, remote
   packfile compaction, and a Git LFS custom transfer agent.
 
+[0.9.10]: https://github.com/tkittich/git-remote-seafile/compare/v0.9.9...v0.9.10
 [0.9.9]: https://github.com/tkittich/git-remote-seafile/compare/v0.9.8...v0.9.9
 [0.9.8]: https://github.com/tkittich/git-remote-seafile/compare/v0.9.7...v0.9.8
 [0.9.7]: https://github.com/tkittich/git-remote-seafile/compare/v0.9.6...v0.9.7

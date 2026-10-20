@@ -244,6 +244,8 @@ git pull
 pip install -e .
 ```
 
+**Upgrading to v0.9.10** Nothing changes for an existing vault, and nothing about what is stored changes. A new vault with a gigabyte or more of compressible 4–64 MiB files measures once on its first real run: four 8 MiB probe files are uploaded to the payload store and deleted (eight library-history entries), and the cut-off is remembered. `--dry-run` measures nothing. To choose a cut-off for an existing vault, run once with `--payload-auto-ratio measure` or `--payload-auto-ratio R`; files then move between git and payload once, and copies already in history stay there.
+
 **Upgrading to v0.9.9** is the same as upgrading to v0.9.8, which was tagged but never released: `git seafile-snapshot` run from a subfolder of a repository now snapshots the whole repository (with a note), and an explicit `--source` naming a subfolder is refused; a vault that already remembers a subfolder keeps working. Nothing about what is stored changes.
 
 **Upgrading to v0.9.8 from v0.9.7** changes nothing for a setup that works, except that `git seafile-snapshot` run from a subfolder of a repository now snapshots the whole repository (with a note), and an explicit `--source` naming a subfolder is refused; a vault that already remembers a subfolder keeps working. Nothing about what is stored changes.

@@ -1,6 +1,6 @@
 # Engineering Roadmap & Backlog
 
-**Baseline:** v0.9.9 (v0.9.0: the snapshot tool ships in the wheel and gains payload mode: large files stored by SHA-256, with gc, verify, retention and browsable views; on top of 0.8.8's measured pack cap, chunked upload, autogc, `doctor`, `gc --tail` and one output/exit convention)  
+**Baseline:** v0.9.10 (v0.9.0: the snapshot tool ships in the wheel and gains payload mode: large files stored by SHA-256, with gc, verify, retention and browsable views; on top of 0.8.8's measured pack cap, chunked upload, autogc, `doctor`, `gc --tail` and one output/exit convention)  
 **Scope:** What shipped in each release line, the active backlog, and the v1.0.0 horizon.  
 **Test Suite:** all green on `tools/run_tests_parallel.py` (the runner prints the current count; it is deliberately not repeated here). **Python:** 3.10+ (3.9 EOL).
 
@@ -191,6 +191,9 @@ One line per capability — see [CHANGELOG.md](CHANGELOG.md) for the full detail
 
 **v0.9.9 (2026-10-20) — v0.9.8, released.**
 - `v0.9.8` was tagged but never released (its release job failed on a Windows test that depended on the runner's process list); 0.9.9 carries its snapshot fix and the test fix.
+
+**v0.9.10 (2026-10-20) — the payload cut-off is reported, tunable and measured.**
+- `--payload-auto-ratio R|measure`; a `placement:` line and a `tip:` line on every `auto` run; a new vault measures deflate speed and its link once and remembers the cut-off; the storage profile of a vault that outgrew its first verdict is decided before staging.
 
 ---
 
