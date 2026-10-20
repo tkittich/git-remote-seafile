@@ -1288,15 +1288,24 @@ class StaleLockTests(_SnapshotFixture):
         # dispatch logic against a controlled error code.
         import ctypes
 
+        # OpenProcess is stubbed to fail: with a real call, a hosted runner that
+        # happens to be running a process with this pid opens it, never reaches
+        # the error dispatch, and the second assertion fails (v0.9.8 release job,
+        # windows-latest 3.12).
+        failing_kernel32 = unittest.mock.Mock()
+        failing_kernel32.OpenProcess.return_value = None
         real_get_last_error = ctypes.get_last_error
         with unittest.mock.patch.object(
-            ctypes, "get_last_error", return_value=5
-        ):  # ERROR_ACCESS_DENIED
-            self.assertTrue(snap.pid_is_alive(1234))
-        with unittest.mock.patch.object(
-            ctypes, "get_last_error", return_value=87
-        ):  # ERROR_INVALID_PARAMETER: no such process
-            self.assertFalse(snap.pid_is_alive(1234))
+            snap, "_win_kernel32", return_value=failing_kernel32
+        ):
+            with unittest.mock.patch.object(
+                ctypes, "get_last_error", return_value=5
+            ):  # ERROR_ACCESS_DENIED
+                self.assertTrue(snap.pid_is_alive(1234))
+            with unittest.mock.patch.object(
+                ctypes, "get_last_error", return_value=87
+            ):  # ERROR_INVALID_PARAMETER: no such process
+                self.assertFalse(snap.pid_is_alive(1234))
         # The patch restored the real reader (leak-check discipline).
         self.assertEqual(ctypes.get_last_error, real_get_last_error)
 
