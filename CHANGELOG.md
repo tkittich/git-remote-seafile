@@ -14,6 +14,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - **`git seafile-snapshot` from a subfolder of a repository no longer snapshots the subfolder onto the repository's vault.** The source's `seafile://` remote was found from the subfolder, so the folder's files were committed on top of the whole repository's `-vault` chain (a diff of thousands of deleted files). A snapshot is now of the whole repository: from a subfolder the source becomes the repository root, with a note, and an explicit `--source` naming a subfolder is refused. A vault that already remembers a subfolder keeps working.
 
+### Changed
+- **Test fixture hardened.** The Windows access-denied pid test stubs `OpenProcess` instead of probing a fixed pid against the real API, so a runner that happens to run a process with that pid cannot fail it (it failed the first `v0.9.8` release job on windows-latest 3.12).
+
 ## [0.9.7] - 2026-10-16
 
 Upload retries obtain a fresh single-use upload link, stale remote locks from recycled local PIDs are fast-reclaimed,
