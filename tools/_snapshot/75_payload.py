@@ -204,6 +204,7 @@ _CLOUD_PLACEHOLDER_ATTRS = 0x1000 | 0x400000  # OFFLINE | RECALL_ON_DATA_ACCESS
 def find_payload_files(
     source: Path, excludes: list[str], min_size: int, auto: bool = False,
     ratio: float = _AUTO_INCOMPRESSIBLE, survey: dict[str, Any] | None = None,
+    sampled: dict[str, float] | None = None,
 ) -> dict[str, Candidate]:
     """``{relative path: (size, mtime_ns, mode, inode)}`` for every payload file.
 
@@ -240,7 +241,9 @@ def find_payload_files(
             placeholders.append(rel)
             continue
         if auto and size < _AUTO_UPPER:
-            measured = _sample_ratio(source / rel, size)
+            # *sampled* carries an earlier pass's ratios, so choosing a new cut-off
+            # does not read the band again.
+            measured = sampled[rel] if sampled and rel in sampled else _sample_ratio(source / rel, size)
             if survey is not None and measured is not None:
                 survey["mid"].append((size, measured, rel))
             if measured is None or measured < ratio:

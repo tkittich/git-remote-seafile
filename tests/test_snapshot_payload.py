@@ -13,6 +13,7 @@ not).
 
 from __future__ import annotations
 
+import argparse
 import contextlib
 import hashlib
 import io
@@ -2129,6 +2130,132 @@ class PayloadRememberVerifyViewAndClockTests(_PayloadFixture):
         self.assertIn("payload report skipped: boom", out)
         # a failed report is retried next time: the stamp is still the aged one
         self.assertEqual(_git(self.vault, "config", "snapshot.payloadgcreport").strip(), aged)
+
+
+class PayloadTuningTests(_PayloadFixture):
+    """A new vault measures this machine and its link once and remembers the cut-off."""
+
+    def setUp(self):
+        super().setUp()
+        (self.src / "big1.bin").unlink()
+        (self.src / "sub" / "big2.bin").unlink()
+        # ~0.6 under a fast deflate: in git at the default cut-off, payload at 0.5
+        (self.src / "half.bin").write_bytes(os.urandom(1800) + b"\0" * 1200)
+        self.addCleanup(unittest.mock.patch.stopall)
+        for name, value in (("_AUTO_UPPER", 8000), ("_AUTO_LOWER", 2000),
+                            ("_WHATIF_MIN_BYTES", 1000), ("_PROBE_BYTES", 65536)):
+            unittest.mock.patch.object(snap, name, value).start()
+        # Deflate slow next to the link (the stub's loopback), whatever this machine is.
+        unittest.mock.patch.object(snap, "measure_deflate_mibs", return_value=20.0).start()
+
+    def paid(self) -> set[str]:
+        manifest = json.loads(_git(self.vault, "show", "snapshot:.seafile-payload/manifest.json"))
+        return {f["path"] for f in manifest["files"]}
+
+    def setting(self, key: str) -> str:
+        return snap._config(self.vault, key)
+
+    def no_probe(self):
+        return unittest.mock.patch.object(
+            snap, "probe_link", side_effect=AssertionError("the link was probed"))
+
+    def test_the_cutoff_is_where_payload_and_git_take_equally_long_within_bounds(self):
+        # fast link, slow deflate: payload wins at any ratio, so the floor
+        self.assertEqual(snap.tuned_ratio(20.0, 500.0, 300.0), 0.5)
+        # a slow link with a fast deflate: compressing in git pays, so the ceiling
+        self.assertEqual(snap.tuned_ratio(500.0, 0.5, 0.5), 0.9)
+        # in between it is the break-even itself
+        middle = snap.tuned_ratio(88.0, 2.0, 1.2)
+        self.assertGreater(middle, 0.5)
+        self.assertLess(middle, 0.9)
+        self.assertAlmostEqual(middle, 1.2 * (1 / 2.0 + 1 / 2000.0 - 1 / 88.0), places=6)
+
+    def test_the_ratio_argument_is_a_ratio_or_measure(self):
+        self.assertEqual(snap.parse_ratio_argument("measure"), "measure")
+        self.assertEqual(snap.parse_ratio_argument("0.5"), 0.5)
+        with self.assertRaises(argparse.ArgumentTypeError):
+            snap.parse_ratio_argument("fast")
+
+    def test_the_probe_measures_the_link_and_leaves_nothing_behind(self):
+        with unittest.mock.patch.dict(os.environ, self.env):
+            result = snap.probe_link(self.remote)
+        self.assertIsNotNone(result)
+        self.assertGreater(result["single"], 0)
+        self.assertGreater(result["upload"], 0)
+        self.assertFalse(result["in_use"])
+        self.assertEqual(self.object_count(), 0, self.stored_names())
+
+    def test_a_new_vault_measures_once_and_remembers(self):
+        rc, out, err = self.bare()
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn("tuned: payload cut-off is 0.50", out)
+        self.assertEqual(self.paid(), {"half.bin"})  # the 0.6 file moved to payload
+        self.assertEqual(self.setting("snapshot.payloadratio"), "0.5")
+        self.assertEqual(self.setting("snapshot.payloadratiosource"), "measured")
+        self.assertGreater(float(self.setting("snapshot.uplink")), 0)
+        self.assertGreater(float(self.setting("snapshot.uplink1")), 0)
+        self.assertNotIn("assumed", out)  # the tip would have used the rates just measured
+        # the next run remembers: no probe, same placement
+        (self.src / "small.txt").write_bytes(b"changed\n")
+        with self.no_probe():
+            rc, out, err = self.bare()
+        self.assertEqual(rc, 0, out + err)
+        self.assertNotIn("tuned:", out)
+        self.assertEqual(self.paid(), {"half.bin"})
+
+    def test_an_established_vault_is_never_tuned_on_its_own(self):
+        snap.ensure_vault(self.vault, "snapshot")
+        _git(self.vault, "config", "snapshot.payload", "auto")
+        with self.no_probe():
+            rc, out, err = self.bare()
+        self.assertEqual(rc, 0, out + err)
+        self.assertNotIn("tuned:", out)
+        self.assertNotIn("half.bin", self.paid_or_empty())
+
+    def paid_or_empty(self) -> set[str]:
+        try:
+            return self.paid()
+        except subprocess.CalledProcessError:
+            return set()
+
+    def test_a_remote_that_already_holds_payload_keeps_its_cutoff(self):
+        self.orphan()  # another machine's object: the store is in use
+        rc, out, err = self.bare()
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn("already holds payload objects", out)
+        self.assertEqual(self.setting("snapshot.payloadratio"), "")
+        self.assertNotIn("half.bin", self.paid_or_empty())
+        self.assertEqual([n for n in self.stored_names() if ".part-" in n], [])  # nothing uploaded
+
+    def test_a_probe_that_fails_leaves_the_default_and_the_run_succeeds(self):
+        with unittest.mock.patch.object(snap, "probe_link", return_value=None):
+            rc, out, err = self.bare()
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn("could not measure the link", out)
+        self.assertEqual(self.setting("snapshot.payloadratio"), "")
+
+    def test_measure_asks_again_even_for_an_established_vault_and_a_shared_remote(self):
+        snap.ensure_vault(self.vault, "snapshot")
+        _git(self.vault, "config", "snapshot.payload", "auto")
+        _git(self.vault, "config", "snapshot.payloadratio", "0.9")
+        self.orphan()
+        rc, out, err = self.bare("--payload-auto-ratio", "measure")
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn("tuned: payload cut-off is 0.50", out)
+        self.assertEqual(self.setting("snapshot.payloadratio"), "0.5")
+
+    def test_a_typed_ratio_is_not_overridden(self):
+        with self.no_probe():
+            rc, out, err = self.bare("--payload-auto-ratio", "0.9")
+        self.assertEqual(rc, 0, out + err)
+        self.assertEqual(self.setting("snapshot.payloadratio"), "0.9")
+        self.assertEqual(self.setting("snapshot.payloadratiosource"), "typed")
+
+    def test_a_dry_run_never_touches_the_server_to_measure(self):
+        with self.no_probe():
+            rc, out, err = self.bare("--dry-run")
+        self.assertEqual(rc, 0, out + err)
+        self.assertNotIn("tuned:", out)
 
 
 if __name__ == "__main__":

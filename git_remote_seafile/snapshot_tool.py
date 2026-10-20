@@ -3624,6 +3624,7 @@ _CLOUD_PLACEHOLDER_ATTRS = 0x1000 | 0x400000  # OFFLINE | RECALL_ON_DATA_ACCESS
 def find_payload_files(
     source: Path, excludes: list[str], min_size: int, auto: bool = False,
     ratio: float = _AUTO_INCOMPRESSIBLE, survey: dict[str, Any] | None = None,
+    sampled: dict[str, float] | None = None,
 ) -> dict[str, Candidate]:
     """``{relative path: (size, mtime_ns, mode, inode)}`` for every payload file.
 
@@ -3660,7 +3661,9 @@ def find_payload_files(
             placeholders.append(rel)
             continue
         if auto and size < _AUTO_UPPER:
-            measured = _sample_ratio(source / rel, size)
+            # *sampled* carries an earlier pass's ratios, so choosing a new cut-off
+            # does not read the band again.
+            measured = sampled[rel] if sampled and rel in sampled else _sample_ratio(source / rel, size)
             if survey is not None and measured is not None:
                 survey["mid"].append((size, measured, rel))
             if measured is None or measured < ratio:
@@ -4761,15 +4764,17 @@ def add_payload_arguments(parser: Any) -> None:
     )
     parser.add_argument(
         "--payload-auto-ratio",
-        type=float,
+        type=parse_ratio_argument,
         default=None,
-        metavar="R",
+        metavar="R|measure",
         help="payload mode, auto rule: a file of 4-64 MiB goes to payload when a sample of it "
         "keeps at least R of its size under a fast deflate (default 0.9, i.e. only data that "
         "barely compresses). Lower it (e.g. 0.5) to send moderately compressible data to "
         "payload instead of deflating it through git: that is faster when deflate is slow "
         "next to the link, and gives up git's delta compression between snapshots. "
-        "0 < R <= 1; remembered by a complete real run like --payload-min-size",
+        "0 < R <= 1; remembered by a complete real run like --payload-min-size. A new vault "
+        "with a gigabyte or more of such data measures this machine and its link once and "
+        "remembers the result; 'measure' does that again on demand",
     )
 
 
@@ -4828,7 +4833,7 @@ def payload_conflicts(args: argparse.Namespace) -> list[str]:
             "that were never uploaded"
         )
     if args.payload_auto_ratio is not None:
-        if not 0 < args.payload_auto_ratio <= 1:
+        if isinstance(args.payload_auto_ratio, float) and not 0 < args.payload_auto_ratio <= 1:
             problems.append("--payload-auto-ratio must be above 0 and at most 1")
         if args.no_payload or (
             args.payload_min_size is not None and args.payload_min_size.strip().lower() != "auto"
@@ -4923,11 +4928,26 @@ def remember_payload_value(vault: Path, value: str | None, *, dry_run: bool) -> 
     )
 
 
-def resolve_payload_ratio(value: float | None, vault: Path) -> float:
+def parse_ratio_argument(text: str) -> float | str:
+    """``--payload-auto-ratio``: a ratio above 0 and at most 1, or ``measure``."""
+    if text.strip().lower() == "measure":
+        return "measure"
+    try:
+        value = float(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"not a ratio: {text!r} (a number above 0 and at most 1, or 'measure')"
+        ) from None
+    return value
+
+
+def resolve_payload_ratio(value: float | str | None, vault: Path) -> float:
     """The auto rule's compressibility cut-off: the flag, else what this vault
     remembered, else the default.  A remembered value that is not a usable ratio
-    (a hand edit) is the default, not an error: a default is not a request."""
-    if value is not None:
+    (a hand edit) is the default, not an error: a default is not a request.
+    ``measure`` asks for a new measurement, so what the vault remembered is only
+    where this run starts from."""
+    if isinstance(value, float):
         return value
     if (vault / ".git").exists():
         try:
@@ -4939,20 +4959,22 @@ def resolve_payload_ratio(value: float | None, vault: Path) -> float:
     return _AUTO_INCOMPRESSIBLE
 
 
-def remember_payload_ratio(vault: Path, value: float | None, *, dry_run: bool) -> None:
+def remember_payload_ratio(vault: Path, value: float | str | None, *, dry_run: bool) -> None:
     """Write a ratio that was typed, after a *complete* real run; never a default."""
-    if value is None or dry_run:
+    if not isinstance(value, float) or dry_run:
         return
-    _run(
-        ["git", "-C", str(vault), "config", "snapshot.payloadratio", repr(value)],
-        text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-    )
+    for key, text in (("snapshot.payloadratio", repr(value)),
+                      ("snapshot.payloadratiosource", "typed")):
+        _run(
+            ["git", "-C", str(vault), "config", key, text],
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
 
 
 def plan_payload(
     value: str | None, remote: str | None, source: Path, excludes: list[str],
     ratio: float = _AUTO_INCOMPRESSIBLE, ratio_typed: bool = False,
-    survey: dict[str, Any] | None = None,
+    survey: dict[str, Any] | None = None, sampled: dict[str, float] | None = None,
 ) -> tuple[int | None, dict[str, Candidate], str]:
     """``(min_size, candidates, rule)``; ``(None, {}, "size")`` when payload mode is off."""
     auto = value is not None and value.strip().lower() == "auto"
@@ -4977,7 +4999,7 @@ def plan_payload(
             "payload mode needs a remote to upload to: pass --remote "
             "seafile://<library>/<path> (or run from a source with a seafile:// remote)"
         )
-    return min_size, find_payload_files(source, excludes, min_size, auto, ratio, survey), rule
+    return min_size, find_payload_files(source, excludes, min_size, auto, ratio, survey, sampled), rule
 
 
 def refuse_flagless_payload_vault(
@@ -5708,6 +5730,159 @@ def placement_lines(
         f"server and without git's delta between snapshots. Not applied."
     )
     return lines
+
+
+# -- Measuring this machine and its link, once, for a new vault ------------------------
+#
+# Which cut-off is faster depends on two speeds the tool can measure: how fast this
+# machine deflates the data that would stay in git, and how fast the link takes an
+# upload.  A *new* vault with a gigabyte or more of such data measures both on its
+# first real run and remembers the result (``snapshot.payloadratio``), so the choice
+# is made once and stays: a cut-off that changed from run to run would move files
+# between git and payload.  An established vault is never re-tuned on its own -- a
+# default is not a request -- and neither is one whose remote already holds payload
+# objects, because two machines on different cut-offs would move files back and
+# forth.  ``--payload-auto-ratio measure`` measures again on request.
+
+#: Each probe file is this big (a shorter stream is mostly request latency), and the
+#: aggregate probe runs this many at once -- the default ``--payload-jobs``.
+_PROBE_BYTES = 8 * 1024 ** 2
+_PROBE_STREAMS = 3
+
+
+def tuned_ratio(deflate: float, upload: float, single: float) -> float:
+    """The cut-off at which payload and git take equally long, kept in [0.5, 0.9].
+
+    Per MiB, git deflates it (``1/deflate``) and sends the compressed share down
+    one stream (``ratio/single``); payload hashes it and sends all of it, *jobs* at
+    once (``1/upload``).  Payload is faster when ``ratio`` exceeds
+    ``single * (1/upload + 1/hash - 1/deflate)``.  On a fast link that is zero or
+    negative, which would send everything of 4 MiB or more to payload; the floor
+    keeps the highly compressible files in git, where they cost little to store and
+    deltas apply, and the ceiling is the old fixed default.
+    """
+    breakeven = single * (1 / upload + 1 / _ASSUMED_HASH_MIBS - 1 / deflate)
+    return min(_AUTO_INCOMPRESSIBLE, max(_WHATIF_RATIO, breakeven))
+
+
+def probe_link(remote: str, *, force: bool = False) -> dict[str, Any] | None:
+    """Upload speed to the payload store: ``{"single", "upload", "in_use"}`` in MiB/s.
+
+    One stream, then ``_PROBE_STREAMS`` at once, each of ``_PROBE_BYTES`` random
+    bytes under a ``.part-`` name that payload tools ignore, all deleted again.
+    ``in_use`` is whether the store already holds objects; unless *force*, that
+    is reported without uploading anything.  Any failure is ``None``: a
+    measurement must never fail a run.
+    """
+    try:
+        library, base, server_url = payload_location(remote)
+        client = _open_client(server_url)
+        rid = client.get_repo_id(library)
+        directory = f"{base}/objects"
+        in_use = any(e.get("type") == "dir" for e in client.list_dir(rid, directory))
+        if in_use and not force:
+            return {"in_use": True}
+        client.mkdir_p(rid, directory)
+    except Exception:
+        return None
+    names: list[str] = []
+    mib = _PROBE_BYTES / 1024 ** 2
+    try:
+        data = os.urandom(_PROBE_BYTES)
+        nonce = os.urandom(4).hex()
+
+        def push(index: int, worker: Any) -> bool:
+            name = f"probe-{nonce}-{index}{_PART_SUFFIX}{nonce}"
+            names.append(name)
+            return bool(worker.upload_file(rid, directory, name, data))
+
+        started = time.perf_counter()
+        if not push(0, client):
+            return None
+        single = mib / (time.perf_counter() - started)
+        workers = [_open_client(server_url) for _ in range(_PROBE_STREAMS)]
+        started = time.perf_counter()
+        with ThreadPoolExecutor(max_workers=_PROBE_STREAMS) as pool:
+            done = list(pool.map(lambda i: push(i + 1, workers[i]), range(_PROBE_STREAMS)))
+        if not all(done):
+            return None
+        upload = _PROBE_STREAMS * mib / (time.perf_counter() - started)
+        return {"single": single, "upload": upload, "in_use": in_use}
+    except Exception:
+        return None
+    finally:
+        for name in names:
+            try:
+                client.delete_entry(rid, f"{directory}/{name}")
+            except Exception:
+                pass  # a probe file left behind is ignored by every payload tool
+
+
+def tuning_mode(
+    typed: float | str | None, vault: Path, *, dry_run: bool, auto_rule: bool,
+    remote: str | None, has_history: bool,
+) -> str | None:
+    """``"forced"`` (asked for), ``"new"`` (a vault with nothing remembered yet) or None."""
+    if dry_run or not auto_rule or not remote:
+        return None
+    if typed == "measure":
+        return "forced"
+    if typed is not None or has_history:
+        return None
+    if _config(vault, "snapshot.payload") or _config(vault, "snapshot.payloadratio"):
+        return None
+    return "new"
+
+
+def tune_payload_ratio(
+    remote: str, source: Path, survey: dict[str, Any], *, forced: bool
+) -> dict[str, Any] | None:
+    """Measure and choose, or ``None`` when there is nothing to decide.
+
+    The result carries ``ratio``, the two measured rates and the deflate speed, and
+    a ``message`` to print; with no ``ratio`` the message says why the default was
+    kept.  Nothing is written here -- :func:`remember_tuning` does that after a
+    complete run.
+    """
+    in_git = [m for m in survey["mid"] if m[1] < _AUTO_INCOMPRESSIBLE]
+    if sum(m[0] for m in in_git) < _WHATIF_MIN_BYTES:
+        return None  # too little at stake to touch the server for
+    deflate = measure_deflate_mibs(source, in_git)
+    if not deflate:
+        return None
+    probe = probe_link(remote, force=forced)
+    if probe is None:
+        return {"message": "could not measure the link (payload cut-off stays "
+                           f"{_AUTO_INCOMPRESSIBLE:g}); --payload-auto-ratio measure tries again"}
+    if probe.get("in_use") and "single" not in probe:
+        return {"message": "this remote already holds payload objects, so its cut-off "
+                           f"({_AUTO_INCOMPRESSIBLE:g} unless set) is kept: machines must agree. "
+                           "--payload-auto-ratio measure chooses one for this vault"}
+    ratio = tuned_ratio(deflate, probe["upload"], probe["single"])
+    kept = "stays" if ratio >= _AUTO_INCOMPRESSIBLE else "is"
+    return {
+        "ratio": ratio, "deflate": deflate, "upload": probe["upload"], "single": probe["single"],
+        "message": (
+            f"tuned: payload cut-off {kept} {ratio:.2f} (deflate {deflate:.0f} MiB/s here; "
+            f"uploads {probe['upload']:.0f} MiB/s with {_PROBE_STREAMS} at once, "
+            f"{probe['single']:.0f} MiB/s with one). Remembered for this vault; "
+            "--payload-auto-ratio R sets it, --payload-auto-ratio measure measures again"
+        ),
+    }
+
+
+def remember_tuning(vault: Path, tuning: dict[str, Any] | None, *, dry_run: bool) -> None:
+    """Keep a measured cut-off and the link rates after a *complete* real run."""
+    if not tuning or tuning.get("ratio") is None or dry_run:
+        return
+    for key, value in (("snapshot.payloadratio", repr(float(tuning["ratio"]))),
+                       ("snapshot.payloadratiosource", "measured"),
+                       ("snapshot.uplink", f"{tuning['upload']:.1f}"),
+                       ("snapshot.uplink1", f"{tuning['single']:.1f}")):
+        _run(
+            ["git", "-C", str(vault), "config", key, value],
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
 
 
 def _checkout(repo: Path, rev: str, *, detach: bool = False) -> None:
@@ -7067,12 +7242,37 @@ def main(argv: list[str] | None = None) -> int:
             ratio=payload_ratio, ratio_typed=args.payload_auto_ratio is not None,
             survey=payload_survey,
         )
+        tuning_kind = tuning_mode(
+            args.payload_auto_ratio, vault, dry_run=args.dry_run,
+            auto_rule=payload_rule == "auto" and bool(payload_min), remote=remote,
+            has_history=(vault / ".git").exists()
+            and current_tip(vault / ".git", source, branch) is not None,
+        )
+        payload_tuning = (
+            tune_payload_ratio(remote or "", source, payload_survey, forced=tuning_kind == "forced")
+            if tuning_kind else None
+        )
+        if payload_tuning:
+            print(payload_tuning["message"], flush=True)
+            if payload_tuning.get("ratio") is not None and payload_tuning["ratio"] != payload_ratio:
+                payload_ratio = payload_tuning["ratio"]
+                band = {rel: seen for _size, seen, rel in payload_survey["mid"]}
+                payload_survey = new_survey()
+                payload_min, payload_candidates, payload_rule = plan_payload(
+                    args.payload_min_size, remote, source, exclude,
+                    ratio=payload_ratio, ratio_typed=args.payload_auto_ratio is not None,
+                    survey=payload_survey, sampled=band,
+                )
         payload_skip = frozenset(payload_candidates)
         git_dir = ensure_vault(vault, branch)
         # One read of the vault's config serves identity, byte-exactness and
         # the remembered settings below: none of them writes a key another one
         # compares against, so the map cannot go stale between the three.
         vault_config = _read_local_config_map(vault)
+        if payload_tuning and payload_tuning.get("upload"):
+            # Just measured, not yet remembered (that waits for a complete run).
+            vault_config["snapshot.uplink"] = [str(payload_tuning["upload"])]
+            vault_config["snapshot.uplink1"] = [str(payload_tuning["single"])]
         if payload_rule == "auto" and payload_min and (payload_candidates or payload_survey["mid"]):
             for line in placement_lines(
                 payload_survey, payload_candidates, payload_ratio, source, vault_config
@@ -7321,6 +7521,7 @@ def main(argv: list[str] | None = None) -> int:
         # every scheduled run after it.  A preview never gets here.
         remember_payload_value(vault, args.payload_min_size, dry_run=args.dry_run)
         remember_payload_ratio(vault, args.payload_auto_ratio, dry_run=args.dry_run)
+        remember_tuning(vault, payload_tuning, dry_run=args.dry_run)
         remember_record_mtimes(vault, args, dry_run=args.dry_run)
         remember_settings(
             vault,

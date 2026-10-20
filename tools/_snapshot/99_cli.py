@@ -288,12 +288,37 @@ def main(argv: list[str] | None = None) -> int:
             ratio=payload_ratio, ratio_typed=args.payload_auto_ratio is not None,
             survey=payload_survey,
         )
+        tuning_kind = tuning_mode(
+            args.payload_auto_ratio, vault, dry_run=args.dry_run,
+            auto_rule=payload_rule == "auto" and bool(payload_min), remote=remote,
+            has_history=(vault / ".git").exists()
+            and current_tip(vault / ".git", source, branch) is not None,
+        )
+        payload_tuning = (
+            tune_payload_ratio(remote or "", source, payload_survey, forced=tuning_kind == "forced")
+            if tuning_kind else None
+        )
+        if payload_tuning:
+            print(payload_tuning["message"], flush=True)
+            if payload_tuning.get("ratio") is not None and payload_tuning["ratio"] != payload_ratio:
+                payload_ratio = payload_tuning["ratio"]
+                band = {rel: seen for _size, seen, rel in payload_survey["mid"]}
+                payload_survey = new_survey()
+                payload_min, payload_candidates, payload_rule = plan_payload(
+                    args.payload_min_size, remote, source, exclude,
+                    ratio=payload_ratio, ratio_typed=args.payload_auto_ratio is not None,
+                    survey=payload_survey, sampled=band,
+                )
         payload_skip = frozenset(payload_candidates)
         git_dir = ensure_vault(vault, branch)
         # One read of the vault's config serves identity, byte-exactness and
         # the remembered settings below: none of them writes a key another one
         # compares against, so the map cannot go stale between the three.
         vault_config = _read_local_config_map(vault)
+        if payload_tuning and payload_tuning.get("upload"):
+            # Just measured, not yet remembered (that waits for a complete run).
+            vault_config["snapshot.uplink"] = [str(payload_tuning["upload"])]
+            vault_config["snapshot.uplink1"] = [str(payload_tuning["single"])]
         if payload_rule == "auto" and payload_min and (payload_candidates or payload_survey["mid"]):
             for line in placement_lines(
                 payload_survey, payload_candidates, payload_ratio, source, vault_config
@@ -542,6 +567,7 @@ def main(argv: list[str] | None = None) -> int:
         # every scheduled run after it.  A preview never gets here.
         remember_payload_value(vault, args.payload_min_size, dry_run=args.dry_run)
         remember_payload_ratio(vault, args.payload_auto_ratio, dry_run=args.dry_run)
+        remember_tuning(vault, payload_tuning, dry_run=args.dry_run)
         remember_record_mtimes(vault, args, dry_run=args.dry_run)
         remember_settings(
             vault,

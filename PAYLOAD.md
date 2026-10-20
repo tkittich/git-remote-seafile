@@ -85,13 +85,23 @@ class changes between runs simply moves (A14).
 
 The bounds are constants (`_AUTO_UPPER`, `_AUTO_LOWER`). The sample ratio defaults to
 `_AUTO_INCOMPRESSIBLE` (0.9) and is tunable with `--payload-auto-ratio R` (0 < R ≤ 1),
-remembered like the payload value: a lower R sends moderately compressible data to payload
+remembered like the payload value. A lower R sends moderately compressible data to payload
 instead of deflating it through git, which pays when deflate (about 48 MiB/s per core on
 the measuring machine) is slow next to the link, and gives up git's delta between
-snapshots. Whether it pays depends on the machine and the link, so the default is not
-changed on one tree's evidence; instead every `auto` run prints a `placement:` line and,
-when a cut-off of 0.5 would save a minute or more at the measured (or, until a run has
-measured them, assumed) deflate and upload rates, a `tip:` line that changes nothing.
+snapshots. Whether it pays depends on the machine and the link, so the tool measures
+both once, for a **new vault** (no earlier snapshot, nothing remembered) whose git-held
+4-64 MiB band is a gigabyte or more: it deflates real chunks of that band, uploads four
+8 MiB probe files (one, then three at once) under `.part-` names and deletes them, and
+takes the break-even `single * (1/upload + 1/hash - 1/deflate)` kept between 0.5 and 0.9
+(`tuned_ratio`). The result, with the two rates, is remembered in the vault
+(`snapshot.payloadratio`, `snapshot.uplink`, `snapshot.uplink1`), so the choice is made
+once. An established vault is never re-tuned on its own, and neither is a vault whose
+remote already holds payload objects, because two machines on different cut-offs would
+move files between git and payload on alternate runs; `--payload-auto-ratio measure`
+measures again on request, and a probe that fails leaves 0.9. A `--dry-run` measures
+nothing and writes nothing. Every `auto` run prints a `placement:` line and, when a cut-off
+of 0.5 would save a minute or more at the measured (or, until measured, assumed) rates,
+a `tip:` line that changes nothing.
 *Caveat:* a bare `--payload-min-size`
 swallows the next argument, so write the source first or `--payload-min-size=auto`.
 
@@ -274,8 +284,8 @@ faithful path. It lives beside the vault, never inside the helper's directory.
 ### D11. Flags — **decided**
 
 `--payload-min-size [SIZE|auto]` (`0` = off; a bare flag means `auto`), `--no-payload`
-(off, remembered), `--payload-auto-ratio R` (the `auto` sample cut-off, default 0.9,
-remembered),
+(off, remembered), `--payload-auto-ratio R|measure` (the `auto` sample cut-off, default 0.9,
+remembered; measured once for a new vault),
 `--payload-jobs N` (default 3; measured: one upload 32 MiB/s, three 53 MiB/s, five
 no better), `--payload-gc`, `--payload-delete`, `--payload-grace-days N`.
 Combinations that would be silently ignored are refused. An explicit

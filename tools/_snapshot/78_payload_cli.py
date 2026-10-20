@@ -65,15 +65,17 @@ def add_payload_arguments(parser: Any) -> None:
     )
     parser.add_argument(
         "--payload-auto-ratio",
-        type=float,
+        type=parse_ratio_argument,
         default=None,
-        metavar="R",
+        metavar="R|measure",
         help="payload mode, auto rule: a file of 4-64 MiB goes to payload when a sample of it "
         "keeps at least R of its size under a fast deflate (default 0.9, i.e. only data that "
         "barely compresses). Lower it (e.g. 0.5) to send moderately compressible data to "
         "payload instead of deflating it through git: that is faster when deflate is slow "
         "next to the link, and gives up git's delta compression between snapshots. "
-        "0 < R <= 1; remembered by a complete real run like --payload-min-size",
+        "0 < R <= 1; remembered by a complete real run like --payload-min-size. A new vault "
+        "with a gigabyte or more of such data measures this machine and its link once and "
+        "remembers the result; 'measure' does that again on demand",
     )
 
 
@@ -132,7 +134,7 @@ def payload_conflicts(args: argparse.Namespace) -> list[str]:
             "that were never uploaded"
         )
     if args.payload_auto_ratio is not None:
-        if not 0 < args.payload_auto_ratio <= 1:
+        if isinstance(args.payload_auto_ratio, float) and not 0 < args.payload_auto_ratio <= 1:
             problems.append("--payload-auto-ratio must be above 0 and at most 1")
         if args.no_payload or (
             args.payload_min_size is not None and args.payload_min_size.strip().lower() != "auto"
@@ -227,11 +229,26 @@ def remember_payload_value(vault: Path, value: str | None, *, dry_run: bool) -> 
     )
 
 
-def resolve_payload_ratio(value: float | None, vault: Path) -> float:
+def parse_ratio_argument(text: str) -> float | str:
+    """``--payload-auto-ratio``: a ratio above 0 and at most 1, or ``measure``."""
+    if text.strip().lower() == "measure":
+        return "measure"
+    try:
+        value = float(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"not a ratio: {text!r} (a number above 0 and at most 1, or 'measure')"
+        ) from None
+    return value
+
+
+def resolve_payload_ratio(value: float | str | None, vault: Path) -> float:
     """The auto rule's compressibility cut-off: the flag, else what this vault
     remembered, else the default.  A remembered value that is not a usable ratio
-    (a hand edit) is the default, not an error: a default is not a request."""
-    if value is not None:
+    (a hand edit) is the default, not an error: a default is not a request.
+    ``measure`` asks for a new measurement, so what the vault remembered is only
+    where this run starts from."""
+    if isinstance(value, float):
         return value
     if (vault / ".git").exists():
         try:
@@ -243,20 +260,22 @@ def resolve_payload_ratio(value: float | None, vault: Path) -> float:
     return _AUTO_INCOMPRESSIBLE
 
 
-def remember_payload_ratio(vault: Path, value: float | None, *, dry_run: bool) -> None:
+def remember_payload_ratio(vault: Path, value: float | str | None, *, dry_run: bool) -> None:
     """Write a ratio that was typed, after a *complete* real run; never a default."""
-    if value is None or dry_run:
+    if not isinstance(value, float) or dry_run:
         return
-    _run(
-        ["git", "-C", str(vault), "config", "snapshot.payloadratio", repr(value)],
-        text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-    )
+    for key, text in (("snapshot.payloadratio", repr(value)),
+                      ("snapshot.payloadratiosource", "typed")):
+        _run(
+            ["git", "-C", str(vault), "config", key, text],
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
 
 
 def plan_payload(
     value: str | None, remote: str | None, source: Path, excludes: list[str],
     ratio: float = _AUTO_INCOMPRESSIBLE, ratio_typed: bool = False,
-    survey: dict[str, Any] | None = None,
+    survey: dict[str, Any] | None = None, sampled: dict[str, float] | None = None,
 ) -> tuple[int | None, dict[str, Candidate], str]:
     """``(min_size, candidates, rule)``; ``(None, {}, "size")`` when payload mode is off."""
     auto = value is not None and value.strip().lower() == "auto"
@@ -281,7 +300,7 @@ def plan_payload(
             "payload mode needs a remote to upload to: pass --remote "
             "seafile://<library>/<path> (or run from a source with a seafile:// remote)"
         )
-    return min_size, find_payload_files(source, excludes, min_size, auto, ratio, survey), rule
+    return min_size, find_payload_files(source, excludes, min_size, auto, ratio, survey, sampled), rule
 
 
 def refuse_flagless_payload_vault(
