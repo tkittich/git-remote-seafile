@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **A vault that outgrew its `default` storage profile now switches to `raw` before it stages, not after.** The doubling check ran after staging, so the run that grew the tree (on a real 30 GB git-bound tree, 8 minutes of deflating) still used the slow settings and only the next run got the verdict. The check now runs first, from the same stat walk the sample uses, and the post-staging block is gone.
+
 ## [0.9.9] - 2026-10-20
 
 `v0.9.8` was tagged but never released: its release job failed on one test, which is fixed here. Everything in 0.9.8 is in this release, so a snapshot run from a subfolder no longer files a partial tree on the repository's vault. Nothing in how a snapshot or a push is stored changes.

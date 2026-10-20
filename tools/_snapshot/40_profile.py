@@ -240,18 +240,22 @@ def choose_profile(
 
     Skipped when the profile is already ``raw``, or when the user pinned
     ``core.compression`` themselves -- a vault someone tuned by hand is not
-    second-guessed.  A ``default`` verdict is final unless *recheck* is set,
-    which :func:`main` does when the tree has since grown past the point where
-    the decision matters (a vault that began small and became a 20 GB payload
-    would otherwise stay on the slow settings forever).  Under ``--dry-run``
-    (``write=False``) the sample is still taken and reported, but nothing is
-    written.
+    second-guessed.  A ``default`` verdict stands until the tree has doubled
+    since it was made (:func:`profile_recheck_due`), or *recheck* is set: a vault
+    that began small and became a 20 GB payload would otherwise stay on the slow
+    settings forever.  That test runs here, *before* staging, from the same stat
+    walk the sample uses.  It once ran after staging, so the run that grew the
+    tree still deflated all of it (8 minutes of a 30 GB run, then the verdict
+    arrived for the next one).  Under ``--dry-run`` (``write=False``) the sample
+    is still taken and reported, but nothing is written.
     """
     profile = (vault_config.get("snapshot.profile") or [""])[0]
     if profile == "raw" or vault_config.get("core.compression"):
         return
     if profile and not recheck:
-        return
+        total = sum(size for size, _ in _walk_sizes(source, excludes, skip))
+        if not profile_recheck_due(vault_config, total):
+            return
     measure = sample_payload(source, excludes, skip)
     verdict = decide_profile(measure)
     if verdict == "raw":

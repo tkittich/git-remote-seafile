@@ -405,15 +405,6 @@ def main(argv: list[str] | None = None) -> int:
                 ),
             )
             count, size = describe_tree(git_dir, source, tree)
-            # The profile was decided from a sample taken before the first
-            # staging.  A vault that began small and has since become a large
-            # payload gets one more look -- for the *next* run, since this one
-            # has already staged -- once per doubling of the tree.
-            if (not args.dry_run and not args.no_object_compression
-                    and profile_recheck_due(vault_config, size)):
-                choose_profile(vault, git_dir, source, exclude, vault_config,
-                               write=True, recheck=True, skip=payload_skip or None)
-
             print(f"source : {source}")
             print(f"vault  : {vault}")
             print(f"branch : {branch}")

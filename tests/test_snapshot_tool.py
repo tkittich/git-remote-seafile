@@ -2203,14 +2203,35 @@ class LargePayloadProfileTests(unittest.TestCase):
             vault = pathlib.Path(td) / "v"
             git_dir = snap.ensure_vault(vault, "main")
             subprocess.run(["git", "-C", str(vault), "config", "snapshot.profile", "default"], check=True)
+            subprocess.run(["git", "-C", str(vault), "config", "snapshot.profilebytes", str(6 * gib)], check=True)
             src = self._tree(td)
             forced = {"total": 6.0 * gib, "payload": 6.0 * gib, "sampled": 1e6, "ratio": 0.99}
             cfg = snap._read_local_config_map(vault)
             with unittest.mock.patch.object(snap, "sample_payload", return_value=forced), \
                     contextlib.redirect_stdout(io.StringIO()):
-                snap.choose_profile(vault, git_dir, src, [], cfg, write=True)             # final
+                snap.choose_profile(vault, git_dir, src, [], cfg, write=True)             # not doubled: final
                 self.assertEqual(snap._config(vault, "core.compression"), "")
                 snap.choose_profile(vault, git_dir, src, [], cfg, write=True, recheck=True)
+            self.assertEqual(snap._config(vault, "core.compression"), "0")
+            self.assertEqual(snap._config(vault, "snapshot.profile"), "raw")
+
+    def test_a_grown_default_vault_goes_raw_before_the_run_stages(self):
+        # The regression: the doubling test used to run after staging, so the run
+        # that grew the tree deflated all of it and only the next run was fast.
+        gib = 1024 ** 3
+        with tempfile.TemporaryDirectory() as td:
+            vault = pathlib.Path(td) / "v"
+            git_dir = snap.ensure_vault(vault, "main")
+            subprocess.run(["git", "-C", str(vault), "config", "snapshot.profile", "default"], check=True)
+            subprocess.run(["git", "-C", str(vault), "config", "snapshot.profilebytes", str(3 * gib)], check=True)
+            src = self._tree(td)
+            forced = {"total": 6.0 * gib, "payload": 6.0 * gib, "sampled": 1e6, "ratio": 0.99}
+            cfg = snap._read_local_config_map(vault)
+            with unittest.mock.patch.object(snap, "_walk_sizes", return_value=[(6 * gib, "big.bin")]), \
+                    unittest.mock.patch.object(snap, "sample_payload", return_value=forced), \
+                    contextlib.redirect_stdout(io.StringIO()) as out:
+                snap.choose_profile(vault, git_dir, src, [], cfg, write=True)
+            self.assertIn("large raw payload detected", out.getvalue())
             self.assertEqual(snap._config(vault, "core.compression"), "0")
             self.assertEqual(snap._config(vault, "snapshot.profile"), "raw")
 
