@@ -2145,8 +2145,10 @@ class PayloadTuningTests(_PayloadFixture):
         for name, value in (("_AUTO_UPPER", 8000), ("_AUTO_LOWER", 2000),
                             ("_WHATIF_MIN_BYTES", 1000), ("_PROBE_BYTES", 65536)):
             unittest.mock.patch.object(snap, name, value).start()
-        # Deflate slow next to the link (the stub's loopback), whatever this machine is.
-        unittest.mock.patch.object(snap, "measure_deflate_mibs", return_value=20.0).start()
+        # Deflate far slower than any link the probe can measure on loopback, so the
+        # break-even is below the floor however loaded the machine running the suite is
+        # (at 20 MiB/s a busy runner's 5 MiB/s upload put it at 0.52, not 0.50).
+        unittest.mock.patch.object(snap, "measure_deflate_mibs", return_value=1.0).start()
 
     def paid(self) -> set[str]:
         manifest = json.loads(_git(self.vault, "show", "snapshot:.seafile-payload/manifest.json"))
