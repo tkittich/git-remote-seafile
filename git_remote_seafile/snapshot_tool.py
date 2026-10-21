@@ -2123,10 +2123,17 @@ def find_secrets(paths: list[str]) -> list[str]:
     is matched against the whole path -- but anchored at any depth, not just
     the tree root: ``deploy/.ssh/known_hosts`` must be caught as readily as a
     top-level ``.ssh`` directory.
+
+    Files of installed packages (``site-packages``, ``node_modules``) are not the
+    user's credentials: certifi's ``cacert.pem`` is a public CA bundle, and a
+    warning that cries wolf on every virtualenv teaches people to ignore it.
     """
     found: list[str] = []
     for path in paths:
-        name = path.rsplit("/", 1)[-1]
+        parts = path.split("/")
+        if "site-packages" in parts[:-1] or "node_modules" in parts[:-1]:
+            continue
+        name = parts[-1]
         for pattern in SECRET_PATTERNS:
             if "/" in pattern:
                 if fnmatch.fnmatch(path, pattern) or fnmatch.fnmatch(
@@ -2160,8 +2167,6 @@ def suggest_excludes(
     Returns the patterns found (for testing); prints the advice.
     """
     present = {pattern for pattern in RECOMMENDED_EXCLUDES} - set(excluded)
-    if not present:
-        return []
     listing = git(
         git_dir, work_tree, ["ls-files", "-z"], cwd=work_tree
     ).stdout
@@ -2171,6 +2176,14 @@ def suggest_excludes(
         hit = any(exclude_matches(path, pattern) for path in paths)
         if hit:
             found.append(pattern)
+    # A virtualenv under any name (``.venv-audit``, ``env``, ``py312``): ``pyvenv.cfg``
+    # is what makes it one, and it is rebuilt from a requirements file.  Not named
+    # when an exclude already covers it.
+    for path in paths:
+        if path.endswith("/pyvenv.cfg"):
+            venv = path[: -len("/pyvenv.cfg")]
+            if not any(exclude_matches(venv, pat) for pat in [*excluded, *found]):
+                found.append(venv)
     if not found:
         return []
     flags = " ".join(f"--exclude {p!r}" for p in found)
@@ -3466,6 +3479,9 @@ _AUTO_UPPER = 64 * 1024 ** 2
 _AUTO_LOWER = 4 * 1024 ** 2
 _AUTO_INCOMPRESSIBLE = 0.9
 _AUTO_SAMPLE_CHUNK = 256 * 1024
+#: Seconds between progress lines while objects upload (an upload of a large tree
+#: runs for an hour, and a line per file says nothing about how much is left).
+_PULSE_SECONDS = 60.0
 _SIZE_RE = re.compile(r"^\s*(\d+)\s*([kmgt]?)(?:i?b)?\s*$", re.IGNORECASE)
 _SIZE_UNITS = {"": 1, "k": 1024, "m": 1024 ** 2, "g": 1024 ** 3, "t": 1024 ** 4}
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
@@ -3734,6 +3750,15 @@ def _commit_object(
     return bool(client.rename_entry(rid, f"{directory}/{temp}", sha))
 
 
+def _progress_line(done: int, total: int, elapsed: float) -> str:
+    """``progress: 41.2 GB of 292.0 GB uploaded (14%), 52 MiB/s, about 1h20m left``."""
+    rate = done / 1048576 / elapsed if elapsed > 0 else 0.0
+    left = f", about {_fmt_elapsed((total - done) / 1048576 / rate)} left" if rate > 0 else ""
+    percent = done * 100 // total if total else 100
+    return (f"progress: {human_bytes(done)} of {human_bytes(total)} uploaded ({percent}%), "
+            f"{rate:.0f} MiB/s{left}")
+
+
 def _upload_all(
     client: Any, rid: str, server_url: str | None, base: str, source: Path,
     todo: dict[str, dict[str, Any]], jobs: int,
@@ -3767,6 +3792,10 @@ def _upload_all(
     counter = [0]
     failed: list[str] = []
     changed: list[str] = []
+    total_bytes = sum(todo[sha]["size"] for sha in order)
+    uploaded = [0]
+    started = time.monotonic()
+    last_pulse = [started]
 
     def one(sha: str) -> None:
         if failed:
@@ -3814,6 +3843,13 @@ def _upload_all(
             if not _commit_object(worker, rid, directory, temp, sha, size):
                 worker.delete_entry(rid, f"{directory}/{temp}")
                 failed.append(f"{rel}: the server would not name the object")
+            else:
+                with lock:
+                    uploaded[0] += size
+                    now = time.monotonic()
+                    if now - last_pulse[0] >= _PULSE_SECONDS:
+                        last_pulse[0] = now
+                        print(_progress_line(uploaded[0], total_bytes, now - started), flush=True)
         except OSError as exc:
             failed.append(f"{rel}: {exc}")
         except Exception as exc:  # SeafileAPIError, requests errors: reported once, below
@@ -5723,8 +5759,8 @@ def placement_lines(
     lines = [
         f"placement: {len(payload)} file(s) ({human_bytes(pay_b)}) go to payload; {git_n} "
         f"({human_bytes(git_b)}) stay in git -- {small_n} under {human_bytes(_AUTO_LOWER)} and "
-        f"{len(in_git)} of {human_bytes(_AUTO_LOWER)}-{human_bytes(_AUTO_UPPER)} that compress "
-        f"(sample keeps under {ratio:g} of its size)"
+        f"{len(in_git)} of {human_bytes(_AUTO_LOWER)}-{human_bytes(_AUTO_UPPER)} that deflate "
+        f"by more than {1 - ratio:.0%}"
     ]
     if ratio <= _WHATIF_RATIO:
         return lines
@@ -5889,11 +5925,13 @@ def tune_payload_ratio(
                            f"({_AUTO_INCOMPRESSIBLE:g} unless set) is kept: machines must agree. "
                            "--payload-auto-ratio measure chooses one for this vault"}
     ratio = tuned_ratio(deflate, probe["upload"], probe["single"])
-    kept = "stays" if ratio >= _AUTO_INCOMPRESSIBLE else "is"
+    verdict = (f"the default cut-off {ratio:.2f} stands" if ratio >= _AUTO_INCOMPRESSIBLE
+               else f"cut-off {ratio:.2f}")
     return {
         "ratio": ratio, "deflate": deflate, "upload": probe["upload"], "single": probe["single"],
         "message": (
-            f"tuned: payload cut-off {kept} {ratio:.2f} (deflate {deflate:.0f} MiB/s here; "
+            f"tuned: {verdict} -- 4-64 MiB files that deflate by less than {1 - ratio:.0%} go "
+            f"to payload (deflate {deflate:.0f} MiB/s here; "
             f"uploads {probe['upload']:.0f} MiB/s with {_PROBE_STREAMS} at once, "
             f"{probe['single']:.0f} MiB/s with one). Remembered for this vault; "
             "--payload-auto-ratio R sets it, --payload-auto-ratio measure measures again"
@@ -7118,7 +7156,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="build the snapshot but do not move the branch or push "
         "(the vault is still initialised if missing, so its location and "
         "config can be inspected; the remote is still fetched, so the diff is "
-        "shown against the real base)",
+        "shown against the real base). It is a full run up to the commit: the "
+        "git-bound part of the tree is staged into the vault, so it takes the "
+        "time and disk a real run would, and it uploads nothing",
     )
     parser.add_argument(
         "--reset-to-remote",

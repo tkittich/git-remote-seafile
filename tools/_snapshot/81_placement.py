@@ -82,8 +82,8 @@ def placement_lines(
     lines = [
         f"placement: {len(payload)} file(s) ({human_bytes(pay_b)}) go to payload; {git_n} "
         f"({human_bytes(git_b)}) stay in git -- {small_n} under {human_bytes(_AUTO_LOWER)} and "
-        f"{len(in_git)} of {human_bytes(_AUTO_LOWER)}-{human_bytes(_AUTO_UPPER)} that compress "
-        f"(sample keeps under {ratio:g} of its size)"
+        f"{len(in_git)} of {human_bytes(_AUTO_LOWER)}-{human_bytes(_AUTO_UPPER)} that deflate "
+        f"by more than {1 - ratio:.0%}"
     ]
     if ratio <= _WHATIF_RATIO:
         return lines
@@ -248,11 +248,13 @@ def tune_payload_ratio(
                            f"({_AUTO_INCOMPRESSIBLE:g} unless set) is kept: machines must agree. "
                            "--payload-auto-ratio measure chooses one for this vault"}
     ratio = tuned_ratio(deflate, probe["upload"], probe["single"])
-    kept = "stays" if ratio >= _AUTO_INCOMPRESSIBLE else "is"
+    verdict = (f"the default cut-off {ratio:.2f} stands" if ratio >= _AUTO_INCOMPRESSIBLE
+               else f"cut-off {ratio:.2f}")
     return {
         "ratio": ratio, "deflate": deflate, "upload": probe["upload"], "single": probe["single"],
         "message": (
-            f"tuned: payload cut-off {kept} {ratio:.2f} (deflate {deflate:.0f} MiB/s here; "
+            f"tuned: {verdict} -- 4-64 MiB files that deflate by less than {1 - ratio:.0%} go "
+            f"to payload (deflate {deflate:.0f} MiB/s here; "
             f"uploads {probe['upload']:.0f} MiB/s with {_PROBE_STREAMS} at once, "
             f"{probe['single']:.0f} MiB/s with one). Remembered for this vault; "
             "--payload-auto-ratio R sets it, --payload-auto-ratio measure measures again"

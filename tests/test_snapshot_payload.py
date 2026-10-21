@@ -472,6 +472,22 @@ class PayloadBasicsTests(_PayloadFixture):
         self.assertNotEqual(rc, 0)
         self.assertFalse((self.vault / ".git" / "payload-cache.json").exists())
 
+    def test_a_long_upload_prints_how_much_is_left(self):
+        for name in ("p1.bin", "p2.bin", "p3.bin"):
+            (self.src / name).write_bytes(os.urandom(3000))
+        with unittest.mock.patch.object(snap, "_PULSE_SECONDS", 0.0):
+            rc, out, err = self.snapshot("--payload-jobs", "1")
+        self.assertEqual(rc, 0, out + err)
+        self.assertRegex(out, r"progress: [\d.]+ \w+ of [\d.]+ \w+ uploaded \(\d+%\), \d+ MiB/s")
+        self.assertIn("left", out)
+
+    def test_the_progress_line_survives_a_zero_elapsed_time(self):
+        self.assertIn("0 MiB/s", snap._progress_line(0, 100, 0.0))
+        line = snap._progress_line(50 * 1048576, 100 * 1048576, 10.0)
+        self.assertIn("(50%)", line)
+        self.assertIn("5 MiB/s", line)
+        self.assertIn("about 10.0s left", line)
+
     def test_one_changed_file_does_not_stop_the_other_uploads(self):
         for name in ("live.bin", "other1.bin", "other2.bin"):
             (self.src / name).write_bytes(os.urandom(3000))
@@ -2259,7 +2275,7 @@ class PayloadTuningTests(_PayloadFixture):
     def test_a_new_vault_measures_once_and_remembers(self):
         rc, out, err = self.bare()
         self.assertEqual(rc, 0, out + err)
-        self.assertIn("tuned: payload cut-off is 0.50", out)
+        self.assertIn("tuned: cut-off 0.50", out)
         self.assertEqual(self.paid(), {"half.bin"})  # the 0.6 file moved to payload
         self.assertEqual(self.setting("snapshot.payloadratio"), "0.5")
         self.assertEqual(self.setting("snapshot.payloadratiosource"), "measured")
@@ -2312,7 +2328,7 @@ class PayloadTuningTests(_PayloadFixture):
         self.orphan()
         rc, out, err = self.bare("--payload-auto-ratio", "measure")
         self.assertEqual(rc, 0, out + err)
-        self.assertIn("tuned: payload cut-off is 0.50", out)
+        self.assertIn("tuned: cut-off 0.50", out)
         self.assertEqual(self.setting("snapshot.payloadratio"), "0.5")
 
     def test_a_typed_ratio_is_not_overridden(self):

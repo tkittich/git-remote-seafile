@@ -429,10 +429,17 @@ def find_secrets(paths: list[str]) -> list[str]:
     is matched against the whole path -- but anchored at any depth, not just
     the tree root: ``deploy/.ssh/known_hosts`` must be caught as readily as a
     top-level ``.ssh`` directory.
+
+    Files of installed packages (``site-packages``, ``node_modules``) are not the
+    user's credentials: certifi's ``cacert.pem`` is a public CA bundle, and a
+    warning that cries wolf on every virtualenv teaches people to ignore it.
     """
     found: list[str] = []
     for path in paths:
-        name = path.rsplit("/", 1)[-1]
+        parts = path.split("/")
+        if "site-packages" in parts[:-1] or "node_modules" in parts[:-1]:
+            continue
+        name = parts[-1]
         for pattern in SECRET_PATTERNS:
             if "/" in pattern:
                 if fnmatch.fnmatch(path, pattern) or fnmatch.fnmatch(
@@ -466,8 +473,6 @@ def suggest_excludes(
     Returns the patterns found (for testing); prints the advice.
     """
     present = {pattern for pattern in RECOMMENDED_EXCLUDES} - set(excluded)
-    if not present:
-        return []
     listing = git(
         git_dir, work_tree, ["ls-files", "-z"], cwd=work_tree
     ).stdout
@@ -477,6 +482,14 @@ def suggest_excludes(
         hit = any(exclude_matches(path, pattern) for path in paths)
         if hit:
             found.append(pattern)
+    # A virtualenv under any name (``.venv-audit``, ``env``, ``py312``): ``pyvenv.cfg``
+    # is what makes it one, and it is rebuilt from a requirements file.  Not named
+    # when an exclude already covers it.
+    for path in paths:
+        if path.endswith("/pyvenv.cfg"):
+            venv = path[: -len("/pyvenv.cfg")]
+            if not any(exclude_matches(venv, pat) for pat in [*excluded, *found]):
+                found.append(venv)
     if not found:
         return []
     flags = " ".join(f"--exclude {p!r}" for p in found)

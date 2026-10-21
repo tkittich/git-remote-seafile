@@ -1229,6 +1229,39 @@ class CredentialWarningTests(_SnapshotFixture):
         self.assertEqual(rc, 0)
         self.assertIn("deploy/.ssh/known_hosts", out)
 
+class WarningAndTipTests(_SnapshotFixture):
+    """The warnings and tips say something true and name the way out."""
+
+    def test_an_installed_packages_certificate_bundle_is_not_a_credential(self):
+        self.assertEqual(
+            snap.find_secrets([
+                ".venv/Lib/site-packages/certifi/cacert.pem",
+                "web/node_modules/tls/ca.pem",
+                "certs/server.pem",
+                ".env",
+            ]),
+            ["certs/server.pem", ".env"],
+        )
+
+    def test_a_virtualenv_is_suggested_for_exclusion_whatever_its_name(self):
+        venv = self.code / ".venv-audit"
+        (venv / "Lib").mkdir(parents=True)
+        (venv / "pyvenv.cfg").write_bytes(b"home = x\n")
+        (venv / "Lib" / "mod.py").write_bytes(b"x = 1\n")
+        rc, out, err = self.snapshot("--dry-run")
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn("--exclude '.venv-audit'", out)
+        rc, out, err = self.snapshot("--dry-run", "--exclude", ".venv-audit")
+        self.assertEqual(rc, 0, out + err)
+        self.assertNotIn(".venv-audit'", out)  # already left out: nothing to suggest
+
+    def test_a_dry_run_help_says_it_stages_the_tree(self):
+        with contextlib.redirect_stdout(io.StringIO()) as buf, self.assertRaises(SystemExit):
+            snap.main(["--help"])
+        flat = " ".join(buf.getvalue().split())
+        self.assertIn("it uploads nothing", flat)
+
+
 class StaleLockTests(_SnapshotFixture):
     """A lock left by a dead run is reclaimed; a live or foreign one is not."""
 

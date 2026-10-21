@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **A long payload upload prints how much is left.** Once a minute: `progress: 41.2 GB of 292.0 GB uploaded (14%), 52 MiB/s, about 1h20m left`. A line per file said nothing about an hour-long run.
+
+### Changed
+- **A virtualenv is suggested for exclusion under any name.** The "reproducible build output" warning only knew `venv` and `.venv`; a directory holding a `pyvenv.cfg` (`.venv-audit`, `env`, `py312`) is now named too, unless an exclude already covers it. On a real tree that was 11,000 files.
+- **Installed packages no longer trigger the credentials warning.** `certifi/cacert.pem` is a public CA bundle; files under `site-packages` and `node_modules` are not matched against the credential patterns (everything else, `.env` and keys included, is).
+- **Plainer placement and tuning lines.** They now say what a cut-off means ("files that deflate by less than 50% go to payload") instead of quoting a sample ratio, and `--dry-run`'s help says it stages the git-bound tree like a real run (it uploads nothing).
+
 ### Fixed
 - **The link probe no longer reads three streams as slower than one.** Run against the real server, the probe (four 8 MiB files) measured 35 MiB/s for one stream and 34 MiB/s for three at once: a transfer of a quarter of a second is mostly request latency, and the three new connections were set up inside the timed window. The probe now uses 16 MiB files, connects its workers before timing, and never reports an aggregate below the single-stream rate. A new real-server test (`SEAFILE_TEST_LIBRARY`) pins that the probe measures and leaves nothing behind.
 - **A failed upload no longer throws the hashes away, and one live file no longer stops the rest.** The hash cache was saved only after a fully successful publish, so a run that failed on one changed file (a database something keeps writing) hashed the whole tree again next time -- 292 GB on a real tree. It is now saved whenever hashing finished, with the same trust rule as after a clean run (size, mtime, inode, ctime and device must still match). A file that changed or vanished after it was hashed no longer stops the queue: every other file is uploaded and the run then fails naming each such file, with `--exclude` as the way out. A server failure still stops the queue as before.

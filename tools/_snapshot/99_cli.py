@@ -134,7 +134,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="build the snapshot but do not move the branch or push "
         "(the vault is still initialised if missing, so its location and "
         "config can be inspected; the remote is still fetched, so the diff is "
-        "shown against the real base)",
+        "shown against the real base). It is a full run up to the commit: the "
+        "git-bound part of the tree is staged into the vault, so it takes the "
+        "time and disk a real run would, and it uploads nothing",
     )
     parser.add_argument(
         "--reset-to-remote",

@@ -46,6 +46,9 @@ _AUTO_UPPER = 64 * 1024 ** 2
 _AUTO_LOWER = 4 * 1024 ** 2
 _AUTO_INCOMPRESSIBLE = 0.9
 _AUTO_SAMPLE_CHUNK = 256 * 1024
+#: Seconds between progress lines while objects upload (an upload of a large tree
+#: runs for an hour, and a line per file says nothing about how much is left).
+_PULSE_SECONDS = 60.0
 _SIZE_RE = re.compile(r"^\s*(\d+)\s*([kmgt]?)(?:i?b)?\s*$", re.IGNORECASE)
 _SIZE_UNITS = {"": 1, "k": 1024, "m": 1024 ** 2, "g": 1024 ** 3, "t": 1024 ** 4}
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
@@ -314,6 +317,15 @@ def _commit_object(
     return bool(client.rename_entry(rid, f"{directory}/{temp}", sha))
 
 
+def _progress_line(done: int, total: int, elapsed: float) -> str:
+    """``progress: 41.2 GB of 292.0 GB uploaded (14%), 52 MiB/s, about 1h20m left``."""
+    rate = done / 1048576 / elapsed if elapsed > 0 else 0.0
+    left = f", about {_fmt_elapsed((total - done) / 1048576 / rate)} left" if rate > 0 else ""
+    percent = done * 100 // total if total else 100
+    return (f"progress: {human_bytes(done)} of {human_bytes(total)} uploaded ({percent}%), "
+            f"{rate:.0f} MiB/s{left}")
+
+
 def _upload_all(
     client: Any, rid: str, server_url: str | None, base: str, source: Path,
     todo: dict[str, dict[str, Any]], jobs: int,
@@ -347,6 +359,10 @@ def _upload_all(
     counter = [0]
     failed: list[str] = []
     changed: list[str] = []
+    total_bytes = sum(todo[sha]["size"] for sha in order)
+    uploaded = [0]
+    started = time.monotonic()
+    last_pulse = [started]
 
     def one(sha: str) -> None:
         if failed:
@@ -394,6 +410,13 @@ def _upload_all(
             if not _commit_object(worker, rid, directory, temp, sha, size):
                 worker.delete_entry(rid, f"{directory}/{temp}")
                 failed.append(f"{rel}: the server would not name the object")
+            else:
+                with lock:
+                    uploaded[0] += size
+                    now = time.monotonic()
+                    if now - last_pulse[0] >= _PULSE_SECONDS:
+                        last_pulse[0] = now
+                        print(_progress_line(uploaded[0], total_bytes, now - started), flush=True)
         except OSError as exc:
             failed.append(f"{rel}: {exc}")
         except Exception as exc:  # SeafileAPIError, requests errors: reported once, below
