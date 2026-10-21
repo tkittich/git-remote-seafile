@@ -95,7 +95,7 @@ class TestRemoteGC(unittest.TestCase):
         value, but printing it raw produced ``(saved -12 KB)`` -- which reads
         like a bug and calls a growth a saving.
         """
-        self.assertEqual(describe_size_delta(100), "saved ~100 KB")
+        self.assertEqual(describe_size_delta(100), "saved ~100 KiB")
 
         grown = describe_size_delta(-12)
         self.assertIn("grew", grown)
@@ -103,7 +103,7 @@ class TestRemoteGC(unittest.TestCase):
         self.assertNotIn("-12", grown)
 
     def test_an_unchanged_size_is_not_called_a_growth(self):
-        self.assertEqual(describe_size_delta(0), "saved ~0 KB")
+        self.assertEqual(describe_size_delta(0), "saved ~0 KiB")
 
     def test_gc_skipped_below_threshold(self):
         mock_client = MagicMock()

@@ -744,7 +744,7 @@ class RemoteHelper:
             for up_sha, up_pack, up_idx in uploads:
                 up_size = len(up_pack) if isinstance(up_pack, (bytes, bytearray)) else Path(up_pack).stat().st_size
                 size_kb = max(1, up_size // 1024)
-                sys.stderr.write(f"Uploading packfile pack-{up_sha[:8]} ({size_kb} KB)...\n")
+                sys.stderr.write(f"Uploading packfile pack-{up_sha[:8]} ({size_kb} KiB)...\n")
                 sys.stderr.flush()
                 self.client.upload_file(
                     self.repo_id,

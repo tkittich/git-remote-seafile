@@ -385,7 +385,7 @@ class TestCLITestsAndGC(unittest.TestCase):
 
         output = mock_out.getvalue()
         self.assertEqual(code, 0)
-        self.assertIn("grew by ~7 KB", output)
+        self.assertIn("grew by ~7 KiB", output)
         self.assertNotIn("saved -7", output)
 
     @patch("git_remote_seafile.cli.RemoteHelper")

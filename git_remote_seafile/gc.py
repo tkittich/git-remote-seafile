@@ -98,10 +98,10 @@ def describe_size_delta(saved_kb: int) -> str:
     """
     if saved_kb < 0:
         return (
-            f"grew by ~{abs(saved_kb)} KB "
+            f"grew by ~{abs(saved_kb)} KiB "
             "(repacking can do this when the existing packs were already tight)"
         )
-    return f"saved ~{saved_kb} KB"
+    return f"saved ~{saved_kb} KiB"
 
 
 def _fetch_and_verify_pack_pair(
