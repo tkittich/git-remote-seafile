@@ -425,11 +425,17 @@ def run_payload_step(
         racy_window_ns=_UNPROBED_WINDOW_NS if unprobed else _RACY_WINDOW_NS,
         root_dev=root_dev,
     )
-    todo = publish_payload(
-        remote or "", source, manifest, dry_run=dry_run, jobs=jobs or 3
-    )
-    if not dry_run:
-        save_hash_cache(git_dir, cache)
+    try:
+        todo = publish_payload(
+            remote or "", source, manifest, dry_run=dry_run, jobs=jobs or 3
+        )
+    finally:
+        # Hashing is the long half of a run and it is local and repeatable: keep it
+        # when an upload then fails (a live file, a dropped connection), or the next
+        # run reads the whole tree again.  The cache is only trusted for a file whose
+        # size, mtime, inode and ctime still match, exactly as after a clean run.
+        if not dry_run:
+            save_hash_cache(git_dir, cache)
     return manifest, todo
 
 

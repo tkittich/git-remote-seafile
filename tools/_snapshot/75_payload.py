@@ -324,8 +324,12 @@ def _upload_all(
     three at once reach ~53 MiB/s in aggregate, so a small pool helps and a large
     one does not.  Directories are created up front in this thread; each worker
     thread then uses a client of its own (a ``requests`` session is not meant to
-    be shared).  The first failure stops the queue and is raised once the running
-    uploads have finished -- the next run resumes from what landed.
+    be shared).  The first *server* failure stops the queue and is raised once the
+    running uploads have finished -- the next run resumes from what landed.  A file
+    that changed (or vanished) after it was hashed is that file's problem, not the
+    server's: the rest of the queue still goes up, so one live file, such as a
+    database something keeps writing, does not throw away hours of upload, and the
+    run then fails naming every such file.
 
     Each object goes up under a temporary name through a hashing reader and is
     renamed to its hash only if the bytes sent are the bytes the name promises.
@@ -342,6 +346,7 @@ def _upload_all(
     lock = threading.Lock()
     counter = [0]
     failed: list[str] = []
+    changed: list[str] = []
 
     def one(sha: str) -> None:
         if failed:
@@ -349,7 +354,7 @@ def _upload_all(
         item = todo[sha]
         rel, size = item["path"], item["size"]
         if not _unchanged(source, rel, size, item["mtime_ns"]):
-            failed.append(f"{rel}: changed since it was hashed; run again")
+            changed.append(f"{rel}: changed since it was hashed; run again")
             return
         with lock:
             counter[0] += 1
@@ -363,7 +368,12 @@ def _upload_all(
             worker = getattr(local, "client", None)
             if worker is None:
                 worker = local.client = _open_client(server_url)
-            with open(source / rel, "rb") as fh:
+            try:
+                fh = open(source / rel, "rb")
+            except OSError as exc:
+                changed.append(f"{rel}: cannot be read any more ({exc}); run again")
+                return
+            with fh:
                 reader = _HashingFile(fh, size)
                 ok = worker.upload_file(rid, directory, temp, reader)
             if not ok:
@@ -379,7 +389,7 @@ def _upload_all(
                 clean = reader.complete and reader.hexdigest() == sha
             if not clean:
                 worker.delete_entry(rid, f"{directory}/{temp}")
-                failed.append(f"{rel}: changed while it was being uploaded; run again")
+                changed.append(f"{rel}: changed while it was being uploaded; run again")
                 return
             if not _commit_object(worker, rid, directory, temp, sha, size):
                 worker.delete_entry(rid, f"{directory}/{temp}")
@@ -392,8 +402,16 @@ def _upload_all(
     with ThreadPoolExecutor(max_workers=max(1, jobs)) as pool:
         list(pool.map(one, order))
     if failed:
+        more = (f"; {len(changed)} file(s) also changed while the run was in progress"
+                if changed else "")
         raise SnapshotError(
-            f"{len(failed)} payload upload(s) failed (the next run resumes); first: {failed[0]}"
+            f"{len(failed)} payload upload(s) failed (the next run resumes); first: {failed[0]}{more}"
+        )
+    if changed:
+        raise SnapshotError(
+            f"{len(changed)} payload file(s) changed while the run was in progress; every "
+            f"other file was uploaded and the next run resumes. First: {changed[0]}. Stop "
+            "whatever writes them, or leave them out with --exclude"
         )
 
 

@@ -152,14 +152,16 @@ when a file is rewritten in place without touching its mtime, which a size-and-m
 comparison cannot see; a vault never names an object that was not verified present
 at push time; an interrupted run leaves objects no snapshot names (and possibly a
 `.part-` file, which retention ignores), reused by the next run; the first failed
-upload stops the queue and is reported once the running uploads finish. The server
+server upload stops the queue and is reported once the running uploads finish, whereas a file
+that changed or vanished after it was hashed does not -- the rest still go up and the run then
+fails naming every such file, so one live file does not cost the others. The server
 cannot report a content hash, so a listing proves only presence at a size;
 **restore always verifies SHA-256** (R8).
 
 ### D6. Change detection — **decided**
 
 Hashes are cached **per machine**, in the vault's git directory
-(`payload-cache.json`), never read from a manifest: a manifest comes from a remote
+(`payload-cache.json`, saved even when the upload that follows fails: hashing is the long local half), never read from a manifest: a manifest comes from a remote
 anyone with write access could have written. An entry is keyed by path and trusted
 only while size, mtime **and inode** are unchanged (a rename keeps size and mtime,
 and tiles extracted from one archive share both), the device and the inode change

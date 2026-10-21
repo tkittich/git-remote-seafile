@@ -446,6 +446,75 @@ class PayloadBasicsTests(_PayloadFixture):
         self.assertEqual(rc, 0, out + err)
         self.assertEqual(out.count("hashing ["), 0, out)
 
+    def test_a_failed_upload_keeps_the_hashes_so_the_next_run_does_not_start_over(self):
+        (self.src / "big1.bin").unlink()
+        (self.src / "sub" / "big2.bin").unlink()
+        self._tiles()
+        self.stub.faults["upload"] = 500
+        rc, out, err = self.snapshot("--payload-jobs", "1")
+        self.assertNotEqual(rc, 0)
+        self.assertEqual(out.count("hashing ["), 3)
+        cache_path = self.vault / ".git" / "payload-cache.json"
+        self.assertTrue(cache_path.exists(), "the hashes were thrown away with the failed run")
+        cache = json.loads(cache_path.read_text())
+        self.assertEqual(len(cache), 3)
+        for entry in cache.values():  # age them past the racy window, as time does
+            entry["at"] -= 10 * 1_000_000_000
+        cache_path.write_text(json.dumps(cache))
+        del self.stub.faults["upload"]
+        rc, out, err = self.snapshot()
+        self.assertEqual(rc, 0, out + err)
+        self.assertEqual(out.count("hashing ["), 0, out)
+
+    def test_a_dry_run_still_writes_no_cache_even_when_it_fails(self):
+        with unittest.mock.patch.object(snap, "publish_payload", side_effect=snap.SnapshotError("x")):
+            rc, out, err = self.snapshot("--dry-run")
+        self.assertNotEqual(rc, 0)
+        self.assertFalse((self.vault / ".git" / "payload-cache.json").exists())
+
+    def test_one_changed_file_does_not_stop_the_other_uploads(self):
+        for name in ("live.bin", "other1.bin", "other2.bin"):
+            (self.src / name).write_bytes(os.urandom(3000))
+        real = snap._unchanged
+
+        def live_file_changed(source, rel, size, mtime_ns):
+            return False if rel == "live.bin" else real(source, rel, size, mtime_ns)
+
+        with unittest.mock.patch.object(snap, "_unchanged", side_effect=live_file_changed):
+            rc, out, err = self.snapshot("--payload-jobs", "1")
+        self.assertNotEqual(rc, 0)
+        text = out + err
+        self.assertIn("1 payload file(s) changed while the run was in progress", text)
+        self.assertIn("live.bin: changed since it was hashed", text)
+        self.assertIn("--exclude", text)
+        # everything else landed, so the next run has only the live file left to send
+        self.assertEqual(self.object_count(), 4)
+        self.assertTrue((self.vault / ".git" / "payload-cache.json").exists())
+
+    def test_a_file_that_vanishes_after_hashing_is_that_files_problem_not_the_servers(self):
+        (self.src / "gone.bin").write_bytes(os.urandom(3000))
+        real_open = open
+
+        def open_failing_for_gone(file, *a, **kw):
+            if str(file).endswith("gone.bin") and (a[:1] == ("rb",) or kw.get("mode") == "rb"):
+                if state["hashed"]:
+                    raise FileNotFoundError(2, "No such file", str(file))
+            return real_open(file, *a, **kw)
+
+        state = {"hashed": False}
+        real_publish = snap.publish_payload
+
+        def publish_after_hashing(*a, **kw):
+            state["hashed"] = True  # build_manifest has read every file by now
+            return real_publish(*a, **kw)
+
+        with unittest.mock.patch.object(snap, "publish_payload", side_effect=publish_after_hashing), \
+                unittest.mock.patch("builtins.open", side_effect=open_failing_for_gone):
+            rc, out, err = self.snapshot("--payload-jobs", "1")
+        self.assertNotEqual(rc, 0)
+        self.assertIn("gone.bin: cannot be read any more", out + err)
+        self.assertEqual(self.object_count(), 2)  # the other two went up
+
     def test_a_file_edited_within_the_racy_window_is_rehashed(self):
         # An mtime in the future can never be "older than the hash time by the racy
         # window", whatever the machine's load: deterministic, unlike "just now".

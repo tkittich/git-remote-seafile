@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **A failed upload no longer throws the hashes away, and one live file no longer stops the rest.** The hash cache was saved only after a fully successful publish, so a run that failed on one changed file (a database something keeps writing) hashed the whole tree again next time -- 292 GB on a real tree. It is now saved whenever hashing finished, with the same trust rule as after a clean run (size, mtime, inode, ctime and device must still match). A file that changed or vanished after it was hashed no longer stops the queue: every other file is uploaded and the run then fails naming each such file, with `--exclude` as the way out. A server failure still stops the queue as before.
+
 ## [0.9.10] - 2026-10-20
 
 A snapshot with the `auto` payload rule now says where each file went, can be tuned with `--payload-auto-ratio`, and a new vault measures its own machine and link once to choose the cut-off. An existing vault changes nothing: nothing moves between git and payload unless you type the flag. The storage profile for a vault that outgrew its first verdict is now decided before staging instead of after.
