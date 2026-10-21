@@ -7,8 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.11] - 2026-10-21
+
+A run that fails on one changed file no longer throws its hashes away or stops the other uploads, a long upload says how much is left, `--default-excludes` covers any virtualenv, and every message the tools print follows one style and one unit system, with tests that keep it so. Nothing about what is stored changes.
+
 ### Added
-- **A long payload upload prints how much is left.** Once a minute: `progress: 41.2 GB of 292.0 GB uploaded (14%), 52 MiB/s, about 1h20m left`. A line per file said nothing about an hour-long run.
+- **A long payload upload prints how much is left.** Once a minute: `progress: 41.2 GiB of 292.0 GiB uploaded (14%), 52 MiB/s, about 1h20m left`. A line per file said nothing about an hour-long run.
 
 ### Changed
 - **Guards so the message style and the byte units cannot drift again.** `tests/test_message_style.py` reads the source's string literals (not comments or docstrings) and fails on a notification that is not `Warning:`/`Note:`/`Notice:`/`Hint:`/`Error:` in title case, on a number followed by `KB`/`MB`/`GB`, on two byte formatters that disagree, and on a new `Warning:`/`Note:`/`Notice:`/`Hint:`/`Error:` message that no test mentions (`tests/untested_messages.txt` lists the 14 older ones and may only shrink). The convention is now written down in AGENTS.md and CONTRIBUTING.md.
@@ -1737,6 +1741,7 @@ Data-loss and silent-failure fixes, and the Python floor raised to 3.9.
   with zero-config desktop-client token discovery, distributed locking, remote
   packfile compaction, and a Git LFS custom transfer agent.
 
+[0.9.11]: https://github.com/tkittich/git-remote-seafile/compare/v0.9.10...v0.9.11
 [0.9.10]: https://github.com/tkittich/git-remote-seafile/compare/v0.9.9...v0.9.10
 [0.9.9]: https://github.com/tkittich/git-remote-seafile/compare/v0.9.8...v0.9.9
 [0.9.8]: https://github.com/tkittich/git-remote-seafile/compare/v0.9.7...v0.9.8
