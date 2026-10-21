@@ -318,7 +318,7 @@ def _commit_object(
 
 
 def _progress_line(done: int, total: int, elapsed: float) -> str:
-    """``progress: 41.2 GB of 292.0 GB uploaded (14%), 52 MiB/s, about 1h20m left``."""
+    """``progress: 41.2 GiB of 292.0 GiB uploaded (14%), 52 MiB/s, about 1h20m left``."""
     rate = done / 1048576 / elapsed if elapsed > 0 else 0.0
     left = f", about {_fmt_elapsed((total - done) / 1048576 / rate)} left" if rate > 0 else ""
     percent = done * 100 // total if total else 100

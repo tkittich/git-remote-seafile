@@ -93,9 +93,15 @@ def diff_stat(git_dir: Path, work_tree: Path, parent: str, tree: str) -> str:
 
 
 def human_bytes(n: int) -> str:
+    """``1536`` as ``1.5 KiB``: the divisor is 1024, so the label says so.
+
+    It used to print the same numbers as KB/MB/GB while the staging heartbeat
+    said GiB, so one run showed ``292.4 GB`` and ``9 GiB`` for the same kind of
+    quantity.
+    """
     value = float(n)
-    for unit in ("B", "KB", "MB", "GB", "TB"):
-        if value < 1024 or unit == "TB":
+    for unit in ("B", "KiB", "MiB", "GiB", "TiB"):
+        if value < 1024 or unit == "TiB":
             return f"{value:.1f} {unit}" if unit != "B" else f"{int(value)} B"
         value /= 1024
     return f"{n} B"

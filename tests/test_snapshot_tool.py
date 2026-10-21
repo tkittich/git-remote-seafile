@@ -352,7 +352,7 @@ class SnapshotGuardTests(_SnapshotFixture):
         self.assertEqual(rc, 0)
         self.assertIn("embedded git repositories", out)
         self.assertIn("nested (4 file(s))", out)
-        self.assertNotIn("WARNING: these paths are embedded", out)
+        self.assertNotIn("Warning: these paths are embedded", out)
         tree = self.tree()
         for name in ("nested/inner.txt", "nested/sub/deep.txt", "nested/ignored.log"):
             self.assertIn(name, tree)
@@ -376,7 +376,7 @@ class SnapshotGuardTests(_SnapshotFixture):
         self._nested_repo()
         rc, out, _ = self.snapshot("--no-embedded-repos")
         self.assertEqual(rc, 0)
-        self.assertIn("WARNING: these paths are embedded", out)
+        self.assertIn("Warning: these paths are embedded", out)
         self.assertNotIn("nested/inner.txt", self.tree())
 
     def test_a_repository_with_no_commit_is_captured_not_a_crash(self):
@@ -406,7 +406,7 @@ class SnapshotGuardTests(_SnapshotFixture):
         self.assertEqual(rc, 0, out + err)
         self.assertNotIn("nested/inner.txt", self.tree())
         self.assertIn("160000", _git(self.vault, "ls-tree", "-r", BRANCH).stdout)
-        self.assertIn("WARNING: these paths are embedded", out)
+        self.assertIn("Warning: these paths are embedded", out)
 
     def test_the_history_note_is_printed_on_every_capturing_run(self):
         nested = self._nested_repo()
@@ -1254,6 +1254,32 @@ class WarningAndTipTests(_SnapshotFixture):
         rc, out, err = self.snapshot("--dry-run", "--exclude", ".venv-audit")
         self.assertEqual(rc, 0, out + err)
         self.assertNotIn(".venv-audit'", out)  # already left out: nothing to suggest
+
+    def test_default_excludes_cover_a_virtualenv_under_any_name(self):
+        venv = self.code / ".venv-audit"
+        (venv / "Lib").mkdir(parents=True)
+        (venv / "pyvenv.cfg").write_bytes(b"home = x\n")
+        (venv / "Lib" / "mod.py").write_bytes(b"x = 1\n")
+        nested = self.code / "tools" / "py312"
+        nested.mkdir(parents=True)
+        (nested / "pyvenv.cfg").write_bytes(b"home = y\n")
+        (nested / "x.py").write_bytes(b"y = 2\n")
+        self.assertEqual(snap.find_virtualenvs(self.code, []), [".venv-audit", "tools/py312"])
+        self.assertEqual(snap.find_virtualenvs(self.code, [".venv-audit"]), ["tools/py312"])
+        rc, out, err = self.snapshot("--dry-run", "--default-excludes")
+        self.assertEqual(rc, 0, out + err)
+        self.assertNotIn("Warning: the snapshot includes reproducible build output", out)
+        self.assertIn("path(s) left out", out)
+        # without the flag the same tree is still advised about
+        rc, out, err = self.snapshot("--dry-run")
+        self.assertIn("--exclude '.venv-audit'", out)
+
+    def test_the_tool_labels_its_messages_in_one_style_and_its_bytes_in_binary_units(self):
+        self.assertEqual(snap.human_bytes(1536), "1.5 KiB")
+        self.assertEqual(snap.human_bytes(5 * 1024 ** 3), "5.0 GiB")
+        source = pathlib.Path(snap.__file__).read_text(encoding="utf-8")
+        for loud in ("WARNING:", "NOTICE:", "NOTE:"):
+            self.assertNotIn(loud, source, f"{loud!r} drifted back; the convention is Warning:/Note:/Notice:")
 
     def test_a_dry_run_help_says_it_stages_the_tree(self):
         with contextlib.redirect_stdout(io.StringIO()) as buf, self.assertRaises(SystemExit):
@@ -2630,6 +2656,52 @@ class StatusLineTests(unittest.TestCase):
                 )
             text = err.getvalue()
         self.assertIn("MiB written to objects", text)
+
+    def _heartbeat_with(self, expect_bytes: int) -> str:
+        with tempfile.TemporaryDirectory() as td:
+            objects = pathlib.Path(td) / "objects"
+            objects.mkdir()
+            target = str(objects / "late.bin")
+            code = (
+                "import time, pathlib; "
+                f"pathlib.Path(r'{target}').write_bytes(b'x' * 3000000); "
+                "time.sleep(0.6)"
+            )
+            err = io.StringIO()
+            with unittest.mock.patch.object(snap, "STATUS_INTERVAL", 0.12), \
+                    contextlib.redirect_stderr(err):
+                snap._run(
+                    [sys.executable, "-c", code],
+                    status="staging the tree",
+                    measure_dir=objects,
+                    expect_bytes=expect_bytes,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                )
+            return err.getvalue()
+
+    def test_the_staging_heartbeat_says_how_much_is_expected_and_how_long_is_left(self):
+        text = self._heartbeat_with(30_000_000)
+        self.assertIn("MiB written to objects; up to about 29 MiB expected, at most ", text)
+        self.assertIn(" left)", text)
+
+    def test_the_heartbeat_drops_an_expectation_the_step_has_passed_or_never_had(self):
+        for expect in (0, 1_000_000):  # none, and already exceeded by the 3 MB written
+            with self.subTest(expect=expect):
+                text = self._heartbeat_with(expect)
+                self.assertIn("MiB written to objects)", text)
+                self.assertNotIn("expected", text)
+
+    def test_check_free_space_hands_back_the_estimate_for_the_heartbeat(self):
+        with tempfile.TemporaryDirectory() as td:
+            vault = pathlib.Path(td) / "v"
+            git_dir = snap.ensure_vault(vault, "main")
+            src = pathlib.Path(td) / "src"
+            src.mkdir()
+            (src / "a.txt").write_bytes(b"x" * 4096)
+            need = snap.check_free_space(git_dir, vault, src, [], {})
+        self.assertIsInstance(need, int)
+        self.assertGreater(need, 0)
 
     def test_watchdog_kills_a_child_that_makes_no_progress(self):
         with unittest.mock.patch.object(snap, "STATUS_INTERVAL", 0.1), \

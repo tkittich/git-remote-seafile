@@ -106,7 +106,7 @@ def placement_lines(
         return lines
     extra = sum(size * (1 - r) for size, r, _rel in moved)
     lines.append(
-        f"tip: --payload-auto-ratio {_WHATIF_RATIO:g} would move {len(moved)} file(s) "
+        f"Hint: --payload-auto-ratio {_WHATIF_RATIO:g} would move {len(moved)} file(s) "
         f"({human_bytes(moved_b)}) from git to payload: about {seconds / 60:.0f} min faster "
         f"here ({deflate:.0f} MiB/s deflate, {upload:.0f} MiB/s upload"
         f"{', assumed' if assumed else ''}), for about {human_bytes(int(extra))} more on the "

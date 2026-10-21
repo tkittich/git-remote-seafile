@@ -182,6 +182,10 @@ def resolve_snapshot_settings(
         for pattern in RECOMMENDED_EXCLUDES:
             if pattern not in exclude:
                 exclude.append(pattern)
+        # Named by what makes it one, not by what it is called (.venv-audit, env).
+        for venv in find_virtualenvs(source, exclude):
+            if venv not in exclude:
+                exclude.append(venv)
 
     # Everything that can be checked before a single byte is written: a typo in
     # a remote name or a vault inside a synced folder is far cheaper to catch

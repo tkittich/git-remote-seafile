@@ -103,7 +103,7 @@ move files between git and payload on alternate runs; `--payload-auto-ratio meas
 measures again on request, and a probe that fails leaves 0.9. A `--dry-run` measures
 nothing and writes nothing. Every `auto` run prints a `placement:` line and, when a cut-off
 of 0.5 would save a minute or more at the measured (or, until measured, assumed) rates,
-a `tip:` line that changes nothing.
+a `Hint:` line that changes nothing.
 *Caveat:* a bare `--payload-min-size`
 swallows the next argument, so write the source first or `--payload-min-size=auto`.
 

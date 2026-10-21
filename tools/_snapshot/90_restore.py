@@ -347,7 +347,7 @@ def _restore(
     restored_gitlinks = find_gitlinks(into / ".git", into, verified_rev)
     if restored_gitlinks:
         print(
-            "\nWARNING: these paths in the restored tree are embedded git "
+            "\nWarning: these paths in the restored tree are embedded git "
             "repositories.  Only\ntheir commit id was recorded at snapshot "
             "time, NOT their contents -- these\ndirectories are empty on "
             "purpose but incomplete as a backup:"

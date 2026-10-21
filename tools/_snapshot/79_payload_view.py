@@ -182,7 +182,7 @@ def payload_view(
     if skipped:
         shown = "\n  ".join(skipped[:20])
         more = f"\n  ... and {len(skipped) - 20} more" if len(skipped) > 20 else ""
-        print(f"WARNING: {len(skipped)} file(s) were left out of the view:\n  {shown}{more}")
+        print(f"Warning: {len(skipped)} file(s) were left out of the view:\n  {shown}{more}")
     return 0
 
 

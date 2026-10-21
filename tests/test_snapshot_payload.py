@@ -181,7 +181,7 @@ class _PayloadFixture(unittest.TestCase):
                 self.src, "--vault", other, "--remote", "seafile://testlib/pvault2",
                 "--payload-min-size", "auto")
         self.assertEqual(rc, 0, out + err)
-        self.assertNotIn("NOTICE: payload mode", out)    # the user asked for it
+        self.assertNotIn("Notice: payload mode", out)    # the user asked for it
 
     # -- views (D10) ------------------------------------------------------------
     def view(self, *extra: object) -> tuple[int, str, str]:
@@ -985,31 +985,31 @@ class PayloadDefaultAndSafeguardTests(_PayloadFixture):
         self._existing_vault_without_payload()
         rc, out, err = self.bare()
         self.assertEqual(rc, 0, out + err)
-        self.assertIn("NOTICE: payload mode is on by default", out)
+        self.assertIn("Notice: payload mode is on by default", out)
         self.assertIn("2 file(s)", out)
         self.assertIn("--no-payload", out)
-        self.assertLess(out.index("NOTICE: payload mode"), out.index("payload: 2 file(s)"))
+        self.assertLess(out.index("Notice: payload mode"), out.index("payload: 2 file(s)"))
         # ...and again as the last line, on both streams, where a log ends.
-        self.assertTrue(out.rstrip().splitlines()[-1].startswith("NOTICE: this run moved 2 large"))
-        self.assertIn("NOTICE: this run moved 2 large", err)
+        self.assertTrue(out.rstrip().splitlines()[-1].startswith("Notice: this run moved 2 large"))
+        self.assertIn("Notice: this run moved 2 large", err)
         # The warning is said once: the vault now remembers the setting.
         (self.src / "small.txt").write_bytes(b"changed again\n")
         rc, out, err = self.bare()
         self.assertEqual(rc, 0, out + err)
-        self.assertNotIn("NOTICE: payload mode", out)
+        self.assertNotIn("Notice: payload mode", out)
 
     def test_the_conversion_warning_is_also_in_a_preview_and_changes_nothing(self):
         self._existing_vault_without_payload()
         rc, out, err = self.bare("--dry-run")
         self.assertEqual(rc, 0, out + err)
-        self.assertIn("NOTICE: payload mode", out)
+        self.assertIn("Notice: payload mode", out)
         self.assertIn("would move 2 file(s)", out)
         self.assertEqual(self.server_files(), {})
 
     def test_a_first_snapshot_and_an_explicit_flag_do_not_get_the_conversion_warning(self):
         rc, out, err = self.bare()                       # nothing to convert yet
         self.assertEqual(rc, 0, out + err)
-        self.assertNotIn("NOTICE: payload mode", out)
+        self.assertNotIn("Notice: payload mode", out)
         self.assertIn("payload: on by default", out)
         self._existing_vault_without_payload_other()
 

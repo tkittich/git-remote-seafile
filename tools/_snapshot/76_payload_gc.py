@@ -413,7 +413,7 @@ def payload_gc(
               f"tag count as using objects; {history.expired} older snapshot(s) become "
               f"unrestorable once their objects are deleted")
     if history.dropped:
-        print("WARNING: the remote's history changed since the last --payload-delete run:\n  "
+        print("Warning: the remote's history changed since the last --payload-delete run:\n  "
               + "\n  ".join(history.dropped)
               + "\n  snapshots only reachable from there no longer count as using objects")
     print(f"history: {commits} commit(s), {manifests} distinct manifest(s), "
@@ -463,7 +463,7 @@ def payload_gc(
     if others:
         print(f"other  : {others} entry(ies) that are not objects (left alone)")
     if missing:
-        print(f"WARNING: {len(missing)} object(s) named by a manifest are NOT on the server; "
+        print(f"Warning: {len(missing)} object(s) named by a manifest are NOT on the server; "
               f"the snapshots that need them cannot be restored")
     print(verification_note(client, rid, base))
 

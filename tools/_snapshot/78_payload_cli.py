@@ -334,7 +334,7 @@ def conversion_warning(candidates: dict[str, Candidate], dry_run: bool) -> str:
     total = sum(item[0] for item in candidates.values())
     verb = "would move" if dry_run else "is moving"
     return (
-        f"NOTICE: payload mode is on by default and this vault has earlier snapshots that "
+        f"Notice: payload mode is on by default and this vault has earlier snapshots that "
         f"did not use it. This run {verb} {len(candidates)} file(s) "
         f"({human_bytes(total)}) out of git and uploads them as payload objects (one full "
         f"pass).\n"
@@ -407,7 +407,7 @@ def run_payload_step(
         print(conversion_warning(candidates, dry_run), flush=True)
         if not dry_run:
             END_OF_RUN_NOTES.append(
-                f"NOTICE: this run moved {len(candidates)} large file(s) of an existing vault "
+                f"Notice: this run moved {len(candidates)} large file(s) of an existing vault "
                 "out of git into payload mode (on by default). To stay as before, "
                 "run once with --no-payload; it is remembered. See PAYLOAD.md D11."
             )

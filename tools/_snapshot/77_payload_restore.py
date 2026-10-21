@@ -145,6 +145,6 @@ def portable_name_warning(paths: list[str]) -> str | None:
     shown = "\n".join(f"  {p}: {why}" for p, why in bad[:10])
     more = f"\n  ... and {len(bad) - 10} more" if len(bad) > 10 else ""
     return (
-        f"\nWARNING: {len(bad)} payload path(s) cannot be restored on Windows under that "
+        f"\nWarning: {len(bad)} payload path(s) cannot be restored on Windows under that "
         f"name (a restore there skips and reports them; elsewhere they restore):\n{shown}{more}"
     )

@@ -97,7 +97,7 @@ def inline_embedded_repositories(
 def embedded_note(report: list[tuple[str, int]]) -> str:
     """The notice printed when embedded repositories were captured as plain files."""
     lines = [
-        "\nNOTE: these paths are embedded git repositories.  Their files were captured "
+        "\nNote: these paths are embedded git repositories.  Their files were captured "
         "as ordinary\nfiles; their .git directories (history, branches, stashes) were not:"
     ]
     lines += [f"  {path} ({count} file(s))" for path, count in report]

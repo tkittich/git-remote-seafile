@@ -365,6 +365,7 @@ def _run(
     status: str | None = None,
     measure_dir: Path | None = None,
     stall_limit: "float | None | _UnsetStall" = _UNSET_STALL,
+    expect_bytes: int = 0,
     **kwargs: Any,
 ) -> subprocess.CompletedProcess[Any]:
     """``subprocess.run`` for git, failing as a ``SnapshotError`` when it hangs.
@@ -377,8 +378,11 @@ def _run(
     stderr intact across the timeouts, so no helper threads are needed.  Each
     time the interval passes without the child exiting:
 
-    * one line goes to stderr ("still staging the tree ... 4m12s (9 GiB written
-      to objects)"), because nothing else speaks during such a step;
+    * one line goes to stderr ("still staging the tree ... 4m12s (9.0 GiB written
+      to objects; up to about 28.6 GiB expected, at most 9m30s left)"), because
+      nothing else speaks during such a step.  The expectation comes from
+      ``expect_bytes`` (an upper bound: what staging is estimated to add) and is
+      left out when there is none or the step has already passed it;
     * bytes newly present under ``measure_dir`` count as progress and restart the
       stall clock;
     * if nothing has grown for ``STALL_LIMIT`` seconds the child (and, on
@@ -426,7 +430,12 @@ def _run(
             last_seen, last_progress = growth, now
         line = f"still {status} ... {_fmt_elapsed(now - start)}"
         if measure_dir is not None and growth > 0:
-            line += f" ({_fmt_bytes(growth)} written to {measure_dir.name})"
+            detail = f"{_fmt_bytes(growth)} written to {measure_dir.name}"
+            if expect_bytes > growth:
+                rate = growth / max(now - start, 1e-9)
+                detail += (f"; up to about {_fmt_bytes(expect_bytes)} expected, at most "
+                           f"{_fmt_elapsed((expect_bytes - growth) / rate)} left")
+            line += f" ({detail})"
         sys.stderr.write(line + "\n")
         sys.stderr.flush()
         if limit is not None and now - last_progress >= limit:
@@ -466,6 +475,7 @@ def git(
     measure_dir: Path | None = None,
     live_stderr: bool = False,
     stall_limit: "float | None | _UnsetStall" = _UNSET_STALL,
+    expect_bytes: int = 0,
 ) -> subprocess.CompletedProcess[str]:
     """Run git against an explicit --git-dir/--work-tree pair.
 
@@ -541,6 +551,7 @@ def git(
         status=status,
         measure_dir=measure_dir,
         stall_limit=stall_limit,
+        expect_bytes=expect_bytes,
     )
     if check and proc.returncode != 0:
         detail = (proc.stderr or proc.stdout).strip()
@@ -1081,8 +1092,9 @@ def check_free_space(
     git_dir: Path, vault: Path, source: Path, excludes: list[str],
     vault_config: dict[str, list[str]], *, allow_low_disk: bool = False,
     skip: "frozenset[str] | None" = None,
-) -> None:
-    """Refuse to start staging a tree the vault's volume cannot hold.
+) -> int:
+    """Refuse to start staging a tree the vault's volume cannot hold; else return
+    the bytes staging is estimated to add (an upper bound, for the heartbeat).
 
     ``git add`` writes every new object before anything can be undone, and a
     full volume does not fail cleanly: the vault is left with a partial object
@@ -1095,7 +1107,7 @@ def check_free_space(
     )
     free = shutil.disk_usage(vault).free
     if need + _FREE_SPACE_MARGIN_BYTES <= free or allow_low_disk:
-        return
+        return need
     raise SnapshotError(
         f"refusing to stage: the tree is {_fmt_bytes(tree)} and staging it needs about "
         f"{_fmt_bytes(need)} of new object storage in {vault}, but only {_fmt_bytes(free)} is free "
@@ -1869,8 +1881,12 @@ def build_snapshot(
     capture_embedded: bool = True,
     embedded_report: "list[tuple[str, int]] | None" = None,
     record_mtimes: bool = False,
+    staging_bytes: int = 0,
 ) -> tuple[str, str | None, list[str]]:
     """Stage the tree into the vault index and write a commit object.
+
+    ``staging_bytes`` is the estimate of what staging will add to the object
+    store; it only lets the heartbeat say how much is expected.
 
     Excluded paths are filtered out **before** staging.  ``git add -A -f .``
     reads, hashes and writes a loose object for every file in the tree and only
@@ -1914,6 +1930,7 @@ def build_snapshot(
                 cwd=work_tree,
                 status="staging the tree",
                 measure_dir=git_dir / "objects",
+                expect_bytes=staging_bytes,
             )
             unreadable.extend(unreadable_directories(added.stderr))
         except SnapshotError as exc:
@@ -1937,7 +1954,7 @@ def build_snapshot(
                 candidates = [p for p in candidates if p not in gone]
                 nested = [p for p in nested if p not in gone]
                 print(
-                    f"\nNOTE: {len(dropped)} path(s) are behind a Windows junction and were not "
+                    f"\nNote: {len(dropped)} path(s) are behind a Windows junction and were not "
                     f"captured (git would follow the junction, the payload walk does not, so "
                     f"neither is done):\n  " + "\n  ".join(dropped[:10])
                     + (f"\n  ... and {len(dropped) - 10} more" if len(dropped) > 10 else "")
@@ -1973,6 +1990,7 @@ def build_snapshot(
                     stdin="\0".join(kept) + "\0",
                     status="staging the tree",
                     measure_dir=git_dir / "objects",
+                    expect_bytes=staging_bytes,
                 )
                 unreadable.extend(unreadable_directories(added.stderr))
             except SnapshotError as exc:
@@ -2153,6 +2171,35 @@ def index_paths(git_dir: Path, work_tree: Path) -> list[str]:
     return [path for path in listing.split("\0") if path]
 
 
+def find_virtualenvs(source: Path, excludes: list[str]) -> list[str]:
+    """Directories under *source* that are Python virtualenvs, as index-style paths.
+
+    A virtualenv is a directory holding ``pyvenv.cfg``; the name says nothing
+    (``.venv-audit``, ``env``, ``py312``).  The walk does not descend into one, into
+    ``.git``, into anything *excludes* already covers, or through a Windows
+    junction (git does not follow it either).  The source's own ``pyvenv.cfg`` is
+    not a virtualenv *inside* it, so the root is never reported.
+    """
+    found: list[str] = []
+    root = str(source)
+    for dirpath, dirnames, filenames in os.walk(root):
+        rel = os.path.relpath(dirpath, root).replace(os.sep, "/")
+        if rel != "." and "pyvenv.cfg" in filenames:
+            found.append(rel)
+            dirnames[:] = []
+            continue
+        keep = []
+        for name in dirnames:
+            child = name if rel == "." else f"{rel}/{name}"
+            if name == ".git" or any(exclude_matches(child, pat) for pat in excludes):
+                continue
+            if getattr(os.lstat(os.path.join(dirpath, name)), "st_file_attributes", 0) & 0x400:
+                continue
+            keep.append(name)
+        dirnames[:] = keep
+    return sorted(found)
+
+
 def suggest_excludes(
     git_dir: Path, work_tree: Path, excluded: list[str]
 ) -> list[str]:
@@ -2188,7 +2235,7 @@ def suggest_excludes(
         return []
     flags = " ".join(f"--exclude {p!r}" for p in found)
     print(
-        f"\nWARNING: the snapshot includes reproducible build output that is "
+        f"\nWarning: the snapshot includes reproducible build output that is "
         f"usually not worth\nbacking up.  Leave it out next time with "
         f"--default-excludes, or explicitly:\n  {flags}"
     )
@@ -2292,7 +2339,7 @@ def inline_embedded_repositories(
 def embedded_note(report: list[tuple[str, int]]) -> str:
     """The notice printed when embedded repositories were captured as plain files."""
     lines = [
-        "\nNOTE: these paths are embedded git repositories.  Their files were captured "
+        "\nNote: these paths are embedded git repositories.  Their files were captured "
         "as ordinary\nfiles; their .git directories (history, branches, stashes) were not:"
     ]
     lines += [f"  {path} ({count} file(s))" for path, count in report]
@@ -3751,7 +3798,7 @@ def _commit_object(
 
 
 def _progress_line(done: int, total: int, elapsed: float) -> str:
-    """``progress: 41.2 GB of 292.0 GB uploaded (14%), 52 MiB/s, about 1h20m left``."""
+    """``progress: 41.2 GiB of 292.0 GiB uploaded (14%), 52 MiB/s, about 1h20m left``."""
     rate = done / 1048576 / elapsed if elapsed > 0 else 0.0
     left = f", about {_fmt_elapsed((total - done) / 1048576 / rate)} left" if rate > 0 else ""
     percent = done * 100 // total if total else 100
@@ -4473,7 +4520,7 @@ def payload_gc(
               f"tag count as using objects; {history.expired} older snapshot(s) become "
               f"unrestorable once their objects are deleted")
     if history.dropped:
-        print("WARNING: the remote's history changed since the last --payload-delete run:\n  "
+        print("Warning: the remote's history changed since the last --payload-delete run:\n  "
               + "\n  ".join(history.dropped)
               + "\n  snapshots only reachable from there no longer count as using objects")
     print(f"history: {commits} commit(s), {manifests} distinct manifest(s), "
@@ -4523,7 +4570,7 @@ def payload_gc(
     if others:
         print(f"other  : {others} entry(ies) that are not objects (left alone)")
     if missing:
-        print(f"WARNING: {len(missing)} object(s) named by a manifest are NOT on the server; "
+        print(f"Warning: {len(missing)} object(s) named by a manifest are NOT on the server; "
               f"the snapshots that need them cannot be restored")
     print(verification_note(client, rid, base))
 
@@ -4748,7 +4795,7 @@ def portable_name_warning(paths: list[str]) -> str | None:
     shown = "\n".join(f"  {p}: {why}" for p, why in bad[:10])
     more = f"\n  ... and {len(bad) - 10} more" if len(bad) > 10 else ""
     return (
-        f"\nWARNING: {len(bad)} payload path(s) cannot be restored on Windows under that "
+        f"\nWarning: {len(bad)} payload path(s) cannot be restored on Windows under that "
         f"name (a restore there skips and reports them; elsewhere they restore):\n{shown}{more}"
     )
 
@@ -5087,7 +5134,7 @@ def conversion_warning(candidates: dict[str, Candidate], dry_run: bool) -> str:
     total = sum(item[0] for item in candidates.values())
     verb = "would move" if dry_run else "is moving"
     return (
-        f"NOTICE: payload mode is on by default and this vault has earlier snapshots that "
+        f"Notice: payload mode is on by default and this vault has earlier snapshots that "
         f"did not use it. This run {verb} {len(candidates)} file(s) "
         f"({human_bytes(total)}) out of git and uploads them as payload objects (one full "
         f"pass).\n"
@@ -5160,7 +5207,7 @@ def run_payload_step(
         print(conversion_warning(candidates, dry_run), flush=True)
         if not dry_run:
             END_OF_RUN_NOTES.append(
-                f"NOTICE: this run moved {len(candidates)} large file(s) of an existing vault "
+                f"Notice: this run moved {len(candidates)} large file(s) of an existing vault "
                 "out of git into payload mode (on by default). To stay as before, "
                 "run once with --no-payload; it is remembered. See PAYLOAD.md D11."
             )
@@ -5444,7 +5491,7 @@ def payload_view(
     if skipped:
         shown = "\n  ".join(skipped[:20])
         more = f"\n  ... and {len(skipped) - 20} more" if len(skipped) > 20 else ""
-        print(f"WARNING: {len(skipped)} file(s) were left out of the view:\n  {shown}{more}")
+        print(f"Warning: {len(skipped)} file(s) were left out of the view:\n  {shown}{more}")
     return 0
 
 
@@ -5560,9 +5607,15 @@ def diff_stat(git_dir: Path, work_tree: Path, parent: str, tree: str) -> str:
 
 
 def human_bytes(n: int) -> str:
+    """``1536`` as ``1.5 KiB``: the divisor is 1024, so the label says so.
+
+    It used to print the same numbers as KB/MB/GB while the staging heartbeat
+    said GiB, so one run showed ``292.4 GB`` and ``9 GiB`` for the same kind of
+    quantity.
+    """
     value = float(n)
-    for unit in ("B", "KB", "MB", "GB", "TB"):
-        if value < 1024 or unit == "TB":
+    for unit in ("B", "KiB", "MiB", "GiB", "TiB"):
+        if value < 1024 or unit == "TiB":
             return f"{value:.1f} {unit}" if unit != "B" else f"{int(value)} B"
         value /= 1024
     return f"{n} B"
@@ -5783,7 +5836,7 @@ def placement_lines(
         return lines
     extra = sum(size * (1 - r) for size, r, _rel in moved)
     lines.append(
-        f"tip: --payload-auto-ratio {_WHATIF_RATIO:g} would move {len(moved)} file(s) "
+        f"Hint: --payload-auto-ratio {_WHATIF_RATIO:g} would move {len(moved)} file(s) "
         f"({human_bytes(moved_b)}) from git to payload: about {seconds / 60:.0f} min faster "
         f"here ({deflate:.0f} MiB/s deflate, {upload:.0f} MiB/s upload"
         f"{', assumed' if assumed else ''}), for about {human_bytes(int(extra))} more on the "
@@ -6300,7 +6353,7 @@ def _restore(
     restored_gitlinks = find_gitlinks(into / ".git", into, verified_rev)
     if restored_gitlinks:
         print(
-            "\nWARNING: these paths in the restored tree are embedded git "
+            "\nWarning: these paths in the restored tree are embedded git "
             "repositories.  Only\ntheir commit id was recorded at snapshot "
             "time, NOT their contents -- these\ndirectories are empty on "
             "purpose but incomplete as a backup:"
@@ -6669,6 +6722,10 @@ def resolve_snapshot_settings(
         for pattern in RECOMMENDED_EXCLUDES:
             if pattern not in exclude:
                 exclude.append(pattern)
+        # Named by what makes it one, not by what it is called (.venv-audit, env).
+        for venv in find_virtualenvs(source, exclude):
+            if venv not in exclude:
+                exclude.append(venv)
 
     # Everything that can be checked before a single byte is written: a typo in
     # a remote name or a vault inside a synced folder is far cheaper to catch
@@ -7048,7 +7105,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "\nrecommended exclusions (never applied silently -- this is what\n"
             "--default-excludes adds):\n  "
             + " ".join(f"--exclude '{p}'" for p in RECOMMENDED_EXCLUDES)
-            + "\n\nA pattern with no slash matches that name at ANY depth, so\n"
+            + "\n  plus each Python virtualenv found (a directory holding pyvenv.cfg)"
+            "\n\nA pattern with no slash matches that name at ANY depth, so\n"
             "--exclude node_modules also drops packages/*/node_modules.\n"
             "Quote wildcards so your own shell does not expand them first.\n"
             + PAYLOAD_EPILOG
@@ -7120,7 +7178,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action=argparse.BooleanOptionalAction,
         default=None,
         help="add the recommended exclusions on top of any --exclude "
-        f"({', '.join(RECOMMENDED_EXCLUDES)}). Not on by default: a snapshot is "
+        f"({', '.join(RECOMMENDED_EXCLUDES)}) and any Python virtualenv (a "
+        "directory holding a pyvenv.cfg, whatever its name). Not on by default: a snapshot is "
         "a backup, and silently dropping files is how a backup fails at the one "
         "moment it mattered",
     )
@@ -7379,7 +7438,7 @@ def main(argv: list[str] | None = None) -> int:
                 sweep_temp_packs(git_dir)
         # Before a byte is staged: a tree the volume cannot hold must be refused
         # now, not discovered when the disk fills (a dry run stages too).
-        check_free_space(
+        staging_expect = check_free_space(
             git_dir, vault, source, exclude, vault_config,
             allow_low_disk=args.allow_low_disk, skip=payload_skip or None,
         )
@@ -7457,6 +7516,7 @@ def main(argv: list[str] | None = None) -> int:
                 skip_paths=payload_skip or None, manifest=manifest,
                 capture_embedded=not args.no_embedded_repos,
                 embedded_report=embedded_report,
+                staging_bytes=staging_expect,
                 record_mtimes=resolve_record_mtimes(
                     args, vault, remote=remote, no_push=args.no_push,
                     parent_has_record=parent_has_mtimes(git_dir, source, base),
@@ -7484,7 +7544,7 @@ def main(argv: list[str] | None = None) -> int:
             gitlinks = find_gitlinks(git_dir, source, tree)
             if gitlinks:
                 print(
-                    "\nWARNING: these paths are embedded git repositories.  Only "
+                    "\nWarning: these paths are embedded git repositories.  Only "
                     "their commit id is\nrecorded, NOT their contents, so a "
                     "restore will produce a broken directory:"
                 )
@@ -7501,7 +7561,7 @@ def main(argv: list[str] | None = None) -> int:
             )
             if secrets:
                 print(
-                    f"\nWARNING: {len(secrets)} captured path(s) look like "
+                    f"\nWarning: {len(secrets)} captured path(s) look like "
                     f"credentials.  Git history is\npermanent -- push this vault "
                     f"only to a library only you can read:"
                 )

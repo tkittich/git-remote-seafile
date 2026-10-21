@@ -171,7 +171,7 @@ cannot tell them apart. Instead it captures everything and then names the
 reproducible bulk it noticed, with the flags to drop it:
 
 ```
-WARNING: the snapshot includes reproducible build output that is usually not worth
+Warning: the snapshot includes reproducible build output that is usually not worth
 backing up.  Leave it out next time with --default-excludes, or explicitly:
   --exclude 'build' --exclude 'dist' --exclude 'node_modules' --exclude '*.pyc'
 ```

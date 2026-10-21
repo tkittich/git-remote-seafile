@@ -175,8 +175,12 @@ def build_snapshot(
     capture_embedded: bool = True,
     embedded_report: "list[tuple[str, int]] | None" = None,
     record_mtimes: bool = False,
+    staging_bytes: int = 0,
 ) -> tuple[str, str | None, list[str]]:
     """Stage the tree into the vault index and write a commit object.
+
+    ``staging_bytes`` is the estimate of what staging will add to the object
+    store; it only lets the heartbeat say how much is expected.
 
     Excluded paths are filtered out **before** staging.  ``git add -A -f .``
     reads, hashes and writes a loose object for every file in the tree and only
@@ -220,6 +224,7 @@ def build_snapshot(
                 cwd=work_tree,
                 status="staging the tree",
                 measure_dir=git_dir / "objects",
+                expect_bytes=staging_bytes,
             )
             unreadable.extend(unreadable_directories(added.stderr))
         except SnapshotError as exc:
@@ -243,7 +248,7 @@ def build_snapshot(
                 candidates = [p for p in candidates if p not in gone]
                 nested = [p for p in nested if p not in gone]
                 print(
-                    f"\nNOTE: {len(dropped)} path(s) are behind a Windows junction and were not "
+                    f"\nNote: {len(dropped)} path(s) are behind a Windows junction and were not "
                     f"captured (git would follow the junction, the payload walk does not, so "
                     f"neither is done):\n  " + "\n  ".join(dropped[:10])
                     + (f"\n  ... and {len(dropped) - 10} more" if len(dropped) > 10 else "")
@@ -279,6 +284,7 @@ def build_snapshot(
                     stdin="\0".join(kept) + "\0",
                     status="staging the tree",
                     measure_dir=git_dir / "objects",
+                    expect_bytes=staging_bytes,
                 )
                 unreadable.extend(unreadable_directories(added.stderr))
             except SnapshotError as exc:
@@ -459,6 +465,35 @@ def index_paths(git_dir: Path, work_tree: Path) -> list[str]:
     return [path for path in listing.split("\0") if path]
 
 
+def find_virtualenvs(source: Path, excludes: list[str]) -> list[str]:
+    """Directories under *source* that are Python virtualenvs, as index-style paths.
+
+    A virtualenv is a directory holding ``pyvenv.cfg``; the name says nothing
+    (``.venv-audit``, ``env``, ``py312``).  The walk does not descend into one, into
+    ``.git``, into anything *excludes* already covers, or through a Windows
+    junction (git does not follow it either).  The source's own ``pyvenv.cfg`` is
+    not a virtualenv *inside* it, so the root is never reported.
+    """
+    found: list[str] = []
+    root = str(source)
+    for dirpath, dirnames, filenames in os.walk(root):
+        rel = os.path.relpath(dirpath, root).replace(os.sep, "/")
+        if rel != "." and "pyvenv.cfg" in filenames:
+            found.append(rel)
+            dirnames[:] = []
+            continue
+        keep = []
+        for name in dirnames:
+            child = name if rel == "." else f"{rel}/{name}"
+            if name == ".git" or any(exclude_matches(child, pat) for pat in excludes):
+                continue
+            if getattr(os.lstat(os.path.join(dirpath, name)), "st_file_attributes", 0) & 0x400:
+                continue
+            keep.append(name)
+        dirnames[:] = keep
+    return sorted(found)
+
+
 def suggest_excludes(
     git_dir: Path, work_tree: Path, excluded: list[str]
 ) -> list[str]:
@@ -494,7 +529,7 @@ def suggest_excludes(
         return []
     flags = " ".join(f"--exclude {p!r}" for p in found)
     print(
-        f"\nWARNING: the snapshot includes reproducible build output that is "
+        f"\nWarning: the snapshot includes reproducible build output that is "
         f"usually not worth\nbacking up.  Leave it out next time with "
         f"--default-excludes, or explicitly:\n  {flags}"
     )

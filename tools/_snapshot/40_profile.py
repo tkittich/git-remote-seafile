@@ -317,8 +317,9 @@ def check_free_space(
     git_dir: Path, vault: Path, source: Path, excludes: list[str],
     vault_config: dict[str, list[str]], *, allow_low_disk: bool = False,
     skip: "frozenset[str] | None" = None,
-) -> None:
-    """Refuse to start staging a tree the vault's volume cannot hold.
+) -> int:
+    """Refuse to start staging a tree the vault's volume cannot hold; else return
+    the bytes staging is estimated to add (an upper bound, for the heartbeat).
 
     ``git add`` writes every new object before anything can be undone, and a
     full volume does not fail cleanly: the vault is left with a partial object
@@ -331,7 +332,7 @@ def check_free_space(
     )
     free = shutil.disk_usage(vault).free
     if need + _FREE_SPACE_MARGIN_BYTES <= free or allow_low_disk:
-        return
+        return need
     raise SnapshotError(
         f"refusing to stage: the tree is {_fmt_bytes(tree)} and staging it needs about "
         f"{_fmt_bytes(need)} of new object storage in {vault}, but only {_fmt_bytes(free)} is free "

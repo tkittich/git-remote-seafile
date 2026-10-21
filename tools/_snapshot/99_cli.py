@@ -26,7 +26,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "\nrecommended exclusions (never applied silently -- this is what\n"
             "--default-excludes adds):\n  "
             + " ".join(f"--exclude '{p}'" for p in RECOMMENDED_EXCLUDES)
-            + "\n\nA pattern with no slash matches that name at ANY depth, so\n"
+            + "\n  plus each Python virtualenv found (a directory holding pyvenv.cfg)"
+            "\n\nA pattern with no slash matches that name at ANY depth, so\n"
             "--exclude node_modules also drops packages/*/node_modules.\n"
             "Quote wildcards so your own shell does not expand them first.\n"
             + PAYLOAD_EPILOG
@@ -98,7 +99,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action=argparse.BooleanOptionalAction,
         default=None,
         help="add the recommended exclusions on top of any --exclude "
-        f"({', '.join(RECOMMENDED_EXCLUDES)}). Not on by default: a snapshot is "
+        f"({', '.join(RECOMMENDED_EXCLUDES)}) and any Python virtualenv (a "
+        "directory holding a pyvenv.cfg, whatever its name). Not on by default: a snapshot is "
         "a backup, and silently dropping files is how a backup fails at the one "
         "moment it mattered",
     )
@@ -357,7 +359,7 @@ def main(argv: list[str] | None = None) -> int:
                 sweep_temp_packs(git_dir)
         # Before a byte is staged: a tree the volume cannot hold must be refused
         # now, not discovered when the disk fills (a dry run stages too).
-        check_free_space(
+        staging_expect = check_free_space(
             git_dir, vault, source, exclude, vault_config,
             allow_low_disk=args.allow_low_disk, skip=payload_skip or None,
         )
@@ -435,6 +437,7 @@ def main(argv: list[str] | None = None) -> int:
                 skip_paths=payload_skip or None, manifest=manifest,
                 capture_embedded=not args.no_embedded_repos,
                 embedded_report=embedded_report,
+                staging_bytes=staging_expect,
                 record_mtimes=resolve_record_mtimes(
                     args, vault, remote=remote, no_push=args.no_push,
                     parent_has_record=parent_has_mtimes(git_dir, source, base),
@@ -462,7 +465,7 @@ def main(argv: list[str] | None = None) -> int:
             gitlinks = find_gitlinks(git_dir, source, tree)
             if gitlinks:
                 print(
-                    "\nWARNING: these paths are embedded git repositories.  Only "
+                    "\nWarning: these paths are embedded git repositories.  Only "
                     "their commit id is\nrecorded, NOT their contents, so a "
                     "restore will produce a broken directory:"
                 )
@@ -479,7 +482,7 @@ def main(argv: list[str] | None = None) -> int:
             )
             if secrets:
                 print(
-                    f"\nWARNING: {len(secrets)} captured path(s) look like "
+                    f"\nWarning: {len(secrets)} captured path(s) look like "
                     f"credentials.  Git history is\npermanent -- push this vault "
                     f"only to a library only you can read:"
                 )

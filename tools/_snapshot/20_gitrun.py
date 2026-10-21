@@ -119,6 +119,7 @@ def _run(
     status: str | None = None,
     measure_dir: Path | None = None,
     stall_limit: "float | None | _UnsetStall" = _UNSET_STALL,
+    expect_bytes: int = 0,
     **kwargs: Any,
 ) -> subprocess.CompletedProcess[Any]:
     """``subprocess.run`` for git, failing as a ``SnapshotError`` when it hangs.
@@ -131,8 +132,11 @@ def _run(
     stderr intact across the timeouts, so no helper threads are needed.  Each
     time the interval passes without the child exiting:
 
-    * one line goes to stderr ("still staging the tree ... 4m12s (9 GiB written
-      to objects)"), because nothing else speaks during such a step;
+    * one line goes to stderr ("still staging the tree ... 4m12s (9.0 GiB written
+      to objects; up to about 28.6 GiB expected, at most 9m30s left)"), because
+      nothing else speaks during such a step.  The expectation comes from
+      ``expect_bytes`` (an upper bound: what staging is estimated to add) and is
+      left out when there is none or the step has already passed it;
     * bytes newly present under ``measure_dir`` count as progress and restart the
       stall clock;
     * if nothing has grown for ``STALL_LIMIT`` seconds the child (and, on
@@ -180,7 +184,12 @@ def _run(
             last_seen, last_progress = growth, now
         line = f"still {status} ... {_fmt_elapsed(now - start)}"
         if measure_dir is not None and growth > 0:
-            line += f" ({_fmt_bytes(growth)} written to {measure_dir.name})"
+            detail = f"{_fmt_bytes(growth)} written to {measure_dir.name}"
+            if expect_bytes > growth:
+                rate = growth / max(now - start, 1e-9)
+                detail += (f"; up to about {_fmt_bytes(expect_bytes)} expected, at most "
+                           f"{_fmt_elapsed((expect_bytes - growth) / rate)} left")
+            line += f" ({detail})"
         sys.stderr.write(line + "\n")
         sys.stderr.flush()
         if limit is not None and now - last_progress >= limit:
@@ -220,6 +229,7 @@ def git(
     measure_dir: Path | None = None,
     live_stderr: bool = False,
     stall_limit: "float | None | _UnsetStall" = _UNSET_STALL,
+    expect_bytes: int = 0,
 ) -> subprocess.CompletedProcess[str]:
     """Run git against an explicit --git-dir/--work-tree pair.
 
@@ -295,6 +305,7 @@ def git(
         status=status,
         measure_dir=measure_dir,
         stall_limit=stall_limit,
+        expect_bytes=expect_bytes,
     )
     if check and proc.returncode != 0:
         detail = (proc.stderr or proc.stdout).strip()
