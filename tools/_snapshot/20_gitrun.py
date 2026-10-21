@@ -72,14 +72,6 @@ def _dir_size(path: Path) -> int:
     return total
 
 
-def _fmt_bytes(num: float) -> str:
-    if num >= 1073741824:
-        return f"{num / 1073741824:.1f} GiB"
-    if num >= 1048576:
-        return f"{num / 1048576:.0f} MiB"
-    return f"{int(num)} B"
-
-
 def _fmt_elapsed(seconds: float) -> str:
     if seconds >= 3600:
         hours, rem = divmod(int(seconds), 3600)
@@ -184,10 +176,10 @@ def _run(
             last_seen, last_progress = growth, now
         line = f"still {status} ... {_fmt_elapsed(now - start)}"
         if measure_dir is not None and growth > 0:
-            detail = f"{_fmt_bytes(growth)} written to {measure_dir.name}"
+            detail = f"{human_bytes(growth)} written to {measure_dir.name}"
             if expect_bytes > growth:
                 rate = growth / max(now - start, 1e-9)
-                detail += (f"; up to about {_fmt_bytes(expect_bytes)} expected, at most "
+                detail += (f"; up to about {human_bytes(expect_bytes)} expected, at most "
                            f"{_fmt_elapsed((expect_bytes - growth) / rate)} left")
             line += f" ({detail})"
         sys.stderr.write(line + "\n")

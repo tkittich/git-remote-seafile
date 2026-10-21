@@ -22,6 +22,7 @@ from .packs import (
 )
 from .refs import REF_NAMESPACES, conflict_copies_of, is_conflict_copy, iter_refs, is_valid_ref_name
 from .safety import check_preflight_safety, SafetyError
+from .units import format_bytes
 from .url import mask_url, parse_seafile_url
 from .git_util import (
     HEX_SHA_RE,
@@ -743,8 +744,7 @@ class RemoteHelper:
             landed: dict[str, int] = {}
             for up_sha, up_pack, up_idx in uploads:
                 up_size = len(up_pack) if isinstance(up_pack, (bytes, bytearray)) else Path(up_pack).stat().st_size
-                size_kb = max(1, up_size // 1024)
-                sys.stderr.write(f"Uploading packfile pack-{up_sha[:8]} ({size_kb} KiB)...\n")
+                sys.stderr.write(f"Uploading packfile pack-{up_sha[:8]} ({format_bytes(up_size)})...\n")
                 sys.stderr.flush()
                 self.client.upload_file(
                     self.repo_id,

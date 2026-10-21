@@ -593,7 +593,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     except SnapshotError as exc:
-        print(f"error: {exc}", file=sys.stderr)
+        print(f"Error: {exc}", file=sys.stderr)
         return 1
 
 

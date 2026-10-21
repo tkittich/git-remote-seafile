@@ -92,8 +92,12 @@ def diff_stat(git_dir: Path, work_tree: Path, parent: str, tree: str) -> str:
     return proc.stdout.rstrip()
 
 
-def human_bytes(n: int) -> str:
+def human_bytes(n: float) -> str:
     """``1536`` as ``1.5 KiB``: the divisor is 1024, so the label says so.
+
+    The only byte formatter in the tool.  A copy of ``git_remote_seafile.units.
+    format_bytes`` (this file must run without the package installed);
+    ``tests/test_message_style.py`` fails if the two differ.
 
     It used to print the same numbers as KB/MB/GB while the staging heartbeat
     said GiB, so one run showed ``292.4 GB`` and ``9 GiB`` for the same kind of

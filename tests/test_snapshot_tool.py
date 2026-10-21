@@ -2682,7 +2682,7 @@ class StatusLineTests(unittest.TestCase):
 
     def test_the_staging_heartbeat_says_how_much_is_expected_and_how_long_is_left(self):
         text = self._heartbeat_with(30_000_000)
-        self.assertIn("MiB written to objects; up to about 29 MiB expected, at most ", text)
+        self.assertIn("MiB written to objects; up to about 28.6 MiB expected, at most ", text)
         self.assertIn(" left)", text)
 
     def test_the_heartbeat_drops_an_expectation_the_step_has_passed_or_never_had(self):

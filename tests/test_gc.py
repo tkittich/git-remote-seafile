@@ -92,18 +92,18 @@ class TestRemoteGC(unittest.TestCase):
 
         Repacking can produce a slightly larger pack when the existing packs
         were already tight.  The delta is signed because that is the honest
-        value, but printing it raw produced ``(saved -12 KB)`` -- which reads
+        value, but printing it raw produced ``(saved -12.0 KiB)`` -- which reads
         like a bug and calls a growth a saving.
         """
-        self.assertEqual(describe_size_delta(100), "saved ~100 KiB")
+        self.assertEqual(describe_size_delta(100), "saved ~100.0 KiB")
 
         grown = describe_size_delta(-12)
         self.assertIn("grew", grown)
-        self.assertIn("12", grown)
+        self.assertIn("12.0 KiB", grown)
         self.assertNotIn("-12", grown)
 
     def test_an_unchanged_size_is_not_called_a_growth(self):
-        self.assertEqual(describe_size_delta(0), "saved ~0 KiB")
+        self.assertEqual(describe_size_delta(0), "saved ~0 B")
 
     def test_gc_skipped_below_threshold(self):
         mock_client = MagicMock()

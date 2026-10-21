@@ -54,7 +54,7 @@ def auto_incremental_repack(git_dir: Path, work_tree: Path) -> None:
     count = stats.get("count", 0)
     if loose_bytes < _REPACK_MIN_LOOSE_BYTES:
         return
-    print(f"consolidating {count} loose object(s), {_fmt_bytes(loose_bytes)}, "
+    print(f"consolidating {count} loose object(s), {human_bytes(loose_bytes)}, "
           f"before the push ...")
     try:
         git(git_dir, None, ["repack", "-d"], cwd=work_tree,
@@ -260,8 +260,8 @@ def choose_profile(
     verdict = decide_profile(measure)
     if verdict == "raw":
         what = (
-            f"large raw payload detected ({_fmt_bytes(measure['payload'])} in big files of "
-            f"{_fmt_bytes(measure['total'])}; the sample keeps {measure['ratio']:.0%} of its "
+            f"large raw payload detected ({human_bytes(measure['payload'])} in big files of "
+            f"{human_bytes(measure['total'])}; the sample keeps {measure['ratio']:.0%} of its "
             f"size under deflate)"
         )
         if write:
@@ -334,9 +334,9 @@ def check_free_space(
     if need + _FREE_SPACE_MARGIN_BYTES <= free or allow_low_disk:
         return need
     raise SnapshotError(
-        f"refusing to stage: the tree is {_fmt_bytes(tree)} and staging it needs about "
-        f"{_fmt_bytes(need)} of new object storage in {vault}, but only {_fmt_bytes(free)} is free "
-        f"on that volume (and {_fmt_bytes(_FREE_SPACE_MARGIN_BYTES)} is kept in reserve). "
+        f"refusing to stage: the tree is {human_bytes(tree)} and staging it needs about "
+        f"{human_bytes(need)} of new object storage in {vault}, but only {human_bytes(free)} is free "
+        f"on that volume (and {human_bytes(_FREE_SPACE_MARGIN_BYTES)} is kept in reserve). "
         "Put the vault on a larger volume with --vault, narrow the tree with --exclude, "
         "or pass --allow-low-disk if the data is far more compressible than the sample "
         "suggests."
@@ -405,7 +405,7 @@ def sweep_temp_packs(git_dir: Path, *, min_age: float = _TEMP_PACK_MIN_AGE_SECON
             failed.append(f"{path.name} ({exc.strerror or exc})")
     if freed:
         print(f"removed leftover temporary pack file(s) from an interrupted run "
-              f"({_fmt_bytes(freed)} freed)")
+              f"({human_bytes(freed)} freed)")
     if failed:
         print("Warning: could not remove leftover temporary pack file(s): " + "; ".join(failed))
     return freed
@@ -437,11 +437,11 @@ def maintain_vault(vault: Path, *, full_repack: bool = False) -> int:
     free = shutil.disk_usage(vault).free
 
     print(f"vault object store: {stats.get('count', 0)} loose object(s), "
-          f"{_fmt_bytes(loose_kb * 1024)} loose, {_fmt_bytes(packed_kb * 1024)} "
+          f"{human_bytes(loose_kb * 1024)} loose, {human_bytes(packed_kb * 1024)} "
           f"in {stats.get('packs', 0)} packfile(s)")
     if stats.get("garbage", 0):
         print(f"Note: {stats['garbage']} leftover temporary file(s) from an interrupted run "
-              f"hold {_fmt_bytes(stats.get('size-garbage', 0) * 1024)} in objects/pack; "
+              f"hold {human_bytes(stats.get('size-garbage', 0) * 1024)} in objects/pack; "
               "a snapshot run (or --maintain --full-repack) removes them")
 
     profile = _read_config_key(git_dir, "snapshot.profile")
@@ -451,8 +451,8 @@ def maintain_vault(vault: Path, *, full_repack: bool = False) -> int:
                  f"{_PROFILE_BIG_FILE_THRESHOLD})" if profile == "raw" else ""))
 
     if not full_repack:
-        need = _fmt_bytes(store_bytes)
-        have = _fmt_bytes(free)
+        need = human_bytes(store_bytes)
+        have = human_bytes(free)
         verdict = "fits" if free >= store_bytes else "does NOT fit -- free space first"
         print(f"a full repack would need roughly {need} of headroom; this volume has {have} ({verdict}).")
         print("re-run with --maintain --full-repack to consolidate the whole store.")
@@ -460,8 +460,8 @@ def maintain_vault(vault: Path, *, full_repack: bool = False) -> int:
 
     if free < store_bytes:
         raise SnapshotError(
-            f"refusing to repack: the object store is {_fmt_bytes(store_bytes)} but only "
-            f"{_fmt_bytes(free)} is free on this volume; a repack keeps the old packfiles "
+            f"refusing to repack: the object store is {human_bytes(store_bytes)} but only "
+            f"{human_bytes(free)} is free on this volume; a repack keeps the old packfiles "
             "until the new ones are complete, so it needs roughly that much headroom"
         )
 
@@ -477,6 +477,6 @@ def maintain_vault(vault: Path, *, full_repack: bool = False) -> int:
 
     after = _object_store_stats(git_dir, vault)
     print(f"done: {after.get('count', 0)} loose object(s), "
-          f"{_fmt_bytes(after.get('size-pack', 0) * 1024)} in "
+          f"{human_bytes(after.get('size-pack', 0) * 1024)} in "
           f"{after.get('packs', 0)} packfile(s).")
     return 0

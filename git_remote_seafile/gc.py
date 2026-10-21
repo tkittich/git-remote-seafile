@@ -15,6 +15,7 @@ from .git_util import PACK_BIG_FILE_THRESHOLD, clean_git_env, run_git_checked
 from .lock import RemoteLock, describe_ownership_failure
 from .packs import fetch_pack_artifact, is_valid_pack_name
 from .refs import REF_NAMESPACES, is_conflict_copy, is_valid_ref_name, iter_refs
+from .units import format_bytes
 
 #: Ref prefixes the mirror in :func:`compact_repository` carries into the
 #: scratch repository -- the only namespaces whose objects ``repack -a -d`` is
@@ -93,15 +94,15 @@ def describe_size_delta(saved_kb: int) -> str:
     repacking can produce a slightly *larger* pack when the originals were
     already tightly packed, or when the new pack happens to delta less well.
     The delta is reported as a signed number because that is the honest value,
-    but printing it raw produced ``(saved -12 KB)`` -- which reads like a bug,
+    but printing it raw produced ``(saved -12.0 KiB)`` -- which reads like a bug,
     and calls a growth a saving.  So the negative case says what happened.
     """
     if saved_kb < 0:
         return (
-            f"grew by ~{abs(saved_kb)} KiB "
+            f"grew by ~{format_bytes(abs(saved_kb) * 1024)} "
             "(repacking can do this when the existing packs were already tight)"
         )
-    return f"saved ~{saved_kb} KiB"
+    return f"saved ~{format_bytes(saved_kb * 1024)}"
 
 
 def _fetch_and_verify_pack_pair(
