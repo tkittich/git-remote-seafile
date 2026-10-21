@@ -308,6 +308,11 @@ class SeafileClient:
         self._server_time_offset: float | None = None
         self._server_time_offsets: list[float] = []
         self._warned_no_server_time: bool = False
+        # One Session is shared by every thread (ref listing, uploads).  That is
+        # safe only while the read paths leave it alone: nothing after __init__
+        # changes its headers, cookies or adapters, and the one shared mutation,
+        # the Date hook's offset list, is a GIL-atomic append/pop.  Keep it so,
+        # or give each worker thread its own session.
         self.session = requests.Session()
         # File transfers go through a session as well, so they get connection
         # reuse, the `verify`/proxy settings and the retry adapter.  This second

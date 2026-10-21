@@ -73,6 +73,24 @@ class TestConfigModule(unittest.TestCase):
         with patch.dict("os.environ", {"SEAFILE_TEST_LOCK_SETTLE": "not-a-number"}):
             self.assertEqual(RemoteConfig.load().lock_settle, 1)
 
+    def test_the_e2e_suite_still_runs_one_push_with_the_default_window(self):
+        """The e2e harness sets the window to 0 for every run, so the shipped default
+        is exercised end to end by exactly one test.  If it is renamed or loses the
+        line that drops the override, nothing else would notice."""
+        import ast
+        import pathlib
+
+        source = pathlib.Path(__file__).with_name("test_e2e.py").read_text(encoding="utf-8")
+        cls = next(
+            (n for n in ast.walk(ast.parse(source))
+             if isinstance(n, ast.ClassDef) and n.name == "TestDefaultSettlementWindow"),
+            None,
+        )
+        self.assertIsNotNone(cls, "TestDefaultSettlementWindow is gone from tests/test_e2e.py")
+        body = ast.get_source_segment(source, cls) or ""
+        self.assertIn("SEAFILE_TEST_LOCK_SETTLE", body)
+        self.assertIn('["push"', body)
+
     def test_retired_keys_are_neither_read_nor_reported(self):
         """0.8.8 retired them with a warning; the warning cost a `git config`
         call per operation and has had four releases to be read."""
