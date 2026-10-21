@@ -269,6 +269,36 @@ class RealServerTests(unittest.TestCase):
         self.assertTrue(copies, "no conflict copies were produced")
         self.assertEqual(sorted(conflict_copies_of(entries, "v1.0.0")), sorted(copies))
 
+    def test_the_snapshot_tools_link_probe_measures_and_leaves_nothing_behind(self):
+        """``probe_link`` uploads four 8 MiB files (one, then three at once) and deletes them.
+
+        The stub cannot say what a real upload costs or whether a delete leaves a
+        trace.  Measured here: the rates are positive and in the neighbourhood of
+        what DESIGN/PAYLOAD record (one stream ~32 MiB/s, three ~53 MiB/s on the
+        authors' server -- a different link may differ), the store is reported as
+        not in use, and the probe's directory listing is empty afterwards.
+        """
+        sys.path.insert(0, str(_ROOT / "tools"))
+        import seafile_snapshot as snap
+
+        remote = self._url("probe-vault")
+        result = snap.probe_link(remote)
+        self.assertIsNotNone(result, "the probe could not run against the real server")
+        self.assertFalse(result["in_use"])
+        self.assertGreater(result["single"], 0)
+        self.assertGreater(result["upload"], 0)
+        left = self.client.list_dir(self.rid, f"/{self.base}/probe-vault/payload/objects")
+        self.assertEqual([e["name"] for e in left], [], "the probe left files behind")
+        print(f"\nprobe: one stream {result['single']:.1f} MiB/s, "
+              f"{snap._PROBE_STREAMS} at once {result['upload']:.1f} MiB/s -> "
+              f"cut-off {snap.tuned_ratio(48.0, result['upload'], result['single']):.2f} "
+              "at 48 MiB/s deflate")
+
+        # a store that already holds an object is reported as in use, uploading nothing
+        self.client.mkdir_p(self.rid, f"/{self.base}/probe-vault/payload/objects/ab")
+        again = snap.probe_link(remote)
+        self.assertEqual(again, {"in_use": True})
+
 
 if __name__ == "__main__":
     unittest.main()

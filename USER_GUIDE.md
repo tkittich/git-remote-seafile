@@ -1233,7 +1233,7 @@ What to know:
   default cut-off is `0.9` (only data that barely compresses leaves git);
   `--payload-auto-ratio R` changes it, and is remembered. A **new** vault with a
   gigabyte or more of compressible 4--64 MiB files measures your deflate speed and
-  link once on its first real run (four 8 MiB probe files, uploaded and deleted;
+  link once on its first real run (four 16 MiB probe files, uploaded and deleted;
   a crash can leave one, named `probe-*` directly under `payload/objects/`, which is safe
   to delete) and remembers a cut-off between `0.5` and `0.9`. An existing vault is
   never re-tuned on its own; `--payload-auto-ratio measure` measures again.

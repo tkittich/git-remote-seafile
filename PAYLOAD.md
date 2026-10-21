@@ -91,7 +91,7 @@ the measuring machine) is slow next to the link, and gives up git's delta betwee
 snapshots. Whether it pays depends on the machine and the link, so the tool measures
 both once, for a **new vault** (no earlier snapshot, nothing remembered) whose git-held
 4-64 MiB band is a gigabyte or more: it deflates real chunks of that band, uploads four
-8 MiB probe files (one, then three at once) directly under `payload/objects/` (outside
+16 MiB probe files (one, then three at once) directly under `payload/objects/` (outside
 the 256 fan-out directories every payload tool reads, so none of them sees one) and
 deletes them, and
 takes the break-even `single * (1/upload + 1/hash - 1/deflate)` kept between 0.5 and 0.9

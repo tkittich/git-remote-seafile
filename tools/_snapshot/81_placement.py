@@ -127,9 +127,10 @@ def placement_lines(
 # objects, because two machines on different cut-offs would move files back and
 # forth.  ``--payload-auto-ratio measure`` measures again on request.
 
-#: Each probe file is this big (a shorter stream is mostly request latency), and the
-#: aggregate probe runs this many at once -- the default ``--payload-jobs``.
-_PROBE_BYTES = 8 * 1024 ** 2
+#: Each probe file is this big, and the aggregate probe runs this many at once -- the
+#: default ``--payload-jobs``.  On the real server 8 MiB was too short: a transfer of
+#: ~0.25 s is mostly request latency, and three streams read *slower* than one.
+_PROBE_BYTES = 16 * 1024 ** 2
 _PROBE_STREAMS = 3
 
 
@@ -186,12 +187,15 @@ def probe_link(remote: str, *, force: bool = False) -> dict[str, Any] | None:
             return None
         single = mib / (time.perf_counter() - started)
         workers = [_open_client(server_url) for _ in range(_PROBE_STREAMS)]
+        for worker in workers:
+            worker.list_dir(rid, directory)  # connect now, so setup is not timed as upload
         started = time.perf_counter()
         with ThreadPoolExecutor(max_workers=_PROBE_STREAMS) as pool:
             done = list(pool.map(lambda i: push(i + 1, workers[i]), range(_PROBE_STREAMS)))
         if not all(done):
             return None
-        upload = _PROBE_STREAMS * mib / (time.perf_counter() - started)
+        # Never below one stream: if the server serialises uploads, one is what we get.
+        upload = max(single, _PROBE_STREAMS * mib / (time.perf_counter() - started))
         return {"single": single, "upload": upload, "in_use": in_use}
     except Exception:
         return None
