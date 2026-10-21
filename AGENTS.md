@@ -56,6 +56,9 @@ identity and the first CI failures of a release have always been environmental.
   name is defined in exactly one part; nothing evaluated at import time may come
   from a later part.
 - A test class that defines `test_*` methods must not be subclassed.
+- Notifications are `Warning:`/`Note:`/`Notice:`/`Hint:`/`Error:` in title case, byte
+  counts are binary (`KiB`, not `KB`), and every new message is mentioned by a test
+  (`tests/test_message_style.py`; see Conventions below).
 - The version is declared once; docs, release notes and CHANGELOG must agree with
   it (`tests/test_version_consistency.py`, `tests/test_docs_consistency.py`).
 - Docs make claims that guards check: a spec table row that names a test must name
@@ -116,5 +119,18 @@ real data**, even to test. Read-only commands (`--payload-verify`, report-only
   what. Match the surrounding density.
 - User-visible text is part of the contract: messages name the flag that fixes the
   problem, and an error that cannot be acted on is a bug.
+- **Message style** (enforced by `tests/test_message_style.py`): a notification opens
+  with `Warning:` (needs attention), `Note:` (FYI), `Notice:` (a default changed what
+  this run does) or `Hint:` (advice that changes nothing); a fatal error is `Error:`.
+  Title case, never `WARNING:`/`tip:`/`error:`. Status lines (`placement:`, `progress:`,
+  `tuned:`) are labels, not levels. Byte counts use `human_bytes` in the snapshot
+  tool and `git_remote_seafile.units.format_bytes` in the package -- one function, two
+  copies kept equal by a test -- and print KiB/MiB/GiB, never KB/MB/GB.
+- **A new message needs a test** that triggers it and quotes three words in a row of
+  its text. `tests/untested_messages.txt` lists the older messages that have none; it
+  may only shrink, and a new message is not added to it to get past the check.
+- Before a release, run a real snapshot against a scratch tree and *read the whole
+  output*. Reading one real run found the missing progress line, the `GB`/`GiB` mix
+  and a credentials warning on a CA bundle; none of it showed in a green test run.
 - A feature that can lose data needs a guard before it, a test that fails without
   the guard, and a line in the spec's failure model (PAYLOAD.md section 6).

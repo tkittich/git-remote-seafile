@@ -1,0 +1,20 @@
+# Messages that no test mentions yet (see tests/test_message_style.py).
+#
+# This list may only shrink.  Write a test that triggers the message and quotes a
+# distinctive part of it, then delete its line.  A NEW message must not be added
+# here to get past the check: only one that cannot be triggered in a test may, with
+# the reason in a comment above it.  Format: <file>: <first 60 characters>
+git_remote_seafile/client.py: could not be used (
+git_remote_seafile/client.py: is being sent to
+git_remote_seafile/config.py: Warning: implausible seafile.* config ignored (
+git_remote_seafile/helper.py: names no path, so this repository lives at '
+git_remote_seafile/lock.py: Warning: Failed to renew lock lease:
+git_remote_seafile/lock.py: Warning: Lock ticket was taken over; not renewing.
+git_remote_seafile/lock.py: Warning: lease expired and the queue could not be read (
+git_remote_seafile/lock.py: Warning: lock preempted by '
+git_remote_seafile/packs.py: Warning: streaming download of
+git_remote_seafile/refs.py: ; it is not advertised
+git_remote_seafile/refs.py: Warning: ignoring entry '
+tools/_snapshot/20_gitrun.py: Warning: SEAFILE_SNAPSHOT_STALL_LIMIT=
+tools/_snapshot/72_payload_guards.py: Warning: could not write
+tools/_snapshot/90_restore.py: Note: the remote has no branch '

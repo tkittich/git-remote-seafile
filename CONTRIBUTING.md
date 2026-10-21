@@ -370,7 +370,21 @@ gh attestation verify dist/<artifact> --repo tkittich/git-remote-seafile
    - Follow [PEP 8](https://peps.python.org/pep-0008/) conventions.
    - Include type annotations on all function and method signatures.
 
-4. **License Agreement**:
+4. **User-visible text**:
+   - A notification opens with `Warning:` (needs attention), `Note:` (FYI), `Notice:`
+     (a default changed what this run does), `Hint:` (advice that changes nothing) or,
+     for a fatal error, `Error:`. Title case: `WARNING:`, `tip:` and `error:` fail
+     `tests/test_message_style.py`.
+   - Byte counts are binary and labelled so (`KiB`, `MiB`, `GiB`). Use
+     `git_remote_seafile.units.format_bytes` in the package and `human_bytes` in the
+     snapshot tool (a copy, since that tool runs without the package; a test fails if
+     they differ). A hand-written `KB`, `MB` or `GB` next to a number fails the same test.
+   - A message that names a problem names the flag that fixes it.
+   - A new message comes with a test that triggers it and quotes three words in a row
+     of its text; the check lists the ones that do not. `tests/untested_messages.txt` is
+     the older backlog and may only shrink.
+
+5. **License Agreement**:
    - All contributions to this project are submitted under the terms of the **Apache License 2.0**.
 
 ---
