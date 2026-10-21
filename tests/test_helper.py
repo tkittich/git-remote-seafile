@@ -811,6 +811,7 @@ class TestRemoteHelper(unittest.TestCase):
             h._warn_if_head_dangles("refs/heads/main")
         self.assertNotIn("SECRETPW", err.getvalue())
         self.assertIn("seafile.example.com", err.getvalue())
+        self.assertIn("so this repository lives at", err.getvalue())
 
     # -- a ref is published only for packs proven to be on the remote ---------
     def _push_one(self, listing, **kw):

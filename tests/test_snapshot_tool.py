@@ -2835,6 +2835,7 @@ class StatusLineTests(unittest.TestCase):
                 with contextlib.redirect_stderr(err):
                     self.assertEqual(snap._stall_limit_from_env(), snap.STALL_LIMIT)
                 self.assertIn("SEAFILE_SNAPSHOT_STALL_LIMIT", err.getvalue())
+                self.assertIn("is not a positive number", err.getvalue())
 
     def test_children_inherit_a_helper_timeout_sized_to_the_watchdog(self):
         # The helper's own 300 s wall-clock ceiling is meant for an interactive

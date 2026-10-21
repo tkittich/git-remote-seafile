@@ -66,6 +66,7 @@ class TestClientCredentials(unittest.TestCase):
 
         warning = mock_err.getvalue()
         self.assertIn("could not be used", warning)
+        self.assertIn("continuing with other credential sources", warning)
         self.assertIn(".git-seafile.json", warning)
         # The parse error itself, not just "something went wrong" -- a user
         # staring at a one-line JSON file needs the column number.
