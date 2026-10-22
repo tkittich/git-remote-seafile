@@ -7243,6 +7243,9 @@ EXIT_WARNINGS = 3
 RUN_FACTS: dict[str, Any] = {}
 
 
+_WARNING_LIMIT = 500
+
+
 class _LineTap:
     """A text stream that passes everything through and remembers some of its lines.
 
@@ -7251,11 +7254,15 @@ class _LineTap:
     they leave the process finds all of them without a second path to keep in step.
     """
 
-    def __init__(self, stream: Any, warnings: list[str], errors: list[str]) -> None:
+    def __init__(
+        self, stream: Any, warnings: list[str], errors: list[str], seen: set[str]
+    ) -> None:
         self._stream = stream
         self._warnings = warnings
         self._errors = errors
+        self._seen = seen
         self._partial = ""
+        self._open: int | None = None
 
     def write(self, text: str) -> int:
         self._partial += text
@@ -7266,8 +7273,18 @@ class _LineTap:
 
     def _see(self, line: str) -> None:
         stripped = line.strip()
-        if stripped.startswith("Warning:") and stripped not in self._warnings:
+        if self._open is not None:
+            # A warning is wrapped over several lines (and may list paths); it ends
+            # at the blank line that follows it.  Capped, so a stray never swallows
+            # the run's output.
+            if stripped and len(self._warnings[self._open]) < _WARNING_LIMIT:
+                self._warnings[self._open] += " " + stripped
+                return
+            self._open = None
+        if stripped.startswith("Warning:") and stripped not in self._seen:
+            self._seen.add(stripped)
             self._warnings.append(stripped)
+            self._open = len(self._warnings) - 1
         elif stripped.startswith("Error:"):
             self._errors.append(stripped)
 
@@ -7304,8 +7321,9 @@ def run_reported(
     warnings: list[str] = []
     errors: list[str] = []
     real_out, real_err = sys.stdout, sys.stderr
-    sys.stdout = _LineTap(real_err if args.json else real_out, warnings, errors)
-    sys.stderr = _LineTap(real_err, warnings, errors)
+    seen: set[str] = set()
+    sys.stdout = _LineTap(real_err if args.json else real_out, warnings, errors, seen)
+    sys.stderr = _LineTap(real_err, warnings, errors, seen)
     started = time.monotonic()
     try:
         rc = body(args)

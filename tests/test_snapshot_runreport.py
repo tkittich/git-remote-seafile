@@ -90,6 +90,9 @@ class JsonTests(_ReportFixture):
         self.assertEqual(doc["status"], "warnings")
         self.assertEqual(len(doc["warnings"]), 1)
         self.assertTrue(doc["warnings"][0].startswith("Warning:"))
+        # The warning is wrapped over lines and lists the paths: all of it is kept.
+        self.assertIn("only you can read", doc["warnings"][0])
+        self.assertIn(".env", doc["warnings"][0])
 
     def test_a_failed_run_carries_the_error_and_the_exit_code(self):
         into = self.case / "occupied"
