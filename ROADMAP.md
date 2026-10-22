@@ -1,6 +1,6 @@
 # Engineering Roadmap & Backlog
 
-**Baseline:** v0.9.11 (v0.9.0: the snapshot tool ships in the wheel and gains payload mode: large files stored by SHA-256, with gc, verify, retention and browsable views; on top of 0.8.8's measured pack cap, chunked upload, autogc, `doctor`, `gc --tail` and one output/exit convention)  
+**Baseline:** v0.9.12 (v0.9.0: the snapshot tool ships in the wheel and gains payload mode: large files stored by SHA-256, with gc, verify, retention and browsable views; on top of 0.8.8's measured pack cap, chunked upload, autogc, `doctor`, `gc --tail` and one output/exit convention)  
 **Scope:** What shipped in each release line, the active backlog, and the v1.0.0 horizon.  
 **Test Suite:** all green on `tools/run_tests_parallel.py` (the runner prints the current count; it is deliberately not repeated here). **Python:** 3.10+ (3.9 EOL).
 
@@ -18,7 +18,7 @@
 | **Parallel staging in the snapshot tool** | `tools/_snapshot/70_stage.py` | `git add` hashes on one core: measured 190–250 MiB/s on git for Windows (collision-detecting SHA-1, ~7x slower than OpenSSL's; Python's `hashlib` does 1.6 GB/s on the same file), so a 130 GiB tree takes ~11 minutes with the raw profile. Idea: hash the big files in N parallel `git hash-object -w --no-filters` workers, then feed the index with `git update-index --index-info` (no re-hash). Must preserve modes (100644/100755), symlinks (120000) and gitlinks (160000) exactly, and the byte-exactness contract; verify with a restore-and-compare on a tree that has all four. Expected gain: a few times, bounded by the disk. Not worth the risk until someone's wall-clock actually hurts. | M | Medium | backlog |
 | **Payload mode in the snapshot tool** (shipped in 0.9.0; row kept for the design notes) | `tools/_snapshot/75_payload.py` | Big immutable files bypass git: stream-hashed, uploaded by hash to `<path>/payload/objects/`, with a manifest (path, mode, size, SHA-256) in the vault commit. A snapshot is a manifest; renames and duplicates upload nothing; no server name rule applies. Removes the local object copy and the 12-20 minute staging pass on a 131 GiB tree. Shipped with hashing under a racy-clean rule, parallel uploads, verified restore, the `auto` selection rule, a remembered setting, `--payload-rehash`, two-phase `--payload-gc` with `--payload-keep`, `--payload-verify` and `--payload-view`; exercised on a 131 GiB tree against a real server. Spec: PAYLOAD.md; measurements: SNAPSHOT.md section 15.1. | L | Medium | shipped in v0.9.0 |
 
-### 1.0 Ideas kept for later (from the 0.9.11 suggestion pass)
+### 1.0 Ideas kept for later (from the 0.9.12 suggestion pass)
 
 | ID / Source | Component | Description & Impact | Effort | Risk | Planned Target |
 |---|---|---|:---:|:---:|:---:|
@@ -211,6 +211,9 @@ One line per capability — see [CHANGELOG.md](CHANGELOG.md) for the full detail
 
 **v0.9.11 (2026-10-21) — failed uploads keep their hashes; one message style.**
 - A failed upload keeps the hash cache and a changed file no longer stops the other uploads; an upload prints its progress; `--default-excludes` covers any virtualenv; the staging heartbeat says how much is expected; notifications are `Warning:`/`Note:`/`Notice:`/`Hint:`/`Error:` and bytes are KiB/MiB/GiB, guarded by `tests/test_message_style.py`.
+
+**v0.9.12 (2026-10-22) — a backup you can prove restores; scripting.**
+- `--restore-drill [N|all]`; `--json` and `--exit-warnings` (exit 3, opt-in); hashing, payload restore and `--payload-verify` print rate and time left; the hash cache is saved while a tree is hashed, so a killed pass keeps its work.
 
 ---
 

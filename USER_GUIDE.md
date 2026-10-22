@@ -244,6 +244,8 @@ git pull
 pip install -e .
 ```
 
+**Upgrading to v0.9.12** Nothing about what is stored changes and no setting is renamed; the exit codes of a run are what they were (`--exit-warnings`, which adds `3`, is opt-in). Hashing, a payload restore and `--payload-verify` now print a `progress:` line once a minute, as an upload does. New: `--restore-drill`, `--json`, `--exit-warnings`.
+
 **Upgrading to v0.9.11** Nothing about what is stored changes and no setting is renamed. Output that a script reading it would notice: notifications are in title case (`Warning:`, `Note:`, `Notice:`, `Hint:`, `Error:`; the snapshot tool's fatal error was `error:`, and 0.9.10's placement suggestion was `tip:`); byte counts are `KiB`/`MiB`/`GiB` (the snapshot tool printed `KB`/`MB`/`GB` for the same numbers, and the helper's `Uploading packfile` line and `gc`'s `saved ~N` changed with them; the `saved_kb` field of gc's JSON output keeps its name). `--default-excludes` now also leaves out any Python virtualenv it finds (a directory holding `pyvenv.cfg`), which the vault remembers as an ordinary exclude. A run that fails on a file still being written now uploads everything else and keeps its hashes; the file is named, and `--exclude` leaves it out.
 
 **Upgrading to v0.9.10** Nothing changes for an existing vault, and nothing about what is stored changes. A new vault with a gigabyte or more of compressible 4–64 MiB files measures once on its first real run: four 8 MiB probe files are uploaded to the payload store and deleted (eight library-history entries), and the cut-off is remembered. `--dry-run` measures nothing. To choose a cut-off for an existing vault, run once with `--payload-auto-ratio measure` or `--payload-auto-ratio R`; files then move between git and payload once, and copies already in history stay there.
@@ -1066,6 +1068,8 @@ Defaults are resolved most-specific-first:
 | `--into <dir>` | Destination directory for `--restore`. |
 | `--ref <rev>` | Which snapshot to restore. Default: the vault branch tip. Only meaningful with `--restore` — passing it without one is an error, not a no-op. |
 | `--verify` | With `--restore`, also run `git fsck` over the clone. |
+
+**Scheduled runs: exit codes and `--json`.** `0` is done (a warning may have been printed), `1` failed (`Error:` on stderr), `2` the command line was wrong, and `3` — only with `--exit-warnings` — completed but printed a `Warning:`. With `--json` stdout is exactly one JSON line (`status` is `ok`, `warnings` or `failed`), so a job can alert with `jq -e '.status == "ok"'` and attach `.warnings` or `.error` to the notification. Run `--restore-drill` now and then (monthly, not nightly: it downloads the vault once) so the first restore is not the day you need it. Details: SNAPSHOT.md, *Exit codes and `--json`* and *Restore drill*.
 
 **An unchanged tree commits nothing.** The tool compares the new tree against the previous snapshot and stops if they match, so a scheduled job — hourly, say — costs a directory walk and a push that transfers nothing. This is what makes it safe to run far more often than you would run a backup.
 
