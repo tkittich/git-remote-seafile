@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.12] - 2026-10-22
+
+A backup can now be proven restorable, a scheduled run can report in a form a script reads, and every long phase says how much is left. Nothing about what is stored changes, and no run's exit code changes unless `--exit-warnings` is passed.
+
 ### Added
 - `--restore-drill [N|all]`: restore the newest snapshot into a temporary directory, check it byte-for-byte and with `git fsck`, verify a random sample of payload files against their SHA-256, and delete it.
 - `--json`: one JSON document on stdout (status, exit code, warnings, error, result); the human text moves to stderr.
@@ -1750,6 +1754,7 @@ Data-loss and silent-failure fixes, and the Python floor raised to 3.9.
   with zero-config desktop-client token discovery, distributed locking, remote
   packfile compaction, and a Git LFS custom transfer agent.
 
+[0.9.12]: https://github.com/tkittich/git-remote-seafile/compare/v0.9.11...v0.9.12
 [0.9.11]: https://github.com/tkittich/git-remote-seafile/compare/v0.9.10...v0.9.11
 [0.9.10]: https://github.com/tkittich/git-remote-seafile/compare/v0.9.9...v0.9.10
 [0.9.9]: https://github.com/tkittich/git-remote-seafile/compare/v0.9.8...v0.9.9
