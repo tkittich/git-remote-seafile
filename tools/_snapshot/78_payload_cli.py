@@ -424,6 +424,7 @@ def run_payload_step(
         clock_offset_ns=clock_offset,
         racy_window_ns=_UNPROBED_WINDOW_NS if unprobed else _RACY_WINDOW_NS,
         root_dev=root_dev,
+        checkpoint=None if dry_run else (lambda partial: save_hash_cache(git_dir, partial)),
     )
     try:
         todo = publish_payload(

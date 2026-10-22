@@ -358,6 +358,9 @@ def payload_verify(remote: str, vault: Path | None, *, count: str) -> int:
     chosen = shas if count == "all" else sorted(random.sample(shas, min(int(count), len(shas))))
     print(f"verifying {len(chosen)} of {len(shas)} object(s) of the newest snapshot ...", flush=True)
     bad: list[str] = []
+    total_bytes = sum(sizes[sha] for sha in chosen)
+    checked = 0
+    started = last_pulse = time.monotonic()
     with tempfile.TemporaryDirectory(prefix="grs-payload-verify-") as td:
         for index, sha in enumerate(chosen, 1):
             why = _download_verified(
@@ -367,13 +370,19 @@ def payload_verify(remote: str, vault: Path | None, *, count: str) -> int:
             (Path(td) / sha).unlink(missing_ok=True)
             if why is not None:
                 bad.append(f"{sha}: {why}")
+            checked += sizes[sha]
+            now = time.monotonic()
             if index % 10 == 0 or index == len(chosen):
                 print(f"checked [{index}/{len(chosen)}]", flush=True)
+            if now - last_pulse >= _PULSE_SECONDS:
+                last_pulse = now
+                print(_progress_line(checked, total_bytes, now - started, "checked"), flush=True)
     if bad:
         shown = "\n  ".join(bad[:20])
         raise SnapshotError(f"{len(bad)} of {len(chosen)} sampled object(s) are damaged:\n  {shown}")
     print(f"verified {len(chosen)} object(s): every sampled object matches its SHA-256")
     record_verification(client, rid, base, len(chosen), len(shas))
+    RUN_FACTS.update(checked=len(chosen), objects=len(shas), damaged=0)
     return 0
 
 

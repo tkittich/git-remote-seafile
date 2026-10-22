@@ -1,3 +1,28 @@
+def drill_conflicts(args: argparse.Namespace) -> list[str]:
+    """What cannot go with ``--restore-drill``: it restores, into a directory it picks."""
+    if args.restore_drill is None:
+        return []
+    problems = [
+        f"{flag} does not apply to --restore-drill"
+        for flag, value in (
+            ("--restore", args.restore), ("--maintain", args.maintain), ("--into", args.into),
+            ("--verify", args.verify), ("--vault", args.vault), ("--dry-run", args.dry_run),
+            ("--message", args.message), ("--code-remote", args.code_remote),
+            ("--exclude", args.exclude), ("--default-excludes", args.default_excludes),
+            ("--no-push", args.no_push), ("--source", args.source),
+            ("SOURCE (positional)", args.source_positional),
+            ("--payload-verify", args.payload_verify is not None),
+            ("--payload-gc", args.payload_gc), ("--payload-view", args.payload_view is not None),
+        )
+        if value
+    ]
+    try:
+        drill_sample(args.restore_drill)
+    except SnapshotError as exc:
+        problems.append(str(exc))
+    return problems
+
+
 def validate_args(args: argparse.Namespace) -> None:
     """Reject combinations that would otherwise be silently ignored.
 
@@ -11,6 +36,7 @@ def validate_args(args: argparse.Namespace) -> None:
         + mtimes_conflicts(args)
     )
 
+    problems += drill_conflicts(args)
     if args.maintain and args.restore:
         problems.append("--maintain and --restore are different modes")
     if args.maintain:
@@ -38,7 +64,7 @@ def validate_args(args: argparse.Namespace) -> None:
     elif not args.restore:
         for flag, value in (("--verify", args.verify), ("--into", args.into),
                             ("--ref", args.ref)):
-            if value:
+            if value and not (flag == "--ref" and args.restore_drill is not None):
                 problems.append(f"{flag} only applies to --restore")
     else:
         for flag, value in (

@@ -412,8 +412,13 @@ def build_manifest(
     clock_offset_ns: int = 0,
     racy_window_ns: int | None = None,
     root_dev: int | None = None,
+    checkpoint: Callable[[dict[str, dict[str, int | str]]], None] | None = None,
 ) -> tuple[dict[str, Any], dict[str, dict[str, int | str]]]:
     """Hash every payload file; return ``(manifest, updated cache)``.
+
+    ``checkpoint`` receives the cache so far about once a minute, so a pass that
+    is killed (not merely interrupted) keeps what it hashed: a 131 GiB tree takes
+    minutes to hash and the result is only useful as a whole.
 
     ``clock_offset_ns`` is the source filesystem's clock minus this machine's
     (:func:`fs_clock_offset_ns`).  The racy rule compares a file's mtime with the
@@ -429,8 +434,10 @@ def build_manifest(
     fresh: dict[str, dict[str, int | str]] = {}
     total = len(candidates)
     stale = 0
-    for index, rel in enumerate(sorted(candidates), 1):
-        size, mtime_ns, mode, ino, *rest = candidates[rel]
+
+    def vouched(rel: str) -> tuple[dict[str, int | str], bool]:
+        """The cache entry for *rel* and whether it may stand in for a fresh hash."""
+        size, mtime_ns, _mode, ino, *rest = candidates[rel]
         dev = rest[0] if rest else None
         ctime_ns = rest[1] if len(rest) > 1 else None
         old = cache.get(rel) or {}
@@ -459,6 +466,20 @@ def build_manifest(
             and (ctime_ns is None or old.get("ctime") in (None, ctime_ns))
             and (dev is None or old.get("dev") in (None, dev))
         )
+        return old, trusted
+
+    # What will really be read, so the progress line's rate and estimate describe
+    # the hashing and not the files the cache vouches for.
+    to_hash = 0 if quiet else sum(
+        candidates[rel][0] for rel in candidates if not vouched(rel)[1]
+    )
+    hashed = 0
+    started_at = last_pulse = last_checkpoint = time.monotonic()
+    for index, rel in enumerate(sorted(candidates), 1):
+        size, mtime_ns, mode, ino, *rest = candidates[rel]
+        dev = rest[0] if rest else None
+        ctime_ns = rest[1] if len(rest) > 1 else None
+        old, trusted = vouched(rel)
         if trusted:
             digest = str(old["sha256"])
             fresh[rel] = dict(old)
@@ -472,6 +493,19 @@ def build_manifest(
                 print(f"hashing [{index}/{total}] {rel} ({human_bytes(size)})", flush=True)
             started = time.time_ns() + clock_offset_ns
             digest = _sha256_file(source / rel)
+            hashed += size
+            now = time.monotonic()
+            if not quiet and now - last_pulse >= _PULSE_SECONDS:
+                last_pulse = now
+                print(_progress_line(hashed, to_hash, now - started_at, "hashed"), flush=True)
+            if checkpoint is not None and now - last_checkpoint >= _CHECKPOINT_SECONDS:
+                last_checkpoint = now
+                checkpoint({**cache, **fresh, rel: {
+                    "size": size, "mtime_ns": mtime_ns, "ino": ino, "sha256": digest,
+                    "at": started, **({"ctime": ctime_ns} if ctime_ns is not None else {}),
+                    **({"dev": dev} if dev is not None else {}),
+                    **({"fs": True} if clock_offset_ns else {}),
+                }})
             fresh[rel] = {
                 "size": size, "mtime_ns": mtime_ns, "ino": ino, "sha256": digest, "at": started,
             }

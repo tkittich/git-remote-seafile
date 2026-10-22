@@ -21,7 +21,7 @@ import zlib
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
-from typing import Any, NamedTuple, TypedDict
+from typing import Any, Callable, NamedTuple, TypedDict
 
 DEFAULT_BRANCH = "snapshot"
 

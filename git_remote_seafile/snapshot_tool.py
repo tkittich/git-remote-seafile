@@ -217,7 +217,7 @@ import zlib
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
-from typing import Any, NamedTuple, TypedDict
+from typing import Any, Callable, NamedTuple, TypedDict
 
 DEFAULT_BRANCH = "snapshot"
 
@@ -3379,8 +3379,13 @@ def build_manifest(
     clock_offset_ns: int = 0,
     racy_window_ns: int | None = None,
     root_dev: int | None = None,
+    checkpoint: Callable[[dict[str, dict[str, int | str]]], None] | None = None,
 ) -> tuple[dict[str, Any], dict[str, dict[str, int | str]]]:
     """Hash every payload file; return ``(manifest, updated cache)``.
+
+    ``checkpoint`` receives the cache so far about once a minute, so a pass that
+    is killed (not merely interrupted) keeps what it hashed: a 131 GiB tree takes
+    minutes to hash and the result is only useful as a whole.
 
     ``clock_offset_ns`` is the source filesystem's clock minus this machine's
     (:func:`fs_clock_offset_ns`).  The racy rule compares a file's mtime with the
@@ -3396,8 +3401,10 @@ def build_manifest(
     fresh: dict[str, dict[str, int | str]] = {}
     total = len(candidates)
     stale = 0
-    for index, rel in enumerate(sorted(candidates), 1):
-        size, mtime_ns, mode, ino, *rest = candidates[rel]
+
+    def vouched(rel: str) -> tuple[dict[str, int | str], bool]:
+        """The cache entry for *rel* and whether it may stand in for a fresh hash."""
+        size, mtime_ns, _mode, ino, *rest = candidates[rel]
         dev = rest[0] if rest else None
         ctime_ns = rest[1] if len(rest) > 1 else None
         old = cache.get(rel) or {}
@@ -3426,6 +3433,20 @@ def build_manifest(
             and (ctime_ns is None or old.get("ctime") in (None, ctime_ns))
             and (dev is None or old.get("dev") in (None, dev))
         )
+        return old, trusted
+
+    # What will really be read, so the progress line's rate and estimate describe
+    # the hashing and not the files the cache vouches for.
+    to_hash = 0 if quiet else sum(
+        candidates[rel][0] for rel in candidates if not vouched(rel)[1]
+    )
+    hashed = 0
+    started_at = last_pulse = last_checkpoint = time.monotonic()
+    for index, rel in enumerate(sorted(candidates), 1):
+        size, mtime_ns, mode, ino, *rest = candidates[rel]
+        dev = rest[0] if rest else None
+        ctime_ns = rest[1] if len(rest) > 1 else None
+        old, trusted = vouched(rel)
         if trusted:
             digest = str(old["sha256"])
             fresh[rel] = dict(old)
@@ -3439,6 +3460,19 @@ def build_manifest(
                 print(f"hashing [{index}/{total}] {rel} ({human_bytes(size)})", flush=True)
             started = time.time_ns() + clock_offset_ns
             digest = _sha256_file(source / rel)
+            hashed += size
+            now = time.monotonic()
+            if not quiet and now - last_pulse >= _PULSE_SECONDS:
+                last_pulse = now
+                print(_progress_line(hashed, to_hash, now - started_at, "hashed"), flush=True)
+            if checkpoint is not None and now - last_checkpoint >= _CHECKPOINT_SECONDS:
+                last_checkpoint = now
+                checkpoint({**cache, **fresh, rel: {
+                    "size": size, "mtime_ns": mtime_ns, "ino": ino, "sha256": digest,
+                    "at": started, **({"ctime": ctime_ns} if ctime_ns is not None else {}),
+                    **({"dev": dev} if dev is not None else {}),
+                    **({"fs": True} if clock_offset_ns else {}),
+                }})
             fresh[rel] = {
                 "size": size, "mtime_ns": mtime_ns, "ino": ino, "sha256": digest, "at": started,
             }
@@ -3521,6 +3555,9 @@ _AUTO_SAMPLE_CHUNK = 256 * 1024
 #: Seconds between progress lines while objects upload (an upload of a large tree
 #: runs for an hour, and a line per file says nothing about how much is left).
 _PULSE_SECONDS = 60.0
+#: Seconds between saves of the hash cache while a tree is hashed: what a killed pass
+#: loses is at most this much work.
+_CHECKPOINT_SECONDS = 60.0
 _SIZE_RE = re.compile(r"^\s*(\d+)\s*([kmgt]?)(?:i?b)?\s*$", re.IGNORECASE)
 _SIZE_UNITS = {"": 1, "k": 1024, "m": 1024 ** 2, "g": 1024 ** 3, "t": 1024 ** 4}
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
@@ -3789,12 +3826,16 @@ def _commit_object(
     return bool(client.rename_entry(rid, f"{directory}/{temp}", sha))
 
 
-def _progress_line(done: int, total: int, elapsed: float) -> str:
-    """``progress: 41.2 GiB of 292.0 GiB uploaded (14%), 52 MiB/s, about 1h20m left``."""
+def _progress_line(done: int, total: int, elapsed: float, verb: str = "uploaded") -> str:
+    """``progress: 41.2 GiB of 292.0 GiB uploaded (14%), 52 MiB/s, about 1h20m left``.
+
+    *verb* names the work (uploaded, downloaded, hashed, checked), so every long
+    phase reports in the same words.
+    """
     rate = done / 1048576 / elapsed if elapsed > 0 else 0.0
     left = f", about {_fmt_elapsed((total - done) / 1048576 / rate)} left" if rate > 0 else ""
     percent = done * 100 // total if total else 100
-    return (f"progress: {human_bytes(done)} of {human_bytes(total)} uploaded ({percent}%), "
+    return (f"progress: {human_bytes(done)} of {human_bytes(total)} {verb} ({percent}%), "
             f"{rate:.0f} MiB/s{left}")
 
 
@@ -4457,6 +4498,9 @@ def payload_verify(remote: str, vault: Path | None, *, count: str) -> int:
     chosen = shas if count == "all" else sorted(random.sample(shas, min(int(count), len(shas))))
     print(f"verifying {len(chosen)} of {len(shas)} object(s) of the newest snapshot ...", flush=True)
     bad: list[str] = []
+    total_bytes = sum(sizes[sha] for sha in chosen)
+    checked = 0
+    started = last_pulse = time.monotonic()
     with tempfile.TemporaryDirectory(prefix="grs-payload-verify-") as td:
         for index, sha in enumerate(chosen, 1):
             why = _download_verified(
@@ -4466,13 +4510,19 @@ def payload_verify(remote: str, vault: Path | None, *, count: str) -> int:
             (Path(td) / sha).unlink(missing_ok=True)
             if why is not None:
                 bad.append(f"{sha}: {why}")
+            checked += sizes[sha]
+            now = time.monotonic()
             if index % 10 == 0 or index == len(chosen):
                 print(f"checked [{index}/{len(chosen)}]", flush=True)
+            if now - last_pulse >= _PULSE_SECONDS:
+                last_pulse = now
+                print(_progress_line(checked, total_bytes, now - started, "checked"), flush=True)
     if bad:
         shown = "\n  ".join(bad[:20])
         raise SnapshotError(f"{len(bad)} of {len(chosen)} sampled object(s) are damaged:\n  {shown}")
     print(f"verified {len(chosen)} object(s): every sampled object matches its SHA-256")
     record_verification(client, rid, base, len(chosen), len(shas))
+    RUN_FACTS.update(checked=len(chosen), objects=len(shas), damaged=0)
     return 0
 
 
@@ -4699,14 +4749,17 @@ def _download_verified(
     return last
 
 
-def restore_payload(remote: str, into: Path, *, allow_low_disk: bool = False) -> None:
+def restore_payload(
+    remote: str, into: Path, *, allow_low_disk: bool = False, sample: int | None = None
+) -> None:
     """Download and verify the payload a restored snapshot's manifest names.
 
     A security problem in the manifest refuses it whole.  An entry this platform
     cannot hold, one that would overwrite something already there, or one that
     fails to download or verify is skipped and reported -- the rest is restored
     -- and the run then fails.  A file already in place that verifies is kept, so
-    a rerun into the same directory picks up where it stopped.
+    a rerun into the same directory picks up where it stopped.  With *sample* only
+    that many files, chosen at random, are fetched (the restore drill).
     """
     manifest_path = into / PAYLOAD_MANIFEST
     if not manifest_path.is_file():
@@ -4716,13 +4769,17 @@ def restore_payload(remote: str, into: Path, *, allow_low_disk: bool = False) ->
     except (ValueError, RecursionError) as exc:
         raise SnapshotError(f"the snapshot's payload manifest is unreadable: {exc}") from None
     files = validate_manifest(manifest, into)
+    total_files = len(files)
+    if sample is not None and sample < total_files:
+        files = random.sample(files, sample)
     problem = restore_space_problem(files, into, allow_low_disk=allow_low_disk)
     if problem is not None:
         raise SnapshotError(problem)
     library, base, server_url = payload_location(remote)
     client = _api(lambda: _open_client(server_url), "opening the Seafile client")
     rid = _api(lambda: client.get_repo_id(library), f"finding library {library!r}")
-    print(f"restoring {len(files)} payload file(s) from {base}/objects ...", flush=True)
+    of = f" of {total_files}" if len(files) < total_files else ""
+    print(f"restoring {len(files)}{of} payload file(s) from {base}/objects ...", flush=True)
     scratch = extended_path(into / ".git" / "grs-restore")
     scratch.mkdir(parents=True, exist_ok=True)
     try:
@@ -4736,6 +4793,9 @@ def _restore_payload_files(
 ) -> None:
     problems: list[str] = []
     done = 0
+    total_bytes = sum(item["size"] for item in files)
+    fetched = 0
+    started = last_pulse = time.monotonic()
     for index, item in enumerate(files, 1):
         rel, sha = item["path"], item["sha256"]
         if os.name == "nt":
@@ -4768,6 +4828,11 @@ def _restore_payload_files(
         except (OSError, OverflowError, ValueError):
             pass  # content verified; timestamps and mode are best effort
         done += 1
+        fetched += item["size"]
+        now = time.monotonic()
+        if now - last_pulse >= _PULSE_SECONDS:
+            last_pulse = now
+            print(_progress_line(fetched, total_bytes, now - started, "downloaded"), flush=True)
     if problems:
         shown = "\n  ".join(problems[:20])
         more = f"\n  ... and {len(problems) - 20} more" if len(problems) > 20 else ""
@@ -5216,6 +5281,7 @@ def run_payload_step(
         clock_offset_ns=clock_offset,
         racy_window_ns=_UNPROBED_WINDOW_NS if unprobed else _RACY_WINDOW_NS,
         root_dev=root_dev,
+        checkpoint=None if dry_run else (lambda partial: save_hash_cache(git_dir, partial)),
     )
     try:
         todo = publish_payload(
@@ -6213,6 +6279,7 @@ def restore(
     verify: bool = False,
     branch_explicit: bool = True,
     allow_low_disk: bool = False,
+    payload_sample: int | None = None,
 ) -> None:
     """Materialise a snapshot into a new directory; say what a failure leaves behind.
 
@@ -6224,7 +6291,8 @@ def restore(
     """
     was_empty = not into.exists() or not any(into.iterdir())
     try:
-        _restore(remote, into, branch, ref, verify, branch_explicit, allow_low_disk)
+        _restore(remote, into, branch, ref, verify, branch_explicit, allow_low_disk,
+                 payload_sample)
     except SnapshotError as exc:
         if was_empty and into.exists() and any(into.iterdir()):
             raise SnapshotError(
@@ -6242,6 +6310,7 @@ def _restore(
     verify: bool = False,
     branch_explicit: bool = True,
     allow_low_disk: bool = False,
+    payload_sample: int | None = None,
 ) -> None:
     """Materialise a snapshot into a new directory, byte-for-byte.
 
@@ -6402,11 +6471,69 @@ def _restore(
             )
         print("git fsck: object store intact")
 
-    restore_payload(remote, into, allow_low_disk=allow_low_disk)
+    restore_payload(remote, into, allow_low_disk=allow_low_disk, sample=payload_sample)
 
     files = sum(1 for p in into.rglob("*") if p.is_file() and ".git" not in p.parts)
     print(f"restored {files} files from {target} into {into}")
     print(f"verified byte-exact against {verified_rev[:12]}")
+
+
+def _remove_tree(path: Path) -> None:
+    """``rmtree`` that also removes git's read-only object files on Windows."""
+    def writable(func: Any, name: str, _exc: Any) -> None:
+        os.chmod(name, stat.S_IWRITE)
+        func(name)
+    shutil.rmtree(extended_path(path), onerror=writable)
+
+
+def restore_drill(
+    remote: str, branch: str, ref: str | None, sample: int, *, branch_explicit: bool,
+    allow_low_disk: bool = False, allow_synced: bool = False,
+) -> None:
+    """Restore into a temporary directory, check it, and delete it.
+
+    The point is the answer to "would a restore work today", asked without the
+    operator choosing a destination or cleaning up.  Everything a restore checks
+    is checked (every file byte-for-byte, ``git fsck``); only the payload is
+    sampled, since it is the part that costs hours.  A failure keeps the
+    directory (:func:`restore` names it): a restore that failed is the evidence.
+    """
+    scratch = Path(tempfile.mkdtemp(prefix="grs-drill-"))
+    into = scratch / "restore"
+    try:
+        check_paths_are_unsynced(("drill directory", scratch), allow_synced=allow_synced)
+    except SnapshotError:
+        _remove_tree(scratch)
+        raise
+    started = time.monotonic()
+    print(f"restore drill: restoring into {into} (removed afterwards)", flush=True)
+    restore(remote, into, branch, ref, verify=True, branch_explicit=branch_explicit,
+            allow_low_disk=allow_low_disk, payload_sample=sample)
+    seconds = time.monotonic() - started
+    _remove_tree(scratch)
+    print(f"restore drill passed in {_fmt_elapsed(seconds)}: the snapshot restores byte-exact, "
+          "git fsck is clean and every sampled payload file matches its SHA-256", flush=True)
+    RUN_FACTS.update(drill_seconds=round(seconds, 1), sample=sample)
+
+
+def drill_sample(text: str) -> int:
+    """The payload files a drill fetches: a positive number, or ``all``."""
+    if text == "all":
+        return sys.maxsize
+    if not text.isdigit() or int(text) < 1:
+        raise SnapshotError(f"--restore-drill takes a positive number or 'all', not '{text}'")
+    return int(text)
+
+
+def restore_drill_command(args: argparse.Namespace) -> int:
+    if not args.remote:
+        raise SnapshotError("--restore-drill requires --remote <url>")
+    restore_drill(
+        args.remote, args.branch or DEFAULT_BRANCH, args.ref, drill_sample(args.restore_drill),
+        branch_explicit=bool(args.branch), allow_low_disk=args.allow_low_disk,
+        allow_synced=args.allow_synced,
+    )
+    return 0
 
 
 def default_vault_for(source: Path) -> Path:
@@ -6534,6 +6661,31 @@ def check_paths_are_unsynced(*paths: tuple[str, Path], allow_synced: bool = Fals
             f"sync that library with 'auto sync' disabled; pass --allow-synced "
             f"to take responsibility for the risk instead."
         )
+def drill_conflicts(args: argparse.Namespace) -> list[str]:
+    """What cannot go with ``--restore-drill``: it restores, into a directory it picks."""
+    if args.restore_drill is None:
+        return []
+    problems = [
+        f"{flag} does not apply to --restore-drill"
+        for flag, value in (
+            ("--restore", args.restore), ("--maintain", args.maintain), ("--into", args.into),
+            ("--verify", args.verify), ("--vault", args.vault), ("--dry-run", args.dry_run),
+            ("--message", args.message), ("--code-remote", args.code_remote),
+            ("--exclude", args.exclude), ("--default-excludes", args.default_excludes),
+            ("--no-push", args.no_push), ("--source", args.source),
+            ("SOURCE (positional)", args.source_positional),
+            ("--payload-verify", args.payload_verify is not None),
+            ("--payload-gc", args.payload_gc), ("--payload-view", args.payload_view is not None),
+        )
+        if value
+    ]
+    try:
+        drill_sample(args.restore_drill)
+    except SnapshotError as exc:
+        problems.append(str(exc))
+    return problems
+
+
 def validate_args(args: argparse.Namespace) -> None:
     """Reject combinations that would otherwise be silently ignored.
 
@@ -6547,6 +6699,7 @@ def validate_args(args: argparse.Namespace) -> None:
         + mtimes_conflicts(args)
     )
 
+    problems += drill_conflicts(args)
     if args.maintain and args.restore:
         problems.append("--maintain and --restore are different modes")
     if args.maintain:
@@ -6574,7 +6727,7 @@ def validate_args(args: argparse.Namespace) -> None:
     elif not args.restore:
         for flag, value in (("--verify", args.verify), ("--into", args.into),
                             ("--ref", args.ref)):
-            if value:
+            if value and not (flag == "--ref" and args.restore_drill is not None):
                 problems.append(f"{flag} only applies to --restore")
     else:
         for flag, value in (
@@ -7075,6 +7228,110 @@ def repo_toplevel(path: Path) -> Path | None:
     return Path(top).resolve()
 
 
+# -- Run report: exit-code classes and --json (SNAPSHOT.md, "Exit codes and --json") ----
+
+#: The exit codes a script can rely on.  1 and 2 are what the tool always did; 3 is
+#: new and opt-in (``--exit-warnings``), because a run that exited 0 with a warning
+#: must not start failing a scheduled job that was working.
+EXIT_OK = 0
+EXIT_FAILED = 1
+EXIT_USAGE = 2
+EXIT_WARNINGS = 3
+
+#: Facts a run records for the ``--json`` document, next to ``END_OF_RUN_NOTES``:
+#: the code that knows them says them, and nothing reads them unless asked.
+RUN_FACTS: dict[str, Any] = {}
+
+
+class _LineTap:
+    """A text stream that passes everything through and remembers some of its lines.
+
+    ``Warning:`` and ``Error:`` are printed from dozens of places, some after a
+    blank line and some from a child process's captured output; reading them where
+    they leave the process finds all of them without a second path to keep in step.
+    """
+
+    def __init__(self, stream: Any, warnings: list[str], errors: list[str]) -> None:
+        self._stream = stream
+        self._warnings = warnings
+        self._errors = errors
+        self._partial = ""
+
+    def write(self, text: str) -> int:
+        self._partial += text
+        *lines, self._partial = self._partial.split("\n")
+        for line in lines:
+            self._see(line)
+        return self._stream.write(text)
+
+    def _see(self, line: str) -> None:
+        stripped = line.strip()
+        if stripped.startswith("Warning:") and stripped not in self._warnings:
+            self._warnings.append(stripped)
+        elif stripped.startswith("Error:"):
+            self._errors.append(stripped)
+
+    def flush(self) -> None:
+        self._stream.flush()
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._stream, name)
+
+
+def run_mode(args: argparse.Namespace) -> str:
+    for flag, mode in (
+        ("restore_drill", "restore-drill"), ("restore", "restore"), ("maintain", "maintain"),
+        ("payload_verify", "payload-verify"), ("payload_view", "payload-view"),
+        ("payload_gc", "payload-gc"),
+    ):
+        if getattr(args, flag, None) not in (None, False):
+            return mode
+    return "snapshot"
+
+
+def run_reported(
+    args: argparse.Namespace, body: Callable[[argparse.Namespace], int]
+) -> int:
+    """Run *body*; apply ``--exit-warnings`` and write the ``--json`` document.
+
+    With neither flag this is ``body(args)`` and nothing else, so the default
+    behaviour (streams, exit codes) is exactly what it was.  With ``--json`` the
+    human text moves to stderr and stdout carries one line: the document.
+    """
+    if not (args.json or args.exit_warnings):
+        return body(args)
+    RUN_FACTS.clear()
+    warnings: list[str] = []
+    errors: list[str] = []
+    real_out, real_err = sys.stdout, sys.stderr
+    sys.stdout = _LineTap(real_err if args.json else real_out, warnings, errors)
+    sys.stderr = _LineTap(real_err, warnings, errors)
+    started = time.monotonic()
+    try:
+        rc = body(args)
+    finally:
+        sys.stdout, sys.stderr = real_out, real_err
+    if rc == EXIT_OK and warnings and args.exit_warnings:
+        rc = EXIT_WARNINGS
+    if args.json:
+        status = "failed" if rc in (EXIT_FAILED, EXIT_USAGE) else "warnings" if warnings else "ok"
+        document = {
+            "schema": 1,
+            "tool": "git-seafile-snapshot",
+            "version": tool_version(),
+            "mode": run_mode(args),
+            "status": status,
+            "exit_code": rc,
+            "seconds": round(time.monotonic() - started, 1),
+            "warnings": warnings,
+            "error": errors[-1].removeprefix("Error:").strip() if errors else None,
+            "result": dict(RUN_FACTS),
+        }
+        real_out.write(json.dumps(document, sort_keys=True) + "\n")
+        real_out.flush()
+    return rc
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="git-seafile-snapshot",
@@ -7256,6 +7513,29 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "is checked on every restore regardless",
     )
     parser.add_argument(
+        "--restore-drill",
+        nargs="?",
+        const="10",
+        default=None,
+        metavar="N",
+        help="prove the newest snapshot of --remote restores: clone it into a "
+        "temporary directory, check every file byte-for-byte and run git fsck, "
+        "download N randomly chosen payload files (default 10) and check their "
+        "SHA-256, then delete the directory. Needs the disk for the whole vault "
+        "(set TMP or TMPDIR to use a bigger volume); --ref drills an older snapshot",
+    )
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        help="write one JSON document to stdout (status, exit_code, warnings, error, "
+        "result) and move the human text to stderr; for scheduled runs",
+    )
+    parser.add_argument(
+        "--exit-warnings",
+        action="store_true",
+        help="exit 3 instead of 0 when the run completed but printed a Warning:",
+    )
+    parser.add_argument(
         "--no-object-compression",
         action="store_true",
         help=        "disable deflation for newly written vault objects "
@@ -7304,7 +7584,10 @@ def main(argv: list[str] | None = None) -> int:
                 stream.reconfigure(errors="backslashreplace")
             except (OSError, ValueError):
                 pass
-    args = parse_args(argv)
+    return run_reported(parse_args(argv), run_command)
+
+
+def run_command(args: argparse.Namespace) -> int:
     END_OF_RUN_NOTES.clear()
 
     try:
@@ -7312,6 +7595,8 @@ def main(argv: list[str] | None = None) -> int:
         payload_rc = payload_command(args)
         if payload_rc is not None:
             return payload_rc
+        if args.restore_drill is not None:
+            return restore_drill_command(args)
         if args.restore:
             if not args.remote:
                 raise SnapshotError("--restore requires --remote <url>")
@@ -7334,6 +7619,7 @@ def main(argv: list[str] | None = None) -> int:
                 branch_explicit=bool(args.branch),
                 allow_low_disk=args.allow_low_disk,
             )
+            RUN_FACTS.update(into=str(into), ref=args.ref or args.branch or DEFAULT_BRANCH)
             return 0
 
         source, vault, remote, code_remote, exclude, branch = (
@@ -7523,6 +7809,11 @@ def main(argv: list[str] | None = None) -> int:
             print(f"vault  : {vault}")
             print(f"branch : {branch}")
             print(f"files  : {count} ({human_bytes(size)})")
+            RUN_FACTS.update(
+                source=str(source), vault=str(vault), branch=branch, files=count, bytes=size,
+                dry_run=bool(args.dry_run), base=base, remote=remote,
+                payload_objects_to_upload=payload_todo[0] if manifest is not None else 0,
+            )
             print(f"base   : {base[:12] if base else '(first snapshot)'}")
             if manifest is not None:
                 print(payload_summary(
@@ -7608,6 +7899,7 @@ def main(argv: list[str] | None = None) -> int:
                 print("\nnothing to commit; branch left where it is")
             else:
                 set_branch(git_dir, source, branch, commit, base)
+                RUN_FACTS["commit"] = commit
                 print(f"\nmoved refs/heads/{branch} -> {commit[:12]}")
 
             if not remote:
@@ -7636,6 +7928,7 @@ def main(argv: list[str] | None = None) -> int:
                     base,
                     message,
                 )
+                RUN_FACTS["pushed"] = True
                 if manifest is not None:
                     verify_payload_after_push(
                         source, remote, manifest, jobs=args.payload_jobs or 3,

@@ -211,6 +211,7 @@ def restore(
     verify: bool = False,
     branch_explicit: bool = True,
     allow_low_disk: bool = False,
+    payload_sample: int | None = None,
 ) -> None:
     """Materialise a snapshot into a new directory; say what a failure leaves behind.
 
@@ -222,7 +223,8 @@ def restore(
     """
     was_empty = not into.exists() or not any(into.iterdir())
     try:
-        _restore(remote, into, branch, ref, verify, branch_explicit, allow_low_disk)
+        _restore(remote, into, branch, ref, verify, branch_explicit, allow_low_disk,
+                 payload_sample)
     except SnapshotError as exc:
         if was_empty and into.exists() and any(into.iterdir()):
             raise SnapshotError(
@@ -240,6 +242,7 @@ def _restore(
     verify: bool = False,
     branch_explicit: bool = True,
     allow_low_disk: bool = False,
+    payload_sample: int | None = None,
 ) -> None:
     """Materialise a snapshot into a new directory, byte-for-byte.
 
@@ -400,8 +403,66 @@ def _restore(
             )
         print("git fsck: object store intact")
 
-    restore_payload(remote, into, allow_low_disk=allow_low_disk)
+    restore_payload(remote, into, allow_low_disk=allow_low_disk, sample=payload_sample)
 
     files = sum(1 for p in into.rglob("*") if p.is_file() and ".git" not in p.parts)
     print(f"restored {files} files from {target} into {into}")
     print(f"verified byte-exact against {verified_rev[:12]}")
+
+
+def _remove_tree(path: Path) -> None:
+    """``rmtree`` that also removes git's read-only object files on Windows."""
+    def writable(func: Any, name: str, _exc: Any) -> None:
+        os.chmod(name, stat.S_IWRITE)
+        func(name)
+    shutil.rmtree(extended_path(path), onerror=writable)
+
+
+def restore_drill(
+    remote: str, branch: str, ref: str | None, sample: int, *, branch_explicit: bool,
+    allow_low_disk: bool = False, allow_synced: bool = False,
+) -> None:
+    """Restore into a temporary directory, check it, and delete it.
+
+    The point is the answer to "would a restore work today", asked without the
+    operator choosing a destination or cleaning up.  Everything a restore checks
+    is checked (every file byte-for-byte, ``git fsck``); only the payload is
+    sampled, since it is the part that costs hours.  A failure keeps the
+    directory (:func:`restore` names it): a restore that failed is the evidence.
+    """
+    scratch = Path(tempfile.mkdtemp(prefix="grs-drill-"))
+    into = scratch / "restore"
+    try:
+        check_paths_are_unsynced(("drill directory", scratch), allow_synced=allow_synced)
+    except SnapshotError:
+        _remove_tree(scratch)
+        raise
+    started = time.monotonic()
+    print(f"restore drill: restoring into {into} (removed afterwards)", flush=True)
+    restore(remote, into, branch, ref, verify=True, branch_explicit=branch_explicit,
+            allow_low_disk=allow_low_disk, payload_sample=sample)
+    seconds = time.monotonic() - started
+    _remove_tree(scratch)
+    print(f"restore drill passed in {_fmt_elapsed(seconds)}: the snapshot restores byte-exact, "
+          "git fsck is clean and every sampled payload file matches its SHA-256", flush=True)
+    RUN_FACTS.update(drill_seconds=round(seconds, 1), sample=sample)
+
+
+def drill_sample(text: str) -> int:
+    """The payload files a drill fetches: a positive number, or ``all``."""
+    if text == "all":
+        return sys.maxsize
+    if not text.isdigit() or int(text) < 1:
+        raise SnapshotError(f"--restore-drill takes a positive number or 'all', not '{text}'")
+    return int(text)
+
+
+def restore_drill_command(args: argparse.Namespace) -> int:
+    if not args.remote:
+        raise SnapshotError("--restore-drill requires --remote <url>")
+    restore_drill(
+        args.remote, args.branch or DEFAULT_BRANCH, args.ref, drill_sample(args.restore_drill),
+        branch_explicit=bool(args.branch), allow_low_disk=args.allow_low_disk,
+        allow_synced=args.allow_synced,
+    )
+    return 0

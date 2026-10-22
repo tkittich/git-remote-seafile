@@ -181,6 +181,29 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "is checked on every restore regardless",
     )
     parser.add_argument(
+        "--restore-drill",
+        nargs="?",
+        const="10",
+        default=None,
+        metavar="N",
+        help="prove the newest snapshot of --remote restores: clone it into a "
+        "temporary directory, check every file byte-for-byte and run git fsck, "
+        "download N randomly chosen payload files (default 10) and check their "
+        "SHA-256, then delete the directory. Needs the disk for the whole vault "
+        "(set TMP or TMPDIR to use a bigger volume); --ref drills an older snapshot",
+    )
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        help="write one JSON document to stdout (status, exit_code, warnings, error, "
+        "result) and move the human text to stderr; for scheduled runs",
+    )
+    parser.add_argument(
+        "--exit-warnings",
+        action="store_true",
+        help="exit 3 instead of 0 when the run completed but printed a Warning:",
+    )
+    parser.add_argument(
         "--no-object-compression",
         action="store_true",
         help=        "disable deflation for newly written vault objects "
@@ -229,7 +252,10 @@ def main(argv: list[str] | None = None) -> int:
                 stream.reconfigure(errors="backslashreplace")
             except (OSError, ValueError):
                 pass
-    args = parse_args(argv)
+    return run_reported(parse_args(argv), run_command)
+
+
+def run_command(args: argparse.Namespace) -> int:
     END_OF_RUN_NOTES.clear()
 
     try:
@@ -237,6 +263,8 @@ def main(argv: list[str] | None = None) -> int:
         payload_rc = payload_command(args)
         if payload_rc is not None:
             return payload_rc
+        if args.restore_drill is not None:
+            return restore_drill_command(args)
         if args.restore:
             if not args.remote:
                 raise SnapshotError("--restore requires --remote <url>")
@@ -259,6 +287,7 @@ def main(argv: list[str] | None = None) -> int:
                 branch_explicit=bool(args.branch),
                 allow_low_disk=args.allow_low_disk,
             )
+            RUN_FACTS.update(into=str(into), ref=args.ref or args.branch or DEFAULT_BRANCH)
             return 0
 
         source, vault, remote, code_remote, exclude, branch = (
@@ -448,6 +477,11 @@ def main(argv: list[str] | None = None) -> int:
             print(f"vault  : {vault}")
             print(f"branch : {branch}")
             print(f"files  : {count} ({human_bytes(size)})")
+            RUN_FACTS.update(
+                source=str(source), vault=str(vault), branch=branch, files=count, bytes=size,
+                dry_run=bool(args.dry_run), base=base, remote=remote,
+                payload_objects_to_upload=payload_todo[0] if manifest is not None else 0,
+            )
             print(f"base   : {base[:12] if base else '(first snapshot)'}")
             if manifest is not None:
                 print(payload_summary(
@@ -533,6 +567,7 @@ def main(argv: list[str] | None = None) -> int:
                 print("\nnothing to commit; branch left where it is")
             else:
                 set_branch(git_dir, source, branch, commit, base)
+                RUN_FACTS["commit"] = commit
                 print(f"\nmoved refs/heads/{branch} -> {commit[:12]}")
 
             if not remote:
@@ -561,6 +596,7 @@ def main(argv: list[str] | None = None) -> int:
                     base,
                     message,
                 )
+                RUN_FACTS["pushed"] = True
                 if manifest is not None:
                     verify_payload_after_push(
                         source, remote, manifest, jobs=args.payload_jobs or 3,

@@ -236,6 +236,24 @@ silent it refuses instead:
 - **A failing vault-config write is an error**, not a silent divergence between
   what the run believes it remembered and what the vault holds.
 
+### Exit codes and `--json`
+
+| Exit | Meaning |
+| :--- | :--- |
+| `0` | Done (a warning may have been printed), or there was nothing to do. |
+| `1` | The run failed; `Error:` on stderr names why. |
+| `2` | The command line was wrong. |
+| `3` | The run completed but printed a `Warning:`. **Only with `--exit-warnings`**: without it the same run exits `0`, as it always did. |
+
+A scheduled job that must alert on anything unusual runs with `--json
+--exit-warnings`: stdout is then exactly one JSON line, so `jq -e '.status == "ok"'`
+is the whole check. The document names `mode` (`snapshot`, `restore`,
+`restore-drill`, `payload-verify`, ...), `status`, `exit_code`, `warnings` (the
+`Warning:` lines), `error` (the last `Error:` line) and `result`, whose keys depend
+on the mode (a snapshot: `files`, `bytes`, `commit`, `pushed`,
+`payload_objects_to_upload`; `payload-verify`: `checked`, `objects`, `damaged`). The
+keys of a mode are only ever added to.
+
 ## 5. What a run costs
 
 ### Transferred
@@ -353,6 +371,23 @@ git seafile-snapshot --restore \
 # roll back: any revision works
 ... --ref snapshot~3
 ```
+
+### Restore drill
+
+```bash
+git seafile-snapshot --restore-drill --remote seafile://code/myproject-vault
+```
+
+A backup nobody has restored is a hope. The drill restores the newest snapshot
+(or `--ref`) into a temporary directory, checks every file byte-for-byte, runs
+`git fsck`, downloads a random sample of the payload (default 10 files, `all`
+for every one) and compares each with its SHA-256, then deletes the directory. It
+costs the vault's disk and download once, so run it monthly, not nightly; a
+failure keeps the directory for inspection and exits 1.
+
+An interrupted run resumes: objects already uploaded are skipped, and the hash
+cache is saved about once a minute while a tree is hashed (and when an upload then
+fails), so a killed run re-reads only what it had not reached.
 
 The snapshot holds the **whole** tree, tracked files included, so this single
 command reconstitutes the working directory. Clone the *code* repository

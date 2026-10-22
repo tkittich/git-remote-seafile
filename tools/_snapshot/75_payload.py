@@ -49,6 +49,9 @@ _AUTO_SAMPLE_CHUNK = 256 * 1024
 #: Seconds between progress lines while objects upload (an upload of a large tree
 #: runs for an hour, and a line per file says nothing about how much is left).
 _PULSE_SECONDS = 60.0
+#: Seconds between saves of the hash cache while a tree is hashed: what a killed pass
+#: loses is at most this much work.
+_CHECKPOINT_SECONDS = 60.0
 _SIZE_RE = re.compile(r"^\s*(\d+)\s*([kmgt]?)(?:i?b)?\s*$", re.IGNORECASE)
 _SIZE_UNITS = {"": 1, "k": 1024, "m": 1024 ** 2, "g": 1024 ** 3, "t": 1024 ** 4}
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
@@ -317,12 +320,16 @@ def _commit_object(
     return bool(client.rename_entry(rid, f"{directory}/{temp}", sha))
 
 
-def _progress_line(done: int, total: int, elapsed: float) -> str:
-    """``progress: 41.2 GiB of 292.0 GiB uploaded (14%), 52 MiB/s, about 1h20m left``."""
+def _progress_line(done: int, total: int, elapsed: float, verb: str = "uploaded") -> str:
+    """``progress: 41.2 GiB of 292.0 GiB uploaded (14%), 52 MiB/s, about 1h20m left``.
+
+    *verb* names the work (uploaded, downloaded, hashed, checked), so every long
+    phase reports in the same words.
+    """
     rate = done / 1048576 / elapsed if elapsed > 0 else 0.0
     left = f", about {_fmt_elapsed((total - done) / 1048576 / rate)} left" if rate > 0 else ""
     percent = done * 100 // total if total else 100
-    return (f"progress: {human_bytes(done)} of {human_bytes(total)} uploaded ({percent}%), "
+    return (f"progress: {human_bytes(done)} of {human_bytes(total)} {verb} ({percent}%), "
             f"{rate:.0f} MiB/s{left}")
 
 

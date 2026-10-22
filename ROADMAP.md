@@ -18,6 +18,22 @@
 | **Parallel staging in the snapshot tool** | `tools/_snapshot/70_stage.py` | `git add` hashes on one core: measured 190–250 MiB/s on git for Windows (collision-detecting SHA-1, ~7x slower than OpenSSL's; Python's `hashlib` does 1.6 GB/s on the same file), so a 130 GiB tree takes ~11 minutes with the raw profile. Idea: hash the big files in N parallel `git hash-object -w --no-filters` workers, then feed the index with `git update-index --index-info` (no re-hash). Must preserve modes (100644/100755), symlinks (120000) and gitlinks (160000) exactly, and the byte-exactness contract; verify with a restore-and-compare on a tree that has all four. Expected gain: a few times, bounded by the disk. Not worth the risk until someone's wall-clock actually hurts. | M | Medium | backlog |
 | **Payload mode in the snapshot tool** (shipped in 0.9.0; row kept for the design notes) | `tools/_snapshot/75_payload.py` | Big immutable files bypass git: stream-hashed, uploaded by hash to `<path>/payload/objects/`, with a manifest (path, mode, size, SHA-256) in the vault commit. A snapshot is a manifest; renames and duplicates upload nothing; no server name rule applies. Removes the local object copy and the 12-20 minute staging pass on a 131 GiB tree. Shipped with hashing under a racy-clean rule, parallel uploads, verified restore, the `auto` selection rule, a remembered setting, `--payload-rehash`, two-phase `--payload-gc` with `--payload-keep`, `--payload-verify` and `--payload-view`; exercised on a 131 GiB tree against a real server. Spec: PAYLOAD.md; measurements: SNAPSHOT.md section 15.1. | L | Medium | shipped in v0.9.0 |
 
+### 1.0 Ideas kept for later (from the 0.9.11 suggestion pass)
+
+| ID / Source | Component | Description & Impact | Effort | Risk | Planned Target |
+|---|---|---|:---:|:---:|:---:|
+| **`git credential` fallback** | `client.py` | Ask `git credential fill/approve/reject` when no token is configured, so any OS helper (Windows Credential Manager, Keychain, libsecret) works with no new dependency. The cheap first step of the credential-store row. | M | Medium | backlog |
+| **`--status` (read-only)** | snapshot tool | Last snapshot time and size, files changed since (without staging), remembered remote and payload mode, lock state, library quota. Answers "is my backup current?" without running one. | M | Low | backlog |
+| **`--payload-gc` retention presets** | `76_payload_gc.py` | `--keep-last N` / `--keep-days D` over `--payload-keep`'s count. | S | Low | backlog |
+| **`--restore --only <path>`** | `90_restore.py` | Partial restore of one folder from a large snapshot. | M | Medium | backlog |
+| **Scheduler recipe** | docs / snapshot tool | A Task Scheduler XML or systemd timer snippet (or `--print-schedule`). | S | None | backlog |
+| **`--on-failure <cmd>` hook** | snapshot tool | Run a command with the JSON document when a run fails, for notifications. | S | Low | backlog |
+| **`--limit-rate` and a time window** | `75_payload.py` | Keep a backup from saturating a home link in working hours. | M | Low | backlog |
+| **Shareable doctor bundle** | `tools/seafile_doctor.py` | A redacted report (no tokens) meant for pasting into an issue. | S | Low | backlog |
+| **Scheduled CI against a Seafile container** | `.github/` | The T1/T2 gap: every real-server bug so far was found by hand. | M | Low | v1.0.0 |
+| **Seafile version matrix** | docs | A compatibility table; only CE 13.0.28 is measured. | S | None | backlog |
+| **Drill against the live tree** | `90_restore.py` | `--restore-drill --source` compares sampled restored files with the live ones and reports differences as a Note. | S | Low | backlog |
+
 ### 1.1 Deferred polish (v0.8.0 review cycle — cosmetic, no behavioral stake)
 
 Findings from `archive/REVIEW.*-v0.8.0.md` judged not worth their churn during the fix pass; they live here so they are not lost.

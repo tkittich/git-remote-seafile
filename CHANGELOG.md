@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `--restore-drill [N|all]`: restore the newest snapshot into a temporary directory, check it byte-for-byte and with `git fsck`, verify a random sample of payload files against their SHA-256, and delete it.
+- `--json`: one JSON document on stdout (status, exit code, warnings, error, result); the human text moves to stderr.
+- `--exit-warnings`: exit 3 when a run completed with a `Warning:`. Off by default; the exit codes are documented in SNAPSHOT.md.
+- Hashing, payload restore and `--payload-verify` print the same `progress: ... MiB/s, about ... left` line an upload does.
+
+### Fixed
+- A hashing pass killed before it finished lost everything it had hashed; the cache is now saved about once a minute while it runs.
+
 ## [0.9.11] - 2026-10-21
 
 A run that fails on one changed file no longer throws its hashes away or stops the other uploads, a long upload says how much is left, `--default-excludes` covers any virtualenv, and every message the tools print follows one style and one unit system, with tests that keep it so. Nothing about what is stored changes.
