@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import io
 import os
+import stat
 import subprocess
 import tempfile
 import unittest
@@ -12,6 +13,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from git_remote_seafile.git_util import (
+    tips_are_locally_complete,
     GIT_TIMEOUT,
     HEX_SHA_RE,
     GitError,
@@ -312,6 +314,70 @@ class TestGitUtilWithRealGit(unittest.TestCase):
         self.assertEqual(get_git_config_int("test.intval", default=0), 42)
         self.assertEqual(get_git_config_int("test.badint", default=10), 10)
         self.assertEqual(get_git_config_int("test.missing", default=99), 99)
+
+
+class TestTipsAreLocallyComplete(unittest.TestCase):
+    """The fetch skip's new premise: presence of the tip implies its history.
+
+    An interrupted multi-pack fetch leaves the newest pack installed and an
+    older one missing; the tip resolves, the parents do not, and the skip then
+    wedges every later fetch (REVIEW.sonnet-5.5 A2).  Closing the object list
+    with rev-list detects the hole; the healthy case must stay cheap and quiet.
+    """
+
+    def setUp(self):
+        import tempfile
+        self.td = tempfile.TemporaryDirectory()
+        self.repo = Path(self.td.name)
+        r = subprocess.run
+
+        def git(*args, **kw):
+            return r(["git", "-C", str(self.repo), *args], capture_output=True, text=True, **kw)
+
+        git("init", "-q", "-b", "main", ".")
+        git("config", "user.email", "t@example.com")
+        git("config", "user.name", "T")
+        (self.repo / "a.txt").write_text("a" + chr(10), encoding="utf-8")
+        git("add", "-A")
+        git("commit", "-qm", "A")
+        git("repack", "-adq")                      # pack 1: A's objects
+        (self.repo / "b.txt").write_text("b" + chr(10), encoding="utf-8")
+        git("add", "-A")
+        git("commit", "-qm", "B")
+        self.tip = git("rev-parse", "main").stdout.strip()
+        parent = git("rev-parse", "main~1").stdout.strip()
+        listed = git("rev-list", "--objects", self.tip, "--not", parent).stdout
+        r(["git", "pack-objects", "-q", str(self.repo / ".git/objects/pack/pack2")],
+          cwd=str(self.repo), input=listed, text=True, capture_output=True)
+        packs = sorted((self.repo / ".git/objects/pack").glob("*.pack"))
+        self.old_pack = [p for p in packs if not p.name.startswith("pack2")][0]
+        self._cwd = os.getcwd()
+        os.chdir(str(self.repo))
+
+    def tearDown(self):
+        os.chdir(self._cwd)
+        self.td.cleanup()
+
+    def test_a_healthy_store_answers_true(self):
+        self.assertTrue(tips_are_locally_complete([self.tip]))
+
+    def test_a_missing_parent_pack_answers_false(self):
+        # Delete the pack that carries the parent: the tip still resolves from
+        # the newer pack, which is exactly the interrupted-fetch state.
+        for suffix in (".pack", ".idx", ".rev"):
+            victim = self.old_pack.with_suffix(suffix)
+            if victim.exists():
+                os.chmod(victim, stat.S_IWRITE)   # git writes packs read-only
+                victim.unlink()
+        out = subprocess.run(
+            ["git", "-C", str(self.repo), "cat-file", "-t", self.tip],
+            capture_output=True, text=True,
+        )
+        self.assertEqual(out.stdout.strip(), "commit", "the tip must still resolve")
+        self.assertFalse(tips_are_locally_complete([self.tip]))
+
+    def test_garbage_answers_false(self):
+        self.assertFalse(tips_are_locally_complete(["not-a-sha"]))
 
 
 class TestGitUtilErrorHandling(unittest.TestCase):

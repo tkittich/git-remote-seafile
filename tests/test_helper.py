@@ -2201,10 +2201,15 @@ class TestSmartPackFetchFiltering(unittest.TestCase):
         sha2 = "2222222222222222222222222222222222222222"
         out = io.StringIO()
 
-        # Pin the clone-completeness probe: it reads the *ambient* repository,
-        # and CI checks out with --depth 1, so leaving it real would make this
-        # test assert different things locally and on CI.
+        # Pin the clone-completeness probes: they read the *ambient* repository,
+        # and CI checks out with --depth 1, so leaving them real would make this
+        # test assert different things locally and on CI.  The object-closure
+        # probe (tips_are_locally_complete) is pinned for the same reason --
+        # its own behaviour, including the interrupted-fetch wedge it exists to
+        # catch, is tested against real git in
+        # tests.test_git_util.TestTipsAreLocallyComplete.
         with patch("git_remote_seafile.helper.objects_may_be_incomplete", return_value=False), \
+                patch("git_remote_seafile.helper.tips_are_locally_complete", return_value=True), \
                 patch("git_remote_seafile.helper.filter_existing_objects", return_value=[sha1, sha2]):
             with patch("sys.stdout", out), patch("sys.stderr", new_callable=io.StringIO):
                 h.cmd_fetch([f"{sha1} refs/heads/main", f"{sha2} refs/heads/feature"])

@@ -486,6 +486,38 @@ def objects_may_be_incomplete() -> bool:
         return True
 
 
+def tips_are_locally_complete(shas: list[str] | str) -> bool:
+    """True when the history reachable from *shas* is wholly in the object store.
+
+    The fetch skip reasons from tip-commit *presence*, which implies a complete
+    store only when nothing is missing underneath.  A fetch interrupted between
+    two pack installs leaves the newest pack in place and an older one absent:
+    the tip resolves, the parents do not, and every later fetch repeats the
+    skip while git fails with "did not send all necessary objects" -- a clone
+    wedged until the tip's objects are deleted by hand (REVIEW.sonnet-5.5 A2,
+    reproduced).  Walking ``rev-list --objects`` over the tips closes the list:
+    it dies with "Failed to traverse parents" on any missing commit or tree,
+    which is exactly the question, and the walk itself costs seconds against
+    the download the skip exists to avoid.  ``--not --all`` is deliberately
+    *not* used: a local ref that already names the tip (the state after the
+    interrupted fetch updates nothing, but any ref might) makes that form
+    exclude the whole walk and answer empty success.
+
+    Fails safe: anything but a clean walk -- a git error, a timeout, a
+    non-object argument -- answers False, and the caller downloads.
+    """
+    if isinstance(shas, str):
+        shas = [shas]
+    candidates = [s for s in dict.fromkeys(shas) if s and HEX_SHA_RE.fullmatch(s)]
+    if not candidates:
+        return False
+    try:
+        _out, _err, code = run_git(["rev-list", "--objects", "--quiet", *candidates])
+    except GitError:
+        return False
+    return code == 0
+
+
 def get_objects_to_push(local_sha: list[str] | str, exclude_shas: list[str] | str | None = None) -> list[str]:
     """Find all git object lines reachable from local_sha but not in exclude_shas.
 

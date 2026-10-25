@@ -38,6 +38,7 @@ from .git_util import (
     get_git_config,
     remove_tree,
     sweep_stale_scratch,
+    tips_are_locally_complete,
 )
 
 
@@ -1215,7 +1216,7 @@ class RemoteHelper:
                     break
 
             if requested_shas and len(requested_shas) == len(fetch_specs):
-                if not objects_may_be_incomplete():
+                if not objects_may_be_incomplete() and tips_are_locally_complete(requested_shas):
                     try:
                         existing = set(filter_existing_objects(requested_shas))
                         if len(existing) == len(set(requested_shas)):
