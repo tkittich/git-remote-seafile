@@ -170,7 +170,7 @@ def _fetch_and_verify_pack_pair(
     verified = False
     if idx_file.is_file():
         res = run_git_checked(
-            ["-C", str(bare_repo), "verify-pack", "-v", str(idx_file)],
+            ["-C", str(bare_repo), "verify-pack", str(idx_file)],
             scratch_env,
             capture_output=True,
         )

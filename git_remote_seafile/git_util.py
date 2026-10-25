@@ -680,7 +680,7 @@ def install_packfile(
             else:
                 staged_idx.write_bytes(idx_bytes)
             # Verify the index matches the packfile.
-            _, err, code = run_git([*git_dir_args, "verify-pack", "-v", str(staged_idx)])
+            _, err, code = run_git([*git_dir_args, "verify-pack", str(staged_idx)])
             if code != 0:
                 try:
                     staged_idx.unlink(missing_ok=True)

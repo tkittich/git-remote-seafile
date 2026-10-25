@@ -160,7 +160,7 @@ objects are present.
 or an `.idx` that does not match its pack. The remote directory is a plain folder; nothing
 garbage-collects it.
 
-**What the helper already does.** Downloaded `.idx` files are validated with `git verify-pack -v`; a
+**What the helper already does.** Downloaded `.idx` files are validated with `git verify-pack`; a
 corrupt or truncated index is discarded and rebuilt locally with `git index-pack`. A pack whose size
 disagrees with the directory listing aborts compaction rather than being used.
 
