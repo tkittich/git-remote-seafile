@@ -316,6 +316,46 @@ class TestGitUtilWithRealGit(unittest.TestCase):
         self.assertEqual(get_git_config_int("test.missing", default=99), 99)
 
 
+class TestCommunicateRenewal(unittest.TestCase):
+    """The bounded wait runs in slices so a lease holder can renew mid-phase.
+
+    A pack build longer than `seafile.locklease` used to forfeit the lease to
+    the next client (REVIEW.sonnet-5.5 A7, reproduced scaled and on the real
+    server); renewal now happens between wait slices, with no thread.
+    """
+
+    def test_the_renew_callback_runs_while_the_child_sleeps(self):
+        import sys as _sys
+        from git_remote_seafile import git_util
+
+        calls = []
+        with patch.object(git_util, "_RENEW_SLICE_SECONDS", 0.2):
+            out, err, code = git_util._communicate(
+                [_sys.executable, "-c", "import time; time.sleep(1.0)"],
+                None,
+                30.0,
+                renew=lambda: calls.append(1),
+            )
+        self.assertEqual(code, 0)
+        self.assertGreaterEqual(len(calls), 2, "renewal must fire during the wait")
+
+    def test_the_callback_may_end_the_wait(self):
+        import sys as _sys
+        from git_remote_seafile import git_util
+
+        def withdraw():
+            raise git_util.GitError("lease gone")
+
+        with patch.object(git_util, "_RENEW_SLICE_SECONDS", 0.2):
+            with self.assertRaises(git_util.GitError):
+                git_util._communicate(
+                    [_sys.executable, "-c", "import time; time.sleep(5.0)"],
+                    None,
+                    30.0,
+                    renew=withdraw,
+                )
+
+
 class TestTipsAreLocallyComplete(unittest.TestCase):
     """The fetch skip's new premise: presence of the tip implies its history.
 

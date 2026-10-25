@@ -149,13 +149,13 @@ class TestRemoteGC(unittest.TestCase):
             {"name": f"pack-{i}.pack", "size": 10 * 1024**3} for i in range(5)
         ]
 
-        with patch("subprocess.run"):
+        with patch("git_remote_seafile.gc.run_git_checked"):
             res = compact_repository(mock_client, "repo1", "/path", min_packs=9)
 
         self.assertEqual(res["status"], "skipped")  # skipped on count...
         self.assertNotIn("deferred", res.get("message", ""))  # ...not on size.
 
-    @patch("subprocess.run")
+    @patch("git_remote_seafile.gc.run_git_checked")
     def test_gc_compaction_flow(self, mock_subprocess):
         mock_client = MagicMock()
         # list_dir must answer per path: the compactor reads both the pack
@@ -202,7 +202,7 @@ class TestRemoteGC(unittest.TestCase):
         # Mock git pack-objects writing a packfile
         seen_cmds: list[list[str]] = []
 
-        def fake_subprocess(cmd, **kwargs):
+        def fake_subprocess(cmd, _env=None, **kwargs):
             seen_cmds.append(list(cmd))
             if "pack-objects" in cmd:
                 return MagicMock(returncode=0, stdout=b"abcdef1234567890abcdef1234567890abcdef12\n")
@@ -260,7 +260,7 @@ class TestRemoteGC(unittest.TestCase):
                 sorted(set(ticket_paths)),
             )
 
-    @patch("subprocess.run")
+    @patch("git_remote_seafile.gc.run_git_checked")
     def test_gc_compaction_aborts_on_failed_pack_download(self, mock_subprocess):
         mock_client = MagicMock()
         mock_client.list_dir.side_effect = lambda repo_id, path: (
@@ -277,7 +277,7 @@ class TestRemoteGC(unittest.TestCase):
         mock_client.download_file_to = MagicMock(side_effect=OSError("streaming unavailable"))
         mock_client.get_file_text.return_value = "sha-main"
 
-        def fake_subprocess(cmd, **kwargs):
+        def fake_subprocess(cmd, _env=None, **kwargs):
             if "pack-objects" in cmd:
                 return MagicMock(returncode=0, stdout=b"abcdef1234567890abcdef1234567890abcdef12\n")
             return MagicMock(returncode=0)
@@ -291,7 +291,7 @@ class TestRemoteGC(unittest.TestCase):
         deleted_paths = [call.args[1] for call in mock_client.delete_entry.call_args_list if len(call.args) > 1]
         self.assertFalse(any(p.endswith(".pack") for p in deleted_paths))
 
-    @patch("subprocess.run")
+    @patch("git_remote_seafile.gc.run_git_checked")
     def test_gc_compaction_aborts_on_pack_size_mismatch(self, mock_subprocess):
         mock_client = MagicMock()
         mock_client.list_dir.side_effect = lambda repo_id, path: (
@@ -309,7 +309,7 @@ class TestRemoteGC(unittest.TestCase):
         deleted_paths = [call.args[1] for call in mock_client.delete_entry.call_args_list if len(call.args) > 1]
         self.assertFalse(any(p.endswith(".pack") for p in deleted_paths))
 
-    @patch("subprocess.run")
+    @patch("git_remote_seafile.gc.run_git_checked")
     def test_gc_compaction_aborts_when_pack_exceeds_memory_limit(self, mock_subprocess):
         mock_client = MagicMock()
         mock_client.list_dir.side_effect = lambda repo_id, path: (
@@ -327,7 +327,7 @@ class TestRemoteGC(unittest.TestCase):
         deleted_paths = [call.args[1] for call in mock_client.delete_entry.call_args_list if len(call.args) > 1]
         self.assertFalse(any(p.endswith(".pack") for p in deleted_paths))
 
-    @patch("subprocess.run")
+    @patch("git_remote_seafile.gc.run_git_checked")
     def test_gc_preserves_all_branches_and_tags(self, mock_subprocess):
         mock_client = MagicMock()
         uploaded_sizes: dict[str, int] = {}
@@ -359,7 +359,7 @@ class TestRemoteGC(unittest.TestCase):
 
         mock_client.get_file_text.side_effect = fake_get_text
 
-        def fake_subprocess(cmd, **kwargs):
+        def fake_subprocess(cmd, _env=None, **kwargs):
             if "pack-objects" in cmd:
                 return MagicMock(returncode=0, stdout=b"sha123\n")
             return MagicMock(returncode=0)
@@ -391,7 +391,7 @@ class TestRemoteGC(unittest.TestCase):
                  "refs/tags/v1.0", "refs/tags/v2.0"],
             )
 
-    @patch("subprocess.run")
+    @patch("git_remote_seafile.gc.run_git_checked")
     def test_gc_aborts_and_preserves_packs_if_lock_lost_before_cleanup(self, mock_subprocess):
         """GC must verify lock ownership before deleting old remote packs and abort if lost (N-4)."""
         mock_client = MagicMock()
@@ -507,7 +507,7 @@ class TestGcRecoveryAndFencing(unittest.TestCase):
 
     @staticmethod
     def _subprocess_fake(verify_pack_rc=0):
-        def fake(cmd, **kwargs):
+        def fake(cmd, _env=None, **kwargs):
             if "pack-objects" in cmd:
                 return MagicMock(returncode=0, stdout=b"abcdef1234567890abcdef1234567890abcdef12\n")
             if "verify-pack" in cmd:
@@ -540,7 +540,7 @@ class TestGcRecoveryAndFencing(unittest.TestCase):
 
     # --- a remote whose index is wrong -----------------------------------
 
-    @patch("subprocess.run")
+    @patch("git_remote_seafile.gc.run_git_checked")
     def test_gc_regenerates_a_truncated_remote_index(self, mock_subprocess):
         """A short .idx is regenerable, so gc warns and carries on.
 
@@ -570,7 +570,7 @@ class TestGcRecoveryAndFencing(unittest.TestCase):
         regenerated = [c for c in mock_subprocess.call_args_list if c.args and "index-pack" in c.args[0]]
         self.assertTrue(regenerated, "the truncated index was never rebuilt")
 
-    @patch("subprocess.run")
+    @patch("git_remote_seafile.gc.run_git_checked")
     def test_a_ref_that_moves_during_the_repack_stops_every_deletion(self, mock_subprocess):
         """A writer that ignores the lock pushed while gc was repacking.
 
@@ -598,7 +598,7 @@ class TestGcRecoveryAndFencing(unittest.TestCase):
         packs = [p for p in self._deleted_paths(client) if "objects/pack" in p]
         self.assertEqual(packs, [], "an old pack was deleted")
 
-    @patch("subprocess.run")
+    @patch("git_remote_seafile.gc.run_git_checked")
     def test_gc_regenerates_an_index_that_fails_verification(self, mock_subprocess):
         """A present-but-corrupt .idx is rebuilt, not trusted.
 
@@ -617,7 +617,7 @@ class TestGcRecoveryAndFencing(unittest.TestCase):
         regenerated = [c for c in mock_subprocess.call_args_list if c.args and "index-pack" in c.args[0]]
         self.assertTrue(regenerated, "the corrupt index was never rebuilt")
 
-    @patch("subprocess.run")
+    @patch("git_remote_seafile.gc.run_git_checked")
     def test_gc_aborts_when_an_index_exceeds_the_in_memory_ceiling(self, mock_subprocess):
         """An index too large to buffer, with streaming unavailable, is fatal.
 
@@ -646,7 +646,7 @@ class TestGcRecoveryAndFencing(unittest.TestCase):
 
     # --- reporting -------------------------------------------------------
 
-    @patch("subprocess.run")
+    @patch("git_remote_seafile.gc.run_git_checked")
     def test_gc_names_the_files_it_could_not_delete(self, mock_subprocess):
         """A refused delete must be reported, not counted as a success.
 
@@ -685,7 +685,7 @@ class TestGcRecoveryAndFencing(unittest.TestCase):
 
     # --- lease renewal during transfers ----------------------------------
 
-    @patch("subprocess.run")
+    @patch("git_remote_seafile.gc.run_git_checked")
     def test_gc_renews_the_lease_while_transferring(self, mock_subprocess):
         """Both transfer callbacks must renew, or the lease lapses mid-transfer.
 
@@ -732,7 +732,7 @@ class TestGcRecoveryAndFencing(unittest.TestCase):
 
     # --- the fail-closed guards ------------------------------------------
 
-    @patch("subprocess.run")
+    @patch("git_remote_seafile.gc.run_git_checked")
     def test_gc_rejects_a_remote_pack_name_it_cannot_trust(self, mock_subprocess):
         """A name that could escape objects/pack aborts before anything is read.
 
@@ -749,7 +749,7 @@ class TestGcRecoveryAndFencing(unittest.TestCase):
         self.assertIn("Invalid packfile name", res["message"])
         client.get_file_bytes.assert_not_called()
 
-    @patch("subprocess.run")
+    @patch("git_remote_seafile.gc.run_git_checked")
     def test_gc_refuses_when_no_refs_can_be_read(self, mock_subprocess):
         """An empty ref listing is far more likely a failed request than an empty repo.
 
@@ -769,7 +769,7 @@ class TestGcRecoveryAndFencing(unittest.TestCase):
         self.assertIn("no refs could be read", str(ctx.exception))
         self.assertFalse([p for p in self._deleted_paths(client) if p.endswith(".pack")])
 
-    @patch("subprocess.run")
+    @patch("git_remote_seafile.gc.run_git_checked")
     def test_gc_refuses_a_ref_outside_heads_and_tags(self, mock_subprocess):
         """A ref the mirror cannot carry means objects it cannot prove reachable.
 
@@ -802,7 +802,7 @@ class TestGcRecoveryAndFencing(unittest.TestCase):
             [p for p in self._deleted_paths(client) if p.endswith(".pack")]
         )
 
-    @patch("subprocess.run")
+    @patch("git_remote_seafile.gc.run_git_checked")
     def test_gc_refuses_a_ref_name_git_could_not_honour(self, mock_subprocess):
         """An invalid ref name under a mirrored namespace is the same hazard.
 
@@ -828,7 +828,7 @@ class TestGcRecoveryAndFencing(unittest.TestCase):
         self.assertIn("refs/heads/.hidden.lock", res["message"])
         client.get_file_bytes.assert_not_called()
 
-    @patch("subprocess.run")
+    @patch("git_remote_seafile.gc.run_git_checked")
     def test_gc_accepts_a_remote_with_only_mirrored_refs(self, mock_subprocess):
         """The new guard must not refuse the repositories gc exists for.
 
@@ -858,7 +858,7 @@ class TestGcRecoveryAndFencing(unittest.TestCase):
         self.assertEqual(res["status"], "ok")
         self.assertEqual(res["old_packs"], 2)
 
-    @patch("subprocess.run")
+    @patch("git_remote_seafile.gc.run_git_checked")
     def test_gc_refuses_a_ref_with_an_empty_sha(self, mock_subprocess):
         """gc's own boundary check: an empty SHA must never be mirrored.
 
@@ -882,12 +882,12 @@ class TestGcRecoveryAndFencing(unittest.TestCase):
 
         self.assertIn("empty SHA", str(ctx.exception))
 
-    @patch("subprocess.run")
+    @patch("git_remote_seafile.gc.run_git_checked")
     def test_gc_refuses_when_repack_fails(self, mock_subprocess):
         """A failed repack means the new pack is untrustworthy, so nothing is deleted."""
         client = self._client([{"name": "pack-1.pack"}, {"name": "pack-2.pack"}])
 
-        def fake(cmd, **kwargs):
+        def fake(cmd, _env=None, **kwargs):
             if "repack" in cmd:
                 return MagicMock(returncode=1, stderr="fatal: bad object refs/heads/main")
             return MagicMock(returncode=0)
@@ -900,7 +900,7 @@ class TestGcRecoveryAndFencing(unittest.TestCase):
         self.assertIn("git repack failed", str(ctx.exception))
         self.assertFalse([p for p in self._deleted_paths(client) if p.endswith(".pack")])
 
-    @patch("subprocess.run")
+    @patch("git_remote_seafile.gc.run_git_checked")
     def test_gc_refuses_when_repack_produces_no_pack(self, mock_subprocess):
         """Repacking that yields nothing leaves the old packs unproven-superseded."""
         client = self._client([{"name": "pack-1.pack"}, {"name": "pack-2.pack"}])
@@ -912,7 +912,7 @@ class TestGcRecoveryAndFencing(unittest.TestCase):
 
         self.assertIn("produced no packfile", str(ctx.exception))
 
-    @patch("subprocess.run")
+    @patch("git_remote_seafile.gc.run_git_checked")
     def test_gc_carries_on_when_a_bad_index_cannot_be_unlinked(self, mock_subprocess):
         """A locked index file must not abort the compaction.
 
@@ -943,7 +943,7 @@ class TestGcRecoveryAndFencing(unittest.TestCase):
 
     # --- object format (D18) ---------------------------------------------
 
-    @patch("subprocess.run")
+    @patch("git_remote_seafile.gc.run_git_checked")
     def test_gc_initialises_a_sha256_scratch_repo_for_a_sha256_remote(self, mock_subprocess):
         """A 64-hex pack name means the scratch repo must be SHA-256 too.
 
@@ -1082,7 +1082,7 @@ class TestGcVerifiesTheUploadBeforeDeletingAnything(unittest.TestCase):
     def _subprocess_fake():
         """A no-op git: these tests are about the checks, not the repacking."""
 
-        def fake(cmd, **kwargs):
+        def fake(cmd, _env=None, **kwargs):
             if "pack-objects" in cmd:
                 return MagicMock(returncode=0, stdout=b"abcdef1234567890abcdef1234567890abcdef12\n")
             return MagicMock(returncode=0)
@@ -1099,7 +1099,7 @@ class TestGcVerifiesTheUploadBeforeDeletingAnything(unittest.TestCase):
         p_pack.with_suffix.return_value.is_file.return_value = False
         mock_glob.return_value = [p_pack]
 
-    @patch("subprocess.run")
+    @patch("git_remote_seafile.gc.run_git_checked")
     def test_a_truncated_upload_leaves_the_old_packs_alone(self, mock_subprocess):
         """A pack that landed short must not count as landed.
 
@@ -1119,7 +1119,7 @@ class TestGcVerifiesTheUploadBeforeDeletingAnything(unittest.TestCase):
         self.assertIn("3 bytes on the remote but 8 locally", str(ctx.exception))
         self.assertEqual(self._deleted_paths(client), [], "nothing may be deleted on an unverified upload")
 
-    @patch("subprocess.run")
+    @patch("git_remote_seafile.gc.run_git_checked")
     def test_a_pack_absent_from_the_listing_leaves_the_old_packs_alone(self, mock_subprocess):
         """The upload reported success and the file is simply not there."""
         client = self._client_with_listing([{"name": "pack-1.pack"}, {"name": "pack-2.pack"}])
@@ -1134,7 +1134,7 @@ class TestGcVerifiesTheUploadBeforeDeletingAnything(unittest.TestCase):
         self.assertIn("not listed on the remote with a readable size", str(ctx.exception))
         self.assertEqual(self._deleted_paths(client), [], "nothing may be deleted on an unverified upload")
 
-    @patch("subprocess.run")
+    @patch("git_remote_seafile.gc.run_git_checked")
     def test_a_listing_failure_during_verification_leaves_the_old_packs_alone(self, mock_subprocess):
         """Cannot verify is not the same as verified, and must not be read as such."""
         client = self._client_with_listing([{"name": "pack-1.pack"}, {"name": "pack-2.pack"}])
@@ -1162,7 +1162,7 @@ class TestGcVerifiesTheUploadBeforeDeletingAnything(unittest.TestCase):
         self.assertIn("could not list the remote pack directory", str(ctx.exception))
         self.assertEqual(self._deleted_paths(client), [], "nothing may be deleted when the check cannot run")
 
-    @patch("subprocess.run")
+    @patch("git_remote_seafile.gc.run_git_checked")
     def test_a_lease_lost_mid_cleanup_stops_deleting_and_says_so(self, mock_subprocess):
         """The delete loop must fence every deletion, not just the first.
 
@@ -1313,7 +1313,7 @@ class TestTailMerge(unittest.TestCase):
 
     @staticmethod
     def _subprocess_fake(*, objects=b"aa11 commit 120\nbb22 blob 5\n"):
-        def fake(cmd, **kwargs):
+        def fake(cmd, _env=None, **kwargs):
             if "cat-file" in cmd:
                 return MagicMock(returncode=0, stdout=objects.decode())
             if "pack-objects" in cmd:
@@ -1400,7 +1400,7 @@ class TestTailMerge(unittest.TestCase):
 
     # --- the merge itself ---------------------------------------------------
 
-    @patch("subprocess.run")
+    @patch("git_remote_seafile.gc.run_git_checked")
     def test_tail_merge_caps_the_size_of_what_it_writes(self, mock_subprocess):
         """A pack above the server's per-upload ceiling cannot be uploaded at all
         (2 GiB was reset on a real server), so the merge hands git the cap."""
@@ -1409,7 +1409,7 @@ class TestTailMerge(unittest.TestCase):
         commands = []
         inner = self._subprocess_fake()
 
-        def recording(cmd, **kwargs):
+        def recording(cmd, _env=None, **kwargs):
             commands.append(list(cmd))
             return inner(cmd, **kwargs)
 
@@ -1420,7 +1420,7 @@ class TestTailMerge(unittest.TestCase):
         self.assertTrue(pack_objects)
         self.assertIn(f"--max-pack-size={7 * 1024 * 1024}", pack_objects[0])
 
-    @patch("subprocess.run")
+    @patch("git_remote_seafile.gc.run_git_checked")
     def test_tail_merge_consolidates_only_the_movable_packs(self, mock_subprocess):
         small = [{"name": "pack-1.pack", "size": len(b"PACK-DATA")}, {"name": "pack-2.pack", "size": len(b"PACK-DATA")}]
         frozen = {"name": "pack-frozen.pack", "size": 5 * 1024**3}
@@ -1451,7 +1451,7 @@ class TestTailMerge(unittest.TestCase):
         merged = [n for n in client.uploaded_sizes if "tail" in n]
         self.assertEqual(len(merged), 2, "the merged .pack and its .idx were uploaded")
 
-    @patch("subprocess.run")
+    @patch("git_remote_seafile.gc.run_git_checked")
     def test_tail_merge_keeps_the_old_packs_when_the_new_one_has_the_right_size_and_other_bytes(
         self, mock_subprocess
     ):
@@ -1480,7 +1480,7 @@ class TestTailMerge(unittest.TestCase):
             [p for p in self._deleted_pack_paths(client) if "pack-1" in p or "pack-2" in p], []
         )
 
-    @patch("subprocess.run")
+    @patch("git_remote_seafile.gc.run_git_checked")
     def test_tail_merge_deletes_nothing_when_the_tail_holds_no_objects(self, mock_subprocess):
         """An empty bag union has nothing to merge -- so nothing may be deleted.
 
@@ -1496,7 +1496,7 @@ class TestTailMerge(unittest.TestCase):
         self.assertIn("no objects", res["message"])
         self.assertEqual(self._deleted_pack_paths(client), [])
 
-    @patch("subprocess.run")
+    @patch("git_remote_seafile.gc.run_git_checked")
     def test_tail_merge_keeps_the_old_packs_when_the_upload_cannot_be_proven(self, mock_subprocess):
         """Upload success is not evidence the bytes are there; the check fails closed.
 
@@ -1518,7 +1518,7 @@ class TestTailMerge(unittest.TestCase):
         # The attempt itself did happen: the merge was built and sent.
         self.assertTrue(any("tail" in n for n in client.uploaded_sizes))
 
-    @patch("subprocess.run")
+    @patch("git_remote_seafile.gc.run_git_checked")
     def test_tail_merge_reports_incomplete_when_the_lease_is_lost_mid_cleanup(self, mock_subprocess):
         """A lost lease after verification stops cleanup; it is not a success.
 

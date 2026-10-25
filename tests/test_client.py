@@ -1501,6 +1501,51 @@ class TestTransferRetries(unittest.TestCase):
             server.server_close()
 
 
+class TestTransferAbortedPassthrough(unittest.TestCase):
+    """A callback that means to stop the transfer must not be swallowed.
+
+    The streaming upload swallows ordinary callback errors (a monitoring hiccup
+    must not kill a multi-gigabyte push).  The helper raises TransferAborted
+    when the lease is provably lost; that one goes through.
+    """
+
+    def test_read_raises_transfer_aborted_from_the_callback(self):
+        from git_remote_seafile.client import StreamingMultipartFile, TransferAborted
+        import io
+
+        def abort(_transferred, _total):
+            raise TransferAborted("aborting the upload: lost")
+
+        mp = StreamingMultipartFile(
+            fields={"parent_dir": "/x"},
+            file_field="file",
+            filename="a.bin",
+            file_obj=io.BytesIO(b"0123456789"),
+            file_size=10,
+            progress_callback=abort,
+        )
+        # Reading into the file body runs the callback, which aborts.
+        with self.assertRaises(TransferAborted):
+            mp.read(len(mp.header) + 10)
+
+    def test_read_swallows_ordinary_callback_errors(self):
+        from git_remote_seafile.client import StreamingMultipartFile
+        import io
+
+        def hiccup(_transferred, _total):
+            raise RuntimeError("monitoring glitch")
+
+        mp = StreamingMultipartFile(
+            fields={"parent_dir": "/x"},
+            file_field="file",
+            filename="a.bin",
+            file_obj=io.BytesIO(b"0123456789"),
+            file_size=10,
+            progress_callback=hiccup,
+        )
+        self.assertEqual(len(mp.read(mp.total_len)), mp.total_len)
+
+
 class TestSeafileClientOperations(unittest.TestCase):
     def test_mkdir_p_and_delete_entry(self):
         client = SeafileClient(server_url="https://seafile.example.com", token="fake_token", timeout=10)

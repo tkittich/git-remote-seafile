@@ -10,9 +10,14 @@ import time
 from pathlib import Path
 from typing import Any, NamedTuple
 
-from .client import SeafileClient, SeafileAPIError
+from .client import SeafileClient, SeafileAPIError, TransferAborted
 from .config import RemoteConfig
-from .lock import RemoteLock, describe_ownership_failure
+from .lock import (
+    LEASE_LOST,
+    LEASE_PREEMPTED,
+    RemoteLock,
+    describe_ownership_failure,
+)
 from .packs import (
     check_remote_has_packs,
     fetch_and_install_pack,
@@ -717,8 +722,28 @@ class RemoteHelper:
         exclude = list(self._known_remote_tips(pending_updates))
         target_shas = [u.local_sha for u in pending_updates]
 
+        def renew_during_compute() -> None:
+            # The pack build can outlast the lease (a first push of a large
+            # repository is minutes of pack-objects).  A renewal that cannot be
+            # made says nothing on its own -- the next fence decides -- so it is
+            # swallowed here and the build is allowed to finish.
+            try:
+                lock.maybe_renew(20.0)
+            except Exception:
+                pass
+
         def on_upload_progress(transferred: int, total: int) -> None:
-            lock.maybe_renew(20.0)
+            # S5: a lost lease paces the renewal but must also stop the
+            # transfer.  maybe_renew's False is ambiguous ("not due yet"), so
+            # only a state that proves the lease gone aborts; the fence before
+            # each ref write remains the backstop.
+            if not lock.maybe_renew(20.0) and lock.ownership_state() in (
+                LEASE_LOST,
+                LEASE_PREEMPTED,
+            ):
+                raise TransferAborted(
+                    f"aborting the upload: {describe_ownership_failure(lock.ownership_state())}"
+                )
 
         lock.maybe_renew(20.0)
         objects_to_push = get_objects_to_push(target_shas, exclude)
@@ -731,7 +756,8 @@ class RemoteHelper:
         staging_dir = Path(tempfile.mkdtemp(prefix="grs-push-", dir=str(git_dir) if git_dir else None))
         try:
             pack_sha, pack_data, idx_data = create_packfile(
-                objects_to_push, staged_dir=staging_dir, max_pack_bytes=max_pack_bytes
+                objects_to_push, staged_dir=staging_dir, max_pack_bytes=max_pack_bytes,
+                renew=renew_during_compute,
             )
             lock.maybe_renew(20.0)
             if isinstance(pack_data, (bytes, bytearray)):

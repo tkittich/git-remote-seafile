@@ -11,7 +11,7 @@ import sys
 import time
 import tempfile
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 
 class GitError(Exception):
@@ -125,15 +125,31 @@ def get_git_timeout() -> int:
     return _GIT_TIMEOUT
 
 
+#: How long one slice of a bounded subprocess wait may last before a *renew*
+#: callback (see :func:`run_git`) gets its turn.  The wait is implemented as
+#: repeated ``communicate(timeout=slice)`` calls -- each retry keeps the pipes
+#: and any not-yet-fed stdin intact -- so a caller that holds a remote lease
+#: can renew it from *inside* a long local phase (pack-objects, repack)
+#: without a thread.  The slice is well under the shortest sensible lease
+#: (``seafile.locklease`` is 60 s by default and ``maybe_renew`` paces itself).
+_RENEW_SLICE_SECONDS = 10.0
+
+
 def _communicate(
-    cmd: list[str], input_bytes: bytes | None, timeout: float | None
+    cmd: list[str],
+    input_bytes: bytes | None,
+    timeout: float | None,
+    renew: "Callable[[], None] | None" = None,
 ) -> tuple[bytes, bytes, int]:
     """Run *cmd* with piped output; kill it and raise TimeoutExpired on overrun.
 
     The one place a bounded git child is started, waited on and reaped, so the
     timeout is applied -- and a hung child killed -- the same way for every
     caller.  Callers decide what an overrun *means*: ``run_git`` reports a
-    failure, ``filter_existing_objects`` degrades to "cannot tell".
+    failure, ``filter_existing_objects`` degrades to "cannot tell".  With
+    *renew*, the wait happens in slices and the callback runs between them, so
+    a lease holder keeps renewing while git computes; a callback that raises
+    ends the wait with the child killed, because the holder has withdrawn.
     """
     proc = subprocess.Popen(
         cmd,
@@ -141,22 +157,43 @@ def _communicate(
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     )
-    try:
-        out, err = proc.communicate(input=input_bytes, timeout=timeout)
-    except subprocess.TimeoutExpired:
-        proc.kill()
+    if renew is None:
         try:
-            proc.communicate(timeout=5)
-        except Exception:
-            pass
-        raise
-    return out, err, proc.returncode
+            out, err = proc.communicate(input=input_bytes, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            try:
+                proc.communicate(timeout=5)
+            except Exception:
+                pass
+            raise
+        return out, err, proc.returncode
+    first = True
+    deadline = None if timeout is None else time.monotonic() + timeout
+    while True:
+        slice_timeout: float | None = None
+        if deadline is not None:
+            slice_timeout = max(0.05, min(_RENEW_SLICE_SECONDS, deadline - time.monotonic()))
+        try:
+            out, err = proc.communicate(input=input_bytes if first else None, timeout=slice_timeout)
+            return out, err, proc.returncode
+        except subprocess.TimeoutExpired:
+            first = False
+            if deadline is not None and time.monotonic() >= deadline:
+                proc.kill()
+                try:
+                    proc.communicate(timeout=5)
+                except Exception:
+                    pass
+                raise
+            renew()
 
 
 def run_git(
     args: list[str],
     input_bytes: bytes | None = None,
     timeout: float | None | _TimeoutUnset = _UNSET,
+    renew: "Callable[[], None] | None" = None,
 ) -> tuple[bytes, bytes, int]:
     """Execute a git command and return (stdout, stderr, returncode).
 
@@ -164,11 +201,15 @@ def run_git(
     :func:`get_git_timeout`, the configured ceiling; ``None`` disables the bound
     entirely.  A child that overruns is killed and the call raises ``GitError``:
     "the command hung" is a failure to report, not a state to wait out.
+    ``renew`` runs between wait slices inside the bound (see
+    :func:`_communicate`), so a lease holder survives phases longer than the
+    lease -- the reason a ceiling-raising user no longer has to raise
+    ``seafile.locklease`` to match.
     """
     if isinstance(timeout, _TimeoutUnset):
         timeout = get_git_timeout()
     try:
-        return _communicate(["git"] + args, input_bytes, timeout)
+        return _communicate(["git"] + args, input_bytes, timeout, renew)
     except subprocess.TimeoutExpired:
         raise GitError(
             f"git {' '.join(args)} did not finish within {timeout:g}s and was killed. "
@@ -237,10 +278,16 @@ def run_git_checked(
     Unlike :func:`run_git` this takes an explicit *env* (use
     :func:`clean_git_env`) and the usual ``subprocess.run`` keywords, and with
     ``check=True`` turns a failure into a RuntimeError carrying git's own words.
+    ``renew`` (see :func:`_communicate`) runs between wait slices, so gc's
+    ``repack`` and ``pack-objects`` can keep the remote lease alive through a
+    phase that outlasts it.
     """
     limit = get_git_timeout()
     check = kwargs.pop("check", False)
+    renew: "Callable[[], None] | None" = kwargs.pop("renew", None)
     try:
+        if renew is not None:
+            return _run_checked_sliced(args, env, limit, check, kwargs, renew)
         return subprocess.run(["git", *args], env=env, timeout=limit, check=check, **kwargs)
     except subprocess.CalledProcessError as exc:
         # CalledProcessError's repr is the command line and the exit status and
@@ -259,6 +306,57 @@ def run_git_checked(
             f"If this repository legitimately needs longer, raise seafile.gittimeout "
             f"in the system or global git config."
         ) from None
+
+
+def _run_checked_sliced(
+    args: list[str],
+    env: dict[str, str],
+    limit: float,
+    check: bool,
+    kwargs: dict[str, Any],
+    renew: "Callable[[], None]",
+) -> subprocess.CompletedProcess[Any]:
+    """``subprocess.run`` semantics with the wait sliced for *renew*.
+
+    Only the keyword shapes gc actually uses are translated (``capture_output``
+    and ``text``); anything else falls back to the plain pipes below.
+    """
+    popen_kwargs = {
+        k: v for k, v in kwargs.items()
+        if k not in ("capture_output", "input", "timeout", "check", "stdout", "stderr")
+    }
+    stdout = subprocess.PIPE if kwargs.get("capture_output") else kwargs.get("stdout")
+    stderr = subprocess.PIPE if kwargs.get("capture_output") else kwargs.get("stderr")
+    input_data = kwargs.get("input")
+    if input_data is not None:
+        # communicate() can only feed a pipe we opened ourselves.
+        popen_kwargs["stdin"] = subprocess.PIPE
+    proc = subprocess.Popen(
+        ["git", *args], env=env, stdout=stdout, stderr=stderr, **popen_kwargs
+    )
+    first = True
+    deadline = time.monotonic() + limit
+    while True:
+        slice_timeout = max(0.05, min(_RENEW_SLICE_SECONDS, deadline - time.monotonic()))
+        try:
+            out, err = proc.communicate(input=input_data if first else None, timeout=slice_timeout)
+            break
+        except subprocess.TimeoutExpired:
+            first = False
+            if time.monotonic() >= deadline:
+                proc.kill()
+                try:
+                    proc.communicate(timeout=5)
+                except Exception:
+                    pass
+                raise
+            renew()
+    completed: subprocess.CompletedProcess[Any] = subprocess.CompletedProcess(
+        args, proc.returncode, out, err
+    )
+    if check and completed.returncode != 0:
+        raise subprocess.CalledProcessError(completed.returncode, args, out, err)
+    return completed
 
 
 #: Prefixes of the scratch directories this package creates under ``.git``.
@@ -565,13 +663,18 @@ def get_objects_to_push(local_sha: list[str] | str, exclude_shas: list[str] | st
 
 
 def _generate_pack_in_dir(
-    tmp_dir: Path, object_shas: list[str], max_pack_bytes: int | None = None
+    tmp_dir: Path,
+    object_shas: list[str],
+    max_pack_bytes: int | None = None,
+    renew: "Callable[[], None] | None" = None,
 ) -> tuple[str, Path, Path]:
     """Helper to generate packfile and index in a target directory.
 
     With *max_pack_bytes* git may write several packs (each self-contained, no
     deltas across them); the first one's name is returned and the others sit
-    beside it in *tmp_dir* for the caller to find.
+    beside it in *tmp_dir* for the caller to find.  *renew* runs between wait
+    slices of the pack build, so a caller holding a remote lease keeps it
+    through a build longer than the lease.
     """
     tmp_dir.mkdir(parents=True, exist_ok=True)
     pack_prefix = tmp_dir / "pack"
@@ -589,7 +692,7 @@ def _generate_pack_in_dir(
     if max_pack_bytes:
         cmd.append(f"--max-pack-size={max_pack_bytes}")
     cmd.append(str(pack_prefix))
-    out, err, code = run_git(cmd, input_bytes=input_data)
+    out, err, code = run_git(cmd, input_bytes=input_data, renew=renew)
     if code != 0:
         err_msg = err.decode("utf-8", errors="replace").strip()
         raise GitError(f"git pack-objects failed: {err_msg}")
@@ -616,6 +719,7 @@ def create_packfile(
     object_shas: list[str],
     staged_dir: Path | str | None = None,
     max_pack_bytes: int | None = None,
+    renew: "Callable[[], None] | None" = None,
 ) -> tuple[str, bytes | Path, bytes | Path]:
     """Generate a .pack file and corresponding .idx file for the given object SHAs.
 
@@ -626,6 +730,7 @@ def create_packfile(
     *max_pack_bytes* only takes effect with *staged_dir*: the in-memory form can
     only return one pack.  When the objects do not fit, further packs are left
     in *staged_dir* and the caller uploads every ``pack-*.pack`` found there.
+    *renew* reaches the pack build's wait loop (see :func:`run_git`).
     """
     if not object_shas:
         return "", b"", b""
@@ -639,7 +744,7 @@ def create_packfile(
         tmp_parent = None
 
     if staged_dir is not None:
-        return _generate_pack_in_dir(Path(staged_dir), object_shas, max_pack_bytes)
+        return _generate_pack_in_dir(Path(staged_dir), object_shas, max_pack_bytes, renew)
 
     with tempfile.TemporaryDirectory(prefix="git-seaf-pack-", dir=str(tmp_parent) if tmp_parent else None) as td:
         pack_sha, pack_file, idx_file = _generate_pack_in_dir(Path(td), object_shas)

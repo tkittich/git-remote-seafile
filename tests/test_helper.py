@@ -333,6 +333,70 @@ class TestRemoteHelper(unittest.TestCase):
         self.assertIn("error refs/notes/commits refusing to push outside refs/heads and refs/tags", output)
         self.assertIn("error refs/stash refusing to push outside refs/heads and refs/tags", output)
 
+    def test_upload_aborts_when_the_lease_is_provably_lost(self):
+        """A lost lease must stop the transfer, not just pace the renewal.
+
+        The rest of a multi-gigabyte upload to a push that is already doomed
+        is cost and a late error (ROADMAP S5); only a state that *proves* the
+        lease gone aborts, so an ambiguous renewal keeps streaming.
+        """
+        from git_remote_seafile.client import TransferAborted
+        from git_remote_seafile.helper import LEASE_LOST, _PendingUpdate
+
+        h = make_helper()
+        h.client = MagicMock()
+        h.repo_id = "repo1"
+        h.repo_path = "/git-repo"
+        h._refs_cache = {}
+
+        lock = MagicMock()
+        lock.maybe_renew.return_value = False
+        lock.ownership_state.return_value = LEASE_LOST
+
+        def upload_and_report(_rid, _dir, name, content, **_kw):
+            # The real upload invokes the progress callback as bytes stream.
+            cb = _kw.get("progress_callback")
+            if cb:
+                cb(1, 2)
+            return True
+
+        h.client.upload_file.side_effect = upload_and_report
+        pending = [_PendingUpdate("refs/heads/main", "1" * 40, None, False)]
+
+        with patch("git_remote_seafile.helper.get_objects_to_push", return_value=["x"]),                 patch("git_remote_seafile.helper.create_packfile",
+                      return_value=("a" * 40, b"pack", b"idx")):
+            with self.assertRaises(TransferAborted) as caught:
+                h._upload_push_pack(lock, pending)
+        self.assertIn("aborting the upload", str(caught.exception))
+
+    def test_upload_keeps_streaming_when_renewal_is_merely_not_due(self):
+        """maybe_renew's False also means "not due yet"; that must not abort."""
+        from git_remote_seafile.lock import LEASE_HELD
+        from git_remote_seafile.helper import _PendingUpdate
+
+        h = make_helper()
+        h.client = MagicMock()
+        h.repo_id = "repo1"
+        h.repo_path = "/git-repo"
+        h._refs_cache = {}
+
+        lock = MagicMock()
+        lock.maybe_renew.return_value = False
+        lock.ownership_state.return_value = LEASE_HELD
+        # The listing must show the staged pair, or the push fails verification
+        # for a reason this test is not about.
+        sha = "a" * 40
+        h.client.list_dir.return_value = [
+            {"name": f"pack-{sha}.pack", "size": 4},
+            {"name": f"pack-{sha}.idx", "size": 3},
+        ]
+
+        pending = [_PendingUpdate("refs/heads/main", "1" * 40, None, False)]
+        with patch("git_remote_seafile.helper.get_objects_to_push", return_value=["x"]),                 patch("git_remote_seafile.helper.create_packfile",
+                      return_value=("a" * 40, b"pack", b"idx")):
+            h._upload_push_pack(lock, pending)   # must not raise
+        h.client.upload_file.assert_called()
+
     def test_cmd_push_refuses_a_shallow_repository(self):
         """A shallow push publishes a ref whose parents do not exist.
 

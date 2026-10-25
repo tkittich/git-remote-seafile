@@ -107,6 +107,17 @@ class SeafileAPIError(Exception):
     pass
 
 
+class TransferAborted(Exception):
+    """Raised by a progress callback to stop the transfer it observes.
+
+    The streaming upload swallows ordinary callback errors (a monitoring
+    hiccup must not kill a multi-gigabyte push), so a caller that *means* to
+    abort -- the helper, when the lock lease is provably lost and the rest of
+    the upload is doomed -- raises this instead, and the two swallow sites let
+    it through.
+    """
+
+
 def _force_file_host_enabled() -> bool:
     """Should returned download/upload links be forced onto the API server?
 
@@ -241,6 +252,8 @@ class StreamingMultipartFile:
             if self.progress_callback:
                 try:
                     self.progress_callback(file_transferred, self.file_size)
+                except TransferAborted:
+                    raise
                 except Exception:
                     pass
 
@@ -1176,6 +1189,8 @@ class SeafileClient:
                         try:
                             payload_len = len(payload) if hasattr(payload, "__len__") else 0
                             progress_callback(payload_len, payload_len)
+                        except TransferAborted:
+                            raise
                         except Exception:
                             pass
             except SeafileAPIError as ex:
@@ -1248,6 +1263,8 @@ class SeafileClient:
                     if progress_callback is not None:
                         try:
                             progress_callback(_base + done, file_size)
+                        except TransferAborted:
+                            raise
                         except Exception:
                             pass
 

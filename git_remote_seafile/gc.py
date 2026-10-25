@@ -614,6 +614,7 @@ def tail_merge(
                 input="\n".join(shas) + "\n",
                 text=True,
                 capture_output=True,
+                renew=maybe_renew,
             )
             maybe_renew()
             if res.returncode != 0:
@@ -938,6 +939,7 @@ def compact_repository(
                 scratch_env,
                 capture_output=True,
                 text=True,
+                renew=maybe_renew,
             )
             maybe_renew()
             if res.returncode != 0:
