@@ -25,7 +25,14 @@ from .packs import (
     load_installed_packs,
     record_installed_packs,
 )
-from .refs import REF_NAMESPACES, conflict_copies_of, is_conflict_copy, iter_refs, is_valid_ref_name
+from .refs import (
+    REF_NAMESPACES,
+    conflict_copies_of,
+    is_conflict_copy,
+    is_unsafe_destination_component,
+    iter_refs,
+    is_valid_ref_name,
+)
 from .safety import check_preflight_safety, SafetyError
 from .units import format_bytes
 from .url import mask_url, parse_seafile_url
@@ -93,6 +100,14 @@ def _destination_error(dst: str) -> str | None:
     deletion path removes what remains, and a *directory* is a legal target for
     ``delete_entry``.  So ``git push origin :refs/heads/`` deleted every branch
     in the repository.  A destination must name a ref, not a namespace.
+
+    The last check is about the *server*, not git: Seafile stores names
+    NFC-normalised and rewrites a double quote, so two spellings of one name
+    are one file there while they are two refs here -- pushing the second
+    silently overwrote the first's value (REVIEW.sonnet-5.5 A6, reproduced on
+    the real server through the helper).  It applies to destinations only; a
+    listing cannot change what is stored, and refusing to advertise an existing
+    ref would make one planted file unfetchable.
     """
     for prefix in _ALLOWED_REF_PREFIXES:
         if dst.startswith(prefix):
@@ -104,6 +119,10 @@ def _destination_error(dst: str) -> str | None:
         return "refusing to push a ref name with an empty or trailing component"
     if not is_valid_ref_name(dst):
         return "refusing to push a name git would reject (git-check-ref-format)"
+    for component in name.split("/"):
+        problem = is_unsafe_destination_component(component)
+        if problem is not None:
+            return f"refusing to push a name the server stores differently: the component {problem}"
     return None
 
 

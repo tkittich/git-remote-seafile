@@ -23,9 +23,16 @@ def exclude_matches(path: str, pattern: str) -> bool:
       command line excludes the same set on every platform;
     * ``fnmatch`` against the whole path, which is what makes a wildcard work
       (``*.pyc`` matches ``a/b/c.pyc``: fnmatch's ``*`` crosses ``/``); or
-    * any single path *component* equal to the pattern (case-insensitively),
+      * any single path *component* equal to the pattern (case-insensitively),
       which is what makes a bare name mean "a directory by that name, at any
       depth".
+
+    Both sides are compared in Unicode Normalization Form C: a source holding a
+    decomposed name (``cafe\\u0301.txt``, the spelling a macOS tool or an HFS+
+    volume writes) against the composed pattern a user types does not match
+    byte-for-byte, and the file sailed into the snapshot behind the user's back
+    (REVIEW.iq3_s E3, reproduced on Linux).  The comparison already ignores
+    case; normalisation is the same concession to humans typing patterns.
     """
     # The pattern travels the same road as the index: forward slashes, no
     # trailing slash, and -- so one command line means one snapshot -- a case
@@ -35,6 +42,8 @@ def exclude_matches(path: str, pattern: str) -> bool:
     pattern = pattern.strip().replace("\\", "/").rstrip("/")
     if not pattern:
         return False
+    path = unicodedata.normalize("NFC", path)
+    pattern = unicodedata.normalize("NFC", pattern)
     # A pattern naming a directory prefix (--exclude packages/web/build)
     # excludes everything inside it -- the more-precise spelling must exclude
     # at least as much as the bare name it refines (SNAP-03).

@@ -456,6 +456,24 @@ class SnapshotGuardTests(_SnapshotFixture):
         rc, out, err = self.snapshot("--exclude", "locked")
         self.assertEqual(rc, 0, out + err)
 
+    def test_an_exclude_typed_composed_matches_a_decomposed_name(self):
+        """The comparison is NFC on both sides.
+
+        A decomposed name in the tree against a composed pattern on the command
+        line did not match, and the file entered the snapshot behind the
+        user's back (REVIEW.iq3_s E3, reproduced on Linux; the same
+        normalisation is what S20's embedded-walk fix needs).
+        """
+        composed = "caf" + chr(233) + ".txt"           # U+00E9 (precomposed)
+        decomposed = "cafe" + chr(769) + ".txt"        # e + U+0301 (decomposed)
+        self.assertNotEqual(composed, decomposed)
+        (self.code / decomposed).write_bytes(b"nfd")
+        rc, out, err = self.snapshot("--exclude", composed)
+        self.assertEqual(rc, 0, out + err)
+        self.assertNotIn(composed, self.tree())
+        self.assertNotIn(decomposed, self.tree())
+        self.assertIn("excluded", out)
+
     @unittest.skipIf(
         os.name == "nt" or (hasattr(os, "geteuid") and os.geteuid() == 0),
         "needs POSIX permissions that bind the current user",

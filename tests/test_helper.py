@@ -397,6 +397,33 @@ class TestRemoteHelper(unittest.TestCase):
             h._upload_push_pack(lock, pending)   # must not raise
         h.client.upload_file.assert_called()
 
+    def test_cmd_push_refuses_a_name_the_server_stores_differently(self):
+        """An NFD branch and its NFC twin are two refs here, one file there.
+
+        The server stores names NFC-normalised (measured on CE 13.0.28), so
+        pushing the decomposed spelling silently overwrote the composed one's
+        value (REVIEW.sonnet-5.5 A6, reproduced on the real server through the
+        helper).  A quoted component and one over 255 UTF-8 bytes are refused
+        for the same reason: the server keeps a different name than the one
+        asked for.
+        """
+        from git_remote_seafile.helper import _destination_error
+
+        composed = "caf" + chr(233)              # U+00E9 (precomposed)
+        decomposed = "cafe" + chr(769)           # e + U+0301 (decomposed)
+        self.assertNotEqual(composed, decomposed)
+        why = _destination_error(f"refs/heads/{decomposed}")
+        self.assertIsNotNone(why)
+        self.assertIn("server stores differently", why)
+        self.assertIn("Normalization Form C", why)
+        # The composed spelling is fine, and so is the same name elsewhere in
+        # the ref (only the component is judged).
+        self.assertIsNone(_destination_error(f"refs/heads/{composed}"))
+        self.assertIsNone(_destination_error(f"refs/heads/{composed}/{decomposed}-dir".replace(decomposed, composed)))
+        # A quote and an over-long component are refused with the same shape.
+        self.assertIn("server stores differently", _destination_error('refs/heads/a"b'))
+        self.assertIn("server stores differently", _destination_error("refs/heads/" + "x" * 256))
+
     def test_cmd_push_refuses_a_shallow_repository(self):
         """A shallow push publishes a ref whose parents do not exist.
 

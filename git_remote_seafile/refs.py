@@ -88,6 +88,34 @@ def is_valid_ref_name(ref_name: str) -> bool:
     return True
 
 
+#: The server stores names NFC-normalised and turns a double quote into
+#: ``%22`` (measured on CE 13.0.28), so two spellings of one name are one file
+#: there and two refs here: pushing ``café`` silently overwrote the
+#: value ``café`` held (REVIEW.sonnet-5.5 A6, reproduced on the real
+#: server through the helper).  A destination must therefore already be in the
+#: form the server keeps, and free of the characters it rewrites.
+_UNSAFE_DEST_CHARS = re.compile(r'["\x00-\x1f\x7f]')
+
+
+def is_unsafe_destination_component(component: str) -> str | None:
+    """Why *component* may not be written as a ref name on the remote, or None.
+
+    Used on *destinations* (a typed push target), never on names the remote
+    already holds -- a listing cannot change what is stored, and refusing to
+    advertise an existing ref would make one planted file unfetchable, which is
+    a worse failure than the collision this prevents.
+    """
+    import unicodedata
+
+    if _UNSAFE_DEST_CHARS.search(component):
+        return "contains a character the server rewrites in a name (\" or a control character)"
+    if unicodedata.normalize("NFC", component) != component:
+        return "is not in Unicode Normalization Form C (the server stores names NFC, "                "so two spellings of one name are one file there)"
+    if len(component.encode("utf-8")) > 255:
+        return "is longer than the 255 bytes of UTF-8 the server accepts"
+    return None
+
+
 def _listing(
     client: SeafileClient, repo_id: str, path: str, *, known_dir: bool, strict: bool
 ) -> list:
