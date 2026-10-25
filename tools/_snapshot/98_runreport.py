@@ -35,6 +35,7 @@ class _LineTap:
         self._seen = seen
         self._partial = ""
         self._open: int | None = None
+        self._open_error: int | None = None
 
     def write(self, text: str) -> int:
         self._partial += text
@@ -53,12 +54,22 @@ class _LineTap:
                 self._warnings[self._open] += " " + stripped
                 return
             self._open = None
+        if self._open_error is not None:
+            # An error is wrapped the same way -- the house style lists the
+            # affected paths on the following lines -- and `.error` carrying
+            # only the headline loses exactly the part a scheduler would act
+            # on (REVIEW.iq3_s E4, reproduced).
+            if stripped and len(self._errors[self._open_error]) < _WARNING_LIMIT:
+                self._errors[self._open_error] += " " + stripped
+                return
+            self._open_error = None
         if stripped.startswith("Warning:") and stripped not in self._seen:
             self._seen.add(stripped)
             self._warnings.append(stripped)
             self._open = len(self._warnings) - 1
         elif stripped.startswith("Error:"):
             self._errors.append(stripped)
+            self._open_error = len(self._errors) - 1
 
     def flush(self) -> None:
         self._stream.flush()
@@ -97,26 +108,49 @@ def run_reported(
     sys.stdout = _LineTap(real_err if args.json else real_out, warnings, errors, seen)
     sys.stderr = _LineTap(real_err, warnings, errors, seen)
     started = time.monotonic()
+    rc: int | None = None
     try:
         rc = body(args)
+    except KeyboardInterrupt:
+        # A scheduler's SIGINT is a run outcome, not a reason to die with a
+        # traceback and no document at all: the contract says stdout is then
+        # exactly one JSON line, and it is precisely the interrupted runs a
+        # scheduler most needs to classify (REVIEW.iq3_s D7/E5, reproduced:
+        # rc=-2, empty stdout).
+        sys.stderr.write("Error: interrupted by a signal\n")
+        sys.stderr.flush()
+        rc = EXIT_FAILED
+    except BaseException as exc:
+        # run_command catches SnapshotError; anything else (an OSError from a
+        # raw file operation, a GitError that escaped a wrapper) would leave
+        # the same document-less traceback.  Reported, then re-raised: an
+        # unexpected exception is a bug, and hiding it behind status "failed"
+        # would hide the traceback from the person who can fix it.
+        sys.stderr.write(f"Error: {type(exc).__name__}: {exc}\n")
+        sys.stderr.flush()
+        rc = EXIT_FAILED
+        raise
     finally:
         sys.stdout, sys.stderr = real_out, real_err
-    if rc == EXIT_OK and warnings and args.exit_warnings:
-        rc = EXIT_WARNINGS
-    if args.json:
-        status = "failed" if rc in (EXIT_FAILED, EXIT_USAGE) else "warnings" if warnings else "ok"
-        document = {
-            "schema": 1,
-            "tool": "git-seafile-snapshot",
-            "version": tool_version(),
-            "mode": run_mode(args),
-            "status": status,
-            "exit_code": rc,
-            "seconds": round(time.monotonic() - started, 1),
-            "warnings": warnings,
-            "error": errors[-1].removeprefix("Error:").strip() if errors else None,
-            "result": dict(RUN_FACTS),
-        }
-        real_out.write(json.dumps(document, sort_keys=True) + "\n")
-        real_out.flush()
+        if rc == EXIT_OK and warnings and args.exit_warnings:
+            rc = EXIT_WARNINGS
+        if args.json:
+            status = (
+                "failed" if rc in (EXIT_FAILED, EXIT_USAGE)
+                else "warnings" if warnings else "ok"
+            )
+            document = {
+                "schema": 1,
+                "tool": "git-seafile-snapshot",
+                "version": tool_version(),
+                "mode": run_mode(args),
+                "status": status,
+                "exit_code": rc,
+                "seconds": round(time.monotonic() - started, 1),
+                "warnings": warnings,
+                "error": errors[-1].removeprefix("Error:").strip() if errors else None,
+                "result": dict(RUN_FACTS),
+            }
+            real_out.write(json.dumps(document, sort_keys=True) + "\n")
+            real_out.flush()
     return rc

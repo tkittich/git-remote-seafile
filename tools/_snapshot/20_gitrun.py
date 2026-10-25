@@ -112,6 +112,7 @@ def _run(
     measure_dir: Path | None = None,
     stall_limit: "float | None | _UnsetStall" = _UNSET_STALL,
     expect_bytes: int = 0,
+    live_stderr: bool = False,
     **kwargs: Any,
 ) -> subprocess.CompletedProcess[Any]:
     """``subprocess.run`` for git, failing as a ``SnapshotError`` when it hangs.
@@ -137,7 +138,22 @@ def _run(
     ``stall_limit=None`` is heartbeat-only mode, for steps with no measurable
     progress (a push's silent upload, a verification that re-reads every file
     and writes nothing): the lines keep coming and nothing is ever killed.
+
+    With ``live_stderr`` the child's stderr is piped to one reader thread that
+    echoes every line through *Python's* ``sys.stderr`` the moment it arrives.
+    That keeps the live stream (git's progress, the remote helper's own
+    warnings) *and* puts it through whatever ``sys.stderr`` currently is --
+    under ``--json --exit-warnings`` that is the run-report tap, so the
+    helper's ``Warning:`` lines count for exit 3 and reach the document's
+    ``warnings`` instead of bypassing both on an inherited file descriptor
+    (REVIEW.sonnet-5.5 D9, reproduced).  The reader is joined before the call
+    returns; it is not a daemon and never outlives the child.
     """
+    if live_stderr:
+        return _run_live(
+            cmd, status=status, measure_dir=measure_dir, stall_limit=stall_limit,
+            expect_bytes=expect_bytes, **kwargs,
+        )
     if status is None:
         kwargs.setdefault("timeout", GIT_TIMEOUT)
         try:
@@ -197,6 +213,99 @@ def _run(
     return subprocess.CompletedProcess(cmd, proc.returncode, out, err)
 
 
+def _run_live(
+    cmd: list[str],
+    *,
+    status: str | None,
+    measure_dir: Path | None,
+    stall_limit: "float | None | _UnsetStall",
+    expect_bytes: int,
+    **kwargs: Any,
+) -> subprocess.CompletedProcess[Any]:
+    """A run whose stderr is echoed line-by-line through ``sys.stderr``.
+
+    Same watchdog contract as the status loop above (wall-clock ``GIT_TIMEOUT``
+    when there is nothing to measure, no-progress stall kill when there is),
+    but the wait is a poll loop because the stderr pipe belongs to the reader
+    thread -- ``communicate`` would race it for the same pipe.
+    """
+    limit = _stall_limit_from_env() if isinstance(stall_limit, _UnsetStall) else stall_limit
+    wall = None if limit is not None or status is not None else GIT_TIMEOUT
+
+    stdin_data = kwargs.pop("input", None)
+    if stdin_data is not None and kwargs.get("stdin") != subprocess.PIPE:
+        kwargs["stdin"] = subprocess.PIPE
+    kwargs.pop("timeout", None)
+    kwargs["stderr"] = subprocess.PIPE
+    kwargs.setdefault("stdout", subprocess.PIPE)
+    proc = subprocess.Popen(cmd, **kwargs)
+    collected: list[str] = []
+
+    def _pump() -> None:
+        try:
+            for raw in proc.stderr:      # type: ignore[union-attr]
+                collected.append(raw)
+                sys.stderr.write(raw)    # the tap under --json; the term otherwise
+                sys.stderr.flush()
+        except (OSError, ValueError):
+            pass
+
+    reader = threading.Thread(target=_pump, name="grs-live-stderr")
+    reader.start()
+    try:
+        baseline = _dir_size(measure_dir) if measure_dir is not None else 0
+        start = last_progress = time.monotonic()
+        last_seen = 0
+        next_line = start
+        deadline = start + wall if wall is not None else None
+        killed = False
+        while proc.poll() is None:
+            time.sleep(0.5)
+            now = time.monotonic()
+            growth = max(0, _dir_size(measure_dir) - baseline) if measure_dir is not None else 0
+            if growth > last_seen:
+                last_seen, last_progress = growth, now
+            if status is not None and now >= next_line:
+                next_line = now + STATUS_INTERVAL
+                line = f"still {status} ... {_fmt_elapsed(now - start)}"
+                if measure_dir is not None and growth > 0:
+                    detail = f"{human_bytes(growth)} written to {measure_dir.name}"
+                    if expect_bytes > growth:
+                        rate = growth / max(now - start, 1e-9)
+                        detail += (f"; up to about {human_bytes(expect_bytes)} expected, at most "
+                                   f"{_fmt_elapsed((expect_bytes - growth) / rate)} left")
+                    line += f" ({detail})"
+                sys.stderr.write(line + "\n")
+                sys.stderr.flush()
+            if limit is not None and now - last_progress >= limit:
+                _kill_tree(proc)
+                killed = True
+                break
+            if deadline is not None and now >= deadline:
+                _kill_tree(proc)
+                killed = True
+                break
+        out = proc.stdout.read() if proc.stdout is not None else None
+        if stdin_data is not None and proc.stdin is not None:
+            try:
+                proc.stdin.close()
+            except OSError:
+                pass
+        proc.wait()
+        reader.join(timeout=10)
+        if killed:
+            reason = (
+                f"made no measurable progress for {limit:g}s and was killed (stalled?)"
+                if limit is not None and (deadline is None or now - last_progress >= limit)
+                else f"did not finish within {GIT_TIMEOUT:g}s and was killed"
+            )
+            raise SnapshotError(f"git {' '.join(cmd[1:])} {reason}") from None
+    finally:
+        if reader.is_alive():
+            reader.join(timeout=5)
+    return subprocess.CompletedProcess(cmd, proc.returncode, out, "".join(collected))
+
+
 
 #: Variables git uses to pick the repository it operates on; a run launched from
 #: a hook or CI step inherits them, and they override --git-dir.  A copy of
@@ -241,10 +350,10 @@ def git(
 
     ``status``/``measure_dir``/``stall_limit`` are passed to :func:`_run` for
     steps that run long enough to look dead (staging, pushing, restoring).  With
-    ``live_stderr`` the child's stderr is inherited, so a push shows git's and
-    the remote helper's own output as it happens -- including the helper's
-    notices.  Callers must tolerate ``proc.stderr`` being ``None`` on failure
-    (the text already reached the user directly).
+    ``live_stderr`` the child's stderr is echoed line-by-line through Python's
+    ``sys.stderr`` as it arrives, so a push shows git's and the remote helper's
+    own output when it happens *and* the run-report tap sees it -- an inherited
+    file descriptor did the first and silently skipped the second.
     """
     cmd = ["git", f"--git-dir={git_dir}"]
     if work_tree is not None:
@@ -293,11 +402,12 @@ def git(
         input=stdin,
         stdin=subprocess.DEVNULL if stdin is None else None,
         stdout=subprocess.PIPE,
-        stderr=None if live_stderr else subprocess.PIPE,
+        stderr=subprocess.PIPE,
         status=status,
         measure_dir=measure_dir,
         stall_limit=stall_limit,
         expect_bytes=expect_bytes,
+        live_stderr=live_stderr,
     )
     if check and proc.returncode != 0:
         detail = (proc.stderr or proc.stdout).strip()

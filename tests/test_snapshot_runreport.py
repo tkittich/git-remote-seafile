@@ -36,6 +36,14 @@ class _ReportFixture(_PayloadFixture):
             os.utime(path, ns=(OLD_NS, OLD_NS))
 
 
+class _NullSink:
+    def write(self, s):
+        return len(s)
+
+    def flush(self):
+        pass
+
+
 class ExitCodeTests(_ReportFixture):
     def test_a_warning_still_exits_zero_by_default(self):
         self.with_secret()
@@ -111,6 +119,107 @@ class JsonTests(_ReportFixture):
         doc = self.document(out)
         self.assertEqual(doc["mode"], "payload-verify")
         self.assertEqual((doc["result"]["checked"], doc["result"]["damaged"]), (2, 0))
+
+    def test_an_interrupted_json_run_still_writes_the_document(self):
+        """SIGINT used to mean a traceback and no document at all.
+
+        The contract says stdout is exactly one JSON line; an interrupt is
+        precisely the outcome a scheduler must classify (REVIEW.iq3_s D7,
+        reproduced: rc=-2, empty stdout).
+        """
+        buf_out, buf_err = [], []
+
+        class _Tee:
+            def write(self, s):
+                buf_out.append(s)
+                return len(s)
+
+            def flush(self):
+                pass
+
+        def body(_args):
+            raise KeyboardInterrupt
+
+        import argparse
+
+        args = argparse.Namespace(
+            json=True, exit_warnings=True,
+            restore=None, maintain=False, payload_verify=None,
+            payload_view=None, payload_gc=False, restore_drill=None,
+        )
+        real_stdout, real_stderr = sys.stdout, sys.stderr
+
+        class _ErrTap:
+            def write(self, s):
+                buf_err.append(s)
+                return len(s)
+
+            def flush(self):
+                pass
+
+        sys.stdout, sys.stderr = _Tee(), _ErrTap()
+        try:
+            rc = snap.run_reported(args, body)
+        finally:
+            sys.stdout, sys.stderr = real_stdout, real_stderr
+        self.assertEqual(rc, snap.EXIT_FAILED)
+        document = json.loads("".join(buf_out).strip())
+        self.assertEqual(document["status"], "failed")
+        self.assertIn("interrupted by a signal", document["error"])
+
+    def test_a_wrapped_error_keeps_its_paths_in_the_document(self):
+        """`.error` carried only the headline; the named files were lost."""
+        warnings: list[str] = []
+        errors: list[str] = []
+        tap = snap._LineTap(_NullSink(), warnings, errors, set())
+        tap.write("Error: 2 of 3 payload file(s) were not restored (1 was, and verified):\n")
+        tap.write("  a.bin: SHA-256 does not match the manifest\n")
+        tap.write("  b.bin: object not found on the server\n")
+        tap.write("\n")
+        self.assertEqual(len(errors), 1)
+        self.assertIn("a.bin", errors[0])
+        self.assertIn("b.bin", errors[0])
+
+    def test_the_push_step_warns_through_the_run_report(self):
+        """A helper warning on the push must reach --exit-warnings (sonnet D9).
+
+        The push child's stderr used to be an inherited fd, so the helper's own
+        "Warning:" lines bypassed the tap and a run exited 0 with
+        status "ok" over an unverified ref write.
+        """
+        import subprocess as _sp
+        import threading as _th
+
+        emitted = []
+        lock = _th.Lock()
+
+        class _Sink:
+            def write(self, s):
+                with lock:
+                    emitted.append(s)
+                return len(s)
+
+            def flush(self):
+                pass
+
+        sink = _Sink()
+        real = sys.stderr
+        sys.stderr = sink
+        try:
+            proc = snap._run(
+                [sys.executable, "-c",
+                 "import sys; sys.stderr.write('Warning: child writes a warning line' + chr(10))"],
+                text=True,
+                stdout=_sp.PIPE,
+                live_stderr=True,
+            )
+        finally:
+            sys.stderr = real
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        with lock:
+            text = "".join(emitted)
+        self.assertIn("Warning: child writes a warning line", text)
+        self.assertIn("Warning: child writes a warning line", proc.stderr or "")
 
     def test_json_and_exit_warnings_together(self):
         self.with_secret()
