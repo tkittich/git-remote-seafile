@@ -222,9 +222,18 @@ class RemoteHelper:
         return f"{self.repo_path}/{clean_rel}".rstrip("/")
 
     def _prune_empty_ref_parents(self, ref_path: str) -> None:
-        """Prune empty parent directories up to refs/heads or refs/tags after ref deletion."""
+        """Prune empty parent directories up to (and including) the namespace.
+
+        ``refs/heads`` itself is removed when the last branch under it is
+        deleted, not left behind as an existing-but-empty directory.  That
+        state is poison for the listing guard in ``refs._listing`` -- "a
+        directory that exists and answers empty is a read failure" -- which is
+        the right answer for a server glitch but the wrong one for a namespace
+        this tool emptied itself.  Removing the directory keeps the two
+        distinguishable, and ``mkdir_p`` recreates it on the next push.
+        """
         parent = os.path.dirname(ref_path).replace("\\", "/")
-        stop_points = {"refs/heads", "refs/tags", "refs", ""}
+        stop_points = {"refs", ""}
         while parent and parent not in stop_points:
             full_parent = self._full_path(parent)
             try:

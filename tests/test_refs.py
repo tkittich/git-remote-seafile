@@ -13,14 +13,17 @@ from git_remote_seafile.refs import REF_NAMESPACES, iter_refs, is_valid_ref_name
 
 
 class FakeClient:
-    """Stand-in exposing only the two methods iter_refs relies on.
+    """Stand-in exposing only the methods iter_refs relies on.
 
     ``tree`` maps a remote directory path to its entries; an entry value of
     ``"dir"`` marks a subdirectory, ``"file:<sha>"`` marks a ref file.
+    ``existing_dirs`` names directories that exist on the server while being
+    empty (a state the flat ``tree`` cannot express).
     """
 
-    def __init__(self, tree: dict[str, dict[str, str]]):
+    def __init__(self, tree: dict[str, dict[str, str]], existing_dirs: set[str] | None = None):
         self.tree = tree
+        self.existing_dirs = existing_dirs or set()
 
     def list_dir(self, repo_id, path):
         return [
@@ -32,6 +35,11 @@ class FakeClient:
         parent, _, name = path.rpartition("/")
         val = self.tree.get(parent, {}).get(name)
         return val[len("file:"):] if val and val.startswith("file:") else None
+
+    def dir_exists(self, repo_id, path):
+        return path in self.existing_dirs or any(
+            k.startswith(path.rstrip("/") + "/") for k in self.tree
+        )
 
 
 class TestIterRefs(unittest.TestCase):
@@ -306,3 +314,45 @@ class TestConflictCopies(unittest.TestCase):
         self.assertIn("conflict copy", err.getvalue())
         self.assertNotIn("malformed", err.getvalue())
 
+
+
+class TestEmptyListingOfAKnownDirectory(unittest.TestCase):
+    """A directory that exists and answers empty is a read failure, not "no refs".
+
+    The listing a glitch answers empty is the same listing a truncated answer
+    comes from: advertising the rest as the whole repository is how a fetch
+    quietly loses branches (REVIEW.iq3_s B1, reproduced at the listing layer).
+    """
+
+    HEADS = "/git-repo/refs/heads"
+    REFS = "/git-repo/refs"
+
+    def _tree_with_existing_empty_heads(self):
+        # The parent listing shows heads as a directory; the directory itself
+        # exists (200) and answers empty twice.
+        return FakeClient(
+            {self.REFS: {"heads": "dir"}},
+            existing_dirs={self.HEADS},
+        )
+
+    def test_strict_listing_treats_it_as_a_read_failure(self):
+        from git_remote_seafile.client import SeafileAPIError
+
+        with self.assertRaises(SeafileAPIError) as caught:
+            list(iter_refs(self._tree_with_existing_empty_heads(), "rid", "/git-repo",
+                           "refs/heads", strict_listing=True))
+        self.assertIn("twice answered empty", str(caught.exception))
+
+    def test_strict_gc_walk_treats_it_as_a_read_failure(self):
+        from git_remote_seafile.client import SeafileAPIError
+
+        with self.assertRaises(SeafileAPIError):
+            list(iter_refs(self._tree_with_existing_empty_heads(), "rid", "/git-repo",
+                           "refs/heads", strict=True))
+
+    def test_a_never_created_namespace_is_still_just_empty(self):
+        # No directory in the parent listing, nothing existing: a brand-new
+        # repository must keep advertising zero branches without a whisper.
+        client = FakeClient({})
+        self.assertEqual(list(iter_refs(client, "rid", "/git-repo", "refs/heads",
+                                        strict_listing=True)), [])

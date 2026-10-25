@@ -99,7 +99,11 @@ def _listing(
     us), and treating it as "no refs" is how a branch silently falls out of an
     advertisement or out of ``gc``'s view of what is reachable.  An empty answer
     for a known directory is therefore asked again, and a confirmed 404 is an
-    error when *strict* and a warning otherwise.
+    error when *strict* and a warning otherwise.  A directory that provably
+    exists and answers empty *twice* is a read failure too, not an empty
+    namespace: a server that cannot list a directory it holds may be listing it
+    short the next time, and every consumer of this walk decides what to
+    advertise -- or what to delete -- from the answer.
     """
     entries = client.list_dir(repo_id, path)
     if entries or not known_dir:
@@ -114,7 +118,15 @@ def _listing(
         sys.stderr.write(f"Warning: {message}\n")
         sys.stderr.flush()
         return []
-    return client.list_dir(repo_id, path)
+    second = client.list_dir(repo_id, path)
+    if second:
+        return second
+    message = f"{path} exists but twice answered empty; the refs under it cannot be read"
+    if strict:
+        raise SeafileAPIError(message)
+    sys.stderr.write(f"Warning: {message}\n")
+    sys.stderr.flush()
+    return []
 
 
 def iter_refs(
@@ -148,10 +160,12 @@ def iter_refs(
     ns = namespace.strip("/")
     root = f"{base_path.rstrip('/')}/{ns}"
     # A namespace root the repository's own ``refs`` directory lists is known to
-    # exist.  Asked only when strict: it is one more request, worth it where the
-    # answer decides what is deleted.
+    # exist.  Asked when strict or strict_listing: it is one more request, worth
+    # it wherever the answer decides what is deleted or advertised -- the fetch
+    # advertisement gains the same "an existing directory that answers empty is
+    # a read failure" guard gc already had.
     root_known = False
-    if strict and "/" in ns:
+    if (strict or strict_listing) and "/" in ns:
         parent, _, leaf = root.rpartition("/")
         root_known = any(
             isinstance(e, dict) and e.get("name") == leaf and e.get("type") == "dir"
