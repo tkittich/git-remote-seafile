@@ -356,6 +356,24 @@ class TestClientAPI(unittest.TestCase):
         raw_url = "http://seafile.example.com:8082/seafhttp/files/abc123/file.pack"
         self.assertEqual(self.client._adjust_url(raw_url), raw_url)
 
+    def test_adjust_url_upgrades_a_link_that_misspells_the_port(self):
+        """``http://host:443`` from an https server is upgraded, not fetched raw.
+
+        The token decision folds a scheme's default port away, so this link
+        compares as *the same authority* and would have been fetched through
+        the session carrying the Authorization header -- in cleartext.  The
+        upgrade comparison used a different parser that kept the port, so the
+        two decisions disagreed and the cleartext fetch happened (REVIEW
+        iq3_s C1, found independently by three reviewers).  Both questions now
+        use the token's own parser, so a same-authority link is always
+        upgraded to the server's scheme before any session is chosen.
+        """
+        raw_url = "http://seafile.example.com:443/seafhttp/files/abc123/file.pack"
+        adjusted = self.client._adjust_url(raw_url)
+        self.assertTrue(adjusted.startswith("https://"), adjusted)
+        # And the token decision agrees that the upgraded link is home ground.
+        self.assertIs(self.client._transfer_session(adjusted), self.client.session)
+
     def test_upload_posts_to_the_upgraded_url(self):
         """The scheme fix has to reach the POST, not just `_adjust_url`.
 

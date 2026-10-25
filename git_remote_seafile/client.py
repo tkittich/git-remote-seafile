@@ -691,13 +691,18 @@ class SeafileClient:
           rewritten URL 404s.  It stays opt-in (``seafile.forcefilehost`` /
           ``SEAFILE_FORCE_FILE_HOST``).
 
-        The authority comparison goes through :func:`normalize_netloc`, so two
-        spellings of one server (``HTTP://Host:443`` vs ``https://host``) are
-        the same place -- a user-typed ``SEAFILE_SERVER`` keeps its case, and
-        the link the server returns need not match it character for character.
-        A genuinely different endpoint still compares different: a file server
-        on ``host:8082`` is not ``host``, and ``host:8082`` over http stays
-        ``host:8082``.
+        The authority comparison goes through :func:`_transfer_authority` -- the
+        same parser the token decision uses -- so two spellings of one server
+        (``HTTP://Host:443`` vs ``https://host``) are the same place *and* the
+        two decisions cannot disagree.  They used to: the token compared
+        ``http://host:443`` to ``https://host`` as equal (443 folded away) while
+        the upgrade compared them as different (443 kept), so a link the proxy
+        mis-spelled with the port was fetched in cleartext *with* the account
+        token attached -- the one place the "token only to the host it names,
+        over the scheme it was configured for" rule was not the rule the code
+        applied (REVIEW.iq3_s C1, reproduced).  A genuinely different endpoint
+        still compares different: a file server on ``host:8082`` is not
+        ``host``, and ``host:8082`` over http stays ``host:8082``.
         """
         if not _link_authority_is_sane(raw_url):
             raise SeafileAPIError(
@@ -720,7 +725,7 @@ class SeafileClient:
             )
 
         if (
-            normalize_netloc(tgt.netloc) == normalize_netloc(srv.netloc)
+            _transfer_authority(raw_url) == _transfer_authority(self.server_url)
             and tgt.scheme == "http"
             and srv.scheme == "https"
         ):
