@@ -224,16 +224,19 @@ def _upload_new_packs(
     """Upload each new pack and its index; return the remote names written."""
     uploaded: set[str] = set()
     for np in new_packs:
-        uploaded.add(np.name)
-        client.upload_file(
-            repo_id, pack_dir, np.name, np, replace=True, progress_callback=on_upload_progress
-        )
+        # Index first, pack second: readers of the remote key on `.pack`
+        # names, so an interrupted publish leaves an inert orphan `.idx`
+        # rather than a pack whose index never landed.
         n_idx = np.with_suffix(".idx")
         if n_idx.is_file():
             uploaded.add(n_idx.name)
             client.upload_file(
                 repo_id, pack_dir, n_idx.name, n_idx, replace=True, progress_callback=on_upload_progress
             )
+        uploaded.add(np.name)
+        client.upload_file(
+            repo_id, pack_dir, np.name, np, replace=True, progress_callback=on_upload_progress
+        )
     return uploaded
 
 

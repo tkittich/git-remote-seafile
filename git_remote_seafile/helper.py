@@ -755,6 +755,12 @@ class RemoteHelper:
                 up_size = len(up_pack) if isinstance(up_pack, (bytes, bytearray)) else Path(up_pack).stat().st_size
                 sys.stderr.write(f"Uploading packfile pack-{up_sha[:8]} ({format_bytes(up_size)})...\n")
                 sys.stderr.flush()
+                # Index first, pack second: every reader of the remote keys on
+                # `.pack` names, so an interrupted publish leaves an inert
+                # orphan `.idx` instead of a pack whose pair never landed.
+                self.client.upload_file(
+                    self.repo_id, pack_dir, f"pack-{up_sha}.idx", up_idx, replace=True
+                )
                 self.client.upload_file(
                     self.repo_id,
                     pack_dir,
@@ -763,14 +769,32 @@ class RemoteHelper:
                     replace=True,
                     progress_callback=on_upload_progress,
                 )
-                self.client.upload_file(
-                    self.repo_id, pack_dir, f"pack-{up_sha}.idx", up_idx, replace=True
-                )
                 landed[f"pack-{up_sha}.pack"] = up_size
                 landed[f"pack-{up_sha}.idx"] = (
                     len(up_idx) if isinstance(up_idx, (bytes, bytearray)) else Path(up_idx).stat().st_size
                 )
-            self._verify_packs_landed(pack_dir, landed)
+            try:
+                self._verify_packs_landed(pack_dir, landed)
+            except Exception:
+                # A pack that landed truncated under a 2xx is a landmine at its
+                # final name: every later fetch dies in index-pack on it and gc
+                # dies in the same place, so the repository is unusable until
+                # someone deletes the file by hand (RUNBOOK 4).  What this push
+                # posted, this push removes -- the old packs are untouched.
+                removed = 0
+                for name in sorted(landed):
+                    try:
+                        if self.client.delete_entry(self.repo_id, f"{pack_dir}/{name}"):
+                            removed += 1
+                    except Exception:
+                        pass
+                sys.stderr.write(
+                    f"Warning: the upload could not be verified and {removed} of {len(landed)} "
+                    "file(s) this push uploaded were removed from the remote; the old "
+                    "packfiles are untouched and no ref was updated.\n"
+                )
+                sys.stderr.flush()
+                raise
         finally:
             remove_tree(staging_dir)
 

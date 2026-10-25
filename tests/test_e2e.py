@@ -119,6 +119,53 @@ class TestFaultInjection(E2ETestCase):
         self.assertIn("HTTP 500", combined)
 
 
+class TestUnverifiedUploadCleanup(E2ETestCase):
+    """A push whose pack cannot be proven present must not leave it behind.
+
+    A pack that lands truncated under a 2xx stays at its final name, where
+    every later fetch dies in index-pack and gc dies the same way -- the
+    repository is unusable until someone deletes the file by hand. The push
+    already refused; it now also removes what it posted (REVIEW.iq3_s B4).
+    """
+
+    def test_an_unverifiable_upload_is_removed_and_no_ref_moves(self):
+        src = init_repo(self.work / "src_unverified", self.env)
+        commit_file(src, "a.txt", "hello\n", "base commit", self.env)
+        run_git(["remote", "add", "origin", self.url("unverified")], src, self.env)
+
+        # Drop the pack from the store at the moment the push's verification
+        # listing reads the pack directory (the second listing of that path:
+        # the first is the mkdir existence probe before the upload).
+        seen = {"n": 0}
+
+        def drop_the_pack():
+            seen["n"] += 1
+            if seen["n"] >= 2:
+                for key in list(self.stub.files.get(REPO_ID, {})):
+                    if key.startswith("/unverified/objects/pack/") and key.endswith(".pack"):
+                        del self.stub.files[REPO_ID][key]
+
+        self.stub.get_hooks.append(
+            (lambda path: "/dir/" in path and "objects/pack" in path, drop_the_pack)
+        )
+
+        proc = run_git(["push", "-u", "origin", "main"], src, self.env, check=False)
+        self.assertNotEqual(proc.returncode, 0, "the push must not report success")
+        combined = proc.stdout + proc.stderr
+        self.assertIn("could not be verified", combined)
+        self.assertIn("removed from the remote", combined)
+
+        leftovers = self.stub.packs("/unverified")
+        self.assertEqual(
+            leftover := [n for n in leftovers], [],
+            f"nothing of this push may remain, found {leftover}",
+        )
+        # And no ref was published over the hole.
+        self.assertNotIn(
+            "/unverified/refs/heads/main", self.stub.files.get(REPO_ID, {})
+        )
+
+
 class TestFetchFailureIsLoud(E2ETestCase):
     """A clone whose pack transfer fails must fail, not produce an empty repo.
 
