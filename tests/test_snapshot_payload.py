@@ -1601,6 +1601,86 @@ class PayloadRetentionTests(_PayloadFixture):
         self.assertTrue(snap._commit_object(fake, "r", "/d", "h" * 64 + ".part-1", "h" * 64, 10))
         self.assertEqual(fake.deleted, ["/d/" + "h" * 64 + ".part-1"])
 
+    def test_a_rename_onto_a_taken_name_makes_a_copy_and_it_is_judged(self):
+        """The server's rename is create-or-duplicate (measured on CE 13.0.28).
+
+        The old code returned True on the rename's 200 and never looked: a
+        damaged wrong-size object under <sha> then blocked every later snapshot
+        that needed the content, each retry leaving another full-size copy
+        (REVIEW.sonnet-5.5 E7, reproduced on the real server; the stub models
+        the duplicate since 0.9.13).
+        """
+        sha = "h" * 64
+
+        class Fake:
+            def __init__(self):
+                self.deleted = []
+                self.files: dict[str, bytes] = {sha: b"stale"}
+
+            def rename_entry(self, rid, path, new):
+                # Create-or-duplicate on leaf names, like the server's API.
+                src = path.rsplit("/", 1)[-1]
+                if src not in self.files:
+                    return False
+                if new in self.files:
+                    self.files[f"{new} (1)"] = self.files.pop(src)
+                    return True
+                self.files[new] = self.files.pop(src)
+                return True
+
+            def list_dir(self, rid, directory):
+                return [
+                    {"name": name, "size": len(body)} for name, body in self.files.items()
+                ]
+
+            def delete_entry(self, rid, path):
+                leaf = path.rsplit("/", 1)[-1]
+                self.deleted.append(leaf)
+                self.files.pop(leaf, None)
+                return True
+
+        # Wrong-size object under the hash name: replaced by the good one.
+        wrong = Fake()
+        wrong.files[f"{sha}.part-1"] = b"good-bytes-here"
+        ok = snap._commit_object(wrong, "r", "/d", f"{sha}.part-1", sha, 15)
+        self.assertTrue(ok)
+        self.assertEqual(wrong.files.get(sha), b"good-bytes-here")
+        self.assertNotIn(f"{sha} (1)", wrong.files, "the duplicate copy must be swept")
+
+        # Right-size object with different planted bytes: left alone and the
+        # copy dropped -- S17's missing scenario (nothing would have failed if
+        # this branch overwrote an object that was already correct).
+        right = Fake()
+        right.files[sha] = b"x" * 15
+        right.files[f"{sha}.part-1"] = b"y" * 15
+        ok = snap._commit_object(right, "r", "/d", f"{sha}.part-1", sha, 15)
+        self.assertTrue(ok)
+        self.assertEqual(right.files.get(sha), b"x" * 15, "a correct object is never replaced")
+        self.assertNotIn(f"{sha} (1)", right.files)
+        self.assertNotIn(sha, right.deleted, "the right-sized object was not deleted")
+
+    def test_a_damaged_object_no_longer_blocks_snapshots_through_the_stub(self):
+        """End to end against the duplicate-modelling stub: the R3 carve-out.
+
+        Before the fix the run failed with "missing or the wrong size" on
+        every later run, each retry adding a full-size <sha> (N) copy.
+        """
+        self.assertEqual(self.snapshot()[0], 0)
+        victim = self.object_key(self.big1)
+        self.stub.files[REPO_ID][victim] = self.stub.files[REPO_ID][victim][:3]
+        rc, out, err = self.snapshot()
+        self.assertEqual(rc, 0, out + err)
+        prefix = "/".join(victim.split("/")[:-1])
+        dups = [
+            k for k in self.server_files()
+            if k.startswith(prefix + "/") and "(1)" in k.rsplit("/", 1)[-1]
+        ]
+        self.assertEqual(dups, [], f"duplicate copies were left: {dups}")
+        self.assertEqual(
+            len(self.stub.files[REPO_ID][victim]), len(self.big1),
+            "the object under the hash name is the right size again",
+        )
+
 
 class PayloadRememberVerifyViewAndClockTests(_PayloadFixture):
     """The remembered setting, verify, views, the clock domain, the report."""

@@ -41,7 +41,7 @@ encryption and retention policy.
 | :-- | :--- | :--- |
 | R1 | A restored tree is byte-identical to the source at snapshot time, payload files included. | `test_restore_downloads_and_verifies_the_payload`; real-server soak |
 | R2 | A snapshot never references an object that was not verified present before the vault was pushed. | ordering in D5; `test_a_failed_parallel_upload_names_the_file_and_resumes` |
-| R3 | A run never replaces an object with different bytes, and never deletes one. (It does replace a *wrong-size* object, which is damage, with the correct bytes.) | design; `test_a_file_removed_from_the_source_keeps_its_object`, `test_a_name_another_writer_just_stored_is_not_deleted_by_a_collision` |
+| R3 | A run never replaces an object with different bytes, and never deletes one. (It does replace a *wrong-size* object, which is damage, with the correct bytes.) | `test_a_file_removed_from_the_source_keeps_its_object`, `test_a_name_another_writer_just_stored_is_not_deleted_by_a_collision`, `test_a_rename_onto_a_taken_name_makes_a_copy_and_it_is_judged` (the server's rename is create-or-duplicate: measured on CE 13.0.28; the wrong-size branch and the leave-a-right-sized-object-alone branch are both pinned there), `test_a_damaged_object_no_longer_blocks_snapshots_through_the_stub` |
 | R4 | An unchanged tree uploads nothing and commits nothing. | `test_an_unchanged_tree_uploads_nothing_and_commits_nothing` |
 | R5 | A rename or duplicate uploads nothing. | `test_a_rename_uploads_nothing`, `test_duplicate_content_is_one_object` |
 | R6 | A file that changed between hashing and upload is never stored under another content's name. | `test_a_file_that_changes_between_hash_and_upload_is_refused` |

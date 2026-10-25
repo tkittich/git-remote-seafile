@@ -305,19 +305,71 @@ def _commit_object(
 ) -> bool:
     """Give the verified temporary file its hash name.
 
-    If the name is taken by an object of the right size (another machine or worker
-    stored the same bytes a moment ago) the temporary is simply dropped: the same
-    name always has the same content.  A taken name with a wrong size is a stale
-    object; it is removed and the rename tried once more.
+    The server's rename is *create-or-duplicate*: on a taken name it answers
+    success and leaves the target untouched with a ``<sha> (1)`` copy beside it
+    (measured on CE 13.0.28 -- the stub models it since 0.9.13; the old code
+    assumed the refusal the stub used to answer, so a damaged object blocked
+    every later snapshot that needed the content, each retry leaving another
+    full-size copy; REVIEW.sonnet-5.5 E7).  So after every rename the directory
+    is listed once, and:
+
+    * no duplicate -- the rename landed on a free name, done;
+    * a duplicate and the existing ``<sha>`` at the *right* size -- another
+      writer stored the same bytes a moment ago (the temporary's digest was
+      proved equal to ``sha`` before any rename), so the copy is dropped;
+    * a duplicate and ``<sha>`` at the *wrong* size -- damage, and the R3
+      carve-out in action: the stale object is deleted and the rename retried
+      once, with the duplicate copies swept either way.
     """
-    if client.rename_entry(rid, f"{directory}/{temp}", sha):
+    marker = f"{sha} ("
+    stale = f"{directory}/{sha}"
+    temp_path = f"{directory}/{temp}"
+
+    def _duplicates(entries: list) -> list[str]:
+        return [
+            str(e.get("name"))
+            for e in entries
+            if isinstance(e, dict) and str(e.get("name", "")).startswith(marker)
+        ]
+
+    def _sweep(dups: list[str]) -> None:
+        for dup in dups:
+            client.delete_entry(rid, f"{directory}/{dup}")
+
+    if client.rename_entry(rid, temp_path, sha):
+        entries = client.list_dir(rid, directory)
+        dups = _duplicates(entries)
+        if not dups:
+            return True
+        existing = next(
+            (e for e in entries if isinstance(e, dict) and e.get("name") == sha), None
+        )
+        if existing is not None and existing.get("size") == size:
+            # Same bytes under the name already (content addressing): the
+            # duplicate copy the rename left is redundant, not evidence.
+            _sweep(dups)
+            return True
+        # A wrong-size object under the hash name is damage; replace it.  The
+        # create-or-duplicate rename consumed the temporary into the first
+        # duplicate, so that copy is the bytes to move onto the freed name.
+        if not client.delete_entry(rid, stale):
+            return False
+        if not client.rename_entry(rid, f"{directory}/{dups[0]}", sha):
+            return False
+        _sweep(_duplicates(client.list_dir(rid, directory)))
         return True
+    # The rename was refused outright (a deployment that does fail on a taken
+    # name): fall back to judging the existing object by its size.
     for entry in client.list_dir(rid, directory):
         if entry.get("name") == sha and entry.get("size") == size:
-            client.delete_entry(rid, f"{directory}/{temp}")
+            client.delete_entry(rid, temp_path)
             return True
-    client.delete_entry(rid, f"{directory}/{sha}")
-    return bool(client.rename_entry(rid, f"{directory}/{temp}", sha))
+    if not client.delete_entry(rid, stale):
+        return False
+    if not client.rename_entry(rid, temp_path, sha):
+        return False
+    _sweep(_duplicates(client.list_dir(rid, directory)))
+    return True
 
 
 def _progress_line(done: int, total: int, elapsed: float, verb: str = "uploaded") -> str:

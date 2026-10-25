@@ -211,7 +211,18 @@ class _Handler(BaseHTTPRequestHandler):
                 if p not in files:
                     return self._send(404, b'{"error":"not found"}')
                 if new in files:
-                    return self._send(400, b'{"error":"file already exists"}')
+                    # Measured on CE 13.0.28: the rename onto a taken name
+                    # answers success and creates "<name> (1)" beside the
+                    # target, which keeps its old bytes.  The code may not rely
+                    # on a refusal (REVIEW.sonnet-5.5 E7 / the triage's probe).
+                    base, dot, ext = new.rpartition(".")
+                    dup = f"{base or new} (1){('.' + ext) if dot else ''}"
+                    n = 1
+                    while dup in files:
+                        n += 1
+                        dup = f"{base or new} ({n}){('.' + ext) if dot else ''}"
+                    files[dup] = files.pop(p)
+                    return self._send(200, b'"success"')
                 files[new] = files.pop(p)
                 return self._send(200, b'"success"')
         if path == "/api/v2.1/repos/sync-batch-copy-item/":
