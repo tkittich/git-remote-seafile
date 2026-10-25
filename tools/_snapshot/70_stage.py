@@ -317,6 +317,18 @@ def build_snapshot(
     else:
         extra_dirs = []
 
+    # Embedded repositories: their files (the default), or their commit id.
+    # Decided from the *directories* that hold a .git, not from gitlinks in the
+    # index: from the second run on the index already holds the files, so a
+    # gitlink-based test saw nothing and silently ignored the flag.  The walk
+    # appends to ``unreadable``: git cannot warn about a directory inside a
+    # repository it refuses to enter, so its stderr guard is blind there.
+    handle_embedded_repositories(
+        git_dir, work_tree, excludes, skip_paths,
+        capture=capture_embedded, extra_dirs=extra_dirs, report=embedded_report,
+        unreadable=unreadable,
+    )
+
     unreadable = [
         d for d in dict.fromkeys(unreadable)
         if not any(exclude_matches(d, pat) for pat in excludes)
@@ -330,15 +342,6 @@ def build_snapshot(
             + (f"\n  ... and {len(unreadable) - 10} more" if len(unreadable) > 10 else "")
             + "\nMake them readable, or leave them out on purpose with --exclude."
         )
-
-    # Embedded repositories: their files (the default), or their commit id.
-    # Decided from the *directories* that hold a .git, not from gitlinks in the
-    # index: from the second run on the index already holds the files, so a
-    # gitlink-based test saw nothing and silently ignored the flag.
-    handle_embedded_repositories(
-        git_dir, work_tree, excludes, skip_paths,
-        capture=capture_embedded, extra_dirs=extra_dirs, report=embedded_report,
-    )
 
     if record_mtimes:
         record_mtimes_in_index(git_dir, work_tree, parent)
@@ -487,8 +490,11 @@ def find_virtualenvs(source: Path, excludes: list[str]) -> list[str]:
             child = name if rel == "." else f"{rel}/{name}"
             if name == ".git" or any(exclude_matches(child, pat) for pat in excludes):
                 continue
-            if getattr(os.lstat(os.path.join(dirpath, name)), "st_file_attributes", 0) & 0x400:
-                continue
+            try:
+                if getattr(os.lstat(os.path.join(dirpath, name)), "st_file_attributes", 0) & 0x400:
+                    continue
+            except OSError:
+                continue  # vanished between the listing and the stat; not a venv either way
             keep.append(name)
         dirnames[:] = keep
     return sorted(found)

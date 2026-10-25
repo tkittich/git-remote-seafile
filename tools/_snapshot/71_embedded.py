@@ -14,7 +14,9 @@ def embedded_repositories(git_dir: Path, work_tree: Path) -> list[str]:
     return found
 
 
-def _files_of_repository(root: Path, prefix: str) -> list[str]:
+def _files_of_repository(
+    root: Path, prefix: str, unreadable: "list[str] | None" = None
+) -> list[str]:
     """Index paths for everything under *root* except ``.git`` itself.
 
     ``os.walk`` rather than ``git ls-files``: git treats a directory holding a
@@ -23,17 +25,35 @@ def _files_of_repository(root: Path, prefix: str) -> list[str]:
     stores the link, not its target), and a junction is not followed, as in
     :func:`_walk_sizes`.  A repository nested inside this one is walked on the
     same terms, so depth does not matter.
+
+    ``unreadable`` collects directories the walk cannot open.  git cannot warn
+    about a directory it refuses to enter, so its stderr guard (70_stage)
+    covers the rest of the tree but is structurally blind here; without this,
+    an unreadable directory inside an embedded repository left a hole in a
+    "full" backup with exit 0 (REVIEW.iq3_s E1, reproduced on Linux).
     """
     found: list[str] = []
-    for dirpath, dirnames, filenames in os.walk(root):
+
+    def _deny(err: OSError) -> None:
+        if unreadable is not None:
+            unreadable.append(prefix.rstrip("/"))
+
+    for dirpath, dirnames, filenames in os.walk(root, onerror=_deny):
         keep: list[str] = []
         for name in dirnames:
             full = os.path.join(dirpath, name)
             if name == ".git":
                 continue
-            if os.path.islink(full):
+            try:
+                is_link = os.path.islink(full)
+                is_reparse = bool(
+                    getattr(os.lstat(full), "st_file_attributes", 0) & 0x400
+                )
+            except OSError:
+                continue  # vanished between listing and stat
+            if is_link:
                 found.append(f"{prefix}/{os.path.relpath(full, root)}".replace(os.sep, "/"))
-            elif not getattr(os.lstat(full), "st_file_attributes", 0) & 0x400:
+            elif not is_reparse:
                 keep.append(name)
         dirnames[:] = keep
         for name in filenames:
@@ -50,6 +70,7 @@ def inline_embedded_repositories(
     excludes: list[str],
     skip_paths: "frozenset[str] | None" = None,
     extra_dirs: "list[str] | None" = None,
+    unreadable: "list[str] | None" = None,
 ) -> list[tuple[str, int]]:
     """Replace each gitlink in the index by the files under it; ``[(path, files)]``.
 
@@ -75,7 +96,7 @@ def inline_embedded_repositories(
     report: list[tuple[str, int]] = []
     for link in links:
         root = work_tree / link
-        files = _files_of_repository(root, link) if root.is_dir() else []
+        files = _files_of_repository(root, link, unreadable) if root.is_dir() else []
         files = [
             path for path in files
             if not any(exclude_matches(path, pat) for pat in excludes)
@@ -164,6 +185,7 @@ def handle_embedded_repositories(
     capture: bool,
     extra_dirs: "list[str] | None" = None,
     report: "list[tuple[str, int]] | None" = None,
+    unreadable: "list[str] | None" = None,
 ) -> None:
     """Leave the index holding every embedded repository the way the run asked.
 
@@ -173,10 +195,15 @@ def handle_embedded_repositories(
     so the flag means the same on the second run as on the first.  ``report``
     receives ``(directory, files)`` for every embedded repository whose files
     are in the snapshot, on every run (the note that their history is not
-    captured used to be printed on the first run only).
+    captured used to be printed on the first run only).  ``unreadable`` is the
+    list build_snapshot's refusal reads: a directory inside an embedded
+    repository the walk cannot open lands there, because git's own warning
+    cannot see inside one.
     """
     if capture:
-        inline_embedded_repositories(git_dir, work_tree, excludes, skip_paths, extra_dirs)
+        inline_embedded_repositories(
+            git_dir, work_tree, excludes, skip_paths, extra_dirs, unreadable
+        )
     paths = index_paths(git_dir, work_tree)
     # Outermost repositories only: a repository inside another is part of that
     # one's files, and its own gitlink would make "a file and a directory".

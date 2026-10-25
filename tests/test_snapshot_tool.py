@@ -456,6 +456,48 @@ class SnapshotGuardTests(_SnapshotFixture):
         rc, out, err = self.snapshot("--exclude", "locked")
         self.assertEqual(rc, 0, out + err)
 
+    @unittest.skipIf(
+        os.name == "nt" or (hasattr(os, "geteuid") and os.geteuid() == 0),
+        "needs POSIX permissions that bind the current user",
+    )
+    def test_an_unreadable_directory_inside_an_embedded_repository_stops_the_run(self):
+        """git cannot warn about a directory inside a repository it refuses to
+        enter, so its stderr guard is structurally blind there; the tool's own
+        walk must carry the refusal (REVIEW.iq3_s E1, reproduced on Linux)."""
+        nested = self.code / "vendor"
+        nested.mkdir()
+        _git(nested, "init", "-q", "-b", "main", ".")
+        (nested / "inner.txt").write_bytes(b"inner\n")
+        locked = nested / "locked"
+        locked.mkdir()
+        (locked / "secret.txt").write_bytes(b"x\n")
+        locked.chmod(0)
+        self.addCleanup(locked.chmod, 0o755)
+        rc, out, err = self.snapshot()
+        self.assertEqual(rc, 1, out + err)
+        self.assertIn("could not be read", err)
+        self.assertIn("vendor", err)
+
+    def test_the_embedded_walks_denied_directory_feeds_the_refusal_everywhere(self):
+        """The walk's onerror hook, driven directly, so Windows sees it too."""
+        import tempfile as _tf
+
+        with _tf.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            (root / "f.txt").write_bytes(b"x\n")
+            unreadable: list[str] = []
+            real_walk = os.walk
+
+            def walk_that_hits_a_denied_dir(top, **kw):
+                onerror = kw.get("onerror")
+                if onerror is not None and str(top) == str(root):
+                    onerror(PermissionError(13, "Permission denied", str(root / "denied")))
+                return real_walk(top, **kw)
+
+            with unittest.mock.patch.object(snap.os, "walk", side_effect=walk_that_hits_a_denied_dir):
+                snap._files_of_repository(root, "vend", unreadable)
+            self.assertEqual(unreadable, ["vend"])
+
     def test_an_unreadable_directory_warning_from_git_stops_the_run_on_every_platform(self):
         """The test above needs POSIX permissions and is skipped on Windows,
         leaving the guard unexercised there.  This feeds git's own warning."""

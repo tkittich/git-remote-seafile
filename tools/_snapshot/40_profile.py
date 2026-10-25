@@ -131,15 +131,21 @@ def _walk_sizes(
     """
     found: list[tuple[int, str]] = []
     root = str(source)
+
+    def _keep(d: str) -> bool:
+        if d == ".git":
+            return False
+        try:
+            return not (getattr(os.lstat(os.path.join(dirpath, d)), "st_file_attributes", 0) & 0x400)
+        except OSError:
+            # Vanished between the listing and the stat: nothing to walk.
+            return False
+
     for dirpath, dirnames, filenames in os.walk(root):
         # A junction or mount point is a directory to os.walk but not a symlink,
         # and git does not follow it: neither may a walk that decides what is
         # uploaded, or one junction to a drive root would hash the drive.
-        dirnames[:] = [
-            d for d in dirnames
-            if d != ".git"
-            and not (getattr(os.lstat(os.path.join(dirpath, d)), "st_file_attributes", 0) & 0x400)
-        ]
+        dirnames[:] = [d for d in dirnames if _keep(d)]
         for name in filenames:
             full = os.path.join(dirpath, name)
             rel = os.path.relpath(full, root).replace(os.sep, "/")
