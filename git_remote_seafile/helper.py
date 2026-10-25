@@ -31,6 +31,7 @@ from .git_util import (
     get_objects_to_push,
     install_packfile,
     is_ancestor,
+    is_shallow_repository,
     objects_may_be_incomplete,
     GitError,
     rev_parse,
@@ -1024,6 +1025,23 @@ class RemoteHelper:
     def cmd_push(self, push_specs: list[str]) -> None:
         """Process push instructions."""
         sweep_stale_scratch()
+        # A shallow repository cannot be pushed from: `pack-objects` stops at
+        # the shallow boundary without complaint, so the ref would name commits
+        # the remote does not hold and every clone of it would fail to traverse
+        # parents -- a plain bare remote rejects the same push outright
+        # ("shallow update not allowed"; REVIEW.sonnet-5.5 A3, reproduced).  The
+        # fetch side already withholds its skip for the same repository shape.
+        if is_shallow_repository():
+            for spec in push_specs:
+                _proto_error(
+                    self._spec_destination(spec),
+                    "refusing to push from a shallow repository: the pack would stop at the "
+                    "shallow boundary and the ref would name commits the remote does not "
+                    "hold. Run 'git fetch --unshallow' and push again",
+                )
+            sys.stdout.write("\n")
+            sys.stdout.flush()
+            return
         # Pre-flight safety checks (Trap 1, Trap 2, root pollution, typos)
         try:
             self._preflight_safety(push_mode=True)

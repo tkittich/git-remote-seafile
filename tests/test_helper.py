@@ -333,6 +333,30 @@ class TestRemoteHelper(unittest.TestCase):
         self.assertIn("error refs/notes/commits refusing to push outside refs/heads and refs/tags", output)
         self.assertIn("error refs/stash refusing to push outside refs/heads and refs/tags", output)
 
+    def test_cmd_push_refuses_a_shallow_repository(self):
+        """A shallow push publishes a ref whose parents do not exist.
+
+        `pack-objects` stops at the shallow boundary without complaint, so the
+        remote would hold a ref that fails every clone with "Failed to traverse
+        parents" (REVIEW.sonnet-5.5 A3, reproduced; a plain bare remote rejects
+        the same push with "shallow update not allowed").
+        """
+        h = make_helper()
+        h.client = MagicMock()
+        h.repo_id = "repo1"
+        h.repo_path = "/git-repo"
+        h._refs_cache = {}
+
+        out = io.StringIO()
+        with patch("git_remote_seafile.helper.is_shallow_repository", return_value=True), \
+                patch("sys.stdout", out), patch("sys.stderr", new_callable=io.StringIO):
+            h.cmd_push(["HEAD:refs/heads/main"])
+
+        output = out.getvalue()
+        self.assertIn("error refs/heads/main refusing to push from a shallow repository", output)
+        self.assertIn("git fetch --unshallow", output)
+        h.client.upload_file.assert_not_called()
+
     def test_cmd_push_does_not_duplicate_error_for_successful_ref(self):
         h = make_helper()
         h.client = MagicMock()
