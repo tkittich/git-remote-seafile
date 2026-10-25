@@ -190,6 +190,16 @@ class _Handler(BaseHTTPRequestHandler):
         body = self._read_body()
         path = urlparse(self.path).path
         if path.startswith("/api2/repos/") and path.endswith("/dir/"):
+            form = parse_qs(body.decode("utf-8", "replace"))
+            if form.get("operation") == ["mkdir"]:
+                rid, p = self._rid(), _norm(self._query_p())
+                if self.stub.faults.get("mkdir_duplicate") == p.rsplit("/", 1)[-1]:
+                    # Seafile's mkdir is create-or-duplicate (measured on CE
+                    # 13.0.28): a name another client just took answers success
+                    # and creates "<name> (1)" beside it.  The plain handler
+                    # stores nothing (the stub has no directory entries), so the
+                    # duplicate is modelled as one file under the copy.
+                    self.stub.files.setdefault(rid, {})[f"{p} (1)/dup"] = b""
             return self._send(200, b"{}")
 
         if path.startswith("/api2/repos/") and path.endswith("/file/"):

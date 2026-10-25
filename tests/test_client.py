@@ -1589,6 +1589,29 @@ class TestSeafileClientOperations(unittest.TestCase):
         self.assertTrue(client.mkdir_p("repo1", "/a"))
         self.assertIn(("repo1", "/a"), client._known_dirs)
 
+    def test_mkdir_p_refuses_a_create_or_duplicate_answer(self):
+        """Seafile's mkdir on a taken name succeeds and makes "<name> (1)".
+
+        Measured on CE 13.0.28 (six concurrent creates -> three directories,
+        no errors).  A client that believed the 201 would upload into a
+        directory no other client lists; the loser must be told to retry.
+        """
+        client = SeafileClient(server_url="https://seafile.example.com", token="fake_token", timeout=10)
+        client.session = MagicMock()
+
+        listing = MagicMock(status_code=200)
+        listing.json.return_value = [{"type": "dir", "name": "lock.d (1)"}]
+        client.session.get.side_effect = [
+            MagicMock(status_code=404),   # the directory does not exist
+            listing,                      # the parent listing after the POST
+        ]
+        client.session.post.return_value = MagicMock(status_code=201, text="success")
+
+        with self.assertRaises(SeafileAPIError) as caught:
+            client.mkdir_p("repo1", "/lock.d")
+        self.assertIn("kept this one as a duplicate", str(caught.exception))
+        self.assertNotIn(("repo1", "/repo/lock.d"), client._known_dirs)
+
 
 class TestClientFailsLoudly(unittest.TestCase):
     """A12.10 / H-7 / H-8 -- three places the client answered a question it had

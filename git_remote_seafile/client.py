@@ -910,6 +910,28 @@ class SeafileClient:
             url = f"{self.server_url}/api2/repos/{repo_id}/dir/?p={quote(current, safe='/')}"
             resp = self.session.post(url, data={"operation": "mkdir"}, timeout=self.timeout)
             if resp.status_code in (200, 201):
+                # Seafile's mkdir is create-or-duplicate: on a name a concurrent
+                # client just took it answers success and creates "<name> (1)"
+                # beside it (measured on CE 13.0.28: six simultaneous creates
+                # made three directories, no errors).  The loser must hear that
+                # now, before its uploads scatter into a directory no other
+                # client lists -- for the lock directory that is two clients
+                # each watching an empty queue.  One listing per *created*
+                # directory, so an established repository pays nothing.
+                marker = f"{part} ("
+                try:
+                    siblings = self.list_dir(repo_id, current.rpartition("/")[0] or "/")
+                    duplicated = any(
+                        isinstance(e, dict) and str(e.get("name", "")).startswith(marker)
+                        for e in siblings
+                    )
+                except SeafileAPIError:
+                    duplicated = False
+                if duplicated:
+                    raise SeafileAPIError(
+                        f"another client created {current} at the same moment and the server "
+                        "kept this one as a duplicate; run the command again"
+                    )
                 self._known_dirs.add((repo_id, current))
                 continue
             if resp.status_code == 400 and "already exists" in resp.text.lower():
