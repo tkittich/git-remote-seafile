@@ -644,35 +644,40 @@ class PayloadBasicsTests(_PayloadFixture):
         after an hour, like an unprobed share, and the run says so.
 
         The mock is active in BOTH snapshots so the cached entry itself
-        carries ctime == mtime -- the condition the coarse rule detects.  The
-        mtime is an hour-band value (60 s before the hash): older than the
-        2 s racy window, so under the ordinary rule the entry is trusted and
-        a same-size edit with the mtime restored vouches for the OLD bytes;
-        under the coarse 1 h window it is not, and only the coarse rule makes
-        the restore return the new bytes.  (The first draft used a years-old
-        mtime, which stays trusted under either window and so proved the
-        ctime mismatch instead -- and its control assertion assumed NTFS,
-        where ctime != mtime for a fresh file; on ext4/APFS ctime == mtime
-        until something touches the file, and the fixture had not.  utime to
-        60 s ago moves real ctime on every platform, so the unmocked control
-        stays note-free everywhere.  Failed on all ten POSIX CI legs; this
-        rewrite is the platform-neutral form.)
+        carries ctime == mtime -- the condition the coarse rule detects -- and
+        the mtime is an hour-band value (60 s before the first hash): older
+        than the 2 s racy window, so under the ordinary rule the entry is
+        trusted and a same-size edit with the mtime restored vouches for the
+        OLD bytes; under the coarse 1 h window it is not, and only the coarse
+        rule makes the restore return the new bytes.
+
+        (Two earlier drafts failed on all POSIX CI legs.  The first assumed
+        NTFS in its control: on ext4/APFS a file that was merely created and
+        written has ctime == mtime exactly -- both stamped by the same inode
+        operation -- so big2, which the fixture never touches, trips the
+        detection in any control run and the note's absence cannot be
+        asserted.  The second moved the utime before the control but left the
+        cache entry written unmocked, so the mocked run's ctime mismatch, not
+        the coarse rule, did the work.  The mock is therefore active from the
+        first hash, and the control assertion is gone.)
         """
         import unittest.mock
 
         target = self.src / "big1.bin"
-        # An hour-band mtime, set before the first snapshot: utime moves the
-        # real ctime away from the mtime on every platform, so the unmocked
-        # control below is note-free on NTFS, ext4 and APFS alike.
+        second = self.src / "sub" / "big2.bin"
+        # An hour-band mtime for every payload file: older than the 2 s racy
+        # window by the time the first hash lands, well inside the coarse hour.
         band = time.time_ns() - 60 * 1_000_000_000
-        os.utime(target, ns=(band, band))
+        for path in (target, second):
+            os.utime(path, ns=(band, band))
 
         def fat_like(path, st):
             return st.st_mtime_ns   # the FAT family's only timestamp
 
-        rc, out, err = self.snapshot()
+        with unittest.mock.patch.object(snap, "change_time_ns", fat_like):
+            rc, out, err = self.snapshot()
         self.assertEqual(rc, 0, out + err)
-        self.assertNotIn("no change time of its own", out + err)
+        self.assertIn("no change time of its own", out + err)
 
         # Same size, same mtime, edited after the first hash: under the 2 s
         # racy window the entry is trusted (the mtime is a minute old) and

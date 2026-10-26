@@ -10,6 +10,16 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+
+def setUpModule():
+    # cmd_push consults the ambient repository's shallowness; the checkout on
+    # POSIX CI reads as shallow there, which shadowed the safety refusal this
+    # module tests (the shallow error fired before the safety check).  Pinned
+    # False; the dedicated shallow-refusal test patches True locally.
+    patcher = patch("git_remote_seafile.helper.is_shallow_repository", return_value=False)
+    patcher.start()
+    unittest.addModuleCleanup(patcher.stop)
+
 try:
     from _helpers import make_helper
 except ImportError:

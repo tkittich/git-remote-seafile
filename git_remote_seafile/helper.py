@@ -1070,23 +1070,6 @@ class RemoteHelper:
     def cmd_push(self, push_specs: list[str]) -> None:
         """Process push instructions."""
         sweep_stale_scratch()
-        # A shallow repository cannot be pushed from: `pack-objects` stops at
-        # the shallow boundary without complaint, so the ref would name commits
-        # the remote does not hold and every clone of it would fail to traverse
-        # parents -- a plain bare remote rejects the same push outright
-        # ("shallow update not allowed"; REVIEW.sonnet-5.5 A3, reproduced).  The
-        # fetch side already withholds its skip for the same repository shape.
-        if is_shallow_repository():
-            for spec in push_specs:
-                _proto_error(
-                    self._spec_destination(spec),
-                    "refusing to push from a shallow repository: the pack would stop at the "
-                    "shallow boundary and the ref would name commits the remote does not "
-                    "hold. Run 'git fetch --unshallow' and push again",
-                )
-            sys.stdout.write("\n")
-            sys.stdout.flush()
-            return
         # Pre-flight safety checks (Trap 1, Trap 2, root pollution, typos)
         try:
             self._preflight_safety(push_mode=True)
@@ -1105,6 +1088,36 @@ class RemoteHelper:
         # taken, because taking the lock is itself a side effect.
         if self.dry_run:
             self._push_dry_run(push_specs)
+            return
+
+        # Destination validation comes before anything about the repository's
+        # state: the destination checks are pure string work and their errors
+        # name the actual mistake -- a malformed destination must not be
+        # shadowed by an answer about shallowness (v0.9.14's first CI run:
+        # ten POSIX legs reported "shallow" for destinations that were simply
+        # invalid).  _split_spec reports and drops the unparseable ones; only
+        # valid destinations reach the checks below.
+        push_specs = [spec for spec in push_specs if self._split_spec(spec) is not None]
+
+        # A shallow repository cannot be pushed from: `pack-objects` stops at
+        # the shallow boundary without complaint, so the ref would name commits
+        # the remote does not hold and every clone of it would fail to traverse
+        # parents -- a plain bare remote rejects the same push outright
+        # ("shallow update not allowed"; REVIEW.sonnet-5.5 A3, reproduced).  The
+        # fetch side already withholds its skip for the same repository shape.
+        # A dry run is answered above: it builds no pack, so the shallow
+        # boundary is not a question it needs answered.
+        if is_shallow_repository():
+            for spec in push_specs:
+                _proto_error(
+                    self._spec_destination(spec),
+                    "refusing to push from a shallow repository (git reports "
+                    "--is-shallow-repository true): the pack would stop at the "
+                    "shallow boundary and the ref would name commits the remote does "
+                    "not hold. Run 'git fetch --unshallow' and push again",
+                )
+            sys.stdout.write("\n")
+            sys.stdout.flush()
             return
 
         auto_gc_movable_count = 0

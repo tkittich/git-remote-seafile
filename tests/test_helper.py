@@ -23,6 +23,20 @@ from git_remote_seafile.safety import SafetyError, check_preflight_safety
 from git_remote_seafile.git_util import GitError
 from git_remote_seafile.lock import LEASE_LOST, LEASE_UNKNOWN, RepositoryLockedError
 
+
+def setUpModule():
+    # cmd_push consults the *ambient* repository's shallowness; the checkout
+    # on POSIX CI reads as shallow there (every unpatched cmd_push test hit
+    # the refusal on the 2026-10-26 run, across two worker processes), and
+    # these unit tests' subject is the protocol behaviour over a MOCKED
+    # server, not the checkout.  Pinned False for every test that does not
+    # say otherwise; the dedicated shallow-refusal test patches True locally
+    # and still wins.
+    patcher = patch("git_remote_seafile.helper.is_shallow_repository", return_value=False)
+    patcher.start()
+    unittest.addModuleCleanup(patcher.stop)
+
+
 class CheckoutStallWarningTests(unittest.TestCase):
     def _warn(self, nbytes, *, os_name="nt", autocrlf="true"):
         import io
