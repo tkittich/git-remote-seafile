@@ -250,12 +250,15 @@ problem, handled differently:
 Nothing in a snapshot run deletes. `--payload-gc --remote URL [--vault DIR]`
 reports; with `--payload-delete` it **marks, and later deletes, in two phases**:
 
-- the first run records, in `payload/gc-pending.json` on the server and by this
-  machine's clock, every object no snapshot references; a later run deletes an
+- the first run records, in `payload/gc-pending.json` on the server and by the
+  server's clock (the `Date` estimate, which does not jump with either
+  machine's wall clock), every object no snapshot references; a later run deletes an
   object only if it has been recorded unreferenced for `--payload-grace-days`
   (default 7, minimum 1) **and is still unreferenced**. An object a run reused in
   the meantime is referenced again when the second run looks, so it survives;
-  nothing depends on the server's timestamps;
+  entries written by older versions carry that machine's local-clock stamp,
+  and the one-off skew between it and the server is the same bounded quantity
+  §6.1 records below;
 - it reads the manifest of **every commit reachable from every branch and tag of the remote**
   (fetched into a scratch repository, with `SEAFILE_STRICT_REFS=1` so the helper's
   listing fails rather than skip a ref it cannot read -- a skipped branch would make
@@ -487,9 +490,11 @@ rename-based upload was re-run against the real server.
 | The pre-push re-upload was not re-listed | NIT | it is |
 | Restored mode and mtime, the post-upload listing check, unparseable JSON in history | test gaps | tests |
 
-*Not changed, recorded:* a retention run's grace clock is the clock of the machine that
-marked the object, so two machines that both run retention shift the effective window by
-their skew (bounded by the one-day floor); a non-UTF-8 name from a POSIX source cannot be
+*Changed in 0.9.13, was recorded as accepted:* a retention run's grace clock was the clock of
+the machine that marked the object, so the wall clock of whichever machine ran the delete
+decided both ends — a jump of +8 days deleted an object marked seconds before (measured,
+REVIEW.sonnet-5.5 D3). The mark and the comparison now run on the server's `Date` estimate.
+*Still not changed, recorded:* a non-UTF-8 name from a POSIX source cannot be
 restored on Windows; `SeafileClient.copy_entries` was removed until views need it.
 
 *Round 3 (0.9.3), recorded:* the probe file is `.grs-clock-probe-<pid>-<ns>`, created

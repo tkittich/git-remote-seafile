@@ -186,8 +186,22 @@ def fetch_pack_artifact(
     if hasattr(client, "download_file_to"):
         try:
             downloaded = bool(
-                client.download_file_to(repo_id, remote_path, dest, progress_callback=progress_callback)
+                client.download_file_to(
+                    repo_id, remote_path, dest,
+                    progress_callback=progress_callback,
+                    # A body larger than the listing's size is a lying or
+                    # hostile server: the stream is cut off at the expected
+                    # size instead of being written whole and refused after
+                    # (REVIEW.sonnet-5.5 C1).
+                    max_bytes=expected_size,
+                )
             ) and dest.is_file()
+        except SeafileAPIError:
+            # The cap raises from inside the stream.  With a size on record
+            # there is no honest fallback: the unbounded path below would
+            # fetch exactly what the cap exists to refuse.
+            if expected_size is not None:
+                raise
         except Exception as exc:
             sys.stderr.write(f"Warning: streaming download of {dest.name} failed: {exc}\n")
             sys.stderr.flush()

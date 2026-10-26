@@ -179,10 +179,25 @@ def _read_json_marker(client: Any, rid: str, base: str, name: str) -> dict[str, 
 def _write_json_marker(client: Any, rid: str, base: str, name: str, data: dict[str, Any]) -> None:
     try:
         client.mkdir_p(rid, base)
-        client.upload_file(rid, base, name, json.dumps(data, sort_keys=True).encode("ascii"))
+        body = json.dumps(data, sort_keys=True).encode("ascii")
+        client.upload_file(rid, base, name, body)
     except Exception as exc:  # a marker must never fail the run that has just succeeded
         print(f"Warning: could not write {name}: {type(exc).__name__}: {exc}",
               file=sys.stderr, flush=True)
+        return
+    # Read the marker back (ROADMAP S3, write half): the upload's 2xx is not
+    # evidence the bytes are there, and a baseline that never landed erases
+    # the history-rewrite fence exactly like a torn one.  The markers are
+    # written rarely (once per delete or verify run), so the read costs
+    # nothing that matters.
+    try:
+        landed = client.get_file_text(rid, f"{base}/{name}")
+        if landed is not None and landed.strip() != body.decode("ascii"):
+            print(f"Warning: {name} did not read back as what was written; a later "
+                  "run may re-decide from an empty or stale marker",
+                  file=sys.stderr, flush=True)
+    except Exception:
+        pass  # the write itself succeeded; an unreachable read proves nothing
 
 
 def record_verification(client: Any, rid: str, base: str, checked: int, total: int) -> None:
@@ -201,7 +216,37 @@ def verification_note(client: Any, rid: str, base: str) -> str:
 
 
 def read_seen_tips(client: Any, rid: str, base: str) -> dict[str, str]:
-    data = _read_json_marker(client, rid, base, _SEEN_NAME)
+    """The ref tips the last delete run saw, or ``{}`` for a first run.
+
+    A marker that is *there* but unreadable or unparseable is an error, not an
+    empty history: treating it as ``{}`` erased the history-rewrite fence, and
+    a delete run then marked objects that rewritten snapshots still need
+    (ROADMAP S3, read half).  The remedy names the file, like the reader for
+    ``gc-pending.json`` beside it.
+    """
+    try:
+        text = client.get_file_text(rid, f"{base}/{_SEEN_NAME}")
+    except Exception as exc:
+        raise SnapshotError(
+            f"could not read {base}/{_SEEN_NAME} ({type(exc).__name__}: {exc}); the "
+            "history-rewrite fence cannot be checked. Retry, or remove the file (it "
+            "will be re-created from the tips this run sees)"
+        ) from None
+    if not text:
+        return {}
+    try:
+        data = json.loads(text)
+    except (ValueError, RecursionError):
+        raise SnapshotError(
+            f"{base}/{_SEEN_NAME} is unreadable; the history-rewrite fence cannot be "
+            "checked. Remove the file to start a fresh baseline -- after checking "
+            "that no snapshot history was rewritten"
+        ) from None
+    if not isinstance(data, dict):
+        raise SnapshotError(
+            f"{base}/{_SEEN_NAME} is not an object; the history-rewrite fence cannot "
+            "be checked. Remove the file to start a fresh baseline"
+        )
     return {k: v for k, v in data.items() if isinstance(k, str) and isinstance(v, str)}
 
 

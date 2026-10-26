@@ -1634,6 +1634,27 @@ class TestSeafileClientOperations(unittest.TestCase):
         self.assertTrue(client.mkdir_p("repo1", "/a"))
         self.assertIn(("repo1", "/a"), client._known_dirs)
 
+    def test_repo_listing_with_non_object_elements_is_survivable(self):
+        """A broken or hostile /api2/repos/ answer must not raise AttributeError.
+
+        The listing's elements were indexed with `.get` unchecked, so one
+        string in the array escaped as "'str' object has no attribute 'get'"
+        with no hint it was the server's answer (REVIEW.sonnet-5.5 C5).
+        """
+        listing = MagicMock(status_code=200)
+        listing.json.return_value = ["not a library", {"id": "r1", "name": "lib"}]
+        client = SeafileClient(server_url="https://seafile.example.com", token="t")
+        client.session = MagicMock()
+        client.session.get.return_value = listing
+        self.assertEqual(client.get_repo_id("lib"), "r1")
+
+        listing.json.return_value = ["still not a library"]
+        client2 = SeafileClient(server_url="https://seafile.example.com", token="t")
+        client2.session = MagicMock()
+        client2.session.get.return_value = listing
+        with self.assertRaises(SeafileAPIError):
+            client2.get_repo_id("lib")
+
     def test_mkdir_p_refuses_a_create_or_duplicate_answer(self):
         """Seafile's mkdir on a taken name succeeds and makes "<name> (1)".
 

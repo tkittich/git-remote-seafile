@@ -784,6 +784,11 @@ class SeafileClient:
         repos = resp.json()
         if not isinstance(repos, list):
             raise SeafileAPIError(f"Unexpected response from {url}: {resp.text}")
+        # An element that is not an object cannot be a library; a hostile or
+        # broken answer used to escape as AttributeError from `.get` below,
+        # shown to the user as "'str' object has no attribute 'get'"
+        # (REVIEW.sonnet-5.5 C5, reproduced).
+        repos = [repo for repo in repos if isinstance(repo, dict)]
 
         # Check for direct ID match first (UUIDs are globally unique)
         for repo in repos:

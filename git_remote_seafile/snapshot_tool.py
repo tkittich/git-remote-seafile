@@ -2808,10 +2808,25 @@ def _read_json_marker(client: Any, rid: str, base: str, name: str) -> dict[str, 
 def _write_json_marker(client: Any, rid: str, base: str, name: str, data: dict[str, Any]) -> None:
     try:
         client.mkdir_p(rid, base)
-        client.upload_file(rid, base, name, json.dumps(data, sort_keys=True).encode("ascii"))
+        body = json.dumps(data, sort_keys=True).encode("ascii")
+        client.upload_file(rid, base, name, body)
     except Exception as exc:  # a marker must never fail the run that has just succeeded
         print(f"Warning: could not write {name}: {type(exc).__name__}: {exc}",
               file=sys.stderr, flush=True)
+        return
+    # Read the marker back (ROADMAP S3, write half): the upload's 2xx is not
+    # evidence the bytes are there, and a baseline that never landed erases
+    # the history-rewrite fence exactly like a torn one.  The markers are
+    # written rarely (once per delete or verify run), so the read costs
+    # nothing that matters.
+    try:
+        landed = client.get_file_text(rid, f"{base}/{name}")
+        if landed is not None and landed.strip() != body.decode("ascii"):
+            print(f"Warning: {name} did not read back as what was written; a later "
+                  "run may re-decide from an empty or stale marker",
+                  file=sys.stderr, flush=True)
+    except Exception:
+        pass  # the write itself succeeded; an unreachable read proves nothing
 
 
 def record_verification(client: Any, rid: str, base: str, checked: int, total: int) -> None:
@@ -2830,7 +2845,37 @@ def verification_note(client: Any, rid: str, base: str) -> str:
 
 
 def read_seen_tips(client: Any, rid: str, base: str) -> dict[str, str]:
-    data = _read_json_marker(client, rid, base, _SEEN_NAME)
+    """The ref tips the last delete run saw, or ``{}`` for a first run.
+
+    A marker that is *there* but unreadable or unparseable is an error, not an
+    empty history: treating it as ``{}`` erased the history-rewrite fence, and
+    a delete run then marked objects that rewritten snapshots still need
+    (ROADMAP S3, read half).  The remedy names the file, like the reader for
+    ``gc-pending.json`` beside it.
+    """
+    try:
+        text = client.get_file_text(rid, f"{base}/{_SEEN_NAME}")
+    except Exception as exc:
+        raise SnapshotError(
+            f"could not read {base}/{_SEEN_NAME} ({type(exc).__name__}: {exc}); the "
+            "history-rewrite fence cannot be checked. Retry, or remove the file (it "
+            "will be re-created from the tips this run sees)"
+        ) from None
+    if not text:
+        return {}
+    try:
+        data = json.loads(text)
+    except (ValueError, RecursionError):
+        raise SnapshotError(
+            f"{base}/{_SEEN_NAME} is unreadable; the history-rewrite fence cannot be "
+            "checked. Remove the file to start a fresh baseline -- after checking "
+            "that no snapshot history was rewritten"
+        ) from None
+    if not isinstance(data, dict):
+        raise SnapshotError(
+            f"{base}/{_SEEN_NAME} is not an object; the history-rewrite fence cannot "
+            "be checked. Remove the file to start a fresh baseline"
+        )
     return {k: v for k, v in data.items() if isinstance(k, str) and isinstance(v, str)}
 
 
@@ -3108,6 +3153,11 @@ def apply_recorded_mtimes(into: Path) -> tuple[int, int]:
         if (
             not isinstance(rel, str) or isinstance(stamp, bool) or not isinstance(stamp, int)
             or not 0 <= stamp < _MAX_MTIME_NS or path_security_problem(rel) is not None
+            or windows_name_problem(rel) is not None
+            # A record entry is remote data like a manifest entry, so it gets
+            # the same Windows-name check: `.git::$INDEX_ALLOCATION/config`
+            # passed the security check and moved .git/config's time
+            # (REVIEW.sonnet-5.5 D10, reproduced).
         ):
             skipped += 1
             continue
@@ -3220,6 +3270,11 @@ _HFS_IGNORABLE = dict.fromkeys(
 
 
 def _component_is_git(part: str) -> bool:
+    # An NTFS stream suffix is stripped first: Windows resolves
+    # `.git::$INDEX_ALLOCATION/x` and `.git:$I30:x` to the real `.git`, and
+    # those spellings passed this test as strings (REVIEW.sonnet-5.5 D10).
+    # Everything before the first colon is what the filesystem reads.
+    part = part.split(":", 1)[0]
     folded = part.translate(_HFS_IGNORABLE).rstrip(". ").casefold()
     return folded == ".git" or folded.startswith("git~")
 
@@ -4430,6 +4485,26 @@ _RECHECK_EVERY = 25
 _RECHECK_SECONDS = 10.0
 
 _OBJECT_NAME = re.compile(r"^[0-9a-f]{64}$")
+
+
+def _grace_now(client: Any) -> float:
+    """The clock the grace period runs on: the server's ``Date`` estimate.
+
+    The mark and the delete are different runs, often on different days, and
+    the wall clock of *whichever machine happens to run the delete* decided
+    both ends: a machine whose clock jumped forward eight days between the
+    runs deleted an object that was marked seconds before (measured,
+    REVIEW.sonnet-5.5 D3).  The server's time estimate cannot jump with
+    either machine's wall clock, which is the whole property the grace period
+    needs.  Entries written by older versions carry local-clock stamps; the
+    error is the one-off skew between that machine's clock and the server's,
+    the same bounded quantity §6.1 already records as accepted.
+    """
+    try:
+        return float(client.get_server_time())
+    except Exception:
+        return time.time()
+
 #: An object, or the temporary an interrupted upload left beside it.
 _COLLECTABLE_NAME = re.compile(r"^[0-9a-f]{64}(\.part-[0-9a-f]+)?$")
 DEFAULT_GRACE_DAYS = 7.0
@@ -4853,7 +4928,7 @@ def payload_gc(
         sha: float(ts) for sha, ts in (pending_raw.items() if isinstance(pending_raw, dict) else [])
         if isinstance(sha, str) and _COLLECTABLE_NAME.match(sha) and isinstance(ts, (int, float))
     }
-    now = time.time()
+    now = _grace_now(client)
     due = {sha for sha in unused if sha in pending and now - pending[sha] >= grace_days * 86400}
     waiting = unused - due
 
@@ -4873,6 +4948,16 @@ def payload_gc(
     print(verification_note(client, rid, base))
 
     if not delete:
+        # Seed the history-rewrite fence: a report that read the *remote's*
+        # history and found no baseline writes the tips it saw, so the first
+        # delete run has something to compare against (ROADMAP S2).  Only
+        # when none exists — rewriting an existing baseline to current tips
+        # would mask a rewrite that happened since the last delete run — and
+        # never on the vault-only weekly report, whose tips may be stale.
+        if not seen and not from_vault and history.tips:
+            write_seen_tips(client, rid, base, history.tips)
+            print("fence baseline: recorded the ref tips this report saw (the "
+                  "first --payload-delete run compares against them)")
         if unused:
             print("\nnothing changed (report only); --payload-delete marks unused objects now "
                   "and deletes them once they have stayed unused for the grace period")
@@ -6331,7 +6416,23 @@ def remember_tuning(vault: Path, tuning: dict[str, Any] | None, *, dry_run: bool
         )
 
 
+#: The fixed headroom a restore or drill asks of the destination volume
+#: before cloning: the vault's git size cannot be known before the transfer,
+#: and a checkout roughly doubles the cloned bytes, so this is a floor, not
+#: an estimate.
+_CLONE_FLOOR_BYTES = 1024 ** 3
+
+
 def _checkout(repo: Path, rev: str, *, detach: bool = False) -> None:
+    if rev.startswith("-"):
+        # A remote ref is a file the library writer controls, and a name like
+        # "--detach" is a legal one there; handed to git unguarded it parses
+        # as the option, and the restore dies with "a branch yet to be born"
+        # (REVIEW.sonnet-5.5 E3, reproduced on Windows and Linux).
+        raise SnapshotError(
+            f"cannot check out {rev!r}: the name reads as a git option. "
+            "Restore a differently named branch, or pass a commit id"
+        )
     args = ["git", "-C", str(repo), "-c", "core.longpaths=true", "checkout", "-f"]
     if detach:
         args.append("--detach")
@@ -6593,6 +6694,26 @@ def _restore(
     """
     if into.exists() and any(into.iterdir()):
         raise SnapshotError(f"restore destination is not empty: {into}")
+
+    # The payload's need is measured before its download (D13); the git half
+    # cannot be — the vault's packed size is unknowable before the transfer —
+    # so the destination volume gets a fixed headroom floor instead (the
+    # review round's deferred item: the drill and the restore filled temp
+    # volumes and kept the partial tree).  A full checkout roughly doubles
+    # the cloned bytes, hence the generous floor.
+    if not allow_low_disk:
+        try:
+            free = shutil.disk_usage(into).free
+        except OSError:
+            free = None
+        if free is not None and free < _CLONE_FLOOR_BYTES:
+            raise SnapshotError(
+                f"the volume holding {into} has {human_bytes(free)} of free space; a restore "
+                f"needs at least {human_bytes(_CLONE_FLOOR_BYTES)} of headroom before "
+                "the clone, and the vault's git size cannot be known before the "
+                "transfer (the payload's need is measured separately, below). "
+                "--allow-low-disk tries anyway"
+            )
 
     into.parent.mkdir(parents=True, exist_ok=True)
     print(f"cloning {remote} -> {into} (no checkout) ...")

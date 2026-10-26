@@ -683,6 +683,11 @@ class PayloadManifestAndSelectionTests(_PayloadFixture):
             "../evil", "a/../../evil", "/etc/passwd", "a//b", "./a", "", "a/.",
             ".git/config", ".GIT/hooks/post-checkout", "a/.git/x", ".git ", "git~1/config",
             ".seafile-payload/manifest.json", ".SEAFILE-PAYLOAD/x", "a\0b",
+            # NTFS stream spellings that Windows resolves to the real .git
+            # (REVIEW.sonnet-5.5 D10): the string test passes, the filesystem
+            # does not.
+            ".git::$INDEX_ALLOCATION/config", ".git:$I30:$INDEX_ALLOCATION/x",
+            ".git::$DATA", "x/git~1:y",
         )
         for path in bad_paths:
             with self.subTest(path=path), self.assertRaises(snap.SnapshotError):
@@ -1250,6 +1255,61 @@ class PayloadDefaultAndSafeguardTests(_PayloadFixture):
         self.assertIn("free space", out + err)
         self.assertIn("--allow-low-disk", out + err)
 
+    def test_the_clone_volume_floor_refuses_before_the_clone(self):
+        """The git half of a restore had no space check (the review's E1/D4).
+
+        The payload's need is measured, but the vault's git size is unknowable
+        before the transfer, so the destination volume gets a fixed headroom
+        floor and the refusal says exactly that.
+        """
+        self.assertEqual(self.snapshot()[0], 0)
+        free = type("U", (), {"free": 100})()
+
+        def no_clone(*a, **kw):
+            raise AssertionError("the clone started after the space refusal")
+
+        with unittest.mock.patch("shutil.disk_usage", lambda p: free), \
+                unittest.mock.patch.object(snap, "_run", side_effect=no_clone):
+            rc, out, err, into = self.restore("tight-clone")
+        self.assertNotEqual(rc, 0)
+        self.assertIn("headroom", out + err)
+        self.assertIn("cannot be known before the transfer", out + err)
+
+    def test_allow_low_disk_tries_the_tight_restore_anyway(self):
+        self.assertEqual(self.snapshot()[0], 0)
+        free = type("U", (), {"free": 100})()
+        with unittest.mock.patch("shutil.disk_usage", lambda p: free):
+            rc, out, err, into = self.restore("lowdisk", "--allow-low-disk")
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn("restored", out)
+
+    def test_an_mtimes_entry_in_a_stream_spelling_is_skipped(self):
+        """`.git::$INDEX_ALLOCATION/config` in the times record is remote data.
+
+        It passed the security check as a string and moved `.git/config`'s
+        time on a real restore (REVIEW.sonnet-5.5 D10); the Windows-name
+        check now skips it like a manifest entry.
+        """
+        into = self.case / "mt-stream"
+        (into / ".git").mkdir(parents=True)
+        record = into / ".seafile-payload" / "mtimes.json"
+        record.parent.mkdir(parents=True)
+        record.write_text(json.dumps(
+            {"format": 1, "files": {".git::$INDEX_ALLOCATION/config": 1_600_000_000_000_000_000}}
+        ), encoding="utf-8")
+        applied, skipped = snap.apply_recorded_mtimes(into)
+        self.assertEqual((applied, skipped), (0, 1))
+
+    def test_a_ref_named_like_an_option_is_refused(self):
+        """A remote branch called `--detach` reads as git's option (sonnet E3).
+
+        The checkout refuses the name before git sees it, instead of dying
+        with "a branch yet to be born" and a partial tree.
+        """
+        with self.assertRaises(snap.SnapshotError) as caught:
+            snap._checkout(self.case, "--detach")
+        self.assertIn("reads as a git option", str(caught.exception))
+
     def test_files_hashed_again_are_explained(self):
         self.assertEqual(self.snapshot()[0], 0)
         target = self.src / "big1.bin"
@@ -1384,6 +1444,97 @@ class PayloadRetentionTests(_PayloadFixture):
         self.assertEqual(rc, 0, out + err)
         self.assertNotIn(orphan, self.server_files())
         self.assertEqual(self.object_count(), 2)
+
+    def test_a_marker_that_does_not_read_back_says_so(self):
+        """The upload's 2xx is not evidence the baseline landed (S3 write half)."""
+        import contextlib
+        import io
+
+        class Fake:
+            def mkdir_p(self, rid, base):
+                pass
+
+            def upload_file(self, rid, base, name, body):
+                return True
+
+            def get_file_text(self, rid, path):
+                return "{}"   # anything but what was written
+
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            snap.write_seen_tips(Fake(), "r", "/base", {"refs/heads/snapshot": "a" * 40})
+        self.assertIn("did not read back as what was written", err.getvalue())
+
+    def test_the_grace_clock_is_the_server_estimate_not_the_local_wall_clock(self):
+        """A local clock jump between the mark and the delete must not delete.
+
+        The wall clock of whichever machine runs the delete decided both ends
+        of the grace comparison: a jump of +8 days deleted an object marked
+        seconds before (REVIEW.sonnet-5.5 D3, reproduced).  The mark and the
+        comparison now run on the server's `Date` estimate, which does not
+        jump with either machine.
+        """
+        self.assertEqual(self.snapshot()[0], 0)
+        orphan = self.orphan()
+        server_now = {"t": 50_000_000.0}
+        with unittest.mock.patch.object(snap, "_grace_now", lambda c: server_now["t"]):
+            rc, out, err = self.gc("--payload-delete", "--payload-grace-days", "1")
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn("marked 1 newly unreferenced", out)
+        # The mark was written in the server's clock, not the local one.
+        pending = json.loads(self.stub.files[REPO_ID][f"{self.base}/gc-pending.json"])
+        self.assertEqual(list(pending.values()), [50_000_000.0])
+        # Five server-seconds later, while the local wall clock jumps eight
+        # days: the object must still be inside its grace period.
+        server_now["t"] += 5.0
+        local_before = time.time()
+        jumped = lambda: local_before + 8 * DAY  # noqa: E731
+        with unittest.mock.patch.object(snap, "_grace_now", lambda c: server_now["t"]), \
+                unittest.mock.patch("time.time", jumped):
+            rc, out, err = self.gc("--payload-delete", "--payload-grace-days", "1")
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn(orphan, self.server_files(),
+                      "the local clock jump reached the grace comparison")
+
+    def test_a_report_run_seeds_the_fence_baseline(self):
+        """The first delete run had nothing to compare against (ROADMAP S2).
+
+        A force push before anyone had ever deleted was invisible; a report
+        run that read the remote's history now records the tips it saw.
+        """
+        self.assertEqual(self.snapshot()[0], 0)
+        seen_key = f"{self.base}/gc-seen.json"
+        self.assertNotIn(seen_key, self.server_files())
+        rc, out, err = self.gc()   # report only: no --payload-delete, no --vault
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn("fence baseline", out)
+        seeded = json.loads(self.stub.files[REPO_ID][seen_key])
+        self.assertIn("refs/heads/snapshot", seeded)
+        # The weekly vault-only report must not rewrite the baseline.
+        before = self.stub.files[REPO_ID][seen_key]
+        _git(self.vault, "config", "snapshot.payloadgcreport", str(time.time() - 8 * 86400))
+        (self.src / "small.txt").write_bytes(b"force a snapshot\n")
+        self.assertEqual(self.snapshot()[0], 0)
+        self.assertEqual(self.stub.files[REPO_ID][seen_key], before,
+                         "the vault-only report rewrote the fence baseline")
+
+    def test_an_unreadable_fence_baseline_stops_the_delete(self):
+        """`gc-seen.json` that is there but unparseable is an error (S3).
+
+        Reading it as "{}" erased the fence, and the run then wrote a fresh
+        baseline from the rewritten tips, hiding the rewrite permanently.
+        """
+        self.assertEqual(self.snapshot()[0], 0)
+        orphan = self.orphan()
+        rc, out, err = self.gc("--payload-delete", "--payload-grace-days", "1")
+        self.assertEqual(rc, 0, out + err)   # the delete run marks and writes the baseline
+        self.stub.files[REPO_ID][f"{self.base}/gc-seen.json"] = b"not json"
+        self.backdate_pending(2)
+        rc, out, err = self.gc("--payload-delete", "--payload-grace-days", "1")
+        self.assertNotEqual(rc, 0, out + err)
+        self.assertIn("gc-seen.json is unreadable", out + err)
+        self.assertIn("Remove the file", out + err)
+        self.assertIn(orphan, self.server_files(), "nothing may be deleted without the fence")
 
     def test_a_push_that_lands_while_gc_is_deciding_stops_the_deletion(self):
         self.assertEqual(self.snapshot()[0], 0)

@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **The payload retention grace period runs on the server's `Date` estimate** instead of the deleting machine's wall clock, which decided both ends of the comparison: a clock jump of +8 days deleted an object marked seconds before (measured, REVIEW.sonnet-5.5 D3).
+- **The payload history-rewrite fence can no longer be erased by a torn marker.** A `gc-seen.json` that is there but unreadable or unparseable stops the run instead of reading as "no history"; a report-only `--payload-gc` with no baseline records the tips it saw so the first delete has something to compare against; and a written marker is read back instead of trusting the upload's 2xx.
+- A restore refuses a destination volume with less than 1 GiB free *before the clone* — the vault's git size cannot be known before the transfer, and only the payload's need was measured (`--allow-low-disk` overrides).
+- A branch whose name reads as a git option (`--detach`) is refused at checkout instead of dying with "a branch yet to be born".
+- A OneDrive-style NTFS stream spelling (`.git::$INDEX_ALLOCATION/x`) is refused like the `.git` it resolves to, in payload manifests and in the mtimes record; a pack download is cut off at its listed size instead of buffered whole and refused after; a broken `/api2/repos/` answer with non-object elements no longer escapes as `AttributeError`; and the ref walk stops at 32 levels of hostile nesting instead of issuing unbounded listings.
 ## [0.9.13] - 2026-10-26
 
 The six-model review round's fixes: a lease that outlasts its phases, an upload that stops when its push is already doomed, a fetch that can no longer wedge itself, and payload objects that survive a real server's create-or-duplicate rename. Two refusals are new (shallow pushes, ref names the server would store differently), and `--rebuild-index` is the git-side audit for edits no timestamp can see.

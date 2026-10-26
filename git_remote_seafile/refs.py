@@ -33,6 +33,13 @@ REF_NAMESPACES = ("refs/heads", "refs/tags")
 #: this is not one.
 _MAX_REF_FILE_BYTES = 4096
 
+#: How deep under a namespace the walk will go.  Git itself has no limit, but
+#: the walk is driven by listings a hostile server answers, and each level is
+#: one more request with a longer path; past this the nesting is not a
+#: repository anyone grew by accident (REVIEW.sonnet-5.5 C2: 3,000 nested
+#: listings were issued before the probe stopped the script).
+_MAX_REF_DEPTH = 32
+
 _INVALID_REF_CHARS = re.compile(r"[\s\x00-\x1f\x7f~^:?*\[\\]|\.\.|//|\.lock$|@\{")
 
 
@@ -201,11 +208,21 @@ def iter_refs(
         )
     # Depth-first walk.  The stack holds (remote_dir, ref_prefix) pairs, so a
     # directory contributes its own name to the ref name of everything below it.
-    stack: list[tuple[str, str, bool]] = [(root, "", root_known)]
+    stack: list[tuple[str, str, bool, int]] = [(root, "", root_known, 0)]
     ref_entries: list[tuple[str, str]] = []
+    depth_capped = False
 
     while stack:
-        dir_path, prefix, known = stack.pop()
+        dir_path, prefix, known, depth = stack.pop()
+        if depth > _MAX_REF_DEPTH:
+            if not depth_capped:
+                sys.stderr.write(
+                    f"Warning: refs nested deeper than {_MAX_REF_DEPTH} levels under "
+                    f"{ns} are not walked; the deeper names are not advertised\n"
+                )
+                sys.stderr.flush()
+                depth_capped = True
+            continue
         for entry in _listing(
             client, repo_id, dir_path, known_dir=known, strict=strict or strict_listing
         ):
@@ -214,7 +231,7 @@ def iter_refs(
                 continue
             kind = entry.get("type")
             if kind == "dir":
-                stack.append((f"{dir_path}/{name}", f"{prefix}{name}/", True))
+                stack.append((f"{dir_path}/{name}", f"{prefix}{name}/", True, depth + 1))
             elif kind == "file":
                 ref_name = f"{ns}/{prefix}{name}"
                 size = entry.get("size")

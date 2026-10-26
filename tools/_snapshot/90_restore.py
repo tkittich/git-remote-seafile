@@ -1,6 +1,22 @@
 
 
+#: The fixed headroom a restore or drill asks of the destination volume
+#: before cloning: the vault's git size cannot be known before the transfer,
+#: and a checkout roughly doubles the cloned bytes, so this is a floor, not
+#: an estimate.
+_CLONE_FLOOR_BYTES = 1024 ** 3
+
+
 def _checkout(repo: Path, rev: str, *, detach: bool = False) -> None:
+    if rev.startswith("-"):
+        # A remote ref is a file the library writer controls, and a name like
+        # "--detach" is a legal one there; handed to git unguarded it parses
+        # as the option, and the restore dies with "a branch yet to be born"
+        # (REVIEW.sonnet-5.5 E3, reproduced on Windows and Linux).
+        raise SnapshotError(
+            f"cannot check out {rev!r}: the name reads as a git option. "
+            "Restore a differently named branch, or pass a commit id"
+        )
     args = ["git", "-C", str(repo), "-c", "core.longpaths=true", "checkout", "-f"]
     if detach:
         args.append("--detach")
@@ -262,6 +278,26 @@ def _restore(
     """
     if into.exists() and any(into.iterdir()):
         raise SnapshotError(f"restore destination is not empty: {into}")
+
+    # The payload's need is measured before its download (D13); the git half
+    # cannot be — the vault's packed size is unknowable before the transfer —
+    # so the destination volume gets a fixed headroom floor instead (the
+    # review round's deferred item: the drill and the restore filled temp
+    # volumes and kept the partial tree).  A full checkout roughly doubles
+    # the cloned bytes, hence the generous floor.
+    if not allow_low_disk:
+        try:
+            free = shutil.disk_usage(into).free
+        except OSError:
+            free = None
+        if free is not None and free < _CLONE_FLOOR_BYTES:
+            raise SnapshotError(
+                f"the volume holding {into} has {human_bytes(free)} of free space; a restore "
+                f"needs at least {human_bytes(_CLONE_FLOOR_BYTES)} of headroom before "
+                "the clone, and the vault's git size cannot be known before the "
+                "transfer (the payload's need is measured separately, below). "
+                "--allow-low-disk tries anyway"
+            )
 
     into.parent.mkdir(parents=True, exist_ok=True)
     print(f"cloning {remote} -> {into} (no checkout) ...")

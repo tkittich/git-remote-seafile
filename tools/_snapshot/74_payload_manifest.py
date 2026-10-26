@@ -87,6 +87,11 @@ _HFS_IGNORABLE = dict.fromkeys(
 
 
 def _component_is_git(part: str) -> bool:
+    # An NTFS stream suffix is stripped first: Windows resolves
+    # `.git::$INDEX_ALLOCATION/x` and `.git:$I30:x` to the real `.git`, and
+    # those spellings passed this test as strings (REVIEW.sonnet-5.5 D10).
+    # Everything before the first colon is what the filesystem reads.
+    part = part.split(":", 1)[0]
     folded = part.translate(_HFS_IGNORABLE).rstrip(". ").casefold()
     return folded == ".git" or folded.startswith("git~")
 

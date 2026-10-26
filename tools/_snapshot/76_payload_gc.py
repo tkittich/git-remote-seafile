@@ -34,6 +34,26 @@ _RECHECK_EVERY = 25
 _RECHECK_SECONDS = 10.0
 
 _OBJECT_NAME = re.compile(r"^[0-9a-f]{64}$")
+
+
+def _grace_now(client: Any) -> float:
+    """The clock the grace period runs on: the server's ``Date`` estimate.
+
+    The mark and the delete are different runs, often on different days, and
+    the wall clock of *whichever machine happens to run the delete* decided
+    both ends: a machine whose clock jumped forward eight days between the
+    runs deleted an object that was marked seconds before (measured,
+    REVIEW.sonnet-5.5 D3).  The server's time estimate cannot jump with
+    either machine's wall clock, which is the whole property the grace period
+    needs.  Entries written by older versions carry local-clock stamps; the
+    error is the one-off skew between that machine's clock and the server's,
+    the same bounded quantity §6.1 already records as accepted.
+    """
+    try:
+        return float(client.get_server_time())
+    except Exception:
+        return time.time()
+
 #: An object, or the temporary an interrupted upload left beside it.
 _COLLECTABLE_NAME = re.compile(r"^[0-9a-f]{64}(\.part-[0-9a-f]+)?$")
 DEFAULT_GRACE_DAYS = 7.0
@@ -457,7 +477,7 @@ def payload_gc(
         sha: float(ts) for sha, ts in (pending_raw.items() if isinstance(pending_raw, dict) else [])
         if isinstance(sha, str) and _COLLECTABLE_NAME.match(sha) and isinstance(ts, (int, float))
     }
-    now = time.time()
+    now = _grace_now(client)
     due = {sha for sha in unused if sha in pending and now - pending[sha] >= grace_days * 86400}
     waiting = unused - due
 
@@ -477,6 +497,16 @@ def payload_gc(
     print(verification_note(client, rid, base))
 
     if not delete:
+        # Seed the history-rewrite fence: a report that read the *remote's*
+        # history and found no baseline writes the tips it saw, so the first
+        # delete run has something to compare against (ROADMAP S2).  Only
+        # when none exists — rewriting an existing baseline to current tips
+        # would mask a rewrite that happened since the last delete run — and
+        # never on the vault-only weekly report, whose tips may be stale.
+        if not seen and not from_vault and history.tips:
+            write_seen_tips(client, rid, base, history.tips)
+            print("fence baseline: recorded the ref tips this report saw (the "
+                  "first --payload-delete run compares against them)")
         if unused:
             print("\nnothing changed (report only); --payload-delete marks unused objects now "
                   "and deletes them once they have stayed unused for the grace period")

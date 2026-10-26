@@ -356,3 +356,30 @@ class TestEmptyListingOfAKnownDirectory(unittest.TestCase):
         client = FakeClient({})
         self.assertEqual(list(iter_refs(client, "rid", "/git-repo", "refs/heads",
                                         strict_listing=True)), [])
+
+
+class TestRefWalkDepthCap(unittest.TestCase):
+    """A listing that nests forever must not drive the walk forever (C2)."""
+
+    def test_bottomless_nesting_terminates_at_the_cap(self):
+        import contextlib
+        import io
+
+        class Bottomless:
+            """Every directory contains one more directory, never a ref."""
+
+            def list_dir(self, repo_id, path):
+                return [{"type": "dir", "name": "deeper"}]
+
+            def get_file_text(self, repo_id, path):
+                return None
+
+            def dir_exists(self, repo_id, path):
+                return True
+
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            got = list(iter_refs(Bottomless(), "rid", "/r", "refs/heads", strict=True))
+        self.assertEqual(got, [])
+        self.assertIn("nested deeper than", err.getvalue())
+        self.assertIn("not advertised", err.getvalue())

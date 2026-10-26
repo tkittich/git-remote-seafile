@@ -212,6 +212,11 @@ def apply_recorded_mtimes(into: Path) -> tuple[int, int]:
         if (
             not isinstance(rel, str) or isinstance(stamp, bool) or not isinstance(stamp, int)
             or not 0 <= stamp < _MAX_MTIME_NS or path_security_problem(rel) is not None
+            or windows_name_problem(rel) is not None
+            # A record entry is remote data like a manifest entry, so it gets
+            # the same Windows-name check: `.git::$INDEX_ALLOCATION/config`
+            # passed the security check and moved .git/config's time
+            # (REVIEW.sonnet-5.5 D10, reproduced).
         ):
             skipped += 1
             continue
