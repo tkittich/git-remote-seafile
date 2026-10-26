@@ -965,6 +965,7 @@ These are the places where the tool, Git, or Seafile stops short. None is hidden
 | Edits that leave no trace in the file's stats | On a filesystem with no change time of its own (FAT/exFAT, some volumes and shares), a same-size in-place rewrite with the old timestamp back defeats change detection; such files get a one-hour trust margin and the run says so. On Windows, writes through a memory-mapped view (numpy `memmap`, SQLite/LMDB) leave *every* timestamp untouched on NTFS. `--payload-rehash` and `--rebuild-index` re-read the bytes; a writer like that should be `--exclude`d or stopped. |
 | Paths behind a Windows junction | A junction (`mklink /J`, used by pnpm and some caches) is not followed: the paths behind it are **not captured**, and the run reports them. Move the target inside the tree or `--exclude` the junction. |
 | Large payloads | The vault turns compression off and raises the big-file threshold after sampling, so a 20 GB tree stages at disk speed. A very large file that *changes* adds its own size to the remote per change until a merge; `seafile.autogc` bounds that. |
+| Very large trees (measured) | A 1,000,000-file tree makes a ~156 MB manifest, parsed in ~6 s with a ~600 MB transient memory peak at restore; the retention mark list is ~82 bytes an object, and the helper refuses to read it past ~205,000 marked objects. `--exclude` the bulk before that. |
 
 The full snapshot caveat list, with the reasoning, is in [SNAPSHOT.md](SNAPSHOT.md) §8.
 

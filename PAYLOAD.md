@@ -128,13 +128,18 @@ One line of ASCII JSON, keys sorted, no trailing newline (so no text-mode pipe o
 filter can alter it). Fields: `format`, `snapshot` (a digest of the entries),
 `min_size`, `files[]` of `{path, size, mode, sha256, mtime_ns}`. `mode` is
 `100644` or `100755`. A reader must reject an unknown `format` greater than the one
-it knows. *Measured (2026-10-14, synthetic):* a manifest of 100,000 files is
-~19 MB (about 190 bytes an entry) and ~6.2 MB in a pack. After a `repack -ad`, a
-snapshot that changes 0.1% of the entries adds ~10 kB, 1% adds ~110 kB, and one
-that changes every entry (the hash and mtime of each) adds ~6 MB, because the new
-hashes are incompressible. git's delta absorbs the unchanged lines, so growth
-follows what changed, not the size of the tree. The cost is a full-manifest
-rewrite only when every file changed.
+it knows. *Measured (2026-10-14, synthetic; 2026-10-26 at scale, T11):* a manifest of
+100,000 files is ~19 MB (about 190 bytes an entry) and ~6.2 MB in a pack. At
+scale: 500,000 files are ~78 MB raw and 1,000,000 files are ~156 MB raw, parsed
+in ~6 s with a ~600 MB transient peak -- survivable on a desktop, and the point
+where `--exclude`ing the bulk starts to matter. The retention mark list is
+~82 bytes an entry, so the helper's 16 MiB text-reader cap bites at ~205,000
+marked objects; `--payload-gc` before then keeps the list small. After a
+`repack -ad`, a snapshot that changes 0.1% of the entries adds ~10 kB, 1% adds
+~110 kB, and one that changes every entry (the hash and mtime of each) adds
+~6 MB, because the new hashes are incompressible. git's delta absorbs the
+unchanged lines, so growth follows what changed, not the size of the tree. The
+cost is a full-manifest rewrite only when every file changed.
 
 ### D5. Ordering and failure model — **decided**
 

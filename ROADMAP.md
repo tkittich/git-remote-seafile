@@ -196,7 +196,7 @@ that exists and answers empty is a read failure). **S3** — the read-side
 | **T8** | `lock.py` | A foreign ticket that exists but does not parse is skipped in the queue scan, removing a live holder from the decision. Raise in the *fence* scan only (reap=False); reaping must stay lenient or planted garbage blocks acquire forever. | S | Medium | backlog |
 | **T9** | `helper.py` | A fetch 404 against a concurrent gc fails the fetch; re-list `objects/pack/` once and retry from the new listing. | S | Low | backlog |
 | **T10** | docs/tooling | Repair mode for a remote with a deleted pack (doc done in RUNBOOK §3.2; a `--repair` that sends a full pack remains tooling). | M | Low | backlog |
-| **T11** | `74`/`76_payload_gc.py` | Unmeasured bounds: manifest/mtimes reads (no cap in the tool) and `gc-pending.json` past the 16 MiB text reader (~190k marked objects, inferred). Measure at 1M entries, then cap or shard. | M | Low | backlog |
+| **T11** | `74`/`76_payload_gc.py` | **Done (measured 2026-10-26):** a 1M-file manifest is ~156 MB raw, ~6 s parse, ~600 MB transient peak; the retention mark list is ~82 bytes/entry, so the 16 MiB text-reader cap bites at ~205k marked objects. Numbers recorded in PAYLOAD D4 and USER_GUIDE §14; `--exclude` is the lever. | M | Low | done |
 | **T12** | various | Small nits batch: restore free-space check covers the clone volume (and the drill's scratch); `_checkout` needs `--` before the rev; `windows_name_problem` in `apply_recorded_mtimes`; `:`-suffixed `.git` spellings; pack downloads bounded by the listed size; ref-walk depth cap; element-type validation in `_resolve_repo_id`; runner prints skip names; POSIX glob-shape fixtures. | S each | Low | backlog |
 
 ---
