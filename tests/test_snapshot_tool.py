@@ -1205,6 +1205,27 @@ class ExcludeBeforeStagingTests(_SnapshotFixture):
             "file was staged and hashed before the net dropped it",
         )
 
+    @unittest.skipIf(os.name == "nt", "* and ? cannot exist in a Windows file name")
+    def test_glob_shaped_names_do_not_stage_their_neighbours(self):
+        """The literal-pathspec guard exercised with the other glob shapes.
+
+        S19: the guard was proven with one bracketed name; `*` and `?` in a
+        file name are the same hazard (git would expand them across the
+        directory) and need a POSIX volume to exist at all.
+        """
+        (self.code / "a*b.txt").write_bytes(b"star kept\n")
+        (self.code / "axb.txt").write_bytes(b"star neighbour\n")
+        (self.code / "a?b.txt").write_bytes(b"query kept\n")
+        (self.code / "aqb.txt").write_bytes(b"query neighbour\n")
+
+        rc, _, err = self.snapshot("--exclude", "axb.txt", "--exclude", "aqb.txt")
+        self.assertEqual(rc, 0, err)
+        tree = self.tree()
+        self.assertIn("a*b.txt", tree)
+        self.assertIn("a?b.txt", tree)
+        self.assertNotIn("axb.txt", tree)
+        self.assertNotIn("aqb.txt", tree)
+
     def test_a_deleted_file_leaves_the_snapshot(self):
         """A pathspec add stages no deletion, so the stale entry must be dropped.
 

@@ -182,6 +182,7 @@ def _worker(target: str, out_path: str) -> int:
         "failures": [],
         "errors": [],
         "skipped": 0,
+        "skips": [],
         "unexpected_successes": [],
     }
     try:
@@ -191,6 +192,10 @@ def _worker(target: str, out_path: str) -> int:
         summary["failures"] = [t.id() for t, _ in result.failures]
         summary["errors"] = [t.id() for t, _ in result.errors]
         summary["skipped"] = len(result.skipped)
+        summary["skips"] = [
+            (test.id(), (reason or "").strip().splitlines()[0] if (reason or "").strip() else "")
+            for test, reason in result.skipped
+        ]
         summary["unexpected_successes"] = [
             t.id() for t, _ in getattr(result, "unexpectedSuccesses", [])
         ]
@@ -427,6 +432,7 @@ def main(argv: list[str] | None = None) -> int:
     errors = [t for r in results for t in r["errors"]]
     unexpected = [t for r in results for t in r["unexpected_successes"]]
     skipped = sum(r["skipped"] for r in results)
+    skips = [entry for r in results for entry in r.get("skips", [])]
     tests = sum(r["tests"] for r in results)
 
     print("\n" + "-" * 70)
@@ -438,7 +444,13 @@ def main(argv: list[str] | None = None) -> int:
     if empty:
         print(f"Warning: {len(empty)} target(s) ran no tests: {', '.join(sorted(empty)[:5])}")
     if skipped:
+        # A count alone reads as coverage: a run on a machine that quietly
+        # cannot exercise a guard (junctions, symlinks, POSIX permissions)
+        # looks identical to one that can (ROADMAP S18).  The platform
+        # blind-spot problem becomes visible instead of inferred.
         print(f"skipped: {skipped}")
+        for test_id, reason in skips:
+            print(f"  skipped: {test_id}" + (f" -- {reason}" if reason else ""))
 
     if failures or errors or unexpected:
         print(f"FAILED (failures={len(failures)}, errors={len(errors)})")

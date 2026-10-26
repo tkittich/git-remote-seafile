@@ -20,6 +20,13 @@ include PAYLOAD.md
 include CODE_OF_CONDUCT.md
 include pyproject.toml
 
+# The typing marker (PEP 561): without it a downstream type checker reads
+# this package as untyped while CONTRIBUTING.md asks contributors to
+# annotate every signature (ROADMAP S16).  The docs guard checks that the
+# manifest names nothing git does not track, so a marker added here without
+# being committed fails the suite.
+include git_remote_seafile/py.typed
+
 # The source-checkout launcher, so an sdist can be run without installing it.
 recursive-include bin *
 

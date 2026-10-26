@@ -693,6 +693,24 @@ class TestDocumentationIndex(unittest.TestCase):
                 )
 
 
+class TestTypingMarker(unittest.TestCase):
+    """PEP 561 (ROADMAP S16): the package ships its typing marker.
+
+    The file must exist, be tracked, be named by MANIFEST.in (the sdist), and
+    be declared as package data (the wheel) -- any missed half and a
+    downstream type checker reads the package as untyped.
+    """
+
+    def test_the_marker_ships_everywhere_it_must(self):
+        root = Path(__file__).resolve().parent.parent
+        marker = root / "git_remote_seafile" / "py.typed"
+        self.assertTrue(marker.is_file(), "py.typed is missing from the package")
+        manifest = (root / "MANIFEST.in").read_text(encoding="utf-8")
+        self.assertIn("git_remote_seafile/py.typed", manifest)
+        pyproject = (root / "pyproject.toml").read_text(encoding="utf-8")
+        self.assertIn('git_remote_seafile = ["py.typed"]', pyproject)
+
+
 class TestChangelogLinks(unittest.TestCase):
     """Every released section needs its reference link, or the heading is dead text.
 

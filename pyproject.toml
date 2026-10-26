@@ -62,6 +62,11 @@ git-seafile-snapshot = "git_remote_seafile.snapshot_tool:main"
 [tool.setuptools.packages.find]
 include = ["git_remote_seafile*"]
 
+# PEP 561: the marker is what tells a downstream type checker the package
+# is annotated.  Without package-data it silently leaves the wheel out.
+[tool.setuptools.package-data]
+git_remote_seafile = ["py.typed"]
+
 [tool.setuptools.dynamic]
 # setuptools resolves this by parsing __init__.py, not by importing the package,
 # as long as __version__ stays a plain string literal.  test_version_consistency
