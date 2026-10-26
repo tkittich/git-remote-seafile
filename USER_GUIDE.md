@@ -1321,7 +1321,8 @@ What to know:
   refused before the first download (`--allow-low-disk` overrides); an upload larger
   than your remaining quota, or into a library this machine syncs, is warned about
   first; a fresh vault is refused when the remote's snapshots use another threshold
-  than the default (repeat that flag, or pass `--payload-min-size auto` to switch).
+  than the default, or a different auto cut-off (repeat that flag, or pass
+  `--payload-min-size auto` / `--payload-auto-ratio <theirs>` to switch).
   Every snapshot commit records the tool's version in a `Git-Remote-Seafile:`
   trailer, and a run warns when it builds on a snapshot written by a newer tool.
   The store line and the gc report say when `--payload-verify` last ran.

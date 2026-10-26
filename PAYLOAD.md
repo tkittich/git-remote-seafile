@@ -168,7 +168,11 @@ cannot report a content hash, so a listing proves only presence at a size;
 
 Hashes are cached **per machine**, in the vault's git directory
 (`payload-cache.json`, saved even when the upload that follows fails: hashing is the long local half), never read from a manifest: a manifest comes from a remote
-anyone with write access could have written. An entry is keyed by path and trusted
+anyone with write access could have written. The file is stamped with the
+writing machine's identity, and a reader on another machine -- the vault can
+be shared, its clock and share-clock probe belong to the writer -- hashes
+everything again and says so; a cache an older tool wrote without the stamp is
+adopted as before. An entry is keyed by path and trusted
 only while size, mtime **and inode** are unchanged (a rename keeps size and mtime,
 and tiles extracted from one archive share both), the device and the inode change
 time (`ctime`) are the ones recorded -- so an in-place edit that puts the old mtime
