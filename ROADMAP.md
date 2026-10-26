@@ -1,6 +1,6 @@
 # Engineering Roadmap & Backlog
 
-**Baseline:** v0.9.12 (v0.9.0: the snapshot tool ships in the wheel and gains payload mode: large files stored by SHA-256, with gc, verify, retention and browsable views; on top of 0.8.8's measured pack cap, chunked upload, autogc, `doctor`, `gc --tail` and one output/exit convention)  
+**Baseline:** v0.9.13 (0.9.13: the six-model review round's fixes — a lease renewed inside long compute phases, the real server's create-or-duplicate rename honoured, a fetch skip that proves the tips' history locally, `--rebuild-index`; 0.9.0: the snapshot tool ships in the wheel and gains payload mode: large files stored by SHA-256, with gc, verify, retention and browsable views; on top of 0.8.8's measured pack cap, chunked upload, autogc, `doctor`, `gc --tail` and one output/exit convention)  
 **Scope:** What shipped in each release line, the active backlog, and the v1.0.0 horizon.  
 **Test Suite:** all green on `tools/run_tests_parallel.py` (the runner prints the current count; it is deliberately not repeated here). **Python:** 3.10+ (3.9 EOL).
 
@@ -58,7 +58,6 @@ re-probe before fixing.
 
 | ID / Source | Component | Description & Impact | Verified | Effort | Risk | Planned Target |
 |---|---|---|---|:---:|:---:|:---:|
-| **H-20 / qwen** | `lock.py` | Mixed ticket formats force the mtime fallback, and waiters re-upload on every poll, so the "winner" can flip each round while neither lease expires. Needs a legacy client in contention. | transcribed | M | Low | backlog |
 | **R3-5** | `client.py` | Bounding the server's `Date` offset (say to an hour) was **rejected, not deferred**: the offset exists to absorb a client clock that is wrong, and a machine off by more than the bound would then fail every lock for a reason the user cannot see, to defend against a hostile server that can already do worse. | — | — | won't do |
 | **C9** | `README.md`, `USER_GUIDE.md` | The two overlap heavily — the comparison tables are near-duplicates. **Partly done:** USER_GUIDE §3–§4 moved to ALTERNATIVES.md and the AI-disclosure paragraph appears once; the README comparison tables remain. | transcribed | M | None | v1.0.0 |
 | **T1 / T2** | `tests/` | **Partly done:** `tests/test_realserver.py` (opt-in, `SEAFILE_TEST_LIBRARY`) runs the API semantics, the SHA-1/SHA-256 round trip, concurrent pushers and the conflict-copy observation against a real server (CE 13.0.28). Concurrency is covered (nine pushers through the lock; twelve same-path uploads) and a 4 GiB soak was run by hand. Still missing: Pro, clustered/object-store deployments, a scheduled CI job against a container. | probed | M | Low | v1.0.0 |
@@ -78,7 +77,14 @@ names `backlog`, v1.0.0 or `won't do`. `A12.1` (multipart values refuse CR/LF), 
 commits per push, 6.5 s on the 20th with autogc) landed after v0.8.7, together with
 the pack-size cap found by the 4 GiB soak. `T-5` (the vault lock's descriptor and half-written file on a failed write), `T-6` (a non-UTF-8 file name aborting an `--exclude` run, reproduced in Debian), `T-7` (a name starting with `"` or holding a newline now verified one at a time) and `T-8` (`--code-remote` with `--no-push` is refused) landed after v0.9.2; `T-11` was already fixed (SNAP-06) and only its row was stale. `H-23` (a torn or damaged `repo.db` read as "no libraries", so the synced-folder guard silently did not run: now retried, and said once), the R1/R2/R4/P group (the "matches the remote" message no longer exists, the rollback message is truthful since 0.9.3, a failed restore names the partial tree it left; the vault lock covering the push is by design, since it is per vault and the rollback depends on it) and `A12.7` (a force unlock that swept nothing because the tickets were already gone reports "released", which is the true state) were probed against 0.9.4 and closed after it. `H-13` / `C-01` (a reverse-proxy context path: the server setting carries it, see USER_GUIDE 7.1; a `seafile://` URL still cannot) landed after v0.9.4. `G-5…G-10` (the six suite gaps: untested credential branches, `cmd_fetch` fed a spec the helper never produces, the unreached "empty" pack outcome, a scheduling-dependent concurrency assertion, a gc test that asserted less than its name, a stale cross-reference), `T-14`/`T-02` (the parallel runner now stops its workers and everything they started on Ctrl-C and tolerates a held temp directory) and `T-15`/`T-21` (a failed spawn closed its log; a worker that runs past `--timeout` is killed and named; a target that ran nothing is warned about) landed after v0.9.4. `C-05` (the shared `requests.Session` invariant is now stated beside the session in `client.py`) and the settlement-window coverage row (a config test fails if `TestDefaultSettlementWindow` disappears) landed after 0.9.11. `T-17` / `SNAP-01` (the vault's `git()`
 inheriting an ambient `GIT_DIR`) and `C-08` (bracketed IPv6 netloc) were fixed
-earlier and re-verified against v0.8.6, so they are not listed above. `A12.6 / H-10` (the lock ticket records process start time on Windows and Linux, so a PID recycled after reboot is recognized as dead and fast-reclaimed), `T-4` (the `repo.db` schema reader and live-database retry logic consolidated in `sqlite_read.read_repo_properties`), and the `test_lock` fixture hostname robustness row (`_ticket` machine defaults to `foreign-<hostname>`) landed after v0.9.6.
+earlier and re-verified against v0.8.6, so they are not listed above. `A12.6 / H-10` (the lock ticket records process start time on Windows and Linux, so a PID recycled after reboot is recognized as dead and fast-reclaimed), `T-4` (the `repo.db` schema reader and live-database retry logic consolidated in `sqlite_read.read_repo_properties`), and the `test_lock` fixture hostname robustness row (`_ticket` machine defaults to
+`foreign-<hostname>`) landed after v0.9.6.  `H-20` (mixed ticket formats forcing
+an mtime-ordered queue, and waiters re-uploading their ticket on every poll) was
+**re-probed against v0.9.12 and is stale — its behaviour is gone**: the queue
+sorts each ticket on its own `order_ts`, falling back per ticket (never queue-wide)
+to its timestamp and mtime, and a waiter uploads its ticket at most once per
+refresh interval rather than once per poll. It left §1.2 rather than joining it.
+
 
 ### 1.3 Found during the v0.8.7 pass
 
@@ -89,6 +95,109 @@ landed after v0.9.2.)
 | ID / Source | Component | Description & Impact | Effort | Risk | Planned Target |
 |---|---|---|---|:---:|:---:|:---:|
 | **`push.followTags`** | — | Not a repository change — a maintainer-side git setting. With it a bare `git push` carries any tag that points at what is being pushed, which is the failure that produced v0.8.6's "pushed, but no tag". `CONTRIBUTING.md` §Tagging now names the tag explicitly and says why, so this is a convenience rather than a fix. | S | None | next touch |
+
+### 1.4 The 2026-10-25 archive sweep
+
+`archive/` is where the reviews live, and the backlog above was written from the
+reviews dated on or before 2026-10-12. Everything in the archive newer than that —
+the payload round (glm-5.3, lms-128, gemini and its triage), the opus-project /
+R2 / R4 rounds, the two opus-snapshot reports, the two Phase-1 records, the
+gemini / GLM-5.3 / deepseek-v4.1-flash full reports, the Seafile sync analysis and
+its upstream drafts, the backup-tool comparison, and the suite measurement note —
+was read end to end and re-derived against v0.9.12. Most of it is already in the
+§1.2 closed block or in CHANGELOG 0.9.1–0.9.12, and the payload round's fifteen
+triage items are all verifiably present in code (the re-read-chunk fix, the
+vault's tags in retention, the unparseable listing size, the collected
+temporaries, the pre-push re-list). What is left is below.
+
+**Read the Verified column.** *probed* means the current file was read and the gap
+is there; *lead* means it was not confirmed — re-derive it before fixing anything.
+The ID namespace is new (`S`) because the archive's own identifiers collide across
+reviews (A5, A13 and T5 each mean two different things), and a row is keyed on file
+and behaviour, never on an ID.
+
+| ID / Source | Component | Description & Impact | Verified | Effort | Risk | Planned Target |
+|---|---|---|---|:---:|:---:|:---:|
+| **S1 / deepseek B1+A4; phase1-notes A4** | `client.py`, `refs.py`, `gc.py` | The one open LOSS-class item, and it was predicted in Phase 1 before any code was opened. `list_dir` (client.py:838) sends no paging parameter and treats the returned array as the whole directory; nothing in the package asks for a page or a total. DESIGN l.239 already records the fact ("returned all 130 files… Not measured above 130 entries… not defended against beyond the empty-listing refusal"), but no backlog row existed. The *empty* listing is handled (`refs._listing` retries a known directory; `gc` refuses an empty mirror); the *short* one is not, and a short listing advertises fewer branches to a clone and mirrors fewer roots for `git repack -a -d`, whose objects then look unreachable. Fix: page to exhaustion, or refuse when a page looks truncated — and measure a directory of 1,000+ entries on a real server, since the stub never truncates. Until then the vault needs a second copy (see S9). | probed | M | Low | v1.0.0 |
+| **S2 / R4-6** | `76_payload_gc.py` | The history-rewrite fence has no baseline before the first delete. The fence reads the ref tips the last delete run saw, but the report branch returns at :479-483, *above* the `write_seen_tips` call at :548 — so the report-only run that A26 schedules every week neither warns nor records anything, and a run whose only history-reading has been reports has nothing to compare against. A force push or branch delete before anyone had ever deleted is therefore invisible, and the rewritten-away snapshots' objects are marked for deletion. Fix: have the report read and write the baseline; the named test seeds an existing baseline, so it needs a second scenario that starts from an empty store. | probed | S | Low | backlog |
+| **S3 / R4-15 residual** | `72_payload_guards.py`, `76_payload_gc.py` | The same family, the read side: an unreadable marker is `{}`. The marker reader catches every exception and returns an empty dict, so a torn or garbage `gc-seen.json` erases the S2 fence for that run — and then the run writes a fresh baseline built from the rewritten tips, which hides the rewrite permanently. Beside it, `gc-pending.json` is handled the other way (:451-455: an unparseable one stops the run and names the remedy), and markers are uploaded directly rather than written `.part`-then-renamed, so a torn marker is a realistic state rather than a hypothetical one. Fix: state the rule for both marker files — stop, as the pending file does — and put all three gc state files through the write discipline already used for objects. | probed | S | Low | backlog |
+| **S4 / R4-11 + Q5** | `75_payload.py`, PAYLOAD A13 | A guard sized by the feature that found it: the placeholder test at :246 sits *behind* the size-floor comparison at :235, so a OneDrive "files on demand" placeholder below the payload floor is never refused by name — `git add` hydrates it (or fails), on a tree where the user was told placeholders are refused. PAYLOAD A13 says "a placeholder is refused by name" with no size qualifier, so the spec claims more than the code does. Fix: move the reparse-attribute check ahead of the floor so it applies to every walk, or qualify A13 and say which walks are covered. | probed | S | Low | backlog |
+| **S5 / opus-project F9 (second half)** | `helper.py`, `lock.py` | A lost lease paces the renewal but never stops the transfer. The upload progress callback calls `maybe_renew()` and drops its result, and nothing reads `ownership_state()` again until each ref write, so after `LEASE_LOST` a multi-GiB pack keeps uploading to a push that is already doomed — cost and a late error, not corruption, because every ref is fenced. Fix: abort the transfer on `LEASE_LOST` in the callback and test that a lease killed mid-upload stops the upload. | probed | S | Low | backlog |
+| **S6 / opus-project §3 residual** | `helper.py`, `git_util.py` | v0.9.3 refused the *option-shaped* half of a hostile remote ref value; the revision-expression half is open. A ref file containing `HEAD` or a `@{…}` form reaches `git merge-base --is-ancestor` and is evaluated against the **local** repository, so the fast-forward decision is made from the wrong words. The value is screened only for a leading `-`. Fix: `HEX_SHA_RE.fullmatch` the remote value before the ancestry check, as `cmd_list` already does for advertised tips. | probed | S | Low | backlog |
+| **S7 / opus-snapshot F6, opus-snapshot-2 G6 residual** | `76_payload_gc.py`, `99_cli.py` | Retention still copies the vault to work out what is referenced. An explicit `--payload-gc` / `--payload-delete` fetches into a scratch repository under `%TEMP%` (:208-213 reads the vault in place only when there is no remote to compare with), and the run's one free-space check is the staging one (`99_cli.py:391`), which says nothing about the volume the fetch lands on. So a disk-full can stop a retention run mid-fetch. Fix: read the vault in place for the local side of the comparison too, and bound the fetch with the same refusal used before staging. | probed | M | Low | backlog |
+| **S8 / gemini-payload §4 suspicion 3 (never triaged)** | `76_payload_gc.py`, `client.py` | A server-side state file nobody has measured. The mark list is read whole through the text reader, which refuses anything over 16 MiB, and it is rewritten whole on every run — so a store with a couple of hundred thousand marked objects dies before it can print a single report line, and the failure message names no way out. The manifest's growth was measured (D4, A18); this file never has been. Fix: measure it, then shard or stream it — and make the refusal name the remedy, which is the standing rule for errors. | probed (path); the size that triggers it is inferred | M | Low | backlog |
+| **S9 / deepseek §meta** | `USER_GUIDE.md`, `SNAPSHOT.md` | The comparison review's verdict ("not as the sole copy") never reached a shipped document. The RUNBOOK and DESIGN warn about a half-complete pack set during `gc`, but nothing tells a user that while S1 is open the vault is a backup that a short directory listing can quietly shrink. Fold into the S1 fix: one row in the limits table naming the desktop client's library history as the second copy. | probed | S | None | with S1 |
+| **S10 / triage T12 (origin glm F15)** | `PAYLOAD.md`, `75_payload.py`, `76_payload_gc.py` | The shipped spec contradicts tested behaviour, and the docs are the contract. D5 ("possibly a `.part-` file, which retention ignores") and D9 ("temporary `.part-` files and strangers are reported and left alone") are both false: the collectable pattern matches `<64 hex>.part-<token>` and the temporary is deleted through the same two phases, and a test pins exactly that. The code comment at `75_payload.py:40` and the retention module's header repeat the stale sentence. Round 2 recorded the fix, but no release note and no spec edit followed it. Fix: restate D5/D9 and the two comments to say what the code and the test do. | probed | S | None | next touch |
+| **S11 / comparison §9** | `SNAPSHOT.md` | A file arguing with itself: §11's table says "a copied file is stored twice" at l.705, while 35 lines earlier l.670 gives the measurement that says the opposite (two identical 1 MB files share one blob, 1099 KiB of object store for 2 MB of content). Reword to what is true — git does not dedup *similar* files; a one-byte difference is a whole new blob until `gc`. Also stale in the same table: the line saying full delta-compaction "remains a manual gc", although the tail merge has been automatic and on by default since v0.8.8. The doc guards check that a named test exists; a sentence contradicting a measurement in the same document is invisible to them. | probed | S | None | next touch |
+| **S12 / comparison §13** | `SNAPSHOT.md` | Prior art missing its closest cousin: §13 lists git-annex, Borg, restic and safe-gitignore but not bup, which is git-packfile-based and chunk-deduplicating — the design this project deliberately does not take, so the comparison is worth having. One row. | probed | S | None | next touch |
+| **S13 / sonnet §5 E8** | `gc.py` | The helper's slowest command is the quietest. `gc` and the tail merge print one header per step and then nothing, while the long phases run with their output captured; the snapshot tool has had a heartbeat and a `progress:` line since v0.9.11 and v0.9.12 extended it to every long phase. A multi-GiB compaction on a link that takes twenty minutes reads as a hang. Fix: reuse the one-line heartbeat in the helper's gc and tail paths (it is a status label, not a level, so the message-style guard is satisfied). | probed | S | None | backlog |
+| **S14 / sonnet-v0.8.2 C10 + A11(b)** | `tools/seafile_doctor.py` | Nothing finds the remote-side conflict copies that block `gc`. A Seafile conflict copy under `refs/` stops compaction permanently: `gc` names it and points at the RUNBOOK's manual steps, and doctor's `conflicts` walks synced *worktrees* only, so the one place the copies matter is unexamined. DESIGN §7 has carried "a repository health command" as proposed-but-unimplemented with no backlog row. Fix: a doctor subcommand that lists conflict residue under a repository path, and cross-reference it from the `gc` refusal message (a message must name the flag or command that fixes it). | probed | S | Low | backlog |
+| **S15 / phase1-notes A7** | `tools/seafile_doctor.py` | The load-bearing pack cap is calibrated to one server. The 1 GiB ceiling came from one CE 13.0.28 Docker deployment (DESIGN l.238 records the measurement); a proxy with a smaller body limit turns every large push into a failure *after* the lock is taken. Fix: a doctor probe that measures the largest accepted upload body and prints the cap that follows from it — or state plainly in the guide that the default is one deployment's number. (deepseek withdrew its own version of this in Phase 2; it survives here as tooling, not as a defect.) | probed | M | Low | backlog |
+| **S16 / sonnet-v0.8.2 C12 residual** | `git_remote_seafile/`, `MANIFEST.in` | The type check stops at the package boundary. v0.8.7 made the package and `tools/` mypy-clean and moved the settings into `pyproject.toml`, but no marker file ships, so a downstream type checker reads this package as untyped while `CONTRIBUTING.md` still asks contributors to annotate every signature. Fix: ship the marker as package data and add the manifest rule; the docs guard that asks whether the manifest names anything git does not track will catch a missed half. | probed | S | None | next touch |
+| **S17 / deepseek E2 (residual of phase1 D3)** | `PAYLOAD.md` R3, `75_payload.py` | R3 ("a run never replaces an object with different bytes, and never deletes one") is still checked by *design* plus two narrow cases. Nothing would fail if the wrong-size-replacement branch overwrote an object that was already correct — the dangerous carve-out in R3's own text. The loss path was refuted by execution, so this is a missing test, not a bug. Fix: a stub where the hash name exists at the right size with different content, asserting it is left alone, and name that test in R3's "how it is checked" column. | probed | S | Low | backlog |
+| **S18 / test note §3.1** | `tools/run_tests_parallel.py` | The summary prints a skip *count*, never a name or a reason. There are twenty-odd conditional skips (junctions, symlinks, POSIX bash, tags, non-UTF-8 names), so a run on a machine that quietly cannot exercise a guard looks identical to one that can. The workers already collect the skip entries with their reasons. Fix: print each skipped test and its reason in the summary, so the platform-blind-spot problem below becomes visible instead of inferred. | probed | S | None | next touch |
+| **S19 / test note §4.3, §5; PAYLOAD §7** | `tests/` | The suite's blind spots are geographic, not logical, and the same list keeps reappearing: the literal-pathspec guard is exercised with one bracketed name only (`*` and `?` are unproven, and cheap to test on the ubuntu and macOS legs), and PAYLOAD §7's "not covered" list — macOS decomposed names, SMB/NFS clock skew, a cluster, a proxy — is prose with no row anywhere. §1.2 T1/T2 tracks the server-topology half of that sentence; the name-shape half has never had a home. Fix: POSIX-only fixtures for the glob shapes, then rows for the platform cases so a green run stops implying coverage it does not have. | probed | M | Low | backlog |
+| **S20 / opus-snapshot F-embedded (unverified)** | `71_embedded.py` | A lead, not a finding. The embedded-repository walk normalises to NFC for *comparisons* (`:73`, `:82`) but feeds the names the walk produced straight into `update-index --stdin` (`:84-92`), so on macOS a decomposed name may be written as the walk reported it and the next run could hold two spellings of one file. Nothing here can confirm it — no reviewer in any round had a Mac, and CI has no case-folding or NFD filesystem. Fix if it survives re-derivation: normalise to the form git reports before writing the index. | **lead** | M | Medium | needs a Mac |
+| **S21 / upstream drafts, sync analysis §4** | external (Seafile client, REST API) | Four letters never sent: three client bug reports (a whole-second index mtime, `IN_CREATE` for `link(2)`, missing share flags while hashing) and one request for a conditional write in the REST API, drafted 2026-10-14 with an explicit "verify against the current source first" step. They are the other half of "upstream integration" that DESIGN §2.2 says is the point of the whole exercise, and they sit in a gitignored folder where nothing schedules them. Fix: check each against upstream today, then send or delete it. | probed (absent from the repo) | S | None | one-time |
+
+**What the sweep did *not* produce, so it is not lost twice.** The grace period for
+unreachable objects, the comparison table's chunk dedup, encryption at rest and
+compression control, and bounding the server's `Date` header offset are each
+recorded as decided — rejected in §1.2 or listed as deliberate non-goals — and stay
+that way; the feature candidates the comparison review raised that are *not*
+non-goals (`--keep-snapshots` for the git side, §1.0 covers payload objects only; a
+snapshot listing that includes git-stored files, since views are built from the
+manifest alone; a desktop agent) are the ones worth a decision, and none is
+promised here.
+
+**Closed by the v0.9.13 batch (2026-10-26, commits `45af1f9..3d62db7`).** The
+triage of this sweep and of the four other model reviews
+(`REVIEW.TRIAGE-v0.9.12.md`) produced a fix-now batch; every commit in it
+passes the gates, the full suite (1,213 tests) and the real-server suite:
+
+- **S4** — the placeholder attribute check now precedes the size floor, so a
+  placeholder of any size is refused by name; PAYLOAD A13 names the test
+  (`bb4d0ab`).
+- **S5** — the lease is renewed from *inside* long local compute phases (the
+  bounded subprocess wait runs in slices), and an upload whose lease is
+  provably lost aborts instead of streaming a doomed push (`7ffbb82`).
+- **S6** — a push *destination* whose component is not NFC-normalised, holds a
+  double quote, or exceeds 255 UTF-8 bytes is refused; names the remote
+  already holds are still advertised (`7d4f030`). Found reproduced on the real
+  server: the NFD branch overwrote the NFC twin's value.
+- **S10** — PAYLOAD D5/D9 and the `75_payload.py` comment now say retention
+  *collects* `.part-` temporaries through the two phases (`232690e`).
+- **S11 / S12** — SNAPSHOT §11 no longer contradicts its own dedup
+  measurement, the stale "manual gc" line is gone, and §13 names bup
+  (`602abe0`).
+- **S17** — superseded rather than fixed as worded: the triage's mutation
+  showed the keep-branch *was* pinned by the collision test, and the real
+  server's create-or-duplicate rename (sonnet E7) replaced the concern. The
+  missing scenario test exists and R3's column names it (`d90bcce`).
+
+**Updated by measurement, still open:** **S1** — listings measured whole at
+5,000 entries on CE 13.0.28 behind nginx (four probes agree; the endpoint
+ignores paging parameters), so the row's risk here is nil and the open half
+is portability; its *empty-answer* half is fixed (`ab27d2b` — a directory
+that exists and answers empty is a read failure). **S3** — the read-side
+`{}` stands, though the "torn marker is realistic" premise is weakened (a
+150 MiB upload was never listed partially; the chunk-abandon probe agrees).
+
+### 1.5 From the v0.9.13 triage (backlog; drafts were `REVIEW.TRIAGE-v0.9.12.md` §7)
+
+| ID | Component | Description & Impact | Effort | Risk | Planned Target |
+|---|---|---|:---:|:---:|:---:|
+| **T2** | `76_payload_gc.py` | Retention's grace clock stamps and compares `gc-pending.json` with the *local* wall clock; an 8-day clock jump on the deleting machine deleted an object marked seconds earlier (reproduced). Stamp and compare with the server-`Date` estimate. | S | Low | backlog |
+| **T3** | `helper.py` | Push packs are proven by listing size only; `gc` additionally proves SHA-256. Decide explicitly: extend `_verify_content` to pushes or record the cost reasoning in DESIGN §4.5. | S | Low | backlog |
+| **T4** | snapshot tool | Git-side stat-cache defeats have `--rebuild-index`; payload side has `--payload-rehash`. Remaining: keep both documented next to the mapped-writer and FAT-family limits rows. | S | Low | done in 0.9.13 (docs half) |
+| **T5** | `lock.py` | Lock identity is hostname + MAC; containers sharing a bridge MAC can reap a live foreign lock. Add a per-install or boot id to the ticket. | S | Low | backlog |
+| **T6** | `74`/`78_payload_cli.py` | The `auto` ratio is not in the manifest and the hash cache carries no machine id, so two machines can place files differently. Record `"ratio"` beside `"rule"` (no format bump needed); stamp the cache. | M | Medium | backlog |
+| **T7** | `config.py` | `seafile.locklease`/`locktimeout`/`gcmaxpackmib` are read unscoped, unlike `gittimeout` — a repository can shorten its own lease. Trusted-scope read, or a §4.8 note. | S | Low | backlog |
+| **T8** | `lock.py` | A foreign ticket that exists but does not parse is skipped in the queue scan, removing a live holder from the decision. Raise in the *fence* scan only (reap=False); reaping must stay lenient or planted garbage blocks acquire forever. | S | Medium | backlog |
+| **T9** | `helper.py` | A fetch 404 against a concurrent gc fails the fetch; re-list `objects/pack/` once and retry from the new listing. | S | Low | backlog |
+| **T10** | docs/tooling | Repair mode for a remote with a deleted pack (doc done in RUNBOOK §3.2; a `--repair` that sends a full pack remains tooling). | M | Low | backlog |
+| **T11** | `74`/`76_payload_gc.py` | Unmeasured bounds: manifest/mtimes reads (no cap in the tool) and `gc-pending.json` past the 16 MiB text reader (~190k marked objects, inferred). Measure at 1M entries, then cap or shard. | M | Low | backlog |
+| **T12** | various | Small nits batch: restore free-space check covers the clone volume (and the drill's scratch); `_checkout` needs `--` before the rev; `windows_name_problem` in `apply_recorded_mtimes`; `:`-suffixed `.git` spellings; pack downloads bounded by the listed size; ref-walk depth cap; element-type validation in `_resolve_repo_id`; runner prints skip names; POSIX glob-shape fixtures. | S each | Low | backlog |
 
 ---
 
