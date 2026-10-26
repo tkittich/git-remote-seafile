@@ -27,14 +27,32 @@ jobs:
   test:
     runs-on: ${{ matrix.os }}
     strategy:
-      # One failing job must not cancel the other 14.  With fail-fast on, the
+      # One failing job must not cancel the rest.  With fail-fast on, the
       # first failure hides every other platform/version -- which is how a
       # 3.8-only dependency failure masked a 3.10-only test failure for
       # several commits.
       fail-fast: false
+      # Nine legs rather than the full 15-way cross product, for the same
+      # coverage logic: the interpreter differences are platform-independent,
+      # so every Python version runs on ubuntu, and the OS differences
+      # (paths, junctions, POSIX permissions, line endings) are covered by
+      # the floor (3.10) and the newest (3.14) on windows and macos.  Two
+      # failures in a row were a single platform-conditional test failing on
+      # ten POSIX legs at once -- the cross product multiplied the wait and
+      # the compute without adding a verdict (measured: 15 legs, 9-10 min
+      # each, the pipeline as slow as its slowest leg).
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        os: [ubuntu-latest]
         python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
+        include:
+          - os: windows-latest
+            python-version: "3.10"
+          - os: windows-latest
+            python-version: "3.14"
+          - os: macos-latest
+            python-version: "3.10"
+          - os: macos-latest
+            python-version: "3.14"
 
     steps:
     # Action majors below are the *lowest* whose action.yml declares
