@@ -256,7 +256,9 @@ class ResumeAndProgressTests(_ReportFixture):
                 unittest.mock.patch.object(snap, "_sha256_file", second_one_dies):
             with self.assertRaises(KeyboardInterrupt):
                 self.snapshot()
-        cache = json.loads((self.vault / ".git" / "payload-cache.json").read_text("utf-8"))
+        # Read through the loader: the on-disk file is machine-stamped now,
+        # and what the assertion is about is what the next run will see.
+        cache = snap.load_hash_cache(self.vault / ".git")
         self.assertEqual(list(cache), ["big1.bin"])
 
     def test_hashing_prints_how_much_is_left(self):

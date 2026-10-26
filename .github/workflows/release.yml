@@ -61,8 +61,8 @@ jobs:
   # The same matrix CI runs, on purpose.  A release gate exercising one
   # interpreter proves the suite passes on *that* interpreter, which is not the
   # claim a release makes: the tag names a commit, not a platform, and nothing
-  # else re-checks the other fourteen combinations between the last push to main
-  # and the release.
+  # else re-checks the other combinations between the last push to main and
+  # the release.
   test:
     needs: verify-tag
     runs-on: ${{ matrix.os }}
@@ -70,9 +70,20 @@ jobs:
       # One failing combination must not cancel the rest: the useful output of a
       # red release gate is the list of combinations that fail.
       fail-fast: false
+      # Kept in step with ci.yml's nine legs (see the note there); the shape
+      # test in tests/test_release_workflow.py fails if the two diverge.
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        os: [ubuntu-latest]
         python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
+        include:
+          - os: windows-latest
+            python-version: "3.10"
+          - os: windows-latest
+            python-version: "3.14"
+          - os: macos-latest
+            python-version: "3.10"
+          - os: macos-latest
+            python-version: "3.14"
     steps:
     - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       with:
