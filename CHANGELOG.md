@@ -5,9 +5,31 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.9.14] - 2026-10-26
+
+The rest of the review round's backlog, plus the fix for the one platform-conditional test that failed v0.9.13's CI on every POSIX leg. The retention grace clock now runs on the server's time, the payload history-rewrite fence cannot be erased by a torn marker, the lock fails closed over an unreadable ticket, and the CI matrix drops to nine legs for the same coverage logic.
+
+### Added
+- The payload retention grace period runs on the server's `Date` estimate instead of the deleting machine's wall clock, which decided both ends of the comparison: a clock jump of +8 days deleted an object marked seconds before (measured).
+- A report-only `--payload-gc` with no baseline records the ref tips it saw, so the first delete run's history-rewrite fence has something to compare against; a fence baseline that is there but unreadable stops the run instead of reading as "no history"; and a written marker is read back instead of trusting the upload's 2xx.
+- The auto cut-off is recorded in the manifest beside the rule that produced it, and a fresh vault whose default differs from the remote's recorded ratio is refused, naming `--payload-auto-ratio` (only when the vault remembers no ratio and none was typed).
+- The hash cache is stamped with the writing machine's identity: a vault directory two machines share no longer vouches for the other machine's entries, and says so. A legacy flat cache is still adopted.
+- The lock fails closed over a ticket that exists but does not parse: the verification scans answer `LEASE_UNKNOWN` / "could not inspect" instead of reading a live holder out of the queue. Acquisition stays lenient, so a planted unreadable file cannot block the lock for ever.
+- A restore refuses a destination volume with less than 1 GiB free *before the clone* — the vault's git size cannot be known before the transfer, and only the payload's need was measured (`--allow-low-disk` overrides).
+- A branch whose name reads as a git option (`--detach`) is refused at checkout instead of dying with "a branch yet to be born".
+- The helper's `gc` and tail merge print a throttled `progress:` line during the long captured phases (the repack, the tail's pack-objects), which used to be silent for the whole compaction.
+- The package ships its PEP 561 `py.typed` marker; the parallel test runner prints every skipped test and its reason, not a bare count.
 
 ### Fixed
+- **The platform-conditional test that failed v0.9.13's CI on all ten POSIX legs.** The coarse-margin test assumed NTFS (where ctime differs from mtime for a fresh file); on ext4 and APFS the control itself tripped the condition it asserted against, and the years-old mtime it used stayed trusted under either window. Rewritten to be platform-neutral, and now fails under mutation of the rule it documents.
+- A OneDrive-style NTFS stream spelling (`.git::$INDEX_ALLOCATION/x`) is refused like the `.git` it resolves to, in payload manifests and in the mtimes record; a pack download is cut off at its listed size instead of buffered whole and refused after; a broken `/api2/repos/` answer with non-object elements no longer escapes as `AttributeError`; and the ref walk stops at 32 levels of hostile nesting.
+- The literal-pathspec guard is now exercised with the `*` and `?` glob shapes too (POSIX-only fixtures; the guard had been proven with one bracketed name).
+
+### Changed
+- **The CI matrix is nine legs instead of fifteen**, for the same coverage logic: every Python version runs on ubuntu, and windows/macos keep the floor and the newest. ~40% less runner compute; the pipeline stays as slow as its slowest leg.
+- The measured bounds of very large trees are recorded (PAYLOAD D4, USER_GUIDE §14): a 1,000,000-file manifest is ~156 MB raw with a ~600 MB transient parse peak, and the retention mark list is ~82 bytes an object.
+
+
 - **The payload retention grace period runs on the server's `Date` estimate** instead of the deleting machine's wall clock, which decided both ends of the comparison: a clock jump of +8 days deleted an object marked seconds before (measured, REVIEW.sonnet-5.5 D3).
 - **The payload history-rewrite fence can no longer be erased by a torn marker.** A `gc-seen.json` that is there but unreadable or unparseable stops the run instead of reading as "no history"; a report-only `--payload-gc` with no baseline records the tips it saw so the first delete has something to compare against; and a written marker is read back instead of trusting the upload's 2xx.
 - A restore refuses a destination volume with less than 1 GiB free *before the clone* — the vault's git size cannot be known before the transfer, and only the payload's need was measured (`--allow-low-disk` overrides).
@@ -1789,6 +1811,7 @@ Data-loss and silent-failure fixes, and the Python floor raised to 3.9.
   with zero-config desktop-client token discovery, distributed locking, remote
   packfile compaction, and a Git LFS custom transfer agent.
 
+[0.9.14]: https://github.com/tkittich/git-remote-seafile/compare/v0.9.13...v0.9.14
 [0.9.13]: https://github.com/tkittich/git-remote-seafile/compare/v0.9.12...v0.9.13
 [0.9.12]: https://github.com/tkittich/git-remote-seafile/compare/v0.9.11...v0.9.12
 [0.9.11]: https://github.com/tkittich/git-remote-seafile/compare/v0.9.10...v0.9.11

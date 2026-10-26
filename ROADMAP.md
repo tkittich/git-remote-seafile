@@ -1,6 +1,6 @@
 # Engineering Roadmap & Backlog
 
-**Baseline:** v0.9.13 (0.9.13: the six-model review round's fixes — a lease renewed inside long compute phases, the real server's create-or-duplicate rename honoured, a fetch skip that proves the tips' history locally, `--rebuild-index`; 0.9.0: the snapshot tool ships in the wheel and gains payload mode: large files stored by SHA-256, with gc, verify, retention and browsable views; on top of 0.8.8's measured pack cap, chunked upload, autogc, `doctor`, `gc --tail` and one output/exit convention)  
+**Baseline:** v0.9.14 (0.9.13: the six-model review round's fixes — a lease renewed inside long compute phases, the real server's create-or-duplicate rename honoured, a fetch skip that proves the tips' history locally, `--rebuild-index`; 0.9.0: the snapshot tool ships in the wheel and gains payload mode: large files stored by SHA-256, with gc, verify, retention and browsable views; on top of 0.8.8's measured pack cap, chunked upload, autogc, `doctor`, `gc --tail` and one output/exit convention)  
 **Scope:** What shipped in each release line, the active backlog, and the v1.0.0 horizon.  
 **Test Suite:** all green on `tools/run_tests_parallel.py` (the runner prints the current count; it is deliberately not repeated here). **Python:** 3.10+ (3.9 EOL).
 
@@ -175,6 +175,17 @@ passes the gates, the full suite (1,213 tests) and the real-server suite:
   server's create-or-duplicate rename (sonnet E7) replaced the concern. The
   missing scenario test exists and R3's column names it (`d90bcce`).
 
+**Closed by the v0.9.14 batch (2026-10-26, commits `42b2fa8..2a1f418` and the
+release prep):** **S13** — the helper's `gc` and tail merge print a throttled
+`progress:` line during the long captured phases (`e8196b2`); **S16** — the
+package ships its PEP 561 `py.typed` marker with the sdist and wheel rules;
+**S18** — the parallel runner prints every skipped test and its reason;
+**S19** — the literal-pathspec fixture gains the `*` and `?` glob shapes
+(POSIX-only). The v0.9.13 CI failure (all ten POSIX legs red) was a single
+platform-conditional test added with S13's sibling docs change — rewritten
+platform-neutral, mutation-checked (`713c538`), and the CI matrix trimmed to
+nine legs for the same coverage logic (`1932fce`).
+
 **Updated by measurement, still open:** **S1** — listings measured whole at
 5,000 entries on CE 13.0.28 behind nginx (four probes agree; the endpoint
 ignores paging parameters), so the row's risk here is nil and the open half
@@ -191,13 +202,13 @@ that exists and answers empty is a read failure). **S3** — the read-side
 | **T3** | `helper.py` | Push packs are proven by listing size only; `gc` additionally proves SHA-256. Decide explicitly: extend `_verify_content` to pushes or record the cost reasoning in DESIGN §4.5. | S | Low | backlog |
 | **T4** | snapshot tool | Git-side stat-cache defeats have `--rebuild-index`; payload side has `--payload-rehash`. Remaining: keep both documented next to the mapped-writer and FAT-family limits rows. | S | Low | done in 0.9.13 (docs half) |
 | **T5** | `lock.py` | Lock identity is hostname + MAC; containers sharing a bridge MAC can reap a live foreign lock. Add a per-install or boot id to the ticket. | S | Low | backlog |
-| **T6** | `74`/`78_payload_cli.py` | The `auto` ratio is not in the manifest and the hash cache carries no machine id, so two machines can place files differently. Record `"ratio"` beside `"rule"` (no format bump needed); stamp the cache. | M | Medium | backlog |
+| **T6** | `74`/`78_payload_cli.py` | **Done (f67a3bb):** the manifest records the ratio beside the rule (validated on read); a fresh vault whose default differs from the remote's recorded ratio is refused, naming the flag; the cache is stamped with the writing machine and a foreign cache re-hashes everything, saying so. | M | Medium | done |
 | **T7** | `config.py` | `seafile.locklease`/`locktimeout`/`gcmaxpackmib` are read unscoped, unlike `gittimeout` — a repository can shorten its own lease. Trusted-scope read, or a §4.8 note. | S | Low | backlog |
-| **T8** | `lock.py` | A foreign ticket that exists but does not parse is skipped in the queue scan, removing a live holder from the decision. Raise in the *fence* scan only (reap=False); reaping must stay lenient or planted garbage blocks acquire forever. | S | Medium | backlog |
+| **T8** | `lock.py` | **Done (42b2fa8):** the verification scans fail closed on a ticket that exists but does not parse (LEASE_UNKNOWN / locked: None); acquisition stays lenient so a planted file cannot block the lock for ever. | S | Medium | done |
 | **T9** | `helper.py` | A fetch 404 against a concurrent gc fails the fetch; re-list `objects/pack/` once and retry from the new listing. | S | Low | backlog |
 | **T10** | docs/tooling | Repair mode for a remote with a deleted pack (doc done in RUNBOOK §3.2; a `--repair` that sends a full pack remains tooling). | M | Low | backlog |
 | **T11** | `74`/`76_payload_gc.py` | **Done (measured 2026-10-26):** a 1M-file manifest is ~156 MB raw, ~6 s parse, ~600 MB transient peak; the retention mark list is ~82 bytes/entry, so the 16 MiB text-reader cap bites at ~205k marked objects. Numbers recorded in PAYLOAD D4 and USER_GUIDE §14; `--exclude` is the lever. | M | Low | done |
-| **T12** | various | Small nits batch: restore free-space check covers the clone volume (and the drill's scratch); `_checkout` needs `--` before the rev; `windows_name_problem` in `apply_recorded_mtimes`; `:`-suffixed `.git` spellings; pack downloads bounded by the listed size; ref-walk depth cap; element-type validation in `_resolve_repo_id`; runner prints skip names; POSIX glob-shape fixtures. | S each | Low | backlog |
+| **T12** | various | **Done (8feea1f, 1455932):** every nit in the list landed with tests. | S each | Low | done |
 
 ---
 
