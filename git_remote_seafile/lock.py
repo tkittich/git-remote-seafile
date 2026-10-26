@@ -391,7 +391,11 @@ class RemoteLock:
         expires_at = lock_time + lock_lease
         return now < expires_at
 
-    def _scan_tickets(self, now: float, reap: bool = True) -> list[dict[str, Any]]:
+    def _scan_tickets(
+        self, now: float, reap: bool = True, *, strict: bool = False
+    ) -> list[dict[str, Any]]:
+        """With *strict*, an unreadable ticket is an error, not an absent holder."""
+
         active_tickets: list[dict[str, Any]] = []
         entries = self.client.list_dir(self.repo_id, self.lock_dir)
         if not isinstance(entries, list):
@@ -410,8 +414,23 @@ class RemoteLock:
             try:
                 t_info = json.loads(raw)
             except Exception:
-                continue
+                t_info = None
             if not isinstance(t_info, dict):
+                # A ticket that exists and is non-empty but unreadable is a
+                # read failure, not an absent holder: a 2xx that carried a
+                # truncated body would otherwise read a *live* holder out of
+                # the queue, and a second client would acquire mid-push.
+                # Verification paths fail closed on it (strict, below);
+                # acquisition stays lenient, because a planted unreadable
+                # file must not block the lock for ever -- the holder
+                # discovers the damage itself at its next renewal, which
+                # refuses on exactly this condition.
+                if strict:
+                    raise RuntimeError(
+                        f"the lock ticket {ticket_path} exists but is unreadable, so the "
+                        "queue cannot be trusted; the holder's next renewal will fail "
+                        "on it. Remove the file once no push is running"
+                    )
                 continue
 
             t_nonce = t_info.get("nonce") or name[:-5]
@@ -737,7 +756,7 @@ class RemoteLock:
         if expired:
             try:
                 others = [
-                    t for t in self._scan_tickets(now, reap=False)
+                    t for t in self._scan_tickets(now, reap=False, strict=True)
                     if t.get("nonce") != self._nonce and self._is_lock_active(t, now, quiet=True)
                 ]
             except Exception as ex:
@@ -825,7 +844,7 @@ class RemoteLock:
             return self._preemptor_cached
 
         now = self._get_server_time()
-        tickets = self._scan_tickets(now, reap=False)
+        tickets = self._scan_tickets(now, reap=False, strict=True)
         active = [t for t in tickets if self._is_lock_active(t, now, quiet=True)]
         mine = next((t for t in active if t.get("nonce") == self._nonce), None)
         if mine is None:
@@ -939,7 +958,7 @@ class RemoteLock:
         """
         now = self._get_server_time()
         try:
-            tickets = self._scan_tickets(now, reap=False)
+            tickets = self._scan_tickets(now, reap=False, strict=True)
         except Exception as ex:
             return {"locked": None, "error": str(ex)}
         if tickets:

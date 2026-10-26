@@ -1396,6 +1396,59 @@ class _FlakyScanStore(_SharedLockStore):
         return super().list_dir(repo_id, path)
 
 
+class TestUnreadableTicketFailsClosed(unittest.TestCase):
+    """A ticket that exists but does not parse is a read failure (ROADMAP T8).
+
+    A 2xx that carried a truncated ticket body would otherwise read a *live*
+    holder out of the queue, and a second client would acquire mid-push.
+    Verification fails closed; acquisition stays lenient, because a planted
+    unreadable file must not block the lock for ever.
+    """
+
+    def setUp(self):
+        self.store = _SharedLockStore()
+        self.lock = RemoteLock(self.store.client("token123"), "repo1", "/path",
+                               timeout=5, lease=60, settle=0)
+
+    def _plant_garbage(self):
+        self.store.files["/path/.git-lock.d/deadbeef.json"] = b'{"trunc'
+
+    def test_verify_ownership_answers_unknown_over_an_unreadable_queue(self):
+        self.lock.acquired = True
+        self.lock._nonce = "mine"
+        self.lock._identity = ("own", "this-machine")
+        self.lock._order_ts = 0.0
+        self.lock._holding = True
+        self.store.put_ticket("/path/.git-lock.d/mine.json", json.loads(
+            _ticket("mine", owner="own", machine="this-machine")))
+        self._plant_garbage()
+        self.assertFalse(self.lock.verify_ownership())
+        self.assertEqual(self.lock.ownership_state(), LEASE_UNKNOWN)
+
+    def test_get_status_refuses_to_read_the_queue_as_unlocked(self):
+        self._plant_garbage()
+        status = self.lock.get_status()
+        self.assertIsNone(status["locked"], "garbage must not read as UNLOCKED")
+        self.assertIn("unreadable", status["error"])
+
+    def test_acquire_still_succeeds_with_garbage_in_the_queue(self):
+        self._plant_garbage()
+        with self.lock:
+            self.assertTrue(self.lock.acquired)
+        self.assertIn("/path/.git-lock.d/deadbeef.json", self.store.files,
+                      "acquire must not delete a ticket it cannot parse")
+
+    def test_a_holder_with_a_torn_ticket_refuses_to_renew(self):
+        self.lock.acquired = True
+        self.lock._nonce = "mine"
+        self.lock._identity = ("own", "this-machine")
+        self.lock._order_ts = 0.0
+        self.lock._holding = True
+        self.store.files["/path/.git-lock.d/mine.json"] = b'{"trunc'
+        state = self.lock.renew_state()
+        self.assertEqual(state, LEASE_UNKNOWN)
+
+
 class TestLockAcquireFailurePaths(unittest.TestCase):
     """The branches `acquire()` takes when the network is misbehaving.
 
