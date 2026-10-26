@@ -410,6 +410,37 @@ class PayloadBasicsTests(_PayloadFixture):
         self.assertIn("re-uploading", out)
         self.assertIn(gone["key"], self.server_files())
 
+    def test_a_post_push_verify_failure_still_remembers_the_settings(self):
+        """The push landed; a check *behind* it must not un-remember the run.
+
+        verify_payload_after_push used to raise past the remember block, so
+        the vault forgot the payload setting it had just used and the next
+        bare scheduled run was refused by R10's guard -- wedging the job until
+        a human re-typed the flag (REVIEW.deepseek D5).  Now: the settings are
+        remembered, a Warning says what could not be re-verified, exit 1.
+        """
+        self.assertEqual(self.snapshot()[0], 0)
+        (self.src / "big1.bin").write_bytes(os.urandom(6000))
+        with unittest.mock.patch.object(
+            snap, "verify_payload_after_push",
+            side_effect=snap.SnapshotError(
+                "the snapshot was pushed, but 1 payload object(s) it names are missing"
+            ),
+        ):
+            rc, out, err = self.snapshot()
+        self.assertEqual(rc, 1, out + err)
+        self.assertIn("Warning:", out + err)
+        self.assertIn("re-verified", out + err)
+        # The vault remembers what this run used, so the next bare run works.
+        remembered = subprocess.run(
+            ["git", "-C", str(self.vault), "config", "--local", "--get", "snapshot.payload"],
+            capture_output=True, text=True,
+        ).stdout.strip()
+        self.assertTrue(remembered, "snapshot.payload was not remembered")
+        # And the next bare run goes through instead of being refused.
+        rc, out, err = self.snapshot()
+        self.assertEqual(rc, 0, out + err)
+
     def test_an_unpushed_snapshot_whose_object_vanished_blocks_the_next_push(self):
         self.assertEqual(self.snapshot()[0], 0)
         s2 = os.urandom(6000)
@@ -561,6 +592,40 @@ class PayloadBasicsTests(_PayloadFixture):
         rc, out, err, into = self.restore("racy")
         self.assertEqual(rc, 0, out + err)
         self.assertEqual((into / "big1.bin").read_bytes(), bytes(b ^ 0x0F for b in self.big1))
+
+    def test_a_placeholder_is_refused_below_the_payload_floor_too(self):
+        """The attribute check runs before the size floor (ROADMAP S4).
+
+        A OneDrive placeholder of, say, 1 KiB used to fall through to
+        `git add`, which hydrates it (or fails) -- on a tree whose operator
+        was told placeholders are refused.  PAYLOAD A13 now holds at any size.
+        """
+        import types
+        import unittest.mock
+
+        real_lstat = os.lstat
+        small = self.src / "tiny-placeholder.bin"
+        small.write_bytes(b"placeholder bytes")
+
+        def fake_lstat(path, *a, **kw):
+            st = real_lstat(path, *a, **kw)
+            if str(path).endswith("tiny-placeholder.bin"):
+                fake = types.SimpleNamespace(**{k: getattr(st, k) for k in dir(st) if not k.startswith("_")})
+                fake.st_file_attributes = 0x1000 | 0x400000   # OFFLINE | RECALL_ON_DATA_ACCESS
+                return fake
+            return st
+
+        with unittest.mock.patch.object(snap.os, "lstat", fake_lstat):
+            with self.assertRaises(snap.SnapshotError) as caught:
+                snap.find_payload_files(self.src, [], 1024 * 1024)
+        self.assertIn("tiny-placeholder.bin", str(caught.exception))
+
+        # And through a run: the refusal names the file and the remedy.
+        with unittest.mock.patch.object(snap.os, "lstat", fake_lstat):
+            rc, out, err = self.snapshot()
+        self.assertNotEqual(rc, 0)
+        self.assertIn("placeholder", out + err)
+        self.assertIn("tiny-placeholder.bin", out + err)
 
     def test_a_volume_with_no_change_time_gets_the_hour_margin(self):
         """The FAT family keeps one timestamp; ctime answers the mtime back.

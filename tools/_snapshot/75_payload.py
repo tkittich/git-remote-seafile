@@ -233,11 +233,6 @@ def find_payload_files(
     for size, rel in _walk_sizes(source, excludes):
         if rel == PAYLOAD_RESERVED_DIR or rel.startswith(PAYLOAD_RESERVED_DIR + "/"):
             continue
-        if size < floor:
-            if survey is not None and auto:
-                survey["small"][0] += 1
-                survey["small"][1] += size
-            continue
         try:
             st = os.lstat(source / rel)
         except OSError:
@@ -245,7 +240,16 @@ def find_payload_files(
         if not stat.S_ISREG(st.st_mode):
             continue
         if getattr(st, "st_file_attributes", 0) & _CLOUD_PLACEHOLDER_ATTRS:
+            # Before the size floor (ROADMAP S4): a placeholder below the
+            # floor used to fall through to `git add`, which hydrates it (or
+            # fails) on a tree whose operator was told placeholders are
+            # refused.  One extra lstat per file -- the walk already did one.
             placeholders.append(rel)
+            continue
+        if size < floor:
+            if survey is not None and auto:
+                survey["small"][0] += 1
+                survey["small"][1] += size
             continue
         if auto and size < _AUTO_UPPER:
             # *sampled* carries an earlier pass's ratios, so choosing a new cut-off

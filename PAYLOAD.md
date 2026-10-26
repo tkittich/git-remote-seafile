@@ -415,7 +415,7 @@ data, or surprise. Disposition is one of **fixed**, **handled**, **specified**
 | A10 | Two paths differ by case, Unicode form, or a trailing dot or space; restore onto Windows or macOS | one overwrites the other, both verify | **fixed**: D8 never overwrites; collisions are skipped and reported |
 | A11 | Payload path looks like a credential | the secrets report covered only staged paths | **fixed**: payload paths scanned |
 | A12 | File held open exclusively (Windows) | traceback or silent skip | **handled**: R9 |
-| A13 | OneDrive "files on demand" placeholder | hashing triggers a download of the whole file | **handled**: a placeholder is refused by name, and reparse points are not walked |
+| A13 | OneDrive "files on demand" placeholder | hashing triggers a download of the whole file | **handled**: a placeholder of any size is refused by name (the attribute check precedes the size floor; `test_a_placeholder_is_refused_below_the_payload_floor_too`), and reparse points are not walked |
 | A14 | The threshold changes between runs | files move between git and payload | **handled**: staging skips payload paths; old snapshots unaffected; flag is required (R10) |
 | A15 | A payload file becomes a symlink or shrinks below the threshold | falls to git | **handled** |
 | A16 | `--reset-to-remote` drops local-only snapshots | their objects become orphans; the previous-manifest cache disappears | **handled**: harmless; a rehash |
