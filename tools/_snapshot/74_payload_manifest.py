@@ -28,6 +28,13 @@ def check_manifest_shape(manifest: Any, where: str = "the payload manifest") -> 
             "Upgrade it before restoring or running retention"
         )
     check_min_tool(manifest, where)
+    ratio = manifest.get("ratio")
+    if ratio is not None and (
+        isinstance(ratio, bool) or not isinstance(ratio, (int, float)) or not 0 < ratio <= 1
+    ):
+        # The field feeds the cross-machine cut-off guard, so a hostile or
+        # hand-written value is refused rather than compared.
+        raise SnapshotError(f"{where} has a bad ratio {ratio!r}")
     files = manifest.get("files")
     if not isinstance(files, list):
         raise SnapshotError(f"{where} has no file list")
@@ -231,18 +238,54 @@ def add_manifest_to_index(
 # renumbered file the hash of its predecessor.
 
 
-def load_hash_cache(git_dir: Path) -> dict[str, dict[str, int | str]]:
+def _machine_id() -> str:
+    """A stable per-installation identifier for the hash cache's provenance.
+
+    The cache is documented as per-machine (PAYLOAD D6), but the file lives in
+    the vault, which two machines can share (a source on a NAS with the vault
+    beside it): an entry's validity depends on the writing machine's clock and
+    its probe of the share clock, so a reader on another machine cannot vouch
+    for it (REVIEW.iq3_s D5).
+    """
+    import uuid
+
+    return f"{socket.gethostname()}/{hex(uuid.getnode())}"
+
+
+def load_machine_hash_cache(git_dir: Path) -> tuple[dict[str, dict[str, int | str]], str | None]:
+    """The hash cache entries and the machine that wrote them.
+
+    ``(entries, None)`` for a cache without a stamp (an older tool wrote it;
+    its entries are adopted, as before), ``(entries, this machine)`` when the
+    stamp matches, and ``({}, other machine)`` when it does not -- a reader
+    cannot vouch for another machine's clock, so every file is hashed again.
+    """
     try:
         data = json.loads((git_dir / _CACHE_NAME).read_text(encoding="utf-8"))
     except (OSError, ValueError, RecursionError):
-        return {}
-    return data if isinstance(data, dict) else {}
+        return {}, None
+    if not isinstance(data, dict):
+        return {}, None
+    if "entries" in data and isinstance(data["entries"], dict):
+        machine = data.get("machine")
+        if not isinstance(machine, str):
+            return data["entries"], None
+        return (data["entries"] if machine == _machine_id() else {}), machine
+    return data, None
+
+
+def load_hash_cache(git_dir: Path) -> dict[str, dict[str, int | str]]:
+    """The hash cache entries, whatever machine wrote them (legacy reader)."""
+    entries, _machine = load_machine_hash_cache(git_dir)
+    return entries
 
 
 def save_hash_cache(git_dir: Path, cache: dict[str, dict[str, int | str]]) -> None:
     tmp = git_dir / (_CACHE_NAME + ".tmp")
+    document = json.dumps({"machine": _machine_id(), "entries": cache},
+                          separators=(",", ":"))
     try:
-        tmp.write_text(json.dumps(cache, separators=(",", ":")), encoding="utf-8")
+        tmp.write_text(document, encoding="utf-8")
         os.replace(tmp, git_dir / _CACHE_NAME)
     except OSError:
         pass  # a cache that cannot be written only costs a rehash
@@ -425,6 +468,7 @@ def build_manifest(
     *,
     quiet: bool = False,
     rule: str = "size",
+    ratio: float | None = None,
     clock_offset_ns: int = 0,
     racy_window_ns: int | None = None,
     root_dev: int | None = None,
@@ -574,4 +618,11 @@ def build_manifest(
         "rule": rule,
         "files": entries,
     }
+    if rule == "auto" and ratio is not None:
+        # Which cut-off produced this snapshot, recorded beside the rule it
+        # belongs to: two machines whose cut-offs differ move files in the
+        # 4-64 MiB band between git and the payload on alternate runs, and
+        # the fresh-vault guard can only see the difference if it is here
+        # (ROADMAP T6).  check_manifest_shape validates it.
+        manifest["ratio"] = ratio
     return manifest, fresh

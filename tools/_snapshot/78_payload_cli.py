@@ -260,6 +260,21 @@ def resolve_payload_ratio(value: float | str | None, vault: Path) -> float:
     return _AUTO_INCOMPRESSIBLE
 
 
+def vault_remembers_ratio(vault: Path) -> bool:
+    """Whether the vault's own config holds a usable auto cut-off.
+
+    The fresh-vault ratio guard fires only when it does not: a remembered
+    value is a deliberate choice, and a default is not a request.
+    """
+    if not (vault / ".git").exists():
+        return False
+    try:
+        remembered = float(_config(vault, "snapshot.payloadratio"))
+    except ValueError:
+        return False
+    return 0 < remembered <= 1
+
+
 def remember_payload_ratio(vault: Path, value: float | str | None, *, dry_run: bool) -> None:
     """Write a ratio that was typed, after a *complete* real run; never a default."""
     if not isinstance(value, float) or dry_run:
@@ -373,10 +388,19 @@ def run_payload_step(
     dry_run: bool,
     jobs: int | None = None,
     rule: str = "size",
+    ratio: float = 0.9,
+    ratio_remembered: bool = False,
+    ratio_typed: bool = False,
     rehash: bool = False,
     from_default: bool = False,
 ) -> tuple[dict[str, Any] | None, tuple[int, int]]:
-    """Hash and upload the payload; ``(manifest, (objects, bytes) to upload)``."""
+    """Hash and upload the payload; ``(manifest, (objects, bytes) to upload)``.
+
+    ``ratio`` is this run's auto cut-off; ``ratio_remembered`` says whether
+    the vault chose it and ``ratio_typed`` whether this run typed one -- the
+    fresh-vault guard fires only when neither is true, because a default is
+    not a request.
+    """
     warn_if_newer_tool(git_dir, source, base)
     previous = load_manifest(git_dir, source, base)
     if previous is not None and min_size is None:
@@ -398,6 +422,26 @@ def run_payload_step(
             "default is auto. Repeat the flag the remote uses, or pass --payload-min-size "
             "auto to switch deliberately"
         )
+    if from_default and previous is not None and previous.get("rule") == "auto" \
+            and not ratio_remembered and not ratio_typed:
+        # The same guard for the auto cut-off, which 0.9.13 started recording
+        # in the manifest (ROADMAP T6): a fresh vault whose default (0.9)
+        # differs from the cut-off the remote's snapshots were written with
+        # would move files in the 4-64 MiB band between git and the payload
+        # on alternate runs.  Only a vault with NO remembered ratio and no
+        # typed one is refused -- a remembered or typed value is a deliberate
+        # choice, and a default is not a request.
+        theirs = previous.get("ratio")
+        if isinstance(theirs, (int, float)) and not isinstance(theirs, bool) \
+                and 0 < theirs <= 1 and abs(ratio - float(theirs)) > 1e-9:
+            raise SnapshotError(
+                "this remote's snapshots were written with the auto cut-off "
+                f"--payload-auto-ratio {float(theirs):g}, but this vault has no ratio of "
+                "its own and the default is "
+                f"{ratio:g}: the two would move files in the 4-64 MiB band between git "
+                "and the payload on alternate runs. Repeat the flag the remote uses, or "
+                "pass --payload-auto-ratio <yours> to differ deliberately"
+            )
     if not candidates and previous is None:
         # Nothing qualifies and the vault never used payload mode: no manifest,
         # so a tree that merely *could* grow payload files is not locked into
@@ -419,8 +463,21 @@ def run_payload_step(
         root_dev: int | None = os.stat(source).st_dev
     except OSError:
         root_dev = None
+    entries, cache_machine = load_machine_hash_cache(git_dir)
+    if cache_machine is not None and cache_machine != _machine_id():
+        # The cache is documented as per-machine (PAYLOAD D6), but the file
+        # lives in the vault, which two machines can share: an entry's
+        # validity depends on the writing machine's clock and its probe of
+        # the share clock, so another machine's entries cannot vouch for
+        # anything (REVIEW.iq3_s D5).
+        print(
+            f"Note: the payload hash cache was written by another machine ({cache_machine}); "
+            "every payload file was hashed again",
+            flush=True,
+        )
+        entries = {}
     manifest, cache = build_manifest(
-        candidates, source, {} if rehash else load_hash_cache(git_dir), min_size, rule=rule,
+        candidates, source, {} if rehash else entries, min_size, rule=rule, ratio=ratio,
         clock_offset_ns=clock_offset,
         racy_window_ns=_UNPROBED_WINDOW_NS if unprobed else _RACY_WINDOW_NS,
         root_dev=root_dev,

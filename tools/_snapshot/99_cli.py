@@ -475,6 +475,9 @@ def run_command(args: argparse.Namespace) -> int:
             manifest, payload_todo = run_payload_step(
                 git_dir, source, base, remote, payload_min, payload_candidates,
                 dry_run=args.dry_run, jobs=args.payload_jobs, rule=payload_rule,
+                ratio=payload_ratio,
+                ratio_remembered=vault_remembers_ratio(vault),
+                ratio_typed=args.payload_auto_ratio is not None,
                 rehash=args.payload_rehash, from_default=payload_default,
             )
             embedded_report: list[tuple[str, int]] = []

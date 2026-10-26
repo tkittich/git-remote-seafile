@@ -132,6 +132,19 @@ class _PayloadFixture(unittest.TestCase):
     def stored_names(self) -> list[str]:
         return [k.rsplit("/", 1)[-1] for k in self.server_files() if k.startswith(self.objects + "/")]
 
+    def age_cache_entries(self, seconds: float) -> None:
+        """Age every hash-cache entry past the racy window, as time does.
+
+        Handles both on-disk shapes: the machine-stamped wrapper (0.9.13+)
+        and the flat map older tools wrote.
+        """
+        cache_path = self.vault / ".git" / "payload-cache.json"
+        cache = json.loads(cache_path.read_text())
+        entries = cache["entries"] if "entries" in cache else cache
+        for entry in entries.values():
+            entry["at"] -= seconds * 1_000_000_000
+        cache_path.write_text(json.dumps(cache))
+
     def backdate_pending(self, days: float) -> None:
         key = f"{self.base}/gc-pending.json"
         state = json.loads(self.stub.files[REPO_ID][key])
@@ -481,11 +494,7 @@ class PayloadBasicsTests(_PayloadFixture):
         self.assertEqual(out.count("hashing ["), 3)
         # A cache entry is trusted only when the file is older than the moment it
         # was hashed by the racy window; age the entry, as the passage of time does.
-        cache_path = self.vault / ".git" / "payload-cache.json"
-        cache = json.loads(cache_path.read_text())
-        for entry in cache.values():
-            entry["at"] -= 10 * 1_000_000_000
-        cache_path.write_text(json.dumps(cache))
+        self.age_cache_entries(10)
         rc, out, err = self.snapshot()
         self.assertEqual(rc, 0, out + err)
         self.assertEqual(out.count("hashing ["), 0, out)
@@ -501,10 +510,9 @@ class PayloadBasicsTests(_PayloadFixture):
         cache_path = self.vault / ".git" / "payload-cache.json"
         self.assertTrue(cache_path.exists(), "the hashes were thrown away with the failed run")
         cache = json.loads(cache_path.read_text())
-        self.assertEqual(len(cache), 3)
-        for entry in cache.values():  # age them past the racy window, as time does
-            entry["at"] -= 10 * 1_000_000_000
-        cache_path.write_text(json.dumps(cache))
+        self.assertEqual(len(cache["entries"]), 3)
+        self.assertIn("machine", cache, "the cache records which machine wrote it")
+        self.age_cache_entries(10)  # age them past the racy window, as time does
         del self.stub.faults["upload"]
         rc, out, err = self.snapshot()
         self.assertEqual(rc, 0, out + err)
@@ -1487,6 +1495,77 @@ class PayloadRetentionTests(_PayloadFixture):
             snap.write_seen_tips(Fake(), "r", "/base", {"refs/heads/snapshot": "a" * 40})
         self.assertIn("did not read back as what was written", err.getvalue())
 
+    def test_the_manifest_records_the_ratio_that_produced_it(self):
+        """The auto cut-off travels beside the rule it belongs to (ROADMAP T6)."""
+        rc, out, err = self.bare()
+        self.assertEqual(rc, 0, out + err)
+        manifest = json.loads(_git(self.vault, "show", "snapshot:.seafile-payload/manifest.json"))
+        self.assertEqual(manifest["rule"], "auto")
+        self.assertEqual(manifest["ratio"], 0.9)
+
+    def test_a_manifest_ratio_that_is_not_one_is_refused(self):
+        """The field feeds the cross-machine guard, so it is validated."""
+        dest = self.case / "dest"
+        dest.mkdir()
+        with self.assertRaises(snap.SnapshotError):
+            snap.check_manifest_shape({"format": 2, "files": [], "ratio": 1.5})
+        with self.assertRaises(snap.SnapshotError):
+            snap.check_manifest_shape({"format": 2, "files": [], "ratio": "0.9"})
+        # A genuine value passes.
+        snap.check_manifest_shape({"format": 2, "files": [], "ratio": 0.5})
+
+    def test_a_fresh_vault_is_refused_when_the_remote_used_another_ratio(self):
+        """The ratio guard beside the rule guard: a default is not a request.
+
+        Two machines whose cut-offs differ move files in the 4-64 MiB band
+        between git and the payload on alternate runs (PAYLOAD D13's own row).
+        The remote's manifest now carries the ratio, so the guard can see it.
+        """
+        self.assertEqual(self.bare("--payload-auto-ratio", "0.5")[0], 0)
+        manifest = json.loads(_git(self.vault, "show", "snapshot:.seafile-payload/manifest.json"))
+        self.assertEqual(manifest["ratio"], 0.5)
+        rc, out, err = self.bare(vault=self.case / "fresh-ratio")
+        self.assertNotEqual(rc, 0, out + err)
+        self.assertIn("--payload-auto-ratio 0.5", out + err)
+        # A vault that remembers its own ratio is not refused: it chose.
+        other = self.case / "chose-ratio"
+        rc, out, err = self.bare("--payload-auto-ratio", "0.9", vault=other)
+        self.assertEqual(rc, 0, out + err)
+        # And a fresh vault matching the remote's ratio goes through.
+        rc, out, err = self.bare("--payload-auto-ratio", "0.5",
+                                 vault=self.case / "matching-ratio")
+        self.assertEqual(rc, 0, out + err)
+
+    def test_a_cache_written_by_another_machine_is_not_trusted(self):
+        """The cache is per-machine (PAYLOAD D6); the file can be shared.
+
+        An entry's validity depends on the writing machine's clock and its
+        probe of the share clock, so a reader on another machine hashes
+        everything again and says so (REVIEW.iq3_s D5).
+        """
+        self.assertEqual(self.snapshot()[0], 0)
+        cache_path = self.vault / ".git" / "payload-cache.json"
+        cache = json.loads(cache_path.read_text())
+        cache["machine"] = "other-machine/0x1a2b"
+        cache_path.write_text(json.dumps(cache))
+        rc, out, err = self.snapshot()
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn("written by another machine", out + err)
+        self.assertEqual(out.count("hashing ["), 2, out)
+
+    def test_a_legacy_flat_cache_is_still_adopted(self):
+        """A cache an older tool wrote has no stamp; its entries are kept."""
+        for path in (self.src / "big1.bin", self.src / "sub" / "big2.bin"):
+            os.utime(path, ns=(OLD_NS, OLD_NS))   # far older than any window
+        self.assertEqual(self.snapshot()[0], 0)
+        cache_path = self.vault / ".git" / "payload-cache.json"
+        cache = json.loads(cache_path.read_text())
+        cache_path.write_text(json.dumps(cache["entries"]))   # the pre-0.9.14 shape
+        rc, out, err = self.snapshot()
+        self.assertEqual(rc, 0, out + err)
+        self.assertEqual(out.count("hashing ["), 0, out)
+        self.assertEqual(out.count("written by another machine"), 0)
+
     def test_the_grace_clock_is_the_server_estimate_not_the_local_wall_clock(self):
         """A local clock jump between the mark and the delete must not delete.
 
@@ -1990,11 +2069,7 @@ class PayloadRememberVerifyViewAndClockTests(_PayloadFixture):
         (self.src / "sub" / "big2.bin").unlink()
         self._tiles()
         self.assertEqual(self.snapshot()[0], 0)
-        cache_path = self.vault / ".git" / "payload-cache.json"
-        cache = json.loads(cache_path.read_text())
-        for entry in cache.values():
-            entry["at"] -= 10 * 1_000_000_000      # old enough to be trusted
-        cache_path.write_text(json.dumps(cache))
+        self.age_cache_entries(10)      # old enough to be trusted
         rc, out, err = self.snapshot()
         self.assertEqual(out.count("hashing ["), 0, out)
         rc, out, err = self.snapshot("--payload-rehash")

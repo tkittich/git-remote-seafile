@@ -3211,6 +3211,13 @@ def check_manifest_shape(manifest: Any, where: str = "the payload manifest") -> 
             "Upgrade it before restoring or running retention"
         )
     check_min_tool(manifest, where)
+    ratio = manifest.get("ratio")
+    if ratio is not None and (
+        isinstance(ratio, bool) or not isinstance(ratio, (int, float)) or not 0 < ratio <= 1
+    ):
+        # The field feeds the cross-machine cut-off guard, so a hostile or
+        # hand-written value is refused rather than compared.
+        raise SnapshotError(f"{where} has a bad ratio {ratio!r}")
     files = manifest.get("files")
     if not isinstance(files, list):
         raise SnapshotError(f"{where} has no file list")
@@ -3414,18 +3421,54 @@ def add_manifest_to_index(
 # renumbered file the hash of its predecessor.
 
 
-def load_hash_cache(git_dir: Path) -> dict[str, dict[str, int | str]]:
+def _machine_id() -> str:
+    """A stable per-installation identifier for the hash cache's provenance.
+
+    The cache is documented as per-machine (PAYLOAD D6), but the file lives in
+    the vault, which two machines can share (a source on a NAS with the vault
+    beside it): an entry's validity depends on the writing machine's clock and
+    its probe of the share clock, so a reader on another machine cannot vouch
+    for it (REVIEW.iq3_s D5).
+    """
+    import uuid
+
+    return f"{socket.gethostname()}/{hex(uuid.getnode())}"
+
+
+def load_machine_hash_cache(git_dir: Path) -> tuple[dict[str, dict[str, int | str]], str | None]:
+    """The hash cache entries and the machine that wrote them.
+
+    ``(entries, None)`` for a cache without a stamp (an older tool wrote it;
+    its entries are adopted, as before), ``(entries, this machine)`` when the
+    stamp matches, and ``({}, other machine)`` when it does not -- a reader
+    cannot vouch for another machine's clock, so every file is hashed again.
+    """
     try:
         data = json.loads((git_dir / _CACHE_NAME).read_text(encoding="utf-8"))
     except (OSError, ValueError, RecursionError):
-        return {}
-    return data if isinstance(data, dict) else {}
+        return {}, None
+    if not isinstance(data, dict):
+        return {}, None
+    if "entries" in data and isinstance(data["entries"], dict):
+        machine = data.get("machine")
+        if not isinstance(machine, str):
+            return data["entries"], None
+        return (data["entries"] if machine == _machine_id() else {}), machine
+    return data, None
+
+
+def load_hash_cache(git_dir: Path) -> dict[str, dict[str, int | str]]:
+    """The hash cache entries, whatever machine wrote them (legacy reader)."""
+    entries, _machine = load_machine_hash_cache(git_dir)
+    return entries
 
 
 def save_hash_cache(git_dir: Path, cache: dict[str, dict[str, int | str]]) -> None:
     tmp = git_dir / (_CACHE_NAME + ".tmp")
+    document = json.dumps({"machine": _machine_id(), "entries": cache},
+                          separators=(",", ":"))
     try:
-        tmp.write_text(json.dumps(cache, separators=(",", ":")), encoding="utf-8")
+        tmp.write_text(document, encoding="utf-8")
         os.replace(tmp, git_dir / _CACHE_NAME)
     except OSError:
         pass  # a cache that cannot be written only costs a rehash
@@ -3608,6 +3651,7 @@ def build_manifest(
     *,
     quiet: bool = False,
     rule: str = "size",
+    ratio: float | None = None,
     clock_offset_ns: int = 0,
     racy_window_ns: int | None = None,
     root_dev: int | None = None,
@@ -3757,6 +3801,13 @@ def build_manifest(
         "rule": rule,
         "files": entries,
     }
+    if rule == "auto" and ratio is not None:
+        # Which cut-off produced this snapshot, recorded beside the rule it
+        # belongs to: two machines whose cut-offs differ move files in the
+        # 4-64 MiB band between git and the payload on alternate runs, and
+        # the fresh-vault guard can only see the difference if it is here
+        # (ROADMAP T6).  check_manifest_shape validates it.
+        manifest["ratio"] = ratio
     return manifest, fresh
 
 
@@ -5458,6 +5509,21 @@ def resolve_payload_ratio(value: float | str | None, vault: Path) -> float:
     return _AUTO_INCOMPRESSIBLE
 
 
+def vault_remembers_ratio(vault: Path) -> bool:
+    """Whether the vault's own config holds a usable auto cut-off.
+
+    The fresh-vault ratio guard fires only when it does not: a remembered
+    value is a deliberate choice, and a default is not a request.
+    """
+    if not (vault / ".git").exists():
+        return False
+    try:
+        remembered = float(_config(vault, "snapshot.payloadratio"))
+    except ValueError:
+        return False
+    return 0 < remembered <= 1
+
+
 def remember_payload_ratio(vault: Path, value: float | str | None, *, dry_run: bool) -> None:
     """Write a ratio that was typed, after a *complete* real run; never a default."""
     if not isinstance(value, float) or dry_run:
@@ -5571,10 +5637,19 @@ def run_payload_step(
     dry_run: bool,
     jobs: int | None = None,
     rule: str = "size",
+    ratio: float = 0.9,
+    ratio_remembered: bool = False,
+    ratio_typed: bool = False,
     rehash: bool = False,
     from_default: bool = False,
 ) -> tuple[dict[str, Any] | None, tuple[int, int]]:
-    """Hash and upload the payload; ``(manifest, (objects, bytes) to upload)``."""
+    """Hash and upload the payload; ``(manifest, (objects, bytes) to upload)``.
+
+    ``ratio`` is this run's auto cut-off; ``ratio_remembered`` says whether
+    the vault chose it and ``ratio_typed`` whether this run typed one -- the
+    fresh-vault guard fires only when neither is true, because a default is
+    not a request.
+    """
     warn_if_newer_tool(git_dir, source, base)
     previous = load_manifest(git_dir, source, base)
     if previous is not None and min_size is None:
@@ -5596,6 +5671,26 @@ def run_payload_step(
             "default is auto. Repeat the flag the remote uses, or pass --payload-min-size "
             "auto to switch deliberately"
         )
+    if from_default and previous is not None and previous.get("rule") == "auto" \
+            and not ratio_remembered and not ratio_typed:
+        # The same guard for the auto cut-off, which 0.9.13 started recording
+        # in the manifest (ROADMAP T6): a fresh vault whose default (0.9)
+        # differs from the cut-off the remote's snapshots were written with
+        # would move files in the 4-64 MiB band between git and the payload
+        # on alternate runs.  Only a vault with NO remembered ratio and no
+        # typed one is refused -- a remembered or typed value is a deliberate
+        # choice, and a default is not a request.
+        theirs = previous.get("ratio")
+        if isinstance(theirs, (int, float)) and not isinstance(theirs, bool) \
+                and 0 < theirs <= 1 and abs(ratio - float(theirs)) > 1e-9:
+            raise SnapshotError(
+                "this remote's snapshots were written with the auto cut-off "
+                f"--payload-auto-ratio {float(theirs):g}, but this vault has no ratio of "
+                "its own and the default is "
+                f"{ratio:g}: the two would move files in the 4-64 MiB band between git "
+                "and the payload on alternate runs. Repeat the flag the remote uses, or "
+                "pass --payload-auto-ratio <yours> to differ deliberately"
+            )
     if not candidates and previous is None:
         # Nothing qualifies and the vault never used payload mode: no manifest,
         # so a tree that merely *could* grow payload files is not locked into
@@ -5617,8 +5712,21 @@ def run_payload_step(
         root_dev: int | None = os.stat(source).st_dev
     except OSError:
         root_dev = None
+    entries, cache_machine = load_machine_hash_cache(git_dir)
+    if cache_machine is not None and cache_machine != _machine_id():
+        # The cache is documented as per-machine (PAYLOAD D6), but the file
+        # lives in the vault, which two machines can share: an entry's
+        # validity depends on the writing machine's clock and its probe of
+        # the share clock, so another machine's entries cannot vouch for
+        # anything (REVIEW.iq3_s D5).
+        print(
+            f"Note: the payload hash cache was written by another machine ({cache_machine}); "
+            "every payload file was hashed again",
+            flush=True,
+        )
+        entries = {}
     manifest, cache = build_manifest(
-        candidates, source, {} if rehash else load_hash_cache(git_dir), min_size, rule=rule,
+        candidates, source, {} if rehash else entries, min_size, rule=rule, ratio=ratio,
         clock_offset_ns=clock_offset,
         racy_window_ns=_UNPROBED_WINDOW_NS if unprobed else _RACY_WINDOW_NS,
         root_dev=root_dev,
@@ -8248,6 +8356,9 @@ def run_command(args: argparse.Namespace) -> int:
             manifest, payload_todo = run_payload_step(
                 git_dir, source, base, remote, payload_min, payload_candidates,
                 dry_run=args.dry_run, jobs=args.payload_jobs, rule=payload_rule,
+                ratio=payload_ratio,
+                ratio_remembered=vault_remembers_ratio(vault),
+                ratio_typed=args.payload_auto_ratio is not None,
                 rehash=args.payload_rehash, from_default=payload_default,
             )
             embedded_report: list[tuple[str, int]] = []
