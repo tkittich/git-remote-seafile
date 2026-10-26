@@ -265,6 +265,9 @@ def main(argv: list[str] | None = None) -> int:
 
 def run_command(args: argparse.Namespace) -> int:
     END_OF_RUN_NOTES.clear()
+    # Set when the push landed but a check *behind* it failed: the run exits
+    # non-zero without unwinding past the remember block.
+    late_failure = False
 
     try:
         validate_args(args)
@@ -613,9 +616,25 @@ def run_command(args: argparse.Namespace) -> int:
                 )
                 RUN_FACTS["pushed"] = True
                 if manifest is not None:
-                    verify_payload_after_push(
-                        source, remote, manifest, jobs=args.payload_jobs or 3,
-                    )
+                    try:
+                        verify_payload_after_push(
+                            source, remote, manifest, jobs=args.payload_jobs or 3,
+                        )
+                    except SnapshotError as exc:
+                        # The push has landed; this check looks *behind* it, so
+                        # failing the run here used to skip the remember block
+                        # below -- the vault then forgot its payload setting
+                        # and the next bare run was refused by R10's guard for
+                        # a decision this run had already made.  The snapshot
+                        # is on the server either way: say it as a warning,
+                        # remember everything, and still exit non-zero.
+                        print(f"Warning: {exc}", file=sys.stderr, flush=True)
+                        END_OF_RUN_NOTES.append(
+                            "the snapshot was pushed, but a payload object it names could not "
+                            "be re-verified afterwards; run --payload-verify and take a new "
+                            "snapshot if it names a missing object"
+                        )
+                        late_failure = True
 
         # Remember only a run that got all the way through, so the first
         # successful run leaves the next one with nothing to type -- and a typo'd
@@ -641,7 +660,7 @@ def run_command(args: argparse.Namespace) -> int:
         for note in END_OF_RUN_NOTES:
             print(note, flush=True)
             print(note, file=sys.stderr, flush=True)
-        return 0
+        return 1 if late_failure else 0
 
     except SnapshotError as exc:
         print(f"Error: {exc}", file=sys.stderr)

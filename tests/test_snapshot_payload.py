@@ -376,12 +376,18 @@ class PayloadBasicsTests(_PayloadFixture):
         self.assertEqual(self.object_count(), 0)
 
     def test_every_object_named_is_rechecked_just_before_the_push(self):
-        # An object that was on the server when the run listed it, and gone by the
-        # time of the push (a retention run on another machine), must be put back.
+        # An object that was on the server when the run listed it, and gone by
+        # the time of the push (a retention run on another machine), must be
+        # put back.  The assertion that pins the *pre*-push half of R2: at the
+        # moment push_snapshot runs, the object is already present again -- a
+        # run that only repaired *after* the ref landed (the post-push check
+        # prints the same "re-uploading" words) would fail here.
         self.assertEqual(self.snapshot()[0], 0)
         (self.src / "big1.bin").write_bytes(os.urandom(6000))
         real = snap.auto_incremental_repack
+        real_push = snap.push_snapshot
         gone = {}
+        seen_at_push = {}
 
         def delete_an_object_first(*a, **kw):
             # Called right after the commit and right before the push.
@@ -391,9 +397,16 @@ class PayloadBasicsTests(_PayloadFixture):
             del self.stub.files[REPO_ID][victim]
             return real(*a, **kw)
 
-        with unittest.mock.patch.object(snap, "auto_incremental_repack", delete_an_object_first):
+        def push_only_after_repair(*a, **kw):
+            seen_at_push["present"] = gone["key"] in self.server_files()
+            return real_push(*a, **kw)
+
+        with unittest.mock.patch.object(snap, "auto_incremental_repack", delete_an_object_first), \
+                unittest.mock.patch.object(snap, "push_snapshot", push_only_after_repair):
             rc, out, err = self.snapshot()
         self.assertEqual(rc, 0, out + err)
+        self.assertTrue(seen_at_push.get("present"),
+                        "the object was still missing when the ref was pushed")
         self.assertIn("re-uploading", out)
         self.assertIn(gone["key"], self.server_files())
 
@@ -630,13 +643,27 @@ class PayloadManifestAndSelectionTests(_PayloadFixture):
             snap.check_manifest_shape({"files": []})
 
     def test_a_symlink_in_the_tree_cannot_carry_a_payload_write_outside(self):
-        if os.name == "nt":
-            self.skipTest("creating symlinks needs a privilege on Windows")
+        # The link is built as a real filesystem object on every platform: a
+        # symlink where creating one is allowed, and a directory junction on
+        # Windows (no privilege needed, stdlib _winapi).  The test used to be
+        # skipped on Windows -- the platform the project is developed and
+        # released from -- which left R7's resolve-based containment guard
+        # unguarded there (REVIEW.deepseek E3, mutation-reproduced).
         into = self.case / "linked"
         into.mkdir()
         outside = self.case / "outside"
         outside.mkdir()
-        os.symlink(outside, into / "link")
+        link = into / "link"
+        if os.name == "nt":
+            import _winapi
+            _winapi.CreateJunction(str(outside), str(link))
+            # stdlib has no removal counterpart; rmdir removes the junction,
+            # not its target.
+            self.addCleanup(os.rmdir, str(link))
+        else:
+            os.symlink(outside, link)
+            self.addCleanup(link.unlink)
+        self.assertTrue((into / "link").exists(), "the junction/link resolves")
         with self.assertRaises(snap.SnapshotError):
             snap.validate_manifest({"format": 2, "files": [_good_entry(path="link/evil.bin")]}, into)
 

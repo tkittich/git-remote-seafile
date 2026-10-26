@@ -860,8 +860,15 @@ def ensure_byte_exact(
     # core.quotepath=false ensures international / UTF-8 filenames (e.g. Thai,
     # CJK, accented Latin) are displayed cleanly in git status and diff output
     # rather than C-quoted with octal escapes (\340\270...).
+    # core.fsmonitor/core.untrackedCache: the vault inherits the *global*
+    # config, and a global fsmonitor=true left a detached fsmonitor--daemon
+    # watching the source tree after the tool exited (measured on Windows) --
+    # the source is meant to be only ever read.  Both watchers are pinned off
+    # for the vault's own commands; a user who wants them for their own git
+    # still has them everywhere else.
     for key, wanted in (("core.autocrlf", "false"), ("core.safecrlf", "false"),
-                        ("core.longpaths", "true"), ("core.quotepath", "false")):
+                        ("core.longpaths", "true"), ("core.quotepath", "false"),
+                        ("core.fsmonitor", "false"), ("core.untrackedCache", "false")):
         have = (vault_config.get(key) or [""])[0]
         if have == wanted:
             continue
@@ -3131,6 +3138,10 @@ def apply_recorded_mtimes(into: Path) -> tuple[int, int]:
 # -- manifests ---------------------------------------------------------------
 
 
+#: The snapshot id this tool writes into a manifest: derived, never user text.
+_SNAPSHOT_ID_RE = re.compile(r"p-[0-9a-f]{16}")
+
+
 def check_manifest_shape(manifest: Any, where: str = "the payload manifest") -> list[dict[str, Any]]:
     """The manifest's file entries, if it is a manifest this tool understands.
 
@@ -3153,6 +3164,13 @@ def check_manifest_shape(manifest: Any, where: str = "the payload manifest") -> 
     files = manifest.get("files")
     if not isinstance(files, list):
         raise SnapshotError(f"{where} has no file list")
+    ident = manifest.get("snapshot")
+    if isinstance(ident, str) and not _SNAPSHOT_ID_RE.fullmatch(ident):
+        # The field is a name this tool derives, never user text; a value that
+        # is not the derived shape is a manifest someone wrote by hand, and it
+        # reaches a server-side directory name in --payload-view.  Refused as
+        # unparseable rather than trusted (REVIEW.iq3_s E2).
+        raise SnapshotError(f"{where} has a snapshot id that is not one this tool writes: {ident!r}")
     for item in files:
         if not isinstance(item, dict):
             raise SnapshotError(f"{where} holds an entry that is not an object")
@@ -3724,7 +3742,8 @@ _PAYLOAD_HASH_BLOCK = 8 * 1024 * 1024
 #: same-size edit inside the timestamp granularity would otherwise look untouched.
 _RACY_WINDOW_NS = 2_000_000_000
 _CACHE_NAME = "payload-cache.json"
-#: Objects are uploaded under ``<sha>.part-<token>`` and renamed; GC ignores them.
+#: Objects are uploaded under ``<sha>.part-<token>`` and renamed; retention
+#: collects an interrupted run's temporaries through its two phases (D9).
 _PART_SUFFIX = ".part-"
 #: The ``auto`` selection rule (PAYLOAD.md D1): a file is payload when it is at
 #: least ``_AUTO_UPPER`` bytes, or at least ``_AUTO_LOWER`` bytes *and* a sample
@@ -5740,7 +5759,14 @@ def payload_view(
                 f"{root} already exists; pick another --payload-view-name or pass "
                 "--payload-view-replace"
             )
-        _api(lambda: client.delete_entry(rid, root), f"removing the old {root}")
+        if not _api(lambda: client.delete_entry(rid, root), f"removing the old {root}"):
+            # delete_entry answers False for a refusal the server reports as a
+            # status, and _api only converts exceptions: swallowing that built
+            # the new view into the old one's remains.
+            raise SnapshotError(
+                f"the server would not remove the old view {root}; delete it by hand or "
+                "pick another --payload-view-name"
+            )
 
     skipped: list[str] = []
     seen: set[str] = set()
@@ -7887,6 +7913,9 @@ def main(argv: list[str] | None = None) -> int:
 
 def run_command(args: argparse.Namespace) -> int:
     END_OF_RUN_NOTES.clear()
+    # Set when the push landed but a check *behind* it failed: the run exits
+    # non-zero without unwinding past the remember block.
+    late_failure = False
 
     try:
         validate_args(args)
@@ -8235,9 +8264,25 @@ def run_command(args: argparse.Namespace) -> int:
                 )
                 RUN_FACTS["pushed"] = True
                 if manifest is not None:
-                    verify_payload_after_push(
-                        source, remote, manifest, jobs=args.payload_jobs or 3,
-                    )
+                    try:
+                        verify_payload_after_push(
+                            source, remote, manifest, jobs=args.payload_jobs or 3,
+                        )
+                    except SnapshotError as exc:
+                        # The push has landed; this check looks *behind* it, so
+                        # failing the run here used to skip the remember block
+                        # below -- the vault then forgot its payload setting
+                        # and the next bare run was refused by R10's guard for
+                        # a decision this run had already made.  The snapshot
+                        # is on the server either way: say it as a warning,
+                        # remember everything, and still exit non-zero.
+                        print(f"Warning: {exc}", file=sys.stderr, flush=True)
+                        END_OF_RUN_NOTES.append(
+                            "the snapshot was pushed, but a payload object it names could not "
+                            "be re-verified afterwards; run --payload-verify and take a new "
+                            "snapshot if it names a missing object"
+                        )
+                        late_failure = True
 
         # Remember only a run that got all the way through, so the first
         # successful run leaves the next one with nothing to type -- and a typo'd
@@ -8263,7 +8308,7 @@ def run_command(args: argparse.Namespace) -> int:
         for note in END_OF_RUN_NOTES:
             print(note, flush=True)
             print(note, file=sys.stderr, flush=True)
-        return 0
+        return 1 if late_failure else 0
 
     except SnapshotError as exc:
         print(f"Error: {exc}", file=sys.stderr)

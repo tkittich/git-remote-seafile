@@ -5,6 +5,10 @@
 # -- manifests ---------------------------------------------------------------
 
 
+#: The snapshot id this tool writes into a manifest: derived, never user text.
+_SNAPSHOT_ID_RE = re.compile(r"p-[0-9a-f]{16}")
+
+
 def check_manifest_shape(manifest: Any, where: str = "the payload manifest") -> list[dict[str, Any]]:
     """The manifest's file entries, if it is a manifest this tool understands.
 
@@ -27,6 +31,13 @@ def check_manifest_shape(manifest: Any, where: str = "the payload manifest") -> 
     files = manifest.get("files")
     if not isinstance(files, list):
         raise SnapshotError(f"{where} has no file list")
+    ident = manifest.get("snapshot")
+    if isinstance(ident, str) and not _SNAPSHOT_ID_RE.fullmatch(ident):
+        # The field is a name this tool derives, never user text; a value that
+        # is not the derived shape is a manifest someone wrote by hand, and it
+        # reaches a server-side directory name in --payload-view.  Refused as
+        # unparseable rather than trusted (REVIEW.iq3_s E2).
+        raise SnapshotError(f"{where} has a snapshot id that is not one this tool writes: {ident!r}")
     for item in files:
         if not isinstance(item, dict):
             raise SnapshotError(f"{where} holds an entry that is not an object")

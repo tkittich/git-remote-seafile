@@ -146,8 +146,18 @@ interrupted between the two, or something removed a packfile out of band.
 git -C /path/to/good/clone fsck --full
 ```
 
-**Recover.** From a machine that holds the objects, push the branch again — the helper will upload
-whatever the remote is missing. If no machine has them, the ref must be reset back to a commit whose
+**Recover.** A plain `git push` is **not** enough here: the remote's intact refs still cover the
+missing pack's commits, so the push's exclusion set contains them, git reports "Everything
+up-to-date" and nothing is re-uploaded (measured; the branch looks repaired and is not). Delete
+the broken ref and push it again, which forces a pack of everything the branch names:
+
+```bash
+# from a machine that holds the objects (verify with: git fsck --full)
+git push origin --delete <branch>
+git push origin <branch>
+```
+
+Repeat per broken branch. If no machine has the objects, the ref must be reset back to a commit whose
 objects are present.
 
 ---

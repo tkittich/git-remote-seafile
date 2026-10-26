@@ -40,7 +40,7 @@ encryption and retention policy.
 | # | Requirement | How it is checked |
 | :-- | :--- | :--- |
 | R1 | A restored tree is byte-identical to the source at snapshot time, payload files included. | `test_restore_downloads_and_verifies_the_payload`; real-server soak |
-| R2 | A snapshot never references an object that was not verified present before the vault was pushed. | ordering in D5; `test_a_failed_parallel_upload_names_the_file_and_resumes` |
+| R2 | A snapshot never references an object that was not verified present before the vault was pushed. | ordering in D5; `test_every_object_named_is_rechecked_just_before_the_push` (asserts the object is present *at the moment the ref is pushed*), `test_a_failed_parallel_upload_names_the_file_and_resumes` |
 | R3 | A run never replaces an object with different bytes, and never deletes one. (It does replace a *wrong-size* object, which is damage, with the correct bytes.) | `test_a_file_removed_from_the_source_keeps_its_object`, `test_a_name_another_writer_just_stored_is_not_deleted_by_a_collision`, `test_a_rename_onto_a_taken_name_makes_a_copy_and_it_is_judged` (the server's rename is create-or-duplicate: measured on CE 13.0.28; the wrong-size branch and the leave-a-right-sized-object-alone branch are both pinned there), `test_a_damaged_object_no_longer_blocks_snapshots_through_the_stub` |
 | R4 | An unchanged tree uploads nothing and commits nothing. | `test_an_unchanged_tree_uploads_nothing_and_commits_nothing` |
 | R5 | A rename or duplicate uploads nothing. | `test_a_rename_uploads_nothing`, `test_duplicate_content_is_one_object` |
@@ -151,7 +151,8 @@ Consequences: an object's name is always the hash of its content (R2, R6) -- eve
 when a file is rewritten in place without touching its mtime, which a size-and-mtime
 comparison cannot see; a vault never names an object that was not verified present
 at push time; an interrupted run leaves objects no snapshot names (and possibly a
-`.part-` file, which retention ignores), reused by the next run; the first failed
+`.part-` temporary, which retention collects through the same two phases as
+unreferenced objects), reused by the next run; the first failed
 server upload stops the queue and is reported once the running uploads finish, whereas a file
 that changed or vanished after it was hashed does not -- the rest still go up and the run then
 fails naming every such file, so one live file does not cost the others. The server
@@ -269,8 +270,9 @@ reports; with `--payload-delete` it **marks, and later deletes, in two phases**:
 - Seafile conflict copies under `refs/` stop it (a snapshot reachable only from one
   is invisible to git);
 - it refuses to act when it found no manifest at all;
-- it deletes only names that are exactly 64 hex digits (temporary `.part-` files and
-  strangers are reported and left alone);
+- it deletes only 64-hex names and `<64 hex>.part-<token>` temporaries: the temporaries of
+  interrupted uploads go through the same two phases as unreferenced objects, while strangers
+  (names that are neither) are reported and left alone;
 - it reports any object a manifest names that is **missing** from the server.
 
 `--payload-keep N` is the expiry policy: only the newest N snapshots of each branch

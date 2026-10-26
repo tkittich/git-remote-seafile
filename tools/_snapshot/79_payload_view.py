@@ -140,7 +140,14 @@ def payload_view(
                 f"{root} already exists; pick another --payload-view-name or pass "
                 "--payload-view-replace"
             )
-        _api(lambda: client.delete_entry(rid, root), f"removing the old {root}")
+        if not _api(lambda: client.delete_entry(rid, root), f"removing the old {root}"):
+            # delete_entry answers False for a refusal the server reports as a
+            # status, and _api only converts exceptions: swallowing that built
+            # the new view into the old one's remains.
+            raise SnapshotError(
+                f"the server would not remove the old view {root}; delete it by hand or "
+                "pick another --payload-view-name"
+            )
 
     skipped: list[str] = []
     seen: set[str] = set()

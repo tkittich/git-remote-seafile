@@ -702,10 +702,10 @@ The jobs to give to restic/Borg rather than build here:
 
 | Missing capability | Hand it to | Why not here |
 | :--- | :--- | :--- |
-| Deduplication across *different* files, compression | restic / Borg | Git dedups blobs, not content; a copied file is stored twice. |
+| Deduplication across *different* files, compression | restic / Borg | Git dedups *identical* blobs exactly (see the measurement above) but not *similar* content: a one-byte difference is a whole new blob until `gc` re-deltas. |
 | Encryption at rest | restic / Borg, or an encrypted volume (Seafile encrypted libraries are **not supported**: the helper refuses them) | `git-crypt` works on the vault but encrypts per-repo, not per-file-set. |
 | **Retention and expiry** | restic / Borg | The clearest gap: the vault keeps everything and cannot prune without rewriting history. |
-| Efficient large, volatile binaries | restic / Borg via rclone, or keep them out of the vault | See the large-files section — the cost is real; a bounded automatic tail merge now exists (§5), but full delta-compaction remains a manual `gc`. |
+| Efficient large, volatile binaries | restic / Borg via rclone, or keep them out of the vault | See the large-files section — the cost is real; the automatic tail merge (on since v0.8.8) bounds the growth, and a full `gc` re-deltas the whole history on demand. |
 
 The honest summary: **if you want a backup system, use restic pointed at a
 Seafile-backed rclone target. If you want your ignored files to travel with the
@@ -756,6 +756,7 @@ before designing around them:**
 | **[`safe-gitignore`](https://github.com/sstraus/safe.gitignore)** | A post-commit hook that copies `# safe`-marked ignored files into a **separate private repository**, preserving directory structure, with optional `git-crypt` encryption. Closest in spirit to the vault, but allowlist-driven rather than whole-tree. |
 | **Dotfiles bare-repository idiom** ([write-up](https://www.atlassian.com/git/tutorials/dotfiles)) | `git --git-dir=$HOME/.dotfiles --work-tree=$HOME` is the direct ancestor of the vault pattern. |
 | **[`git-remote-dropbox`](https://github.com/anishathalye/git-remote-dropbox)** | The landmark demonstration of transparent Git packfile transport plus distributed locking over a cloud storage API — the model `git-remote-seafile` itself follows. |
+| **[bup](https://bup.github.io/)** | The closest cousin this project deliberately does not imitate: it splits files into content-defined chunks (a rolling checksum, like rsync) and stores them as git packfiles, so a large changed file costs only its changed chunks. Git has no chunking — a changed file is a whole new blob until `gc` — which is exactly the §11 cost the payload mode sidesteps by storing big files by hash outside git. bup's rolling-checksum dedup is the design answer to that row; adopting it would mean a different object format. |
 | **[git-annex](https://git-annex.branchable.com/)**, **[BorgBackup](https://www.borgbackup.org/)**, **[restic](https://restic.net/)** | Occupy the same "back up everything, incrementally" space with purpose-built formats. They deduplicate and compress better than Git and handle large binaries properly; they do not give you Git's history, diff and merge semantics. See [section 11](#11-how-this-compares-to-restic-borg-and-filesystem-snapshots). |
 
 Reference documentation: [`gitignore(5)`](https://git-scm.com/docs/gitignore) —

@@ -190,8 +190,15 @@ def ensure_byte_exact(
     # core.quotepath=false ensures international / UTF-8 filenames (e.g. Thai,
     # CJK, accented Latin) are displayed cleanly in git status and diff output
     # rather than C-quoted with octal escapes (\340\270...).
+    # core.fsmonitor/core.untrackedCache: the vault inherits the *global*
+    # config, and a global fsmonitor=true left a detached fsmonitor--daemon
+    # watching the source tree after the tool exited (measured on Windows) --
+    # the source is meant to be only ever read.  Both watchers are pinned off
+    # for the vault's own commands; a user who wants them for their own git
+    # still has them everywhere else.
     for key, wanted in (("core.autocrlf", "false"), ("core.safecrlf", "false"),
-                        ("core.longpaths", "true"), ("core.quotepath", "false")):
+                        ("core.longpaths", "true"), ("core.quotepath", "false"),
+                        ("core.fsmonitor", "false"), ("core.untrackedCache", "false")):
         have = (vault_config.get(key) or [""])[0]
         if have == wanted:
             continue
