@@ -37,7 +37,8 @@ _PAYLOAD_HASH_BLOCK = 8 * 1024 * 1024
 #: same-size edit inside the timestamp granularity would otherwise look untouched.
 _RACY_WINDOW_NS = 2_000_000_000
 _CACHE_NAME = "payload-cache.json"
-#: Objects are uploaded under ``<sha>.part-<token>`` and renamed; GC ignores them.
+#: Objects are uploaded under ``<sha>.part-<token>`` and renamed; retention
+#: collects an interrupted run's temporaries through its two phases (D9).
 _PART_SUFFIX = ".part-"
 #: The ``auto`` selection rule (PAYLOAD.md D1): a file is payload when it is at
 #: least ``_AUTO_UPPER`` bytes, or at least ``_AUTO_LOWER`` bytes *and* a sample
