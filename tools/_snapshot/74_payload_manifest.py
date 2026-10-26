@@ -434,6 +434,9 @@ def build_manifest(
     fresh: dict[str, dict[str, int | str]] = {}
     total = len(candidates)
     stale = 0
+    # Files whose filesystem reports no change time distinct from the mtime
+    # (the FAT family; any volume that answers the query with the mtime).
+    coarse = [0]
 
     def vouched(rel: str) -> tuple[dict[str, int | str], bool]:
         """The cache entry for *rel* and whether it may stand in for a fresh hash."""
@@ -451,6 +454,18 @@ def build_manifest(
             # margin doubles rather than the entry being distrusted forever,
             # which re-read the whole tree on every run of such a volume.
             window *= 2
+        if ctime_ns is not None and ctime_ns == mtime_ns:
+            # The filesystem has no change time of its own: the FAT family
+            # keeps one timestamp in the directory entry, and a volume or API
+            # that reports the modification time back as the change time does
+            # the same.  A same-size in-place rewrite with the mtime put back
+            # then leaves *every* field of the key unchanged and the cache
+            # vouches for the old hash (measured on vfat, REVIEW.iq3_s D2).
+            # Treat it like an unprobed share: the one-hour margin, so a
+            # scheduled run in steady state re-hashes nothing but an edit
+            # inside the hour cannot hide.
+            window = max(window, _UNPROBED_WINDOW_NS)
+            coarse[0] += 1
         trusted = (
             old.get("size") == size
             and old.get("mtime_ns") == mtime_ns
@@ -517,6 +532,13 @@ def build_manifest(
                 fresh[rel]["fs"] = True
         entries.append(
             {"path": rel, "size": size, "mode": mode, "sha256": digest, "mtime_ns": mtime_ns}
+        )
+    if coarse[0] and not quiet:
+        print(
+            f"Note: {coarse[0]} file(s) are on a filesystem with no change time of its own "
+            "(FAT/exFAT, or a volume that answers with the modification time); a cached hash "
+            "for them is trusted only after an hour, and --payload-rehash re-checks everything",
+            flush=True,
         )
     if stale and not quiet:
         print(

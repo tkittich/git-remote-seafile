@@ -257,10 +257,11 @@ def build_snapshot(
                 candidates = [p for p in candidates if p not in gone]
                 nested = [p for p in nested if p not in gone]
                 print(
-                    f"\nNote: {len(dropped)} path(s) are behind a Windows junction and were not "
+                    f"\nWarning: {len(dropped)} path(s) are behind a Windows junction and were not "
                     f"captured (git would follow the junction, the payload walk does not, so "
                     f"neither is done):\n  " + "\n  ".join(dropped[:10])
                     + (f"\n  ... and {len(dropped) - 10} more" if len(dropped) > 10 else "")
+                    + "\nMove what they point at inside the tree, or --exclude the junction."
                 )
         excluded = [
             path

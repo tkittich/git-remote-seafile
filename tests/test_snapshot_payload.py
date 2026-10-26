@@ -549,6 +549,39 @@ class PayloadBasicsTests(_PayloadFixture):
         self.assertEqual(rc, 0, out + err)
         self.assertEqual((into / "big1.bin").read_bytes(), bytes(b ^ 0x0F for b in self.big1))
 
+    def test_a_volume_with_no_change_time_gets_the_hour_margin(self):
+        """The FAT family keeps one timestamp; ctime answers the mtime back.
+
+        Measured on vfat (REVIEW.iq3_s D2): a same-size in-place rewrite with
+        the mtime restored left every field of the cache key unchanged and the
+        second run vouched for the old hash.  Such a file is now trusted only
+        after an hour, like an unprobed share, and the run says so.
+        """
+        import unittest.mock
+
+        target = self.src / "big1.bin"
+        rc, out, err = self.snapshot()
+        self.assertEqual(rc, 0, out + err)
+        self.assertNotIn("no change time of its own", out + err)
+
+        def fat_like(path, st):
+            return st.st_mtime_ns   # the FAT family's only timestamp
+
+        # Same size, same mtime, edited *after* the racy window would have
+        # expired (hashed_at + 2s) but well inside the hour: only the coarse
+        # rule re-hashes it.
+        stat = target.stat()
+        edited = bytes(b ^ 0x11 for b in self.big1)
+        target.write_bytes(edited)
+        os.utime(target, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+        with unittest.mock.patch.object(snap, "change_time_ns", fat_like):
+            rc, out, err = self.snapshot()
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn("no change time of its own", out + err)
+        rc, out, err, into = self.restore("coarse")
+        self.assertEqual(rc, 0, out + err)
+        self.assertEqual((into / "big1.bin").read_bytes(), edited)
+
     def test_a_hash_the_remote_wrote_is_never_used(self):
         # The cache is this machine's: a manifest on the remote does not feed it.
         self.assertEqual(self.snapshot()[0], 0)

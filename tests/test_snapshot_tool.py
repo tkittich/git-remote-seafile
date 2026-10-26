@@ -456,6 +456,39 @@ class SnapshotGuardTests(_SnapshotFixture):
         rc, out, err = self.snapshot("--exclude", "locked")
         self.assertEqual(rc, 0, out + err)
 
+    def test_rebuild_index_rereads_the_git_side_bytes(self):
+        """The git-side audit: an edit invisible to the stat cache is caught.
+
+        Dropping the vault index forces git to re-hash every file, the
+        counterpart of --payload-rehash for the files git stores (an edit that
+        leaves size and timestamp untouched is otherwise trusted).
+        """
+        target = self.code / "tracked.txt"
+        target.write_bytes(b"original\n")
+        rc, out, err = self.snapshot()
+        self.assertEqual(rc, 0, out + err)
+        # Same size, same mtime: nothing the index's stat cache compares moves.
+        import os as _os
+        stat = target.stat()
+        target.write_bytes(b"replaced\n")
+        _os.utime(target, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+        rc, out, err = self.snapshot()
+        self.assertEqual(rc, 0, out + err)
+        # The audit run re-reads the bytes even though the stats agree.
+        rc, out, err = self.snapshot("--rebuild-index")
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn("rebuilding the vault index", out + err)
+        shown = _git(self.vault, "show", "HEAD:tracked.txt").stdout
+        self.assertIn("replaced", shown, "the audit caught the invisible edit")
+        # And the flag is refused where it cannot apply (a run-failure exit,
+        # like every other argument conflict).
+        rc, out, err = self.run_tool(
+            "--restore", "--remote", self.remote,
+            "--into", str(self.tmp / "nope"), "--rebuild-index",
+        )
+        self.assertEqual(rc, 1, out + err)
+        self.assertIn("--rebuild-index does not apply to --restore", out + err)
+
     def test_an_exclude_typed_composed_matches_a_decomposed_name(self):
         """The comparison is NFC on both sides.
 

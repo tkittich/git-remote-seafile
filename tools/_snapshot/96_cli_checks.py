@@ -13,6 +13,7 @@ def drill_conflicts(args: argparse.Namespace) -> list[str]:
             ("SOURCE (positional)", args.source_positional),
             ("--payload-verify", args.payload_verify is not None),
             ("--payload-gc", args.payload_gc), ("--payload-view", args.payload_view is not None),
+            ("--rebuild-index", args.rebuild_index),
         )
         if value
     ]
@@ -58,6 +59,8 @@ def validate_args(args: argparse.Namespace) -> None:
             # Housekeeping performs the repack itself; skipping it is a
             # snapshot-run concern.
             ("--no-repack", args.no_repack),
+            # There is no staging to re-read in housekeeping.
+            ("--rebuild-index", args.rebuild_index),
         ):
             if value:
                 problems.append(f"{flag} does not apply to --maintain")
@@ -88,6 +91,8 @@ def validate_args(args: argparse.Namespace) -> None:
             # remote -- and would otherwise be silently ignored.
             ("--source", args.source),
             ("SOURCE (positional)", args.source_positional),
+            # A restore stages nothing into a vault index.
+            ("--rebuild-index", args.rebuild_index),
         ):
             if value:
                 problems.append(f"{flag} does not apply to --restore")

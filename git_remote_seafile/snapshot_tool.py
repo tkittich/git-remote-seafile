@@ -2071,10 +2071,11 @@ def build_snapshot(
                 candidates = [p for p in candidates if p not in gone]
                 nested = [p for p in nested if p not in gone]
                 print(
-                    f"\nNote: {len(dropped)} path(s) are behind a Windows junction and were not "
+                    f"\nWarning: {len(dropped)} path(s) are behind a Windows junction and were not "
                     f"captured (git would follow the junction, the payload walk does not, so "
                     f"neither is done):\n  " + "\n  ".join(dropped[:10])
                     + (f"\n  ... and {len(dropped) - 10} more" if len(dropped) > 10 else "")
+                    + "\nMove what they point at inside the tree, or --exclude the junction."
                 )
         excluded = [
             path
@@ -3559,6 +3560,9 @@ def build_manifest(
     fresh: dict[str, dict[str, int | str]] = {}
     total = len(candidates)
     stale = 0
+    # Files whose filesystem reports no change time distinct from the mtime
+    # (the FAT family; any volume that answers the query with the mtime).
+    coarse = [0]
 
     def vouched(rel: str) -> tuple[dict[str, int | str], bool]:
         """The cache entry for *rel* and whether it may stand in for a fresh hash."""
@@ -3576,6 +3580,18 @@ def build_manifest(
             # margin doubles rather than the entry being distrusted forever,
             # which re-read the whole tree on every run of such a volume.
             window *= 2
+        if ctime_ns is not None and ctime_ns == mtime_ns:
+            # The filesystem has no change time of its own: the FAT family
+            # keeps one timestamp in the directory entry, and a volume or API
+            # that reports the modification time back as the change time does
+            # the same.  A same-size in-place rewrite with the mtime put back
+            # then leaves *every* field of the key unchanged and the cache
+            # vouches for the old hash (measured on vfat, REVIEW.iq3_s D2).
+            # Treat it like an unprobed share: the one-hour margin, so a
+            # scheduled run in steady state re-hashes nothing but an edit
+            # inside the hour cannot hide.
+            window = max(window, _UNPROBED_WINDOW_NS)
+            coarse[0] += 1
         trusted = (
             old.get("size") == size
             and old.get("mtime_ns") == mtime_ns
@@ -3642,6 +3658,13 @@ def build_manifest(
                 fresh[rel]["fs"] = True
         entries.append(
             {"path": rel, "size": size, "mode": mode, "sha256": digest, "mtime_ns": mtime_ns}
+        )
+    if coarse[0] and not quiet:
+        print(
+            f"Note: {coarse[0]} file(s) are on a filesystem with no change time of its own "
+            "(FAT/exFAT, or a volume that answers with the modification time); a cached hash "
+            "for them is trusted only after an hour, and --payload-rehash re-checks everything",
+            flush=True,
         )
     if stale and not quiet:
         print(
@@ -6886,6 +6909,7 @@ def drill_conflicts(args: argparse.Namespace) -> list[str]:
             ("SOURCE (positional)", args.source_positional),
             ("--payload-verify", args.payload_verify is not None),
             ("--payload-gc", args.payload_gc), ("--payload-view", args.payload_view is not None),
+            ("--rebuild-index", args.rebuild_index),
         )
         if value
     ]
@@ -6931,6 +6955,8 @@ def validate_args(args: argparse.Namespace) -> None:
             # Housekeeping performs the repack itself; skipping it is a
             # snapshot-run concern.
             ("--no-repack", args.no_repack),
+            # There is no staging to re-read in housekeeping.
+            ("--rebuild-index", args.rebuild_index),
         ):
             if value:
                 problems.append(f"{flag} does not apply to --maintain")
@@ -6961,6 +6987,8 @@ def validate_args(args: argparse.Namespace) -> None:
             # remote -- and would otherwise be silently ignored.
             ("--source", args.source),
             ("SOURCE (positional)", args.source_positional),
+            # A restore stages nothing into a vault index.
+            ("--rebuild-index", args.rebuild_index),
         ):
             if value:
                 problems.append(f"{flag} does not apply to --restore")
@@ -7830,6 +7858,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "its commit id, as 0.9.0 did, instead of capturing its files",
     )
     parser.add_argument(
+        "--rebuild-index",
+        action="store_true",
+        help="drop the vault's index before staging, so every git-stored file is read and "
+        "hashed again. The git-side counterpart of --payload-rehash: an edit that left size "
+        "and timestamp untouched (a memory-mapped writer on Windows, a volume with no change "
+        "time) is invisible to the stat cache, and this is the audit that re-reads the bytes",
+    )
+    parser.add_argument(
         "--no-repack",
         action="store_true",
         help="skip the automatic incremental repack that runs before a push",
@@ -7980,6 +8016,13 @@ def run_command(args: argparse.Namespace) -> int:
         if not args.dry_run:
             with VaultLock(git_dir):
                 sweep_temp_packs(git_dir)
+                if args.rebuild_index:
+                    # The git-side audit: without index entries, staging reads
+                    # and re-hashes every file, so an edit that left the stat
+                    # cache's fields untouched (a memory-mapped writer, a
+                    # volume with no change time) is caught by the bytes.
+                    (git_dir / "index").unlink(missing_ok=True)
+                    print("rebuilding the vault index: every git-stored file is re-read")
         # Before a byte is staged: a tree the volume cannot hold must be refused
         # now, not discovered when the disk fills (a dry run stages too).
         staging_expect = check_free_space(

@@ -236,6 +236,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "its commit id, as 0.9.0 did, instead of capturing its files",
     )
     parser.add_argument(
+        "--rebuild-index",
+        action="store_true",
+        help="drop the vault's index before staging, so every git-stored file is read and "
+        "hashed again. The git-side counterpart of --payload-rehash: an edit that left size "
+        "and timestamp untouched (a memory-mapped writer on Windows, a volume with no change "
+        "time) is invisible to the stat cache, and this is the audit that re-reads the bytes",
+    )
+    parser.add_argument(
         "--no-repack",
         action="store_true",
         help="skip the automatic incremental repack that runs before a push",
@@ -386,6 +394,13 @@ def run_command(args: argparse.Namespace) -> int:
         if not args.dry_run:
             with VaultLock(git_dir):
                 sweep_temp_packs(git_dir)
+                if args.rebuild_index:
+                    # The git-side audit: without index entries, staging reads
+                    # and re-hashes every file, so an edit that left the stat
+                    # cache's fields untouched (a memory-mapped writer, a
+                    # volume with no change time) is caught by the bytes.
+                    (git_dir / "index").unlink(missing_ok=True)
+                    print("rebuilding the vault index: every git-stored file is re-read")
         # Before a byte is staged: a tree the volume cannot hold must be refused
         # now, not discovered when the disk fills (a dry run stages too).
         staging_expect = check_free_space(

@@ -196,7 +196,17 @@ captured). *Known
 limit:* a mount type this list does not know is treated as local, so the
 rule there is the machine-clock one; `--payload-rehash` is the audit. (macOS is
 read from `mount`: smbfs, nfs, afpfs and webdav.) A file with a future mtime is
-rehashed on every run (a cost, not a risk).
+rehashed on every run (a cost, not a risk). A filesystem with no change time of
+its own — the FAT family keeps one timestamp in the directory entry, and a
+volume or API that answers the change-time query with the modification time
+does the same — cannot move the key on an in-place edit either, so such a file
+(measured on vfat: `ctime == mtime` to the nanosecond) is trusted only after an
+hour, the same margin an unprobed share gets, and the run says how many. On
+Windows, bytes changed through a memory-mapped view leave size, mtime *and*
+NTFS's change time untouched (measured, 90 s after unmap) — no stat-based key
+can see that; `--payload-rehash` (payload files) and `--rebuild-index`
+(git-stored files) are the audits, and a writer like that should be excluded or
+stopped.
 
 ### D7. Concurrency — **decided**
 
