@@ -634,20 +634,42 @@ class PayloadBasicsTests(_PayloadFixture):
         the mtime restored left every field of the cache key unchanged and the
         second run vouched for the old hash.  Such a file is now trusted only
         after an hour, like an unprobed share, and the run says so.
+
+        The mock is active in BOTH snapshots so the cached entry itself
+        carries ctime == mtime -- the condition the coarse rule detects.  The
+        mtime is an hour-band value (60 s before the hash): older than the
+        2 s racy window, so under the ordinary rule the entry is trusted and
+        a same-size edit with the mtime restored vouches for the OLD bytes;
+        under the coarse 1 h window it is not, and only the coarse rule makes
+        the restore return the new bytes.  (The first draft used a years-old
+        mtime, which stays trusted under either window and so proved the
+        ctime mismatch instead -- and its control assertion assumed NTFS,
+        where ctime != mtime for a fresh file; on ext4/APFS ctime == mtime
+        until something touches the file, and the fixture had not.  utime to
+        60 s ago moves real ctime on every platform, so the unmocked control
+        stays note-free everywhere.  Failed on all ten POSIX CI legs; this
+        rewrite is the platform-neutral form.)
         """
         import unittest.mock
 
         target = self.src / "big1.bin"
-        rc, out, err = self.snapshot()
-        self.assertEqual(rc, 0, out + err)
-        self.assertNotIn("no change time of its own", out + err)
+        # An hour-band mtime, set before the first snapshot: utime moves the
+        # real ctime away from the mtime on every platform, so the unmocked
+        # control below is note-free on NTFS, ext4 and APFS alike.
+        band = time.time_ns() - 60 * 1_000_000_000
+        os.utime(target, ns=(band, band))
 
         def fat_like(path, st):
             return st.st_mtime_ns   # the FAT family's only timestamp
 
-        # Same size, same mtime, edited *after* the racy window would have
-        # expired (hashed_at + 2s) but well inside the hour: only the coarse
-        # rule re-hashes it.
+        rc, out, err = self.snapshot()
+        self.assertEqual(rc, 0, out + err)
+        self.assertNotIn("no change time of its own", out + err)
+
+        # Same size, same mtime, edited after the first hash: under the 2 s
+        # racy window the entry is trusted (the mtime is a minute old) and
+        # the OLD hash would stand; the coarse 1 h window is what forces the
+        # re-hash the restore below asserts.
         stat = target.stat()
         edited = bytes(b ^ 0x11 for b in self.big1)
         target.write_bytes(edited)
