@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.13] - 2026-10-26
+
+The six-model review round's fixes: a lease that outlasts its phases, an upload that stops when its push is already doomed, a fetch that can no longer wedge itself, and payload objects that survive a real server's create-or-duplicate rename. Two refusals are new (shallow pushes, ref names the server would store differently), and `--rebuild-index` is the git-side audit for edits no timestamp can see.
+
+### Added
+- `--rebuild-index` drops the vault's index before staging, so every git-stored file is read and hashed again — the counterpart of `--payload-rehash` for an edit that leaves size and timestamp untouched (a memory-mapped writer on Windows, a volume with no change time).
+- A filesystem with no change time of its own (FAT/exFAT) gets the one-hour trust margin an unprobed share already had, and the run says how many files that applies to.
+
+### Fixed
+- **A local phase longer than the lease forfeited the lock.** A pack build or repack past `seafile.locklease` (60 s) left the ticket expired mid-phase; a peer reaped it and the push failed late with an orphan pack. The lease is renewed from inside the phase now, and an upload whose lease is provably lost stops instead of streaming a doomed push.
+- **A truncated pack stayed at its final name** and wedged every later fetch and `gc`. The push removes what it posted when the upload cannot be verified, and publishes the `.idx` before the `.pack`.
+- **An interrupted multi-pack fetch wedged the clone**: the tip resolved, so every later fetch skipped the download git then failed for. The skip now requires the tips' history to be locally whole.
+- **A damaged payload object blocked every later snapshot** on a real server, whose rename onto a taken name creates a `<sha> (1)` copy instead of failing; the stale object is now replaced and the copies swept.
+- **A fetch that met an empty listing advertised a branchless repository.** A namespace that exists and answers empty is a read failure now, not "no refs".
+- **A push from a shallow repository published a ref whose parents do not exist**; it is refused, naming `git fetch --unshallow`.
+- **A directory inside an embedded repository that cannot be read left a hole with exit 0**; the run stops and names it.
+- A push whose ref name the server would store differently (not NFC-normalised, a double quote, over 255 UTF-8 bytes) is refused instead of silently overwriting a twin branch.
+- A concurrent mkdir's `<name> (1)` duplicate is detected and refused at creation.
+- `--json` writes its document on an interrupt and on unexpected exceptions; a wrapped `Error:` keeps its listed paths; the push's own warnings now count for `--exit-warnings` and reach the `warnings` array.
+- A OneDrive placeholder below the payload floor is refused by name, as one above it always was.
+- `--payload-view-replace` reports a refused delete of the old view instead of building into its remains; the manifest's `snapshot` id is validated before it names a server-side directory.
+- The vault pins `core.fsmonitor=false` and `core.untrackedCache=false`, so a global fsmonitor no longer leaves a daemon watching the source tree after the run.
+- A post-push payload-verification failure is a warning and a non-zero exit; the vault still remembers its settings, so the next scheduled run is not refused.
+- A renamed branch whose namespace became empty removes `refs/heads` itself, so an existing-but-empty directory stays the read-failure signal it now is.
+- `verify-pack` runs without `-v`, whose per-object output reached ~0.6 GiB of captured text for a 10M-object pack.
+
+### Changed
+- Manual RUNBOOK §3.2 states the real repair for a remote with a deleted pack: delete the ref and push it again — a plain push re-uploads nothing.
+
 ## [0.9.12] - 2026-10-22
 
 A backup can now be proven restorable, a scheduled run can report in a form a script reads, and every long phase says how much is left. Nothing about what is stored changes, and no run's exit code changes unless `--exit-warnings` is passed.
@@ -1754,6 +1783,7 @@ Data-loss and silent-failure fixes, and the Python floor raised to 3.9.
   with zero-config desktop-client token discovery, distributed locking, remote
   packfile compaction, and a Git LFS custom transfer agent.
 
+[0.9.13]: https://github.com/tkittich/git-remote-seafile/compare/v0.9.12...v0.9.13
 [0.9.12]: https://github.com/tkittich/git-remote-seafile/compare/v0.9.11...v0.9.12
 [0.9.11]: https://github.com/tkittich/git-remote-seafile/compare/v0.9.10...v0.9.11
 [0.9.10]: https://github.com/tkittich/git-remote-seafile/compare/v0.9.9...v0.9.10
