@@ -6,6 +6,7 @@ import hashlib
 import re
 import sys
 import tempfile
+import time
 from pathlib import Path
 from typing import Any
 
@@ -85,6 +86,29 @@ def refs_outside_namespaces(client: SeafileClient, repo_id: str, repo_path: str)
             else:
                 problems.append(f"{full} (entry of unknown type '{entry.get('type')}')")
     return problems
+
+
+def _phase_pulse(write: Any, label: str, *, every: float = 60.0) -> Any:
+    """A throttled ``progress:`` line for a long *captured* phase.
+
+    The helper's slowest commands print one header per step and then nothing:
+    the repack and pack-objects run with their output captured, so a
+    multi-gigabyte compaction on a slow link reads as a hang (ROADMAP S13).
+    The returned callback runs between the sliced subprocess waits -- the
+    same slices that renew the lease -- and prints a line at most once per
+    *every* seconds.  A status label, not a notification level, so the
+    message-style guard is satisfied.
+    """
+    started = time.monotonic()
+    last = [started]
+
+    def pulse() -> None:
+        now = time.monotonic()
+        if now - last[0] >= every:
+            last[0] = now
+            write(f"progress: {label} ... {now - started:.0f}s\n")
+
+    return pulse
 
 
 def describe_size_delta(saved_kb: int) -> str:
@@ -595,6 +619,12 @@ def tail_merge(
                     "message": "The movable packfiles contain no objects; nothing to merge.",
                 }
 
+            pulse_merge = _phase_pulse(sys.stderr, "merging the tail")
+
+            def merge_pulse() -> None:
+                maybe_renew()
+                pulse_merge()
+
             # 5. Pack the union into one self-contained packfile.  Deltas are
             # computed only against objects in this set: a base that lives in a
             # frozen pack is duplicated, never referenced away, so the merged
@@ -614,7 +644,7 @@ def tail_merge(
                 input="\n".join(shas) + "\n",
                 text=True,
                 capture_output=True,
-                renew=maybe_renew,
+                renew=merge_pulse,
             )
             maybe_renew()
             if res.returncode != 0:
@@ -793,6 +823,12 @@ def compact_repository(
             # download and another client may lawfully take over.
             maybe_renew()
 
+        pulse_repack = _phase_pulse(sys.stderr, "repacking objects")
+
+        def repack_pulse() -> None:
+            maybe_renew()
+            pulse_repack()
+
         # 1. Discover all remote packfiles
         entries = client.list_dir(repo_id, pack_dir)
         old_packs = [e["name"] for e in entries if e["name"].endswith(".pack")]
@@ -939,7 +975,7 @@ def compact_repository(
                 scratch_env,
                 capture_output=True,
                 text=True,
-                renew=maybe_renew,
+                renew=repack_pulse,
             )
             maybe_renew()
             if res.returncode != 0:

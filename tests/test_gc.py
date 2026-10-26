@@ -1581,3 +1581,35 @@ class TestGitFailuresNameTheCause(unittest.TestCase):
         self.assertNotIn("CalledProcessError", text)
         self.assertNotIn("returned non-zero exit status", text)
 
+
+
+class TestPhasePulse(unittest.TestCase):
+    """The long captured phases say they are alive (ROADMAP S13).
+
+    gc and the tail merge print one header per step and then nothing while
+    the repack or pack-objects runs captured; on a slow link that reads as a
+    hang.  The pulse prints a `progress:` line at most once a minute.
+    """
+
+    def test_the_pulse_throttles_to_its_interval(self):
+        import io
+        from git_remote_seafile.gc import _phase_pulse
+
+        sink = io.StringIO()
+        clock = {"now": 1000.0}
+        real = gc_module.time.monotonic
+        gc_module.time.monotonic = lambda: clock["now"]
+        try:
+            pulse = _phase_pulse(sink.write, "repacking objects")
+            pulse()
+            self.assertEqual(sink.getvalue(), "",
+                             "the first call must not print before the interval")
+            clock["now"] = 1070.0
+            pulse()
+            self.assertIn("progress: repacking objects ... 70s", sink.getvalue())
+            clock["now"] = 1080.0
+            pulse()
+            self.assertEqual(sink.getvalue().count("progress:"), 1,
+                             "a call inside the interval must not print")
+        finally:
+            gc_module.time.monotonic = real
