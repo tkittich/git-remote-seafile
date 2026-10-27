@@ -224,7 +224,7 @@ Within one machine the vault lock serialises runs. Between machines, objects are
 union: two machines storing the same object write identical bytes under one name,
 which cannot conflict in a meaningful way (measured: same-*path* concurrent writers
 produce `(SFConflict ...)` copies; a copy of an object is an extra file whose name
-is not a hash and is ignored and collectable). The vault chain is arbitrated as
+is not a hash, so retention ignores it and does not collect it: delete it by hand, it costs quota at full size). The vault chain is arbitrated as
 before (SNAPSHOT.md section 6).
 
 ### D8. Restore — **decided**
@@ -423,7 +423,7 @@ data, or surprise. Disposition is one of **fixed**, **handled**, **specified**
 | A6 | Another machine's un-pushed snapshot references an object; retention deletes it | data loss | **handled within the grace period**: D9 two-phase, every branch and tag of the remote plus the local vault's (which must be one). Another machine's objects that are uploaded but not pushed are invisible to this machine's retention; they survive `--payload-grace-days`, after which that machine's next run re-uploads them (source unchanged) or refuses to push. Run retention from one machine |
 | A7 | Run interrupted after upload, before push | orphan objects | **handled**: harmless, reused (D5) |
 | A8 | An object is truncated or altered on the server, same size | upload skipped as "present"; backup silently bad until a restore | **handled**: the tool no longer creates this state itself (D5); `--payload-verify [N\|all]` downloads and hashes a sample of the newest snapshot's objects; schedule it as a drill |
-| A9 | `(SFConflict ...)` copies appear next to an object | listing sees a non-hash name | **handled**: ignored; collectable |
+| A9 | `(SFConflict ...)` copies appear next to an object | listing sees a non-hash name | **handled**: ignored, not collected (delete by hand; it costs quota at full size) |
 | A10 | Two paths differ by case, Unicode form, or a trailing dot or space; restore onto Windows or macOS | one overwrites the other, both verify | **fixed**: D8 never overwrites; collisions are skipped and reported |
 | A11 | Payload path looks like a credential | the secrets report covered only staged paths | **fixed**: payload paths scanned |
 | A12 | File held open exclusively (Windows) | traceback or silent skip | **handled**: R9 |

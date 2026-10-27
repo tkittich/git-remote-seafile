@@ -231,7 +231,7 @@ check worth running for a program you are about to hand a token to.
 | Credential disclosure to an unintended host via a crafted URL | A token is only used when its server is named and matches the remote (above) |
 | Credential disclosure over a plaintext link | A warning on every adoption of a token over `http://` to a non-loopback host |
 | A file in the working directory shadowing an import | Launchers run Python in isolated mode (`-I`), so the current directory is not on the import path |
-| A malicious or corrupted packfile installed locally | Strict packfile-name validation, `verify-pack -v`, and size verification against the remote listing |
+| A malicious or corrupted packfile installed locally | Strict packfile-name validation, `verify-pack`, and size verification against the remote listing |
 | A server answering success for an upload that failed | Compaction re-lists the remote and requires every new packfile at its expected size before deleting anything |
 | A stale lock holder writing inside a live holder's push | Ownership fencing before every destructive step, detecting both takeover and preemption |
 | Silent data omission in a snapshot | The snapshot tool's excludes are opt-in and named, never silent |
