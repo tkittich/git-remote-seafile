@@ -193,6 +193,22 @@ def _parse_min_packs(args: list[str], default: int = 2) -> int:
     return value
 
 
+def _account_email(resp: Any) -> str | None:
+    """The account's email from an ``/api2/account/info/`` answer; ``None`` when the body is not an object.
+
+    A 200 carrying a JSON array, a string or no JSON at all is what a captive
+    portal or a wrong URL looks like, and used to escape as an AttributeError
+    or ValueError traceback from two read-only diagnostics.
+    """
+    try:
+        info = resp.json()
+    except ValueError:
+        return None
+    if not isinstance(info, dict):
+        return None
+    return str(info.get("email") or "(no email reported)")
+
+
 def _doctor(url: str | None) -> int:
     """Run every first-use check in order and say what to do next.
 
@@ -215,7 +231,13 @@ def _doctor(url: str | None) -> int:
         return fail(f"no usable login: {ex}")
     if resp.status_code != 200:
         return fail(f"{client.server_url} rejected the token (HTTP {resp.status_code}); log in again")
-    ok(f"logged in to {client.server_url} as {resp.json().get('email')}")
+    email = _account_email(resp)
+    if email is None:
+        return fail(
+            f"{client.server_url} answered the account request with HTTP 200 but not a "
+            "Seafile account object; check the server URL (a proxy or login page?)"
+        )
+    ok(f"logged in to {client.server_url} as {email}")
     if not url:
         print("Next: git-remote-seafile doctor <seafile://library/path> to check a destination.")
         return 0
@@ -294,7 +316,12 @@ def _cmd_check_auth(rest: list[str]) -> int:
     except Exception as ex:
         return _error(f"Error: {ex}")
     if resp.status_code == 200:
-        email = resp.json().get("email")
+        email = _account_email(resp)
+        if email is None:
+            return _error(
+                f"Error: {client.server_url} answered the account request with HTTP 200 but "
+                "not a Seafile account object; check the server URL (a proxy or login page?)"
+            )
         print(f"Authenticated successfully with {client.server_url} as {email}")
         return 0
     return _error(f"Authentication failed: HTTP {resp.status_code} {resp.text}")

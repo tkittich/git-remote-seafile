@@ -46,6 +46,25 @@ class TestDoctor(unittest.TestCase):
         client.upload_file.assert_called_once()
         client.delete_entry.assert_called_once()
 
+    def test_an_account_answer_that_is_not_an_object_fails_without_a_traceback(self):
+        """A 200 carrying a JSON array (or no JSON) is a proxy or a login page;
+        it killed the first step of ``doctor`` with an AttributeError."""
+        def not_json():
+            raise ValueError("no json")
+
+        for body in (lambda: ["not", "an", "object"], not_json):
+            client = MagicMock()
+            client.server_url = "https://s.example"
+            client.session.get.return_value = MagicMock(status_code=200, json=body)
+            out = io.StringIO()
+            with patch.object(sys, "argv", ["git-remote-seafile", "doctor"]), \
+                    patch("sys.stdout", out), \
+                    patch("git_remote_seafile.cli.SeafileClient", return_value=client):
+                code = main()
+            self.assertEqual(code, 1, out.getvalue())
+            self.assertIn("[FAIL]", out.getvalue())
+            self.assertIn("not a Seafile account object", out.getvalue())
+
     def test_a_probe_that_does_not_round_trip_fails(self):
         code, out, _ = self._run("seafile://lib/x", landed=b"something else")
         self.assertEqual(code, 1)
@@ -228,6 +247,21 @@ class TestCLICheckAuth(unittest.TestCase):
                 code = main()
                 self.assertEqual(code, 0)
                 self.assertIn("dev@example.com", mock_out.getvalue())
+
+    @patch("git_remote_seafile.cli.SeafileClient")
+    def test_check_auth_with_a_body_that_is_not_an_object_is_an_error(self, mock_client_cls):
+        mock_client = MagicMock()
+        mock_client_cls.return_value = mock_client
+        mock_client.server_url = "https://seafile.example.com"
+        mock_resp = MagicMock(status_code=200)
+        mock_resp.json.return_value = ["not", "an", "object"]
+        mock_client.session.get.return_value = mock_resp
+
+        with patch.object(sys, "argv", ["git-remote-seafile", "check-auth"]):
+            with patch("sys.stderr", new_callable=io.StringIO) as mock_err:
+                code = main()
+        self.assertEqual(code, 1)
+        self.assertIn("not a Seafile account object", mock_err.getvalue())
 
     @patch("git_remote_seafile.cli.SeafileClient")
     def test_check_auth_failure(self, mock_client_cls):
