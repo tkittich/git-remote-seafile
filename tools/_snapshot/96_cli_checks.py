@@ -34,7 +34,7 @@ def validate_args(args: argparse.Namespace) -> None:
     """
     problems: list[str] = (
         payload_gc_conflicts(args) + payload_conflicts(args) + payload_view_conflicts(args)
-        + mtimes_conflicts(args)
+        + mtimes_conflicts(args) + status_conflicts(args)
     )
 
     problems += drill_conflicts(args)

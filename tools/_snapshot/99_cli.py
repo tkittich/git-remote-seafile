@@ -174,6 +174,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     add_payload_groups(parser)
     add_mtimes_arguments(parser)
+    add_status_arguments(parser)
     parser.add_argument(
         "--verify",
         action="store_true",
@@ -304,6 +305,14 @@ def run_command(args: argparse.Namespace) -> int:
         source, vault, remote, code_remote, exclude, branch = (
             resolve_snapshot_settings(args)
         )
+
+        # --status shares the resolution ladder so it reports what the next run
+        # would use, and stops before anything that writes: the vault, its
+        # identity settings and the remembered values are read, never made.
+        if args.status:
+            return status_command(
+                args, source, vault, remote, code_remote, exclude, branch
+            )
 
         # Housekeeping diverges here on purpose: it must not push the code
         # repo, initialise identity settings or remember anything -- only read

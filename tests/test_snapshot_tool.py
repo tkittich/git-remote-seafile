@@ -3183,5 +3183,89 @@ class OddNameAndLockFailureTests(_SnapshotFixture):
         self.assertNotIn("dist/bundle.js", names)
 
 
+class StatusTests(_SnapshotFixture):
+    """``--status`` answers "is my backup current?" without staging anything.
+
+    The comparison is deliberately stat-based and says so; these tests pin the
+    answer it gives from the records a snapshot writes, and the shapes of the
+    report a scheduler (or a person) reads.
+    """
+
+    def status(self, *extra: object) -> tuple[int, str, str]:
+        return self.run_tool(
+            "--source", self.code, "--vault", self.vault, "--status", *extra
+        )
+
+    def test_a_source_with_no_vault_reports_that_and_the_settings(self):
+        rc, out, err = self.status()
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn("nothing has been snapshotted", out)
+        self.assertIn(f"source        : {self.code}", out)
+        self.assertIn("payload mode  : off", out)
+
+    def test_a_fresh_snapshot_reports_zero_changes(self):
+        self.assertEqual(self.snapshot("--no-push", "--record-mtimes")[0], 0)
+        rc, out, err = self.status()
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn("last snapshot :", out)
+        self.assertIn("changed since: 0 file(s), 0 new, 0 deleted", out)
+        self.assertIn("size-and-mtime comparison", out, "the heuristic must be named in the report")
+        self.assertIn("lock          : free", out)
+
+    def test_changes_are_named_and_counted(self):
+        self.assertEqual(self.snapshot("--no-push", "--record-mtimes")[0], 0)
+        (self.code / "README.md").write_bytes(b"changed\n")
+        (self.code / "added.txt").write_bytes(b"new\n")
+        (self.code / "app.log").unlink()
+        rc, out, err = self.status()
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn("changed since: 1 file(s), 1 new, 1 deleted", out)
+        self.assertIn("changed: README.md", out)
+        self.assertIn("new: added.txt", out)
+        self.assertIn("deleted: app.log", out)
+
+    def test_a_touched_file_shows_as_changed_and_the_report_says_why(self):
+        """A touch (same bytes, new time) is flagged: the heuristic errs loud.
+
+        The run itself treats a byte-identical tree as nothing to do, so the
+        report's Note names both directions of the error -- a change that keeps
+        size and mtime hides, and a touch shows.
+        """
+        self.assertEqual(self.snapshot("--no-push", "--record-mtimes")[0], 0)
+        (self.code / "README.md").write_bytes(b"hello\n")
+        import os as _os
+        _os.utime(self.code / "README.md", ns=(1, 1))
+        rc, out, err = self.status()
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn("changed: README.md", out)
+        self.assertIn("though the next run would find nothing new", out)
+
+    def test_a_held_lock_is_reported(self):
+        self.assertEqual(self.snapshot("--no-push", "--record-mtimes")[0], 0)
+        lock = self.vault / ".git" / "seafile-snapshot.lock"
+        lock.write_text(f"{socket.gethostname()} 999999 start\n", encoding="utf-8")
+        rc, out, err = self.status()
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn("lock          : held by", out)
+
+    def test_status_is_json_too(self):
+        self.assertEqual(self.snapshot("--no-push", "--record-mtimes")[0], 0)
+        (self.code / "README.md").write_bytes(b"changed\n")
+        rc, out, err = self.status("--json")
+        self.assertEqual(rc, 0, out + err)
+        doc = json.loads(out)
+        self.assertEqual(doc["mode"], "status")
+        self.assertEqual(doc["result"]["status"]["changed"], 1)
+        self.assertEqual(doc["result"]["status"]["new"], 0)
+
+    def test_status_refuses_to_combine_with_the_other_modes(self):
+        rc, out, err = self.status("--restore")
+        self.assertEqual(rc, 1, out + err)
+        self.assertIn("does not combine with", err)
+        rc, out, err = self.status("--record-mtimes")
+        self.assertEqual(rc, 1, out + err)
+        self.assertIn("only apply to a snapshot run", err)
+
+
 if __name__ == "__main__":
     unittest.main()

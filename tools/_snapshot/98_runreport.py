@@ -82,7 +82,7 @@ def run_mode(args: argparse.Namespace) -> str:
     for flag, mode in (
         ("restore_drill", "restore-drill"), ("restore", "restore"), ("maintain", "maintain"),
         ("payload_verify", "payload-verify"), ("payload_view", "payload-view"),
-        ("payload_gc", "payload-gc"),
+        ("payload_gc", "payload-gc"), ("status", "status"),
     ):
         if getattr(args, flag, None) not in (None, False):
             return mode

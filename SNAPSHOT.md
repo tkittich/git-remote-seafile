@@ -248,11 +248,33 @@ silent it refuses instead:
 A scheduled job that must alert on anything unusual runs with `--json
 --exit-warnings`: stdout is then exactly one JSON line, so `jq -e '.status == "ok"'`
 is the whole check. The document names `mode` (`snapshot`, `restore`,
-`restore-drill`, `payload-verify`, ...), `status`, `exit_code`, `warnings` (the
-`Warning:` lines), `error` (the last `Error:` line) and `result`, whose keys depend
-on the mode (a snapshot: `files`, `bytes`, `commit`, `pushed`,
-`payload_objects_to_upload`; `payload-verify`: `checked`, `objects`, `damaged`). The
-keys of a mode are only ever added to.
+`restore-drill`, `payload-verify`, `status`, ...), `status`, `exit_code`, `warnings`
+(the `Warning:` lines), `error` (the last `Error:` line) and `result`, whose keys
+depend on the mode (a snapshot: `files`, `bytes`, `commit`, `pushed`,
+`payload_objects_to_upload`; `payload-verify`: `checked`, `objects`, `damaged`;
+`status`: `tip`, `comparable`, `changed`, `new`, `deleted`, `unreadable`). The keys
+of a mode are only ever added to.
+
+### `--status`, and how far its answer reaches
+
+`--status` answers "is my backup current?" without staging, hashing or uploading
+anything. The last snapshot's time and size come from the vault; the settings it
+prints are resolved through the same ladder a run uses, so they are what the next
+run would do, not what the vault merely remembers. The change comparison is against
+the two records the snapshot itself wrote into the tip — the payload manifest for
+the large files (size and mtime), `mtimes.json` for the git-stored ones (mtime) —
+so the baseline travels with the snapshot and works from another machine, where a
+per-machine hash cache would vouch for nothing.
+
+It is a **stat-based heuristic**, and the report says which way it errs: a change
+that keeps size and mtime hides from it (this is the racy window the snapshot run
+closes by re-hashing what it stages), and a file whose time changed without its
+content shows as changed though the next run would find nothing new (the run
+reuses the parent's record for a byte-identical tree). It reads only local state:
+the remote is never contacted, the library's quota is not reported, the remote
+lock is `git-remote-seafile lock-status`'s to answer, and a vault whose tip
+carries neither record (an older tool, or `--no-record-mtimes` with no payload)
+says so instead of comparing.
 
 ## 5. What a run costs
 

@@ -139,6 +139,10 @@ class VaultLock:
         self.path = git_dir / "seafile-snapshot.lock"
         self._fd: int | None = None
 
+    def holder(self) -> tuple[str, int, str | None] | None:
+        """The lock file's recorded holder, read without touching it (--status)."""
+        return self._holder()
+
     def _holder(self) -> tuple[str, int, str | None] | None:
         try:
             text = self.path.read_text(encoding="utf-8").strip()
