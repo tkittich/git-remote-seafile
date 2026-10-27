@@ -8,7 +8,7 @@ import sys
 import tempfile
 import time
 from pathlib import Path
-from typing import Any, NamedTuple
+from typing import Any, Callable, NamedTuple
 
 from .client import (
     REF_WRITE_READ_TIMEOUT_SECONDS,
@@ -755,7 +755,9 @@ class RemoteHelper:
             )
             sys.stderr.flush()
 
-    def _known_remote_tips(self, pending_updates: list[_PendingUpdate]) -> set[str]:
+    def _known_remote_tips(
+        self, pending_updates: list[_PendingUpdate], renew: Callable[[], None] | None = None
+    ) -> set[str]:
         """The commits the remote holds *now*, which the new pack may leave out.
 
         Whatever is reachable from a ref the remote still has is on the remote,
@@ -773,7 +775,8 @@ class RemoteHelper:
         try:
             for namespace in REF_NAMESPACES:
                 for _name, sha in iter_refs(
-                    self.client, self.repo_id, self.repo_path, namespace, strict=True
+                    self.client, self.repo_id, self.repo_path, namespace, strict=True,
+                    renew=renew,
                 ):
                     if sha:
                         known.add(sha)
@@ -799,18 +802,22 @@ class RemoteHelper:
 
         Raises on any failure; the caller reports it against every pending ref.
         """
-        exclude = list(self._known_remote_tips(pending_updates))
         target_shas = [u.local_sha for u in pending_updates]
 
         def renew_during_compute() -> None:
             # The pack build can outlast the lease (a first push of a large
-            # repository is minutes of pack-objects).  A renewal that cannot be
-            # made says nothing on its own -- the next fence decides -- so it is
-            # swallowed here and the build is allowed to finish.
+            # repository is minutes of pack-objects), and so can reading the
+            # remote's refs just below it (~33 ms a ref on a real server: a few
+            # thousand tags outlast a 60 s lease that nothing renewed).  A
+            # renewal that cannot be made says nothing on its own -- the next
+            # fence decides -- so it is swallowed here and the work is allowed
+            # to finish.
             try:
                 lock.maybe_renew(20.0)
             except Exception:
                 pass
+
+        exclude = list(self._known_remote_tips(pending_updates, renew=renew_during_compute))
 
         def on_upload_progress(transferred: int, total: int) -> None:
             # S5: a lost lease paces the renewal but must also stop the

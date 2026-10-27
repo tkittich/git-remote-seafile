@@ -293,6 +293,16 @@ class TestRepair(unittest.TestCase):
             for name, (cap, data) in caps.items():
                 self.assertEqual(cap, len(data), name)
 
+    def test_reading_the_tips_renews_the_lease(self):
+        """Under the lock, a repository with thousands of tags takes minutes."""
+        from git_remote_seafile.repair import _read_tips
+
+        client = _StubClient({"main": "a" * 40, "dev": "b" * 40})
+        renewed: list[int] = []
+        tips = _read_tips(client, "repo1", _REPO, renew=lambda: renewed.append(1))
+        self.assertEqual(len(tips), 2)
+        self.assertGreaterEqual(len(renewed), 1)
+
     def test_a_listed_size_that_is_not_a_number_counts_as_zero(self):
         for raw, want in (("12", 12), (7, 7), ("abc", 0), (None, 0), (True, 0), (3.5, 0)):
             self.assertEqual(_int_size({"size": raw}), want, raw)

@@ -25,7 +25,7 @@ import hashlib
 import sys
 import tempfile
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from .client import SeafileClient
 from .config import RemoteConfig
@@ -181,7 +181,9 @@ def _list_packs(
     return pack_sizes, idx_sizes
 
 
-def _read_tips(client: SeafileClient, repo_id: str, repo_path: str) -> list[tuple[str, str]]:
+def _read_tips(
+    client: SeafileClient, repo_id: str, repo_path: str, renew: Callable[[], None] | None = None
+) -> list[tuple[str, str]]:
     """Every ref tip the remote holds.
 
     Strict, as ``gc`` reads its mirror: a ref that is listed but cannot be
@@ -191,7 +193,8 @@ def _read_tips(client: SeafileClient, repo_id: str, repo_path: str) -> list[tupl
     tips: list[tuple[str, str]] = []
     for namespace in REF_NAMESPACES:
         for ref_name, sha in iter_refs(
-            client, repo_id, repo_path, namespace, strict=True, strict_listing=True
+            client, repo_id, repo_path, namespace, strict=True, strict_listing=True,
+            renew=renew,
         ):
             if not is_valid_ref_name(ref_name):
                 sys.stderr.write(f"Warning: ignoring malformed ref name '{ref_name}'\n")
@@ -242,13 +245,15 @@ def repair_remote(
     cfg = config if config is not None else RemoteConfig.load()
 
     with RemoteLock(client, repo_id, clean_repo, config=cfg) as lock:
-        # Listed under the lock, like the rest of the sequence: a pack list taken
-        # before it can be reshaped by a compaction that finishes while we wait.
-        tips = _read_tips(client, repo_id, repo_path)
-        pack_sizes, idx_sizes = _list_packs(client, repo_id, pack_dir, has_refs=bool(tips))
-
         def maybe_renew() -> None:
             lock.maybe_renew(20.0)
+
+        # Listed under the lock, like the rest of the sequence: a pack list taken
+        # before it can be reshaped by a compaction that finishes while we wait.
+        # Reading the refs is minutes on a repository with thousands of tags, so
+        # the lease is renewed from inside the walk.
+        tips = _read_tips(client, repo_id, repo_path, renew=maybe_renew)
+        pack_sizes, idx_sizes = _list_packs(client, repo_id, pack_dir, has_refs=bool(tips))
 
         def on_upload_progress(transferred: int, total: int) -> None:
             maybe_renew()

@@ -29,6 +29,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`--payload-view` said "no data was transferred" while the library grew by the full size of what it copied** (reproduced on a real server: a view of one 70 MiB object added 70.0 MiB). The server shares blocks but the quota and library size count each copy at full size, so a view of a large snapshot can use what the next backup needs. The closing line now says so (with the bytes counted), the quota warning that already ran before building names a view's copies instead of "uploads", and PAYLOAD D10 no longer implies the view is free.
 
+- **Reading many refs outlasted the lock lease.** A push (and `gc`, and `repair`) re-reads every remote ref under the lock, about 33 ms a ref on a real server, so a repository with a few thousand tags could lose a 60-second lease before the pack was even built and fail after its work was done. The ref walk now renews the lease before every directory listing and between batches of reads, never while a read is in flight.
+
 ### Changed
 - SNAPSHOT.md and DESIGN's failure model say which omissions are not reported: named pipes, sockets and device nodes have no content to store and are skipped without a note.
 

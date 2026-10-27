@@ -983,7 +983,8 @@ def compact_repository(
                 found: dict[str, str] = {}
                 for namespace in REF_NAMESPACES:
                     for ref_name, sha in iter_refs(
-                        client, repo_id, clean_repo, namespace, strict=True
+                        client, repo_id, clean_repo, namespace, strict=True,
+                        renew=maybe_renew,
                     ):
                         if not sha or not sha.strip():
                             raise RuntimeError(

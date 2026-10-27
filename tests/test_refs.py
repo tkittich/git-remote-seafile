@@ -424,3 +424,63 @@ class TestRefWalkListingCap(unittest.TestCase):
         with self.assertRaises(SeafileAPIError) as ctx:
             list(iter_refs(self.FanOut(), "rid", "/r", "refs/heads", strict=True))
         self.assertIn("do not describe a repository", str(ctx.exception))
+
+
+class TestRefReadsRenewTheCallersLease(unittest.TestCase):
+    """Reading refs is ~33 ms each on a real server (B5): a few thousand outlast
+    a 60 s lease that nothing renewed, and the push fails after its work is done."""
+
+    class Counting:
+        """``refs`` flat refs under refs/heads; tracks reads in flight."""
+
+        def __init__(self, refs: int):
+            import threading
+
+            self.refs = refs
+            self.in_flight = 0
+            self.reads = 0
+            self._lock = threading.Lock()
+
+        def list_dir(self, repo_id, path):
+            if path.endswith("/refs/heads"):
+                return [{"type": "file", "name": f"b{i:04d}"} for i in range(self.refs)]
+            return []
+
+        def get_file_text(self, repo_id, path):
+            import time
+
+            with self._lock:
+                self.in_flight += 1
+                self.reads += 1
+            time.sleep(0.001)
+            with self._lock:
+                self.in_flight -= 1
+            return "a" * 40
+
+        def dir_exists(self, repo_id, path):
+            return True
+
+    def test_the_lease_is_renewed_between_batches_and_never_beside_a_read(self):
+        client = self.Counting(200)
+        calls: list[int] = []
+
+        def renew() -> None:
+            calls.append(client.in_flight)
+
+        got = list(iter_refs(client, "rid", "/r", "refs/heads", renew=renew))
+        self.assertEqual(len(got), 200)
+        self.assertEqual(client.reads, 200)
+        # 200 refs, 8 workers x 8 per batch = 4 batches, plus the listing
+        self.assertGreaterEqual(len(calls), 4, calls)
+        self.assertEqual(set(calls), {0}, "renewal ran while a read was in flight")
+
+    def test_a_single_threaded_walk_renews_before_each_read(self):
+        client = self.Counting(5)
+        calls: list[int] = []
+        list(iter_refs(client, "rid", "/r", "refs/heads", max_workers=1,
+                       renew=lambda: calls.append(1)))
+        self.assertGreaterEqual(len(calls), 5)
+
+    def test_no_callback_changes_nothing(self):
+        client = self.Counting(20)
+        self.assertEqual(len(list(iter_refs(client, "rid", "/r", "refs/heads"))), 20)

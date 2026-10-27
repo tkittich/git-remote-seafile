@@ -383,6 +383,38 @@ class TestRemoteHelper(unittest.TestCase):
                 h._upload_push_pack(lock, pending)
         self.assertIn("aborting the upload", str(caught.exception))
 
+    def test_reading_the_remote_refs_renews_the_lease_before_the_pack_is_built(self):
+        """B5: ~33 ms a ref on a real server, so a few thousand refs outlast a 60 s
+        lease.  The walk gets the renewal, and the push calls it before it starts
+        building anything."""
+        from git_remote_seafile.helper import _PendingUpdate
+
+        h = make_helper()
+        h.client = MagicMock()
+        h.repo_id = "repo1"
+        h.repo_path = "/git-repo"
+        h._refs_cache = {}
+        lock = MagicMock()
+        lock.maybe_renew.return_value = False
+        seen: dict[str, int] = {}
+
+        def walk(*_args, renew=None, **_kwargs):
+            assert renew is not None, "the walk was not given the renewal"
+            for _ in range(3):
+                renew()
+            yield "refs/heads/main", "b" * 40
+
+        def build(target_shas, exclude):
+            seen["renewals_before_build"] = lock.maybe_renew.call_count
+            seen["excluded"] = len(exclude)
+            return []
+
+        pending = [_PendingUpdate("refs/heads/dev", "1" * 40, None, False)]
+        with patch("git_remote_seafile.helper.iter_refs", walk),                 patch("git_remote_seafile.helper.get_objects_to_push", build):
+            h._upload_push_pack(lock, pending)
+        self.assertGreaterEqual(seen["renewals_before_build"], 3)
+        self.assertEqual(seen["excluded"], 1)
+
     def test_upload_keeps_streaming_when_renewal_is_merely_not_due(self):
         """maybe_renew's False also means "not due yet"; that must not abort."""
         from git_remote_seafile.lock import LEASE_HELD

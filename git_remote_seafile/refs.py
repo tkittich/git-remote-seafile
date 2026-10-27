@@ -21,7 +21,7 @@ from __future__ import annotations
 import concurrent.futures
 import re
 import sys
-from typing import Iterator
+from typing import Callable, Iterator
 
 from .client import SeafileAPIError, SeafileClient
 
@@ -180,8 +180,15 @@ def iter_refs(
     *,
     strict: bool = False,
     strict_listing: bool = False,
+    renew: Callable[[], None] | None = None,
 ) -> Iterator[tuple[str, str]]:
     """Yield ``(ref_name, sha)`` for every ref under ``namespace``.
+
+    *renew*, when given, is called before every directory listing and between
+    batches of ref reads, never while a read is in flight.  A caller that holds
+    the push lock passes its lease renewal: reading is ~33 ms a ref on a real
+    server, so a few thousand refs outlast a 60 s lease that nothing renewed
+    (REVIEW.sonnet-5.5-v0.9.14 B5).
 
     ``namespace`` is a git ref prefix such as ``refs/heads``.  The walk is
     recursive, so a nested ref is yielded under its full name
@@ -242,6 +249,8 @@ def iter_refs(
                 sys.stderr.flush()
                 depth_capped = True
             continue
+        if renew is not None:
+            renew()
         for entry in _listing(
             client, repo_id, dir_path, known_dir=known, strict=strict or strict_listing
         ):
@@ -317,6 +326,8 @@ def iter_refs(
 
     if len(ref_entries) == 1 or max_workers <= 1:
         for item in ref_entries:
+            if renew is not None:
+                renew()
             ref_name, sha = _fetch_ref(item)
             if sha:
                 yield ref_name, sha
@@ -330,12 +341,20 @@ def iter_refs(
         # requests itself does not guarantee Session thread safety -- keep the
         # concurrent work strictly read-only; do not widen it to calls that
         # mutate session state (cookies, auth, headers).
+        #
+        # The reads go out in batches so that *renew* (an upload) runs between
+        # them, with no read in flight, rather than beside them on the shared
+        # session.  Results still come back in sorted order.
+        batch = workers * 8
         with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
-            for ref_name, sha in executor.map(_fetch_ref, ref_entries):
-                if sha:
-                    yield ref_name, sha
-                else:
-                    _unreadable(ref_name)
+            for start in range(0, len(ref_entries), batch):
+                if renew is not None:
+                    renew()
+                for ref_name, sha in executor.map(_fetch_ref, ref_entries[start:start + batch]):
+                    if sha:
+                        yield ref_name, sha
+                    else:
+                        _unreadable(ref_name)
 
 
 __all__ = [
