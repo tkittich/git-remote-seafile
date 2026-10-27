@@ -179,7 +179,19 @@ backing up.  Leave it out next time with --default-excludes, or explicitly:
 `--default-excludes` adds the recommended set (`node_modules`, `venv`, `.venv`,
 `__pycache__`, `*.pyc`, `dist`, `build`) on top of anything passed to
 `--exclude`. Excludes are remembered with everything else, so one
-`--default-excludes` run keeps them until they are overridden explicitly.
+`--default-excludes` run keeps them until they are overridden explicitly. A
+recommended pattern is left out of the list for a run when the source's own git
+repository **tracks** a file it matches (`build` would otherwise drop a committed
+`tools/build/make.py`); the run names the file and the `--exclude` that drops it
+anyway. An explicit `--exclude` is always honoured.
+
+**What no flag can capture.** Named pipes, sockets and device nodes have no
+content a snapshot could store, and git skips them. They are the one kind of
+omission that is **not** reported: the run's file count simply lacks them
+(measured on Debian: a FIFO and an AF_UNIX socket under the source were absent
+from the tree with no note). Everything else that is left out is named — excluded
+paths by count, a nested `.git` as an embedded repository, junctions and
+unreadable directories by name.
 
 > **A pattern with no slash matches that name at *any* depth.** `--exclude
 > node_modules` drops `packages/api/node_modules/` as well as the top-level

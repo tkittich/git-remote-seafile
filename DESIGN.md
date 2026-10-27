@@ -453,7 +453,7 @@ This section states what the *protocol* assumes and defends against. Deployment 
 | A planted multi-megabyte ref, HEAD or ticket                  | A ref listed over 4 KiB is not read; text files declared over 16 MiB are refused                                                                        |
 | A stale lock holder writing inside a live holder's push       | Ownership fencing at every destructive step; the fence detects both takeover and preemption, with distinct messages (§4.4)                              |
 | Information disclosure through the lock queue                 | Documented as readable; no secret is placed in a ticket beyond a token-derived hash                                                                     |
-| A silently truncated backup                                   | The snapshot tool's excludes are opt-in and named; an omitted file is never silent                                                                      |
+| A silently truncated backup                                   | The snapshot tool's excludes are opt-in and named; an omitted file is never silent (but a pipe, socket or device node cannot be stored and is skipped without a note: SNAPSHOT.md section 4, "Exclusions are never silent")                                                                    |
 
 ### 6.4 What this design does not protect against
 
