@@ -6721,6 +6721,26 @@ def _status_tip_facts(git_dir: Path, work_tree: Path, tip: str) -> tuple[str, st
     return when.strip(), subject.strip(), count, total
 
 
+def _status_unknown(tip: str | None, **extra: Any) -> dict[str, Any]:
+    """The ``--json`` result when nothing can be compared: every key present, the counts null.
+
+    SNAPSHOT.md promises the keys of a mode are only ever added to; a run with no
+    vault used to return ``{"snapshots": 0}`` alone, so ``jq -e '.result.status.changed
+    == 0'`` read ``null`` and a scheduler could take "no vault" for "all clear".
+    Null never equals 0.
+    """
+    return {
+        "tip": tip,
+        "comparable": False,
+        "changed": None,
+        "new": None,
+        "deleted": None,
+        "unreadable": None,
+        "uncompared": None,
+        **extra,
+    }
+
+
 def status_command(
     args: argparse.Namespace,
     source: Path,
@@ -6760,7 +6780,7 @@ def status_command(
             f"no vault at {vault} yet -- nothing has been snapshotted; "
             "a first run creates it"
         )
-        RUN_FACTS.update(status={"snapshots": 0})
+        RUN_FACTS.update(status=_status_unknown(None, snapshots=0))
         return 0
     holder = VaultLock(git_dir).holder()
     if holder is None:
@@ -6773,7 +6793,7 @@ def status_command(
     tip = current_tip(git_dir, source, branch)
     if tip is None:
         print(f"last snapshot : none -- branch {branch} has no commits yet")
-        RUN_FACTS.update(status={"snapshots": 0})
+        RUN_FACTS.update(status=_status_unknown(None, snapshots=0))
         return 0
 
     when, subject, stored_count, stored_bytes = _status_tip_facts(git_dir, source, tip)
@@ -6801,7 +6821,7 @@ def status_command(
             "older tool, or with --no-record-mtimes and no payload), so what changed "
             "since it cannot be compared; the next snapshot re-establishes them"
         )
-        RUN_FACTS.update(status={"tip": tip, "comparable": False})
+        RUN_FACTS.update(status=_status_unknown(tip))
         return 0
 
     inventory, _nested, unreadable_dirs = _status_inventory(git_dir, source, exclude)

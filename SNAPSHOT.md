@@ -264,7 +264,9 @@ is the whole check. The document names `mode` (`snapshot`, `restore`,
 (the `Warning:` lines), `error` (the last `Error:` line) and `result`, whose keys
 depend on the mode (a snapshot: `files`, `bytes`, `commit`, `pushed`,
 `payload_objects_to_upload`; `payload-verify`: `checked`, `objects`, `damaged`;
-`status`: `tip`, `comparable`, `changed`, `new`, `deleted`, `unreadable`, `uncompared`). The keys
+`status`: `tip`, `comparable`, `changed`, `new`, `deleted`, `unreadable`, `uncompared`, and
+`snapshots` when there is no vault or no commit yet; when nothing can be compared the counts
+are `null`, never `0`). The keys
 of a mode are only ever added to.
 
 ### `--status`, and how far its answer reaches

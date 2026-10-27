@@ -3392,6 +3392,18 @@ class StatusTests(_SnapshotFixture):
         self.assertEqual(doc["result"]["status"]["changed"], 1)
         self.assertEqual(doc["result"]["status"]["new"], 0)
 
+    def test_json_carries_every_key_even_when_nothing_can_be_compared(self):
+        """No vault used to give ``{"snapshots": 0}`` alone, so a scheduler's
+        ``.changed == 0`` read null; the counts are null, which never equals 0."""
+        rc, out, err = self.status("--json")
+        self.assertEqual(rc, 0, out + err)
+        status = json.loads(out)["result"]["status"]
+        for key in ("tip", "comparable", "changed", "new", "deleted", "unreadable", "uncompared"):
+            self.assertIn(key, status)
+        self.assertIs(status["comparable"], False)
+        self.assertIsNone(status["changed"])
+        self.assertEqual(status["snapshots"], 0)
+
     def test_status_refuses_to_combine_with_the_other_modes(self):
         rc, out, err = self.status("--restore")
         self.assertEqual(rc, 1, out + err)
