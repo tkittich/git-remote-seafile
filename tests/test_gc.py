@@ -1391,13 +1391,16 @@ class TestTailMerge(unittest.TestCase):
         client.get_file_bytes.assert_not_called()
         self.assertEqual(self._deleted_pack_paths(client), [])
 
-    def test_tail_merge_defers_when_the_movable_set_exceeds_the_budget(self):
-        """Five 1 MiB packs against a 2 MiB budget: defer, transferring nothing.
+    def test_tail_merge_defers_when_not_even_two_packs_fit_the_budget(self):
+        """Five 3 MiB packs against a 2 MiB budget: defer, transferring nothing.
 
         The budget is a download cap on the *movable* set only; frozen bytes
-        never enter it because they would never be downloaded anyway.
+        never enter it because they would never be downloaded anyway.  A merge
+        of fewer than two packs removes no file, so that is the only case left
+        that defers (a set that merely totals more than the budget is merged in
+        part: see the next test).
         """
-        client = self._client([{"name": f"pack-{i}.pack", "size": 1024**2} for i in range(5)])
+        client = self._client([{"name": f"pack-{i}.pack", "size": 3 * 1024**2} for i in range(5)])
 
         res = tail_merge(client, "repo1", "/path", config=self._cfg(threshold=3, max_mib=2), verbose=False)
 
@@ -1405,6 +1408,48 @@ class TestTailMerge(unittest.TestCase):
         self.assertIn("deferred", res["message"])
         client.get_file_bytes.assert_not_called()
         self.assertEqual(self._deleted_pack_paths(client), [])
+
+    @patch("git_remote_seafile.gc.run_git_checked")
+    def test_tail_merge_over_the_budget_merges_the_smallest_packs_that_fit(self, mock_subprocess):
+        """Six 1 MiB packs against a 3 MiB budget: three are merged, three wait.
+
+        Deferring every push once the movable set outgrew the budget let the
+        pack count grow without bound (reproduced on a real server: pushes 20-26
+        all deferred, 20 -> 26 packs).  The merge is a bag union, so any subset
+        is safe; it only has to fit what one run may download.
+        """
+        body = b"x" * (1024**2)
+        client = self._client(
+            [{"name": f"pack-{i}.pack", "size": len(body)} for i in range(6)], body=body
+        )
+        mock_subprocess.side_effect = self._subprocess_fake()
+
+        res = tail_merge(client, "repo1", "/path", config=self._cfg(threshold=3, max_mib=3), verbose=False)
+
+        self.assertEqual(res["status"], "ok", res)
+        self.assertEqual(res["merged_packs"], 3)
+        self.assertEqual(res["left_for_later"], 3)
+        self.assertEqual(
+            sorted(self._deleted_pack_paths(client)),
+            [f"/path/objects/pack/pack-{i}.{ext}" for i in range(3) for ext in ("idx", "pack")],
+            "exactly the three chosen pairs; the other three are untouched",
+        )
+        downloaded = [c.args[1] for c in client.download_file_to.call_args_list]
+        self.assertFalse(any("pack-3" in str(p) or "pack-4" in str(p) or "pack-5" in str(p)
+                             for p in downloaded), "a pack left for later is not downloaded")
+
+    def test_select_within_budget_takes_the_smallest_first_and_needs_two(self):
+        from git_remote_seafile.gc import select_within_budget
+
+        packs = [("a", 5), ("b", 1), ("c", 2), ("d", 3), ("e", None)]
+        self.assertEqual(
+            [n for n, _ in select_within_budget(packs, 6)], ["e", "b", "c", "d"]
+        )
+        self.assertEqual([n for n, _ in select_within_budget(packs, 3)], ["e", "b", "c"])
+        # the two smallest (1 + 2) do not fit 2 -> defer; one pack is not a merge
+        self.assertEqual(select_within_budget([("b", 1), ("c", 2)], 2), [])
+        self.assertEqual(select_within_budget([("b", 1)], 100), [])
+        self.assertEqual(select_within_budget([], 100), [])
 
     def test_tail_merge_refuses_an_untrusted_pack_name(self):
         """A name that could not be a real packfile aborts before any transfer.

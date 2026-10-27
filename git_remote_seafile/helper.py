@@ -1086,9 +1086,19 @@ class RemoteHelper:
             if movable_count < threshold:
                 return 0
             # Tail merge downloads only the small packs and re-uploads their
-            # union, so above the download budget it defers to a manual
-            # off-hours run no matter how many pile up.
-            if auto_gc and movable_bytes > session_config.gc_max_mib * 1024 * 1024:
+            # union.  Above the download budget it merges the smallest packs
+            # that fit (tail_merge re-decides under the lock); only when not
+            # even two fit does it defer to a manual off-hours run.
+            from .gc import select_within_budget
+
+            budget = session_config.gc_max_mib * 1024 * 1024
+            if (
+                auto_gc
+                and movable_bytes > budget
+                and not select_within_budget(
+                    [(name, size) for name, size in pack_info if size < freeze_at], budget
+                )
+            ):
                 sys.stderr.write(
                     f"\nNotice: Movable packs total {movable_bytes / (1024**3):.1f} GiB across "
                     f"{movable_count} packfile(s), above the automatic download budget "
@@ -1106,7 +1116,7 @@ class RemoteHelper:
                     f"totaling {movable_bytes / (1024**3):.1f} GiB.\n"
                     f"Tip: Run 'git-remote-seafile gc {mask_url(self.raw_url)}' to optimize remote storage,\n"
                     f"     or run 'git config seafile.autogc true' to enable automatic tail merge\n"
-                    f"     (automatic runs defer while the movable packs exceed 2 x seafile.gcmaxpackmib).\n\n"
+                    f"     (an automatic run merges at most 2 x seafile.gcmaxpackmib of the smallest packs).\n\n"
                 )
                 sys.stderr.flush()
         except Exception:

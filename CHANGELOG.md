@@ -18,6 +18,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **A different project pointed at an existing `--remote` was chained onto the first one's history without a word** (reproduced: the chain's newest tree was the other project's, and a later `--payload-keep` run expires the first project's snapshots). A new vault now says what chain it is joining, with the previous snapshot's time and subject (`Note:`), and warns when fewer than half of that snapshot's git-stored paths exist in the source (`Warning:`, so `--exit-warnings` returns 3). It does not refuse: a reorganised project is legitimate.
 
+- **The automatic tail merge deferred on every push once the movable packs outgrew its download budget**, so the pack count grew without bound (reproduced on a real server with a small `seafile.gcmaxpackmib`: pushes 20 to 26 all deferred, 20 to 26 packs, and every `git clone` downloads every pack). It now merges the smallest packs that fit the budget (never fewer than two) and leaves the rest for the next run; only a set whose two smallest packs already exceed the budget still defers. On the same server the 20th push merged 20 packs down to 10 and the count stayed bounded afterwards. The result of `tail_merge` gains `left_for_later`.
+
 ### Changed
 - SNAPSHOT.md and DESIGN's failure model say which omissions are not reported: named pipes, sockets and device nodes have no content to store and are skipped without a note.
 

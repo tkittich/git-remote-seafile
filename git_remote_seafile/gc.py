@@ -443,6 +443,29 @@ def _delete_superseded(
     return deleted_count, failed_deletions, cleanup_stopped
 
 
+def select_within_budget(
+    movable: list[tuple[str, Any]], budget: int
+) -> list[tuple[str, Any]]:
+    """The smallest movable packs whose total fits *budget*; ``[]`` when fewer than two do.
+
+    Smallest first removes the most files per byte downloaded, which is what the
+    merge is for.  A merge of one pack removes nothing, so fewer than two is
+    "defer", the answer for a set whose two smallest members already exceed the
+    budget.  Safe for any subset: the merge is a bag union of the objects in the
+    packs it takes, with no reachability semantics.  A size the listing omitted
+    counts as 0 here and is checked by the download itself.
+    """
+    chosen: list[tuple[str, Any]] = []
+    total = 0
+    for name, size in sorted(movable, key=lambda item: (int(item[1] or 0), item[0])):
+        step = int(size or 0)
+        if total + step > budget:
+            break
+        chosen.append((name, size))
+        total += step
+    return chosen if len(chosen) >= 2 else []
+
+
 def tail_merge(
     client: SeafileClient,
     repo_id: str,
@@ -481,9 +504,12 @@ def tail_merge(
         unreferenced clutter a later run removes.
     ``"skipped"``
         Nothing to do: fewer than ``config.gc_threshold`` movable packfiles --
-        or their total exceeds the download budget (``config.gc_max_mib``, 2 x ``gc_max_pack_mib``), when
-        auto-GC defers to a manual off-hours run instead of round-tripping that
-        much mid-push.  The message says which case applied.
+        or not even the two smallest fit the download budget
+        (``config.gc_max_mib``, 2 x ``gc_max_pack_mib``), when auto-GC defers to
+        a manual off-hours run instead of round-tripping that much mid-push.
+        A set whose total merely exceeds the budget is not skipped: the
+        smallest packs that fit are merged and the rest are counted in
+        ``left_for_later``.  The message says which case applied.
     ``"error"``
         Aborted before any deletion: a pack failed to download or verify, an
         index could not be rebuilt, repacking produced nothing, or the upload
@@ -555,6 +581,18 @@ def tail_merge(
 
         total_movable = sum(int(size or 0) for _, size in movable)
         budget = cfg.gc_max_mib * 1024 * 1024
+        left_for_later = 0
+        if respect_budget and total_movable > budget:
+            # Over the budget is not "do nothing": merging the smallest packs
+            # that fit still removes files, and deferring every push for ever
+            # let the pack count grow without bound (reproduced on a real
+            # server with a small seafile.gcmaxpackmib).  Only when not even
+            # two packs fit does the run defer, as before.
+            chosen = select_within_budget(movable, budget)
+            if chosen:
+                left_for_later = len(movable) - len(chosen)
+                movable = chosen
+                total_movable = sum(int(size or 0) for _, size in movable)
         if respect_budget and total_movable > budget:
             return {
                 "status": "skipped",
@@ -569,9 +607,13 @@ def tail_merge(
             }
 
         if verbose:
+            later = (
+                f", {left_for_later} more over the download budget left for the next run"
+                if left_for_later else ""
+            )
             sys.stderr.write(
                 f"Tailing remote repository ({len(movable)} movable packfiles, "
-                f"{frozen_count} frozen)...\n"
+                f"{frozen_count} frozen{later})...\n"
             )
 
         with tempfile.TemporaryDirectory(prefix="git-seaf-tailmerge-") as td:
@@ -732,6 +774,7 @@ def tail_merge(
                 "status": "incomplete" if cleanup_stopped else "ok",
                 "merged_packs": len(movable),
                 "frozen_packs": frozen_count,
+                "left_for_later": left_for_later,
                 "new_pack_bytes": new_total_bytes,
                 "tail_bytes": total_movable,
                 "deleted_packs": deleted_count,
