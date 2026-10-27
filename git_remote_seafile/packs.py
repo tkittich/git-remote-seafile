@@ -22,6 +22,19 @@ PACK_NAME_RE = re.compile(r"^pack-[0-9a-z._-]+\.pack$")
 MAX_IN_MEMORY_PACK_BYTES = 16 * 1024 * 1024
 
 
+class ListedPackVanishedError(SeafileAPIError):
+    """A packfile the listing showed was already gone when it was downloaded.
+
+    The 404-after-listing signature of a concurrent compaction: gc merges the
+    pack and removes it between the caller's ``list_dir`` and the GET.  The
+    fetch path re-lists once and retries from the fresh listing
+    (``helper.cmd_fetch``); this reaching the top level means the second
+    listing could not serve the pack either, and the fetch must fail loudly.
+    A subclass of :class:`SeafileAPIError` so every existing handler keeps
+    working unchanged.
+    """
+
+
 def is_valid_pack_name(pack_name: str) -> bool:
     """Validate remote packfile name against pattern and directory traversal.
 
@@ -253,6 +266,16 @@ def fetch_and_install_pack(
             raise SeafileAPIError(
                 f"Packfile {pack_name} download was truncated: expected {expected_size} bytes, "
                 f"got {staged_pack.stat().st_size} bytes."
+            )
+        if reason == "missing":
+            # The 404-after-listing signature: the pack was merged and removed
+            # by a concurrent gc between the caller's listing and the GET.  A
+            # distinct type so the fetch can re-list and retry once while every
+            # other handler keeps treating it as the SeafileAPIError it is.
+            raise ListedPackVanishedError(
+                f"Packfile {pack_name} is listed at {remote_pack_dir} but was gone when "
+                "downloaded; a concurrent compaction may have merged and removed it, and "
+                "the local repository would be missing objects."
             )
         if reason is not None:
             raise SeafileAPIError(

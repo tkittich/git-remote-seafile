@@ -2016,6 +2016,10 @@ class TestFetchFailureIsLoud(unittest.TestCase):
             )
 
     def test_an_advertised_pack_that_cannot_be_downloaded_is_an_error(self):
+        # The pack is missing on the first attempt (the listing predates a
+        # concurrent gc's removal), so the fetch re-lists once and retries;
+        # this client's listing never changes, so the second attempt fails
+        # too and the fetch dies with the remedy named.
         with tempfile.TemporaryDirectory() as td:
             local_git = Path(td) / ".git"
             (local_git / "objects" / "pack").mkdir(parents=True)
@@ -2029,11 +2033,102 @@ class TestFetchFailureIsLoud(unittest.TestCase):
 
             with patch("git_remote_seafile.helper.get_git_dir", return_value=local_git):
                 with patch("sys.stdout", new_callable=io.StringIO):
-                    with patch("sys.stderr", new_callable=io.StringIO):
+                    with patch("sys.stderr", new_callable=io.StringIO) as err:
                         with self.assertRaises(SeafileAPIError) as ctx:
                             h.cmd_fetch([f"{'a' * 40} refs/heads/main"])
 
             self.assertIn("pack-ffffffffffffffffffffffffffffffffffffffff.pack", str(ctx.exception))
+            self.assertIn(
+                "still missing after the remote pack directory",
+                str(ctx.exception),
+                "the failure must say the re-list-and-retry already happened",
+            )
+            self.assertEqual(client.list_dir.call_count, 2, "exactly one re-list")
+            self.assertIn("Re-listing the remote pack directory", err.getvalue())
+
+    def test_a_pack_vanished_mid_fetch_is_relistered_and_the_replacement_fetched(self):
+        """T9: a concurrent gc removed the pack between our listing and the GET.
+
+        The re-list drops the dead name and names the merged replacement, the
+        replacement downloads, and the fetch succeeds where it used to need a
+        human to re-run it.
+        """
+        with tempfile.TemporaryDirectory() as td:
+            local_git = Path(td) / ".git"
+            (local_git / "objects" / "pack").mkdir(parents=True)
+
+            client = MagicMock()
+            client.list_dir.side_effect = [
+                [{"name": "pack-old.pack"}],  # listed, then removed by the gc
+                [{"name": "pack-new.pack"}],  # the merged replacement
+            ]
+            client.get_file_bytes.return_value = None  # any fallback sees a 404
+
+            def fake_download(repo_id, path, dest, progress_callback=None, max_bytes=None):
+                if path.endswith("pack-old.pack"):
+                    return False  # 404: gone before we got to it
+                Path(dest).write_bytes(b"PACKBYTES")
+                return True
+
+            client.download_file_to.side_effect = fake_download
+            h = self._helper(client)
+
+            out = io.StringIO()
+            with patch("git_remote_seafile.helper.get_git_dir", return_value=local_git):
+                with patch("git_remote_seafile.helper.install_packfile") as install:
+                    with patch(
+                        "git_remote_seafile.helper.RemoteHelper._objects_present",
+                        return_value=True,
+                    ):
+                        with patch("sys.stdout", out), patch("sys.stderr", new_callable=io.StringIO) as err:
+                            h.cmd_fetch([f"{'a' * 40} refs/heads/main"])
+
+            self.assertEqual(out.getvalue(), "\n", "the retried fetch must succeed")
+            self.assertIn("Re-listing the remote pack directory", err.getvalue())
+            self.assertIn("gone when downloaded", err.getvalue())
+            self.assertEqual(client.list_dir.call_count, 2, "exactly one re-list")
+            self.assertEqual(install.call_count, 1, "only the replacement installs")
+            self.assertEqual(install.call_args[0][0], "pack-new.pack")
+
+    def test_a_retry_that_cannot_serve_the_requested_tips_fails_loudly(self):
+        """After the re-list the tips are in no remote pack: the fetch fails.
+
+        The retry must never turn a remote that has genuinely lost packs into
+        a successful fetch of nothing -- the silent-success class this whole
+        test class exists for.
+        """
+        with tempfile.TemporaryDirectory() as td:
+            local_git = Path(td) / ".git"
+            (local_git / "objects" / "pack").mkdir(parents=True)
+
+            client = MagicMock()
+            client.list_dir.side_effect = [
+                [{"name": "pack-old.pack"}],
+                [{"name": "pack-new.pack"}],
+            ]
+            client.get_file_bytes.return_value = None
+
+            def fake_download(repo_id, path, dest, progress_callback=None, max_bytes=None):
+                if path.endswith("pack-old.pack"):
+                    return False
+                Path(dest).write_bytes(b"PACKBYTES")
+                return True
+
+            client.download_file_to.side_effect = fake_download
+            h = self._helper(client)
+
+            with patch("git_remote_seafile.helper.get_git_dir", return_value=local_git):
+                with patch("git_remote_seafile.helper.install_packfile"):
+                    with patch(
+                        "git_remote_seafile.helper.RemoteHelper._objects_present",
+                        return_value=False,
+                    ):
+                        with patch("sys.stdout", new_callable=io.StringIO):
+                            with patch("sys.stderr", new_callable=io.StringIO):
+                                with self.assertRaises(SeafileAPIError) as ctx:
+                                    h.cmd_fetch([f"{'a' * 40} refs/heads/main"])
+
+            self.assertIn("in no remote packfile", str(ctx.exception))
 
     def test_a_successful_fetch_still_emits_the_terminator(self):
         # The guard against false failure: a healthy fetch must stay quiet and

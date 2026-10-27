@@ -102,6 +102,31 @@ class TestPacksModule(unittest.TestCase):
         )
         installer.assert_called_once()
 
+    def test_a_missing_listed_pack_raises_the_vanished_error(self):
+        """A 404 for a listed pack is the concurrent-gc signature, distinguishable."""
+        import tempfile
+        from pathlib import Path
+
+        from git_remote_seafile.packs import ListedPackVanishedError, fetch_and_install_pack
+
+        client = MagicMock()
+        del client.download_file_to  # force the capped in-memory fallback
+        client.get_file_bytes.return_value = None  # 404
+        installer = MagicMock()
+        with tempfile.TemporaryDirectory() as td:
+            with self.assertRaises(ListedPackVanishedError) as ctx:
+                fetch_and_install_pack(
+                    client=client,
+                    repo_id="r1",
+                    remote_pack_dir="/git-repo/objects/pack",
+                    pack_name="pack-123.pack",
+                    git_dir=Path(td),
+                    installer=installer,
+                )
+        self.assertIn("gone when downloaded", str(ctx.exception))
+        self.assertIsInstance(ctx.exception, SeafileAPIError)
+        installer.assert_not_called()
+
 
 
 class TestPackNamesCannotCollideByCase(unittest.TestCase):

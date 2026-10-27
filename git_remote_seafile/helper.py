@@ -22,6 +22,7 @@ from .packs import (
     check_remote_has_packs,
     fetch_and_install_pack,
     is_valid_pack_name,
+    ListedPackVanishedError,
     load_installed_packs,
     record_installed_packs,
 )
@@ -1319,6 +1320,21 @@ class RemoteHelper:
                 max((int(entries_by_name[n].get("size") or 0) for n in pack_files), default=0)
             )
 
+            def refresh_remote_listing() -> None:
+                """Re-read the remote pack directory and the local pack names.
+
+                Both snapshots go stale in exactly the same window: a concurrent
+                gc merges packs and installs the result while this fetch runs,
+                so the fresh listing drops the dead names and names whatever
+                replaced them, and the fresh glob sees what the first download
+                attempts already installed.
+                """
+                nonlocal entries_by_name, pack_files, local_packs
+                remote_entries = self.client.list_dir(self.repo_id, remote_pack_dir)
+                entries_by_name = {e["name"]: e for e in remote_entries if isinstance(e, dict) and "name" in e}
+                pack_files = [name for name in entries_by_name if name.endswith(".pack")]
+                local_packs = {p.name for p in local_pack_dir.glob("pack-*.pack")} if local_pack_dir.is_dir() else set()
+
             def download_missing(already_fetched: dict[str, int]) -> dict[str, int | None]:
                 """Install every remote pack this clone does not already hold.
 
@@ -1356,7 +1372,41 @@ class RemoteHelper:
                     )
                 return fetched
 
-            fetched = download_missing(installed)
+            # A pack that was in the listing but is gone at download time was
+            # merged and removed by a concurrent gc between our listing and the
+            # GET. One re-list-and-retry serves it: the fresh listing drops the
+            # dead name and names whatever replaced it. A second failure -- and
+            # requested tips still missing after the retry -- propagates,
+            # because a fetch that cannot serve its refs must fail loudly
+            # rather than quietly return half a repository.
+            relists_left = 1
+            vanished_once = False
+
+            def download_retrying(already_fetched: dict[str, int]) -> dict[str, int | None]:
+                nonlocal relists_left, vanished_once
+                try:
+                    return download_missing(already_fetched)
+                except ListedPackVanishedError as ex:
+                    if relists_left <= 0:
+                        raise
+                    relists_left -= 1
+                    vanished_once = True
+                    sys.stderr.write(
+                        f"Note: {ex} Re-listing the remote pack directory "
+                        "and retrying the download.\n"
+                    )
+                    sys.stderr.flush()
+                    refresh_remote_listing()
+                    try:
+                        return download_missing(already_fetched)
+                    except ListedPackVanishedError as ex2:
+                        raise SeafileAPIError(
+                            f"{ex2} It was still missing after the remote pack directory "
+                            "was re-listed and the download retried once; run "
+                            "'git-remote-seafile test <url>' to diagnose."
+                        ) from ex2
+
+            fetched = download_retrying(installed)
 
             # The recorded list is a *hint*, and a hint must never outrank
             # evidence.  It says "this clone fetched that pack", which implies
@@ -1376,7 +1426,18 @@ class RemoteHelper:
                     "no ref reaches. Downloading them again.\n"
                 )
                 sys.stderr.flush()
-                fetched.update(download_missing({}))
+                fetched.update(download_retrying({}))
+
+            # The retry healed the listing, not the remote: if the requested
+            # tips are in no pack we could install, the fetch cannot serve
+            # them.  Saying so here beats git dying later with "did not send
+            # all necessary objects" and nothing in the output to explain it.
+            if vanished_once and requested_shas and not self._objects_present(requested_shas):
+                raise SeafileAPIError(
+                    "the requested objects are in no remote packfile even after the pack "
+                    "directory was re-listed -- the remote may have lost packs; run "
+                    "'git-remote-seafile test <url>' to diagnose"
+                )
 
             record_installed_packs(git_dir, self.repo_id, self.repo_path, fetched)
 
