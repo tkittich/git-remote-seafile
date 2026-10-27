@@ -6573,6 +6573,11 @@ def status_conflicts(args: argparse.Namespace) -> list[str]:
         problems.append(
             "--record-mtimes and --no-record-mtimes only apply to a snapshot run"
         )
+    if args.no_push or args.dry_run:
+        problems.append(
+            "--status describes the next run as it would be made with the vault's "
+            "remembered settings, so it does not combine with --no-push or --dry-run"
+        )
     return problems
 
 
@@ -6622,6 +6627,11 @@ def _status_walk_nested(work_tree: Path, nested: str, excludes: list[str]) -> li
     return found
 
 
+def _status_junction_filter(source: Path) -> Any:
+    """The run's own junction predicate on Windows (git follows a junction, a run leaves it out)."""
+    return _junction_filter(source) if os.name == "nt" else None
+
+
 def _status_inventory(
     git_dir: Path, source: Path, excludes: list[str]
 ) -> tuple[list[str], list[str], list[str]]:
@@ -6638,10 +6648,18 @@ def _status_inventory(
     nested: list[str] = []
     unreadable_dirs: list[str] = []
     listed = stageable_paths(git_dir, source, nested_out=nested, warnings_out=unreadable_dirs)
+    # The three filters a run applies before staging (70_stage): a status that
+    # skipped them would call "new" what no run will ever capture.
+    behind = _status_junction_filter(source)
     paths = [
         path for path in listed
         if not any(exclude_matches(path, pat) for pat in excludes)
+        and path != PAYLOAD_RESERVED_DIR
+        and not path.startswith(PAYLOAD_RESERVED_DIR + "/")
+        and not is_clock_probe_debris(path)
+        and not (behind is not None and behind(path))
     ]
+    nested = [d for d in nested if not (behind is not None and behind(d, True))]
     for repo in nested:
         paths.extend(_status_walk_nested(source, repo, excludes))
     return sorted(set(paths)), nested, unreadable_dirs
@@ -6755,6 +6773,7 @@ def status_command(
     changed: list[str] = []
     new: list[str] = []
     unreadable: list[str] = []
+    uncompared = 0
     for path in inventory:
         try:
             st = os.lstat(extended_path(source / path))
@@ -6771,8 +6790,13 @@ def status_command(
         elif path in recorded:
             if st.st_mtime_ns != recorded[path]:
                 changed.append(path)
-        else:
+        elif recorded:
             new.append(path)
+        else:
+            # A payload snapshot taken without the mtimes record: no baseline
+            # exists for the git-stored files, and "everything is new" would be
+            # the report's only possible answer for every one of them.
+            uncompared += 1
     known = set(payload_by_path) | set(recorded)
     # What is under an unreadable directory is missing from the listing, not
     # deleted: it stays out of that count and the directory is named instead.
@@ -6784,11 +6808,20 @@ def status_command(
 
     print(
         "Note: the counts below are a size-and-mtime comparison against the records "
-        "the last snapshot wrote; they err on both sides -- a change that keeps size "
-        "and mtime hides from this report, and a file whose time changed without its "
-        "content shows as changed though the next run would find nothing new. The "
-        "snapshot itself re-hashes what it stages."
+        "the last snapshot wrote; they err on both sides -- a change that keeps its "
+        "recorded stats hides from this report (size and mtime for a payload file, "
+        "mtime alone for a git-stored one, whose record holds no size), and a file "
+        "whose time changed without its content shows as changed though the next run "
+        "would find nothing new. The snapshot itself re-hashes what it stages. This "
+        "report reads only local state and does not contact the remote, so it cannot "
+        "say whether the last snapshot was pushed."
     )
+    if uncompared:
+        print(
+            f"  {uncompared:,} git-stored file(s) could not be compared: the last "
+            "snapshot has a payload manifest but no mtimes record (--no-record-mtimes); "
+            "the next snapshot re-establishes it"
+        )
     print(f"  changed since: {len(changed)} file(s), {len(new)} new, {len(deleted)} deleted")
     for line in _status_examples(sorted(changed)):
         print(f"  changed: {line}")
@@ -6817,6 +6850,7 @@ def status_command(
         "new": len(new),
         "deleted": len(deleted),
         "unreadable": len(unreadable),
+        "uncompared": uncompared,
     })
     return 0
 

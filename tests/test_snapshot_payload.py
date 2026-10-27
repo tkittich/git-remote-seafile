@@ -2067,6 +2067,19 @@ class PayloadRetentionTests(_PayloadFixture):
 class PayloadRememberVerifyViewAndClockTests(_PayloadFixture):
     """The remembered setting, verify, views, the clock domain, the report."""
 
+    def test_status_does_not_call_every_git_file_new_when_the_snapshot_has_no_mtimes(self):
+        """A payload snapshot taken with --no-record-mtimes has a manifest but no
+        baseline for the git-stored files; the report must say so instead of
+        counting every one of them as new."""
+        self.assertEqual(self.snapshot("--no-record-mtimes")[0], 0)
+        rc, out, err = self.run_tool(self.src, "--vault", self.vault, "--status")
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn("0 new", out)
+        self.assertIn("could not be compared", out)
+        rc, out, err = self.run_tool(self.src, "--vault", self.vault, "--status", "--json")
+        status = json.loads(out)["result"]["status"]
+        self.assertGreater(status["uncompared"], 0)
+        self.assertEqual(status["new"], 0)
 
     # -- the remembered setting and the force-rehash switch ---------------------
     def test_payload_rehash_ignores_the_cache_for_one_run(self):

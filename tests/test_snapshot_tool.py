@@ -3267,6 +3267,36 @@ class StatusTests(_SnapshotFixture):
         self.assertIn("could not be read", out)
         self.assertIn("a snapshot run stops", out)
 
+    def test_paths_no_run_would_capture_are_not_reported_as_new(self):
+        """A run filters out probe debris, the reserved directory and anything
+        behind a Windows junction; a status that listed them as new would never
+        reach zero.  The junction predicate is injected so this runs everywhere."""
+        self.assertEqual(self.snapshot("--no-push", "--record-mtimes")[0], 0)
+        (self.code / ".grs-clock-probe-1-2").write_bytes(b"x")
+        (self.code / ".seafile-payload").mkdir()
+        (self.code / ".seafile-payload" / "README.txt").write_bytes(b"x")
+        (self.code / "link").mkdir()
+        (self.code / "link" / "deep.txt").write_bytes(b"x")
+
+        def behind(path: str, self_too: bool = False) -> bool:
+            return path.startswith("link/") or (self_too and path == "link")
+
+        with unittest.mock.patch.object(snap, "_status_junction_filter", lambda _src: behind):
+            rc, out, err = self.status()
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn("changed since: 0 file(s), 0 new, 0 deleted", out)
+        # Without the junction predicate only that one path is a real "new" file.
+        rc, out, err = self.status()
+        self.assertIn("1 new", out)
+        self.assertIn("new: link/deep.txt", out)
+
+    def test_the_report_says_it_cannot_tell_whether_the_snapshot_was_pushed(self):
+        self.assertEqual(self.snapshot("--no-push", "--record-mtimes")[0], 0)
+        rc, out, err = self.status()
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn("does not contact the remote", out)
+        self.assertIn("mtime alone for a git-stored one", out)
+
     def test_changes_are_named_and_counted(self):
         self.assertEqual(self.snapshot("--no-push", "--record-mtimes")[0], 0)
         (self.code / "README.md").write_bytes(b"changed\n")
@@ -3320,6 +3350,10 @@ class StatusTests(_SnapshotFixture):
         rc, out, err = self.status("--record-mtimes")
         self.assertEqual(rc, 1, out + err)
         self.assertIn("only apply to a snapshot run", err)
+        for flag in ("--no-push", "--dry-run"):
+            rc, out, err = self.status(flag)
+            self.assertEqual(rc, 1, out + err)
+            self.assertIn("does not combine with --no-push or --dry-run", err)
 
 
 if __name__ == "__main__":

@@ -252,7 +252,7 @@ is the whole check. The document names `mode` (`snapshot`, `restore`,
 (the `Warning:` lines), `error` (the last `Error:` line) and `result`, whose keys
 depend on the mode (a snapshot: `files`, `bytes`, `commit`, `pushed`,
 `payload_objects_to_upload`; `payload-verify`: `checked`, `objects`, `damaged`;
-`status`: `tip`, `comparable`, `changed`, `new`, `deleted`, `unreadable`). The keys
+`status`: `tip`, `comparable`, `changed`, `new`, `deleted`, `unreadable`, `uncompared`). The keys
 of a mode are only ever added to.
 
 ### `--status`, and how far its answer reaches
@@ -267,14 +267,28 @@ so the baseline travels with the snapshot and works from another machine, where 
 per-machine hash cache would vouch for nothing.
 
 It is a **stat-based heuristic**, and the report says which way it errs: a change
-that keeps size and mtime hides from it (this is the racy window the snapshot run
-closes by re-hashing what it stages), and a file whose time changed without its
-content shows as changed though the next run would find nothing new (the run
-reuses the parent's record for a byte-identical tree). It reads only local state:
-the remote is never contacted, the library's quota is not reported, the remote
-lock is `git-remote-seafile lock-status`'s to answer, and a vault whose tip
-carries neither record (an older tool, or `--no-record-mtimes` with no payload)
-says so instead of comparing.
+that keeps the stats its record holds hides from it — size *and* mtime for a payload
+file, **mtime alone for a git-stored one**, because `mtimes.json` records no size, so
+a same-mtime rewrite of a different length reads as unchanged although the next run
+commits it (this is the racy window the snapshot run closes by re-hashing what it
+stages) — and a file whose time changed without its content shows as changed though
+the next run would find nothing new (the run reuses the parent's record for a
+byte-identical tree). Recording the size in `mtimes.json` would close the first gap
+and is a format change, so it is a backlog item rather than a patch.
+
+It reads only local state: the remote is never contacted, so it cannot say whether
+the last snapshot was pushed (a `--no-push` run advances the same local tip); the
+library's quota is not reported, the remote lock is `git-remote-seafile lock-status`'s
+to answer, and a vault whose tip carries neither record (an older tool, or
+`--no-record-mtimes` with no payload) says so instead of comparing. A payload
+snapshot taken with `--no-record-mtimes` has a manifest but no baseline for its
+git-stored files; they are counted as `uncompared`, not as new. The inventory
+applies the filters a run applies before staging (the excludes, the reserved
+`.seafile-payload/` directory, clock-probe debris and, on Windows, paths behind a
+junction), so a path no run would capture is not reported as new; a directory git
+could not open is named as unreadable, because the run would stop on it. It does not
+combine with `--no-push` or `--dry-run`: it describes the next run as it would be made
+with the settings the vault remembers.
 
 ## 5. What a run costs
 
