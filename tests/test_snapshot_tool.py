@@ -751,6 +751,31 @@ class ByteExactnessTests(_SnapshotFixture):
             "filter: unset", vault_git("check-attr", "filter", "--", "data.dat").stdout
         )
 
+    def test_a_source_working_tree_encoding_cannot_corrupt_the_backup(self):
+        # `working-tree-encoding` re-encodes on add and on checkout, so the
+        # stored blob was UTF-8 while the file on disk was UTF-16: the snapshot
+        # looked fine and the restore failed byte verification.  The pin must
+        # unset it too, in a fresh vault and in one pinned by an older version.
+        (self.code / ".gitattributes").write_bytes(b"*.txt working-tree-encoding=UTF-16LE\n")
+        utf16 = "héllo\n".encode("utf-16-le")
+        (self.code / "u.txt").write_bytes(utf16)
+
+        for older_pin in (None, b"* -text -filter -ident\n"):
+            if older_pin is not None:
+                (self.vault / ".git" / "info" / "attributes").write_bytes(older_pin)
+                utf16 += "x".encode("utf-16-le")
+                (self.code / "u.txt").write_bytes(utf16)
+            rc, out, err = self.snapshot("--remote", str(self.remote))
+            self.assertEqual(rc, 0, out + err)
+            stored = subprocess.run(
+                ["git", "--git-dir", str(self.vault / ".git"), "cat-file", "blob", "snapshot:u.txt"],
+                check=True, capture_output=True,
+            ).stdout
+            self.assertEqual(stored, utf16, f"re-encoded under pin {older_pin!r}")
+
+        self.restore_to(self.restored)
+        self.assertEqual((self.restored / "u.txt").read_bytes(), utf16)
+
     def test_a_vault_written_by_an_older_version_is_upgraded(self):
         # Vaults created before the -filter fix carry only "* -text".  The
         # marker check must notice and append, and appending is safe because a

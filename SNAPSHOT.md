@@ -430,7 +430,7 @@ original is not a backup.
 Two fixes, both needed:
 
 1. The vault is pinned byte-exact on **every** run: `core.autocrlf=false` plus
-   an `info/attributes` override carrying `* -text -filter -ident`.
+   an `info/attributes` override carrying `* -text -filter -ident -working-tree-encoding`.
 2. `info/attributes` has the **highest precedence** in Git's attribute chain, so
    it also outranks a `.gitattributes` in the source tree — a source
    `* text=auto` cannot re-enable conversion. Confirmed with `git check-attr`,
@@ -607,7 +607,7 @@ backup and wrong for a checkout.
 ## 9. Large files and Git LFS
 
 **The vault does not use Git LFS, and it actively disables it rather than merely
-omitting it.** The vault's `info/attributes` carries `* -text -filter -ident`,
+omitting it.** The vault's `info/attributes` carries `* -text -filter -ident -working-tree-encoding`,
 which outranks any `.gitattributes` in the source tree and unsets every
 `filter=` attribute — including LFS. This is deliberate, and it exists because
 of a real, measured failure: a source `.gitattributes` containing

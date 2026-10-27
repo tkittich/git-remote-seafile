@@ -140,7 +140,7 @@ def ensure_identity(
             )
 
 
-BYTE_EXACT_MARKER = "* -text -filter -ident"
+BYTE_EXACT_MARKER = "* -text -filter -ident -working-tree-encoding"
 
 BYTE_EXACT_ATTRIBUTES = (
     "# Written by seafile_snapshot.py.  The vault exists to hold byte-exact\n"
@@ -155,7 +155,11 @@ BYTE_EXACT_ATTRIBUTES = (
     "#            uploaded nowhere, because the vault has no LFS remote.\n"
     "#            Silent data loss in a tool whose job is a full backup.\n"
     "#   -ident   $Id$ keyword expansion.\n"
-    "* -text -filter -ident\n"
+    "#   -working-tree-encoding\n"
+    "#            a source '*.txt working-tree-encoding=UTF-16LE' makes `git add`\n"
+    "#            store the file re-encoded as UTF-8, and a restore then differs\n"
+    "#            from the original.\n"
+    "* -text -filter -ident -working-tree-encoding\n"
 )
 
 

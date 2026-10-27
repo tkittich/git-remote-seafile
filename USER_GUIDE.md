@@ -1112,7 +1112,7 @@ core.untrackedCache=false
 and writes this into its own `info/attributes`:
 
 ```
-* -text -filter -ident
+* -text -filter -ident -working-tree-encoding
 ```
 
 `info/attributes` **outranks** any `.gitattributes` copied from the source, which is what makes the pin hold. Three details worth knowing, because all were learned the hard way:
