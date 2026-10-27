@@ -2801,6 +2801,28 @@ class PayloadTuningTests(_PayloadFixture):
         self.assertNotIn("tuned:", out)
         self.assertEqual(self.paid(), {"half.bin"})
 
+    def test_a_slow_measured_link_is_remembered_as_measured_not_as_zero(self):
+        """The rates were stored with one decimal, so a probe slower than
+        0.05 MiB/s (a loaded runner, a bad connection) was kept as "0.0", read
+        back as unusable and replaced by the assumed 53 MiB/s: the opposite of
+        what was measured.  It also made the test above fail on a busy machine."""
+        snap.ensure_vault(self.vault, "snapshot")
+        snap.remember_tuning(
+            self.vault, {"ratio": 0.5, "upload": 0.0312, "single": 0.0187}, dry_run=False
+        )
+        self.assertGreater(float(self.setting("snapshot.uplink")), 0)
+        self.assertGreater(float(self.setting("snapshot.uplink1")), 0)
+        upload, single, assumed = snap.link_rates(snap._read_local_config_map(self.vault))
+        self.assertAlmostEqual(upload, 0.0312, places=4)
+        self.assertAlmostEqual(single, 0.0187, places=4)
+        self.assertFalse(assumed, "a measured rate is not an assumed one")
+        # ordinary rates keep their short form
+        snap.remember_tuning(
+            self.vault, {"ratio": 0.5, "upload": 53.21, "single": 32.0}, dry_run=False
+        )
+        self.assertEqual(self.setting("snapshot.uplink"), "53.21")
+        self.assertEqual(self.setting("snapshot.uplink1"), "32")
+
     def test_an_established_vault_is_never_tuned_on_its_own(self):
         snap.ensure_vault(self.vault, "snapshot")
         _git(self.vault, "config", "snapshot.payload", "auto")

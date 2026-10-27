@@ -20,6 +20,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **The automatic tail merge deferred on every push once the movable packs outgrew its download budget**, so the pack count grew without bound (reproduced on a real server with a small `seafile.gcmaxpackmib`: pushes 20 to 26 all deferred, 20 to 26 packs, and every `git clone` downloads every pack). It now merges the smallest packs that fit the budget (never fewer than two) and leaves the rest for the next run; only a set whose two smallest packs already exceed the budget still defers. On the same server the 20th push merged 20 packs down to 10 and the count stayed bounded afterwards. The result of `tail_merge` gains `left_for_later`.
 
+- **A link measured slower than 0.05 MiB/s was remembered as 0.0** (one decimal), read back as unusable, and replaced by the assumed 53 MiB/s: the opposite of what was measured. The vault stores the rates to four significant figures now. It also made `PayloadTuningTests.test_a_new_vault_measures_once_and_remembers` fail once on a loaded Windows runner.
+
 ### Changed
 - SNAPSHOT.md and DESIGN's failure model say which omissions are not reported: named pipes, sockets and device nodes have no content to store and are skipped without a note.
 
