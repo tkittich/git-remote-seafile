@@ -534,10 +534,11 @@ class RemoteHelper:
             return local_sha, remote_sha
         if remote_sha and not force:
             # A ref file's content is whatever the server returned.  It reaches
-            # git's argv below, where `--stdin` or `--help` is an option, not a
-            # revision.  Only that shape is refused here: any other non-object
-            # name already fails inside git and gets the same answer.
-            if isinstance(remote_sha, str) and remote_sha.startswith("-"):
+            # git's argv below, where `--stdin` is an option and `HEAD` or
+            # `main` is a revision resolved in the *local* repository -- which
+            # answers "ancestor" for them and lets the push overwrite the ref.
+            # Only a full object id can be compared with the local tip.
+            if isinstance(remote_sha, str) and not HEX_SHA_RE.fullmatch(remote_sha):
                 return "fetch first"
             try:
                 if not is_ancestor(remote_sha, local_sha):

@@ -1399,6 +1399,26 @@ class TestRemoteHelper(unittest.TestCase):
         )
         mock_ancestor.assert_not_called()
 
+    @patch("git_remote_seafile.helper.rev_parse", return_value="a" * 40)
+    @patch("git_remote_seafile.helper.is_ancestor", return_value=True)
+    def test_a_remote_ref_that_is_a_revision_name_is_not_compared_with_the_local_repo(
+        self, mock_ancestor, _rev
+    ):
+        """``HEAD`` and ``main`` are ancestors of the local tip, so resolving
+        them locally let a garbled ref file be overwritten by any push."""
+        for planted in ("HEAD", "main", "HEAD~1", "abc1234"):
+            h = make_helper()
+            h.client = MagicMock()
+            h.client.get_file_text.return_value = planted
+            h.repo_id = "repo1"
+            h.repo_path = "/git-repo"
+            self.assertEqual(
+                h._decide_update("refs/heads/main", "refs/heads/main", force=False),
+                "fetch first",
+                planted,
+            )
+        mock_ancestor.assert_not_called()
+
     def test_cmd_push_delete_does_not_prune_on_an_unconfirmed_listing(self):
         # list_dir answers [] for both "empty" and "missing/unreachable"; a
         # transient failure used to read as "prune it" -- a destructive call
