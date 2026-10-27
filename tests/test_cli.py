@@ -71,6 +71,41 @@ class TestDoctor(unittest.TestCase):
         self.assertIn("[FAIL] write probe", out)
 
 
+class TestTerminationUnwinds(unittest.TestCase):
+    def test_sigterm_runs_finally_blocks_so_a_lock_ticket_is_released(self):
+        """A bare SIGTERM skipped ``RemoteLock.__exit__`` and left the ticket on
+        the server for a full lease; it must unwind like an exception."""
+        import signal
+
+        from git_remote_seafile.cli import _unwind_on_termination
+
+        saved = {n: signal.getsignal(n) for n in (signal.SIGTERM,)}
+        try:
+            _unwind_on_termination()
+            released = []
+            with self.assertRaises(SystemExit) as ctx:
+                try:
+                    signal.raise_signal(signal.SIGTERM)
+                finally:
+                    released.append("ticket deleted")
+            self.assertEqual(released, ["ticket deleted"])
+            self.assertEqual(ctx.exception.code, 128 + int(signal.SIGTERM))
+        finally:
+            for number, handler in saved.items():
+                signal.signal(number, handler)
+
+    def test_main_installs_the_handler_before_anything_else(self):
+        import signal
+
+        before = signal.getsignal(signal.SIGTERM)
+        try:
+            with patch.object(sys, "argv", ["git-remote-seafile", "--version"]),                     patch("sys.stdout", new_callable=io.StringIO):
+                main()
+            self.assertNotEqual(signal.getsignal(signal.SIGTERM), before)
+        finally:
+            signal.signal(signal.SIGTERM, before)
+
+
 class TestGcTail(unittest.TestCase):
     def _run(self, result):
         helper = MagicMock(repo_id="rid", repo_path="/r")

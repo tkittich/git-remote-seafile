@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import os
+import signal
 import sys
 from pathlib import Path
 from typing import Any
@@ -794,7 +795,31 @@ def _is_git_invoking_the_helper(args: list[str]) -> bool:
         return False
 
 
+def _unwind_on_termination() -> None:
+    """Turn SIGTERM (and Ctrl-Break on Windows) into an exit that unwinds.
+
+    A bare SIGTERM ends the process without running ``finally`` blocks, so the
+    lock ticket of a push cut off by a CI timeout or a ``kill`` stayed on the
+    server for a full lease -- for every other machine; the dead-PID shortcut
+    only helps the same one.  Raising ``SystemExit`` instead lets
+    ``RemoteLock.__exit__`` delete the ticket.  Not installable off the main
+    thread, and a console without the signal simply keeps its default.
+    """
+    def handler(signum: int, frame: Any) -> None:
+        raise SystemExit(128 + signum)
+
+    for name in ("SIGTERM", "SIGBREAK"):
+        number = getattr(signal, name, None)
+        if number is None:
+            continue
+        try:
+            signal.signal(number, handler)
+        except (ValueError, OSError):
+            pass
+
+
 def main() -> int:
+    _unwind_on_termination()
     if hasattr(sys.stdout, "reconfigure"):
         try:
             sys.stdout.reconfigure(newline="\n", encoding="utf-8")
