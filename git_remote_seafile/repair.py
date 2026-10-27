@@ -42,6 +42,7 @@ from .git_util import (
     run_git_checked,
 )
 from .lock import RemoteLock
+from .packs import is_valid_pack_name
 from .refs import REF_NAMESPACES, is_valid_ref_name, iter_refs
 
 __all__ = ["repair_remote"]
@@ -165,11 +166,19 @@ def repair_remote(
     cfg = config if config is not None else RemoteConfig.load()
 
     entries = client.list_dir(repo_id, pack_dir)
-    pack_sizes = {
-        e["name"]: int(e.get("size") or 0)
-        for e in entries
-        if isinstance(e, dict) and str(e.get("name", "")).endswith(".pack")
-    }
+    pack_sizes: dict[str, int] = {}
+    for e in entries:
+        name = str(e.get("name", "")) if isinstance(e, dict) else ""
+        if not name.endswith(".pack"):
+            continue
+        # The name becomes a local path in the scratch directory.  gc and fetch
+        # validate it before any download; a library writer who can plant
+        # "..\..\x.pack" must not get a write outside that directory here.
+        if not is_valid_pack_name(name):
+            sys.stderr.write(f"Warning: ignoring pack file with an invalid name '{name}'\n")
+            sys.stderr.flush()
+            continue
+        pack_sizes[name] = int(e.get("size") or 0)
     idx_sizes = {
         e["name"]: int(e.get("size") or 0)
         for e in entries

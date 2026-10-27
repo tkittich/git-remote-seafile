@@ -175,6 +175,35 @@ class TestRepair(unittest.TestCase):
             self.assertIn("cannot enumerate", res["unrepaired"][0][1])
             self.assertEqual(client.uploaded, [], "nothing was uploaded from a clone that has nothing")
 
+    def test_a_listed_pack_name_that_is_a_path_is_never_downloaded(self):
+        """A name like ``..\\..\\evil.pack`` becomes a local path on Windows.
+
+        Found by a real-server run: repair wrote the planted file outside its
+        scratch directory because, unlike gc and fetch, it never validated the
+        name it took from the listing.
+        """
+        with tempfile.TemporaryDirectory() as td:
+            clone, sha = _history(Path(td))
+            client = _StubClient({"main": sha})
+            hostile = ["..\\..\\evil.pack", "../evil.pack", "pack-x\n.pack"]
+            for name in hostile:
+                client.pack_files[name] = b"not a pack"
+            requested: list[str] = []
+            real_download = client.download_file_to
+
+            def spy(repo_id, path, dest, progress_callback=None, max_bytes=None):
+                requested.append(str(path))
+                return real_download(repo_id, path, dest, progress_callback, max_bytes)
+
+            client.download_file_to = spy
+            with patch("sys.stderr") as err:
+                res = _repair(client, clone, dry_run=True)
+            self.assertEqual(res["status"], "broken")
+            self.assertEqual(requested, [], "no hostile name reached a download")
+            written = "".join(c.args[0] for c in err.write.call_args_list)
+            self.assertIn("invalid name", written)
+            self.assertIn("ignoring pack file", written)
+
     def test_an_upload_that_lands_nothing_is_reported_not_silent(self):
         """An upload the listing cannot confirm fails the repair out loud.
 
