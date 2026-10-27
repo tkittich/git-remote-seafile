@@ -821,6 +821,34 @@ class TestClientAPI(unittest.TestCase):
         self.assertTrue(self.client.upload_file("repo1", "/test", "file.txt", bio))
         self.assertEqual(self.client.session.post.call_count, 2)
 
+    def test_a_caller_can_ask_for_one_attempt_and_a_short_wait(self):
+        """A ref write must not be resent after a timeout (the resend can land
+        after a competitor's write) and must not wait ten minutes for a reply."""
+        self.client.dir_exists = MagicMock(return_value=True)
+        link = '"https://seafile.example.com/seafhttp/upload/xyz"'
+        self.client.session.get = MagicMock(return_value=MagicMock(status_code=200, text=link))
+        self.client.session.post = MagicMock(
+            side_effect=[MagicMock(status_code=502, text="Bad Gateway"), MagicMock(status_code=200)]
+        )
+        with self.assertRaises(SeafileAPIError):
+            self.client.upload_file(
+                "repo1", "/test", "ref", b"sha\n", attempts=1, read_timeout=7,
+            )
+        self.assertEqual(self.client.session.post.call_count, 1)
+        timeout = self.client.session.post.call_args.kwargs["timeout"]
+        self.assertEqual(timeout[1], 7)
+
+    def test_the_default_upload_still_retries_and_waits_long(self):
+        self.client.dir_exists = MagicMock(return_value=True)
+        link = '"https://seafile.example.com/seafhttp/upload/xyz"'
+        self.client.session.get = MagicMock(return_value=MagicMock(status_code=200, text=link))
+        self.client.session.post = MagicMock(
+            side_effect=[MagicMock(status_code=502, text="Bad Gateway"), MagicMock(status_code=200)]
+        )
+        self.assertTrue(self.client.upload_file("repo1", "/test", "f", b"x"))
+        self.assertEqual(self.client.session.post.call_count, 2)
+        self.assertGreaterEqual(self.client.session.post.call_args.kwargs["timeout"][1], 600)
+
     def test_upload_file_retries_refreshes_upload_link(self):
         self.client.dir_exists = MagicMock(return_value=True)
         link1 = '"https://seafile.example.com/seafhttp/upload/link1"'

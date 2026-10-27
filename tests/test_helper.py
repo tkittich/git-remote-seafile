@@ -1419,6 +1419,28 @@ class TestRemoteHelper(unittest.TestCase):
             )
         mock_ancestor.assert_not_called()
 
+    @patch("git_remote_seafile.helper.rev_parse", return_value="a" * 40)
+    def test_a_ref_write_is_one_short_attempt_and_a_failure_says_the_outcome_is_unknown(self, _rev):
+        """The fence is moments old when the ref is written; a resend after a
+        timeout may land after a competitor's write, so there is none, and the
+        error says the ref may or may not have been written."""
+        from git_remote_seafile.client import REF_WRITE_READ_TIMEOUT_SECONDS, SeafileAPIError
+
+        h = make_helper()
+        h.client = MagicMock()
+        h.repo_id = "repo1"
+        h.repo_path = "/git-repo"
+        h._refs_cache = {}
+        h.client.get_file_text.return_value = None
+        h.client.upload_file.side_effect = SeafileAPIError("Failed to upload main: timed out")
+        with self.assertRaises(SeafileAPIError) as ctx:
+            h._publish_ref("refs/heads/main", "a" * 40, None, False)
+        kwargs = h.client.upload_file.call_args.kwargs
+        self.assertEqual(kwargs["attempts"], 1)
+        self.assertEqual(kwargs["read_timeout"], REF_WRITE_READ_TIMEOUT_SECONDS)
+        self.assertIn("may or may not have been written", str(ctx.exception))
+        self.assertIn("was not resent", str(ctx.exception))
+
     def _format_race_helper(self, remote_refs):
         """A helper whose remote holds *remote_refs* (``{name: sha}``) under refs/heads."""
         h = make_helper()

@@ -301,6 +301,14 @@ UPLOAD_READ_TIMEOUT_SECONDS = 600
 #: Attempts per chunk (the first plus retries) before the upload is abandoned.
 UPLOAD_CHUNK_ATTEMPTS = 3
 
+#: How long a ref-sized write (a 41-byte file under the lock, behind a fence that
+#: proved ownership moments before) waits for the server's reply.  The 600 s above
+#: is for a multi-gigabyte upload; applied to a ref it widened the gap between the
+#: fence and the write to minutes, and a resend after a timeout could land after
+#: a competitor's write.  A server that has not answered a 41-byte write in this
+#: long is not going to be waited on; the caller reports the ref as unknown.
+REF_WRITE_READ_TIMEOUT_SECONDS = 20
+
 
 class SeafileClient:
     """Lightweight HTTP client for Seafile Web API v2.1."""
@@ -1073,8 +1081,16 @@ class SeafileClient:
         content: Any,
         replace: bool = True,
         progress_callback: Any = None,
+        *,
+        attempts: int | None = None,
+        read_timeout: float | None = None,
     ) -> bool:
         """Upload file content to a parent directory.
+
+        ``attempts`` and ``read_timeout`` override the defaults (three attempts
+        for a rewindable payload, ``UPLOAD_READ_TIMEOUT_SECONDS``): a caller
+        writing a ref wants one attempt and a short wait, because a resend after
+        a timeout may land after somebody else's write.
 
         ``content`` may be ``bytes``, an open binary file object, or a path.
         A file object or path is *streamed* to the server rather than read into
@@ -1087,12 +1103,22 @@ class SeafileClient:
         ``pathlib.Path`` to upload a file from disk.  A path spelled as ``str``
         would otherwise be uploaded as a file whose body is its own name.
         """
+        # Passed on only when set, so the default call keeps its old shape.
+        options: dict[str, Any] = {}
+        if attempts is not None:
+            options["attempts"] = attempts
+        if read_timeout is not None:
+            options["read_timeout"] = read_timeout
         if isinstance(content, os.PathLike):
             with open(content, "rb") as fh:
-                return self._upload(repo_id, parent_dir, filename, fh, replace, progress_callback)
+                return self._upload(
+                    repo_id, parent_dir, filename, fh, replace, progress_callback, **options
+                )
         if isinstance(content, str):
             content = content.encode("utf-8")
-        return self._upload(repo_id, parent_dir, filename, content, replace, progress_callback)
+        return self._upload(
+            repo_id, parent_dir, filename, content, replace, progress_callback, **options
+        )
 
     def _upload(
         self,
@@ -1102,6 +1128,9 @@ class SeafileClient:
         payload: Any,
         replace: bool,
         progress_callback: Any = None,
+        *,
+        attempts: int | None = None,
+        read_timeout: float | None = None,
     ) -> bool:
         clean_parent = ("/" + parent_dir.strip("/")).rstrip("/") or "/"
         self.mkdir_p(repo_id, clean_parent)
@@ -1134,7 +1163,11 @@ class SeafileClient:
         is_rewindable = (hasattr(payload, "read") and hasattr(payload, "seek")) or isinstance(
             payload, (bytes, bytearray)
         )
-        max_attempts = UPLOAD_CHUNK_ATTEMPTS if is_rewindable else 1
+        max_attempts = (
+            attempts if attempts is not None
+            else UPLOAD_CHUNK_ATTEMPTS if is_rewindable else 1
+        )
+        upload_timeout = self._upload_timeout(read_timeout)
         start_cur = payload.tell() if hasattr(payload, "tell") else 0
 
         up_resp = None
@@ -1165,7 +1198,7 @@ class SeafileClient:
                         "Content-Length": str(len(mp)),
                     }
                     up_resp = self._xfer(
-                        "post", upload_url, data=mp, headers=headers, timeout=self._upload_timeout()
+                        "post", upload_url, data=mp, headers=headers, timeout=upload_timeout
                     )
                 elif isinstance(payload, (bytes, bytearray)) and progress_callback is not None:
                     bio = io.BytesIO(payload)
@@ -1182,13 +1215,13 @@ class SeafileClient:
                         "Content-Length": str(len(mp)),
                     }
                     up_resp = self._xfer(
-                        "post", upload_url, data=mp, headers=headers, timeout=self._upload_timeout()
+                        "post", upload_url, data=mp, headers=headers, timeout=upload_timeout
                     )
                 else:
                     files = {"file": (filename, payload)}
                     data = {"parent_dir": clean_parent, "replace": "1" if replace else "0"}
                     up_resp = self._xfer(
-                        "post", upload_url, files=files, data=data, timeout=self._upload_timeout()
+                        "post", upload_url, files=files, data=data, timeout=upload_timeout
                     )
                     if progress_callback:
                         try:
@@ -1229,8 +1262,14 @@ class SeafileClient:
             )
         return True
 
-    def _upload_timeout(self) -> tuple[float, float]:
-        """``(connect, read)`` for an upload request; see the module constant."""
+    def _upload_timeout(self, read_timeout: float | None = None) -> tuple[float, float]:
+        """``(connect, read)`` for an upload request; see the module constant.
+
+        An explicit *read_timeout* is taken as given (a ref write is meant to be
+        shorter than the 30 s request timeout, not floored to it).
+        """
+        if read_timeout is not None:
+            return (self.timeout, read_timeout)
         return (self.timeout, max(self.timeout, UPLOAD_READ_TIMEOUT_SECONDS))
 
     def _upload_chunked(

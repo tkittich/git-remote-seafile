@@ -10,7 +10,12 @@ import time
 from pathlib import Path
 from typing import Any, NamedTuple
 
-from .client import SeafileClient, SeafileAPIError, TransferAborted
+from .client import (
+    REF_WRITE_READ_TIMEOUT_SECONDS,
+    SeafileClient,
+    SeafileAPIError,
+    TransferAborted,
+)
 from .config import RemoteConfig
 from .lock import (
     LEASE_LOST,
@@ -949,13 +954,25 @@ class RemoteHelper:
 
         dst_parent = self._full_path(os.path.dirname(dst))
         dst_filename = os.path.basename(dst)
-        self.client.upload_file(
-            self.repo_id,
-            dst_parent,
-            dst_filename,
-            f"{local_sha}\n".encode("utf-8"),
-            replace=True,
-        )
+        # One attempt and a short wait.  The fence that proved ownership is
+        # moments old; a write that is resent after a timeout may land after a
+        # competitor's, and one the server takes minutes to answer is not worth
+        # waiting for.  Either way the outcome is unknown, and said to be.
+        try:
+            self.client.upload_file(
+                self.repo_id,
+                dst_parent,
+                dst_filename,
+                f"{local_sha}\n".encode("utf-8"),
+                replace=True,
+                attempts=1,
+                read_timeout=REF_WRITE_READ_TIMEOUT_SECONDS,
+            )
+        except SeafileAPIError as ex:
+            raise SeafileAPIError(
+                f"{ex}; the ref may or may not have been written and the write was not "
+                "resent -- fetch, check the remote, and push again"
+            ) from ex
 
         # Read the ref back.  Seafile exposes no atomic compare-and-swap, so the
         # CAS check above and this write are separate round trips, and a peer
@@ -1028,6 +1045,8 @@ class RemoteHelper:
                         "HEAD",
                         f"ref: {dst}\n".encode("utf-8"),
                         replace=True,
+                        attempts=1,
+                        read_timeout=REF_WRITE_READ_TIMEOUT_SECONDS,
                     )
             except Exception as ex:
                 sys.stderr.write(
