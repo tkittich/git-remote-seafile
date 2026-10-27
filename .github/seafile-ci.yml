@@ -1,0 +1,75 @@
+# A Seafile CE container for the real-server suite (`.github/workflows/realserver.yml`).
+#
+# Single-container CE 12 shape (nginx on :80 inside the seafile image, MariaDB
+# and memcached beside it): the fewest moving parts that still give real server
+# semantics.  The measured deployment is CE 13.0.28; when the 13 compose
+# (caddy, JWT_PRIVATE_KEY, redis) has been validated once, only this file
+# changes -- the workflow and tools/realserver_ci.py speak plain HTTP to the
+# mapped port and do not care which version answers.
+#
+# Every variable that changed spelling across 11 -> 12 -> 13 is set in BOTH
+# spellings (DB_HOST/SEAFILE_MYSQL_DB_HOST, SEAFILE_ADMIN_*/INIT_SEAFILE_ADMIN_*,
+# DB_ROOT_PASSWORD/SEAFILE_MYSQL_DB_PASSWORD/INIT_SEAFILE_MYSQL_ROOT_PASSWORD):
+# first-boot scripts read the spelling they know and ignore the rest, and a
+# blind first run should not fail on a rename.  This file is where the fix
+# lands if the container logs disagree.
+#
+# The credentials are throwaway by construction: they exist only on the CI
+# runner's container, for a library that is deleted at the end of every run.
+name: grs-realserver
+
+services:
+  db:
+    image: mariadb:10.11
+    environment:
+      MYSQL_ROOT_PASSWORD: grs-ci-root
+      MYSQL_DATABASE: seafile-db
+      MYSQL_USER: seafile
+      MYSQL_PASSWORD: grs-ci-db
+      MYSQL_LOG_CONSOLE: "true"
+      SEAFILE_MYSQL_DB_HOST: db
+      SEAFILE_MYSQL_DB_PORT: "3306"
+      SEAFILE_MYSQL_DB_USER: seafile
+      SEAFILE_MYSQL_DB_PASSWORD: grs-ci-db
+      INIT_SEAFILE_MYSQL_ROOT_PASSWORD: grs-ci-root
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 5s
+      timeout: 5s
+      retries: 36
+
+  memcached:
+    image: memcached:1.6.29
+    entrypoint: memcached -m 256
+
+  seafile:
+    image: seafileltd/seafile-mc:12.0-latest
+    ports:
+      - "8080:80"
+    volumes:
+      - seafile-data:/shared
+    environment:
+      DB_HOST: db
+      SEAFILE_MYSQL_DB_HOST: db
+      DB_ROOT_PASSWORD: grs-ci-root
+      SEAFILE_MYSQL_DB_PASSWORD: grs-ci-db
+      TIME_ZONE: Etc/UTC
+      SEAFILE_ADMIN_EMAIL: ci@grs.invalid
+      SEAFILE_ADMIN_PASSWORD: grs-ci-admin
+      INIT_SEAFILE_ADMIN_EMAIL: ci@grs.invalid
+      INIT_SEAFILE_ADMIN_PASSWORD: grs-ci-admin
+      # Hostname carries the mapped port: first boot writes SERVICE_URL and
+      # FILE_SERVER_ROOT from it, so the server's transfer links are reachable
+      # from the runner at http://localhost:8080.
+      SEAFILE_SERVER_HOSTNAME: localhost:8080
+      SEAFILE_SERVER_PROTOCOL: http
+      # Ignored by CE 12; carried so the 13.0 flip needs no other edit here.
+      JWT_PRIVATE_KEY: grs-ci-not-a-secret-but-long-enough-0123456789
+    depends_on:
+      db:
+        condition: service_healthy
+      memcached:
+        condition: service_started
+
+volumes:
+  seafile-data:

@@ -1,0 +1,57 @@
+name: real-server (Seafile container)
+
+# The T1/T2 gap closer: every real-server bug so far was found by hand, because
+# the stub encodes the authors' beliefs about the server rather than the
+# server's behavior.  This workflow stands up a throwaway Seafile CE container
+# (`.github/seafile-ci.yml`), runs `tests.test_realserver` against it, and
+# deletes the scratch library it created -- nothing outside the runner survives.
+#
+# **Deliberately dispatch-only for now.**  This workflow could not be exercised
+# before landing (no Docker on the machine that wrote it), and this project's
+# own history says first CI runs fail environmentally.  Trigger it by hand
+# ("Run workflow"), fix what the logs name -- the image tag, first-boot env
+# spellings and port mapping in `.github/seafile-ci.yml` are the likely
+# suspects, in that order -- and only after one green run enable the schedule:
+#
+# on:
+#   workflow_dispatch:
+#   schedule:
+#     - cron: "17 3 * * 0"   # weekly, Sunday 03:17 UTC
+on:
+  workflow_dispatch:
+
+# Least privilege, same as ci.yml: nothing here writes to the repository.
+permissions:
+  contents: read
+
+# A second manual trigger while one run is in flight queues behind it rather
+# than racing it for the mapped port.
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  realserver:
+    # Forks burn their own minutes on a container this size for a suite whose
+    # findings only matter on the repository that can act on them.
+    if: github.repository == 'tkittich/git-remote-seafile'
+    runs-on: ubuntu-latest
+    # Image pull + first boot + the suite itself; generous, but bounded.
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.12"
+      - name: Start the Seafile CE container
+        run: docker compose -f .github/seafile-ci.yml up -d
+      - name: Run the real-server suite against it
+        run: python tools/realserver_ci.py
+      # The container is both the subject and the best diagnostic: when the
+      # suite or the readiness probe fails, the reason is in these logs, and
+      # the runner (with the container) disappears at the end of the job.
+      - name: Container logs and teardown
+        if: always()
+        run: |
+          docker compose -f .github/seafile-ci.yml logs --tail 300 seafile db
+          docker compose -f .github/seafile-ci.yml down -v
