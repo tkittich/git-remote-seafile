@@ -7,6 +7,7 @@ import io
 import json
 import os
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -429,6 +430,16 @@ class TestRemoteHelper(unittest.TestCase):
         ]
         lock = MagicMock()
         lock.maybe_renew.return_value = False
+
+        def slow_upload(_rid, _dir, name, _content, **_kw):
+            # A real upload takes time.  Without this the fake finishes inside one
+            # tick of Windows' 15.6 ms monotonic clock on Python 3.10, the elapsed
+            # time reads 0.0, and "too fast to time" is the correct answer.
+            if name.endswith(".pack"):
+                time.sleep(0.06)
+            return True
+
+        h.client.upload_file.side_effect = slow_upload
         pending = [_PendingUpdate("refs/heads/main", "1" * 40, None, False)]
         with patch("git_remote_seafile.helper.get_objects_to_push", return_value=["x"]), \
                 patch("git_remote_seafile.helper.create_packfile",
