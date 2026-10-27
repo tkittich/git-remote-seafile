@@ -1438,6 +1438,39 @@ class TestTailMerge(unittest.TestCase):
         self.assertFalse(any("pack-3" in str(p) or "pack-4" in str(p) or "pack-5" in str(p)
                              for p in downloaded), "a pack left for later is not downloaded")
 
+    def test_the_download_budget_follows_the_measured_link(self):
+        from git_remote_seafile.gc import auto_merge_budget, link_rate_mibs
+
+        cfg = self._cfg(max_mib=2048)
+        static = 2048 * 1024 * 1024
+        self.assertEqual(auto_merge_budget(cfg, None), static)
+        self.assertEqual(auto_merge_budget(cfg, 0), static)
+        self.assertEqual(auto_merge_budget(cfg, 32.0), static, "a fast link keeps the static cap")
+        self.assertEqual(auto_merge_budget(cfg, 1.0), 150 * 1024 * 1024)
+        # a push that moved too little says nothing about throughput
+        self.assertIsNone(link_rate_mibs(2 * 1024 * 1024, 12.0))
+        self.assertIsNone(link_rate_mibs(64 * 1024 * 1024, 0.0))
+        self.assertAlmostEqual(link_rate_mibs(64 * 1024 * 1024, 2.0), 32.0)
+
+    @patch("git_remote_seafile.gc.run_git_checked")
+    def test_tail_merge_on_a_slow_link_merges_only_what_that_link_moves_in_time(self, mock_subprocess):
+        """Six 1 MiB packs, a generous byte budget, and a link measured at
+        0.02 MiB/s (3 MiB in 150 s): three are merged, three wait."""
+        body = b"x" * (1024**2)
+        client = self._client(
+            [{"name": f"pack-{i}.pack", "size": len(body)} for i in range(6)], body=body
+        )
+        mock_subprocess.side_effect = self._subprocess_fake()
+
+        res = tail_merge(
+            client, "repo1", "/path", config=self._cfg(threshold=3, max_mib=8192),
+            verbose=False, link_mibs=0.02,
+        )
+
+        self.assertEqual(res["status"], "ok", res)
+        self.assertEqual(res["merged_packs"], 3)
+        self.assertEqual(res["left_for_later"], 3)
+
     def test_select_within_budget_takes_the_smallest_first_and_needs_two(self):
         from git_remote_seafile.gc import select_within_budget
 

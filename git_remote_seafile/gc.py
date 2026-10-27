@@ -443,6 +443,40 @@ def _delete_superseded(
     return deleted_count, failed_deletions, cleanup_stopped
 
 
+#: How long an automatic merge may hold the lock, at the link's own measured rate.
+#: It downloads the packs and uploads their union, so it moves about twice the
+#: bytes it selects.
+AUTO_MERGE_MAX_SECONDS = 300.0
+
+#: A push of less than this says nothing about throughput: it is all request
+#: latency (REVIEW.sonnet-5.5-v0.9.14 B4: a 2 MiB push took 12 s on a server that
+#: moves 30 MiB/s).
+_RATE_MIN_BYTES = 8 * 1024 * 1024
+
+
+def link_rate_mibs(total_bytes: int, seconds: float) -> float | None:
+    """MiB/s of an upload, or ``None`` when it was too small or too fast to time."""
+    if total_bytes < _RATE_MIN_BYTES or seconds <= 0:
+        return None
+    return total_bytes / (1024 * 1024) / seconds
+
+
+def auto_merge_budget(cfg: RemoteConfig, link_mibs: float | None) -> int:
+    """Bytes an automatic merge may download.
+
+    The static cap (2 x ``seafile.gcmaxpackmib``) was calibrated on a server that
+    moves ~32 MiB/s, where it is about a minute and a half of lock hold.  On a
+    1 MiB/s link the same 2 GiB is over an hour, so when this push measured its
+    own upload rate the budget is also capped at what that rate moves in
+    ``AUTO_MERGE_MAX_SECONDS`` (download plus re-upload).  No measurement keeps
+    the static cap.
+    """
+    static = cfg.gc_max_mib * 1024 * 1024
+    if not link_mibs or link_mibs <= 0:
+        return static
+    return min(static, int(link_mibs * 1024 * 1024 * AUTO_MERGE_MAX_SECONDS / 2))
+
+
 def select_within_budget(
     movable: list[tuple[str, Any]], budget: int
 ) -> list[tuple[str, Any]]:
@@ -473,8 +507,13 @@ def tail_merge(
     config: RemoteConfig | None = None,
     verbose: bool = True,
     respect_budget: bool = True,
+    link_mibs: float | None = None,
 ) -> dict[str, Any]:
     """Merge the remote's small ("movable") packfiles.
+
+    *link_mibs* is the upload rate the push that triggered this run measured, if
+    it moved enough to measure; it lowers the download budget on a slow link
+    (:func:`auto_merge_budget`).
 
     The automatic tier of compaction (DESIGN.md §4.5).  Unlike
     :func:`compact_repository` it never moves the big packs: a pack at or above
@@ -580,7 +619,7 @@ def tail_merge(
             }
 
         total_movable = sum(int(size or 0) for _, size in movable)
-        budget = cfg.gc_max_mib * 1024 * 1024
+        budget = auto_merge_budget(cfg, link_mibs)
         left_for_later = 0
         if respect_budget and total_movable > budget:
             # Over the budget is not "do nothing": merging the smallest packs

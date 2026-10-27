@@ -224,6 +224,9 @@ class RemoteHelper:
     #: once per push under the lock; ``None`` is "no ref to read" or "could not
     #: tell", and the string ``"unprobed"`` is "not asked yet".  Reset per push.
     _remote_width: "int | None | str" = "unprobed"
+    #: Upload rate (MiB/s) this push measured, or ``None`` when it moved too little
+    #: to tell; lowers the automatic merge's download budget on a slow link.
+    _push_link_mibs: float | None = None
 
     def __init__(self, remote_name: str, url: str, client: SeafileClient | None = None):
         self.remote_name = remote_name
@@ -866,6 +869,8 @@ class RemoteHelper:
                         uploads.append((extra_sha, extra, extra.with_suffix(".idx")))
             pack_dir = self._full_path("objects/pack")
             landed: dict[str, int] = {}
+            self._push_link_mibs = None
+            sent_bytes, sent_seconds = 0, 0.0
             for up_sha, up_pack, up_idx in uploads:
                 up_size = len(up_pack) if isinstance(up_pack, (bytes, bytearray)) else Path(up_pack).stat().st_size
                 sys.stderr.write(f"Uploading packfile pack-{up_sha[:8]} ({format_bytes(up_size)})...\n")
@@ -876,6 +881,7 @@ class RemoteHelper:
                 self.client.upload_file(
                     self.repo_id, pack_dir, f"pack-{up_sha}.idx", up_idx, replace=True
                 )
+                started = time.monotonic()
                 self.client.upload_file(
                     self.repo_id,
                     pack_dir,
@@ -884,10 +890,15 @@ class RemoteHelper:
                     replace=True,
                     progress_callback=on_upload_progress,
                 )
+                sent_bytes += up_size
+                sent_seconds += time.monotonic() - started
                 landed[f"pack-{up_sha}.pack"] = up_size
                 landed[f"pack-{up_sha}.idx"] = (
                     len(up_idx) if isinstance(up_idx, (bytes, bytearray)) else Path(up_idx).stat().st_size
                 )
+            from .gc import link_rate_mibs
+
+            self._push_link_mibs = link_rate_mibs(sent_bytes, sent_seconds)
             try:
                 self._verify_packs_landed(pack_dir, landed)
             except Exception:
@@ -1096,9 +1107,9 @@ class RemoteHelper:
             # union.  Above the download budget it merges the smallest packs
             # that fit (tail_merge re-decides under the lock); only when not
             # even two fit does it defer to a manual off-hours run.
-            from .gc import select_within_budget
+            from .gc import auto_merge_budget, select_within_budget
 
-            budget = session_config.gc_max_mib * 1024 * 1024
+            budget = auto_merge_budget(session_config, self._push_link_mibs)
             if (
                 auto_gc
                 and movable_bytes > budget
@@ -1109,7 +1120,14 @@ class RemoteHelper:
                 sys.stderr.write(
                     f"\nNotice: Movable packs total {movable_bytes / (1024**3):.1f} GiB across "
                     f"{movable_count} packfile(s), above the automatic download budget "
-                    f"({session_config.gc_max_mib} MiB, 2 x seafile.gcmaxpackmib).\n"
+                    f"({budget // (1024 * 1024)} MiB"
+                    + (
+                        f", lowered to {self._push_link_mibs:.1f} MiB/s x 150 s by this push's own "
+                        "upload rate"
+                        if self._push_link_mibs and budget < session_config.gc_max_mib * 1024 * 1024
+                        else ", 2 x seafile.gcmaxpackmib"
+                    )
+                    + ").\n"
                     f"Auto tail-merge was deferred: it downloads and re-uploads those packs.\n"
                     f"Run 'git-remote-seafile gc {mask_url(self.raw_url)}' manually when the time cost suits.\n\n"
                 )
@@ -1154,6 +1172,7 @@ class RemoteHelper:
                 self.repo_path,
                 config=session_config,
                 verbose=True,
+                link_mibs=self._push_link_mibs,
             )
         except Exception as ex:
             sys.stderr.write(f"Auto tail-merge skipped: {_flatten(ex)}\n")

@@ -383,6 +383,60 @@ class TestRemoteHelper(unittest.TestCase):
                 h._upload_push_pack(lock, pending)
         self.assertIn("aborting the upload", str(caught.exception))
 
+    @patch("git_remote_seafile.helper.rev_parse", return_value="sha123")
+    @patch("git_remote_seafile.helper.is_ancestor", return_value=True)
+    @patch("git_remote_seafile.helper.get_objects_to_push", return_value=[])
+    @patch("git_remote_seafile.gc.tail_merge")
+    def test_auto_gc_defers_on_a_slow_link_the_push_itself_measured(
+        self, mock_merge, mock_objs, mock_ancestor, mock_rev
+    ):
+        """B4: the 2 GiB budget was calibrated on a 32 MiB/s server (a minute and
+        a half); at 1 MiB/s it is over an hour inside the ``git push``.  The rate
+        the push just measured caps the budget at what that link moves in 150 s
+        each way."""
+        h = make_helper()
+        h.client = MagicMock()
+        h.repo_id = "repo1"
+        h.repo_path = "/git-repo"
+        h.raw_url = "seafile://repo/path"
+        h._refs_cache = {}
+        h._push_link_mibs = 0.005       # budget 0.75 MiB: not even two 1 MiB packs
+        mi_b = 1024**2
+        h.client.list_dir.return_value = [
+            {"name": f"pack-{i}.pack", "size": mi_b} for i in range(9)
+        ]
+        cfg = RemoteConfig(lock_timeout=15, lock_lease=60, lock_settle=0, auto_gc=True, gc_threshold=3,
+                           gc_max_mib=8192, gc_max_pack_mib=4096)
+        err = io.StringIO()
+        with patch("sys.stderr", err):
+            advice = h._auto_gc_advice(cfg)
+        self.assertEqual(advice, 0)
+        self.assertIn("lowered to 0.0 MiB/s x 150 s by this push's own upload rate", err.getvalue())
+        mock_merge.assert_not_called()
+
+    @patch("git_remote_seafile.helper.rev_parse", return_value="a" * 40)
+    def test_a_push_of_a_real_size_measures_the_link_for_the_merge_that_may_follow(self, _rev):
+        from git_remote_seafile.helper import _PendingUpdate
+
+        h = make_helper()
+        h.client = MagicMock()
+        h.repo_id = "repo1"
+        h.repo_path = "/git-repo"
+        h._refs_cache = {}
+        h.client.list_dir.side_effect = lambda rid, path: [
+            {"name": f"pack-{'1' * 40}.pack", "size": 9 * 1024 * 1024},
+            {"name": f"pack-{'1' * 40}.idx", "size": 5},
+        ]
+        lock = MagicMock()
+        lock.maybe_renew.return_value = False
+        pending = [_PendingUpdate("refs/heads/main", "1" * 40, None, False)]
+        with patch("git_remote_seafile.helper.get_objects_to_push", return_value=["x"]), \
+                patch("git_remote_seafile.helper.create_packfile",
+                      return_value=("1" * 40, b"P" * (9 * 1024 * 1024), b"idx00")):
+            h._upload_push_pack(lock, pending)
+        self.assertIsNotNone(h._push_link_mibs)
+        self.assertGreater(h._push_link_mibs, 0)
+
     def test_reading_the_remote_refs_renews_the_lease_before_the_pack_is_built(self):
         """B5: ~33 ms a ref on a real server, so a few thousand refs outlast a 60 s
         lease.  The walk gets the renewal, and the push calls it before it starts
@@ -1177,7 +1231,7 @@ class TestRemoteHelper(unittest.TestCase):
             h.cmd_push(["refs/heads/main:refs/heads/main"])
 
         mock_merge.assert_called_once_with(
-            h.client, "repo1", "/git-repo", config=cfg, verbose=True,
+            h.client, "repo1", "/git-repo", config=cfg, verbose=True, link_mibs=None,
         )
 
     @patch("git_remote_seafile.helper.rev_parse", return_value="sha123")

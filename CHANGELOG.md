@@ -31,6 +31,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Reading many refs outlasted the lock lease.** A push (and `gc`, and `repair`) re-reads every remote ref under the lock, about 33 ms a ref on a real server, so a repository with a few thousand tags could lose a 60-second lease before the pack was even built and fail after its work was done. The ref walk now renews the lease before every directory listing and between batches of reads, never while a read is in flight.
 
+- **The automatic tail merge's 2 GiB budget assumed a fast link.** It was calibrated at 0.05 s/MiB on one server; at 1 MiB/s the same budget is over an hour of lock hold inside a `git push`. When the push that triggered the merge uploaded at least 8 MiB, the budget is now also capped at what that measured rate moves in 150 seconds each way (150 MiB at 1 MiB/s); a fast link keeps the static cap, and a push too small to time leaves it alone. The deferral Notice names the lowered budget. The time per small pack on a high-latency server (121 s for twenty 2 MiB packs on the review round's server) is bounded by the 20-pack threshold and documented in DESIGN §4.5.
+
 ### Changed
 - SNAPSHOT.md and DESIGN's failure model say which omissions are not reported: named pipes, sockets and device nodes have no content to store and are skipped without a note.
 
