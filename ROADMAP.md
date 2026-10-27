@@ -198,7 +198,7 @@ that exists and answers empty is a read failure). **S3** — the read-side
 
 | ID | Component | Description & Impact | Effort | Risk | Planned Target |
 |---|---|---|:---:|:---:|:---:|
-| **T2** | `76_payload_gc.py` | Retention's grace clock stamps and compares `gc-pending.json` with the *local* wall clock; an 8-day clock jump on the deleting machine deleted an object marked seconds earlier (reproduced). Stamp and compare with the server-`Date` estimate. | S | Low | backlog |
+| **T2** | `76_payload_gc.py` | **Done (8feea1f, shipped in v0.9.14):** the grace clock stamps and compares `gc-pending.json` with the server-`Date` estimate, so an 8-day clock jump on the deleting machine no longer deletes an object marked seconds earlier. | S | Low | done |
 | **T3** | `helper.py` | Push packs are proven by listing size only; `gc` additionally proves SHA-256. Decide explicitly: extend `_verify_content` to pushes or record the cost reasoning in DESIGN §4.5. | S | Low | backlog |
 | **T4** | snapshot tool | Git-side stat-cache defeats have `--rebuild-index`; payload side has `--payload-rehash`. Remaining: keep both documented next to the mapped-writer and FAT-family limits rows. | S | Low | done in 0.9.13 (docs half) |
 | **T5** | `lock.py` | **Done (47cd9d9):** tickets carry a per-install token (`~/.git-remote-seafile/install-id`); the dead-PID reclaim and the plain `unlock` require it to match, so containers sharing a bridge MAC and a hostname can no longer reap each other's live locks. Additive field: old tickets fall back to hostname+MAC, and an unpersistable home directory disables the check (today's behavior). | S | Low | done |
