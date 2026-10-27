@@ -977,6 +977,10 @@ class ForeignChainTests(_SnapshotFixture):
         other.mkdir()
         self._populate(other, "elsewhere")
         _git(other, "init", "-q", "-b", "main", ".")
+        # The vault takes its committer identity from the source repository; a
+        # CI runner has no global one (the fixture sets it for self.code too).
+        _git(other, "config", "user.email", "dev@example.com")
+        _git(other, "config", "user.name", "Dev")
         rc, out, err = self.run_tool(
             "--source", other, "--vault", self.tmp / "vault-other", "--remote", str(self.remote)
         )
