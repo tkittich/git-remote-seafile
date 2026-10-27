@@ -889,13 +889,15 @@ def get_trusted_git_config_bool(key: str, default: bool = False) -> bool:
 
     `git config --get` reads every scope, including the `.git/config` of the
     repository being operated on.  That is the right behavior for tuning keys
-    (lock timeouts, gc thresholds) but a trust-boundary inversion for the
-    safety gates: a hostile or careless repository that ships
-    `[seafile] skipsafetychecks = true` in its own config would otherwise
-    disarm the guardrails for every helper operation launched from that
-    checkout.  Keys read here answer only to the machine owner (system and
-    global scopes) and the environment; the repository being cloned or pushed
-    to never gets a vote.
+    (lock timeouts, gc thresholds -- a repo-local value reaches only the
+    checkout that set it, and the lease travels in the holder's ticket) but a
+    trust-boundary inversion for the safety gates: a hostile or careless
+    repository that ships `[seafile] skipsafetychecks = true` in its own
+    config would otherwise disarm the guardrails for every helper operation
+    launched from that checkout.  Keys read here answer only to the machine
+    owner (system and global scopes) and the environment; the repository being
+    cloned or pushed to never gets a vote.  DESIGN section 4.8 records the
+    full split and its reasoning.
     """
     raw_value = _trusted_config_value(key)
     if raw_value is None:

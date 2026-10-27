@@ -107,6 +107,12 @@ class RemoteConfig:
         # Annotated because the literal alone infers ``dict[str, int]`` -- bool
         # is a subtype of int, so ``auto_gc`` does not widen it -- and that
         # cannot then be splatted into the dataclass's ``auto_gc: bool`` field.
+        # These read every scope, repository-local included, on purpose: the
+        # lease a contender honours travels in the holder's ticket (see
+        # RemoteLock._is_lock_active), so a repo-local value reaches only the
+        # checkout that set it. DESIGN section 4.8 records the reasoning, and
+        # why gittimeout/skipsafetychecks are different (the trusted readers
+        # in git_util).
         values: dict[str, Any] = {
             "lock_timeout": get_git_config_int("seafile.locktimeout", 15),
             "lock_lease": get_git_config_int("seafile.locklease", 60),
