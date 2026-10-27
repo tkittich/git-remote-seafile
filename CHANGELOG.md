@@ -5,6 +5,29 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.15] - 2026-10-27
+
+Two new commands (`--status` for the snapshot tool, `repair` for the helper), the last triage rows (T5, T7, T9, T10), and the fixes from four independent reviews of v0.9.14. The sharpest of those: `repair` took a pack name from the server and used it as a local path, a SHA-256 push could land in a SHA-1 repository and leave it unclonable, and the snapshot tool's byte-exact pin missed `working-tree-encoding`.
+
+### Added
+- **`git seafile-snapshot --status`** answers "is my backup current?" without staging, hashing or uploading anything: the last snapshot's time and size, what changed in the source since it, the settings the next run would use (resolved through the run's own ladder), and the vault lock. The change count is a stat comparison against the two records the snapshot itself wrote into its tip (the payload manifest, and `mtimes.json`), so the baseline travels with the snapshot and works from another machine. It is a heuristic and the report says so: a change that keeps its recorded stats hides (size and mtime for a payload file, **mtime alone for a git-stored one**), a touched file shows, and because it never contacts the remote it cannot say whether the last snapshot was pushed. `--json` mode `status` carries `tip`, `comparable`, `changed`, `new`, `deleted`, `unreadable` and `uncompared`. It refuses to combine with the acting modes, `--no-push` and `--dry-run`.
+- **`git-remote-seafile repair <url> [--dry-run]`** (T10) automates RUNBOOK §3.2 for a ref whose packfile was removed out of band ("bad object"): it reads the remote's packs into a scratch repository, finds every ref whose objects they do not carry, and uploads, from the clone it runs in, one pack per broken ref holding exactly what that ref needs. It never deletes and never writes a ref. Uploads are proven by size and then by a read-back SHA-256, and the lock is held throughout.
+- **Lock tickets carry a per-install id** (T5), `~/.git-remote-seafile/install-id`. Two containers on one bridge share a hostname and a MAC and used to reap each other's live lock as stale; the dead-PID reclaim and a plain `unlock` now require the ids to match. Additive: tickets without the field fall back to the old behaviour.
+- **A fetch re-lists once when a listed pack 404s** (T9): a concurrent `gc` merging and removing a pack between the listing and the download no longer needs a human to re-run the fetch. If the tips are still absent after the retry, it fails there with the remedy named.
+- A dispatch-only workflow, `.github/workflows/realserver.yml`, stands up a throwaway Seafile CE container and runs `tests.test_realserver` against it. Not yet proven on a runner; its header names the likely first-run failures.
+- **Why the tuning keys read every scope** (T7) is recorded in DESIGN §4.8 as a note, not a scope change: the lease a contender honours travels in the holder's ticket.
+
+### Fixed
+- **`repair` used a server-supplied pack name as a local path.** Unlike `gc` and `fetch` it never validated the name, so a library writer could plant `..\..\evil.pack` in `objects/pack/` and have `repair` write outside its scratch directory on Windows (reproduced on a real server). Invalid names are skipped with a `Warning:`.
+- **A SHA-256 push could land in a SHA-1 repository.** The object format advertised by `list` is read before the lock, and the first push to an empty remote assumes the local format; a peer of the other format pushing in between left a 64-hex ref and a SHA-256 pack beside 40-hex ones, and every later clone failed in `index-pack` (reproduced on a real server). A push now derives the remote's format under the lock and refuses a mismatch before any pack is built, `--force` included.
+- **The snapshot tool's byte-exact pin did not unset `working-tree-encoding`.** A source `.gitattributes` with `*.txt working-tree-encoding=UTF-16LE` made `git add` store the file re-encoded as UTF-8, the run reported success, and `--restore` then failed byte verification. The pin is now `* -text -filter -ident -working-tree-encoding`; a vault pinned by an earlier version gets the new line appended.
+- **A remote ref file holding `HEAD` or `main` was resolved in the local repository** by the fast-forward check and silently overwritten (ROADMAP S6, reproduced live). Only a full object id is compared now; anything else answers `fetch first`.
+- **`--status` called the files under an unreadable directory deleted**, with `unreadable: 0` and exit 0, while a real run stops on that directory. It now names the directory as unreadable and warns. It also stops reporting as new what no run captures (the reserved `.seafile-payload/`, clock-probe debris, paths behind a Windows junction), and no longer calls every git-stored file new when a payload snapshot was taken with `--no-record-mtimes`.
+
+### Changed
+- The digest-of-the-bytes-sent guard (PAYLOAD R6) has its own test; mutation checks in two reviews showed the only named test tripped the stat check instead, so removing the digest comparison left the suite green.
+- Documentation that contradicted the code or itself is corrected: the ROADMAP rows for S2–S6, S10–S13 and S16–S19 carry their fixing commits; USER_GUIDE no longer says a snapshot source may live in a synced library, qualifies "touching a file makes no new snapshot" for payload files, and names the two shapes whose pack count grows until a manual `gc`; PAYLOAD says a conflict copy is ignored and not collected; DESIGN §4.5 no longer implies the frozen-pack count is bounded; SECURITY says `verify-pack` runs without `-v`.
+
 ## [0.9.14] - 2026-10-26
 
 The rest of the review round's backlog, plus the fix for the one platform-conditional test that failed v0.9.13's CI on every POSIX leg. The retention grace clock now runs on the server's time, the payload history-rewrite fence cannot be erased by a torn marker, the lock fails closed over an unreadable ticket, and the CI matrix drops to nine legs for the same coverage logic.
@@ -1811,6 +1834,7 @@ Data-loss and silent-failure fixes, and the Python floor raised to 3.9.
   with zero-config desktop-client token discovery, distributed locking, remote
   packfile compaction, and a Git LFS custom transfer agent.
 
+[0.9.15]: https://github.com/tkittich/git-remote-seafile/compare/v0.9.14...v0.9.15
 [0.9.14]: https://github.com/tkittich/git-remote-seafile/compare/v0.9.13...v0.9.14
 [0.9.13]: https://github.com/tkittich/git-remote-seafile/compare/v0.9.12...v0.9.13
 [0.9.12]: https://github.com/tkittich/git-remote-seafile/compare/v0.9.11...v0.9.12
