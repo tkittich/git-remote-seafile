@@ -5,7 +5,9 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.9.16] - 2026-10-28
+
+The rest of the v0.9.14 review round's backlog, most of it reproduced or measured on a real server. The automatic tail merge no longer defers for ever once the small packs outgrow its budget, a ref write is one short attempt instead of a resend that could land after a competitor's, a push reads thousands of refs without losing its lease, and a restore on Windows goes around names Windows cannot hold instead of restoring nothing. A new vault says which chain it joins, `--default-excludes` stops dropping committed source, and one live payload file no longer stops every snapshot (`--payload-skip-changing`).
 
 ### Added
 - **`--payload-skip-changing`**: one payload file that is always being written (a database, a mailbox, a VM disk) failed every run, so nothing else was snapshotted until it was excluded. With the flag, a file that changes while it is read or uploaded is left out of that snapshot, named in a `Warning:` (the manifest's derived id is recomputed), and the next quiet run captures it again. Opt-in: the default stays an error, and its message now names the flag.
@@ -16,21 +18,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **A SIGTERM or Ctrl-Break left the push's lock ticket on the server** for a full lease: the lock's `__exit__` never ran. The command line now turns them into an exit that unwinds.
 - **A file rewritten while `git add` reads it** stopped the run with git's `confused by unstable object source data` and no hint. The run now says a file was rewritten, that nothing was snapshotted, and to `--exclude` a file that is always being written; SNAPSHOT §8 no longer claims such a file "yields a snapshot".
 - **`--status --json` with no vault or no snapshot** returned `{"snapshots": 0}` alone; every key is now present with `null` counts (which never equal 0).
-
 - **A ref write could outlive the fence that guarded it by minutes.** It got the pack upload's ten-minute reply timeout and up to three attempts, so a first attempt that stalled and a resend that landed after a competitor's write were both possible, and the read-back matched because the resend had just overwritten the competitor. A ref (and the `HEAD` bootstrap) is now one attempt with a 20-second reply timeout; a write that gets no answer is reported as `may or may not have been written and the write was not resent`.
-
 - **A different project pointed at an existing `--remote` was chained onto the first one's history without a word** (reproduced: the chain's newest tree was the other project's, and a later `--payload-keep` run expires the first project's snapshots). A new vault now says what chain it is joining, with the previous snapshot's time and subject (`Note:`), and warns when fewer than half of that snapshot's git-stored paths exist in the source (`Warning:`, so `--exit-warnings` returns 3). It does not refuse: a reorganised project is legitimate.
-
 - **The automatic tail merge deferred on every push once the movable packs outgrew its download budget**, so the pack count grew without bound (reproduced on a real server with a small `seafile.gcmaxpackmib`: pushes 20 to 26 all deferred, 20 to 26 packs, and every `git clone` downloads every pack). It now merges the smallest packs that fit the budget (never fewer than two) and leaves the rest for the next run; only a set whose two smallest packs already exceed the budget still defers. On the same server the 20th push merged 20 packs down to 10 and the count stayed bounded afterwards. The result of `tail_merge` gains `left_for_later`.
-
 - **A link measured slower than 0.05 MiB/s was remembered as 0.0** (one decimal), read back as unusable, and replaced by the assumed 53 MiB/s: the opposite of what was measured. The vault stores the rates to four significant figures now. It also made `PayloadTuningTests.test_a_new_vault_measures_once_and_remembers` fail once on a loaded Windows runner.
-
 - **A restore on Windows of a snapshot holding a name Windows cannot hold** (`a:b.txt`, `aux.js`, a trailing dot, captured on Linux) **restored nothing**: `git checkout` refuses the whole tree with `invalid path` and writes no file, while payload files with such names were already skipped and reported. The git-stored files are now restored around those names (the index is built from the revision minus them and written with `checkout-index`; `core.protectNTFS` stays on), the names are listed in a `Warning:`, the byte verification covers everything else, and the final line says how many names were excluded.
-
 - **`--payload-view` said "no data was transferred" while the library grew by the full size of what it copied** (reproduced on a real server: a view of one 70 MiB object added 70.0 MiB). The server shares blocks but the quota and library size count each copy at full size, so a view of a large snapshot can use what the next backup needs. The closing line now says so (with the bytes counted), the quota warning that already ran before building names a view's copies instead of "uploads", and PAYLOAD D10 no longer implies the view is free.
-
 - **Reading many refs outlasted the lock lease.** A push (and `gc`, and `repair`) re-reads every remote ref under the lock, about 33 ms a ref on a real server, so a repository with a few thousand tags could lose a 60-second lease before the pack was even built and fail after its work was done. The ref walk now renews the lease before every directory listing and between batches of reads, never while a read is in flight.
-
 - **The automatic tail merge's 2 GiB budget assumed a fast link.** It was calibrated at 0.05 s/MiB on one server; at 1 MiB/s the same budget is over an hour of lock hold inside a `git push`. When the push that triggered the merge uploaded at least 8 MiB, the budget is now also capped at what that measured rate moves in 150 seconds each way (150 MiB at 1 MiB/s); a fast link keeps the static cap, and a push too small to time leaves it alone. The deferral Notice names the lowered budget. The time per small pack on a high-latency server (121 s for twenty 2 MiB packs on the review round's server) is bounded by the 20-pack threshold and documented in DESIGN §4.5.
 
 ### Changed
@@ -1869,6 +1863,7 @@ Data-loss and silent-failure fixes, and the Python floor raised to 3.9.
   with zero-config desktop-client token discovery, distributed locking, remote
   packfile compaction, and a Git LFS custom transfer agent.
 
+[0.9.16]: https://github.com/tkittich/git-remote-seafile/compare/v0.9.15...v0.9.16
 [0.9.15]: https://github.com/tkittich/git-remote-seafile/compare/v0.9.14...v0.9.15
 [0.9.14]: https://github.com/tkittich/git-remote-seafile/compare/v0.9.13...v0.9.14
 [0.9.13]: https://github.com/tkittich/git-remote-seafile/compare/v0.9.12...v0.9.13
