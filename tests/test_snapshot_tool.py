@@ -3225,7 +3225,9 @@ class StatusTests(_SnapshotFixture):
         rc, out, err = self.status()
         self.assertEqual(rc, 0, out + err)
         self.assertIn("nothing has been snapshotted", out)
-        self.assertIn(f"source        : {self.code}", out)
+        # The tool prints the resolved path: /private/var on macOS, the long
+        # form of an 8.3 short name (RUNNER~1) on a Windows runner.
+        self.assertIn(f"source        : {self.code.resolve()}", out)
         self.assertIn("payload mode  : off", out)
 
     def test_a_fresh_snapshot_reports_zero_changes(self):
