@@ -152,8 +152,9 @@ promised here.
 
 **Closed by the v0.9.13 batch (2026-10-26, commits `45af1f9..3d62db7`).** The
 triage of this sweep and of the four other model reviews
-(`REVIEW.TRIAGE-v0.9.12.md`) produced a fix-now batch; every commit in it
-passes the gates, the full suite (1,213 tests) and the real-server suite:
+(`REVIEW.TRIAGE-v0.9.12.md`, now in `archive/`) produced a fix-now batch; every
+commit in it passes the gates, the full suite (1,213 tests) and the real-server
+suite:
 
 - **S4** — the placeholder attribute check now precedes the size floor, so a
   placeholder of any size is refused by name; PAYLOAD A13 names the test
@@ -194,7 +195,7 @@ that exists and answers empty is a read failure). **S3** — the read-side
 `{}` stands, though the "torn marker is realistic" premise is weakened (a
 150 MiB upload was never listed partially; the chunk-abandon probe agrees).
 
-### 1.5 From the v0.9.13 triage (backlog; drafts were `REVIEW.TRIAGE-v0.9.12.md` §7)
+### 1.5 From the v0.9.13 triage (drafts were `archive/REVIEW.TRIAGE-v0.9.12.md` §7)
 
 | ID | Component | Description & Impact | Effort | Risk | Planned Target |
 |---|---|---|:---:|:---:|:---:|
