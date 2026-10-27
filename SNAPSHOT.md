@@ -162,6 +162,19 @@ which source it belongs to: a run pointing a **different** tree at an existing
 vault is refused, because one vault is one linear chain of snapshots of one tree
 and a later reader cannot undo a mix.
 
+That memory is local. A **new** vault (no snapshot branch yet) pointed at a
+`--remote` that already holds a chain continues that chain, which is how a second
+machine joins one backup, and nothing travels with the chain that names its source.
+So the run says what it is joining (`Note: this vault is new, so it continues the
+snapshot chain already on <remote> …`, with the previous snapshot's time and
+subject), and when fewer than half of the previous snapshot's git-stored paths exist
+in this source (with at least five to compare) it says so as a `Warning:`: the source
+does not look like the same tree, and putting it on the same history would also let a
+later `--payload-keep` run expire the first tree's snapshots. It does not refuse: a
+reorganised project is legitimate, and a refusal on a default would stop a run that
+worked. Another `--remote` or `--branch` keeps two trees apart. A payload-only tree
+has too few git-stored paths for the comparison and gets the Note.
+
 ### Exclusions are never silent
 
 **There is no default exclude list.** "All files" is the point of a snapshot,

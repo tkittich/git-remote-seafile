@@ -948,6 +948,51 @@ class MultiMachineTests(_SnapshotFixture):
         )
 
 
+class ForeignChainTests(_SnapshotFixture):
+    """A new vault continues whatever chain the remote has; it must say so, and
+    say louder when the source does not look like the tree that wrote it."""
+
+    def _populate(self, root: pathlib.Path, prefix: str, count: int = 8) -> None:
+        for i in range(count):
+            (root / f"{prefix}-{i}.txt").write_bytes(f"{prefix} {i}\n".encode())
+
+    def test_the_same_tree_on_another_machine_joins_with_a_note(self):
+        self._populate(self.code, "proj")
+        self.assertEqual(self.snapshot("--remote", str(self.remote))[0], 0)
+        code_b, vault_b = self._second_machine()
+        rc, out, err = self.run_tool(
+            "--source", code_b, "--vault", vault_b, "--remote", str(self.remote)
+        )
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn("Note: this vault is new, so it continues the snapshot chain", out)
+        self.assertNotIn("does not look like the same tree", out)
+
+    def test_a_different_project_on_the_same_remote_is_warned_about(self):
+        """Reproduced: project B with a fresh vault and project A's --remote was
+        chained onto A's history with no word about it, and the chain's newest
+        tree was B's."""
+        self._populate(self.code, "proj")
+        self.assertEqual(self.snapshot("--remote", str(self.remote))[0], 0)
+        other = self.tmp / "other-project"
+        other.mkdir()
+        self._populate(other, "elsewhere")
+        _git(other, "init", "-q", "-b", "main", ".")
+        rc, out, err = self.run_tool(
+            "--source", other, "--vault", self.tmp / "vault-other", "--remote", str(self.remote)
+        )
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn("Warning: this vault is new, so it will continue the snapshot chain", out)
+        self.assertIn("does not look like the same tree", out)
+        self.assertIn("another --remote or --branch", out)
+
+    def test_the_first_snapshot_to_an_empty_remote_says_nothing_about_a_chain(self):
+        self._populate(self.code, "proj")
+        rc, out, err = self.snapshot("--remote", str(self.remote))
+        self.assertEqual(rc, 0, out + err)
+        self.assertNotIn("continue the snapshot chain", out)
+        self.assertNotIn("continues the snapshot chain", out)
+
+
 class PushRaceTests(_SnapshotFixture):
     """A push that fails -- refused outright, or losing a race -- recovers."""
 

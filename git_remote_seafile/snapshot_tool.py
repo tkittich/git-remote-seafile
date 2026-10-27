@@ -1824,6 +1824,66 @@ def reconcile_with_remote(
     return tip
 
 
+#: A vault joining a chain whose source shares less than this fraction of the
+#: previous snapshot's git-stored paths is probably not the same tree.
+_SAME_TREE_OVERLAP = 0.5
+
+#: Below this many git-stored paths in the previous snapshot an overlap says
+#: nothing (a payload-only tree, a handful of files).
+_SAME_TREE_MIN_PATHS = 5
+
+
+def warn_if_foreign_chain(
+    git_dir: Path, work_tree: Path, base: str, tree: str, remote: str, branch: str
+) -> None:
+    """Say what a fresh vault is about to continue, and warn when it looks like another tree.
+
+    A vault that does not hold the branch builds on whatever the remote has --
+    that is how a second machine joins one backup (MultiMachineTests), and it is
+    also how a *different* project pointed at the same ``--remote`` ends up on
+    top of the first one's history, silently (REVIEW.sonnet-5.5-v0.9.14 E2: the
+    chain's newest tree was the other project's, and a later ``--payload-keep``
+    expires the first project's snapshots).  Nothing travels with the chain that
+    names its source, so the comparison is the only evidence there is: how many
+    of the previous snapshot's paths this source still has.
+    """
+    meta = git(
+        git_dir, work_tree, ["show", "-s", "--format=%cI%x00%s", base], cwd=work_tree, check=False
+    ).stdout
+    when, _sep, subject = meta.partition("\x00")
+
+    def paths(rev: str) -> set[str]:
+        listing = git(
+            git_dir, work_tree, ["ls-tree", "-r", "--name-only", "-z", rev], cwd=work_tree,
+            check=False,
+        ).stdout
+        return {
+            p for p in listing.split("\0")
+            if p and p != PAYLOAD_RESERVED_DIR and not p.startswith(PAYLOAD_RESERVED_DIR + "/")
+        }
+
+    before, now = paths(base), paths(tree)
+    shared = len(before & now)
+    if len(before) >= _SAME_TREE_MIN_PATHS and shared < _SAME_TREE_OVERLAP * len(before):
+        print(
+            f"\nWarning: this vault is new, so it will continue the snapshot chain already on "
+            f"{remote} ({branch}), last written {when.strip()} -- \"{subject.strip()}\" -- but "
+            f"only {shared} of its {len(before)} files exist in this source.  This does not look "
+            "like the same tree.  If it is a different project, stop: put it on another --remote "
+            "or --branch, or the two trees share one history (and a --payload-keep run would "
+            "expire the first one's snapshots).",
+            flush=True,
+        )
+    else:
+        print(
+            f"Note: this vault is new, so it continues the snapshot chain already on {remote} "
+            f"({branch}), last written {when.strip()} -- \"{subject.strip()}\".  That is how a "
+            "second machine joins one backup; for a different tree use another --remote or "
+            "--branch.",
+            flush=True,
+        )
+
+
 def commit_tree(
     git_dir: Path, work_tree: Path, tree: str, parent: str | None, message: str
 ) -> str:
@@ -8747,8 +8807,10 @@ def run_command(args: argparse.Namespace) -> int:
 
             # Decide the base *after* consulting the remote, so a second machine
             # appends to the shared chain rather than building an unrelated one.
+            joining = False
             if remote:
                 remote_tip = fetch_remote_tip(git_dir, source, remote, branch)
+                joining = remote_tip is not None and current_tip(git_dir, source, branch) is None
                 base = reconcile_with_remote(
                     git_dir,
                     source,
@@ -8799,6 +8861,8 @@ def run_command(args: argparse.Namespace) -> int:
                 payload_objects_to_upload=payload_todo[0] if manifest is not None else 0,
             )
             print(f"base   : {base[:12] if base else '(first snapshot)'}")
+            if joining and base and remote:
+                warn_if_foreign_chain(git_dir, source, base, tree, remote, branch)
             if manifest is not None:
                 print(payload_summary(
                     manifest, payload_todo, args.dry_run,

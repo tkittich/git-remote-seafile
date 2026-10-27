@@ -462,8 +462,10 @@ def run_command(args: argparse.Namespace) -> int:
 
             # Decide the base *after* consulting the remote, so a second machine
             # appends to the shared chain rather than building an unrelated one.
+            joining = False
             if remote:
                 remote_tip = fetch_remote_tip(git_dir, source, remote, branch)
+                joining = remote_tip is not None and current_tip(git_dir, source, branch) is None
                 base = reconcile_with_remote(
                     git_dir,
                     source,
@@ -514,6 +516,8 @@ def run_command(args: argparse.Namespace) -> int:
                 payload_objects_to_upload=payload_todo[0] if manifest is not None else 0,
             )
             print(f"base   : {base[:12] if base else '(first snapshot)'}")
+            if joining and base and remote:
+                warn_if_foreign_chain(git_dir, source, base, tree, remote, branch)
             if manifest is not None:
                 print(payload_summary(
                     manifest, payload_todo, args.dry_run,

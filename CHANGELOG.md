@@ -16,6 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **A ref write could outlive the fence that guarded it by minutes.** It got the pack upload's ten-minute reply timeout and up to three attempts, so a first attempt that stalled and a resend that landed after a competitor's write were both possible, and the read-back matched because the resend had just overwritten the competitor. A ref (and the `HEAD` bootstrap) is now one attempt with a 20-second reply timeout; a write that gets no answer is reported as `may or may not have been written and the write was not resent`.
 
+- **A different project pointed at an existing `--remote` was chained onto the first one's history without a word** (reproduced: the chain's newest tree was the other project's, and a later `--payload-keep` run expires the first project's snapshots). A new vault now says what chain it is joining, with the previous snapshot's time and subject (`Note:`), and warns when fewer than half of that snapshot's git-stored paths exist in the source (`Warning:`, so `--exit-warnings` returns 3). It does not refuse: a reorganised project is legitimate.
+
 ### Changed
 - SNAPSHOT.md and DESIGN's failure model say which omissions are not reported: named pipes, sockets and device nodes have no content to store and are skipped without a note.
 
