@@ -10,6 +10,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - **`--status` could not see a rewrite that kept the mtime but changed the size of a git-stored file** (three reviews of v0.9.14 found it): `mtimes.json` held a time only, so a copy tool that preserves timestamps hid the change and the next run committed it. The record gains an additive `sizes` key (a tool that does not know it reads `files` as before) and `--status` compares it. Snapshots taken before this keep a size-less record, so their git-stored files are still compared by mtime alone until the tree next changes; the report's Note says so.
 
+### Changed
+- Each part of the payload hash cache's key (size, mtime, inode, device, change time, racy window) now has a test in which it alone stops the cache vouching for an old hash; before, the racy window and the change time caught the same rewrite in every named test, so removing either left the suite green (mutation checks in two reviews).
+
 ## [0.9.16] - 2026-10-28
 
 The rest of the v0.9.14 review round's backlog, most of it reproduced or measured on a real server. The automatic tail merge no longer defers for ever once the small packs outgrow its budget, a ref write is one short attempt instead of a resend that could land after a competitor's, a push reads thousands of refs without losing its lease, and a restore on Windows goes around names Windows cannot hold instead of restoring nothing. A new vault says which chain it joins, `--default-excludes` stops dropping committed source, and one live payload file no longer stops every snapshot (`--payload-skip-changing`).

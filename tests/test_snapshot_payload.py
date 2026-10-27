@@ -2748,6 +2748,57 @@ class PayloadRememberVerifyViewAndClockTests(_PayloadFixture):
         self.assertEqual(_git(self.vault, "config", "snapshot.payloadgcreport").strip(), aged)
 
 
+class HashCacheKeyTests(unittest.TestCase):
+    """Each part of the hash cache's key must refuse to vouch on its own (PAYLOAD D6).
+
+    The named tests drove real edits, in which the racy window and the change time
+    both catch the same rewrite: removing either left them green (mutation checks in
+    two reviews).  Here the cache entry is forged with a wrong hash, so whether the
+    cache vouched is read straight off the result, and exactly one part of the key
+    differs per case.
+    """
+
+    SIZE = 5
+    MTIME = 1_600_000_000_123_456_700   # not a whole second, so the window does not double
+    CTIME = MTIME + 7_000_000           # differs from the mtime: the volume has a change time
+    INO, DEV = 4242, 7
+    FORGED = "0" * 64
+
+    def _hash_with(self, **changes) -> str:
+        """The sha the manifest records when the cache entry differs by ``changes``."""
+        entry = {
+            "size": self.SIZE, "mtime_ns": self.MTIME, "ino": self.INO, "dev": self.DEV,
+            "ctime": self.CTIME, "sha256": self.FORGED,
+            "at": self.MTIME + 10 * 1_000_000_000,   # hashed ten seconds after the edit
+        }
+        entry.update(changes)
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            (root / "f.bin").write_bytes(b"hello")
+            candidates = {"f.bin": (self.SIZE, self.MTIME, "100644", self.INO, self.DEV, self.CTIME)}
+            manifest, _cache = snap.build_manifest(
+                candidates, root, {"f.bin": entry}, 1, quiet=True, root_dev=None,
+            )
+        return manifest["files"][0]["sha256"]
+
+    def test_an_entry_that_matches_in_every_part_is_trusted(self):
+        self.assertEqual(self._hash_with(), self.FORGED, "the control: a matching, old entry vouches")
+
+    def test_each_part_of_the_key_refuses_on_its_own(self):
+        real = hashlib.sha256(b"hello").hexdigest()
+        cases = {
+            "size": {"size": self.SIZE + 1},
+            "mtime": {"mtime_ns": self.MTIME - 1_000},
+            "inode": {"ino": self.INO + 1},
+            "device": {"dev": self.DEV + 1},
+            "change time": {"ctime": self.CTIME + 1},
+            # hashed half a second after the edit: inside the racy window
+            "racy window": {"at": self.MTIME + 500_000_000},
+        }
+        for part, change in cases.items():
+            self.assertEqual(self._hash_with(**change), real, f"the {part} alone did not stop the cache vouching")
+
+
 class PayloadSkipChangingTests(_PayloadFixture):
     """One payload file that is always being written must not stop every snapshot."""
 
