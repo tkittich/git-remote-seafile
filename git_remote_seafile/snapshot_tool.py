@@ -2307,6 +2307,28 @@ def index_paths(git_dir: Path, work_tree: Path) -> list[str]:
     return [path for path in listing.split("\0") if path]
 
 
+def source_tracked_paths(source: Path) -> list[str]:
+    """Paths the source's own git repository tracks; empty when the source is not a repository root.
+
+    Read-only (``ls-files`` writes nothing).  Used so that a *recommended*
+    exclude never drops source the user has committed: ``build`` also names
+    ``tools/build/make.py``.
+    """
+    if not (source / ".git").exists():
+        return []
+    proc = _run(
+        ["git", "-C", str(source), "ls-files", "-z"],
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+    )
+    if proc.returncode != 0:
+        return []
+    return [p for p in proc.stdout.split("\0") if p]
+
+
 def find_virtualenvs(source: Path, excludes: list[str]) -> list[str]:
     """Directories under *source* that are Python virtualenvs, as index-style paths.
 
@@ -7704,9 +7726,26 @@ def resolve_snapshot_settings(
         remembered.get("exclude") or []
     )
     if args.default_excludes:
+        tracked: list[str] | None = None
         for pattern in RECOMMENDED_EXCLUDES:
-            if pattern not in exclude:
-                exclude.append(pattern)
+            if pattern in exclude:
+                continue
+            # The list is a guess about reproducible output; the source's own
+            # repository knows better.  "build" must not drop a tracked
+            # tools/build/make.py -- a restore would "reconstitute the working
+            # directory" without source the user committed.
+            if tracked is None:
+                tracked = source_tracked_paths(source)
+            held = next((path for path in tracked if exclude_matches(path, pattern)), None)
+            if held is not None:
+                print(
+                    f"Note: --default-excludes keeps '{pattern}' for this run: the source's own "
+                    f"git repository tracks {held!r}, and a backup that drops committed source "
+                    f"is not a backup. Pass --exclude '{pattern}' to leave it out anyway.",
+                    flush=True,
+                )
+                continue
+            exclude.append(pattern)
         # Named by what makes it one, not by what it is called (.venv-audit, env).
         for venv in find_virtualenvs(source, exclude):
             if venv not in exclude:
@@ -8320,7 +8359,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=None,
         help="add the recommended exclusions on top of any --exclude "
         f"({', '.join(RECOMMENDED_EXCLUDES)}) and any Python virtualenv (a "
-        "directory holding a pyvenv.cfg, whatever its name). Not on by default: a snapshot is "
+        "directory holding a pyvenv.cfg, whatever its name). A pattern is kept for the run "
+        "when the source's own git repository tracks a file it matches. Not on by default: a snapshot is "
         "a backup, and silently dropping files is how a backup fails at the one "
         "moment it mattered",
     )

@@ -210,9 +210,26 @@ def resolve_snapshot_settings(
         remembered.get("exclude") or []
     )
     if args.default_excludes:
+        tracked: list[str] | None = None
         for pattern in RECOMMENDED_EXCLUDES:
-            if pattern not in exclude:
-                exclude.append(pattern)
+            if pattern in exclude:
+                continue
+            # The list is a guess about reproducible output; the source's own
+            # repository knows better.  "build" must not drop a tracked
+            # tools/build/make.py -- a restore would "reconstitute the working
+            # directory" without source the user committed.
+            if tracked is None:
+                tracked = source_tracked_paths(source)
+            held = next((path for path in tracked if exclude_matches(path, pattern)), None)
+            if held is not None:
+                print(
+                    f"Note: --default-excludes keeps '{pattern}' for this run: the source's own "
+                    f"git repository tracks {held!r}, and a backup that drops committed source "
+                    f"is not a backup. Pass --exclude '{pattern}' to leave it out anyway.",
+                    flush=True,
+                )
+                continue
+            exclude.append(pattern)
         # Named by what makes it one, not by what it is called (.venv-audit, env).
         for venv in find_virtualenvs(source, exclude):
             if venv not in exclude:

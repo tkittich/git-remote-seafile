@@ -1975,6 +1975,38 @@ class BareRunTests(_SnapshotFixture):
         self.assertNotIn("dist/bundle.js", tree)
         self.assertIn("README.md", tree)  # ordinary files are untouched
 
+    def test_default_excludes_never_drop_source_the_repository_tracks(self):
+        """``build`` is a guess about reproducible output; the user's own repository
+        knows ``tools/build/make.py`` is committed source.  A restore of a backup
+        without it would not reconstitute the working directory."""
+        (self.code / "tools" / "build").mkdir(parents=True)
+        (self.code / "tools" / "build" / "make.py").write_bytes(b"print('build')\n")
+        _git(self.code, "add", "tools/build/make.py")
+        _git(self.code, "commit", "-qm", "tracked build dir")
+        rc, out, err = self.run_tool(
+            "--source", self.code, "--vault", self.vault, "--default-excludes"
+        )
+        self.assertEqual(rc, 0, err)
+        tree = self.tree()
+        self.assertIn("tools/build/make.py", tree)
+        self.assertIn("keeps 'build' for this run", out)
+        self.assertIn("tracks 'tools/build/make.py'", out)
+        # the rest of the list still applies, and untracked output is still left out
+        self.assertNotIn("node_modules/pkg/a.js", tree)
+        self.assertNotIn("dist/bundle.js", tree)
+
+    def test_an_explicit_exclude_of_a_tracked_path_is_still_honoured(self):
+        (self.code / "tools" / "build").mkdir(parents=True)
+        (self.code / "tools" / "build" / "make.py").write_bytes(b"print('build')\n")
+        _git(self.code, "add", "tools/build/make.py")
+        _git(self.code, "commit", "-qm", "tracked build dir")
+        rc, out, err = self.run_tool(
+            "--source", self.code, "--vault", self.vault, "--default-excludes",
+            "--exclude", "build",
+        )
+        self.assertEqual(rc, 0, err)
+        self.assertNotIn("tools/build/make.py", self.tree())
+
     def test_verbose_output_is_not_a_requirement(self):
         # A bare run must be quiet enough for cron: one summary, and no traceback.
         rc, out, err = self.run_tool(

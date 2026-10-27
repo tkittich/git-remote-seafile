@@ -100,7 +100,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=None,
         help="add the recommended exclusions on top of any --exclude "
         f"({', '.join(RECOMMENDED_EXCLUDES)}) and any Python virtualenv (a "
-        "directory holding a pyvenv.cfg, whatever its name). Not on by default: a snapshot is "
+        "directory holding a pyvenv.cfg, whatever its name). A pattern is kept for the run "
+        "when the source's own git repository tracks a file it matches. Not on by default: a snapshot is "
         "a backup, and silently dropping files is how a backup fails at the one "
         "moment it mattered",
     )

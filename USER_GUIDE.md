@@ -1051,7 +1051,7 @@ Defaults are resolved most-specific-first:
 | `--remote <url>` | The Seafile destination. Default: remembered, else derived from the source's own `seafile://` remote. |
 | `--branch <branch>` | The vault branch holding the snapshots. Default: `snapshot` — one shared chain across machines (§15.6). `--branch snapshot-<host>` gives per-machine chains instead. |
 | `--exclude <glob>` | Repeatable. Skip matching paths, e.g. `--exclude node_modules`. |
-| `--default-excludes` / `--no-default-excludes` | Add the recommended junk exclusions (§15.2.1) and every Python virtualenv found (a directory holding `pyvenv.cfg`, whatever it is called), or explicitly not. |
+| `--default-excludes` / `--no-default-excludes` | Add the recommended junk exclusions (§15.2.1) and every Python virtualenv found (a directory holding `pyvenv.cfg`, whatever it is called), or explicitly not. A recommended pattern is kept out of the list for a run when the source's own git repository tracks a file it matches (`build` would otherwise drop a committed `tools/build/make.py`); the run says so, and an explicit `--exclude` is always honoured. |
 | `--no-embedded-repos` | Record a nested git repository only as its commit id (the 0.9.0 behaviour). By default its files are captured, its `.git` is not. |
 | `--record-mtimes` / `--no-record-mtimes` | Record (or not) the modification time of git-stored files in `.seafile-payload/mtimes.json`. On by default for a run that pushes to a `seafile://` remote; an explicit choice is remembered by the vault. |
 | `--payload-report-days N` | Payload mode: print the report-only `--payload-gc` summary when none was printed in N days (default 7, `0` off). |
