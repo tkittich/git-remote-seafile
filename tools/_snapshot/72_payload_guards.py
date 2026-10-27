@@ -91,8 +91,12 @@ def _account_quota(client: Any) -> tuple[int, int] | None:
     return usage, total
 
 
-def quota_note(client: Any, need_bytes: int) -> str | None:
+def quota_note(client: Any, need_bytes: int, *, action: str = "uploads") -> str | None:
     """A warning when the upload would not fit the account's quota.
+
+    *action* names what the run does with the bytes: a payload view copies
+    server-side and moves nothing, but the quota counts each copy at its full
+    size, so "uploads" would be the wrong word there.
 
     A warning, not a refusal: the quota that counts is the library owner's, which
     is not necessarily this account.
@@ -108,9 +112,9 @@ def quota_note(client: Any, need_bytes: int) -> str | None:
     if need_bytes <= free:
         return None
     return (
-        f"Warning: this run uploads {human_bytes(need_bytes)} but the account has "
+        f"Warning: this run {action} {human_bytes(need_bytes)} but the account has "
         f"{human_bytes(max(free, 0))} of quota left ({human_bytes(usage)} of "
-        f"{human_bytes(total)} used); the upload will probably fail partway. Free space, or "
+        f"{human_bytes(total)} used); it will probably fail partway. Free space, or "
         "ask for more, first -- already stored objects are kept and the next run resumes."
     )
 
@@ -133,8 +137,8 @@ def synced_payload_library_note(rid: str) -> str | None:
     return None
 
 
-def payload_preflight(client: Any, rid: str, need_bytes: int) -> None:
-    for note in (synced_payload_library_note(rid), quota_note(client, need_bytes)):
+def payload_preflight(client: Any, rid: str, need_bytes: int, *, action: str = "uploads") -> None:
+    for note in (synced_payload_library_note(rid), quota_note(client, need_bytes, action=action)):
         if note:
             print(note, file=sys.stderr, flush=True)
 

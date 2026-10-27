@@ -2816,8 +2816,12 @@ def _account_quota(client: Any) -> tuple[int, int] | None:
     return usage, total
 
 
-def quota_note(client: Any, need_bytes: int) -> str | None:
+def quota_note(client: Any, need_bytes: int, *, action: str = "uploads") -> str | None:
     """A warning when the upload would not fit the account's quota.
+
+    *action* names what the run does with the bytes: a payload view copies
+    server-side and moves nothing, but the quota counts each copy at its full
+    size, so "uploads" would be the wrong word there.
 
     A warning, not a refusal: the quota that counts is the library owner's, which
     is not necessarily this account.
@@ -2833,9 +2837,9 @@ def quota_note(client: Any, need_bytes: int) -> str | None:
     if need_bytes <= free:
         return None
     return (
-        f"Warning: this run uploads {human_bytes(need_bytes)} but the account has "
+        f"Warning: this run {action} {human_bytes(need_bytes)} but the account has "
         f"{human_bytes(max(free, 0))} of quota left ({human_bytes(usage)} of "
-        f"{human_bytes(total)} used); the upload will probably fail partway. Free space, or "
+        f"{human_bytes(total)} used); it will probably fail partway. Free space, or "
         "ask for more, first -- already stored objects are kept and the next run resumes."
     )
 
@@ -2858,8 +2862,8 @@ def synced_payload_library_note(rid: str) -> str | None:
     return None
 
 
-def payload_preflight(client: Any, rid: str, need_bytes: int) -> None:
-    for note in (synced_payload_library_note(rid), quota_note(client, need_bytes)):
+def payload_preflight(client: Any, rid: str, need_bytes: int, *, action: str = "uploads") -> None:
+    for note in (synced_payload_library_note(rid), quota_note(client, need_bytes, action=action)):
         if note:
             print(note, file=sys.stderr, flush=True)
 
@@ -6135,10 +6139,13 @@ def payload_view(
         made.append(("/".join(parts[:-1]), parts[-1], item["sha256"]))
 
     # A server-side copy adds no blocks, but the library's quota counts each copy
-    # at its full size (measured, SNAPSHOT.md 15.1): a view of a large snapshot
-    # can use what the next backup needs.  Said before anything is built.
+    # at its full size (measured, SNAPSHOT.md 15.1, and again on a real server:
+    # a view of one 70 MiB object grew the library by 70.0 MiB): a view of a
+    # large snapshot can use what the next backup needs.  Said before anything
+    # is built, and again in the closing line.
     sizes = {item["sha256"]: item["size"] for item in files}
-    payload_preflight(client, rid, sum(sizes[sha] for _d, _n, sha in made))
+    counted = sum(sizes[sha] for _d, _n, sha in made)
+    payload_preflight(client, rid, counted, action="copies (counted at full size)")
     print(f"building {root}: {len(made)} file(s) ...", flush=True)
     _api(lambda: client.mkdir_p(rid, root), f"creating {root}")
     done_dirs: set[str] = set()
@@ -6155,7 +6162,11 @@ def payload_view(
         )
         if index % 100 == 0 or index == len(made):
             print(f"built [{index}/{len(made)}]", flush=True)
-    print(f"view ready: {library}:{root} ({len(made)} file(s); no data was transferred)")
+    print(
+        f"view ready: {library}:{root} ({len(made)} file(s), {human_bytes(counted)}; the server "
+        "copied them without moving data, but the library's quota and size now count each "
+        "copy at its full size -- delete the view when you are done with it)"
+    )
     if skipped:
         shown = "\n  ".join(skipped[:20])
         more = f"\n  ... and {len(skipped) - 20} more" if len(skipped) > 20 else ""

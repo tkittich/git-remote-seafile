@@ -165,10 +165,13 @@ def payload_view(
         made.append(("/".join(parts[:-1]), parts[-1], item["sha256"]))
 
     # A server-side copy adds no blocks, but the library's quota counts each copy
-    # at its full size (measured, SNAPSHOT.md 15.1): a view of a large snapshot
-    # can use what the next backup needs.  Said before anything is built.
+    # at its full size (measured, SNAPSHOT.md 15.1, and again on a real server:
+    # a view of one 70 MiB object grew the library by 70.0 MiB): a view of a
+    # large snapshot can use what the next backup needs.  Said before anything
+    # is built, and again in the closing line.
     sizes = {item["sha256"]: item["size"] for item in files}
-    payload_preflight(client, rid, sum(sizes[sha] for _d, _n, sha in made))
+    counted = sum(sizes[sha] for _d, _n, sha in made)
+    payload_preflight(client, rid, counted, action="copies (counted at full size)")
     print(f"building {root}: {len(made)} file(s) ...", flush=True)
     _api(lambda: client.mkdir_p(rid, root), f"creating {root}")
     done_dirs: set[str] = set()
@@ -185,7 +188,11 @@ def payload_view(
         )
         if index % 100 == 0 or index == len(made):
             print(f"built [{index}/{len(made)}]", flush=True)
-    print(f"view ready: {library}:{root} ({len(made)} file(s); no data was transferred)")
+    print(
+        f"view ready: {library}:{root} ({len(made)} file(s), {human_bytes(counted)}; the server "
+        "copied them without moving data, but the library's quota and size now count each "
+        "copy at its full size -- delete the view when you are done with it)"
+    )
     if skipped:
         shown = "\n  ".join(skipped[:20])
         more = f"\n  ... and {len(skipped) - 20} more" if len(skipped) > 20 else ""

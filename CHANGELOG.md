@@ -27,6 +27,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **A restore on Windows of a snapshot holding a name Windows cannot hold** (`a:b.txt`, `aux.js`, a trailing dot, captured on Linux) **restored nothing**: `git checkout` refuses the whole tree with `invalid path` and writes no file, while payload files with such names were already skipped and reported. The git-stored files are now restored around those names (the index is built from the revision minus them and written with `checkout-index`; `core.protectNTFS` stays on), the names are listed in a `Warning:`, the byte verification covers everything else, and the final line says how many names were excluded.
 
+- **`--payload-view` said "no data was transferred" while the library grew by the full size of what it copied** (reproduced on a real server: a view of one 70 MiB object added 70.0 MiB). The server shares blocks but the quota and library size count each copy at full size, so a view of a large snapshot can use what the next backup needs. The closing line now says so (with the bytes counted), the quota warning that already ran before building names a view's copies instead of "uploads", and PAYLOAD D10 no longer implies the view is free.
+
 ### Changed
 - SNAPSHOT.md and DESIGN's failure model say which omissions are not reported: named pipes, sockets and device nodes have no content to store and are skipped without a note.
 

@@ -302,7 +302,7 @@ history (days), as a safety net for a mistaken delete.
 builds `<vault path>-view/<NAME>` (default NAME: the snapshot id) in the same
 library: for each manifest entry the object is copied server-side into the right
 directory, keeping its hash name, and renamed to the file's name (two calls per
-file, no data moved, and measured to add no blocks). It refuses when any object is
+file, no data moved, and measured to add no blocks -- but the library's quota and size count each copy at its full size, so a view of a large snapshot needs that much quota; the run warns when the account's quota is short and says so in its closing line). It refuses when any object is
 missing, refuses an existing view unless `--payload-view-replace`, and reports
 files the server cannot name (a component over 255 bytes, or two names that
 collapse to one) instead of failing. A view is a convenience: no mode, no mtime,

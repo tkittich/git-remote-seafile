@@ -2263,6 +2263,26 @@ class PayloadRememberVerifyViewAndClockTests(_PayloadFixture):
         self.assertFalse(any(k.startswith("/pvault-view/current/") and len(k.rsplit("/", 1)[-1]) == 64
                              for k in files), "an object name was left in the view")
 
+    def test_a_view_says_the_quota_counts_each_copy_at_full_size(self):
+        """It printed "no data was transferred" and a view of one 70 MiB object
+        grew the library by 70.0 MiB on a real server (blocks are shared, the
+        quota is not)."""
+        self.assertEqual(self.snapshot()[0], 0)
+        rc, out, err = self.view("--payload-view-name", "current")
+        self.assertEqual(rc, 0, out + err)
+        self.assertNotIn("no data was transferred", out)
+        self.assertIn("without moving data", out)
+        self.assertIn("count each copy at its full size", out)
+        self.assertIn(snap.human_bytes(len(self.big1) + len(self.big2)), out)
+
+    def test_a_view_that_would_not_fit_the_quota_warns_before_building(self):
+        self.assertEqual(self.snapshot()[0], 0)
+        with unittest.mock.patch.object(snap, "_account_quota", return_value=(900, 1000)):
+            rc, out, err = self.view("--payload-view-name", "tight")
+        self.assertEqual(rc, 0, out + err)  # a warning, not a refusal: the owner's quota counts
+        self.assertIn("Warning: this run copies (counted at full size)", err)
+        self.assertIn("of quota left", err)
+
     def test_a_view_of_an_older_snapshot_shows_the_older_bytes(self):
         self.assertEqual(self.snapshot()[0], 0)
         (self.src / "big1.bin").write_bytes(os.urandom(6000))
