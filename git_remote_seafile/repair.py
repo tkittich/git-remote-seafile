@@ -129,6 +129,79 @@ def _verify_repair_upload(
                 )
 
 
+def _int_size(entry: dict[str, Any]) -> int:
+    """A listing entry's size, 0 for anything that is not a plain integer."""
+    raw = entry.get("size")
+    if isinstance(raw, bool):
+        return 0
+    if isinstance(raw, int):
+        return raw
+    return int(raw) if isinstance(raw, str) and raw.isdigit() else 0
+
+
+def _list_packs(
+    client: SeafileClient, repo_id: str, pack_dir: str, *, has_refs: bool
+) -> tuple[dict[str, int], dict[str, int]]:
+    """``(pack sizes, idx sizes)`` of the remote, by name.
+
+    A listing that answers empty while refs exist is asked again once: a
+    transient empty answer would otherwise make every ref look broken (and a
+    real run re-upload the whole history).  If it is still empty the remote
+    may genuinely have lost every pack -- the case repair exists for -- so it
+    goes on, saying so.
+    """
+    entries = client.list_dir(repo_id, pack_dir)
+    if not entries and has_refs:
+        entries = client.list_dir(repo_id, pack_dir)
+        if not entries:
+            sys.stderr.write(
+                f"Warning: {pack_dir} lists no packfiles at all, twice; every ref will be "
+                "treated as broken. Repair only adds packs, so this is safe, but check "
+                "that the server is listing the directory correctly\n"
+            )
+            sys.stderr.flush()
+    pack_sizes: dict[str, int] = {}
+    idx_sizes: dict[str, int] = {}
+    for e in entries:
+        name = str(e.get("name", "")) if isinstance(e, dict) else ""
+        if name.endswith(".idx"):
+            idx_sizes[name] = _int_size(e)
+        elif name.endswith(".pack"):
+            # The name becomes a local path in the scratch directory.  gc and
+            # fetch validate it before any download; a library writer who can
+            # plant "..\\..\\x.pack" must not get a write outside it here.
+            if not is_valid_pack_name(name):
+                sys.stderr.write(f"Warning: ignoring pack file with an invalid name '{name}'\n")
+                sys.stderr.flush()
+                continue
+            pack_sizes[name] = _int_size(e)
+    return pack_sizes, idx_sizes
+
+
+def _read_tips(client: SeafileClient, repo_id: str, repo_path: str) -> list[tuple[str, str]]:
+    """Every ref tip the remote holds.
+
+    Strict, as ``gc`` reads its mirror: a ref that is listed but cannot be
+    read is an error naming it.  Skipping it with a warning made
+    ``repair --dry-run`` answer "clean" over the very ref that was broken.
+    """
+    tips: list[tuple[str, str]] = []
+    for namespace in REF_NAMESPACES:
+        for ref_name, sha in iter_refs(
+            client, repo_id, repo_path, namespace, strict=True, strict_listing=True
+        ):
+            if not is_valid_ref_name(ref_name):
+                sys.stderr.write(f"Warning: ignoring malformed ref name '{ref_name}'\n")
+                sys.stderr.flush()
+                continue
+            if not HEX_SHA_RE.fullmatch(sha):
+                sys.stderr.write(f"Warning: ignoring invalid SHA '{sha}' for ref '{ref_name}'\n")
+                sys.stderr.flush()
+                continue
+            tips.append((ref_name, sha))
+    return tips
+
+
 def repair_remote(
     client: SeafileClient,
     repo_id: str,
@@ -165,40 +238,11 @@ def repair_remote(
     pack_dir = f"{clean_repo}/objects/pack"
     cfg = config if config is not None else RemoteConfig.load()
 
-    entries = client.list_dir(repo_id, pack_dir)
-    pack_sizes: dict[str, int] = {}
-    for e in entries:
-        name = str(e.get("name", "")) if isinstance(e, dict) else ""
-        if not name.endswith(".pack"):
-            continue
-        # The name becomes a local path in the scratch directory.  gc and fetch
-        # validate it before any download; a library writer who can plant
-        # "..\..\x.pack" must not get a write outside that directory here.
-        if not is_valid_pack_name(name):
-            sys.stderr.write(f"Warning: ignoring pack file with an invalid name '{name}'\n")
-            sys.stderr.flush()
-            continue
-        pack_sizes[name] = int(e.get("size") or 0)
-    idx_sizes = {
-        e["name"]: int(e.get("size") or 0)
-        for e in entries
-        if isinstance(e, dict) and str(e.get("name", "")).endswith(".idx")
-    }
-
-    tips: list[tuple[str, str]] = []
-    for namespace in REF_NAMESPACES:
-        for ref_name, sha in iter_refs(client, repo_id, repo_path, namespace):
-            if not is_valid_ref_name(ref_name):
-                sys.stderr.write(f"Warning: ignoring malformed ref name '{ref_name}'\n")
-                sys.stderr.flush()
-                continue
-            if not HEX_SHA_RE.fullmatch(sha):
-                sys.stderr.write(f"Warning: ignoring invalid SHA '{sha}' for ref '{ref_name}'\n")
-                sys.stderr.flush()
-                continue
-            tips.append((ref_name, sha))
-
     with RemoteLock(client, repo_id, clean_repo, config=cfg) as lock:
+        # Listed under the lock, like the rest of the sequence: a pack list taken
+        # before it can be reshaped by a compaction that finishes while we wait.
+        tips = _read_tips(client, repo_id, repo_path)
+        pack_sizes, idx_sizes = _list_packs(client, repo_id, pack_dir, has_refs=bool(tips))
 
         def maybe_renew() -> None:
             lock.maybe_renew(20.0)

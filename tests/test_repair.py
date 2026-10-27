@@ -15,7 +15,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 from git_remote_seafile.config import RemoteConfig
-from git_remote_seafile.repair import repair_remote
+from git_remote_seafile.client import SeafileAPIError
+from git_remote_seafile.repair import _int_size, repair_remote
 
 _REPO = "/git-repo"
 
@@ -203,6 +204,79 @@ class TestRepair(unittest.TestCase):
             written = "".join(c.args[0] for c in err.write.call_args_list)
             self.assertIn("invalid name", written)
             self.assertIn("ignoring pack file", written)
+
+    def test_a_ref_that_is_listed_but_unreadable_is_an_error_not_a_clean_bill(self):
+        """Skipping it with a warning let ``--dry-run`` say "clean" over the very
+        ref that was broken; the tips are read the way ``gc`` reads its mirror."""
+        with tempfile.TemporaryDirectory() as td:
+            clone, sha = _history(Path(td))
+            client = _StubClient({"main": sha, "damaged": ""})
+            with self.assertRaises(SeafileAPIError) as ctx:
+                _repair(client, clone, dry_run=True)
+            self.assertIn("refs/heads/damaged", str(ctx.exception))
+            self.assertIn("could not be read", str(ctx.exception))
+
+    def test_the_pack_listing_is_taken_under_the_lock(self):
+        """A listing taken before the lock can be reshaped by a compaction that
+        finishes while we wait; the docstring promises the lock throughout."""
+        with tempfile.TemporaryDirectory() as td:
+            clone, sha = _history(Path(td))
+            client = _StubClient({"main": sha})
+            events: list[str] = []
+            real_list = client.list_dir
+
+            def spy(repo_id, path):
+                if str(path).endswith("/objects/pack"):
+                    events.append("list packs")
+                return real_list(repo_id, path)
+
+            class Lock(_StubLock):
+                def __enter__(self):
+                    events.append("lock")
+                    return self
+
+            client.list_dir = spy
+            with patch("git_remote_seafile.repair.RemoteLock", Lock):
+                repair_remote(client, "repo1", _REPO, config=_CFG, verbose=False,
+                              local_repo=clone, dry_run=True)
+            self.assertEqual(events[0], "lock", events)
+            self.assertIn("list packs", events)
+
+    def test_a_transient_empty_pack_listing_is_asked_again_once(self):
+        """200-with-empty for a directory that holds packs made every ref look
+        broken, and a real run would re-upload the whole history."""
+        with tempfile.TemporaryDirectory() as td:
+            clone, sha = _history(Path(td))
+            client = _StubClient({"main": sha})
+            self.assertEqual(_repair(client, clone)["status"], "ok")  # packs now exist
+            real_list = client.list_dir
+            answers = {"empty_first": True}
+
+            def flaky(repo_id, path):
+                if str(path).endswith("/objects/pack") and answers["empty_first"]:
+                    answers["empty_first"] = False
+                    return []
+                return real_list(repo_id, path)
+
+            client.list_dir = flaky
+            with patch("sys.stderr") as err:
+                res = _repair(client, clone, dry_run=True)
+            self.assertEqual(res["status"], "clean", res)
+            self.assertNotIn("lists no packfiles", "".join(c.args[0] for c in err.write.call_args_list))
+
+    def test_a_remote_that_really_lists_no_packs_is_repaired_and_says_so(self):
+        with tempfile.TemporaryDirectory() as td:
+            clone, sha = _history(Path(td))
+            client = _StubClient({"main": sha})
+            with patch("sys.stderr") as err:
+                res = _repair(client, clone, dry_run=True)
+            self.assertEqual(res["status"], "broken")
+            self.assertIn("lists no packfiles at all", "".join(c.args[0] for c in err.write.call_args_list))
+
+    def test_a_listed_size_that_is_not_a_number_counts_as_zero(self):
+        for raw, want in (("12", 12), (7, 7), ("abc", 0), (None, 0), (True, 0), (3.5, 0)):
+            self.assertEqual(_int_size({"size": raw}), want, raw)
+        self.assertEqual(_int_size({}), 0)
 
     def test_an_upload_that_lands_nothing_is_reported_not_silent(self):
         """An upload the listing cannot confirm fails the repair out loud.
