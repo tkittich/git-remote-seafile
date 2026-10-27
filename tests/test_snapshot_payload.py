@@ -388,6 +388,33 @@ class PayloadBasicsTests(_PayloadFixture):
         self.assertIn("changed since it was hashed", out + err)
         self.assertEqual(self.object_count(), 0)
 
+    def test_bytes_that_differ_from_the_hash_are_never_named_after_it(self):
+        """The digest of what is sent is the guard that cannot be fooled: a file
+        rewritten in place with its size and mtime restored (a memory-mapped
+        writer on Windows) passes every stat check.  Here the stat check is
+        blinded and the bytes swapped between hashing and upload; only the
+        hashing reader can notice, and the object must not land under the old
+        content's name (the mutation ``clean = True`` fails this test)."""
+        target = self.src / "big1.bin"
+        original = target.stat()
+        swapped = []
+
+        def blind_stat_check(source, rel, size, mtime_ns):
+            if rel == "big1.bin" and not swapped:
+                swapped.append(True)
+                target.write_bytes(os.urandom(len(self.big1)))
+                os.utime(target, ns=(original.st_atime_ns, original.st_mtime_ns))
+            return True
+
+        with unittest.mock.patch.object(snap, "_unchanged", blind_stat_check):
+            rc, out, err = self.snapshot()
+        self.assertNotEqual(rc, 0, out + err)
+        self.assertIn("changed while it was being uploaded", out + err)
+        self.assertNotIn(self.object_key(self.big1), self.server_files())
+        self.assertEqual(
+            [n for n in self.stored_names() if ".part-" in n], [], "the temporary copy is removed"
+        )
+
     def test_every_object_named_is_rechecked_just_before_the_push(self):
         # An object that was on the server when the run listed it, and gone by
         # the time of the push (a retention run on another machine), must be
