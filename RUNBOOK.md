@@ -148,8 +148,22 @@ git -C /path/to/good/clone fsck --full
 
 **Recover.** A plain `git push` is **not** enough here: the remote's intact refs still cover the
 missing pack's commits, so the push's exclusion set contains them, git reports "Everything
-up-to-date" and nothing is re-uploaded (measured; the branch looks repaired and is not). Delete
-the broken ref and push it again, which forces a pack of everything the branch names:
+up-to-date" and nothing is re-uploaded (measured; the branch looks repaired and is not).
+
+**Automated repair**, from a machine that holds the objects (verify with `git fsck --full`):
+
+```bash
+git-remote-seafile repair seafile://<library>/<path> --dry-run   # names the broken refs
+git-remote-seafile repair seafile://<library>/<path>             # uploads what they need
+```
+
+The command never deletes and never rewrites a ref: it reads the remote's packfiles, works out
+which ref tips nothing carries, and uploads one pack per broken ref holding exactly the objects
+that ref names and the remote lacks. Run it from a clone of the same repository; it reports a ref
+it cannot repair (the clone lacks its objects) rather than skipping it.
+
+The manual procedure below does the same thing by rewriting the ref, which needs no new command
+but briefly deletes the branch:
 
 ```bash
 # from a machine that holds the objects (verify with: git fsck --full)

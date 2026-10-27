@@ -43,6 +43,9 @@ _COMMANDS: tuple[tuple[str, str, str, tuple[tuple[str, str], ...]], ...] = (
       ("--tail",
        "Run exactly what seafile.autogc runs: merge only the small packfiles, "
        "leave large ones in place, no pruning"))),
+    ("repair", "git-remote-seafile repair <seafile://url> [--dry-run]",
+     "Restore refs whose objects no remote packfile carries, from this clone",
+     (("--dry-run", "Report the broken refs without uploading anything"),)),
     ("lfs-transfer", "git-remote-seafile lfs-transfer <seafile://url>",
      "Git LFS Custom Transfer Agent", ()),
     ("set-head", "git-remote-seafile set-head <seafile://url> <branch>",
@@ -465,6 +468,50 @@ def _cmd_gc(rest: list[str]) -> int:
     return 0
 
 
+def _cmd_repair(rest: list[str]) -> int:
+    positional = _positional_args(rest)
+    if not positional:
+        return _usage("repair")
+    url = positional[0]
+    dry_run = "--dry-run" in rest
+    try:
+        from .config import RemoteConfig
+        from .repair import repair_remote
+        helper = RemoteHelper("repair", url)
+        res = repair_remote(
+            helper.client,
+            helper.repo_id,
+            helper.repo_path,
+            dry_run=dry_run,
+            config=RemoteConfig.load(),
+        )
+    except Exception as ex:
+        return _error(f"Repair failed: {ex}")
+    status = res.get("status")
+    if status == "clean":
+        print("Every ref names objects the remote's packfiles carry; nothing to repair.")
+        return 0
+    if status == "broken":
+        print(f"{len(res['broken_refs'])} ref(s) name objects no remote packfile carries:")
+        for name, sha in res["broken_refs"]:
+            print(f"  {name} ({sha[:12]})")
+        print("Re-run without --dry-run to upload them from this clone.")
+        return 1
+    if status == "ok":
+        print(
+            f"Repaired {len(res['repaired'])} ref(s): uploaded "
+            f"{len(res['packs_uploaded'])} packfile(s) to the remote."
+        )
+        return 0
+    if status in ("partial", "error") and "unrepaired" in res:
+        for name in res["repaired"]:
+            print(f"  repaired: {name}")
+        for name, why in res["unrepaired"]:
+            print(f"  not repaired: {name} -- {why}")
+        return 1
+    return _error(str(res.get("message", "Repair failed.")))
+
+
 def _cmd_lfs_transfer(rest: list[str]) -> int:
     positional = _positional_args(rest)
     if not positional:
@@ -664,6 +711,7 @@ _HANDLERS = {
     "check-safety": _cmd_check_safety,
     "check-auth": _cmd_check_auth,
     "gc": _cmd_gc,
+    "repair": _cmd_repair,
     "lfs-transfer": _cmd_lfs_transfer,
     "set-head": _cmd_set_head,
     "lock-status": _cmd_lock_status,

@@ -315,6 +315,8 @@ Related details:
 - **`git repack` is not a lock primitive.** Ownership is proven by the fence (§4.4), not by the presence of a Git lock file.
 - **Removing a pack from the repository does not reclaim server storage.** Raw reclamation requires the administrator to run `seaf-gc` after the library retention window has elapsed.
 
+**Repair (`git-remote-seafile repair`, `repair.py`).** A ref whose tip no remote packfile carries — a pack removed out of band, or lost to an interrupted publish — is what the RUNBOOK's manual delete-and-repush fixes by rewriting the ref. The automated repair reads the remote's packs into a scratch repository (the same verified download and index as a compaction, §4.5), enumerates every object they carry with `cat-file --batch-all-objects`, and diffs every ref tip against that set. For each broken ref it builds one pack in the *local* clone — `rev-list --objects` of the tip minus the covered set, so a ref whose objects arrived with another ref's repair pays once — and uploads it, proven by the fresh listing's sizes and then by a read-back SHA-256, the same two proofs deletion is gated on. It never deletes and never writes a ref, so its worst case is a duplicate pack a later gc collects, and the local clone without the objects is reported per ref rather than skipped. The lock is held throughout: the coverage answer must not be invalidated by a concurrent compaction reshaping the pack set it came from.
+
 ### 4.6 Git LFS
 
 - Implements the official Git LFS line-based JSON custom transfer protocol, handling `init`, `upload`, and `download` events over standard I/O.
@@ -368,6 +370,7 @@ Implausible values — a negative timeout, a non-positive lease, a sub-1 thresho
 | `packs.py`                           | Remote packfile discovery, streaming download, integrity verification, atomic installation (`fetch_and_install_pack`, `check_remote_has_packs`, `is_valid_pack_name`) |
 | `lock.py`                            | Distributed ticket-based lease (`RemoteLock`), ownership fencing                                                                                                      |
 | `gc.py`                              | Remote packfile compaction — full `gc` and the automatic tail merge (§4.5) — and verified deletion                                                                                                                      |
+| `repair.py`                          | Restore refs whose objects no remote packfile carries (§4.5 Repair): enumerate, diff tips, upload from the local clone; never deletes, never writes a ref                                                              |
 | `lfs.py`                             | Git LFS custom transfer agent                                                                                                                                         |
 | `safety.py`                          | Pre-flight guardrails and synced-library discovery                                                                                                                    |
 | `git_util.py`                        | Git plumbing wrappers, shallow/promisor probing, `merge-base` ancestry                                                                                                |
