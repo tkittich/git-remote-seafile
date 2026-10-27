@@ -22,6 +22,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **A link measured slower than 0.05 MiB/s was remembered as 0.0** (one decimal), read back as unusable, and replaced by the assumed 53 MiB/s: the opposite of what was measured. The vault stores the rates to four significant figures now. It also made `PayloadTuningTests.test_a_new_vault_measures_once_and_remembers` fail once on a loaded Windows runner.
 
+- **A restore on Windows of a snapshot holding a name Windows cannot hold** (`a:b.txt`, `aux.js`, a trailing dot, captured on Linux) **restored nothing**: `git checkout` refuses the whole tree with `invalid path` and writes no file, while payload files with such names were already skipped and reported. The git-stored files are now restored around those names (the index is built from the revision minus them and written with `checkout-index`; `core.protectNTFS` stays on), the names are listed in a `Warning:`, the byte verification covers everything else, and the final line says how many names were excluded.
+
 ### Changed
 - SNAPSHOT.md and DESIGN's failure model say which omissions are not reported: named pipes, sockets and device nodes have no content to store and are skipped without a note.
 

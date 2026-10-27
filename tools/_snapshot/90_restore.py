@@ -7,7 +7,78 @@
 _CLONE_FLOOR_BYTES = 1024 ** 3
 
 
-def _checkout(repo: Path, rev: str, *, detach: bool = False) -> None:
+def _unrepresentable_paths(repo: Path, rev: str) -> list[str]:
+    """Paths in *rev* whose names Windows cannot hold; always empty elsewhere."""
+    if os.name != "nt":
+        return []
+    listing = _run(
+        ["git", "-C", str(repo), "ls-tree", "-r", "-z", "--name-only", "--full-tree", rev],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if listing.returncode != 0:
+        return []  # the checkout below reports whatever is wrong with the revision
+    names = (p.decode("utf-8", errors="surrogateescape") for p in listing.stdout.split(b"\0") if p)
+    return [name for name in names if windows_name_problem(name) is not None]
+
+
+def _checkout_around(repo: Path, rev: str, skipped: list[str], *, detach: bool) -> None:
+    """Check *rev* out without the paths in *skipped*.
+
+    ``git checkout`` refuses a whole tree for one name Windows cannot hold
+    ("error: invalid path 'a:b.txt'") and writes nothing, and relaxing
+    ``core.protectNTFS`` to get past it would also lift git's defence against
+    hostile NTFS names (8.3 aliases of ``.git``).  So the index is built from
+    the revision's own entries minus those paths and written with
+    ``checkout-index``; HEAD is pointed at the revision by hand.
+    """
+    listing = _run(
+        ["git", "-C", str(repo), "ls-tree", "-r", "-z", "--full-tree", rev],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if listing.returncode != 0:
+        raise SnapshotError(
+            f"could not list '{rev}' in {repo} (rc={listing.returncode})\n"
+            f"{listing.stderr.decode('utf-8', errors='replace').strip()}"
+        )
+    drop = set(skipped)
+    entries = bytearray()
+    for entry in listing.stdout.split(b"\0"):
+        if not entry:
+            continue
+        meta, _, path = entry.partition(b"\t")
+        if path.decode("utf-8", errors="surrogateescape") in drop:
+            continue
+        fields = meta.split()
+        entries += fields[0] + b" " + fields[2] + b"\t" + path + b"\0"
+    steps = [
+        (["read-tree", "--empty"], None),
+        (["update-index", "-z", "--add", "--index-info"], bytes(entries)),
+        (["update-ref", "--no-deref", "HEAD", rev] if detach
+         else ["symbolic-ref", "HEAD", f"refs/heads/{rev}"], None),
+        (["-c", "core.longpaths=true", "checkout-index", "-a", "-f"], None),
+    ]
+    for args, stdin in steps:
+        slow = "checkout-index" in args
+        proc = _run(
+            ["git", "-C", str(repo), *args],
+            input=stdin,
+            stdin=subprocess.DEVNULL if stdin is None else None,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            status=f"restoring files into {repo}" if slow else None,
+            measure_dir=repo if slow else None,
+        )
+        if proc.returncode != 0:
+            raise SnapshotError(
+                f"checkout of '{rev}' failed (rc={proc.returncode})\n"
+                f"{proc.stdout.decode('utf-8', errors='replace').strip()}"
+            )
+
+
+def _checkout(repo: Path, rev: str, *, detach: bool = False) -> list[str]:
+    """Check *rev* out; return the paths that could not be written (names this OS cannot hold)."""
     if rev.startswith("-"):
         # A remote ref is a file the library writer controls, and a name like
         # "--detach" is a legal one there; handed to git unguarded it parses
@@ -17,6 +88,10 @@ def _checkout(repo: Path, rev: str, *, detach: bool = False) -> None:
             f"cannot check out {rev!r}: the name reads as a git option. "
             "Restore a differently named branch, or pass a commit id"
         )
+    skipped = _unrepresentable_paths(repo, rev)
+    if skipped:
+        _checkout_around(repo, rev, skipped, detach=detach)
+        return skipped
     args = ["git", "-C", str(repo), "-c", "core.longpaths=true", "checkout", "-f"]
     if detach:
         args.append("--detach")
@@ -35,9 +110,10 @@ def _checkout(repo: Path, rev: str, *, detach: bool = False) -> None:
         raise SnapshotError(
             f"checkout of '{rev}' failed (rc={proc.returncode})\n{proc.stdout.strip()}"
         )
+    return []
 
 
-def verify_restore(repo: Path, rev: str) -> list[str]:
+def verify_restore(repo: Path, rev: str, skip: "set[str] | None" = None) -> list[str]:
     """Paths whose bytes on disk disagree with the snapshot's blobs.
 
     Byte-level on purpose, because the two filter-aware checks can both pass a
@@ -90,6 +166,8 @@ def verify_restore(repo: Path, rev: str) -> list[str]:
         fields = meta.split()
         if len(fields) < 3 or fields[1] != b"blob":
             continue
+        if skip and path.decode("utf-8", errors="surrogateescape") in skip:
+            continue  # a name this OS cannot hold: not restored, and said so
         # A symlink is a blob (mode 120000) holding the link-target
         # string, and the plain hash path cannot verify one: on Windows
         # (core.symlinks=false) git checks it out as a TEXT FILE whose
@@ -372,11 +450,19 @@ def _restore(
                 f"cannot resolve '{ref}' in the vault\n{proc.stderr.strip()}"
             )
         sha = proc.stdout.strip()
-        _checkout(into, sha, detach=True)
+        unholdable = _checkout(into, sha, detach=True)
         target = f"{ref} ({sha[:12]})"
         verified_rev = sha
     else:
-        _checkout(into, branch)
+        unholdable = _checkout(into, branch)
+    if unholdable:
+        shown = "\n".join(f"  {path}" for path in unholdable[:10])
+        more = f"\n  ... and {len(unholdable) - 10} more" if len(unholdable) > 10 else ""
+        print(
+            f"\nWarning: {len(unholdable)} file(s) in this snapshot have names Windows cannot hold "
+            f"and were not restored:\n{shown}{more}\nRestore on Linux or macOS to get them; "
+            "everything else was restored and is verified below."
+        )
 
     # The snapshot-time warning about embedded repositories is years and
     # machines away by the time someone restores; the restored revision is
@@ -408,7 +494,7 @@ def _restore(
 
     # A restore that differs from the snapshot is not a restore, and the
     # autocrlf class of bug is invisible to `git status` -- so check the bytes.
-    mismatched = verify_restore(into, verified_rev)
+    mismatched = verify_restore(into, verified_rev, set(unholdable))
     if mismatched:
         shown = "\n".join(f"  {path}" for path in mismatched[:20])
         extra = (
@@ -443,7 +529,10 @@ def _restore(
 
     files = sum(1 for p in into.rglob("*") if p.is_file() and ".git" not in p.parts)
     print(f"restored {files} files from {target} into {into}")
-    print(f"verified byte-exact against {verified_rev[:12]}")
+    print(
+        f"verified byte-exact against {verified_rev[:12]}"
+        + (f" ({len(unholdable)} unrepresentable name(s) excluded)" if unholdable else "")
+    )
 
 
 def _remove_tree(path: Path) -> None:

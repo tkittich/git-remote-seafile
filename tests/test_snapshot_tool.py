@@ -1561,6 +1561,80 @@ class RestoreVerificationTests(_SnapshotFixture):
         self.assertEqual(rc, 0, err)
         self.assertIn("verified byte-exact", out)
 
+    def _vault_with_odd_names(self) -> None:
+        """A snapshot chain on ``self.remote`` holding names Windows cannot hold.
+
+        ``git add``, ``update-index`` and even ``fast-import`` refuse them on
+        Windows, so the objects are written by hand (``hash-object --literally``):
+        the shape of a vault captured on Linux and restored on Windows.
+        """
+        def put(kind: str, data: bytes) -> bytes:
+            out = subprocess.run(
+                ["git", "-C", str(self.remote), "hash-object", "-w", "--literally",
+                 "-t", kind, "--stdin"],
+                input=data, check=True, capture_output=True,
+            ).stdout.decode().strip()
+            return bytes.fromhex(out)
+
+        def tree(entries: list[tuple[str, str, bytes]]) -> bytes:
+            body = b"".join(
+                f"{mode} {name}".encode() + b"\0" + sha
+                for name, mode, sha in sorted(entries, key=lambda e: e[0].encode())
+            )
+            return put("tree", body)
+
+        blob = {
+            name: put("blob", data) for name, data in
+            (("ok", b"one\n"), ("colon", b"two\n"), ("aux", b"three\n"), ("fine", b"four\n"))
+        }
+        sub = tree([("fine.txt", "100644", blob["fine"])])
+        root = tree([
+            ("ok.txt", "100644", blob["ok"]),
+            ("a:b.txt", "100644", blob["colon"]),
+            ("aux.js", "100644", blob["aux"]),
+            ("sub", "40000", sub),
+        ])
+        env = {**os.environ, "GIT_COMMITTER_NAME": "T", "GIT_COMMITTER_EMAIL": "t@example.com",
+               "GIT_AUTHOR_NAME": "T", "GIT_AUTHOR_EMAIL": "t@example.com"}
+        commit = subprocess.run(
+            ["git", "-C", str(self.remote), "commit-tree", root.hex(), "-m", "odd names"],
+            check=True, capture_output=True, text=True, env=env,
+        ).stdout.strip()
+        _git(self.remote, "update-ref", f"refs/heads/{BRANCH}", commit)
+        _git(self.remote, "symbolic-ref", "HEAD", f"refs/heads/{BRANCH}")
+
+    @unittest.skipUnless(os.name == "nt", "only Windows refuses these names")
+    def test_a_restore_on_windows_goes_around_names_it_cannot_hold(self):
+        """``git checkout`` refused the whole tree for one such name ("invalid
+        path 'a:b.txt'") and wrote nothing: no file of the snapshot came back
+        (reproduced Debian -> Windows).  The rest is restored and verified, the
+        names are listed, and relaxing core.protectNTFS is not how."""
+        self._vault_with_odd_names()
+        rc, out, err = self.restore_to(self.restored)
+        self.assertEqual(rc, 0, out + err)
+        self.assertEqual((self.restored / "ok.txt").read_bytes(), b"one\n")
+        self.assertEqual((self.restored / "sub" / "fine.txt").read_bytes(), b"four\n")
+        self.assertFalse((self.restored / "aux.js").exists())
+        self.assertIn("Warning: 2 file(s) in this snapshot have names Windows cannot hold", out)
+        self.assertIn("a:b.txt", out)
+        self.assertIn("2 unrepresentable name(s) excluded", out)
+        self.assertEqual(
+            _git(self.restored, "config", "--get", "core.protectNTFS").stdout.strip(), ""
+        )
+
+    @unittest.skipUnless(os.name == "nt", "only Windows refuses these names")
+    def test_a_restore_of_an_older_snapshot_on_windows_goes_around_them_too(self):
+        self._vault_with_odd_names()
+        rc, out, err = self.restore_to(self.restored, "--ref", BRANCH)
+        self.assertEqual(rc, 0, out + err)
+        self.assertTrue((self.restored / "ok.txt").is_file())
+        self.assertIn("have names Windows cannot hold", out)
+
+    @unittest.skipIf(os.name == "nt", "Windows is where names are unrepresentable")
+    def test_no_name_is_set_aside_off_windows(self):
+        self._vault_with_odd_names()
+        self.assertEqual(snap._unrepresentable_paths(self.remote, BRANCH), [])
+
     def test_a_gitlink_in_the_snapshot_warns_at_restore_time(self):
         """The snapshot-time warning must be repeated where the hole opens.
 

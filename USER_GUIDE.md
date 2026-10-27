@@ -1333,7 +1333,8 @@ What to know:
 - **What it does not do:** no encryption, no delta between versions of one file (a
   changed file is a whole new object; the server shares unchanged blocks), and a
   file's name must be restorable on the platform you restore to (Windows names it
-  cannot hold are skipped and reported).
+  cannot hold are skipped and reported, git-stored files and payload files alike;
+  the rest of the snapshot is restored and verified).
 
 The specification, the requirements and the review that shaped it are
 [PAYLOAD.md](PAYLOAD.md); the measurements are in
