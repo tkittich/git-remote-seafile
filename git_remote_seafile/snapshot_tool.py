@@ -664,6 +664,12 @@ def git(
                 "If no git process is running on this vault, delete the lock file named "
                 "above and re-run; the vault itself is not damaged."
             )
+        if "unstable object source data" in detail:
+            hint = (
+                "\nA file was rewritten while git was reading it (git does not say which). "
+                "Nothing was snapshotted; run again. If it keeps happening, something is "
+                "writing to the tree all the time (a database, a log): --exclude it."
+            )
         raise SnapshotError(
             f"git {' '.join(args)} failed (rc={proc.returncode})\n{detail}{hint}"
         )

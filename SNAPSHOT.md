@@ -543,9 +543,14 @@ the same file grows the remote by 32 MB **per day** until someone runs `git-remo
 the most important operational caveat for large files, and it is a compaction
 problem, not a Git one.
 
-**A snapshot is not a transaction.** The tree is read file by file. A file
-changing mid-scan yields a snapshot that is internally consistent but not a
-point-in-time image of the whole tree.
+**A snapshot is not a transaction.** The tree is read file by file, and a file
+that changes while git reads it **stops the run**: git itself refuses with
+`fatal: confused by unstable object source data` (six times out of six when a
+6-48 MiB file was rewritten under `git add`), the run reports it with a hint and
+exits non-zero, and no snapshot is made. So a snapshot is never torn, but a tree
+that is always being written (a database, a log) needs `--exclude` for that file.
+Files that change *between* the reads of different files give a snapshot that is
+internally consistent but not a point-in-time image of the whole tree.
 
 **Secrets are permanent.** The vault will happily record `.env`, keys and
 credentials, and Git history is forever. Every run lists the credential-shaped

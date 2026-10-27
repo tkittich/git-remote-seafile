@@ -2306,6 +2306,21 @@ class StaleGitLockHintTests(unittest.TestCase):
         self.assertIn("left its lock behind", str(ctx.exception))
         self.assertIn("delete the lock file", str(ctx.exception))
 
+    def test_a_file_rewritten_while_git_reads_it_is_explained_and_nothing_is_snapshotted(self):
+        """Git's message names an object id, not the file or an action (reproduced
+        six times out of six on Debian by rewriting a large file under ``git add``)."""
+        proc = unittest.mock.MagicMock(
+            returncode=128, stdout="",
+            stderr="fatal: confused by unstable object source data for cda6b24ab12",
+        )
+        with unittest.mock.patch.object(snap, "_run", return_value=proc):
+            with self.assertRaises(snap.SnapshotError) as ctx:
+                snap.git(pathlib.Path("V/.git"), None, ["add", "-A"], cwd=pathlib.Path("."))
+        message = str(ctx.exception)
+        self.assertIn("was rewritten while git was reading it", message)
+        self.assertIn("Nothing was snapshotted", message)
+        self.assertIn("--exclude it", message)
+
 
 class LargePayloadProfileTests(unittest.TestCase):
     """A first-run sample decides once whether the vault should skip deflate and
