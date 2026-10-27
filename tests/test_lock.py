@@ -418,6 +418,52 @@ class TestConcurrencyAndLocking(unittest.TestCase):
             with self.assertRaises(RepositoryLockedError):
                 lock.acquire()
 
+    def test_dead_pid_reclaim_requires_the_same_install_id(self):
+        """Same hostname and MAC, different install: the shared-bridge container pair.
+
+        machine_id is the MAC (``uuid.getnode``), which a bridge gives to every
+        container on it, and the hostname can be set equal as well; only the
+        per-install token knows the two apart.  Reaping on a dead local PID
+        would let one container take the other's *live* lock, so the ticket's
+        install id must match ours.  An old ticket without the field keeps the
+        machine_id-only behavior -- the tests above pin that.
+        """
+        store = _SharedLockStore()
+        store.put_ticket("/path/.git-lock.d/sister.json", json.loads(_ticket(
+            "sister",
+            owner="sister-container-user",
+            machine=socket.gethostname(),
+            install_id="the-other-container",
+            pid=999999,
+        )))
+
+        lock = RemoteLock(store.client("token123"), "repo1", "/path", timeout=0, lease=60, settle=0)
+        with patch("git_remote_seafile.lock._LOCAL_INSTALL_ID", "this-install"):
+            with patch("git_remote_seafile.lock._is_pid_alive", return_value=False):
+                with self.assertRaises(RepositoryLockedError):
+                    lock.acquire()
+
+    def test_dead_pid_reclaims_when_the_install_id_matches(self):
+        """The install id is an additional proof, not a replacement: a match reclaims."""
+        store = _SharedLockStore()
+        store.put_ticket("/path/.git-lock.d/crashed.json", json.loads(_ticket(
+            "crashed",
+            owner="crashed-local-user",
+            machine=socket.gethostname(),
+            install_id="this-install",
+            pid=999999,
+        )))
+
+        lock = RemoteLock(store.client("token123"), "repo1", "/path", timeout=0, lease=60, settle=0)
+        err = io.StringIO()
+        with patch("git_remote_seafile.lock._LOCAL_INSTALL_ID", "this-install"):
+            with patch("git_remote_seafile.lock._is_pid_alive", return_value=False):
+                with patch("sys.stderr", err):
+                    lock.acquire()
+
+        self.assertTrue(lock.acquired)
+        self.assertIn("Reclaiming stale lock from dead local process", err.getvalue())
+
     def test_ticket_based_ordering_earliest_wins(self):
         """When multiple tickets exist, the earliest ticket wins."""
         store = _SharedLockStore()
@@ -583,6 +629,30 @@ class TestConcurrencyAndLocking(unittest.TestCase):
         )
         self.assertTrue(lock.unlock())
         self.assertNotIn("/path/.git-lock.d/live.json", store.files)
+
+    def test_plain_unlock_refuses_a_lock_from_another_install(self):
+        """Same owner and hostname, different install: staleness cannot be judged here.
+
+        The dead-PID check that makes a plain unlock safe runs in *this* PID
+        namespace; a ticket written by another install (the shared-MAC
+        container pair) is not covered by it, so the unlock must refuse and
+        leave --force as the deliberate override.
+        """
+        store = _SharedLockStore()
+        lock = RemoteLock(store.client("token-U"), "repo1", "/path", timeout=1, lease=60, settle=0)
+        mine = dict(owner=lock._owner_id(), machine=socket.gethostname())
+        store.put_ticket(
+            "/path/.git-lock.d/sister.json",
+            json.loads(_ticket("sister", pid=4294967295, install_id="the-other-container", **mine)),
+        )
+        with patch("git_remote_seafile.lock._LOCAL_INSTALL_ID", "this-install"):
+            with self.assertRaises(RepositoryLockedError) as ctx:
+                lock.unlock()
+        self.assertIn("different install of git-remote-seafile", str(ctx.exception))
+        self.assertIn("/path/.git-lock.d/sister.json", store.files)
+
+        self.assertTrue(lock.unlock(force=True))
+        self.assertNotIn("/path/.git-lock.d/sister.json", store.files)
 
     def test_lock_lease_renew(self):
         """Lease renewal rewrites the ticket with a fresh timestamp."""

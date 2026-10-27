@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import secrets
 import socket
 import sys
 import time
@@ -95,6 +96,45 @@ def _f(val: Any) -> float:
 
 
 _LOCAL_MACHINE_ID: str = hex(uuid.getnode())
+
+#: The per-install token, read or created lazily by :func:`_local_install_id`.
+_LOCAL_INSTALL_ID: str | None = None
+
+
+def _local_install_id() -> str:
+    """A per-install random token, persisted in the user's home directory.
+
+    Hostname plus the MAC (``uuid.getnode``) used to be the whole machine
+    identity, and two containers on one bridge share both: either could look
+    at the other's live lock, find the holding PID absent from its own PID
+    namespace, and reap it as stale.  The token is one random value per home
+    directory, created on first use, so installs differ even when every
+    observable property of the "machine" matches.
+
+    An empty return -- a home directory that can be neither read nor written
+    -- means "unknown", and the callers fall back to the hostname+MAC
+    behavior.  The failure mode of not matching is a lock that waits out its
+    lease; the failure mode of a wrongful match is a live lock reaped, so
+    only a provable match may reclaim, and the token is cached (including the
+    empty one) rather than minted afresh per call.
+    """
+    global _LOCAL_INSTALL_ID
+    if _LOCAL_INSTALL_ID is None:
+        path = Path.home() / ".git-remote-seafile" / "install-id"
+        token = ""
+        try:
+            token = path.read_text(encoding="utf-8").strip()
+        except (OSError, UnicodeDecodeError):
+            token = ""
+        if not token:
+            token = secrets.token_hex(16)
+            try:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(token + "\n", encoding="utf-8")
+            except OSError:
+                token = ""
+        _LOCAL_INSTALL_ID = token
+    return _LOCAL_INSTALL_ID
 
 
 def _is_pid_alive(pid: int) -> bool:
@@ -323,6 +363,7 @@ class RemoteLock:
             "owner": owner,
             "machine": machine,
             "machine_id": _LOCAL_MACHINE_ID,
+            "install_id": _local_install_id(),
             "nonce": self._nonce,
             "timestamp": now,
             "order_ts": self._order_ts,
@@ -357,10 +398,17 @@ class RemoteLock:
         # that is no longer alive or has been recycled by the OS. Both the hostname
         # *and* machine_id (when available) are checked, so a container, or a fleet
         # of machines sharing a default hostname, cannot make another host's live lock
-        # look dead here.
+        # look dead here.  A third check catches what those two cannot: two
+        # containers on one bridge share the MAC *and* can be given the same
+        # hostname, so a ticket naming a different install id is another PID
+        # namespace whatever the "machine" fields say, and its lock waits out
+        # its lease instead of being reaped on a dead PID that proves nothing.
         same_machine = (lock_machine == socket.gethostname())
         if same_machine and lock_machine_id is not None:
             same_machine = (str(lock_machine_id) == _LOCAL_MACHINE_ID)
+        lock_install_id = info.get("install_id")
+        if same_machine and lock_install_id and lock_install_id != _local_install_id():
+            same_machine = False
 
         if same_machine and lock_pid_int > 0:
             lock_start_time = info.get("start_time")
@@ -979,6 +1027,7 @@ class RemoteLock:
                 "owner": winner.get("owner", "unknown"),
                 "machine": winner.get("machine", "unknown"),
                 "machine_id": winner.get("machine_id"),
+                "install_id": winner.get("install_id"),
                 "pid": winner.get("pid"),
                 "nonce": winner.get("nonce"),
                 "expires_in": max(0, int(exp - now)),
@@ -1042,6 +1091,19 @@ class RemoteLock:
                 holder_pid = 0
             holder_mid = status.get("machine_id")
             same_machine = holder_mid is None or str(holder_mid) == _LOCAL_MACHINE_ID
+            holder_install = status.get("install_id")
+            if holder_install and holder_install != _local_install_id():
+                # A ticket naming an install id other than ours was written
+                # from another PID namespace even if hostname and MAC match
+                # (the shared-bridge container case): liveness here proves
+                # nothing, so a plain unlock refuses rather than delete a
+                # live lock it cannot judge.  --force is the deliberate
+                # override, exactly as for a lock on another machine.
+                raise RepositoryLockedError(
+                    "The lock was taken by a different install of git-remote-seafile "
+                    "on a machine that reports this hostname, so it cannot be "
+                    "verified stale from here. Use --force to break the lock."
+                )
             if (
                 not status.get("stale")
                 and same_machine
