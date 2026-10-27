@@ -5,6 +5,18 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **A ref walk could be driven through ~3^32 listings** by a server answering every directory with three subdirectories: the depth cap stops a chain, not a fan-out. A walk now lists at most 5,000 directories; a strict one (`gc`, a fetch's advertisement) raises naming the cap, a lenient one warns once and stops.
+- **`--default-excludes` dropped committed source.** `build` also matched a tracked `tools/build/make.py`, so a restore did not reconstitute the working directory. A recommended pattern is now kept out of the list for a run when the source's own git repository tracks a file it matches; the run names the file and the `--exclude` that drops it anyway, and an explicit `--exclude` is always honoured.
+- **A SIGTERM or Ctrl-Break left the push's lock ticket on the server** for a full lease: the lock's `__exit__` never ran. The command line now turns them into an exit that unwinds.
+- **A file rewritten while `git add` reads it** stopped the run with git's `confused by unstable object source data` and no hint. The run now says a file was rewritten, that nothing was snapshotted, and to `--exclude` a file that is always being written; SNAPSHOT §8 no longer claims such a file "yields a snapshot".
+- **`--status --json` with no vault or no snapshot** returned `{"snapshots": 0}` alone; every key is now present with `null` counts (which never equal 0).
+
+### Changed
+- SNAPSHOT.md and DESIGN's failure model say which omissions are not reported: named pipes, sockets and device nodes have no content to store and are skipped without a note.
+
 ## [0.9.15] - 2026-10-27
 
 Two new commands (`--status` for the snapshot tool, `repair` for the helper), the last triage rows (T5, T7, T9, T10), and the fixes from four independent reviews of v0.9.14. The sharpest of those: `repair` took a pack name from the server and used it as a local path, a SHA-256 push could land in a SHA-1 repository and leave it unclonable, and the snapshot tool's byte-exact pin missed `working-tree-encoding`.
