@@ -199,7 +199,11 @@ review round also closed: `repair` validates listed pack names (`2e95077`),
 refuses `--no-push` / `--dry-run` (`6d01a98`, `534def2`), the byte-exact pin
 unsets `working-tree-encoding` (`90bec7e`), a push refuses an object format
 that differs from what the remote holds under the lock (`d3493a7`), and
-R6's digest-of-bytes-sent guard has its own test (`6591a4f`).
+R6's digest-of-bytes-sent guard has its own test (`6591a4f`). A second batch
+hardened `repair` (strict tips, listing under the lock), made the payload
+pre-push check refuse when it cannot list its commits, stopped `check-auth` /
+`doctor` crashing on a non-object account answer, and capped the LFS and
+read-back downloads at their known size (`abf4514`..`1f5b1ec`).
 
 **Updated by measurement, still open:** **S1** — listings measured whole at
 5,000 entries on CE 13.0.28 behind nginx (four probes agree; the endpoint
