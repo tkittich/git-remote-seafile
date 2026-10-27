@@ -1005,6 +1005,32 @@ class _FencedOnceLock:
         return LEASE_LOST
 
 
+class TestContentReadBackIsCapped(unittest.TestCase):
+    def test_the_read_back_stops_at_the_size_that_was_uploaded(self):
+        """A body longer than the pack just sent is not that pack; the probe
+        download must not stream it to disk to find that out."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            pack = Path(td) / "pack-a.pack"
+            idx = Path(td) / "pack-a.idx"
+            pack.write_bytes(b"P" * 10)
+            idx.write_bytes(b"I" * 4)
+            client = MagicMock()
+            caps: list[int | None] = []
+
+            def download(repo_id, path, dest, *args, max_bytes=None, **kwargs):
+                caps.append(max_bytes)
+                Path(dest).write_bytes((pack if str(path).endswith(".pack") else idx).read_bytes())
+                return True
+
+            client.download_file_to.side_effect = download
+            gc_module._verify_content(
+                client, "repo1", "/r/objects/pack", [pack], Path(td),
+                old_adj="old", new_desc="new packfile",
+            )
+        self.assertEqual(sorted(caps), [4, 10])
+
+
 class TestGcVerifiesTheUploadBeforeDeletingAnything(unittest.TestCase):
     """A5: the packs gc deletes are the ones the repository is served from.
 

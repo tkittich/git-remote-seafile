@@ -152,7 +152,7 @@ class TestLFSTransferAgent(unittest.TestCase):
     def test_lfs_download_success(self):
         mock_client = MagicMock()
 
-        def fake_download(repo_id, file_path, dest, progress_callback=None):
+        def fake_download(repo_id, file_path, dest, progress_callback=None, max_bytes=None):
             Path(dest).write_bytes(b"BINARY-OBJECT-BYTES")
             return True
 
@@ -245,7 +245,7 @@ class TestLFSTransferAgent(unittest.TestCase):
         # fail later on the final hash.
         mock_client = MagicMock()
 
-        def fake_download(repo_id, file_path, dest, progress_callback=None):
+        def fake_download(repo_id, file_path, dest, progress_callback=None, max_bytes=None):
             Path(dest).write_bytes(b"SHORT")
             return True
 
@@ -266,10 +266,29 @@ class TestLFSTransferAgent(unittest.TestCase):
         finally:
             agent._temp_dir.cleanup()
 
+    def test_lfs_download_is_cut_off_at_the_size_git_lfs_announced(self):
+        """A server that streams without end must not fill the disk before the
+        size is compared: the announced size is the cap, and no size means no cap."""
+        for msg_size, want in ((5, 5), (0, 0), (None, None), (True, None), (-1, None), ("5", None)):
+            mock_client = MagicMock()
+            mock_client.download_file_to = MagicMock(return_value=False)
+            agent = LFSTransferAgent(mock_client, "repo1", "/git-test")
+            try:
+                msg = {"event": "download", "oid": "abcdef0123456789"}
+                if msg_size is not None:
+                    msg["size"] = msg_size
+                with patch("sys.stdout", io.StringIO()):
+                    agent.handle_download(msg)
+                self.assertEqual(
+                    mock_client.download_file_to.call_args.kwargs.get("max_bytes"), want, msg_size
+                )
+            finally:
+                agent._temp_dir.cleanup()
+
     def test_lfs_download_accepts_a_matching_size(self):
         mock_client = MagicMock()
 
-        def fake_download(repo_id, file_path, dest, progress_callback=None):
+        def fake_download(repo_id, file_path, dest, progress_callback=None, max_bytes=None):
             Path(dest).write_bytes(b"EXACT")
             return True
 

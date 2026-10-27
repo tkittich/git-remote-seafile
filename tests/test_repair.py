@@ -273,6 +273,26 @@ class TestRepair(unittest.TestCase):
             self.assertEqual(res["status"], "broken")
             self.assertIn("lists no packfiles at all", "".join(c.args[0] for c in err.write.call_args_list))
 
+    def test_the_read_back_is_capped_at_the_size_that_was_uploaded(self):
+        """A body longer than the pack just sent is not that pack; it must not be
+        streamed to disk to find out (a hostile or broken server)."""
+        with tempfile.TemporaryDirectory() as td:
+            clone, sha = _history(Path(td))
+            client = _StubClient({"main": sha})
+            caps: dict[str, object] = {}
+            real = client.download_file_to
+
+            def spy(repo_id, path, dest, progress_callback=None, max_bytes=None):
+                if Path(dest).name.startswith("verify-"):
+                    caps[Path(dest).name] = (max_bytes, client.pack_files[str(path).rsplit("/", 1)[-1]])
+                return real(repo_id, path, dest, progress_callback, max_bytes)
+
+            client.download_file_to = spy
+            self.assertEqual(_repair(client, clone)["status"], "ok")
+            self.assertTrue(caps, "the repair read its upload back")
+            for name, (cap, data) in caps.items():
+                self.assertEqual(cap, len(data), name)
+
     def test_a_listed_size_that_is_not_a_number_counts_as_zero(self):
         for raw, want in (("12", 12), (7, 7), ("abc", 0), (None, 0), (True, 0), (3.5, 0)):
             self.assertEqual(_int_size({"size": raw}), want, raw)

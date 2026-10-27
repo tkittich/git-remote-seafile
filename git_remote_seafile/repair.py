@@ -107,7 +107,10 @@ def _verify_repair_upload(
                 continue
             probe = probe_dir / f"verify-{local.name}"
             try:
-                present = client.download_file_to(repo_id, f"{pack_dir}/{local.name}", probe)
+                present = client.download_file_to(
+                    repo_id, f"{pack_dir}/{local.name}", probe,
+                    max_bytes=local.stat().st_size,
+                )
                 same = (
                     present is True
                     and probe.stat().st_size == local.stat().st_size

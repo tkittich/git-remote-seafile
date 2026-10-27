@@ -365,7 +365,12 @@ def _verify_content(
                 continue
             probe = scratch / f"verify-{local.name}"
             try:
-                present = client.download_file_to(repo_id, f"{pack_dir}/{local.name}", probe)
+                # Capped at what was uploaded: a body longer than that is not
+                # the file, and must not be streamed to disk to find out.
+                present = client.download_file_to(
+                    repo_id, f"{pack_dir}/{local.name}", probe,
+                    max_bytes=local.stat().st_size,
+                )
                 same = (
                     present is True
                     and probe.stat().st_size == local.stat().st_size

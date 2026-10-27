@@ -198,8 +198,19 @@ class LFSTransferAgent:
             # object in memory before writing it.
             throttle = _ProgressThrottle(lambda so_far, delta: self._send_progress(oid, so_far, delta))
 
+            # git-lfs sends the object's size with the request.  Cutting the
+            # stream off at it keeps a server that streams without end (or
+            # lies about its length) from filling the disk before the size is
+            # compared below.
+            expected = msg.get("size")
+            cap = (
+                expected
+                if isinstance(expected, int) and not isinstance(expected, bool) and expected >= 0
+                else None
+            )
             download_ok = self.client.download_file_to(
-                self.repo_id, file_path, temp_dest, progress_callback=throttle.callback
+                self.repo_id, file_path, temp_dest, progress_callback=throttle.callback,
+                max_bytes=cap,
             )
             last_bytes = throttle.last_bytes
 
@@ -216,8 +227,7 @@ class LFSTransferAgent:
             # mismatch means the stored object is truncated or corrupt.  LFS
             # would catch it on the final hash, but an early, explicit error
             # beats a confusing hash failure later.
-            expected = msg.get("size")
-            if isinstance(expected, int) and not isinstance(expected, bool) and expected >= 0 and size != expected:
+            if cap is not None and size != expected:
                 self._send_json({
                     "event": "complete",
                     "oid": oid,
