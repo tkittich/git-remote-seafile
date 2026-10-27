@@ -1419,6 +1419,49 @@ class TestRemoteHelper(unittest.TestCase):
             )
         mock_ancestor.assert_not_called()
 
+    def _format_race_helper(self, remote_refs):
+        """A helper whose remote holds *remote_refs* (``{name: sha}``) under refs/heads."""
+        h = make_helper()
+        h.client = MagicMock()
+        h.repo_id = "repo1"
+        h.repo_path = "/git-repo"
+        h._refs_cache = {}
+        h.client.list_dir.side_effect = lambda repo_id, path: (
+            [{"type": "file", "name": n} for n in remote_refs] if path.endswith("refs/heads") else []
+        )
+        h.client.get_file_text.side_effect = lambda repo_id, path: remote_refs.get(path.rsplit("/", 1)[-1])
+        return h
+
+    @patch("git_remote_seafile.helper.rev_parse", return_value="a" * 40)
+    @patch("git_remote_seafile.helper.is_ancestor", return_value=True)
+    def test_a_push_of_the_other_object_format_is_refused_under_the_lock(self, mock_ancestor, _rev):
+        """The format advertised by ``list`` was read before the lock.  A peer
+        of the other format that pushed in between left 64-hex refs beside
+        40-hex ones and a remote no clone could read (reproduced on a real
+        server); the push must see what the remote holds now."""
+        h = self._format_race_helper({"main": "b" * 64})
+        verdict = h._decide_update("refs/heads/dev", "refs/heads/dev", force=False)
+        self.assertIsInstance(verdict, str)
+        self.assertIn("holds sha256 objects", verdict)
+        self.assertIn("this repository is sha1", verdict)
+        # --force skips the ancestry check, not this one.
+        verdict = h._decide_update("refs/heads/main", "refs/heads/main", force=True)
+        self.assertIn("same object format", verdict)
+
+    @patch("git_remote_seafile.helper.rev_parse", return_value="a" * 40)
+    def test_the_same_object_format_and_an_empty_remote_are_not_refused(self, _rev):
+        for refs in ({"main": "b" * 40}, {}):
+            h = self._format_race_helper(refs)
+            verdict = h._decide_update("refs/heads/dev", "refs/heads/dev", force=False)
+            self.assertIsInstance(verdict, tuple, refs)
+
+    @patch("git_remote_seafile.helper.rev_parse", return_value="a" * 40)
+    def test_a_remote_whose_refs_cannot_be_listed_does_not_block_the_push_check(self, _rev):
+        h = self._format_race_helper({})
+        h.client.list_dir.side_effect = RuntimeError("HTTP 500")
+        verdict = h._decide_update("refs/heads/dev", "refs/heads/dev", force=False)
+        self.assertIsInstance(verdict, tuple)
+
     def test_cmd_push_delete_does_not_prune_on_an_unconfirmed_listing(self):
         # list_dir answers [] for both "empty" and "missing/unreachable"; a
         # transient failure used to read as "prune it" -- a destructive call

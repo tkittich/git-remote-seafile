@@ -62,6 +62,9 @@ from .git_util import (
 _ALLOWED_REF_PREFIXES = tuple(f"{ns}/" for ns in REF_NAMESPACES)
 
 
+_FORMAT_OF_WIDTH = {40: "sha1", 64: "sha256"}
+
+
 def _flatten(text: object) -> str:
     """Collapse a message onto a single line.
 
@@ -212,6 +215,10 @@ class RemoteHelper:
     #: ref must not exist".  Replaced, never mutated, so the class default is
     #: safe to share.
     cas_expect: dict[str, str] = {}
+    #: Hash width (40 or 64) of the refs already on the remote, probed at most
+    #: once per push under the lock; ``None`` is "no ref to read" or "could not
+    #: tell", and the string ``"unprobed"`` is "not asked yet".  Reset per push.
+    _remote_width: "int | None | str" = "unprobed"
 
     def __init__(self, remote_name: str, url: str, client: SeafileClient | None = None):
         self.remote_name = remote_name
@@ -303,6 +310,41 @@ class RemoteHelper:
         sys.stdout.write("object-format\n")
         sys.stdout.write("\n")
         sys.stdout.flush()
+
+    def _remote_hash_width(self, this_ref: str | None) -> int | None:
+        """40 or 64 from the refs the remote holds *now*; ``None`` when there are none to read.
+
+        The ref being pushed answers it for free when it exists.  Otherwise the
+        first readable ref in the allowed namespaces does, probed once per push.
+        A listing that fails is "cannot tell", not a refusal: the pushes behind
+        it go through the same listing and fail loudly if the server is down.
+        """
+        if isinstance(this_ref, str) and HEX_SHA_RE.fullmatch(this_ref):
+            return len(this_ref)
+        if self._remote_width != "unprobed":
+            return self._remote_width  # type: ignore[return-value]
+        width: int | None = None
+        try:
+            stack = [self._full_path(ns) for ns in reversed(REF_NAMESPACES)]
+            listings = 0
+            while stack and width is None and listings < 64:
+                path = stack.pop()
+                listings += 1
+                for entry in self.client.list_dir(self.repo_id, path):
+                    if not isinstance(entry, dict):
+                        continue
+                    name, kind = str(entry.get("name", "")), entry.get("type")
+                    if kind == "dir":
+                        stack.append(f"{path}/{name}")
+                    elif kind == "file" and not is_conflict_copy(name):
+                        sha = self.client.get_file_text(self.repo_id, f"{path}/{name}")
+                        if isinstance(sha, str) and HEX_SHA_RE.fullmatch(sha.strip()):
+                            width = len(sha.strip())
+                            break
+        except Exception:
+            width = None
+        self._remote_width = width
+        return width
 
     def _detect_remote_object_format(self, discovered_refs: list[tuple[str, str]]) -> str:
         """Return "sha1" or "sha256" from a non-empty ref listing.
@@ -525,6 +567,18 @@ class RemoteHelper:
             self._refs_cache[dst] = remote_sha
         else:
             self._refs_cache.pop(dst, None)
+        # The list that told git the remote's object format was read before the
+        # lock; a peer of the other format may have pushed since (the first push
+        # to an empty remote assumes the local format).  Re-derive it here, from
+        # what the remote holds now, or a 64-hex ref lands beside 40-hex ones
+        # and every clone fails in index-pack.
+        remote_width = self._remote_hash_width(remote_sha)
+        if remote_width is not None and remote_width != len(local_sha):
+            return (
+                f"the remote repository holds {_FORMAT_OF_WIDTH.get(remote_width, '?')} "
+                f"objects and this repository is {_FORMAT_OF_WIDTH.get(len(local_sha), '?')}; "
+                "push to a remote of the same object format"
+            )
         if dst in self.cas_expect:
             # --force-with-lease: the push may rewrite history, but only over
             # exactly the value the user last saw.  Git sends no ``+`` for it,
@@ -1206,6 +1260,7 @@ class RemoteHelper:
         *reported* so the caller's failure path does not report it twice.
         """
         pending: list[_PendingUpdate] = []
+        self._remote_width = "unprobed"
         for spec in push_specs:
             parsed = self._split_spec(spec)
             if parsed is None:
