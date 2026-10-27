@@ -388,6 +388,19 @@ class PayloadBasicsTests(_PayloadFixture):
         self.assertIn("changed since it was hashed", out + err)
         self.assertEqual(self.object_count(), 0)
 
+    def test_a_pre_push_check_that_cannot_list_its_commits_refuses_the_push(self):
+        """``rev-list`` failing (a remote tip the vault does not hold, a damaged
+        object) used to read as "no commits to check", and the push went ahead
+        unverified: the guard against naming a lost object failed open."""
+        self.assertEqual(self.snapshot()[0], 0)
+        tip = _git(self.vault, "rev-parse", "snapshot").strip()
+        with self.assertRaises(snap.SnapshotError) as ctx:
+            snap.verify_payload_before_push(
+                self.vault / ".git", self.src, self.remote, "0123456789" * 4, tip, None
+            )
+        self.assertIn("could not list the commits", str(ctx.exception))
+        self.assertIn("refusing to push", str(ctx.exception))
+
     def test_bytes_that_differ_from_the_hash_are_never_named_after_it(self):
         """The digest of what is sent is the guard that cannot be fooled: a file
         rewritten in place with its size and mtime restored (a memory-mapped

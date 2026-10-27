@@ -592,8 +592,16 @@ def verify_payload_before_push(
     restored, and the push is refused naming it.
     """
     span = f"{remote_tip}..{tip}" if remote_tip else tip
-    commits = [c for c in git(git_dir, source, ["rev-list", span], cwd=source, check=False)
-               .stdout.split() if c]
+    listed = git(git_dir, source, ["rev-list", span], cwd=source, check=False)
+    if listed.returncode != 0:
+        # An error is not "no commits": this is the guard that stops a push from
+        # naming an object the server lost, and it must not fail open.
+        detail = (listed.stderr or "").strip() or f"exit {listed.returncode}"
+        raise SnapshotError(
+            f"could not list the commits about to be pushed ({detail}); refusing to push "
+            "without checking their payload objects on the server"
+        )
+    commits = [c for c in listed.stdout.split() if c]
     if not commits:
         return
     specs = "".join(f"{c}:{PAYLOAD_MANIFEST}\n" for c in commits)
