@@ -295,13 +295,14 @@ per-machine hash cache would vouch for nothing.
 
 It is a **stat-based heuristic**, and the report says which way it errs: a change
 that keeps the stats its record holds hides from it — size *and* mtime for a payload
-file, **mtime alone for a git-stored one**, because `mtimes.json` records no size, so
-a same-mtime rewrite of a different length reads as unchanged although the next run
-commits it (this is the racy window the snapshot run closes by re-hashing what it
-stages) — and a file whose time changed without its content shows as changed though
-the next run would find nothing new (the run reuses the parent's record for a
-byte-identical tree). Recording the size in `mtimes.json` would close the first gap
-and is a format change, so it is a backlog item rather than a patch.
+file, and for a git-stored one whose snapshot recorded sizes (`sizes` in
+`mtimes.json`, an additive key), but **mtime alone for a git-stored file of an older
+snapshot**, whose record has none — so a same-mtime rewrite of a different length
+reads as unchanged there although the next run commits it (this is the racy window
+the snapshot run closes by re-hashing what it stages) — and a file whose time changed
+without its content shows as changed though the next run would find nothing new (the
+run reuses the parent's record for a byte-identical tree, which is why an old record
+stays size-less until the tree changes).
 
 It reads only local state: the remote is never contacted, so it cannot say whether
 the last snapshot was pushed (a `--no-push` run advances the same local tip); the

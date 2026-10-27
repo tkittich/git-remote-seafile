@@ -246,6 +246,7 @@ def status_command(
             f"  payload     : {len(payload_by_path):,} file(s), {human_bytes(payload_bytes)}"
         )
     recorded = _recorded_mtimes(git_dir, source, tip)
+    recorded_sizes = _recorded_sizes(git_dir, source, tip)
 
     if manifest is None and not recorded:
         print(
@@ -276,7 +277,10 @@ def status_command(
             ):
                 changed.append(path)
         elif path in recorded:
-            if st.st_mtime_ns != recorded[path]:
+            if st.st_mtime_ns != recorded[path] or (
+                path in recorded_sizes and stat.S_ISREG(st.st_mode)
+                and st.st_size != recorded_sizes[path]
+            ):
                 changed.append(path)
         elif recorded:
             new.append(path)
@@ -297,8 +301,9 @@ def status_command(
     print(
         "Note: the counts below are a size-and-mtime comparison against the records "
         "the last snapshot wrote; they err on both sides -- a change that keeps its "
-        "recorded stats hides from this report (size and mtime for a payload file, "
-        "mtime alone for a git-stored one, whose record holds no size), and a file "
+        "recorded stats hides from this report (size and mtime, for a payload file and for "
+        "a git-stored one whose snapshot recorded sizes; mtime alone for an older "
+        "snapshot's), and a file "
         "whose time changed without its content shows as changed though the next run "
         "would find nothing new. The snapshot itself re-hashes what it stages. This "
         "report reads only local state and does not contact the remote, so it cannot "

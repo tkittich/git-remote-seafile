@@ -364,7 +364,7 @@ Git stores content and a mode, not a time, so a restore gave every git-stored fi
 checkout time (payload files already carry theirs in the manifest). A snapshot that
 pushes to a `seafile://` remote, or is given `--record-mtimes`, writes
 `.seafile-payload/mtimes.json`: one line of ASCII JSON, sorted keys,
-`{"format": 1, "files": {path: mtime_ns}}`, for every file in the snapshot's tree
+`{"format": 1, "files": {path: mtime_ns}, "sizes": {path: bytes}}`, for every file in the snapshot's tree
 except the reserved directory (payload files are in the manifest).
 
 - **The times are the real ones** (`lstat`, so a symlink's own). When nothing in the
@@ -381,7 +381,13 @@ except the reserved directory (payload files are in the manifest).
   only an explicit choice is written), else on if the parent snapshot has a record,
   else on for a run that pushes to a `seafile://` remote. A default is not a request:
   a local-only run on a vault with no record stays as it was.
-- **Cost:** about 60 bytes a file; at 100,000 files about 5 MB raw and 1.5 MB
+- **`sizes`** is an additive key of the same format-1 document, one entry per regular
+  file (a symlink's own size says nothing about content). A tool that does not know it
+  reads `files` exactly as before, and a record written before it simply has none: the
+  parent's record is reused unchanged for an unchanged tree, so such a record stays
+  size-less until the tree changes. `--status` uses it: with a size, a rewrite that
+  restores the mtime no longer reads as unchanged.
+- **Cost:** about 70 bytes a file; at 100,000 files about 5 MB raw and 1.5 MB
   compressed, rewritten whenever any file's content changes, and uploaded whole
   (the helper does not delta against the remote's copy). Sharding it is a format
   change and is not done.

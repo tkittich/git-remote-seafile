@@ -3462,12 +3462,39 @@ class StatusTests(_SnapshotFixture):
         self.assertIn("1 new", out)
         self.assertIn("new: link/deep.txt", out)
 
+    def test_a_rewrite_that_keeps_the_mtime_but_not_the_size_is_seen(self):
+        """The record held an mtime only, so a copy tool that preserves timestamps (or
+        a deliberate utime) hid a rewrite of a different length: the report said
+        nothing had changed and the next run committed it.  Three reviews found it."""
+        self.assertEqual(self.snapshot("--no-push", "--record-mtimes")[0], 0)
+        record = json.loads(_git(self.vault, "show", f"{BRANCH}:.seafile-payload/mtimes.json").stdout)
+        self.assertEqual(record["sizes"]["README.md"], len((self.code / "README.md").read_bytes()))
+        self.assertEqual(set(record["sizes"]) - set(record["files"]), set())
+        before = (self.code / "README.md").stat()
+        (self.code / "README.md").write_bytes(b"a much longer line than before, same mtime\n")
+        os.utime(self.code / "README.md", ns=(before.st_atime_ns, before.st_mtime_ns))
+        rc, out, err = self.status()
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn("changed since: 1 file(s), 0 new, 0 deleted", out)
+        self.assertIn("changed: README.md", out)
+
+    def test_a_snapshot_recorded_before_sizes_existed_is_compared_by_mtime_alone(self):
+        self.assertEqual(self.snapshot("--no-push", "--record-mtimes")[0], 0)
+        before = (self.code / "README.md").stat()
+        (self.code / "README.md").write_bytes(b"a much longer line than before, same mtime\n")
+        os.utime(self.code / "README.md", ns=(before.st_atime_ns, before.st_mtime_ns))
+        with unittest.mock.patch.object(snap, "_recorded_sizes", return_value={}):
+            rc, out, err = self.status()
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn("changed since: 0 file(s), 0 new, 0 deleted", out)
+        self.assertIn("mtime alone for an older snapshot", out)
+
     def test_the_report_says_it_cannot_tell_whether_the_snapshot_was_pushed(self):
         self.assertEqual(self.snapshot("--no-push", "--record-mtimes")[0], 0)
         rc, out, err = self.status()
         self.assertEqual(rc, 0, out + err)
         self.assertIn("does not contact the remote", out)
-        self.assertIn("mtime alone for a git-stored one", out)
+        self.assertIn("for a git-stored one whose snapshot recorded sizes", out)
 
     def test_changes_are_named_and_counted(self):
         self.assertEqual(self.snapshot("--no-push", "--record-mtimes")[0], 0)
