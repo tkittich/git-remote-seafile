@@ -3212,6 +3212,36 @@ class StatusTests(_SnapshotFixture):
         self.assertIn("size-and-mtime comparison", out, "the heuristic must be named in the report")
         self.assertIn("lock          : free", out)
 
+    def test_an_unreadable_directory_is_named_not_counted_as_deleted(self):
+        """A real run stops on a directory git cannot open; the status that
+        forecasts it must not call the files under it deleted and say nothing.
+        Fed git's own warning so it runs on every platform."""
+        (self.code / "locked").mkdir()
+        (self.code / "locked" / "b.txt").write_bytes(b"b\n")
+        self.assertEqual(self.snapshot("--no-push", "--record-mtimes")[0], 0)
+        real_git = snap.git
+
+        def git_with_a_warning(git_dir, work_tree, args, **kw):
+            proc = real_git(git_dir, work_tree, args, **kw)
+            if args[:1] == ["ls-files"] and "-o" in args and "-z" in args:
+                kept = "\0".join(
+                    p for p in proc.stdout.split("\0") if p and not p.startswith("locked/")
+                ) + "\0"
+                return subprocess.CompletedProcess(
+                    proc.args, proc.returncode, kept,
+                    "warning: could not open directory 'locked/': Permission denied\n",
+                )
+            return proc
+
+        with unittest.mock.patch.object(snap, "git", git_with_a_warning):
+            rc, out, err = self.status()
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn("0 deleted", out)
+        self.assertNotIn("deleted: locked", out)
+        self.assertIn("unreadable: locked/", out)
+        self.assertIn("could not be read", out)
+        self.assertIn("a snapshot run stops", out)
+
     def test_changes_are_named_and_counted(self):
         self.assertEqual(self.snapshot("--no-push", "--record-mtimes")[0], 0)
         (self.code / "README.md").write_bytes(b"changed\n")

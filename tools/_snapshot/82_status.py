@@ -92,24 +92,27 @@ def _status_walk_nested(work_tree: Path, nested: str, excludes: list[str]) -> li
 
 def _status_inventory(
     git_dir: Path, source: Path, excludes: list[str]
-) -> tuple[list[str], list[str]]:
-    """The files a snapshot would capture now: ``(paths, nested_repos)``.
+) -> tuple[list[str], list[str], list[str]]:
+    """The files a snapshot would capture now: ``(paths, nested_repos, unreadable_dirs)``.
 
     ``stageable_paths`` is the run's own list (``git ls-files -c -o`` from the
     vault's index point of view, ignored files included), and the excludes are
     applied with the run's own matcher, so a status cannot disagree with a run
     about what belongs.  Embedded repositories are walked separately, as the
-    capture does.
+    capture does.  A directory git could not open is returned, not dropped: its
+    files are missing from the list, and without the name a status would call
+    them deleted while the run it forecasts refuses to start.
     """
     nested: list[str] = []
-    listed = stageable_paths(git_dir, source, nested_out=nested)
+    unreadable_dirs: list[str] = []
+    listed = stageable_paths(git_dir, source, nested_out=nested, warnings_out=unreadable_dirs)
     paths = [
         path for path in listed
         if not any(exclude_matches(path, pat) for pat in excludes)
     ]
     for repo in nested:
         paths.extend(_status_walk_nested(source, repo, excludes))
-    return sorted(set(paths)), nested
+    return sorted(set(paths)), nested, unreadable_dirs
 
 
 def _status_tip_facts(git_dir: Path, work_tree: Path, tip: str) -> tuple[str, str, int, int]:
@@ -215,7 +218,7 @@ def status_command(
         RUN_FACTS.update(status={"tip": tip, "comparable": False})
         return 0
 
-    inventory, _nested = _status_inventory(git_dir, source, exclude)
+    inventory, _nested, unreadable_dirs = _status_inventory(git_dir, source, exclude)
     inventory_set = set(inventory)
     changed: list[str] = []
     new: list[str] = []
@@ -239,7 +242,13 @@ def status_command(
         else:
             new.append(path)
     known = set(payload_by_path) | set(recorded)
-    deleted = sorted(known - inventory_set)
+    # What is under an unreadable directory is missing from the listing, not
+    # deleted: it stays out of that count and the directory is named instead.
+    prefixes = tuple(d.rstrip("/") + "/" for d in unreadable_dirs)
+    deleted = sorted(
+        p for p in known - inventory_set if not (prefixes and p.startswith(prefixes))
+    )
+    unreadable.extend(d.rstrip("/") + "/" for d in unreadable_dirs)
 
     print(
         "Note: the counts below are a size-and-mtime comparison against the records "
@@ -257,6 +266,13 @@ def status_command(
         print(f"  deleted: {line}")
     for line in _status_examples(sorted(unreadable)):
         print(f"  unreadable: {line}")
+    if unreadable_dirs:
+        count = len(unreadable_dirs)
+        print(
+            f"Warning: {count} director{'y' if count == 1 else 'ies'} could not be read, "
+            "so what is under it is in none of the counts above; a snapshot run "
+            "stops until it can be read or is left out with --exclude"
+        )
     print(
         "quota        : not reported -- --status reads only local state; "
         "the library's page on the server names it"
