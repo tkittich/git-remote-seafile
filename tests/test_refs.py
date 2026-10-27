@@ -383,3 +383,44 @@ class TestRefWalkDepthCap(unittest.TestCase):
         self.assertEqual(got, [])
         self.assertIn("nested deeper than", err.getvalue())
         self.assertIn("not advertised", err.getvalue())
+
+
+class TestRefWalkListingCap(unittest.TestCase):
+    """The depth cap stops a chain, not a fan-out (C2): three subdirectories in
+    every directory is ~3**32 listings before the depth is reached."""
+
+    class FanOut:
+        def __init__(self):
+            self.listings = 0
+
+        def list_dir(self, repo_id, path):
+            self.listings += 1
+            return [{"type": "dir", "name": n} for n in ("a", "b", "c")]
+
+        def get_file_text(self, repo_id, path):
+            return None
+
+        def dir_exists(self, repo_id, path):
+            return True
+
+    def test_a_fan_out_stops_after_a_bounded_number_of_listings(self):
+        import contextlib
+        import io
+
+        from git_remote_seafile.refs import _MAX_REF_LISTINGS
+
+        client = self.FanOut()
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            got = list(iter_refs(client, "rid", "/r", "refs/heads"))
+        self.assertEqual(got, [])
+        self.assertLessEqual(client.listings, _MAX_REF_LISTINGS)
+        self.assertIn("directories under refs/heads were listed", err.getvalue())
+        self.assertIn("not advertised", err.getvalue())
+
+    def test_strict_walks_raise_instead_of_returning_a_short_answer(self):
+        from git_remote_seafile.client import SeafileAPIError
+
+        with self.assertRaises(SeafileAPIError) as ctx:
+            list(iter_refs(self.FanOut(), "rid", "/r", "refs/heads", strict=True))
+        self.assertIn("do not describe a repository", str(ctx.exception))

@@ -40,6 +40,13 @@ _MAX_REF_FILE_BYTES = 4096
 #: listings were issued before the probe stopped the script).
 _MAX_REF_DEPTH = 32
 
+#: How many directories one walk will list.  The depth cap stops a chain, not a
+#: fan-out: a server that answers every directory with three subdirectories
+#: sends the walk through ~3**32 listings (REVIEW.sonnet-5.5-v0.9.14 C2, 30,000
+#: listings issued before the probe was stopped).  Real repositories have a
+#: directory per branch prefix -- dozens, rarely thousands.
+_MAX_REF_LISTINGS = 5000
+
 _INVALID_REF_CHARS = re.compile(r"[\s\x00-\x1f\x7f~^:?*\[\\]|\.\.|//|\.lock$|@\{")
 
 
@@ -211,9 +218,21 @@ def iter_refs(
     stack: list[tuple[str, str, bool, int]] = [(root, "", root_known, 0)]
     ref_entries: list[tuple[str, str]] = []
     depth_capped = False
+    listings = 0
 
     while stack:
         dir_path, prefix, known, depth = stack.pop()
+        listings += 1
+        if listings > _MAX_REF_LISTINGS:
+            message = (
+                f"more than {_MAX_REF_LISTINGS} directories under {ns} were listed; "
+                "the server's answers do not describe a repository, so the walk stops"
+            )
+            if strict or strict_listing:
+                raise SeafileAPIError(message)
+            sys.stderr.write(f"Warning: {message}; the refs not reached are not advertised\n")
+            sys.stderr.flush()
+            break
         if depth > _MAX_REF_DEPTH:
             if not depth_capped:
                 sys.stderr.write(
