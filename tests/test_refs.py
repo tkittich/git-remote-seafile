@@ -416,7 +416,7 @@ class TestRefWalkListingCap(unittest.TestCase):
         self.assertEqual(got, [])
         self.assertLessEqual(client.listings, _MAX_REF_LISTINGS)
         self.assertIn("directories under refs/heads were listed", err.getvalue())
-        self.assertIn("not advertised", err.getvalue())
+        self.assertIn("the refs not reached are not advertised", err.getvalue())
 
     def test_strict_walks_raise_instead_of_returning_a_short_answer(self):
         from git_remote_seafile.client import SeafileAPIError
