@@ -153,6 +153,40 @@ def _status_tip_facts(git_dir: Path, work_tree: Path, tip: str) -> tuple[str, st
     return when.strip(), subject.strip(), count, total
 
 
+def _status_pushed(
+    git_dir: Path, source: Path, branch: str, tip: str, remote: str | None
+) -> tuple[bool | None, int | None]:
+    """Print the ``pushed`` line; ``(pushed?, snapshots taken since)``, ``None`` when unknown.
+
+    What this vault recorded at its last push, not a look at the server: this
+    report reads only local state.  A vault with no remote has nothing to say.
+    """
+    if not remote:
+        return None, None
+    last = recorded_pushed_tip(git_dir, source, branch)
+    if last is None:
+        print(
+            "pushed        : not recorded -- this vault has not pushed since it began "
+            "keeping that record (the next push does)"
+        )
+        return None, None
+    if last == tip:
+        print("pushed        : yes -- the newest snapshot is the one this vault last pushed")
+        return True, 0
+    counted = git(
+        git_dir, source, ["rev-list", "--count", f"{last}..{tip}"], cwd=source, check=False
+    )
+    ahead = int(counted.stdout.strip()) if counted.returncode == 0 and counted.stdout.strip().isdigit() else None
+    if ahead:
+        print(
+            f"pushed        : NO -- {ahead} snapshot(s) were taken after the last push "
+            "(a --no-push run, or a push that failed); the next run pushes them"
+        )
+        return False, ahead
+    print("pushed        : NO -- the newest snapshot is not the one this vault last pushed")
+    return False, None
+
+
 def _status_unknown(tip: str | None, **extra: Any) -> dict[str, Any]:
     """The ``--json`` result when nothing can be compared: every key present, the counts null.
 
@@ -169,6 +203,8 @@ def _status_unknown(tip: str | None, **extra: Any) -> dict[str, Any]:
         "deleted": None,
         "unreadable": None,
         "uncompared": None,
+        "pushed": None,
+        "unpushed": None,
         **extra,
     }
 
@@ -232,6 +268,7 @@ def status_command(
     print(f"last snapshot : {when}  \"{subject}\"")
     print(f"  git-stored  : {stored_count:,} file(s), {human_bytes(stored_bytes)}")
 
+    pushed, unpushed = _status_pushed(git_dir, source, branch, tip, remote)
     manifest = load_manifest(git_dir, source, tip)
     payload_by_path: dict[str, dict[str, Any]] = {}
     if manifest is not None:
@@ -306,8 +343,8 @@ def status_command(
         "snapshot's), and a file "
         "whose time changed without its content shows as changed though the next run "
         "would find nothing new. The snapshot itself re-hashes what it stages. This "
-        "report reads only local state and does not contact the remote, so it cannot "
-        "say whether the last snapshot was pushed."
+        "report reads only local state and does not contact the remote: the pushed line is "
+        "what this vault recorded at its last push, not a look at the server."
     )
     if uncompared:
         print(
@@ -344,5 +381,7 @@ def status_command(
         "deleted": len(deleted),
         "unreadable": len(unreadable),
         "uncompared": uncompared,
+        "pushed": pushed,
+        "unpushed": unpushed,
     })
     return 0

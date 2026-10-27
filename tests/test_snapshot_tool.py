@@ -3489,11 +3489,53 @@ class StatusTests(_SnapshotFixture):
         self.assertIn("changed since: 0 file(s), 0 new, 0 deleted", out)
         self.assertIn("mtime alone for an older snapshot", out)
 
+    def test_status_says_whether_the_newest_snapshot_left_this_vault(self):
+        """After a ``--no-push`` run the local tip is a snapshot the remote never
+        received, and ``--status`` printed its time and "0 changed" as if all were
+        well.  The vault records the tip it last pushed; the report compares."""
+        self.assertEqual(self.snapshot("--remote", str(self.remote), "--record-mtimes")[0], 0)
+        rc, out, err = self.status()
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn("pushed        : yes", out)
+
+        (self.code / "README.md").write_bytes(b"changed and not pushed\n")
+        self.assertEqual(self.snapshot("--no-push")[0], 0)
+        rc, out, err = self.status()
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn("pushed        : NO -- 1 snapshot(s) were taken after the last push", out)
+        doc = json.loads(self.status("--json")[1])["result"]["status"]
+        self.assertIs(doc["pushed"], False)
+        self.assertEqual(doc["unpushed"], 1)
+
+        # the next real run pushes it, and the report follows
+        self.assertEqual(self.snapshot("--remote", str(self.remote))[0], 0)
+        rc, out, err = self.status()
+        self.assertIn("pushed        : yes", out)
+        doc = json.loads(self.status("--json")[1])["result"]["status"]
+        self.assertIs(doc["pushed"], True)
+        self.assertEqual(doc["unpushed"], 0)
+
+    def test_a_vault_that_never_recorded_a_push_says_so_instead_of_guessing(self):
+        self.assertEqual(self.snapshot("--remote", str(self.remote))[0], 0)
+        _git(self.vault, "config", "--unset", "snapshot.pushed")
+        rc, out, err = self.status()
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn("pushed        : not recorded", out)
+        doc = json.loads(self.status("--json")[1])["result"]["status"]
+        self.assertIsNone(doc["pushed"])
+
+    def test_a_vault_with_no_remote_prints_no_pushed_line(self):
+        self.assertEqual(self.snapshot("--no-push")[0], 0)
+        rc, out, err = self.status()
+        self.assertEqual(rc, 0, out + err)
+        self.assertNotIn("pushed        :", out)
+
     def test_the_report_says_it_cannot_tell_whether_the_snapshot_was_pushed(self):
         self.assertEqual(self.snapshot("--no-push", "--record-mtimes")[0], 0)
         rc, out, err = self.status()
         self.assertEqual(rc, 0, out + err)
         self.assertIn("does not contact the remote", out)
+        self.assertIn("not a look at the server", out)
         self.assertIn("for a git-stored one whose snapshot recorded sizes", out)
 
     def test_changes_are_named_and_counted(self):

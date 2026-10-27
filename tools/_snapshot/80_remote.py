@@ -111,6 +111,27 @@ def human_bytes(n: float) -> str:
     return f"{n} B"
 
 
+_PUSHED_KEY = "snapshot.pushed"
+
+
+def remember_pushed_tip(git_dir: Path, work_tree: Path, branch: str, tip: str) -> None:
+    """Record, in the vault, the snapshot the remote last held after one of *our* pushes.
+
+    ``--status`` never contacts the remote, so this is what lets it say whether
+    the newest snapshot has left this machine.  Only a successful push (or a
+    remote already at our tip) writes it; a failed write is not worth failing a
+    backup for.
+    """
+    git(git_dir, work_tree, ["config", _PUSHED_KEY, f"{branch} {tip}"], cwd=work_tree, check=False)
+
+
+def recorded_pushed_tip(git_dir: Path, work_tree: Path, branch: str) -> str | None:
+    """The tip recorded by :func:`remember_pushed_tip` for *branch*, or ``None``."""
+    proc = git(git_dir, work_tree, ["config", "--get", _PUSHED_KEY], cwd=work_tree, check=False)
+    name, _sep, tip = proc.stdout.strip().partition(" ")
+    return tip if name == branch and tip else None
+
+
 def push_snapshot(
     git_dir: Path,
     work_tree: Path,
@@ -159,6 +180,7 @@ def push_snapshot(
             )
             if proc.returncode == 0:
                 print("push complete")
+                remember_pushed_tip(git_dir, work_tree, branch, current)
                 return
 
             sys.stdout.write(proc.stdout or "")

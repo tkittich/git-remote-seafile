@@ -611,6 +611,8 @@ def run_command(args: argparse.Namespace) -> int:
                       "one in the source repo, to push)")
             elif commit is None and base == remote_tip:
                 print("the remote already has this snapshot; nothing to push")
+                if base and not args.dry_run:
+                    remember_pushed_tip(git_dir, source, branch, base)
             else:
                 if not args.no_repack:
                     auto_incremental_repack(git_dir, source)

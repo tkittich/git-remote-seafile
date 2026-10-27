@@ -277,9 +277,9 @@ is the whole check. The document names `mode` (`snapshot`, `restore`,
 (the `Warning:` lines), `error` (the last `Error:` line) and `result`, whose keys
 depend on the mode (a snapshot: `files`, `bytes`, `commit`, `pushed`,
 `payload_objects_to_upload`; `payload-verify`: `checked`, `objects`, `damaged`;
-`status`: `tip`, `comparable`, `changed`, `new`, `deleted`, `unreadable`, `uncompared`, and
-`snapshots` when there is no vault or no commit yet; when nothing can be compared the counts
-are `null`, never `0`). The keys
+`status`: `tip`, `comparable`, `changed`, `new`, `deleted`, `unreadable`, `uncompared`,
+`pushed`, `unpushed`, and `snapshots` when there is no vault or no commit yet; when nothing
+can be compared the counts are `null`, never `0`). The keys
 of a mode are only ever added to.
 
 ### `--status`, and how far its answer reaches
@@ -304,8 +304,14 @@ without its content shows as changed though the next run would find nothing new 
 run reuses the parent's record for a byte-identical tree, which is why an old record
 stays size-less until the tree changes).
 
-It reads only local state: the remote is never contacted, so it cannot say whether
-the last snapshot was pushed (a `--no-push` run advances the same local tip); the
+It reads only local state: the remote is never contacted. Whether the newest snapshot
+has left this machine is answered from a record the vault keeps instead: after every
+successful push (or a remote already at the tip) it stores the pushed commit
+(`snapshot.pushed` in the vault's config), and the `pushed` line compares the tip with
+it — `yes`, `NO -- N snapshot(s) were taken after the last push` (a `--no-push` run,
+or a push that failed), or `not recorded` for a vault that has not pushed since it began
+keeping the record. It is what this vault did, not a look at the server (another
+machine may have pushed since). A vault with no remote prints no `pushed` line. The
 library's quota is not reported, the remote lock is `git-remote-seafile lock-status`'s
 to answer, and a vault whose tip carries neither record (an older tool, or
 `--no-record-mtimes` with no payload) says so instead of comparing. A payload
