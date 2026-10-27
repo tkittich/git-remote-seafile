@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **`--payload-skip-changing`**: one payload file that is always being written (a database, a mailbox, a VM disk) failed every run, so nothing else was snapshotted until it was excluded. With the flag, a file that changes while it is read or uploaded is left out of that snapshot, named in a `Warning:` (the manifest's derived id is recomputed), and the next quiet run captures it again. Opt-in: the default stays an error, and its message now names the flag.
+
 ### Fixed
 - **A ref walk could be driven through ~3^32 listings** by a server answering every directory with three subdirectories: the depth cap stops a chain, not a fan-out. A walk now lists at most 5,000 directories; a strict one (`gc`, a fetch's advertisement) raises naming the cap, a lenient one warns once and stops.
 - **`--default-excludes` dropped committed source.** `build` also matched a tracked `tools/build/make.py`, so a restore did not reconstitute the working directory. A recommended pattern is now kept out of the list for a run when the source's own git repository tracks a file it matches; the run names the file and the `--exclude` that drops it anyway, and an explicit `--exclude` is always honoured.

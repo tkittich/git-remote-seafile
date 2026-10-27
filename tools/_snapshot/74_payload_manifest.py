@@ -460,6 +460,14 @@ def fs_clock_probe(
     return (0 if -_CLOCK_BEHIND_NOISE_NS < offset < _CLOCK_SKEW_NOISE_NS else offset), False
 
 
+def manifest_snapshot_id(entries: list[dict[str, Any]]) -> str:
+    """The derived id of a file list: path, size, mode and hash, never a time or user text."""
+    ident = hashlib.sha256()
+    for item in entries:
+        ident.update(f"{item['path']}\0{item['size']}\0{item['mode']}\0{item['sha256']}\n".encode())
+    return "p-" + ident.hexdigest()[:16]
+
+
 def build_manifest(
     candidates: dict[str, Candidate],
     source: Path,
@@ -607,12 +615,9 @@ def build_manifest(
             "timestamps does this to every file",
             flush=True,
         )
-    ident = hashlib.sha256()
-    for item in entries:
-        ident.update(f"{item['path']}\0{item['size']}\0{item['mode']}\0{item['sha256']}\n".encode())
     manifest = {
         "format": PAYLOAD_FORMAT,
-        "snapshot": "p-" + ident.hexdigest()[:16],
+        "snapshot": manifest_snapshot_id(entries),
         "min_size": min_size,
         "min_git_remote_seafile": PAYLOAD_MIN_TOOL,
         "rule": rule,

@@ -88,6 +88,14 @@ def add_payload_jobs_argument(parser: Any) -> None:
         "copy tool, or as a periodic audit",
     )
     parser.add_argument(
+        "--payload-skip-changing",
+        action="store_true",
+        help="payload mode: a payload file that changes while it is being read or uploaded (a "
+        "database, a mailbox, a VM disk) is left out of this snapshot, named in a warning, "
+        "instead of failing the run and snapshotting nothing; the previous snapshot keeps its "
+        "last version (default: such a file is an error)",
+    )
+    parser.add_argument(
         "--payload-jobs",
         type=int,
         default=None,
@@ -157,6 +165,8 @@ def payload_conflicts(args: argparse.Namespace) -> list[str]:
                 problems.append(f"{flag} does not apply to --restore or --maintain")
     if args.payload_rehash and (args.restore or args.maintain or args.payload_gc):
         problems.append("--payload-rehash only applies to a snapshot run")
+    if args.payload_skip_changing and (args.restore or args.maintain or args.payload_gc):
+        problems.append("--payload-skip-changing only applies to a snapshot run")
     return problems
 
 
@@ -377,6 +387,100 @@ def _clock_offset_once_noted(git_dir: Path, source: Path) -> tuple[int, bool]:
     return offset, unprobed
 
 
+def payload_store_line(remote: str) -> str:
+    """One line on what the payload store holds, or ``""`` if it cannot be listed.
+
+    Informational: a run is never failed for it.  Snapshots never delete an object,
+    so the number only grows until ``--payload-gc`` / ``--payload-keep`` is used.
+    """
+    try:
+        library, base, server_url = payload_location(remote)
+        client = _open_client(server_url)
+        rid = client.get_repo_id(library)
+        count = total = 0
+        for entry in client.list_dir(rid, f"{base}/objects"):
+            name = entry.get("name")
+            if entry.get("type") != "dir" or not isinstance(name, str):
+                continue
+            for obj in client.list_dir(rid, f"{base}/objects/{name}"):
+                oname, size = obj.get("name"), obj.get("size")
+                if (obj.get("type") != "dir" and isinstance(oname, str)
+                        and len(oname) == 64 and isinstance(size, int)):
+                    count += 1
+                    total += size
+        checked = verification_note(client, rid, base)
+    except Exception:  # informational only
+        return ""
+    return (f"payload store: {count} object(s), {human_bytes(total)} on the server "
+            "(snapshots never delete one; --payload-gc reports what no snapshot uses); "
+            + checked)
+
+
+def publish_payload(
+    remote: str,
+    source: Path,
+    manifest: dict[str, Any],
+    *,
+    dry_run: bool,
+    jobs: int = 3,
+    skip_changing: bool = False,
+) -> tuple[int, int]:
+    """Make the server hold every object the manifest names.
+
+    Uploads the objects (deduplicated by hash) that are missing or the wrong
+    size, then lists **every** object the manifest names and requires each at its
+    size.  Returns ``(objects_to_upload, bytes_to_upload)``.
+
+    With *skip_changing* a file that changes while it is read is dropped from the
+    manifest (and named in a warning) instead of failing the run: one database
+    that is always being written otherwise stops every snapshot of everything
+    else.  It is opt-in; the default stays an error, because a snapshot that
+    quietly lacks a file is the failure a backup cannot afford.
+
+    ``dry_run`` reads the server and changes nothing.
+    """
+    library, base, server_url = payload_location(remote)
+    client = _api(lambda: _open_client(server_url), "opening the Seafile client")
+    rid = _api(lambda: client.get_repo_id(library), f"finding library {library!r}")
+
+    by_sha: dict[str, dict[str, Any]] = {}
+    for item in sorted(manifest["files"], key=lambda e: e["path"]):
+        by_sha.setdefault(item["sha256"], item)
+    held = _remote_objects(client, rid, base, set(by_sha))
+    todo = {sha: item for sha, item in by_sha.items() if held.get(sha) != item["size"]}
+    todo_bytes = sum(item["size"] for item in todo.values())
+    if todo:
+        payload_preflight(client, rid, todo_bytes)
+    if dry_run:
+        return len(todo), todo_bytes
+    left_out = _upload_all(client, rid, server_url, base, source, todo, jobs, skip_changing) if todo else []
+    if left_out:
+        dropped = set(left_out)
+        manifest["files"] = [item for item in manifest["files"] if item["path"] not in dropped]
+        manifest["snapshot"] = manifest_snapshot_id(manifest["files"])
+        by_sha = {}
+        for item in sorted(manifest["files"], key=lambda e: e["path"]):
+            by_sha.setdefault(item["sha256"], item)
+        todo = {sha: item for sha, item in todo.items() if sha in by_sha}
+        todo_bytes = sum(item["size"] for item in todo.values())
+        shown = ", ".join(left_out[:5]) + (" ..." if len(left_out) > 5 else "")
+        print(
+            f"\nWarning: {len(left_out)} payload file(s) changed while they were being read and "
+            f"are NOT in this snapshot (--payload-skip-changing): {shown}.  The previous "
+            "snapshot still holds their last version; stop whatever writes them, or --exclude "
+            "them, to snapshot them again.",
+            flush=True,
+        )
+    after = _remote_objects(client, rid, base, set(by_sha))
+    wrong = [sha for sha, item in by_sha.items() if after.get(sha) != item["size"]]
+    if wrong:
+        raise SnapshotError(
+            f"payload objects are missing or the wrong size on the server: {len(wrong)}, "
+            f"first: {by_sha[wrong[0]]['path']}"
+        )
+    return len(todo), todo_bytes
+
+
 def run_payload_step(
     git_dir: Path,
     source: Path,
@@ -393,6 +497,7 @@ def run_payload_step(
     ratio_typed: bool = False,
     rehash: bool = False,
     from_default: bool = False,
+    skip_changing: bool = False,
 ) -> tuple[dict[str, Any] | None, tuple[int, int]]:
     """Hash and upload the payload; ``(manifest, (objects, bytes) to upload)``.
 
@@ -485,7 +590,8 @@ def run_payload_step(
     )
     try:
         todo = publish_payload(
-            remote or "", source, manifest, dry_run=dry_run, jobs=jobs or 3
+            remote or "", source, manifest, dry_run=dry_run, jobs=jobs or 3,
+            skip_changing=skip_changing,
         )
     finally:
         # Hashing is the long half of a run and it is local and repeatable: keep it

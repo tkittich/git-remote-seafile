@@ -392,9 +392,13 @@ def _progress_line(done: int, total: int, elapsed: float, verb: str = "uploaded"
 
 def _upload_all(
     client: Any, rid: str, server_url: str | None, base: str, source: Path,
-    todo: dict[str, dict[str, Any]], jobs: int,
-) -> None:
+    todo: dict[str, dict[str, Any]], jobs: int, skip_changing: bool = False,
+) -> list[str]:
     """Upload each object in *todo* (``sha -> manifest entry``), *jobs* at once.
+
+    Returns the paths left out because they changed (always empty unless
+    *skip_changing*, which turns "a file changed" from an error into a list the
+    caller drops from the snapshot; a failed upload is still an error).
 
     Largest first.  Measured on the real server: one upload runs at ~32 MiB/s and
     three at once reach ~53 MiB/s in aggregate, so a small pool helps and a large
@@ -423,6 +427,7 @@ def _upload_all(
     counter = [0]
     failed: list[str] = []
     changed: list[str] = []
+    changed_paths: list[str] = []
     total_bytes = sum(todo[sha]["size"] for sha in order)
     uploaded = [0]
     started = time.monotonic()
@@ -435,6 +440,7 @@ def _upload_all(
         rel, size = item["path"], item["size"]
         if not _unchanged(source, rel, size, item["mtime_ns"]):
             changed.append(f"{rel}: changed since it was hashed; run again")
+            changed_paths.append(rel)
             return
         with lock:
             counter[0] += 1
@@ -452,6 +458,7 @@ def _upload_all(
                 fh = open(source / rel, "rb")
             except OSError as exc:
                 changed.append(f"{rel}: cannot be read any more ({exc}); run again")
+                changed_paths.append(rel)
                 return
             with fh:
                 reader = _HashingFile(fh, size)
@@ -470,6 +477,7 @@ def _upload_all(
             if not clean:
                 worker.delete_entry(rid, f"{directory}/{temp}")
                 changed.append(f"{rel}: changed while it was being uploaded; run again")
+                changed_paths.append(rel)
                 return
             if not _commit_object(worker, rid, directory, temp, sha, size):
                 worker.delete_entry(rid, f"{directory}/{temp}")
@@ -494,83 +502,14 @@ def _upload_all(
         raise SnapshotError(
             f"{len(failed)} payload upload(s) failed (the next run resumes); first: {failed[0]}{more}"
         )
-    if changed:
+    if changed and not skip_changing:
         raise SnapshotError(
             f"{len(changed)} payload file(s) changed while the run was in progress; every "
             f"other file was uploaded and the next run resumes. First: {changed[0]}. Stop "
-            "whatever writes them, or leave them out with --exclude"
+            "whatever writes them, leave them out with --exclude, or pass "
+            "--payload-skip-changing to snapshot the rest without them"
         )
-
-
-def payload_store_line(remote: str) -> str:
-    """One line on what the payload store holds, or ``""`` if it cannot be listed.
-
-    Informational: a run is never failed for it.  Snapshots never delete an object,
-    so the number only grows until ``--payload-gc`` / ``--payload-keep`` is used.
-    """
-    try:
-        library, base, server_url = payload_location(remote)
-        client = _open_client(server_url)
-        rid = client.get_repo_id(library)
-        count = total = 0
-        for entry in client.list_dir(rid, f"{base}/objects"):
-            name = entry.get("name")
-            if entry.get("type") != "dir" or not isinstance(name, str):
-                continue
-            for obj in client.list_dir(rid, f"{base}/objects/{name}"):
-                oname, size = obj.get("name"), obj.get("size")
-                if (obj.get("type") != "dir" and isinstance(oname, str)
-                        and len(oname) == 64 and isinstance(size, int)):
-                    count += 1
-                    total += size
-        checked = verification_note(client, rid, base)
-    except Exception:  # informational only
-        return ""
-    return (f"payload store: {count} object(s), {human_bytes(total)} on the server "
-            "(snapshots never delete one; --payload-gc reports what no snapshot uses); "
-            + checked)
-
-
-def publish_payload(
-    remote: str,
-    source: Path,
-    manifest: dict[str, Any],
-    *,
-    dry_run: bool,
-    jobs: int = 3,
-) -> tuple[int, int]:
-    """Make the server hold every object the manifest names.
-
-    Uploads the objects (deduplicated by hash) that are missing or the wrong
-    size, then lists **every** object the manifest names and requires each at its
-    size.  Returns ``(objects_to_upload, bytes_to_upload)``.
-
-    ``dry_run`` reads the server and changes nothing.
-    """
-    library, base, server_url = payload_location(remote)
-    client = _api(lambda: _open_client(server_url), "opening the Seafile client")
-    rid = _api(lambda: client.get_repo_id(library), f"finding library {library!r}")
-
-    by_sha: dict[str, dict[str, Any]] = {}
-    for item in sorted(manifest["files"], key=lambda e: e["path"]):
-        by_sha.setdefault(item["sha256"], item)
-    held = _remote_objects(client, rid, base, set(by_sha))
-    todo = {sha: item for sha, item in by_sha.items() if held.get(sha) != item["size"]}
-    todo_bytes = sum(item["size"] for item in todo.values())
-    if todo:
-        payload_preflight(client, rid, todo_bytes)
-    if dry_run:
-        return len(todo), todo_bytes
-    if todo:
-        _upload_all(client, rid, server_url, base, source, todo, jobs)
-    after = _remote_objects(client, rid, base, set(by_sha))
-    wrong = [sha for sha, item in by_sha.items() if after.get(sha) != item["size"]]
-    if wrong:
-        raise SnapshotError(
-            f"payload objects are missing or the wrong size on the server: {len(wrong)}, "
-            f"first: {by_sha[wrong[0]]['path']}"
-        )
-    return len(todo), todo_bytes
+    return sorted(set(changed_paths))
 
 
 def verify_payload_before_push(

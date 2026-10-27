@@ -491,6 +491,7 @@ def run_command(args: argparse.Namespace) -> int:
                 ratio_remembered=vault_remembers_ratio(vault),
                 ratio_typed=args.payload_auto_ratio is not None,
                 rehash=args.payload_rehash, from_default=payload_default,
+                skip_changing=args.payload_skip_changing,
             )
             embedded_report: list[tuple[str, int]] = []
             tree, commit, excluded = build_snapshot(

@@ -2728,6 +2728,66 @@ class PayloadRememberVerifyViewAndClockTests(_PayloadFixture):
         self.assertEqual(_git(self.vault, "config", "snapshot.payloadgcreport").strip(), aged)
 
 
+class PayloadSkipChangingTests(_PayloadFixture):
+    """One payload file that is always being written must not stop every snapshot."""
+
+    def _live(self, name: str):
+        """A stat check that says ``name`` changed while it was read (a live file)."""
+        real = snap._unchanged
+
+        def check(source, rel, size, mtime_ns):
+            return False if rel == name else real(source, rel, size, mtime_ns)
+
+        return unittest.mock.patch.object(snap, "_unchanged", check)
+
+    def _manifest(self) -> dict:
+        return json.loads(_git(self.vault, "show", "snapshot:.seafile-payload/manifest.json"))
+
+    def test_a_live_file_stops_the_run_by_default_and_the_error_names_the_way_out(self):
+        with self._live("big1.bin"):
+            rc, out, err = self.snapshot()
+        self.assertNotEqual(rc, 0)
+        self.assertIn("changed while the run was in progress", out + err)
+        self.assertIn("--payload-skip-changing", out + err)
+
+    def test_skip_changing_snapshots_everything_else_and_names_the_file(self):
+        with self._live("big1.bin"):
+            rc, out, err = self.snapshot("--payload-skip-changing")
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn("Warning: 1 payload file(s) changed while they were being read", out)
+        self.assertIn("big1.bin", out)
+        self.assertIn("are NOT in this snapshot", out)
+        manifest = self._manifest()
+        self.assertEqual({f["path"] for f in manifest["files"]}, {"sub/big2.bin"})
+        self.assertEqual(manifest["snapshot"], snap.manifest_snapshot_id(manifest["files"]))
+        files = self.server_files()
+        self.assertEqual(files[self.object_key(self.big2)], self.big2)
+        self.assertNotIn(self.object_key(self.big1), files, "the live file was never named")
+        self.assertIn("small.txt", _git(self.vault, "ls-tree", "-r", "--name-only", "snapshot"))
+        self.assertNotIn("big1.bin", _git(self.vault, "ls-tree", "-r", "--name-only", "snapshot"))
+        # the snapshot restores, without the file it said it left out
+        rc, out, err, into = self.restore("restored")
+        self.assertEqual(rc, 0, out + err)
+        self.assertEqual((into / "sub" / "big2.bin").read_bytes(), self.big2)
+        self.assertFalse((into / "big1.bin").exists())
+
+    def test_the_next_quiet_run_picks_the_file_up_again(self):
+        with self._live("big1.bin"):
+            self.assertEqual(self.snapshot("--payload-skip-changing")[0], 0)
+        rc, out, err = self.snapshot()
+        self.assertEqual(rc, 0, out + err)
+        self.assertEqual(
+            {f["path"] for f in self._manifest()["files"]}, {"big1.bin", "sub/big2.bin"}
+        )
+
+    def test_skip_changing_does_not_combine_with_the_other_modes(self):
+        rc, out, err = self.run_tool(
+            "--restore", "--remote", self.remote, "--into", self.case / "x", "--payload-skip-changing"
+        )
+        self.assertEqual(rc, 1, out + err)
+        self.assertIn("--payload-skip-changing only applies to a snapshot run", err)
+
+
 class PayloadTuningTests(_PayloadFixture):
     """A new vault measures this machine and its link once and remembers the cut-off."""
 
