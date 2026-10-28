@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.18] - 2026-10-28
+
+The fixes from a three-reviewer targeted review of v0.9.17. The one that matters: a retention run could delete the objects of a branch the helper's listing had skipped, even in the mode that exists to prevent that.
+
 ### Fixed
 - **`--payload-gc --payload-delete` could delete a branch's objects when the helper's listing skipped the branch** (a targeted review of v0.9.17 found it; two of three reviewers ranked it LOSS, reproduced against the stub). Under `SEAFILE_STRICT_REFS=1`, the mode retention fetches in so that a skipped ref cannot make its objects look unused, four cases still only warned and carried on: an entry of an unknown type, a name git refuses, a ref nested deeper than the walk goes, and a ref file that holds no object id (a torn write, an HTML error page). Each now stops the listing with the file or name; a normal fetch or push still warns and goes on, so one planted file cannot make a repository unfetchable. A Seafile conflict copy is still refused by retention itself, before it fetches.
 - **A `gc-pending.json` that held a time which cannot be real deleted its object on the next delete run.** The stamp was only checked to be a number, so `-1` made "now minus the stamp" exceed any grace period. A stamp that is zero, negative, a boolean, not finite or more than a day ahead is now marked afresh, with a `Warning:` that says so (only delays a deletion). A mark list that is valid JSON but not an object was read as "nothing is marked" and silently restarted every grace period; it is refused now, with the remedy, as the fence baseline beside it already was.
@@ -1894,6 +1898,7 @@ Data-loss and silent-failure fixes, and the Python floor raised to 3.9.
   with zero-config desktop-client token discovery, distributed locking, remote
   packfile compaction, and a Git LFS custom transfer agent.
 
+[0.9.18]: https://github.com/tkittich/git-remote-seafile/compare/v0.9.17...v0.9.18
 [0.9.17]: https://github.com/tkittich/git-remote-seafile/compare/v0.9.16...v0.9.17
 [0.9.16]: https://github.com/tkittich/git-remote-seafile/compare/v0.9.15...v0.9.16
 [0.9.15]: https://github.com/tkittich/git-remote-seafile/compare/v0.9.14...v0.9.15
