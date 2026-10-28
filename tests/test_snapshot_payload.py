@@ -1495,9 +1495,10 @@ class PayloadHistoryReadTests(_PayloadFixture):
     def test_the_vault_is_read_where_it_lies_not_copied_into_the_scratch_repository(self):
         self.assertEqual(self.snapshot()[0], 0)
         real, seen = snap.git, []
+        vault = self.vault.resolve()     # the tool resolves it; macOS and Windows temp paths differ
 
         def spy(repo, work, args, **kwargs):
-            vault_fetch = args[:2] == ["fetch", "-q"] and str(self.vault) in args
+            vault_fetch = args[:2] == ["fetch", "-q"] and str(vault) in args
             before = real(repo, None, ["count-objects", "-v"], cwd=kwargs["cwd"]).stdout if vault_fetch else ""
             result = real(repo, work, args, **kwargs)
             if vault_fetch:
@@ -1511,7 +1512,7 @@ class PayloadHistoryReadTests(_PayloadFixture):
         self.assertEqual(rc, 0, out + err)
         self.assertIn("2 referenced object(s)", out)
         self.assertEqual(len(seen), 1, seen)
-        self.assertIn((self.vault / ".git" / "objects").as_posix(), seen[0][0])
+        self.assertIn((vault / ".git" / "objects").as_posix(), seen[0][0])
         self.assertTrue(seen[0][1], "fetching the vault copied objects into the scratch repository")
 
     def test_a_retention_run_that_cannot_hold_the_history_is_refused_before_the_fetch(self):

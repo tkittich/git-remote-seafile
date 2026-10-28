@@ -215,7 +215,9 @@ class DoctorServerChecksTests(unittest.TestCase):
         with patch.object(SeafileClient, "_adjust_url", through_the_front):
             code, out = self.upload_limit(32)
         self.assertEqual(code, 1, out)
-        self.assertIn("the connection was closed during the upload", out)
+        # Which of the two the client sees depends on the platform's TCP stack: Linux
+        # delivers the 413 that arrived before the reset, Windows and macOS report the reset.
+        self.assertRegex(out, "HTTP 413|the connection was closed during the upload")
         self.assertIn("Hint: git config seafile.gcmaxpackmib 4", out)
 
     # -- the command line --------------------------------------------------------
