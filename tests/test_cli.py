@@ -76,6 +76,15 @@ class TestDoctor(unittest.TestCase):
         self.assertIn("Hint: keep the file that holds", out)
         self.assertNotIn("Next:", out)
 
+    def test_a_walk_that_stopped_at_its_limit_is_not_reported_as_ok(self):
+        """REVIEW.af9e9e1 T4.2: a check that did not finish cannot print a green line."""
+        with patch("git_remote_seafile.cli.find_conflict_copies", return_value=([], True)):
+            code, out, _ = self._run("seafile://lib/x")
+        self.assertEqual(code, 0, out)
+        self.assertIn("Warning: stopped after listing 5000 directories", out)
+        self.assertNotIn("no Seafile conflict copies", out)
+        self.assertIn("Next:", out)
+
     def test_a_clean_repository_passes_the_conflict_check(self):
         code, out, _ = self._run("seafile://lib/x", listing=[{"name": "main", "type": "file"}])
         self.assertEqual(code, 0, out)

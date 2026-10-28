@@ -315,8 +315,13 @@ def _doctor(url: str | None, *, upload_limit: bool = False, max_mib: int | None 
         print("Hint: keep the file that holds the right content, delete the others (RUNBOOK.md, "
               "\"Conflict Artifacts\"), then run doctor again")
         return 1
-    ok(f"no Seafile conflict copies under {helper.repo_path}"
-       + (f" (stopped after listing {CONFLICT_WALK_MAX_DIRS} directories)" if capped else ""))
+    if capped:
+        # Not [ ok ]: the walk did not finish, so "none found" is not "none".
+        print(f"Warning: stopped after listing {CONFLICT_WALK_MAX_DIRS} directories under "
+              f"{helper.repo_path} and found no conflict copy; the rest was not looked at "
+              "(gc walks refs/ without that limit and refuses on a copy there)")
+    else:
+        ok(f"no Seafile conflict copies under {helper.repo_path}")
 
     if upload_limit:
         code = _doctor_upload_limit(helper, max_mib)
@@ -340,10 +345,14 @@ def _doctor_upload_limit(helper: Any, max_mib: int | None) -> int:
             upload_attempt(helper.client, helper.repo_id, scratch), ceiling=ceiling
         )
     finally:
+        # delete_entry answers False for a refusal and raises only on a transport
+        # failure, so both are a folder left behind.
         try:
-            helper.client.delete_entry(helper.repo_id, scratch)
+            removed, why = helper.client.delete_entry(helper.repo_id, scratch), ""
         except Exception as ex:
-            print(f"Warning: could not remove {scratch}: {ex}")
+            removed, why = False, f": {ex}"
+        if not removed:
+            print(f"Warning: could not remove {scratch}{why}")
     for size, outcome in result.trials:
         print(f"       {format_bytes(size):>10}  " + ("accepted" if outcome is None else f"refused: {outcome}"))
     configured = RemoteConfig.load().gc_max_pack_mib

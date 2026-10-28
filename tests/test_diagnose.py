@@ -170,6 +170,21 @@ class DoctorServerChecksTests(unittest.TestCase):
         self.assertEqual(code, 0, out)
         self.assertIn("Warning: could not remove /repo/.git-seafile-doctor-", out)
 
+    def test_a_scratch_folder_the_server_refuses_to_delete_is_named_too(self):
+        """``delete_entry`` answers False for a refusal and raises only on a transport
+        failure; the cleanup used to look for the exception alone (REVIEW.af9e9e1 T4.1)."""
+        real = self.client.delete_entry
+
+        def refuse(repo_id, path):
+            if path.rsplit("/", 1)[-1].startswith(".git-seafile-doctor-"):
+                return False
+            return real(repo_id, path)
+
+        with patch.object(self.client, "delete_entry", side_effect=refuse):
+            code, out = self.upload_limit(2)
+        self.assertEqual(code, 0, out)
+        self.assertIn("Warning: could not remove /repo/.git-seafile-doctor-", out)
+
     def test_a_proxy_that_closes_the_connection_instead_of_answering_is_still_a_limit(self):
         """nginx answers 413 and closes while the client is still sending, so the client
         often sees a reset and never the status; the stub, which reads every body,
