@@ -4655,6 +4655,10 @@ _PENDING_NAME = "gc-pending.json"
 #: tool wrote, so the limit only has to stop a planted one: 64 MiB is ~760,000
 #: entries.
 _PENDING_MAX_BYTES = 64 * 1024 * 1024
+#: A mark is stamped with the server's clock estimate (or the local clock when
+#: that is unavailable); a stamp more than a day ahead of "now" was not written
+#: by a run of this tool.
+_PENDING_FUTURE_SLACK_SECONDS = 86400
 
 
 def _read_pending(client: Any, rid: str, base: str) -> str:
@@ -4982,11 +4986,14 @@ def _refs_the_helper_cannot_see(client: Any, rid: str, repo_path: str) -> list[s
     return found
 
 
-def payload_verify(remote: str, vault: Path | None, *, count: str) -> int:
+def payload_verify(
+    remote: str, vault: Path | None, *, count: str, allow_low_disk: bool = False
+) -> int:
     """Download a sample of the newest snapshot's objects and check their SHA-256."""
     library, base, server_url = payload_location(remote)
     client = _api(lambda: _open_client(server_url), "opening the Seafile client")
     rid = _api(lambda: client.get_repo_id(library), f"finding library {library!r}")
+    _require_room_for_history(client, rid, base[: -len("/payload")], allow_low_disk)
     history = _hashes_in_history(remote, vault, 1)
     sizes, manifests = history.hashes, history.manifests
     if manifests == 0:
@@ -5050,6 +5057,23 @@ def history_fetch_space_problem(
     )
 
 
+def _require_room_for_history(client: Any, rid: str, repo_path: str, allow_low_disk: bool) -> None:
+    """Refuse before a command that fetches the remote's history into the temp volume.
+
+    ``--payload-verify`` reads the same history as retention does and is the
+    command run after something looked wrong, which is when the volume is
+    least likely to have room (REVIEW.af9e9e1 T1.1).
+    """
+    problem = _api(
+        lambda: history_fetch_space_problem(
+            client, rid, repo_path, Path(tempfile.gettempdir()), allow_low_disk=allow_low_disk
+        ),
+        "listing the remote's packs",
+    )
+    if problem:
+        raise SnapshotError(problem)
+
+
 def payload_gc(
     remote: str, vault: Path | None, *, delete: bool, grace_days: float, keep: int | None = None,
     accept_loss: bool = False, from_vault: bool = False, allow_low_disk: bool = False,
@@ -5079,14 +5103,7 @@ def payload_gc(
             "vault's URL lists every one) and run again"
         )
     if not from_vault:
-        problem = _api(
-            lambda: history_fetch_space_problem(
-                client, rid, repo_path, Path(tempfile.gettempdir()), allow_low_disk=allow_low_disk
-            ),
-            "listing the remote's packs",
-        )
-        if problem:
-            raise SnapshotError(problem)
+        _require_room_for_history(client, rid, repo_path, allow_low_disk)
     seen = {} if from_vault else read_seen_tips(client, rid, base)
     history = _hashes_in_history(None if from_vault else remote, vault, keep, seen)
     sizes_by_hash, commits, manifests = history.hashes, history.commits, history.manifests
@@ -5127,11 +5144,23 @@ def payload_gc(
         pending_raw = json.loads(pending_text) if pending_text else {}
     except (ValueError, RecursionError):
         raise SnapshotError(f"{base}/{_PENDING_NAME} is unreadable; remove it and run again") from None
-    pending = {
-        sha: float(ts) for sha, ts in (pending_raw.items() if isinstance(pending_raw, dict) else [])
-        if isinstance(sha, str) and _COLLECTABLE_NAME.match(sha) and isinstance(ts, (int, float))
-    }
+    if not isinstance(pending_raw, dict):
+        raise SnapshotError(f"{base}/{_PENDING_NAME} is not an object; remove it and run again")
     now = _grace_now(client)
+    # A stamp that cannot be a time this tool wrote (zero, negative, in the future,
+    # a boolean, NaN) is not trusted: "now - stamp" would call the grace period over
+    # at once, which is the one thing a mark list exists to prevent.  The object is
+    # marked afresh, which only delays its deletion.
+    pending = {
+        sha: float(ts) for sha, ts in pending_raw.items()
+        if isinstance(sha, str) and _COLLECTABLE_NAME.match(sha)
+        and isinstance(ts, (int, float)) and not isinstance(ts, bool)
+        and 0 < ts <= now + _PENDING_FUTURE_SLACK_SECONDS
+    }
+    unusable = sorted(sha for sha in pending_raw if sha in unused and sha not in pending)
+    if unusable:
+        print(f"Warning: {len(unusable)} mark(s) in {base}/{_PENDING_NAME} hold no usable time; "
+              "those object(s) are marked afresh and wait out the grace period again")
     due = {sha for sha in unused if sha in pending and now - pending[sha] >= grace_days * 86400}
     waiting = unused - due
 
@@ -6278,7 +6307,9 @@ def payload_command(args: argparse.Namespace) -> int | None:
     """Run a payload sub-command (verify, view, retention); ``None`` for a snapshot run."""
     vault = args.vault.expanduser().resolve() if args.vault else None
     if args.payload_verify is not None:
-        return payload_verify(args.remote, vault, count=args.payload_verify)
+        return payload_verify(
+            args.remote, vault, count=args.payload_verify, allow_low_disk=args.allow_low_disk
+        )
     if args.payload_view is not None:
         return payload_view(
             args.remote, args.payload_view, name=args.payload_view_name,

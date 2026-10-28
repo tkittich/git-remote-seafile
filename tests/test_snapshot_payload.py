@@ -1527,6 +1527,64 @@ class PayloadHistoryReadTests(_PayloadFixture):
             rc, out, err = self.gc("--payload-delete", "--payload-grace-days", "1", "--allow-low-disk")
         self.assertEqual(rc, 0, out + err)
 
+    def test_verify_reads_the_same_history_and_is_refused_for_the_same_reason(self):
+        """The check was only on `--payload-gc`; `--payload-verify` fetches the history too."""
+        self.assertEqual(self.snapshot()[0], 0)
+        short = shutil._ntuple_diskusage(10 ** 12, 10 ** 12, 1024)
+        with unittest.mock.patch.object(snap.shutil, "disk_usage", return_value=short):
+            rc, out, err = self.run_tool("--payload-verify", "all", "--remote", self.remote)
+            self.assertEqual(rc, 1, out + err)
+            self.assertIn("refusing to fetch the history", err)
+            rc, out, err = self.run_tool(
+                "--payload-verify", "all", "--remote", self.remote, "--allow-low-disk")
+        self.assertEqual(rc, 0, out + err)
+
+    # -- the state the delete decision rests on (REVIEW.af9e9e1 T2.1, T2.2, T8.1) -------
+    def _marked_orphan(self):
+        self.assertEqual(self.snapshot()[0], 0)
+        orphan = self.orphan()
+        rc, out, err = self.gc("--payload-delete", "--payload-grace-days", "1")
+        self.assertEqual(rc, 0, out + err)
+        return orphan, f"{self.base}/gc-pending.json"
+
+    def test_a_mark_list_that_is_not_an_object_is_refused_not_read_as_empty(self):
+        orphan, key = self._marked_orphan()
+        for text in (b"[]", b'"x"', b"null", b"7"):
+            self.stub.files[REPO_ID][key] = text
+            rc, out, err = self.gc("--payload-delete", "--payload-grace-days", "1")
+            self.assertEqual(rc, 1, (text, out, err))
+            self.assertIn("is not an object", err)
+            self.assertIn("run again", err)
+            self.assertEqual(self.stub.files[REPO_ID][key], text, "a refusal must not rewrite the file")
+            self.assertIn(orphan, self.server_files())
+
+    def test_a_mark_without_a_usable_time_is_marked_afresh_not_treated_as_due(self):
+        """A stamp of -1 made `now - stamp` exceed any grace period: deleted on the next run."""
+        orphan, key = self._marked_orphan()
+        sha = orphan.rsplit("/", 1)[-1]
+        for bad in (-1, 0, True, 4102444800, "yesterday", None):
+            self.stub.files[REPO_ID][key] = json.dumps({sha: bad}).encode()
+            rc, out, err = self.gc("--payload-delete", "--payload-grace-days", "1")
+            self.assertEqual(rc, 0, (bad, out, err))
+            self.assertIn("hold no usable time", out, bad)
+            self.assertIn(orphan, self.server_files(), f"a mark of {bad!r} deleted the object")
+            fresh = json.loads(self.stub.files[REPO_ID][key])[sha]
+            self.assertAlmostEqual(fresh, time.time(), delta=300, msg=bad)
+        self.backdate_pending(2)
+        rc, out, err = self.gc("--payload-delete", "--payload-grace-days", "1")
+        self.assertEqual(rc, 0, out + err)
+        self.assertNotIn(orphan, self.server_files(), "a genuine old mark must still be honoured")
+
+    def test_a_fence_baseline_that_is_not_an_object_stops_the_delete(self):
+        """The wrong-shape half of S3; the unparseable half is tested in PayloadRetentionTests."""
+        orphan, _key = self._marked_orphan()
+        self.stub.files[REPO_ID][f"{self.base}/gc-seen.json"] = b"[]"
+        self.backdate_pending(2)
+        rc, out, err = self.gc("--payload-delete", "--payload-grace-days", "1")
+        self.assertNotEqual(rc, 0, out + err)
+        self.assertIn("is not an object", out + err)
+        self.assertIn(orphan, self.server_files(), "nothing may be deleted without the fence")
+
 
 class PayloadRetentionTests(_PayloadFixture):
     """gc and the second-round findings."""
