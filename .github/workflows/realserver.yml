@@ -55,6 +55,15 @@ jobs:
       # The container is both the subject and the best diagnostic: when the
       # suite or the readiness probe fails, the reason is in these logs, and
       # the runner (with the container) disappears at the end of the job.
+      # Fourth dispatch: the container booted, but "Error happened during
+      # creating seafile admin" printed no reason and /api2/auth-token/ answered
+      # 500.  The reason is in seahub's own logs and in the image's init script,
+      # neither of which `compose logs` shows.
+      - name: Seahub logs and the image's admin script
+        if: failure()
+        run: |
+          docker compose -f .github/seafile-ci.yml exec -T seafile sh -c \
+            'ls /shared/seafile/logs; tail -n 60 /shared/seafile/logs/seahub.log /shared/seafile/logs/seafile.log /opt/seafile/logs/*.log 2>&1; echo ---- check_init_admin; cat /scripts/check_init_admin.py 2>&1' || true
       - name: Container logs and teardown
         if: always()
         run: |
