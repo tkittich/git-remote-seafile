@@ -312,6 +312,31 @@ class TestRemoteHelper(unittest.TestCase):
         self.assertNotIn("corrupt", out.getvalue())
         self.assertIn("Warning: ignoring invalid SHA", err.getvalue())
 
+    def test_a_strict_listing_stops_at_a_ref_that_holds_no_object_id(self):
+        """A caller that deletes from what it fetches must not be shown half a repository:
+        the ref file holding HTML, or a torn write, is a branch whose objects look unused."""
+        h = make_helper()
+        h.client = MagicMock()
+        h.repo_id = "repo1"
+        h.repo_path = "/git-repo"
+        h.library_name = "lib"
+        h._refs_cache = {}
+        h._repository_has_objects = MagicMock(return_value=False)
+        h.client.list_dir.side_effect = lambda repo_id, path: (
+            [{"type": "file", "name": "main"}, {"type": "file", "name": "corrupt"}]
+            if "heads" in path
+            else []
+        )
+        h.client.get_file_text.side_effect = lambda repo_id, path: (
+            "1" * 40 if "heads/main" in path else "<html>error</html>" if "heads/corrupt" in path else None
+        )
+        with patch.dict(os.environ, {"SEAFILE_STRICT_REFS": "1"}), \
+                patch("sys.stdout", io.StringIO()), patch("sys.stderr", io.StringIO()), \
+                patch("time.sleep"):
+            with self.assertRaises(SeafileAPIError) as caught:
+                h.cmd_list()
+        self.assertIn("does not hold an object id", str(caught.exception))
+
     def test_cmd_list_for_push_allows_empty_refs_with_packs(self):
         h = make_helper()
         h.client = MagicMock()

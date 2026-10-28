@@ -395,6 +395,11 @@ class RemoteHelper:
                     sys.stderr.flush()
                     continue
                 if not HEX_SHA_RE.fullmatch(sha):
+                    if strict:
+                        raise SeafileAPIError(
+                            f"the ref {ref_name} does not hold an object id, so it cannot "
+                            "be advertised; restore its content or remove the file"
+                        )
                     sys.stderr.write(f"Warning: ignoring invalid SHA '{sha}' for ref '{ref_name}'\n")
                     sys.stderr.flush()
                     continue

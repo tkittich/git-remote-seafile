@@ -241,6 +241,11 @@ def iter_refs(
             sys.stderr.flush()
             break
         if depth > _MAX_REF_DEPTH:
+            if strict:
+                raise SeafileAPIError(
+                    f"refs nested deeper than {_MAX_REF_DEPTH} levels under {ns} cannot be "
+                    "walked, so the refs below them cannot be seen"
+                )
             if not depth_capped:
                 sys.stderr.write(
                     f"Warning: refs nested deeper than {_MAX_REF_DEPTH} levels under "
@@ -289,6 +294,11 @@ def iter_refs(
                     sys.stderr.flush()
                     continue
                 if not is_valid_ref_name(ref_name):
+                    if strict:
+                        raise SeafileAPIError(
+                            f"'{ref_name}' is not a ref name git accepts, so the ref cannot be "
+                            "listed; rename or remove it"
+                        )
                     sys.stderr.write(f"Warning: ignoring malformed ref name '{ref_name}'\n")
                     sys.stderr.flush()
                     continue
@@ -297,7 +307,13 @@ def iter_refs(
                 # Seafile returns only dir/file today; an unknown type (or a
                 # missing field from an unexpected server response) must not
                 # vanish silently -- a skipped entry here is an unadvertised
-                # ref, which is how silent ref loss starts.
+                # ref, which is how silent ref loss starts.  A walk that decides
+                # what is deleted (``strict``) stops instead of warning.
+                if strict:
+                    raise SeafileAPIError(
+                        f"the entry '{name}' under {dir_path} has the unknown type '{kind}', "
+                        "so a ref may be hidden behind it"
+                    )
                 sys.stderr.write(
                     f"Warning: ignoring entry '{name}' of unknown type '{kind}' under {dir_path}\n"
                 )

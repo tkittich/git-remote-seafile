@@ -379,10 +379,65 @@ class TestRefWalkDepthCap(unittest.TestCase):
 
         err = io.StringIO()
         with contextlib.redirect_stderr(err):
-            got = list(iter_refs(Bottomless(), "rid", "/r", "refs/heads", strict=True))
+            got = list(iter_refs(Bottomless(), "rid", "/r", "refs/heads"))
         self.assertEqual(got, [])
         self.assertIn("nested deeper than", err.getvalue())
         self.assertIn("not advertised", err.getvalue())
+
+        # ... but a walk that decides what is deleted must not return a short answer.
+        from git_remote_seafile.client import SeafileAPIError
+
+        with self.assertRaises(SeafileAPIError) as caught:
+            list(iter_refs(Bottomless(), "rid", "/r", "refs/heads", strict=True))
+        self.assertIn("cannot be walked", str(caught.exception))
+
+
+class TestStrictWalkStopsWhereItCannotSee(unittest.TestCase):
+    """Retention deletes what the listing does not name, so a ref the walk can only
+    warn about is a branch whose objects are deleted (REVIEW.af9e9e1 T3.1)."""
+
+    class _Client(FakeClient):
+        def list_dir(self, repo_id, path):
+            entries = super().list_dir(repo_id, path)
+            for entry in entries:
+                if entry["name"] == "odd":
+                    entry["type"] = "symlink"
+            return entries
+
+    def _walk(self, client, **kw):
+        return list(iter_refs(client, "rid", "/r", "refs/heads", **kw))
+
+    def test_an_entry_of_an_unknown_type_stops_a_strict_walk_and_only_warns_a_lax_one(self):
+        import contextlib
+        import io
+
+        from git_remote_seafile.client import SeafileAPIError
+
+        tree = {"/r/refs/heads": {"main": "file:aaa", "odd": "file:bbb"}}
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            got = dict(self._walk(self._Client(tree)))
+        self.assertEqual(got, {"refs/heads/main": "aaa"})
+        self.assertIn("unknown type 'symlink'", err.getvalue())
+        with self.assertRaises(SeafileAPIError) as caught:
+            self._walk(self._Client(tree), strict=True)
+        self.assertIn("has the unknown type", str(caught.exception))
+
+    def test_a_name_git_refuses_stops_a_strict_walk_and_only_warns_a_lax_one(self):
+        import contextlib
+        import io
+
+        from git_remote_seafile.client import SeafileAPIError
+
+        tree = {"/r/refs/heads": {"main": "file:aaa", "bad..name": "file:bbb"}}
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            got = dict(self._walk(FakeClient(tree)))
+        self.assertEqual(got, {"refs/heads/main": "aaa"})
+        self.assertIn("ignoring malformed ref name", err.getvalue())
+        with self.assertRaises(SeafileAPIError) as caught:
+            self._walk(FakeClient(tree), strict=True)
+        self.assertIn("not a ref name git accepts", str(caught.exception))
 
 
 class TestRefWalkListingCap(unittest.TestCase):
@@ -422,8 +477,17 @@ class TestRefWalkListingCap(unittest.TestCase):
         from git_remote_seafile.client import SeafileAPIError
 
         with self.assertRaises(SeafileAPIError) as ctx:
-            list(iter_refs(self.FanOut(), "rid", "/r", "refs/heads", strict=True))
+            list(iter_refs(self.FanOut(), "rid", "/r", "refs/heads", strict_listing=True))
         self.assertIn("do not describe a repository", str(ctx.exception))
+
+    def test_a_strict_walk_of_a_fan_out_stops_at_the_depth_cap_after_few_listings(self):
+        from git_remote_seafile.client import SeafileAPIError
+        from git_remote_seafile.refs import _MAX_REF_LISTINGS
+
+        client = self.FanOut()
+        with self.assertRaises(SeafileAPIError):
+            list(iter_refs(client, "rid", "/r", "refs/heads", strict=True))
+        self.assertLess(client.listings, _MAX_REF_LISTINGS)
 
 
 class TestRefReadsRenewTheCallersLease(unittest.TestCase):
