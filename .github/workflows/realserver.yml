@@ -52,13 +52,12 @@ jobs:
         run: docker compose -f .github/seafile-ci.yml up -d
       - name: Run the real-server suite against it
         run: python tools/realserver_ci.py
-      # S15: the probe that finds the largest accepted upload, against the first
-      # proxy limit this project has ever been able to set.  The nginx file and
-      # its directive are the image's, not ours, so this step has never run:
-      # `continue-on-error` until one dispatch shows it green, then remove it.
-      # The grep before and after is the evidence of what was (not) changed.
+      # S15: the probe that finds the largest accepted upload, against a proxy
+      # limit this project can finally set.  First dispatch (2026-10-28): the
+      # image's nginx keeps its directives in /etc/nginx/sites-enabled/
+      # seafile.nginx.conf (10m at the top, 0 on the transfer locations), and the
+      # probe found the 48 MiB it was set to (45 accepted, 48 refused).
       - name: Lower the proxy's body limit and let doctor find it
-        continue-on-error: true
         run: |
           docker compose -f .github/seafile-ci.yml exec -T seafile sh -c '
             files=$(grep -rl client_max_body_size /shared/nginx /etc/nginx 2>/dev/null)

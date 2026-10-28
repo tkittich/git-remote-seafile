@@ -178,7 +178,8 @@ def upload_attempt(client: Any, repo_id: str, directory: str) -> Callable[[int],
             # "Failed to upload <name> to <dir>: HTTP 413 (POST <origin>) ..." -- the status is the news.
             text = str(exc).strip()
             if "HTTP " in text:
-                text = text[text.index("HTTP "):]
+                # nginx's 413 body is a page of HTML; the status and the origin say it.
+                text = text[text.index("HTTP "):].split("<", 1)[0].strip()
             elif "Connection" in text:
                 # A proxy that refuses a body often closes the socket while it is
                 # still being sent, so the client sees a reset and never the 413.
