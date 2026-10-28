@@ -16,8 +16,9 @@ from git_remote_seafile.safety import SafetyError
 
 
 class TestDoctor(unittest.TestCase):
-    def _run(self, url=None, landed=b"git-seafile doctor", **overrides):
+    def _run(self, url=None, landed=b"git-seafile doctor", listing=(), **overrides):
         client = MagicMock()
+        client.list_dir.return_value = list(listing)
         client.server_url = "https://s.example"
         client.session.get.return_value = MagicMock(status_code=200, json=lambda: {"email": "me@x"})
         client.get_file_bytes.return_value = landed
@@ -64,6 +65,21 @@ class TestDoctor(unittest.TestCase):
             self.assertEqual(code, 1, out.getvalue())
             self.assertIn("[FAIL]", out.getvalue())
             self.assertIn("not a Seafile account object", out.getvalue())
+
+    def test_conflict_copies_under_the_repository_fail_the_check_and_name_the_fix(self):
+        """A copy under refs/ blocks gc for good; nothing found it before (ROADMAP S14)."""
+        copy = "main (SFConflict me 2026-10-12-10-00-00)"
+        code, out, _ = self._run("seafile://lib/x", listing=[{"name": copy, "type": "file"}])
+        self.assertEqual(code, 1, out)
+        self.assertIn("[FAIL] 1 Seafile conflict copy(ies) under /git-repo", out)
+        self.assertIn(copy, out)
+        self.assertIn("Hint: keep the file that holds", out)
+        self.assertNotIn("Next:", out)
+
+    def test_a_clean_repository_passes_the_conflict_check(self):
+        code, out, _ = self._run("seafile://lib/x", listing=[{"name": "main", "type": "file"}])
+        self.assertEqual(code, 0, out)
+        self.assertIn("no Seafile conflict copies under /git-repo", out)
 
     def test_a_probe_that_does_not_round_trip_fails(self):
         code, out, _ = self._run("seafile://lib/x", landed=b"something else")

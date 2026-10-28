@@ -229,7 +229,7 @@ appears, and names the copy when it lists refs.
 
 **Recover.**
 
-1. List `refs/heads/` in the Seafile Web UI.
+1. List `refs/heads/` in the Seafile Web UI (or run `git-remote-seafile doctor <url>`, which lists every copy under the repository -- refs, packs, lock tickets -- and exits 1 while any remain).
 2. Determine which file holds the intended commit SHA and which is the conflict copy. The real ref
    is the one named exactly `main`; a conflict copy has a decorated name.
 3. Read both. If the conflict copy holds a *newer* commit you want, note its SHA.

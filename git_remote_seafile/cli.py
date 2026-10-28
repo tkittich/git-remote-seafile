@@ -19,6 +19,18 @@ from .safety import (
     get_local_work_tree,
     safe_relative_to,
 )
+from .diagnose import (
+    CONFLICT_WALK_MAX_DIRS,
+    MIB,
+    PROBE_CEILING_BYTES,
+    PROBE_FLOOR_BYTES,
+    chunk_warning,
+    find_conflict_copies,
+    measure_upload_limit,
+    recommended_pack_mib,
+    upload_attempt,
+)
+from .units import format_bytes
 from .url import mask_url
 
 
@@ -29,8 +41,14 @@ from .url import mask_url
 # nowhere -- `--min-packs` and `--force` appeared only in the strings that
 # happened to print when the command was called wrongly.
 _COMMANDS: tuple[tuple[str, str, str, tuple[tuple[str, str], ...]], ...] = (
-    ("doctor", "git-remote-seafile doctor [<seafile://url>]",
-     "Check login, library, safety and write access in one go", ()),
+    ("doctor", "git-remote-seafile doctor [<seafile://url>] [--upload-limit [--max-mib N]]",
+     "Check login, library, safety, write access and conflict copies in one go",
+     (("--upload-limit",
+       "Also measure the largest single upload the server accepts and print the "
+       "seafile.gcmaxpackmib that fits (uploads up to 1023 MiB of zeros into a "
+       "scratch folder, deleted afterwards)"),
+      ("--max-mib N", "With --upload-limit: the largest body to try (default 1023, the most "
+                      "one request can be before the client sends chunks)"))),
     ("test", "git-remote-seafile test <seafile://url>",
      "Test connection and discover refs", ()),
     ("check-safety", "git-remote-seafile check-safety <seafile://url>",
@@ -210,7 +228,7 @@ def _account_email(resp: Any) -> str | None:
     return str(info.get("email") or "(no email reported)")
 
 
-def _doctor(url: str | None) -> int:
+def _doctor(url: str | None, *, upload_limit: bool = False, max_mib: int | None = None) -> int:
     """Run every first-use check in order and say what to do next.
 
     Stops at the first failing step: each step needs the one before it.  With no
@@ -279,7 +297,77 @@ def _doctor(url: str | None) -> int:
     if landed != PROBE_BYTES or not removed:
         return fail(f"write probe did not round-trip cleanly in {helper.repo_path}")
     ok(f"can write and delete in {helper.repo_path}")
+
+    try:
+        copies, capped = find_conflict_copies(helper.client, helper.repo_id, helper.repo_path)
+    except Exception as ex:
+        return fail(f"cannot list {helper.repo_path} to look for conflict copies: {ex}")
+    if copies:
+        blocking = [c for c in copies if "/refs/" in c]
+        shown = chr(10).join(f"       {c}" for c in copies[:20])
+        more = f"{chr(10)}       ... and {len(copies) - 20} more" if len(copies) > 20 else ""
+        print(
+            f"[FAIL] {len(copies)} Seafile conflict copy(ies) under {helper.repo_path}"
+            + (f", {len(blocking)} of them under refs/ (gc refuses to run until they are resolved)"
+               if blocking else "")
+            + chr(10) + shown + more
+        )
+        print("Hint: keep the file that holds the right content, delete the others (RUNBOOK.md, "
+              "\"Conflict Artifacts\"), then run doctor again")
+        return 1
+    ok(f"no Seafile conflict copies under {helper.repo_path}"
+       + (f" (stopped after listing {CONFLICT_WALK_MAX_DIRS} directories)" if capped else ""))
+
+    if upload_limit:
+        code = _doctor_upload_limit(helper, max_mib)
+        if code:
+            return code
     print(f"Next: git remote add origin {url} && git push -u origin <branch>")
+    return 0
+
+
+def _doctor_upload_limit(helper: Any, max_mib: int | None) -> int:
+    """Measure the largest single upload and say what ``seafile.gcmaxpackmib`` fits."""
+    import uuid
+    from .config import RemoteConfig
+
+    ceiling = (max_mib * MIB) if max_mib else PROBE_CEILING_BYTES
+    scratch = f"{helper.repo_path.rstrip('/')}/.git-seafile-doctor-{uuid.uuid4().hex[:8]}"
+    print(f"measuring the largest single upload (up to {format_bytes(ceiling)} of zeros into "
+          f"{scratch}, deleted afterwards) ...", flush=True)
+    try:
+        result = measure_upload_limit(
+            upload_attempt(helper.client, helper.repo_id, scratch), ceiling=ceiling
+        )
+    finally:
+        try:
+            helper.client.delete_entry(helper.repo_id, scratch)
+        except Exception as ex:
+            print(f"Warning: could not remove {scratch}: {ex}")
+    for size, outcome in result.trials:
+        print(f"       {format_bytes(size):>10}  " + ("accepted" if outcome is None else f"refused: {outcome}"))
+    configured = RemoteConfig.load().gc_max_pack_mib
+    if result.accepted == 0:
+        print(f"[FAIL] even {format_bytes(PROBE_FLOOR_BYTES)} was refused ({result.reason}); that is "
+              "not a size limit, so there is no cap to recommend. Fix what the line above says first")
+        return 1
+    if result.unlimited_below_ceiling:
+        print(f"[ ok ] a single upload of {format_bytes(result.accepted)} was accepted (the most "
+              f"tried); seafile.gcmaxpackmib is {configured}")
+        return 0
+    fits = recommended_pack_mib(result.accepted)
+    print(f"[{'FAIL' if configured > fits else ' ok '}] the server accepts a single upload of "
+          f"about {format_bytes(result.accepted)} and refuses {format_bytes(result.rejected or 0)}")
+    if chunk_warning(result.accepted):
+        print("Warning: a file of 1 GiB or more is sent in 128 MiB chunks, and this server refuses "
+              "a body that size; such a file cannot be pushed until the limit is raised")
+    if configured > fits:
+        print(f"       seafile.gcmaxpackmib is {configured}, so a push of more than "
+              f"{format_bytes(result.accepted)} fails after the lock is taken")
+        print(f"Hint: git config seafile.gcmaxpackmib {fits}   (or raise the server's limit: "
+              "client_max_body_size in nginx)")
+        return 1
+    print(f"       seafile.gcmaxpackmib is {configured}, which fits")
     return 0
 
 
@@ -329,8 +417,27 @@ def _cmd_check_auth(rest: list[str]) -> int:
 
 
 def _cmd_doctor(rest: list[str]) -> int:
-    positional = _positional_args(rest)
-    return _doctor(positional[0] if positional else None)
+    positional = _positional_args(rest, value_options=("--max-mib",))
+    max_mib: int | None = None
+    for index, arg in enumerate(rest):
+        raw = (rest[index + 1] if index + 1 < len(rest) else "") if arg == "--max-mib"             else arg.split("=", 1)[1] if arg.startswith("--max-mib=") else None
+        if raw is None:
+            continue
+        try:
+            max_mib = int(raw)
+        except ValueError:
+            max_mib = 0
+        if not 1 <= max_mib <= PROBE_CEILING_BYTES // MIB:
+            sys.stderr.write(
+                f"Error: --max-mib needs a whole number from 1 to {PROBE_CEILING_BYTES // MIB} "
+                f"(a body of 1 GiB or more is sent in chunks), got '{raw}'\n"
+            )
+            return 2
+    if max_mib is not None and "--upload-limit" not in rest:
+        sys.stderr.write("Error: --max-mib only applies with --upload-limit\n")
+        return 2
+    return _doctor(positional[0] if positional else None,
+                   upload_limit="--upload-limit" in rest, max_mib=max_mib)
 
 
 def _cmd_check_safety(rest: list[str]) -> int:

@@ -453,7 +453,8 @@ def payload_gc(
         raise SnapshotError(
             f"{len(conflicts)} ref(s) are Seafile conflict copies the history reader cannot "
             f"see (first: {conflicts[0]}); a snapshot reachable only from one would look "
-            "unreferenced. Resolve them (keep one ref, delete the copies) and run again"
+            "unreferenced. Resolve them (keep one ref, delete the copies; git-remote-seafile doctor on the "
+            "vault's URL lists every one) and run again"
         )
     seen = {} if from_vault else read_seen_tips(client, rid, base)
     history = _hashes_in_history(None if from_vault else remote, vault, keep, seen)

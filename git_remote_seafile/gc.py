@@ -79,7 +79,8 @@ def refs_outside_namespaces(client: SeafileClient, repo_id: str, repo_path: str)
                     problems.append(f"{full} (outside refs/heads and refs/tags)")
                 elif is_conflict_copy(name):
                     problems.append(
-                        f"{full} (a Seafile conflict copy -- see RUNBOOK.md, \"Conflict Artifacts\")"
+                        f"{full} (a Seafile conflict copy -- see RUNBOOK.md, \"Conflict Artifacts\"; "
+                        "`git-remote-seafile doctor <url>` lists every one)"
                     )
                 elif not is_valid_ref_name(full):
                     problems.append(f"{full} (not a valid git ref name)")

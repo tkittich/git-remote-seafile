@@ -12,6 +12,11 @@ same script runs locally: the server, admin credentials and library name are
 overridable through ``GRS_CI_SEAFILE_SERVER``, ``GRS_CI_ADMIN_EMAIL`` and
 ``GRS_CI_ADMIN_PASSWORD``.
 
+With ``--upload-limit-check MIB`` it does not run the suite: it runs
+``git-remote-seafile doctor --upload-limit`` against a container whose nginx was
+given ``client_max_body_size MIB`` (the workflow does that between the two runs)
+and checks that the probe found a limit near it (ROADMAP S15).
+
 Exit code is the suite's exit code; a readiness or setup failure exits
 non-zero with the reason on stderr.
 """
@@ -20,6 +25,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -145,7 +151,43 @@ def delete_library(session: requests.Session, token: str, repo_id: str) -> None:
         sys.stderr.flush()
 
 
-def main() -> int:
+def judge_upload_limit_run(returncode: int, output: str, limit_mib: int) -> str | None:
+    """Why a ``doctor --upload-limit`` run did not find a limit of *limit_mib*, or None.
+
+    The probe finds the largest body to within an eighth and the recommendation
+    keeps a fifth in reserve, so the cap it prints lies between a quarter of the
+    limit and the limit itself; anything else means the probe or the limit
+    setting is broken.
+    """
+    found = re.search(r"git config seafile\.gcmaxpackmib (\d+)", output)
+    if returncode != 1 or not found:
+        return (f"expected exit 1 and a gcmaxpackmib hint under a {limit_mib} MiB body limit, "
+                f"got exit {returncode}")
+    cap = int(found.group(1))
+    if not limit_mib // 4 <= cap <= limit_mib:
+        return f"the recommended cap {cap} MiB is not near the {limit_mib} MiB limit"
+    return None
+
+
+def check_upload_limit(env: dict[str, str], limit_mib: int) -> int:
+    proc = subprocess.run(
+        [sys.executable, "-m", "git_remote_seafile", "doctor", f"seafile://{LIBRARY}/grs-doctor",
+         "--upload-limit", "--max-mib", str(max(64, 2 * limit_mib))],
+        cwd=str(ROOT), env=env, capture_output=True, text=True, timeout=1800,
+    )
+    print(proc.stdout)
+    sys.stderr.write(proc.stderr)
+    why = judge_upload_limit_run(proc.returncode, proc.stdout, limit_mib)
+    if why:
+        sys.stderr.write(f"Error: {why}\n")
+        return 1
+    print(f"The probe found the {limit_mib} MiB body limit.")
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = sys.argv[1:] if argv is None else argv
+    limit_mib = int(args[args.index("--upload-limit-check") + 1]) if "--upload-limit-check" in args else None
     deadline = time.monotonic() + READINESS_BUDGET_SECONDS
     print(f"Waiting for {_server()} to come up (first boot takes minutes)...")
     sys.stdout.flush()
@@ -178,6 +220,8 @@ def main() -> int:
         home = helper_home(scratch.name, token)
         env["HOME"] = home
         env["USERPROFILE"] = home
+        if limit_mib is not None:
+            return check_upload_limit(env, limit_mib)
         # The suite is the same one a developer runs by hand; a failure here
         # is a finding about the server, not about this script.
         proc = subprocess.run(

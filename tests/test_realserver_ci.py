@@ -48,6 +48,17 @@ class _Session:
 
 
 class TestRealserverCI(unittest.TestCase):
+    def test_a_probe_result_near_the_nginx_limit_is_accepted_and_a_wild_one_is_not(self):
+        hint = "Hint: git config seafile.gcmaxpackmib {}   (or raise the server's limit)"
+        self.assertIsNone(ci.judge_upload_limit_run(1, hint.format(37), 48))
+        self.assertIn("not near", ci.judge_upload_limit_run(1, hint.format(1), 48))
+        self.assertIn("not near", ci.judge_upload_limit_run(1, hint.format(900), 48))
+
+    def test_a_run_with_no_hint_or_the_wrong_exit_code_is_a_failure(self):
+        hint = "Hint: git config seafile.gcmaxpackmib 37"
+        self.assertIn("expected exit 1", ci.judge_upload_limit_run(0, hint, 48))
+        self.assertIn("expected exit 1", ci.judge_upload_limit_run(1, "[ ok ] accepted", 48))
+
     def test_the_ping_loop_accepts_a_pong(self):
         with patch.object(ci.requests, "get", return_value=_Resp(200, "pong")):
             ci.wait_for_seahub(deadline=ci.time.monotonic() + 10)

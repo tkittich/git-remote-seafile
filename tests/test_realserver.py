@@ -293,6 +293,49 @@ class RealServerTests(unittest.TestCase):
         self.assertTrue(copies, "no conflict copies were produced")
         self.assertEqual(sorted(conflict_copies_of(entries, "v1.0.0")), sorted(copies))
 
+    def test_doctor_measures_an_upload_and_finds_the_conflict_copies_it_left_alone(self):
+        """The doctor's two server checks against the real thing (ROADMAP S14, S15).
+
+        A 16 MiB ceiling keeps the run short; the container workflow measures a
+        proxy limit separately.  The conflict walk is pointed at the directory
+        the same-path race test leaves, so a real server's copies are what it finds.
+        """
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        from git_remote_seafile import cli, diagnose
+
+        helper = SimpleNamespace(
+            client=self.client, repo_id=self.rid, repo_path=f"/{self.base}/doctor-probe",
+            library_name=_LIBRARY,
+        )
+        configured = SimpleNamespace(gc_max_pack_mib=1024)
+        with patch("git_remote_seafile.config.RemoteConfig.load", return_value=configured):
+            code = cli._doctor_upload_limit(helper, 16)
+        self.assertEqual(code, 0, "a plain container should take a 16 MiB body")
+        self.assertEqual(
+            [e["name"] for e in self.client.list_dir(self.rid, f"/{self.base}/doctor-probe")], [],
+            "the probe left files behind",
+        )
+
+        race = f"/{self.base}/doctor-race"
+        self.client.mkdir_p(self.rid, race)
+        from git_remote_seafile.client import SeafileClient
+
+        def writer(i):
+            SeafileClient(server_url=self.client.server_url).upload_file(
+                self.rid, race, "main", f"w{i}\n".encode(), replace=True
+            )
+
+        threads = [threading.Thread(target=writer, args=(i,)) for i in range(10)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        found, _capped = diagnose.find_conflict_copies(self.client, self.rid, race)
+        self.assertTrue(found, "no conflict copy was found under a directory that has them")
+        self.assertTrue(all("SFConflict" in name for name in found), found)
+
     def test_the_snapshot_tools_link_probe_measures_and_leaves_nothing_behind(self):
         """``probe_link`` uploads four 8 MiB files (one, then three at once) and deletes them.
 

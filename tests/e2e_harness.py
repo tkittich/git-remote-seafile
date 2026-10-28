@@ -240,6 +240,9 @@ class _Handler(BaseHTTPRequestHandler):
         if path.startswith("/upload/"):
             if self.stub.faults.get("upload"):
                 return self._send(self.stub.faults["upload"], b"injected failure")
+            if len(body) > self.stub.faults.get("max_upload", len(body)):
+                # A proxy's client_max_body_size: nginx answers 413 to a body over it.
+                return self._send(413, b"Request Entity Too Large")
             rid = path.split("/")[2]
             ctype = self.headers.get("Content-Type", "")
             m = re.search(r"boundary=([^\s;]+)", ctype)

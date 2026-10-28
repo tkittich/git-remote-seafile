@@ -52,6 +52,22 @@ jobs:
         run: docker compose -f .github/seafile-ci.yml up -d
       - name: Run the real-server suite against it
         run: python tools/realserver_ci.py
+      # S15: the probe that finds the largest accepted upload, against the first
+      # proxy limit this project has ever been able to set.  The nginx file and
+      # its directive are the image's, not ours, so this step has never run:
+      # `continue-on-error` until one dispatch shows it green, then remove it.
+      # The grep before and after is the evidence of what was (not) changed.
+      - name: Lower the proxy's body limit and let doctor find it
+        continue-on-error: true
+        run: |
+          docker compose -f .github/seafile-ci.yml exec -T seafile sh -c '
+            files=$(grep -rl client_max_body_size /shared/nginx /etc/nginx 2>/dev/null)
+            echo "files naming client_max_body_size: $files"
+            grep -n client_max_body_size $files
+            sed -i "s/client_max_body_size [^;]*;/client_max_body_size 48m;/" $files
+            grep -n client_max_body_size $files
+            nginx -t && nginx -s reload'
+          python tools/realserver_ci.py --upload-limit-check 48
       # The container is both the subject and the best diagnostic: when the
       # suite or the readiness probe fails, the reason is in these logs, and
       # the runner (with the container) disappears at the end of the job.
