@@ -267,11 +267,16 @@ reports; with `--payload-delete` it **marks, and later deletes, in two phases**:
   the meantime is referenced again when the second run looks, so it survives;
   entries written by older versions carry that machine's local-clock stamp,
   and the one-off skew between it and the server is the same bounded quantity
-  §6.1 records below;
+  §6.1 records below. A mark list that is not a JSON object stops the run, and a
+  mark whose time cannot be one this tool wrote (zero, negative, more than a day
+  ahead, not a number) is marked afresh with a `Warning:` -- "now minus a stamp
+  of -1" would otherwise call the grace period over at once;
 - it reads the manifest of **every commit reachable from every branch and tag of the remote**
   (fetched into a scratch repository, with `SEAFILE_STRICT_REFS=1` so the helper's
   listing fails rather than skip a ref it cannot read -- a skipped branch would make
-  its objects look unused), plus the local vault's refs when `--vault`
+  its objects look unused: an entry of an unknown type, a name git refuses, a ref
+  nested deeper than the walk goes and a ref file that holds no object id all stop
+  it; a Seafile conflict copy is refused separately, below), plus the local vault's refs when `--vault`
   is given -- which must be a vault, and whose fetch must succeed -- because an
   un-pushed local snapshot may name objects already uploaded. The vault is read
   where it lies (its object store is an alternate of the scratch repository, so
@@ -459,7 +464,7 @@ data, or surprise. Disposition is one of **fixed**, **handled**, **specified**
 | A30 | A symlink `tool -> .git` and a manifest path `tool/hooks/pre-commit` | an executable hook written into the restored repository | **fixed** (0.9.2): protected directories are refused after links are followed; `test_a_link_to_dot_git_cannot_carry_a_payload_write_into_the_repository` |
 | A31 | A manifest that declares a small size for a huge object | the disk fills before the sizes are compared | **fixed** (0.9.2): the download is cut off at the declared size; `test_download_file_to_stops_at_the_size_the_caller_expects` |
 | A32 | A pid recycled by another process after a crash | the lock reads as held; every later snapshot is refused | **fixed** (0.9.2): the lock records the process start time; `test_a_live_pid_with_a_different_start_time_is_a_dead_holder` |
-| A33 | `--payload-delete` decides from a listing that skipped a branch, or from a decision minutes old | objects of the skipped branch, or of a snapshot pushed meanwhile, look unused | **fixed** (0.9.2): the listing is strict (`SEAFILE_STRICT_REFS`) and the refs are read again before the first deletion; `test_a_push_that_lands_while_gc_is_deciding_stops_the_deletion`. **Narrowed further** (0.9.3): they are read again every 25 deletions or 10 s, and a change stops the run (`test_a_push_that_lands_during_the_deletion_loop_stops_it`). *Residual, narrowed again (0.9.3):* a push that verified an object, then lands after that object was deleted, still names it; the retention run takes no remote lock, and a lock would not close this either, because the push checks the objects before it takes the lock. The pushing run now lists the objects its manifest names once more after the push, re-uploads any that went missing while the source file is as it was, and otherwise fails naming them (`test_an_object_deleted_between_the_check_and_the_push_is_put_back`) |
+| A33 | `--payload-delete` decides from a listing that skipped a branch, or from a decision minutes old | objects of the skipped branch, or of a snapshot pushed meanwhile, look unused | **fixed** (0.9.2): the listing is strict (`SEAFILE_STRICT_REFS`) and the refs are read again before the first deletion; `test_a_push_that_lands_while_gc_is_deciding_stops_the_deletion`. **Narrowed further** (0.9.3): they are read again every 25 deletions or 10 s, and a change stops the run (`test_a_push_that_lands_during_the_deletion_loop_stops_it`). *Residual, narrowed again (0.9.3):* a push that verified an object, then lands after that object was deleted, still names it; the retention run takes no remote lock, and a lock would not close this either, because the push checks the objects before it takes the lock. The pushing run now lists the objects its manifest names once more after the push, re-uploads any that went missing while the source file is as it was, and otherwise fails naming them (`test_an_object_deleted_between_the_check_and_the_push_is_put_back`) *Strict walk completed (unreleased, REVIEW.af9e9e1 T3.1):* an entry of an unknown type, a name git refuses, a ref nested past the walk's depth and a ref file holding no object id used to be skipped with a `Warning:` even under `SEAFILE_STRICT_REFS`, so the branch behind one lost its objects after the grace period (reproduced against the stub); each now stops the listing; `test_an_entry_of_an_unknown_type_stops_a_strict_walk_and_only_warns_a_lax_one`, `test_a_strict_listing_stops_at_a_ref_that_holds_no_object_id`. |
 | A34 | A file on a mount under the source, or on a share whose clock cannot be probed | the machine-clock racy rule is wrong there | **fixed** (0.9.2): a one-hour margin, and the device and the inode change time are in the cache key; `test_an_unprobed_share_is_trusted_only_for_files_an_hour_older_than_their_hash` |
 
 ### 6.1 The independent review rounds (2026-10-13 and 14)

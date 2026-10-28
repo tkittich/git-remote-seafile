@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **`--payload-gc --payload-delete` could delete a branch's objects when the helper's listing skipped the branch** (a targeted review of v0.9.17 found it; two of three reviewers ranked it LOSS, reproduced against the stub). Under `SEAFILE_STRICT_REFS=1`, the mode retention fetches in so that a skipped ref cannot make its objects look unused, four cases still only warned and carried on: an entry of an unknown type, a name git refuses, a ref nested deeper than the walk goes, and a ref file that holds no object id (a torn write, an HTML error page). Each now stops the listing with the file or name; a normal fetch or push still warns and goes on, so one planted file cannot make a repository unfetchable. A Seafile conflict copy is still refused by retention itself, before it fetches.
+- **A `gc-pending.json` that held a time which cannot be real deleted its object on the next delete run.** The stamp was only checked to be a number, so `-1` made "now minus the stamp" exceed any grace period. A stamp that is zero, negative, a boolean, not finite or more than a day ahead is now marked afresh, with a `Warning:` that says so (only delays a deletion). A mark list that is valid JSON but not an object was read as "nothing is marked" and silently restarted every grace period; it is refused now, with the remedy, as the fence baseline beside it already was.
+- **`--payload-verify` fetched the whole history into the temporary volume without the free-space check `--payload-gc` has had since the last release.** It makes the same check and honours `--allow-low-disk`.
+- **`doctor --upload-limit` did not say when it failed to remove its scratch folder.** `delete_entry` answers `False` for a refusal and raises only on a transport failure; the cleanup looked for the exception alone, so up to 1 GiB of probe bodies could stay on the server without a word. **`doctor` printed `[ ok ] no Seafile conflict copies` when its walk had stopped at the 5,000-directory limit**; it prints a `Warning:` saying what was not looked at instead.
+
+### Changed
+- The non-object `gc-seen.json` refusal (the history-rewrite fence) had no test; mutating it away left the suite green. It has one.
+
 ## [0.9.17] - 2026-10-28
 
 The first release with the doctor's two server checks (conflict copies and the largest accepted upload), the `--payload-gc` fixes found by the S7 and S8 reviews, and a real-server tier that runs `gc`, the payload store and the proxy-limit probe against a Seafile CE 13.0 container.
