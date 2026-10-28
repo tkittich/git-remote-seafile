@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - Each part of the payload hash cache's key (size, mtime, inode, device, change time, racy window) now has a test in which it alone stops the cache vouching for an old hash; before, the racy window and the change time caught the same rewrite in every named test, so removing either left the suite green (mutation checks in two reviews).
+- A real-server test now pins that a directory listing of 1,100 entries is complete and that the listing endpoint ignores paging parameters (DESIGN §4.3 said "not measured above 130 entries"; it is now measured to 1,200 on CE 13.0.28).
 
 ## [0.9.16] - 2026-10-28
 

@@ -126,6 +126,30 @@ class RealServerTests(unittest.TestCase):
         # which is why the helper reads a ref before deleting it.
         self.assertEqual(self._api("DELETE", "file", base + "/a/b/f.txt").status_code, 200)
 
+    def test_a_listing_of_more_than_a_thousand_entries_is_complete_and_unpaged(self):
+        # The helper treats the array a listing returns as the whole directory.
+        # The stub never truncates, so only a real server can say whether that
+        # holds; 1,200 entries was complete on CE 13.0.28 (2026-10-28).
+        from concurrent.futures import ThreadPoolExecutor
+
+        many = f"/{self.base}/many"
+        count = 1100
+        self.client.mkdir_p(self.rid, many)
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            done = list(pool.map(
+                lambda i: self.client.upload_file(self.rid, many, f"f{i:04d}.txt", b"x"),
+                range(count),
+            ))
+        self.assertTrue(all(done))
+        self.assertEqual(len(self.client.list_dir(self.rid, many)), count)
+        # The endpoint ignores paging parameters rather than rejecting them, so
+        # a reader that asked for "page 2" would get page 1 again.
+        for query in ("&page=2", "&per_page=100&page=1"):
+            url = (f"{self.client.server_url}/api2/repos/{self.rid}/dir/"
+                   f"?p={quote(many, safe='/')}{query}")
+            resp = self.client.session.get(url, timeout=60)
+            self.assertEqual((resp.status_code, len(resp.json())), (200, count), query)
+
     # -- the round trip ----------------------------------------------------------
     def _round_trip(self, name, fmt):
         url = self._url(name)
