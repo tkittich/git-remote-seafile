@@ -21,17 +21,12 @@ name: grs-realserver
 services:
   db:
     image: mariadb:10.11
+    # Root password only, as in the upstream compose: the seafile image creates
+    # its own database and user on first boot, and a database/user pre-made here
+    # is one more thing for its init script to disagree with.
     environment:
       MYSQL_ROOT_PASSWORD: grs-ci-root
-      MYSQL_DATABASE: seafile-db
-      MYSQL_USER: seafile
-      MYSQL_PASSWORD: grs-ci-db
       MYSQL_LOG_CONSOLE: "true"
-      SEAFILE_MYSQL_DB_HOST: db
-      SEAFILE_MYSQL_DB_PORT: "3306"
-      SEAFILE_MYSQL_DB_USER: seafile
-      SEAFILE_MYSQL_DB_PASSWORD: grs-ci-db
-      INIT_SEAFILE_MYSQL_ROOT_PASSWORD: grs-ci-root
     healthcheck:
       test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
       interval: 5s
@@ -51,7 +46,13 @@ services:
     environment:
       DB_HOST: db
       SEAFILE_MYSQL_DB_HOST: db
+      # Second dispatch (2026-10-28): the db log showed the seafile container
+      # connecting as root with `using password: NO` for 15 minutes ("mysql is
+      # not ready"), so none of the spellings below was the one the 12.0 image
+      # reads.  DB_ROOT_PASSWD is the 11/12 spelling; the others stay for 13.
+      DB_ROOT_PASSWD: grs-ci-root
       DB_ROOT_PASSWORD: grs-ci-root
+      INIT_SEAFILE_MYSQL_ROOT_PASSWORD: grs-ci-root
       SEAFILE_MYSQL_DB_PASSWORD: grs-ci-db
       TIME_ZONE: Etc/UTC
       SEAFILE_ADMIN_EMAIL: ci@grs.invalid
