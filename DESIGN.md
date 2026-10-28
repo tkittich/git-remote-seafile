@@ -477,7 +477,7 @@ Explicitly out of scope, with the reason, so a reader does not infer an intentio
 - **Peeled tags (`^{}`).** Not advertised; an annotated tag appears as its tag-object SHA. Git copes; `ls-remote --tags` output has not been compared against a native remote.
 - **Bare vaults.** The snapshot tool's vault is a working repository with a `--work-tree`. `git init --bare` re-shapes `--git-dir`, the tests, the documentation and `restore`; it is a deliberate revisit, not an oversight.
 - **Server storage reclamation.** Removing a pack from a repository does not free blocks on the Seafile backend; that is `seaf-gc` and the administrator's retention policy.
-- **A repository health command.** A `fsck`-style subcommand that reports stray refs, orphaned tickets and half-uploaded packs would back the manual procedures in [RUNBOOK.md](RUNBOOK.md). It is proposed, not implemented; the runbook gives the manual equivalent.
+- **A repository health command.** A `fsck`-style subcommand that reports stray refs, orphaned tickets and half-uploaded packs would back the manual procedures in [RUNBOOK.md](RUNBOOK.md). Partly implemented: `git-remote-seafile doctor <url>` reports conflict copies anywhere under the repository path (ROADMAP S14); stray non-conflict refs, orphaned tickets and half-uploaded packs are still manual, as the runbook gives them.
 
 ---
 
