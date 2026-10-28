@@ -272,6 +272,13 @@ def _hashes_in_history(
                 else:
                     os.environ["SEAFILE_STRICT_REFS"] = previous
         if vault is not None and not in_place:
+            # The vault is read where it lies: with its object store as an
+            # alternate the fetch below finds every object already present and
+            # transfers none, where it used to copy the whole vault into the
+            # temp directory (ROADMAP S7).
+            alternates = repo / "objects" / "info" / "alternates"
+            alternates.parent.mkdir(parents=True, exist_ok=True)
+            alternates.write_text((vault / ".git" / "objects").as_posix() + "\n", encoding="utf-8")
             git(
                 repo, None,
                 ["fetch", "-q", "--no-tags", str(vault),
@@ -428,9 +435,36 @@ def payload_verify(remote: str, vault: Path | None, *, count: str) -> int:
     return 0
 
 
+def history_fetch_space_problem(
+    client: Any, rid: str, repo_path: str, scratch: Path, *, allow_low_disk: bool
+) -> str | None:
+    """A reason the remote's history would not fit in *scratch*, or ``None``.
+
+    The history is read by fetching the remote into a scratch repository, which
+    downloads every pack; a full volume stops the run mid-fetch with whatever
+    git says about it.  The packs' listed sizes are what the fetch will write.
+    """
+    need = sum(
+        e.get("size", 0) for e in client.list_dir(rid, f"{repo_path}/objects/pack")
+        if e.get("type") == "file" and isinstance(e.get("size"), int)
+    )
+    try:
+        free = shutil.disk_usage(scratch).free
+    except OSError:
+        return None
+    if need + _FREE_SPACE_MARGIN_BYTES <= free or allow_low_disk:
+        return None
+    return (
+        f"refusing to fetch the history: the remote's packs are {human_bytes(need)} and "
+        f"{scratch} has {human_bytes(free)} free ({human_bytes(_FREE_SPACE_MARGIN_BYTES)} is "
+        "kept in reserve). Point TMPDIR (TEMP on Windows) at a larger volume, or pass "
+        "--allow-low-disk to try anyway"
+    )
+
+
 def payload_gc(
     remote: str, vault: Path | None, *, delete: bool, grace_days: float, keep: int | None = None,
-    accept_loss: bool = False, from_vault: bool = False,
+    accept_loss: bool = False, from_vault: bool = False, allow_low_disk: bool = False,
 ) -> int:
     """Report, and with *delete* mark and later remove, unreferenced payload objects.
 
@@ -456,6 +490,15 @@ def payload_gc(
             "unreferenced. Resolve them (keep one ref, delete the copies; git-remote-seafile doctor on the "
             "vault's URL lists every one) and run again"
         )
+    if not from_vault:
+        problem = _api(
+            lambda: history_fetch_space_problem(
+                client, rid, repo_path, Path(tempfile.gettempdir()), allow_low_disk=allow_low_disk
+            ),
+            "listing the remote's packs",
+        )
+        if problem:
+            raise SnapshotError(problem)
     seen = {} if from_vault else read_seen_tips(client, rid, base)
     history = _hashes_in_history(None if from_vault else remote, vault, keep, seen)
     sizes_by_hash, commits, manifests = history.hashes, history.commits, history.manifests

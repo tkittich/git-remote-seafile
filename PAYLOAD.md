@@ -273,7 +273,10 @@ reports; with `--payload-delete` it **marks, and later deletes, in two phases**:
   listing fails rather than skip a ref it cannot read -- a skipped branch would make
   its objects look unused), plus the local vault's refs when `--vault`
   is given -- which must be a vault, and whose fetch must succeed -- because an
-  un-pushed local snapshot may name objects already uploaded;
+  un-pushed local snapshot may name objects already uploaded. The vault is read
+  where it lies (its object store is an alternate of the scratch repository, so
+  the fetch copies nothing); the remote's packs are downloaded, so the run is
+  refused first when the temporary directory's volume cannot hold them;
 - **immediately before the first deletion it lists the remote's refs again** and stops
   with nothing deleted if they differ from the ones it decided from: a snapshot pushed
   in the interval may name an object that was unused when the history was read;
@@ -350,6 +353,7 @@ Nothing here changes what a snapshot contains; each item is a refusal or a note
 | `--payload-keep N` makes older snapshots unrestorable | the report says how many; a delete needs `--payload-accept-loss` | `test_keep_that_expires_snapshots_needs_the_acknowledgement` |
 | The payload library is synced by the desktop client | warning before the upload | `test_a_synced_payload_library_is_warned_about` |
 | An upload larger than the account's remaining quota | warning before the upload (a warning, not a refusal: the quota that counts is the library owner's) | `test_an_upload_that_cannot_fit_the_quota_is_warned_about_first` |
+| A retention run whose history fetch would fill the temporary volume | refused before the fetch, naming `TMPDIR`/`TEMP` and `--allow-low-disk` | `test_a_retention_run_that_cannot_hold_the_history_is_refused_before_the_fetch` |
 | A restore with too little free disk | refused before the first download (`--allow-low-disk` overrides) | `test_a_restore_that_cannot_fit_is_refused_before_downloading` |
 | Stored objects that rot unnoticed | `--payload-verify` leaves `payload/verified.json`; the gc report and the store line say when it last ran | `test_verify_leaves_a_marker_the_store_line_and_gc_report_show` |
 | A long hashing pass nobody explains (a copy tool reset every timestamp) | the run says how many files were hashed again and why | `test_files_hashed_again_are_explained` |

@@ -1489,6 +1489,44 @@ class PayloadDefaultAndSafeguardTests(_PayloadFixture):
         self.assertEqual(self.object_count(), 6)
 
 
+class PayloadHistoryReadTests(_PayloadFixture):
+    """What retention reads to decide what is unused, and what it needs for that (ROADMAP S7)."""
+
+    def test_the_vault_is_read_where_it_lies_not_copied_into_the_scratch_repository(self):
+        self.assertEqual(self.snapshot()[0], 0)
+        real, seen = snap.git, []
+
+        def spy(repo, work, args, **kwargs):
+            vault_fetch = args[:2] == ["fetch", "-q"] and str(self.vault) in args
+            before = real(repo, None, ["count-objects", "-v"], cwd=kwargs["cwd"]).stdout if vault_fetch else ""
+            result = real(repo, work, args, **kwargs)
+            if vault_fetch:
+                after = real(repo, None, ["count-objects", "-v"], cwd=kwargs["cwd"]).stdout
+                seen.append(((pathlib.Path(repo) / "objects" / "info" / "alternates").read_text(),
+                             before == after))
+            return result
+
+        with unittest.mock.patch.object(snap, "git", spy):
+            rc, out, err = self.gc("--vault", self.vault, "--payload-grace-days", "1")
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn("2 referenced object(s)", out)
+        self.assertEqual(len(seen), 1, seen)
+        self.assertIn((self.vault / ".git" / "objects").as_posix(), seen[0][0])
+        self.assertTrue(seen[0][1], "fetching the vault copied objects into the scratch repository")
+
+    def test_a_retention_run_that_cannot_hold_the_history_is_refused_before_the_fetch(self):
+        self.assertEqual(self.snapshot()[0], 0)
+        short = shutil._ntuple_diskusage(10 ** 12, 10 ** 12, 1024)
+        with unittest.mock.patch.object(snap.shutil, "disk_usage", return_value=short):
+            rc, out, err = self.gc("--payload-delete", "--payload-grace-days", "1")
+            self.assertEqual(rc, 1, out + err)
+            self.assertIn("refusing to fetch the history", err)
+            self.assertIn("--allow-low-disk", err)
+            self.assertNotIn(f"{self.base}/gc-pending.json", self.server_files())
+            rc, out, err = self.gc("--payload-delete", "--payload-grace-days", "1", "--allow-low-disk")
+        self.assertEqual(rc, 0, out + err)
+
+
 class PayloadRetentionTests(_PayloadFixture):
     """gc and the second-round findings."""
 
