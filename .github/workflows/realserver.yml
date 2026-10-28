@@ -6,7 +6,7 @@ name: real-server (Seafile container)
 # (`.github/seafile-ci.yml`), runs `tests.test_realserver` against it, and
 # deletes the scratch library it created -- nothing outside the runner survives.
 #
-# **Deliberately dispatch-only for now.**  This workflow could not be exercised
+# **Deliberately dispatch-only for now** (first green run: 2026-10-28, 7 of 7 against CE 13.0).  This workflow could not be exercised
 # before landing (no Docker on the machine that wrote it), and this project's
 # own history says first CI runs fail environmentally.  Trigger it by hand
 # ("Run workflow"), fix what the logs name -- the image tag, first-boot env
