@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.17] - 2026-10-28
+
+The first release with the doctor's two server checks (conflict copies and the largest accepted upload), the `--payload-gc` fixes found by the S7 and S8 reviews, and a real-server tier that runs `gc`, the payload store and the proxy-limit probe against a Seafile CE 13.0 container.
+
 ### Added
 - **`git-remote-seafile doctor <url>` looks for Seafile conflict copies** anywhere under the repository path and fails, naming each one, while any remain. A copy under `refs/` stops `gc` for good, `gc` named it, and nothing could list them all; the `gc` and `--payload-gc` refusals now point at the check. The RUNBOOK's recovery steps start from it.
 - **`git-remote-seafile doctor <url> --upload-limit [--max-mib N]` measures the largest single upload the server (or a proxy in front of it) accepts** and prints the `seafile.gcmaxpackmib` that fits. The 1 GiB default is one deployment's number; a smaller body limit turned every large push into a failure after the lock was taken. The probe tries the largest body first (one upload when nothing limits it, as on the measured CE 13.0.28: 1023 MiB accepted), then searches down; it reads a proxy that closes the connection mid-body (what nginx does) as a refusal, deletes what it uploaded, and exits 1 when the configured cap exceeds the limit. The container workflow gains a step that sets nginx's `client_max_body_size` to 48 MiB and checks the probe finds it ; its first dispatch found the limit (45 MiB accepted, 48 MiB refused) and suggested a cap of 36.
@@ -1881,6 +1885,7 @@ Data-loss and silent-failure fixes, and the Python floor raised to 3.9.
   with zero-config desktop-client token discovery, distributed locking, remote
   packfile compaction, and a Git LFS custom transfer agent.
 
+[0.9.17]: https://github.com/tkittich/git-remote-seafile/compare/v0.9.16...v0.9.17
 [0.9.16]: https://github.com/tkittich/git-remote-seafile/compare/v0.9.15...v0.9.16
 [0.9.15]: https://github.com/tkittich/git-remote-seafile/compare/v0.9.14...v0.9.15
 [0.9.14]: https://github.com/tkittich/git-remote-seafile/compare/v0.9.13...v0.9.14
