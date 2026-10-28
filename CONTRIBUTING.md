@@ -82,16 +82,19 @@ the authors' *beliefs* about the server. `tests/test_realserver.py` is the check
 on those beliefs. It is skipped unless you name a scratch library:
 
 ```bash
-SEAFILE_TEST_LIBRARY=test python -m unittest tests.test_realserver -v   # ~70 s
+SEAFILE_TEST_LIBRARY=test python -m unittest tests.test_realserver -v   # ~4 min
 ```
 
 Credentials come from the usual places (desktop client, `~/.git-seafile.json`,
 `SEAFILE_SERVER` + `SEAFILE_TOKEN`). Each run writes under one unique top-level
 folder of that library and removes it afterwards; nothing else is read or
 written. It covers the API semantics the stub copies, the SHA-1 and SHA-256
-push / clone / fetch / delete / tail-merge round trip, concurrent pushers through
-the lock, and the observation that simultaneous same-path uploads leave
-`(SFConflict ...)` copies -- the reason the lock exists. Run it before a release,
+push / clone / fetch / delete / tail-merge round trip, `gc --tail` and a full `gc`
+each followed by a clone that must pass `git fsck`, the snapshot tool's payload
+store (snapshot, restore, verify, gc through the grace period), `doctor`'s two
+server checks, concurrent pushers through the lock, and the observation that
+simultaneous same-path uploads leave `(SFConflict ...)` copies -- the reason the
+lock exists. Run it before a release,
 and whenever the stub's `do_DELETE`/`do_POST` semantics are changed.
 
 ---

@@ -192,6 +192,56 @@ class RealServerTests(unittest.TestCase):
     def test_round_trip_sha256(self):
         self._round_trip("rt_sha256", "sha256")
 
+    def _packs(self, name):
+        entries = self.client.list_dir(self.rid, f"/{self.base}/{name}/objects/pack")
+        return sorted(e["name"] for e in entries if e["name"].endswith(".pack"))
+
+    def _gc(self, repo, name, *args):
+        p = subprocess.run(["git-remote-seafile", "gc", self._url(name), *args], cwd=str(repo),
+                           env=self.env, capture_output=True, text=True, timeout=600)
+        if p.returncode != 0:
+            self.fail(f"gc {args} rc={p.returncode}\n{p.stdout}\n{p.stderr}")
+        return p.stdout + p.stderr
+
+    def test_tail_merge_and_full_gc_leave_a_repository_that_still_clones(self):
+        """The two manual compactions on a real server, each followed by a clone that must be whole.
+
+        Auto-gc is off so each push leaves its own pack; ``gc --tail`` (what
+        auto-gc runs) merges them below the threshold of 3, and plain ``gc``
+        rewrites everything into one.  After each the remote is cloned and
+        checked, because a merge that deleted a pack too early shows up there.
+        """
+        name = "gc_manual"
+        src = self._repo(f"src_{name}")
+        self._git(["config", "seafile.autogc", "false"], src)
+        self._git(["config", "seafile.gcthreshold", "3"], src)
+        self._git(["remote", "add", "origin", self._url(name)], src)
+        for n in range(5):
+            self._commit(src, f"f{n}.txt", f"{n}\n" * 400, f"c{n}")
+            self._git(["push", "-q", "origin", "main"], src)
+        self.assertEqual(len(self._packs(name)), 5)
+
+        def cloned(label, commits):
+            dst = self.tmp / f"dst_{name}_{label}"
+            self._git(["clone", "-q", self._url(name), str(dst)], self.tmp)
+            self.assertEqual(self._git(["rev-list", "--count", "HEAD"], dst).stdout.strip(),
+                             str(commits))
+            self.assertEqual(self._git(["fsck", "--no-dangling"], dst, check=False).returncode, 0)
+
+        out = self._gc(src, name, "--tail")
+        self.assertEqual(len(self._packs(name)), 1, out)
+        cloned("tail", 5)
+
+        for n in range(5, 7):
+            self._commit(src, f"f{n}.txt", f"{n}\n" * 400, f"c{n}")
+            self._git(["push", "-q", "origin", "main"], src)
+        self.assertEqual(len(self._packs(name)), 3)
+        out = self._gc(src, name)
+        self.assertEqual(len(self._packs(name)), 1, out)
+        cloned("full", 7)
+        names = [e["name"] for e in self.client.list_dir(self.rid, f"/{self.base}/{name}")]
+        self.assertFalse([n for n in names if "SFConflict" in n], names)
+
     # -- concurrency ----------------------------------------------------------------
     def test_concurrent_pushers_through_the_lock_leave_no_conflict_copies(self):
         url = self._url("fan")
@@ -365,6 +415,124 @@ class RealServerTests(unittest.TestCase):
         self.client.mkdir_p(self.rid, f"/{self.base}/probe-vault/payload/objects/ab")
         again = snap.probe_link(remote)
         self.assertEqual(again, {"in_use": True})
+
+    # -- the snapshot tool's payload store ----------------------------------------
+    def _snap(self, *argv):
+        """``git seafile-snapshot`` in-process, finding the helper and the server as a user's would."""
+        from unittest.mock import patch
+
+        sys.path.insert(0, str(_ROOT / "tools"))
+        import seafile_snapshot as snap
+
+        with patch.dict(os.environ, self.env):
+            return snap.main([str(a) for a in argv])
+
+    def _objects(self, name):
+        """Every payload object the vault ``name`` holds on the server, as ``{sha: size}``."""
+        root = f"/{self.base}/{name}/payload/objects"
+        found = {}
+        for sub in self.client.list_dir(self.rid, root):
+            for entry in self.client.list_dir(self.rid, f"{root}/{sub['name']}"):
+                found[entry["name"]] = entry["size"]
+        return found
+
+    @staticmethod
+    def _tree(root):
+        import hashlib
+
+        return {
+            p.relative_to(root).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest()
+            for p in sorted(root.rglob("*"))
+            if p.is_file() and not {".git", ".seafile-payload"} & set(p.relative_to(root).parts)
+        }
+
+    def _payload_source(self, name):
+        src = self.tmp / name
+        (src / "sub").mkdir(parents=True)
+        (src / ".gitignore").write_bytes(b"*.bin\n")
+        (src / "small.txt").write_bytes(b"small\n")
+        big = os.urandom(3 * 1024 * 1024)
+        (src / "big1.bin").write_bytes(big)
+        (src / "sub" / "same-as-big1.bin").write_bytes(big)     # one object, two paths
+        (src / "sub" / "big2.bin").write_bytes(os.urandom(5 * 1024 * 1024))
+        self._git(["init", "-q", "-b", "main", "."], src)
+        self._git(["config", "user.email", "t@t"], src)
+        self._git(["config", "user.name", "T"], src)
+        self._git(["add", ".gitignore", "small.txt"], src)
+        self._git(["commit", "-q", "-m", "init"], src)
+        return src
+
+    def test_a_payload_snapshot_restores_byte_for_byte_and_is_found_whole_by_verify(self):
+        """Payload mode against the real server: the object store, the manifest, a restore.
+
+        What the stub cannot say is whether 3-5 MiB bodies, two-level object
+        directories and the git push of the manifest behave the same on the
+        real thing.  Two paths with one content must be one object.
+        """
+        src = self._payload_source("payload_src")
+        vault, remote = self.tmp / "payload_vault", self._url("pvault")
+        args = (src, "--vault", vault, "--remote", remote, "--payload-min-size", "1000000")
+        self.assertEqual(self._snap(*args), 0)
+        stored = self._objects("pvault")
+        self.assertEqual(len(stored), 2, stored)
+        self.assertEqual(sorted(stored.values()), [3 * 1024 * 1024, 5 * 1024 * 1024])
+
+        into = self.tmp / "payload_restored"
+        self.assertEqual(self._snap("--restore", "--remote", remote, "--into", into), 0)
+        self.assertEqual(self._tree(into), self._tree(src))
+        self.assertEqual(self._snap("--payload-verify", "all", "--remote", remote), 0)
+
+        # An unchanged payload uploads nothing: a second run adds no object.
+        (src / "small.txt").write_bytes(b"changed\n")
+        self.assertEqual(self._snap(*args), 0)
+        self.assertEqual(self._objects("pvault"), stored)
+        again = self.tmp / "payload_restored_again"
+        self.assertEqual(self._snap("--restore", "--remote", remote, "--into", again), 0)
+        self.assertEqual((again / "small.txt").read_bytes(), b"changed\n")
+
+    def test_payload_gc_removes_only_the_unreferenced_object_after_the_grace_period(self):
+        """Mark, wait out the grace period, delete -- the delete path on a real server.
+
+        The scratch library is the only place this may run (AGENTS.md); the
+        orphan is uploaded here and the pending list is back-dated by rewriting
+        it, which is all a grace period is.
+        """
+        import json
+
+        src = self._payload_source("gc_src")
+        vault, remote = self.tmp / "gc_vault", self._url("gcvault")
+        self.assertEqual(self._snap(
+            src, "--vault", vault, "--remote", remote, "--payload-min-size", "1000000"), 0)
+        kept = self._objects("gcvault")
+        self.assertEqual(len(kept), 2)
+
+        import hashlib
+
+        orphan = os.urandom(2048)
+        sha = hashlib.sha256(orphan).hexdigest()
+        objects = f"/{self.base}/gcvault/payload/objects"
+        self.client.mkdir_p(self.rid, f"{objects}/{sha[:2]}")
+        self.client.upload_file(self.rid, f"{objects}/{sha[:2]}", sha, orphan, replace=True)
+
+        gc = ("--payload-gc", "--remote", remote, "--payload-delete",
+              "--payload-grace-days", "1", "--payload-no-vault")
+        self.assertEqual(self._snap(*gc), 0)
+        self.assertIn(sha, self._objects("gcvault"), "the first run may only mark")
+
+        pending = f"/{self.base}/gcvault/payload/gc-pending.json"
+        marks = json.loads(self.client.get_file_text(self.rid, pending))
+        self.assertEqual(list(marks), [sha])
+        old = {key: value - 2 * 86400 for key, value in marks.items()}
+        self.client.upload_file(
+            self.rid, pending.rsplit("/", 1)[0], "gc-pending.json",
+            json.dumps(old).encode(), replace=True,
+        )
+        self.assertEqual(self._snap(*gc), 0)
+        self.assertEqual(self._objects("gcvault"), kept)
+
+        into = self.tmp / "gc_restored"
+        self.assertEqual(self._snap("--restore", "--remote", remote, "--into", into), 0)
+        self.assertEqual(self._tree(into), self._tree(src))
 
 
 if __name__ == "__main__":
