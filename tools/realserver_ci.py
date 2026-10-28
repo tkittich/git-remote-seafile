@@ -18,9 +18,11 @@ non-zero with the reason on stderr.
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -88,6 +90,25 @@ def auth_token(session: requests.Session) -> str:
     return token
 
 
+def helper_home(parent: str, token: str) -> str:
+    """A throwaway home whose ``.git-seafile.json`` names this server and token.
+
+    The suite deliberately strips ``SEAFILE_SERVER``/``SEAFILE_TOKEN`` from the
+    environment it gives ``git`` so the helper finds the server the way a user's
+    does (the fifth dispatch failed three tests on exactly that: "Could not find
+    Seafile credentials").  A home of its own, rather than the runner's, keeps a
+    local run of this script from overwriting a developer's real config.
+    """
+    home = tempfile.mkdtemp(prefix="grs-ci-home-", dir=parent)
+    path = Path(home) / ".git-seafile.json"
+    path.write_text(json.dumps({"server": _server(), "token": token}), encoding="utf-8")
+    try:
+        path.chmod(0o600)
+    except OSError:
+        pass
+    return home
+
+
 def find_library(session: requests.Session, token: str, name: str) -> str | None:
     resp = session.get(f"{_server()}/api2/repos/", headers=_headers(token), timeout=30)
     if resp.status_code != 200:
@@ -148,11 +169,15 @@ def main() -> int:
     sys.stdout.flush()
 
     status = 1
+    scratch = tempfile.TemporaryDirectory(prefix="grs-ci-")
     try:
         env = dict(os.environ)
         env["SEAFILE_SERVER"] = _server()
         env["SEAFILE_TOKEN"] = token
         env["SEAFILE_TEST_LIBRARY"] = LIBRARY
+        home = helper_home(scratch.name, token)
+        env["HOME"] = home
+        env["USERPROFILE"] = home
         # The suite is the same one a developer runs by hand; a failure here
         # is a finding about the server, not about this script.
         proc = subprocess.run(
@@ -163,6 +188,7 @@ def main() -> int:
         status = proc.returncode
     finally:
         delete_library(session, token, repo_id)
+        scratch.cleanup()
     if status == 0:
         print("Real-server suite passed against the container.")
     return status

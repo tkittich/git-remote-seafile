@@ -9,6 +9,8 @@ the parts that need no server.
 from __future__ import annotations
 
 import importlib.util
+import json
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -82,6 +84,12 @@ class TestRealserverCI(unittest.TestCase):
         with patch.dict("os.environ", {"GRS_CI_SEAFILE_SERVER": "http://box:1234/"}):
             self.assertEqual(ci._server(), "http://box:1234")
         self.assertEqual(ci._server(), "http://127.0.0.1")
+
+    def test_the_helper_home_carries_the_server_and_token_the_suite_strips_from_env(self):
+        with tempfile.TemporaryDirectory() as parent:
+            home = ci.helper_home(parent, "t0k")
+            cfg = json.loads((Path(home) / ".git-seafile.json").read_text(encoding="utf-8"))
+        self.assertEqual(cfg, {"server": "http://127.0.0.1", "token": "t0k"})
 
 
 if __name__ == "__main__":
