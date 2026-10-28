@@ -81,7 +81,7 @@ class TestRealserverCI(unittest.TestCase):
         self.assertEqual(ci._headers("t0k"), {"Authorization": "Token t0k"})
         with patch.dict("os.environ", {"GRS_CI_SEAFILE_SERVER": "http://box:1234/"}):
             self.assertEqual(ci._server(), "http://box:1234")
-        self.assertEqual(ci._server(), "http://localhost:8080")
+        self.assertEqual(ci._server(), "http://127.0.0.1")
 
 
 if __name__ == "__main__":

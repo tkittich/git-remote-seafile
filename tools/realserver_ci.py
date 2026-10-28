@@ -36,7 +36,7 @@ READINESS_BUDGET_SECONDS = 900.0
 
 
 def _server() -> str:
-    return os.environ.get("GRS_CI_SEAFILE_SERVER", "http://localhost:8080").rstrip("/")
+    return os.environ.get("GRS_CI_SEAFILE_SERVER", "http://127.0.0.1").rstrip("/")
 
 
 def _admin() -> tuple[str, str]:
