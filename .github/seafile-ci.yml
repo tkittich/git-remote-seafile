@@ -1,18 +1,21 @@
-# A Seafile CE container for the real-server suite (`.github/workflows/realserver.yml`).
+# A Seafile CE 13.0 container for the real-server suite (`.github/workflows/realserver.yml`).
 #
-# Single-container CE 12 shape (nginx on :80 inside the seafile image, MariaDB
-# and memcached beside it): the fewest moving parts that still give real server
-# semantics.  The measured deployment is CE 13.0.28; when the 13 compose
-# (caddy, JWT_PRIVATE_KEY, redis) has been validated once, only this file
-# changes -- the workflow and tools/realserver_ci.py speak plain HTTP to the
-# mapped port and do not care which version answers.
+# The shape of the official 13.0 compose (https://manual.seafile.com/13.0/repo/docker/ce/seafile-server.yml
+# and its `.env`): MariaDB, Redis and the seafile image, whose nginx answers on
+# :80.  13.0 is what the measurements in DESIGN.md section 4.3 were taken on
+# (CE 13.0.28), so it is the version this suite has to run against.  The first
+# four dispatches used a 12.0 shape with 12.0's variable names
+# (DB_HOST/DB_PASSWORD/DB_ROOT_PASSWD, memcached); the manual's pages differ
+# between versions, and 13.0 passes SEAFILE_MYSQL_DB_* and
+# INIT_SEAFILE_MYSQL_ROOT_PASSWORD straight through.
 #
-# Every variable that changed spelling across 11 -> 12 -> 13 is set in BOTH
-# spellings (DB_HOST/SEAFILE_MYSQL_DB_HOST, SEAFILE_ADMIN_*/INIT_SEAFILE_ADMIN_*,
-# DB_ROOT_PASSWORD/SEAFILE_MYSQL_DB_PASSWORD/INIT_SEAFILE_MYSQL_ROOT_PASSWORD):
-# first-boot scripts read the spelling they know and ignore the rest, and a
-# blind first run should not fail on a rename.  This file is where the fix
-# lands if the container logs disagree.
+# Left out on purpose: caddy (the runner talks to the container directly),
+# SeaDoc, the notification server and Seafile AI (nothing here touches them).
+# The seafile container publishes :80 itself because there is no proxy in
+# front, and the hostname is a bare IP: setup rejects `localhost:8080`
+# ("not a valid ip or domain"), and first boot writes SERVICE_URL and
+# FILE_SERVER_ROOT from the hostname alone, so the server's transfer links must
+# be reachable from the runner at http://127.0.0.1.
 #
 # The credentials are throwaway by construction: they exist only on the CI
 # runner's container, for a library that is deleted at the end of every run.
@@ -21,9 +24,8 @@ name: grs-realserver
 services:
   db:
     image: mariadb:10.11
-    # Root password only, as in the upstream compose: the seafile image creates
-    # its own database and user on first boot, and a database/user pre-made here
-    # is one more thing for its init script to disagree with.
+    # Root password only, as in the official compose: the seafile image creates
+    # its own databases and user on first boot.
     environment:
       MYSQL_ROOT_PASSWORD: grs-ci-root
       MYSQL_LOG_CONSOLE: "true"
@@ -33,54 +35,47 @@ services:
       timeout: 5s
       retries: 36
 
-  memcached:
-    image: memcached:1.6.29
-    entrypoint: memcached -m 256
+  redis:
+    image: redis
+    command:
+      - /bin/sh
+      - -c
+      - exec redis-server --requirepass "$$REDIS_PASSWORD" --save "" --appendonly no
+    environment:
+      REDIS_PASSWORD: ""
 
   seafile:
-    image: seafileltd/seafile-mc:12.0-latest
+    image: seafileltd/seafile-mc:13.0-latest
     ports:
       - "80:80"
     volumes:
       - seafile-data:/shared
     environment:
-      # Names as the official 12.0 seafile-server.yml hands them to this image
-      # (https://manual.seafile.com/12.0/repo/docker/ce/seafile-server.yml):
-      # DB_HOST/DB_PORT/DB_USER/DB_ROOT_PASSWD/DB_PASSWORD.  The fourth
-      # dispatch booted but could not create the admin and answered 500; the
-      # file had DB_ROOT_PASSWD but never DB_USER/DB_PASSWORD, which the image
-      # needs to create and log in as the `seafile` database user.
-      DB_HOST: db
-      DB_PORT: "3306"
-      DB_USER: seafile
-      DB_PASSWORD: grs-ci-db
       SEAFILE_MYSQL_DB_HOST: db
-      # Second dispatch (2026-10-28): the db log showed the seafile container
-      # connecting as root with `using password: NO` for 15 minutes ("mysql is
-      # not ready"), so none of the spellings below was the one the 12.0 image
-      # reads.  DB_ROOT_PASSWD is the 11/12 spelling; the others stay for 13.
-      DB_ROOT_PASSWD: grs-ci-root
-      DB_ROOT_PASSWORD: grs-ci-root
-      INIT_SEAFILE_MYSQL_ROOT_PASSWORD: grs-ci-root
+      SEAFILE_MYSQL_DB_PORT: "3306"
+      SEAFILE_MYSQL_DB_USER: seafile
       SEAFILE_MYSQL_DB_PASSWORD: grs-ci-db
+      INIT_SEAFILE_MYSQL_ROOT_PASSWORD: grs-ci-root
+      SEAFILE_MYSQL_DB_CCNET_DB_NAME: ccnet_db
+      SEAFILE_MYSQL_DB_SEAFILE_DB_NAME: seafile_db
+      SEAFILE_MYSQL_DB_SEAHUB_DB_NAME: seahub_db
       TIME_ZONE: Etc/UTC
-      SEAFILE_ADMIN_EMAIL: ci@grs.invalid
-      SEAFILE_ADMIN_PASSWORD: grs-ci-admin
       INIT_SEAFILE_ADMIN_EMAIL: ci@grs.invalid
       INIT_SEAFILE_ADMIN_PASSWORD: grs-ci-admin
-      # Third dispatch (2026-10-28): setup refused `localhost:8080` ("not a
-      # valid ip or domain"), so the hostname is a bare IP and the container's
-      # own port 80 is published as 80: first boot writes SERVICE_URL and
-      # FILE_SERVER_ROOT from the hostname alone, and the server's transfer
-      # links must be reachable from the runner at http://127.0.0.1.
       SEAFILE_SERVER_HOSTNAME: 127.0.0.1
       SEAFILE_SERVER_PROTOCOL: http
-      # Ignored by CE 12; carried so the 13.0 flip needs no other edit here.
       JWT_PRIVATE_KEY: grs-ci-not-a-secret-but-long-enough-0123456789
+      CACHE_PROVIDER: redis
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      REDIS_PASSWORD: ""
+      ENABLE_SEADOC: "false"
+      ENABLE_NOTIFICATION_SERVER: "false"
+      ENABLE_SEAFILE_AI: "false"
     depends_on:
       db:
         condition: service_healthy
-      memcached:
+      redis:
         condition: service_started
 
 volumes:
