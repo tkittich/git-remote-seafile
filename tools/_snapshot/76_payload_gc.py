@@ -61,6 +61,28 @@ DEFAULT_GRACE_DAYS = 7.0
 #: delete what a snapshot run, started hours earlier, is about to reference.
 _MIN_GRACE_DAYS = 1.0
 _PENDING_NAME = "gc-pending.json"
+#: The mark list holds one ~88-byte entry per unused object, so the client's
+#: 16 MiB text limit stopped a store at about 190,000 of them (measured: 87.7
+#: bytes per entry) with a message that named no way out.  The file is one this
+#: tool wrote, so the limit only has to stop a planted one: 64 MiB is ~760,000
+#: entries.
+_PENDING_MAX_BYTES = 64 * 1024 * 1024
+
+
+def _read_pending(client: Any, rid: str, base: str) -> str:
+    """The mark list as text ('' when there is none); too large names the way out."""
+    try:
+        data = client.get_file_bytes(rid, f"{base}/{_PENDING_NAME}", max_bytes=_PENDING_MAX_BYTES)
+    except Exception as exc:
+        if "refusing to read it" in str(exc):
+            raise SnapshotError(
+                f"{base}/{_PENDING_NAME} is larger than {human_bytes(_PENDING_MAX_BYTES)}, more "
+                "than a store of unused objects should leave. Remove it and run again: every "
+                "unused object is then marked afresh and is deleted only after a full grace "
+                "period from now, so nothing is lost, only delayed"
+            ) from None
+        raise SnapshotError(f"reading gc state failed: {type(exc).__name__}: {exc}") from None
+    return data.decode("utf-8", errors="replace").strip() if data else ""
 
 
 def add_payload_gc_arguments(parser: Any) -> None:
@@ -468,7 +490,7 @@ def payload_gc(
     # progress is still writing.
     unused = {name for name in stored if name[:64] not in referenced or len(name) > 64}
     missing = referenced - {name for name in stored if len(name) == 64}
-    pending_text = _api(lambda: client.get_file_text(rid, f"{base}/{_PENDING_NAME}"), "reading gc state")
+    pending_text = _read_pending(client, rid, base)
     try:
         pending_raw = json.loads(pending_text) if pending_text else {}
     except (ValueError, RecursionError):

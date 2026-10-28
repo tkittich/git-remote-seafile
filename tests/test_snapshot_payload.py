@@ -1611,6 +1611,28 @@ class PayloadRetentionTests(_PayloadFixture):
         self.assertEqual(out.count("hashing ["), 0, out)
         self.assertEqual(out.count("written by another machine"), 0)
 
+    def test_a_mark_list_beyond_the_read_limit_names_the_way_out(self):
+        """The mark list used to share the 16 MiB text limit (about 190,000 entries) and
+        died with a message that named no remedy (ROADMAP S8)."""
+        self.assertEqual(self.snapshot()[0], 0)
+        key = f"{self.base}/gc-pending.json"
+        marks = json.dumps({_sha(str(i).encode()): 1.0 for i in range(100)}).encode()
+        self.stub.files[REPO_ID][key] = marks
+        with unittest.mock.patch.object(snap, "_PENDING_MAX_BYTES", len(marks) + 1):
+            rc, out, err = self.gc("--payload-delete")
+        self.assertEqual(rc, 0, out + err)
+        self.stub.files[REPO_ID][key] = marks
+        with unittest.mock.patch.object(snap, "_PENDING_MAX_BYTES", len(marks) - 1):
+            rc, out, err = self.gc("--payload-delete")
+        self.assertEqual(rc, 1, out + err)
+        self.assertIn("Remove it and run again", err)
+        self.assertIn("gc-pending.json", err)
+        self.assertEqual(self.stub.files[REPO_ID][key], marks)
+
+    def test_the_mark_list_limit_is_far_above_the_text_limit_it_replaced(self):
+        """About 88 bytes an entry: 16 MiB was ~190,000 unused objects, too few."""
+        self.assertGreaterEqual(snap._PENDING_MAX_BYTES, 4 * 16 * 1024 * 1024)
+
     def test_the_grace_clock_is_the_server_estimate_not_the_local_wall_clock(self):
         """A local clock jump between the mark and the delete must not delete.
 
