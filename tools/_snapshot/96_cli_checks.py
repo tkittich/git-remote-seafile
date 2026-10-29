@@ -206,6 +206,7 @@ def resolve_snapshot_settings(
                 )
         code_remote = args.code_remote or remembered.get("code_remote")
 
+    offer_default_excludes(args, source, vault, remembered)
     exclude = list(args.exclude) if args.exclude is not None else list(
         remembered.get("exclude") or []
     )

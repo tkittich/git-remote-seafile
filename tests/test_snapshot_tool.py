@@ -1509,6 +1509,91 @@ class WarningAndTipTests(_SnapshotFixture):
         self.assertNotIn("--allow-shared-remote", everyday)
 
 
+class _Tty(io.StringIO):
+    def isatty(self):
+        return True
+
+
+class FirstRunExcludePromptTests(_SnapshotFixture):
+    """A person's first run is asked about reproducible directories; nothing else is."""
+
+    def offer(self, *flags, answer="", interactive=True, remembered=None):
+        args = snap.parse_args(["--source", str(self.code), "--vault", str(self.vault), *flags])
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            snap.offer_default_excludes(
+                args, self.code, self.vault, remembered or {},
+                interactive=interactive, ask=lambda prompt: answer,
+            )
+        return args, out.getvalue()
+
+    def test_the_candidates_are_listed_with_their_size_and_a_yes_turns_on_default_excludes(self):
+        args, out = self.offer(answer="")
+        self.assertIn("look reproducible and are usually not worth backing up", out)
+        self.assertIn("node_modules  (", out)
+        self.assertIn("dist  (", out)
+        self.assertTrue(args.default_excludes)
+        self.assertIn("Leaving them out; the vault remembers this", out)
+
+    def test_a_no_captures_everything_and_says_how_to_change_its_mind(self):
+        args, out = self.offer(answer="n")
+        self.assertIsNone(args.default_excludes)
+        self.assertIn("Capturing everything. Pass --default-excludes", out)
+
+    def test_it_stays_quiet_when_the_user_already_decided_or_nobody_is_there(self):
+        for flags, kw in (
+            (("--default-excludes",), {}), (("--no-default-excludes",), {}),
+            (("--exclude", "dist"), {}), ((), {"interactive": False}),
+            (("--json",), {}), (("--exit-warnings",), {}), (("--status",), {}),
+            ((), {"remembered": {"exclude": ["dist"]}}),
+        ):
+            with self.subTest(flags=flags, kw=kw):
+                args, out = self.offer(*flags, answer="y", **kw)
+                self.assertEqual(out, "")
+
+    def test_it_asks_only_before_the_vault_exists(self):
+        self.snapshot("--no-push")
+        args, out = self.offer(answer="y")
+        self.assertEqual(out, "")
+        self.assertIsNone(args.default_excludes)
+
+    def test_committed_source_is_never_offered(self):
+        (self.code / "build").mkdir()
+        (self.code / "build" / "make.py").write_bytes(b"print(1)\n")
+        _git(self.code, "add", "build/make.py")
+        _git(self.code, "commit", "-qm", "build script")
+        self.assertEqual([rel for rel, _ in snap.reproducible_candidates(self.code)],
+                         ["dist", "node_modules"])
+
+    def test_a_virtualenv_is_offered_by_what_makes_it_one(self):
+        venv = self.code / "env-audit"
+        venv.mkdir()
+        (venv / "pyvenv.cfg").write_bytes(b"home = x\n")
+        (venv / "lib.py").write_bytes(b"x = 1\n")
+        found = dict(snap.reproducible_candidates(self.code))
+        self.assertIn("env-audit", found)
+        self.assertEqual(found["env-audit"], len(b"home = x\n") + len(b"x = 1\n"))
+
+    def test_an_eof_at_the_prompt_is_a_no(self):
+        args = snap.parse_args(["--source", str(self.code), "--vault", str(self.vault)])
+
+        def eof(prompt):
+            raise EOFError
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            snap.offer_default_excludes(args, self.code, self.vault, {}, interactive=True, ask=eof)
+        self.assertIsNone(args.default_excludes)
+
+    def test_a_yes_at_a_terminal_leaves_the_directories_out_of_the_resolved_settings(self):
+        args = snap.parse_args(["--source", str(self.code), "--vault", str(self.vault)])
+        # The real input(), reading a "y" from a stdin that claims to be a terminal.
+        with unittest.mock.patch("sys.stdin", _Tty("y\n")), unittest.mock.patch("sys.stdout", _Tty()):
+            settings = snap.resolve_snapshot_settings(args)
+        excluded = settings[4]
+        self.assertIn("node_modules", excluded)
+        self.assertIn("dist", excluded)
+
+
 class StaleLockTests(_SnapshotFixture):
     """A lock left by a dead run is reclaimed; a live or foreign one is not."""
 

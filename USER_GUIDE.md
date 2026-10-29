@@ -1121,7 +1121,7 @@ Defaults are resolved most-specific-first:
 
 #### 15.2.1 What is *not* excluded by default
 
-Nothing. The tool captures the whole tree, including `node_modules/`, `dist/` and `__pycache__/`, and then **tells you** what it noticed:
+Nothing, unless you say so. **On your first run at a terminal** (no vault yet, no `--exclude`, `--default-excludes` or `--no-default-excludes` given, not `--json` or `--exit-warnings`) the tool lists the reproducible directories it found, each with its size, and asks `Leave them out of this and later snapshots? [Y/n]`. A yes is the same as `--default-excludes` (committed source is kept, virtualenvs are found by `pyvenv.cfg`, the vault remembers it); a no captures everything. It never asks again, and an unattended run never asks. Without that answer the tool captures the whole tree, including `node_modules/`, `dist/` and `__pycache__/`, and then **tells you** what it noticed:
 
 ```
 Warning: the snapshot includes reproducible build output that is usually not worth
