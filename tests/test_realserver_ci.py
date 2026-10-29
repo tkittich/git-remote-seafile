@@ -103,5 +103,17 @@ class TestRealserverCI(unittest.TestCase):
         self.assertEqual(cfg, {"server": "http://127.0.0.1", "token": "t0k"})
 
 
+class SuiteCommandTests(unittest.TestCase):
+    def test_the_default_run_is_the_whole_suite_with_the_library_opt_in(self):
+        command, opt_ins = ci.suite_command(None)
+        self.assertEqual(command[-2:], ["tests.test_realserver", "-v"])
+        self.assertEqual(opt_ins, {"SEAFILE_TEST_ALLOW_LIBRARY_CREATE": "1"})
+
+    def test_a_body_limit_runs_only_the_push_through_it(self):
+        command, opt_ins = ci.suite_command(48)
+        self.assertEqual(command[-2:], ["tests.test_realserver.ProxyBodyLimitTests", "-v"])
+        self.assertEqual(opt_ins, {"SEAFILE_TEST_BODY_LIMIT_MIB": "48"})
+
+
 if __name__ == "__main__":
     unittest.main()

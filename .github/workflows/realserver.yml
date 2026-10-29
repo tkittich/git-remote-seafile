@@ -67,6 +67,11 @@ jobs:
             grep -n client_max_body_size $files
             nginx -t && nginx -s reload'
           python tools/realserver_ci.py --upload-limit-check 48
+      # 0.9.19's pack split, against the real nginx instead of the stub's imitation of
+      # it: a git push of twice the limit must be refused, rebuilt in smaller packs,
+      # and arrive whole (the limit is still the 48 MiB set just above).
+      - name: Push through the lowered limit
+        run: python tools/realserver_ci.py --body-limit-tests 48
       # The container is both the subject and the best diagnostic: when the
       # suite or the readiness probe fails, the reason is in these logs, and
       # the runner (with the container) disappears at the end of the job.

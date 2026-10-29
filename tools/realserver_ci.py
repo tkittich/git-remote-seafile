@@ -17,6 +17,11 @@ With ``--upload-limit-check MIB`` it does not run the suite: it runs
 given ``client_max_body_size MIB`` (the workflow does that between the two runs)
 and checks that the probe found a limit near it (ROADMAP S15).
 
+With ``--body-limit-tests MIB`` it runs only ``ProxyBodyLimitTests``: a real ``git push`` bigger than
+the proxy's limit must arrive whole, in smaller packs.  The default run opts in to the one test that
+creates and deletes a whole library (``SEAFILE_TEST_ALLOW_LIBRARY_CREATE``), because this container is
+thrown away.
+
 Exit code is the suite's exit code; a readiness or setup failure exits
 non-zero with the reason on stderr.
 """
@@ -185,8 +190,26 @@ def check_upload_limit(env: dict[str, str], limit_mib: int) -> int:
     return 0
 
 
+def suite_command(body_limit_mib: int | None) -> tuple[list[str], dict[str, str]]:
+    """The unittest invocation and the environment opt-ins for this run.
+
+    The whole suite by default; with a body limit, only the push through it (the earlier run
+    happens before the proxy is lowered, so that class skips there).
+    """
+    if body_limit_mib is not None:
+        return (
+            [sys.executable, "-m", "unittest", "tests.test_realserver.ProxyBodyLimitTests", "-v"],
+            {"SEAFILE_TEST_BODY_LIMIT_MIB": str(body_limit_mib)},
+        )
+    return (
+        [sys.executable, "-m", "unittest", "tests.test_realserver", "-v"],
+        {"SEAFILE_TEST_ALLOW_LIBRARY_CREATE": "1"},
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     args = sys.argv[1:] if argv is None else argv
+    body_limit = int(args[args.index("--body-limit-tests") + 1]) if "--body-limit-tests" in args else None
     limit_mib = int(args[args.index("--upload-limit-check") + 1]) if "--upload-limit-check" in args else None
     deadline = time.monotonic() + READINESS_BUDGET_SECONDS
     print(f"Waiting for {_server()} to come up (first boot takes minutes)...")
@@ -224,11 +247,9 @@ def main(argv: list[str] | None = None) -> int:
             return check_upload_limit(env, limit_mib)
         # The suite is the same one a developer runs by hand; a failure here
         # is a finding about the server, not about this script.
-        proc = subprocess.run(
-            [sys.executable, "-m", "unittest", "tests.test_realserver", "-v"],
-            cwd=str(ROOT),
-            env=env,
-        )
+        command, opt_ins = suite_command(body_limit)
+        env.update(opt_ins)
+        proc = subprocess.run(command, cwd=str(ROOT), env=env)
         status = proc.returncode
     finally:
         delete_library(session, token, repo_id)

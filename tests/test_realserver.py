@@ -535,5 +535,194 @@ class RealServerTests(unittest.TestCase):
         self.assertEqual(self._tree(into), self._tree(src))
 
 
+
+class _RealServerFixture(unittest.TestCase):
+    """The credentials, a scratch folder and a helper environment; no tests of its own.
+
+    ``RealServerTests`` defines tests and so may not be a base class (the parallel
+    runner schedules by class and would run them twice).  The classes below need the
+    same few lines and add their own gates.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        from e2e_harness import make_helper_env
+        from git_remote_seafile.client import SeafileClient
+
+        cls.client = SeafileClient()
+        cls.rid = cls.client.get_repo_id(_LIBRARY)
+        cls.base = "grs-realserver-" + time.strftime("%Y%m%d%H%M%S") + f"-{os.getpid()}"
+        cls.tmp = Path(tempfile.mkdtemp(prefix="grs-real-"))
+        env = make_helper_env(cls.tmp / "bin", cls.client.server_url, _ROOT)
+        for key in ("SEAFILE_SERVER", "SEAFILE_TOKEN", "SEAFILE_TEST_LOCK_SETTLE",
+                    "SEAFILE_SKIP_SAFETY_CHECKS"):
+            env.pop(key, None)
+        cls.env = env
+
+    @classmethod
+    def tearDownClass(cls):
+        url = (
+            f"{cls.client.server_url}/api2/repos/{cls.rid}/file/"
+            f"?p={quote('/' + cls.base, safe='/')}"
+        )
+        try:
+            cls.client.session.delete(url, timeout=120)
+        finally:
+            shutil.rmtree(cls.tmp, ignore_errors=True)
+
+    def _git(self, args, cwd, check=True):
+        p = subprocess.run(["git", *args], cwd=str(cwd), env=self.env,
+                           capture_output=True, text=True, timeout=1800)
+        if check and p.returncode != 0:
+            self.fail(f"git {' '.join(args)} rc={p.returncode}\n{p.stdout}\n{p.stderr}")
+        return p
+
+
+@unittest.skipUnless(
+    _LIBRARY and os.environ.get("SEAFILE_TEST_ALLOW_LIBRARY_CREATE") == "1",
+    "set SEAFILE_TEST_LIBRARY and SEAFILE_TEST_ALLOW_LIBRARY_CREATE=1: this test creates and deletes a "
+    "whole library on the account, which the other tests (one folder in a scratch library) never do",
+)
+class LibraryCreationTests(_RealServerFixture):
+    """``doctor --create-library`` against a real server, and the cleanup of what it made.
+
+    The container workflow sets the opt-in (the container is thrown away). Against a server
+    that holds anything real, the delete below is guarded to the one library this test
+    created: its name must carry the test's prefix and be unique, and it may hold nothing
+    but the empty probe folder doctor wrote.
+    """
+
+    PREFIX = "grs-create-"
+
+    def _libraries_named(self, name):
+        resp = self.client.session.get(f"{self.client.server_url}/api2/repos/", timeout=60)
+        self.assertEqual(resp.status_code, 200, resp.text[:200])
+        return [r for r in resp.json() if isinstance(r, dict) and r.get("name") == name]
+
+    def _delete_only_what_this_test_created(self, name):
+        if not name.startswith(self.PREFIX) or len(name) != len(self.PREFIX) + 8:
+            self.fail(f"refusing to delete a library called {name!r}")
+        found = self._libraries_named(name)
+        if not found:
+            return
+        self.assertEqual(len(found), 1, f"{len(found)} libraries are called {name!r}; deleting none")
+        rid = found[0]["id"]
+        top = {e.get("name") for e in self.client.list_dir(rid, "/")}
+        self.assertLessEqual(top, {"probe"}, f"{name!r} holds {top}, which this test did not put there")
+        self.client.session.delete(f"{self.client.server_url}/api2/repos/{rid}/", timeout=120)
+
+    def test_doctor_create_library_makes_an_unencrypted_library_with_a_short_history(self):
+        import secrets
+
+        from e2e_harness import run_helper
+
+        name = self.PREFIX + secrets.token_hex(4)
+        self.addCleanup(self._delete_only_what_this_test_created, name)
+        proc = run_helper(["doctor", f"seafile://{name}/probe", "--create-library"],
+                          self.tmp, self.env, check=False)
+        output = proc.stdout + proc.stderr
+        self.assertEqual(proc.returncode, 0, output)
+        self.assertIn(f"created library '{name}', keeping 30 days of history", output)
+        self.assertIn("can write and delete", output)
+
+        found = self._libraries_named(name)
+        self.assertEqual(len(found), 1)
+        self.assertFalse(found[0].get("encrypted"), "the library must be unencrypted")
+        self.assertEqual(self.client.get_history_limit(found[0]["id"]), 30)
+
+        # A second run finds it and does not create another.
+        again = run_helper(["doctor", f"seafile://{name}/probe", "--create-library"],
+                           self.tmp, self.env, check=False)
+        self.assertEqual(again.returncode, 0, again.stdout + again.stderr)
+        self.assertNotIn("created library", again.stdout)
+        self.assertEqual(len(self._libraries_named(name)), 1)
+
+    def test_the_cleanup_refuses_a_library_it_did_not_create(self):
+        with self.assertRaises(AssertionError):
+            self._delete_only_what_this_test_created("Documents")
+        with self.assertRaises(AssertionError):
+            self._delete_only_what_this_test_created(self.PREFIX + "toolongforthis")
+
+
+@unittest.skipUnless(
+    _LIBRARY and os.environ.get("SEAFILE_TEST_BODY_LIMIT_MIB"),
+    "set SEAFILE_TEST_LIBRARY and SEAFILE_TEST_BODY_LIMIT_MIB to the proxy's client_max_body_size "
+    "(the container workflow does, after lowering nginx's)",
+)
+class ProxyBodyLimitTests(_RealServerFixture):
+    """A real ``git push`` through a real proxy's request-size limit (the 0.9.19 pack split).
+
+    The stub's ``max_upload`` fault answers 413 the way nginx does; this is the check that a
+    real nginx in front of a real Seafile agrees: the push is refused, rebuilt in smaller
+    packs, and arrives whole.
+    """
+
+    MIB = 1024 * 1024
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.limit = int(os.environ["SEAFILE_TEST_BODY_LIMIT_MIB"]) * cls.MIB
+
+    def _repo(self, name):
+        path = self.tmp / name
+        path.mkdir()
+        self._git(["init", "-q", "-b", "main", "."], path)
+        self._git(["config", "user.email", "t@t"], path)
+        self._git(["config", "user.name", "T"], path)
+        self._git(["config", "core.autocrlf", "false"], path)
+        return path
+
+    def _add_random(self, repo, prefix, count, size):
+        import hashlib
+
+        made = {}
+        for n in range(count):
+            data = os.urandom(size)
+            name = f"{prefix}{n}.bin"
+            (repo / name).write_bytes(data)
+            made[name] = hashlib.sha256(data).hexdigest()
+            self._git(["add", "--", name], repo)
+        self._git(["commit", "-q", "-m", f"add {prefix}"], repo)
+        return made
+
+    def _pack_sizes(self, name):
+        listing = self.client.list_dir(self.rid, f"/{self.base}/{name}/objects/pack")
+        return {e["name"]: e["size"] for e in listing if e.get("name", "").endswith(".pack")}
+
+    def test_a_push_larger_than_the_proxy_limit_arrives_whole_in_smaller_packs(self):
+        import hashlib
+
+        name = "split"
+        repo = self._repo("src_split")
+        # Twice the limit in incompressible bytes: one pack of it cannot get through.
+        count = 6
+        size = int(self.limit * 2 / count)
+        made = self._add_random(repo, "big", count, size)
+        self._git(["remote", "add", "origin", f"seafile://{_LIBRARY}/{self.base}/{name}"], repo)
+
+        proc = self._git(["push", "-u", "origin", "main"], repo)
+
+        self.assertIn("the server refused an upload of", proc.stderr)
+        self.assertIn("Notice: this push went through in packs of at most", proc.stderr)
+        sizes = self._pack_sizes(name)
+        self.assertGreaterEqual(len(sizes), 2, sizes)
+        self.assertTrue(all(sz <= self.limit for sz in sizes.values()),
+                        f"a pack larger than the proxy limit ({self.limit}) is on the server: {sizes}")
+
+        dst = self.tmp / "clone_split"
+        self._git(["clone", f"seafile://{_LIBRARY}/{self.base}/{name}", str(dst)], self.tmp)
+        for fname, digest in made.items():
+            self.assertEqual(hashlib.sha256((dst / fname).read_bytes()).hexdigest(), digest, fname)
+
+        # After an explicit 413 the working cap is kept, and the next push starts from it.
+        remembered = self._git(["config", "--local", "--get", "seafile.gcmaxpackmib"], repo, check=False)
+        if remembered.returncode == 0:
+            self.assertLess(int(remembered.stdout.strip()) * self.MIB, self.limit + 1)
+            self._add_random(repo, "more", 3, size)
+            second = self._git(["push", "origin", "main"], repo)
+            self.assertNotIn("refused an upload", second.stderr)
+
+
 if __name__ == "__main__":
     unittest.main()
