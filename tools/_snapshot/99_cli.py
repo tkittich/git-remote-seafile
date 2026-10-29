@@ -43,6 +43,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "with no measurable progress for 30 minutes is killed as stalled.\n"
             "The remote helper auto-compacts a busy vault after each push --\n"
             "that runs inside the push step and shows up under its status lines.\n"
+            "\ngit reads `git seafile-snapshot --help` itself and looks for a man page: ask for\n"
+            "this text with `git seafile-snapshot help` or `-h`.\n"
         ),
     )
     sections = HelpSections(parser)
@@ -263,7 +265,7 @@ def main(argv: list[str] | None = None) -> int:
                 stream.reconfigure(errors="backslashreplace")
             except (OSError, ValueError):
                 pass
-    return run_reported(parse_args(argv), run_command)
+    return run_reported(parse_args(help_word_to_flag(sys.argv[1:] if argv is None else argv)), run_command)
 
 
 def run_command(args: argparse.Namespace) -> int:
@@ -547,20 +549,14 @@ def run_command(args: argparse.Namespace) -> int:
                     "remote that survives."
                 )
 
-            secrets = find_secrets(
-                index_paths(git_dir, source)
-                + [item["path"] for item in (manifest or {}).get("files", [])]
+            warn_about_secrets(
+                git_dir, source,
+                find_secrets(
+                    index_paths(git_dir, source)
+                    + [item["path"] for item in (manifest or {}).get("files", [])]
+                ),
+                remember=not args.dry_run,
             )
-            if secrets:
-                print(
-                    f"\nWarning: {len(secrets)} captured path(s) look like "
-                    f"credentials.  Git history is\npermanent -- push this vault "
-                    f"only to a library only you can read:"
-                )
-                for path in secrets[:20]:
-                    print(f"  {path}")
-                if len(secrets) > 20:
-                    print(f"  ... and {len(secrets) - 20} more")
 
             # A real run's ``None`` commit *is* the "tree unchanged" signal:
             # build_snapshot returns one when there is nothing new to record.  A

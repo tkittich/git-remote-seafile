@@ -1396,6 +1396,32 @@ class CredentialWarningTests(_SnapshotFixture):
         self.assertIn("look like credentials", out)
         self.assertIn(".env", out)
 
+    def test_the_warning_is_said_once_not_on_every_run(self):
+        # On every run it made --exit-warnings exit 3 for ever on a tree with a .env.
+        # --default-excludes: the fixture's dist/ would otherwise be a warning of its own.
+        rc, out, err = self.snapshot("--no-push", "--default-excludes")
+        self.assertIn("look like credentials", out)
+        (self.code / "notes.txt").write_bytes(b"changed\n")
+        rc, out, err = self.snapshot("--no-push", "--default-excludes", "--exit-warnings")
+        self.assertNotIn("look like credentials", out)
+        self.assertEqual(rc, 0, out + err)
+
+    def test_a_new_credential_file_is_news_again(self):
+        self.snapshot("--no-push")
+        (self.code / "deploy.pem").write_bytes(b"-----BEGIN-----\n")
+        rc, out, _ = self.snapshot("--no-push")
+        self.assertIn("2 captured path(s) look like credentials", out)
+        self.assertIn("deploy.pem", out)
+        rc, out, _ = self.snapshot("--no-push")
+        self.assertNotIn("look like credentials", out)
+
+    def test_a_dry_run_does_not_use_up_the_warning(self):
+        self.snapshot("--dry-run")
+        rc, out, _ = self.snapshot("--dry-run")
+        self.assertIn("look like credentials", out)
+        rc, out, _ = self.snapshot("--no-push")
+        self.assertIn("look like credentials", out)
+
     def test_no_secret_warning_when_nothing_looks_like_one(self):
         rc, out, _ = self.snapshot("--dry-run", "--exclude", ".env")
         self.assertEqual(rc, 0)
@@ -1489,6 +1515,23 @@ class WarningAndTipTests(_SnapshotFixture):
             snap.main(["--help"])
         flat = " ".join(buf.getvalue().split())
         self.assertIn("it uploads nothing", flat)
+
+    def test_the_word_help_is_the_flag_unless_a_directory_has_that_name(self):
+        # `git seafile-snapshot --help` is read by git as a man-page request.
+        self.assertEqual(snap.help_word_to_flag(["help"]), ["--help"])
+        self.assertEqual(snap.help_word_to_flag(["help", "--dry-run"]), ["help", "--dry-run"])
+        self.assertEqual(snap.help_word_to_flag([]), [])
+        with contextlib.redirect_stdout(io.StringIO()) as buf, self.assertRaises(SystemExit):
+            snap.main(["help"])
+        self.assertIn("ask for", " ".join(buf.getvalue().split()))
+        self.assertIn("git seafile-snapshot help", " ".join(buf.getvalue().split()))
+        here = pathlib.Path.cwd()
+        (self.tmp / "help").mkdir()
+        os.chdir(self.tmp)
+        try:
+            self.assertEqual(snap.help_word_to_flag(["help"]), ["help"])
+        finally:
+            os.chdir(here)
 
     def test_the_help_puts_the_options_a_first_run_needs_before_the_rest(self):
         with contextlib.redirect_stdout(io.StringIO()) as buf, self.assertRaises(SystemExit):

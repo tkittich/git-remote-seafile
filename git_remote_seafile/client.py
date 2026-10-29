@@ -846,7 +846,8 @@ class SeafileClient:
             # creates one on first push, and the listing alone does not say so.
             create = (
                 "" if suggestions
-                else " If it does not exist yet, create it in the Seafile web UI first."
+                else " If it does not exist yet, create it in the Seafile web UI, or run "
+                     "'git-remote-seafile doctor <seafile://url> --create-library'."
             )
             raise SeafilePermanentError(
                 f"Seafile library not found: '{name_or_id}'.{hint}{available}{create}"

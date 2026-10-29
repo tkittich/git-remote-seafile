@@ -162,9 +162,9 @@ it first.
 Secrets
 =======
 This tool will happily back up ``.env``, keys and credentials -- that is what a
-*full* backup means -- and Git history is permanent.  Every run therefore lists
-the captured paths that look like credentials, so the choice of remote is made
-with that in view.  Push the vault to a library only you can read; never point
+*full* backup means -- and Git history is permanent.  A run therefore lists
+the captured paths that look like credentials the first time, and again whenever
+that set changes, so the choice of remote is made with that in view.  Push the vault to a library only you can read; never point
 the vault at a public remote.
 
 A snapshot contains exactly the files ``.gitignore`` keeps *out* of the code
@@ -7929,6 +7929,36 @@ def offer_default_excludes(
         print("Capturing everything. Pass --default-excludes on a later run to leave them out.")
 
 
+_SECRETS_KEY = "snapshot.secretsseen"
+
+
+def warn_about_secrets(git_dir: Path, work_tree: Path, secrets: list[str], *, remember: bool) -> None:
+    """Warn that captured paths look like credentials -- when that set is news.
+
+    The warning is a decision point: the first push is the last moment to pick
+    a library only you can read.  Said on every run it stopped being news, and
+    it made ``--exit-warnings`` exit 3 for ever on any tree with a ``.env``, so
+    a scheduled job could no longer tell "something is wrong" from "as before".
+    The vault remembers a digest of the paths it last warned about and warns
+    again when the set changes; a dry run never writes the digest.
+    """
+    digest = hashlib.sha256("\n".join(sorted(secrets)).encode("utf-8", "surrogateescape")).hexdigest()
+    if digest == _read_config_key(git_dir, _SECRETS_KEY):
+        return
+    if secrets:
+        print(
+            f"\nWarning: {len(secrets)} captured path(s) look like "
+            f"credentials.  Git history is\npermanent -- push this vault "
+            f"only to a library only you can read:"
+        )
+        for path in secrets[:20]:
+            print(f"  {path}")
+        if len(secrets) > 20:
+            print(f"  ... and {len(secrets) - 20} more")
+    if remember:
+        git(git_dir, work_tree, ["config", _SECRETS_KEY, digest], cwd=work_tree, check=False)
+
+
 def default_vault_for(source: Path) -> Path:
     """Where the vault lives when ``--vault`` is not given.
 
@@ -8364,6 +8394,19 @@ class HelpSections:
             return self._parser.add_argument(*names, **kwargs)
         title = self._home.get(names[0], HELP_SECTIONS[-1][0])
         return self._groups[title].add_argument(*names, **kwargs)
+
+
+def help_word_to_flag(argv: list[str]) -> list[str]:
+    """``help`` alone means ``--help`` -- unless a directory called ``help`` is being snapshotted.
+
+    ``git seafile-snapshot --help`` never reaches the tool: git reads ``--help``
+    after an external command's name as a request for that command's man page,
+    and fails ("no manual entry") for a command that ships none.  ``git
+    seafile-snapshot help`` is passed through untouched.
+    """
+    if argv == ["help"] and not Path("help").exists():
+        return ["--help"]
+    return argv
 
 
 def _read_config_key(git_dir: Path, key: str) -> str:
@@ -8899,6 +8942,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "with no measurable progress for 30 minutes is killed as stalled.\n"
             "The remote helper auto-compacts a busy vault after each push --\n"
             "that runs inside the push step and shows up under its status lines.\n"
+            "\ngit reads `git seafile-snapshot --help` itself and looks for a man page: ask for\n"
+            "this text with `git seafile-snapshot help` or `-h`.\n"
         ),
     )
     sections = HelpSections(parser)
@@ -9119,7 +9164,7 @@ def main(argv: list[str] | None = None) -> int:
                 stream.reconfigure(errors="backslashreplace")
             except (OSError, ValueError):
                 pass
-    return run_reported(parse_args(argv), run_command)
+    return run_reported(parse_args(help_word_to_flag(sys.argv[1:] if argv is None else argv)), run_command)
 
 
 def run_command(args: argparse.Namespace) -> int:
@@ -9403,20 +9448,14 @@ def run_command(args: argparse.Namespace) -> int:
                     "remote that survives."
                 )
 
-            secrets = find_secrets(
-                index_paths(git_dir, source)
-                + [item["path"] for item in (manifest or {}).get("files", [])]
+            warn_about_secrets(
+                git_dir, source,
+                find_secrets(
+                    index_paths(git_dir, source)
+                    + [item["path"] for item in (manifest or {}).get("files", [])]
+                ),
+                remember=not args.dry_run,
             )
-            if secrets:
-                print(
-                    f"\nWarning: {len(secrets)} captured path(s) look like "
-                    f"credentials.  Git history is\npermanent -- push this vault "
-                    f"only to a library only you can read:"
-                )
-                for path in secrets[:20]:
-                    print(f"  {path}")
-                if len(secrets) > 20:
-                    print(f"  ... and {len(secrets) - 20} more")
 
             # A real run's ``None`` commit *is* the "tree unchanged" signal:
             # build_snapshot returns one when there is nothing new to record.  A

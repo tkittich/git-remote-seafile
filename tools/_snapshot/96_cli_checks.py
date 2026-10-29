@@ -308,3 +308,16 @@ class HelpSections:
             return self._parser.add_argument(*names, **kwargs)
         title = self._home.get(names[0], HELP_SECTIONS[-1][0])
         return self._groups[title].add_argument(*names, **kwargs)
+
+
+def help_word_to_flag(argv: list[str]) -> list[str]:
+    """``help`` alone means ``--help`` -- unless a directory called ``help`` is being snapshotted.
+
+    ``git seafile-snapshot --help`` never reaches the tool: git reads ``--help``
+    after an external command's name as a request for that command's man page,
+    and fails ("no manual entry") for a command that ships none.  ``git
+    seafile-snapshot help`` is passed through untouched.
+    """
+    if argv == ["help"] and not Path("help").exists():
+        return ["--help"]
+    return argv

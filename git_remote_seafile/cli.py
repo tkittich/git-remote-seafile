@@ -273,8 +273,9 @@ def _ensure_library(helper: Any, create: bool) -> str | None:
                 answer = ""
             create = answer.strip().lower() in ("y", "yes")
         if not create:
-            print(f"Hint: re-run with --create-library to create '{name}'")
-            return str(ex)
+            if "--create-library" in str(ex):
+                return str(ex)
+            return f"{ex}\nHint: if '{name}' is not a typo, re-run with --create-library to create it"
         try:
             rid, history_set = make_library(helper.client, name)
         except Exception as create_ex:

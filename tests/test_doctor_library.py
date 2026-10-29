@@ -68,8 +68,21 @@ class TestCreateLibrary(unittest.TestCase):
         helper = _Helper(exists=False)
         code, out, _ = run_doctor(helper)
         self.assertEqual(code, 1)
-        self.assertIn("Hint: re-run with --create-library", out)
+        # A close-match miss may be a typo, so it gets the hint after the failure.
+        self.assertIn("[FAIL] Seafile library not found", out)
+        self.assertIn("Hint: if 'newlib' is not a typo, re-run with --create-library", out)
         helper.client.create_library.assert_not_called()
+
+    def test_a_message_that_already_names_the_flag_is_not_given_a_second_hint(self):
+        helper = _Helper(exists=False)
+        message = MISSING + " If it does not exist yet, create it in the Seafile web UI, or run " \
+                            "'git-remote-seafile doctor <seafile://url> --create-library'."
+        with patch.object(_Helper, "repo_id", property(
+                lambda self: (_ for _ in ()).throw(SeafilePermanentError(message)))):
+            code, out, _ = run_doctor(helper)
+        self.assertEqual(code, 1)
+        self.assertIn("--create-library'.", out)
+        self.assertNotIn("Hint:", out)
 
     def test_create_library_makes_it_with_a_short_history_and_goes_on(self):
         helper = _Helper(exists=False)

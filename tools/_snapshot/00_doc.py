@@ -162,9 +162,9 @@ it first.
 Secrets
 =======
 This tool will happily back up ``.env``, keys and credentials -- that is what a
-*full* backup means -- and Git history is permanent.  Every run therefore lists
-the captured paths that look like credentials, so the choice of remote is made
-with that in view.  Push the vault to a library only you can read; never point
+*full* backup means -- and Git history is permanent.  A run therefore lists
+the captured paths that look like credentials the first time, and again whenever
+that set changes, so the choice of remote is made with that in view.  Push the vault to a library only you can read; never point
 the vault at a public remote.
 
 A snapshot contains exactly the files ``.gitignore`` keeps *out* of the code

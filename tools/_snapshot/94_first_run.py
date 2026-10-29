@@ -101,3 +101,33 @@ def offer_default_excludes(
         print("Leaving them out; the vault remembers this. Name --exclude yourself to change the list.")
     else:
         print("Capturing everything. Pass --default-excludes on a later run to leave them out.")
+
+
+_SECRETS_KEY = "snapshot.secretsseen"
+
+
+def warn_about_secrets(git_dir: Path, work_tree: Path, secrets: list[str], *, remember: bool) -> None:
+    """Warn that captured paths look like credentials -- when that set is news.
+
+    The warning is a decision point: the first push is the last moment to pick
+    a library only you can read.  Said on every run it stopped being news, and
+    it made ``--exit-warnings`` exit 3 for ever on any tree with a ``.env``, so
+    a scheduled job could no longer tell "something is wrong" from "as before".
+    The vault remembers a digest of the paths it last warned about and warns
+    again when the set changes; a dry run never writes the digest.
+    """
+    digest = hashlib.sha256("\n".join(sorted(secrets)).encode("utf-8", "surrogateescape")).hexdigest()
+    if digest == _read_config_key(git_dir, _SECRETS_KEY):
+        return
+    if secrets:
+        print(
+            f"\nWarning: {len(secrets)} captured path(s) look like "
+            f"credentials.  Git history is\npermanent -- push this vault "
+            f"only to a library only you can read:"
+        )
+        for path in secrets[:20]:
+            print(f"  {path}")
+        if len(secrets) > 20:
+            print(f"  ... and {len(secrets) - 20} more")
+    if remember:
+        git(git_dir, work_tree, ["config", _SECRETS_KEY, digest], cwd=work_tree, check=False)
