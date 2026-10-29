@@ -1431,6 +1431,21 @@ class WarningAndTipTests(_SnapshotFixture):
             ["certs/server.pem", ".env"],
         )
 
+    def test_a_run_with_nowhere_to_push_warns_and_counts_for_exit_warnings(self):
+        # It used to print one quiet line and exit 0, so a scheduled job whose
+        # remote was never set looked healthy.
+        rc, out, err = self.snapshot("--exit-warnings")
+        self.assertEqual(rc, 3, out + err)
+        self.assertIn("Warning: no remote to push to", out + err)
+        self.assertIn("exists only on this machine", out + err)
+        self.assertIn("--remote seafile://<library>/", out + err)
+
+    def test_no_push_on_purpose_does_not_warn_about_the_missing_remote(self):
+        rc, out, err = self.snapshot("--no-push")
+        self.assertEqual(rc, 0, out + err)
+        self.assertNotIn("no remote to push to", out + err)
+        self.assertIn("kept locally", out)
+
     def test_a_virtualenv_is_suggested_for_exclusion_whatever_its_name(self):
         venv = self.code / ".venv-audit"
         (venv / "Lib").mkdir(parents=True)

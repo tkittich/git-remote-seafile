@@ -8519,6 +8519,26 @@ def derive_vault_remote(source: Path) -> str | None:
     return f"{code.rstrip('/') or code}-vault"
 
 
+def no_remote_warning(source: Path) -> str:
+    """What a run that has nowhere to push says, as a ``Warning:``.
+
+    A backup that stays on the machine it protects is not one, and a scheduled
+    job that exited 0 with one quiet line looked healthy for as long as nobody
+    read its output.  As a ``Warning:`` it counts for ``--exit-warnings``.
+    """
+    several = len({u for _n, u in source_remote_urls(source) if u.lower().startswith("seafile://")}) > 1
+    why = (
+        "the source has several seafile:// remotes, so none was chosen"
+        if several
+        else "none was given or remembered, and the source has no seafile:// remote to derive one from"
+    )
+    return (
+        f"Warning: no remote to push to ({why}), so this snapshot exists only on this "
+        f"machine. Run once with --remote seafile://<library>/{source.name}-vault; the "
+        "vault remembers it for later runs."
+    )
+
+
 def repo_toplevel(path: Path) -> Path | None:
     """The root of the git work tree that contains ``path``, or None.
 
@@ -9302,7 +9322,9 @@ def run_command(args: argparse.Namespace) -> int:
                 RUN_FACTS["commit"] = commit
                 print(f"\nmoved refs/heads/{branch} -> {commit[:12]}")
 
-            if not remote:
+            if not remote and not args.no_push:
+                print(no_remote_warning(source), file=sys.stderr, flush=True)
+            elif not remote:
                 print("no --remote; snapshot kept locally (pass --remote, or set "
                       "one in the source repo, to push)")
             elif commit is None and base == remote_tip:

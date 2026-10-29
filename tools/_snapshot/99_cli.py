@@ -606,7 +606,9 @@ def run_command(args: argparse.Namespace) -> int:
                 RUN_FACTS["commit"] = commit
                 print(f"\nmoved refs/heads/{branch} -> {commit[:12]}")
 
-            if not remote:
+            if not remote and not args.no_push:
+                print(no_remote_warning(source), file=sys.stderr, flush=True)
+            elif not remote:
                 print("no --remote; snapshot kept locally (pass --remote, or set "
                       "one in the source repo, to push)")
             elif commit is None and base == remote_tip:
