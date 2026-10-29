@@ -1490,6 +1490,24 @@ class WarningAndTipTests(_SnapshotFixture):
         flat = " ".join(buf.getvalue().split())
         self.assertIn("it uploads nothing", flat)
 
+    def test_the_help_puts_the_options_a_first_run_needs_before_the_rest(self):
+        with contextlib.redirect_stdout(io.StringIO()) as buf, self.assertRaises(SystemExit):
+            snap.main(["--help"])
+        text = buf.getvalue()
+        order = [
+            text.index(title + ":")
+            for title in ("everyday options", "restore and verify", "for scheduled runs",
+                          "local vault housekeeping", "advanced options")
+        ]
+        self.assertEqual(order, sorted(order))
+        everyday = text[order[0]:order[1]]
+        for flag in ("--remote", "--exclude", "--dry-run", "--status"):
+            self.assertIn(flag, everyday)
+        # a flag named in no section is still listed, in the last one
+        advanced = text[order[-1]:text.index("payload mode")]
+        self.assertIn("--allow-shared-remote", advanced)
+        self.assertNotIn("--allow-shared-remote", everyday)
+
 
 class StaleLockTests(_SnapshotFixture):
     """A lock left by a dead run is reclaimed; a live or foreign one is not."""

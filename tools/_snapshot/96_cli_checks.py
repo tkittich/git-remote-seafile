@@ -271,3 +271,39 @@ def check_code_remote_is_git_remote(source: Path, name: str) -> None:
             f"--code-remote '{name}' is not a remote of {source} "
             f"(it has: {listing})"
         )
+
+
+#: The help sections of ``--help``, in the order they print, and which options
+#: open each.  Fifty flags in one alphabet-free list made the four a first run
+#: needs as hard to find as the one that rewrites a vault; an option named in
+#: no section lands in the last one, so a new flag is placed by default rather
+#: than lost.
+HELP_SECTIONS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("everyday options", (
+        "--source", "--vault", "--remote", "--branch", "--exclude",
+        "--default-excludes", "--no-push", "--dry-run", "--message", "--status",
+    )),
+    ("restore and verify", (
+        "--restore", "--into", "--ref", "--verify", "--restore-drill",
+    )),
+    ("for scheduled runs", ("--json", "--exit-warnings")),
+    ("local vault housekeeping", ("--maintain", "--full-repack")),
+    ("advanced options", ()),
+)
+
+
+class HelpSections:
+    """``add_argument`` for a parser whose options print in :data:`HELP_SECTIONS`."""
+
+    def __init__(self, parser: argparse.ArgumentParser) -> None:
+        self._parser = parser
+        self._groups = {title: parser.add_argument_group(title) for title, _ in HELP_SECTIONS}
+        self._home = {
+            flag: title for title, flags in HELP_SECTIONS for flag in flags
+        }
+
+    def add_argument(self, *names: str, **kwargs: Any) -> Any:
+        if not names[0].startswith("-"):
+            return self._parser.add_argument(*names, **kwargs)
+        title = self._home.get(names[0], HELP_SECTIONS[-1][0])
+        return self._groups[title].add_argument(*names, **kwargs)

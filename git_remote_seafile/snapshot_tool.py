@@ -8226,6 +8226,42 @@ def check_code_remote_is_git_remote(source: Path, name: str) -> None:
         )
 
 
+#: The help sections of ``--help``, in the order they print, and which options
+#: open each.  Fifty flags in one alphabet-free list made the four a first run
+#: needs as hard to find as the one that rewrites a vault; an option named in
+#: no section lands in the last one, so a new flag is placed by default rather
+#: than lost.
+HELP_SECTIONS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("everyday options", (
+        "--source", "--vault", "--remote", "--branch", "--exclude",
+        "--default-excludes", "--no-push", "--dry-run", "--message", "--status",
+    )),
+    ("restore and verify", (
+        "--restore", "--into", "--ref", "--verify", "--restore-drill",
+    )),
+    ("for scheduled runs", ("--json", "--exit-warnings")),
+    ("local vault housekeeping", ("--maintain", "--full-repack")),
+    ("advanced options", ()),
+)
+
+
+class HelpSections:
+    """``add_argument`` for a parser whose options print in :data:`HELP_SECTIONS`."""
+
+    def __init__(self, parser: argparse.ArgumentParser) -> None:
+        self._parser = parser
+        self._groups = {title: parser.add_argument_group(title) for title, _ in HELP_SECTIONS}
+        self._home = {
+            flag: title for title, flags in HELP_SECTIONS for flag in flags
+        }
+
+    def add_argument(self, *names: str, **kwargs: Any) -> Any:
+        if not names[0].startswith("-"):
+            return self._parser.add_argument(*names, **kwargs)
+        title = self._home.get(names[0], HELP_SECTIONS[-1][0])
+        return self._groups[title].add_argument(*names, **kwargs)
+
+
 def _read_config_key(git_dir: Path, key: str) -> str:
     """A single value out of the *vault's own* config, or ''.
 
@@ -8761,6 +8797,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "that runs inside the push step and shows up under its status lines.\n"
         ),
     )
+    sections = HelpSections(parser)
     parser.add_argument(
         "source_positional",
         nargs="?",
@@ -8770,39 +8807,39 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="directory to snapshot (same as --source, so "
         "'seafile_snapshot.py C:/code/app' works)",
     )
-    parser.add_argument(
+    sections.add_argument(
         "--source",
         type=Path,
         default=None,
         help="directory to snapshot (default: the current directory)",
     )
-    parser.add_argument(
+    sections.add_argument(
         "--vault",
         type=Path,
         default=None,
         help="vault repository location (default: '<source>-vault' beside the "
         "source)",
     )
-    parser.add_argument(
+    sections.add_argument(
         "--branch",
         default=None,
         help=f"branch in the vault holding snapshots "
         f"(default: remembered, else {DEFAULT_BRANCH})",
     )
-    parser.add_argument(
+    sections.add_argument(
         "--remote",
         default=None,
         help="Seafile remote URL to push to, e.g. seafile://code/myproject-vault "
         "(default: remembered, else derived from the source's own seafile:// "
         "remote; pass --no-push to snapshot locally instead)",
     )
-    parser.add_argument(
+    sections.add_argument(
         "--code-remote",
         default=None,
         help="also run a normal 'git push <name>' in the source repo first "
         "(default: remembered, else the code repo is not pushed)",
     )
-    parser.add_argument(
+    sections.add_argument(
         "--exclude",
         action="append",
         default=None,
@@ -8810,7 +8847,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="path matching this glob is left out of the snapshot (repeatable; "
         "default: remembered, else nothing is excluded)",
     )
-    parser.add_argument(
+    sections.add_argument(
         "--default-excludes",
         action=argparse.BooleanOptionalAction,
         default=None,
@@ -8821,33 +8858,33 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "a backup, and silently dropping files is how a backup fails at the one "
         "moment it mattered",
     )
-    parser.add_argument(
+    sections.add_argument(
         "--no-push",
         action="store_true",
         help="this run pushes nothing -- neither the vault nor the code repo "
         "-- and leaves the vault's remembered remote alone, so a one-off "
         "local run does not unhook a scheduled job",
     )
-    parser.add_argument("--message", default=None, help="snapshot commit message")
-    parser.add_argument(
+    sections.add_argument("--message", default=None, help="snapshot commit message")
+    sections.add_argument(
         "--restore",
         action="store_true",
         help="restore a snapshot instead of taking one (needs --remote and "
         "--into); byte-exact, unlike a plain git clone",
     )
-    parser.add_argument(
+    sections.add_argument(
         "--into",
         type=Path,
         default=None,
         help="destination directory for --restore",
     )
-    parser.add_argument(
+    sections.add_argument(
         "--ref",
         default=None,
         help=f"snapshot to restore (default: the vault branch, "
         f"{DEFAULT_BRANCH}); any revision works, e.g. 'snapshot~3' to roll back",
     )
-    parser.add_argument(
+    sections.add_argument(
         "--dry-run",
         action="store_true",
         help="build the snapshot but do not move the branch or push "
@@ -8857,21 +8894,21 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "git-bound part of the tree is staged into the vault, so it takes the "
         "time and disk a real run would, and it uploads nothing",
     )
-    parser.add_argument(
+    sections.add_argument(
         "--reset-to-remote",
         action="store_true",
         help="if the local vault and the remote have diverged, discard the "
         "local-only snapshots and continue from the remote chain instead of "
         "refusing",
     )
-    parser.add_argument(
+    sections.add_argument(
         "--allow-shared-remote",
         action="store_true",
         help="permit --remote to be a URL the source repository already uses. "
         "The snapshot holds the files .gitignore keeps out of the code "
         "repository, so this publishes them; refused by default",
     )
-    parser.add_argument(
+    sections.add_argument(
         "--allow-synced",
         action="store_true",
         help="proceed even when the source or vault (or a restore destination) "
@@ -8880,7 +8917,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "seafile-ignore.txt; this overrides every remaining refusal and puts the "
         "risk of the client rewriting files under Git on you",
     )
-    parser.add_argument(
+    sections.add_argument(
         "--allow-low-disk",
         action="store_true",
         help="stage even when the estimate says the vault's volume cannot hold "
@@ -8890,15 +8927,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "With --restore: download a payload that does not appear to fit",
     )
     add_payload_groups(parser)
-    add_mtimes_arguments(parser)
-    add_status_arguments(parser)
-    parser.add_argument(
+    add_mtimes_arguments(sections)
+    add_status_arguments(sections)
+    sections.add_argument(
         "--verify",
         action="store_true",
         help="with --restore, also run 'git fsck' on the clone. Byte-exactness "
         "is checked on every restore regardless",
     )
-    parser.add_argument(
+    sections.add_argument(
         "--restore-drill",
         nargs="?",
         const="10",
@@ -8910,18 +8947,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "SHA-256, then delete the directory. Needs the disk for the whole vault "
         "(set TMP or TMPDIR to use a bigger volume); --ref drills an older snapshot",
     )
-    parser.add_argument(
+    sections.add_argument(
         "--json",
         action="store_true",
         help="write one JSON document to stdout (status, exit_code, warnings, error, "
         "result) and move the human text to stderr; for scheduled runs",
     )
-    parser.add_argument(
+    sections.add_argument(
         "--exit-warnings",
         action="store_true",
         help="exit 3 instead of 0 when the run completed but printed a Warning:",
     )
-    parser.add_argument(
+    sections.add_argument(
         "--no-object-compression",
         action="store_true",
         help=        "disable deflation for newly written vault objects "
@@ -8931,7 +8968,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "saves nothing and costs 2-3x the staging time; this flag removes it. "
         "For compressible text-heavy trees it trades some vault size for speed",
     )
-    parser.add_argument(
+    sections.add_argument(
         "--maintain",
         action="store_true",
         help="local vault housekeeping instead of a snapshot: by default just "
@@ -8939,7 +8976,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "whole store into one packfile and prunes unreachable objects. Never "
         "touches the source tree or any remote",
     )
-    parser.add_argument(
+    sections.add_argument(
         "--full-repack",
         action="store_true",
         help="with --maintain, run a one-shot full repack + prune of the entire "
@@ -8947,13 +8984,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "incrementally before each push (once it passes roughly 256 MiB); "
         "use this after large deletions to reclaim space",
     )
-    parser.add_argument(
+    sections.add_argument(
         "--no-embedded-repos",
         action="store_true",
         help="record a nested git repository (a directory with its own .git) only as "
         "its commit id, as 0.9.0 did, instead of capturing its files",
     )
-    parser.add_argument(
+    sections.add_argument(
         "--rebuild-index",
         action="store_true",
         help="drop the vault's index before staging, so every git-stored file is read and "
@@ -8961,7 +8998,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "and timestamp untouched (a memory-mapped writer on Windows, a volume with no change "
         "time) is invisible to the stat cache, and this is the audit that re-reads the bytes",
     )
-    parser.add_argument(
+    sections.add_argument(
         "--no-repack",
         action="store_true",
         help="skip the automatic incremental repack that runs before a push",
