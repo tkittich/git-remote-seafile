@@ -7,7 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Found by walking the README quick start on a clean Debian user (pipx, nothing else), plus the V7 lead from the 0.9.17 review.
+## [0.9.20] - 2026-10-29
+
+One data-safety fix and what a clean-machine walk of the README quick start (Debian, pipx, nothing else) turned up. The fix: retention could decide a live payload object was unused when it read a damaged vault in place (ROADMAP V7). The 0.9.19 pack split is now proven against a real nginx limit, and the real-server tier grew two tests. No new settings, and nothing about what is stored changes.
 
 ### Fixed
 - **`--payload-gc --payload-delete` could delete live objects when it read a damaged vault in place (ROADMAP V7).** `cat-file --batch-check` words a commit with no manifest and a commit whose manifest blob is gone the same way (`<spec> missing`, measured), so a vault with a deleted object file lost a manifest silently and its payload objects looked unused (shown: 0 referenced objects instead of 1). Retention now refuses a shallow or partial vault, and for one read in place lists every reachable object and refuses on a missing one. A remote's history was already covered by git's own connectivity check on fetch. PAYLOAD.md A35.
@@ -1938,6 +1940,7 @@ Data-loss and silent-failure fixes, and the Python floor raised to 3.9.
   with zero-config desktop-client token discovery, distributed locking, remote
   packfile compaction, and a Git LFS custom transfer agent.
 
+[0.9.20]: https://github.com/tkittich/git-remote-seafile/compare/v0.9.19...v0.9.20
 [0.9.19]: https://github.com/tkittich/git-remote-seafile/compare/v0.9.18...v0.9.19
 [0.9.18]: https://github.com/tkittich/git-remote-seafile/compare/v0.9.17...v0.9.18
 [0.9.17]: https://github.com/tkittich/git-remote-seafile/compare/v0.9.16...v0.9.17
