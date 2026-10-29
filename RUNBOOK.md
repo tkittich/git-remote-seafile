@@ -121,7 +121,7 @@ closed`), then smaller uploads, then `Notice: this push went through in packs of
 
 A reverse proxy in front of Seafile limits the request body (nginx's `client_max_body_size`) and a
 pack is bigger. The push copes: it deletes what that attempt uploaded, rebuilds with a cap half the
-size and tries again, up to six times, and after a 413 it keeps the cap that worked as
+size and tries again, up to six times, and after a 413 it keeps four fifths of the cap that worked as
 `seafile.gcmaxpackmib` in that repository. Nothing to do.
 
 To choose the number yourself, or to apply it to every repository, measure the limit and set it

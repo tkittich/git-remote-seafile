@@ -110,7 +110,12 @@ _RETIRED_KEYS = frozenset({"seafile.locksettle", "seafile.gcmaxmib"})
 # Read by the code for the test suite's benefit only (the settlement window is
 # fixed at one second for users).  Documenting it would advertise a way to
 # switch off a race guard, which is the thing this variable exists *not* to be.
-_TEST_ONLY_ENV = frozenset({"SEAFILE_TEST_LOCK_SETTLE", "SEAFILE_TEST_LIBRARY"})
+# The real-server tests' own opt-ins: SEAFILE_TEST_ALLOW_LIBRARY_CREATE lets one test create and delete a
+# library, SEAFILE_TEST_BODY_LIMIT_MIB names the proxy limit the push test must get through.
+_TEST_ONLY_ENV = frozenset({
+    "SEAFILE_TEST_LOCK_SETTLE", "SEAFILE_TEST_LIBRARY",
+    "SEAFILE_TEST_ALLOW_LIBRARY_CREATE", "SEAFILE_TEST_BODY_LIMIT_MIB",
+})
 
 _CODE_SUBCOMMAND_EQ = re.compile(r'args\[0\]\s*==\s*"([^"]+)"')
 _CODE_SUBCOMMAND_IN = re.compile(r"args\[0\]\s+in\s+\(([^)]+)\)")

@@ -18,7 +18,7 @@ from .client import (
     TransferAborted,
 )
 from .config import RemoteConfig
-from .diagnose import MIB, size_refusal, split_cap_bytes
+from .diagnose import MIB, PACK_HEADROOM, size_refusal, split_cap_bytes
 from .lock import (
     LEASE_LOST,
     LEASE_PREEMPTED,
@@ -857,7 +857,10 @@ class RemoteHelper:
             return
 
     def _remember_pack_cap(self, cap: int, persist: bool) -> None:
-        mib = max(1, cap // MIB)
+        # The cap that worked is an upper bound on packs that were smaller, and a body carries
+        # multipart overhead: a real nginx at 48 MiB took 32 MiB packs, and refuses near 45.
+        # Keep the fifth to spare that doctor --upload-limit leaves.
+        mib = max(1, int(cap * PACK_HEADROOM) // MIB)
         kept = f"set seafile.gcmaxpackmib to {mib} to start there next time"
         if persist:
             _out, _err, code = run_git(["config", "--local", "seafile.gcmaxpackmib", str(mib)])

@@ -87,8 +87,9 @@ class TestSplitOnRefusal(unittest.TestCase):
 
     def test_a_413_keeps_the_cap_that_worked_in_the_repository(self):
         err, run = self.push(limit=15 * MIB)
-        run.assert_called_once_with(["config", "--local", "seafile.gcmaxpackmib", "10"])
-        self.assertIn("seafile.gcmaxpackmib is now 10 in this repository", err)
+        # The cap that worked was 10 MiB; a fifth is kept to spare, as doctor --upload-limit does.
+        run.assert_called_once_with(["config", "--local", "seafile.gcmaxpackmib", "8"])
+        self.assertIn("seafile.gcmaxpackmib is now 8 in this repository", err)
         self.assertIn("Notice: this push went through in packs of at most 10.0 MiB", err)
 
     def test_a_reset_is_retried_but_not_remembered(self):
@@ -116,7 +117,7 @@ class TestSplitOnRefusal(unittest.TestCase):
             self.h._upload_push_pack(self.lock, self.pending, None)
         run.assert_not_called()
         self.assertIn("the connection was closed", err.getvalue())
-        self.assertIn("set seafile.gcmaxpackmib to 20 to start there next time", err.getvalue())
+        self.assertIn("set seafile.gcmaxpackmib to 16 to start there next time", err.getvalue())
 
     def test_nothing_of_a_refused_attempt_is_left_on_the_server(self):
         self.push(limit=15 * MIB)
