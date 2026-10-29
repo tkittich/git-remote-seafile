@@ -7,7 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Ease of use: the first run needs less looking up. New commands and flags, no new settings, and nothing about what is stored changes.
+## [0.9.19] - 2026-10-29
+
+The first run needs less looking up. Four new commands or flags (`login`, `lfs-setup`, `config`, `doctor --create-library`), a push that survives a proxy's size limit instead of failing after the lock is taken, and a snapshot that no longer reports success when it has nowhere to push. No new settings, and nothing about what is stored changes.
 
 ### Added
 - **`git-remote-seafile login [server] [--user NAME]`** trades a username and password (and a two-factor code, when the server asks) for an API token and saves it to `~/.git-seafile.json`, owner-only, replacing the `curl` step in the User Guide. The password is read from the terminal, sent once to the server's token endpoint and never stored; `http://` to anything but loopback is refused before it is asked for, and the missing-credentials errors now name the command.
@@ -16,11 +18,16 @@ Ease of use: the first run needs less looking up. New commands and flags, no new
 - **A first `git seafile-snapshot` at a terminal asks about reproducible directories.** With no vault yet and no exclusion typed, remembered, or implied by `--json` / `--exit-warnings`, it lists `node_modules`, virtualenvs, `dist` and the like with their sizes (committed source is never listed) and asks `[Y/n]`. A yes is `--default-excludes`. An unattended run never asks, and the default of capturing everything is unchanged.
 - **`git-remote-seafile config`** prints every behavioural setting (`seafile.*` git config keys and their environment variables), the value in force and where it comes from (default, git config, environment). It uses the helper's own readers, so the trusted-scope keys show what the helper would use.
 
+### Tests
+- A real `git push` against the stub's `max_upload` fault (nginx's `client_max_body_size`) drives git, the helper and the client end to end: 18 MiB against a 10 MiB limit lands in smaller packs, the cap is remembered, the next push is not refused, and a clone has every byte. The test fails against the helper from before the split.
+
 ### Changed
 - **A push whose pack the server refuses is no longer a failed push.** A body-size refusal (HTTP 413, or a closed connection on a body of 8 MiB or more) removes what that attempt uploaded, halves the pack cap and rebuilds, up to six times. After a 413 the cap that worked is kept as `seafile.gcmaxpackmib` in the repository's git config with a `Notice:`; a closed connection alone is retried but not remembered, since it may have been the network. `doctor --upload-limit` still measures the exact limit.
+- **The auth hints name `login`.** `doctor`'s rejected-token line and the 401 hint on the library listing pointed at the desktop client only.
 - **A library that does not exist is no longer retried.** The ref listing retried any API error once, so a plain mistake printed `Warning: ... retrying once.` and then failed identically. A missing library, a refused token while listing libraries and an encrypted library now fail at once, and a miss with no close match says libraries are created in the Seafile web UI.
 - **`git seafile-snapshot` with nowhere to push prints a `Warning:`** (it printed one quiet line and exited 0), so `--exit-warnings` returns 3 for a scheduled job whose remote was never set. `--no-push` on purpose keeps the old line.
 - **`git seafile-snapshot --help` groups the options** under everyday options, restore and verify, scheduled runs, housekeeping and advanced options, before the payload groups.
+- **The documents catch up.** `SECURITY.md` said no credential is ever written by the helper, which `login` makes false; it now says what `login` does with a password and a token. The User Guide, `SNAPSHOT.md`, `DESIGN.md` (failure model, module map), `RUNBOOK.md` (HTTP 413) and `AGENTS.md` cover this release, `ROADMAP.md`'s shipped list, which stopped at 0.9.12, is filled in to here, and the README's documentation list is grouped by what the reader wants to do.
 - **The README leads with a five-step quick start** (`uv tool install` or `pipx install`, `doctor`, `git remote add`, `git push`, `git clone`); the comparison and the alternatives tables live in `ALTERNATIVES.md` only, which gains the patched-daemon row they had here.
 
 ## [0.9.18] - 2026-10-28
@@ -1914,6 +1921,7 @@ Data-loss and silent-failure fixes, and the Python floor raised to 3.9.
   with zero-config desktop-client token discovery, distributed locking, remote
   packfile compaction, and a Git LFS custom transfer agent.
 
+[0.9.19]: https://github.com/tkittich/git-remote-seafile/compare/v0.9.18...v0.9.19
 [0.9.18]: https://github.com/tkittich/git-remote-seafile/compare/v0.9.17...v0.9.18
 [0.9.17]: https://github.com/tkittich/git-remote-seafile/compare/v0.9.16...v0.9.17
 [0.9.16]: https://github.com/tkittich/git-remote-seafile/compare/v0.9.15...v0.9.16

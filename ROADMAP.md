@@ -389,7 +389,7 @@ One line per capability — see [CHANGELOG.md](CHANGELOG.md) for the full detail
 **v0.9.18 (2026-10-28) — a listing that cannot skip.**
 - A strict listing stops at a ref it cannot read, a gc mark cannot expire early, `--payload-verify` checks free space, `doctor` says when a cleanup or a walk did not finish.
 
-**v0.9.19 (unreleased) — the first run needs less looking up.**
+**v0.9.19 (2026-10-29) — the first run needs less looking up.**
 - `login`, `config` and `lfs-setup`; `doctor --create-library` and `--set-history` and a history finding; a refused pack is rebuilt in smaller packs; a missing library is not retried; the snapshot tool warns when it has nowhere to push, groups its `--help`, and asks about reproducible directories on a first run at a terminal; the README leads with a quick start.
 
 ---
