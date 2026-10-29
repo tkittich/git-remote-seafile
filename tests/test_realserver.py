@@ -702,6 +702,9 @@ class ProxyBodyLimitTests(_RealServerFixture):
         self._git(["remote", "add", "origin", f"seafile://{_LIBRARY}/{self.base}/{name}"], repo)
 
         proc = self._git(["push", "-u", "origin", "main"], repo)
+        # Kept in the log: which refusal a real nginx produces (a 413, or a closed connection)
+        # decides whether the working cap is remembered, and a pass says neither.
+        sys.stderr.write("\n--- push stderr ---\n" + proc.stderr + "--- end ---\n")
 
         self.assertIn("the server refused an upload of", proc.stderr)
         self.assertIn("Notice: this push went through in packs of at most", proc.stderr)
