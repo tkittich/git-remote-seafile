@@ -3041,6 +3041,41 @@ def change_time_ns(path: Path, st: os.stat_result) -> int:
         return st.st_ctime_ns
 
 
+def require_complete_history(repo: Path, *, walk: bool) -> None:
+    """Refuse to decide what is unreferenced from a history that has holes.
+
+    Retention deletes whatever no manifest in the history names, so a history
+    that is missing some of its manifests makes live objects look dead.  A
+    ``git fetch`` of a remote is connectivity-checked by git itself; the case it
+    does not cover is a vault read *in place*, which a person may have made
+    shallow (``--depth``), partial (``--filter``) or damaged (an object file
+    deleted).  This tool never creates one of those -- ``cat-file --batch-check``
+    cannot tell a commit with no manifest from one whose manifest blob is gone,
+    so the holes are looked for directly.  A shallow or promisor repository is
+    refused outright; with *walk* every reachable object is listed and a
+    missing one refuses too (ROADMAP V7).
+    """
+    problems: list[str] = []
+    if (repo / "shallow").exists():
+        problems.append("it is a shallow repository")
+    config = git(repo, None, ["config", "--get-regexp", r"^(extensions\.partialclone|remote\..*\.promisor)$"],
+                 cwd=repo, check=False).stdout
+    if config.strip():
+        problems.append("it is a partial clone")
+    if walk and not problems:
+        listing = git(repo, None, ["rev-list", "--all", "--objects", "--missing=print"],
+                      cwd=repo, check=False)
+        absent = sum(1 for line in listing.stdout.splitlines() if line.startswith("?"))
+        if absent or listing.returncode != 0:
+            problems.append(f"{absent or 'some'} object(s) it refers to are not in its object store")
+    if problems:
+        raise SnapshotError(
+            f"the history to read is incomplete ({'; '.join(problems)}), and retention decides what is "
+            "unreferenced from the whole history, so it refuses rather than guess. Use a full clone "
+            "of the vault (no --depth, no --filter) or repair it with 'git fsck'"
+        )
+
+
 # -- Modification times of the files git stores (see 70_stage.py) ------------------
 #
 # Git records content and a mode, not a timestamp, so a restore used to give
@@ -4877,6 +4912,7 @@ def _hashes_in_history(
                  "+refs/heads/*:refs/remotes/local/*", "+refs/tags/*:refs/remotes/local-tags/*"],
                 cwd=Path(td),
             )
+        require_complete_history(repo, walk=in_place)
         tips: dict[str, str] = {}
         for line in git(
             repo, None, ["for-each-ref", "--format=%(objectname) %(refname)",

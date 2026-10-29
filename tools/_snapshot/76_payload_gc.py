@@ -289,6 +289,7 @@ def _hashes_in_history(
                  "+refs/heads/*:refs/remotes/local/*", "+refs/tags/*:refs/remotes/local-tags/*"],
                 cwd=Path(td),
             )
+        require_complete_history(repo, walk=in_place)
         tips: dict[str, str] = {}
         for line in git(
             repo, None, ["for-each-ref", "--format=%(objectname) %(refname)",
