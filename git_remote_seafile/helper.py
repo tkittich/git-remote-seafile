@@ -18,6 +18,7 @@ from .client import (
     TransferAborted,
 )
 from .config import RemoteConfig
+from .diagnose import MIB, size_refusal, split_cap_bytes
 from .lock import (
     LEASE_LOST,
     LEASE_PREEMPTED,
@@ -57,6 +58,7 @@ from .git_util import (
     get_git_dir,
     get_git_config,
     remove_tree,
+    run_git,
     sweep_stale_scratch,
     tips_are_locally_complete,
 )
@@ -135,6 +137,18 @@ def _destination_error(dst: str) -> str | None:
             return f"refusing to push a name the server stores differently: the component {problem}"
     return None
 
+
+
+#: How many times a refused upload halves the pack cap before the push gives up.
+MAX_PACK_SPLITS = 6
+
+
+class _UploadRefused(Exception):
+    """The server refused a pack's size; carries what to split by and the original error."""
+
+    def __init__(self, size: int, status: str, cause: BaseException) -> None:
+        super().__init__(str(cause))
+        self.size, self.status, self.cause = size, status, cause
 
 
 class _PendingUpdate(NamedTuple):
@@ -811,6 +825,56 @@ class RemoteHelper:
         pending_updates: list[_PendingUpdate],
         max_pack_bytes: int | None = None,
     ) -> None:
+        """Upload what the pending updates need, in smaller packs if the server refuses the size.
+
+        A reverse proxy with a small body limit used to turn every large push into
+        a failure after the lock was taken, cured only by finding
+        ``doctor --upload-limit`` and setting ``seafile.gcmaxpackmib`` by hand.  A
+        refused upload now halves the pack cap and rebuilds, a few times at most;
+        a status of 413 (not a bare reset, which may be the network) also keeps
+        the cap that worked in this repository's git config for the next push.
+        """
+        cap = max_pack_bytes
+        explicit = False
+        for attempt in range(MAX_PACK_SPLITS + 1):
+            try:
+                self._upload_push_pack_once(lock, pending_updates, cap)
+            except _UploadRefused as refused:
+                smaller = split_cap_bytes(refused.size, cap)
+                if smaller is None or attempt == MAX_PACK_SPLITS:
+                    raise refused.cause from None
+                explicit = explicit or refused.status == "413"
+                sys.stderr.write(
+                    f"Warning: the server refused an upload of {format_bytes(refused.size)} "
+                    f"({'HTTP 413' if refused.status == '413' else 'the connection was closed'}); "
+                    f"building smaller packs (at most {format_bytes(smaller)}) and trying again.\n"
+                )
+                sys.stderr.flush()
+                cap = smaller
+                continue
+            if cap and cap != max_pack_bytes:
+                self._remember_pack_cap(cap, explicit)
+            return
+
+    def _remember_pack_cap(self, cap: int, persist: bool) -> None:
+        mib = max(1, cap // MIB)
+        kept = f"set seafile.gcmaxpackmib to {mib} to start there next time"
+        if persist:
+            _out, _err, code = run_git(["config", "--local", "seafile.gcmaxpackmib", str(mib)])
+            if code == 0:
+                kept = f"seafile.gcmaxpackmib is now {mib} in this repository, so later pushes start there"
+        sys.stderr.write(
+            f"Notice: this push went through in packs of at most {format_bytes(cap)}; {kept}. "
+            "'git-remote-seafile doctor <url> --upload-limit' measures the server's exact limit.\n"
+        )
+        sys.stderr.flush()
+
+    def _upload_push_pack_once(
+        self,
+        lock: RemoteLock,
+        pending_updates: list[_PendingUpdate],
+        max_pack_bytes: int | None = None,
+    ) -> None:
         """Build one pack of everything the pending updates need and upload it.
 
         Raises on any failure; the caller reports it against every pending ref.
@@ -888,18 +952,33 @@ class RemoteHelper:
                 # Index first, pack second: every reader of the remote keys on
                 # `.pack` names, so an interrupted publish leaves an inert
                 # orphan `.idx` instead of a pack whose pair never landed.
-                self.client.upload_file(
-                    self.repo_id, pack_dir, f"pack-{up_sha}.idx", up_idx, replace=True
-                )
                 started = time.monotonic()
-                self.client.upload_file(
-                    self.repo_id,
-                    pack_dir,
-                    f"pack-{up_sha}.pack",
-                    up_pack,
-                    replace=True,
-                    progress_callback=on_upload_progress,
-                )
+                try:
+                    self.client.upload_file(
+                        self.repo_id, pack_dir, f"pack-{up_sha}.idx", up_idx, replace=True
+                    )
+                    started = time.monotonic()
+                    self.client.upload_file(
+                        self.repo_id,
+                        pack_dir,
+                        f"pack-{up_sha}.pack",
+                        up_pack,
+                        replace=True,
+                        progress_callback=on_upload_progress,
+                    )
+                except TransferAborted:
+                    raise
+                except Exception as ex:
+                    status = size_refusal(ex, up_size)
+                    if status is None:
+                        raise
+                    # Nothing of this attempt may stay: the retry's packs have other names.
+                    for name in [*landed, f"pack-{up_sha}.idx", f"pack-{up_sha}.pack"]:
+                        try:
+                            self.client.delete_entry(self.repo_id, f"{pack_dir}/{name}")
+                        except Exception:
+                            pass
+                    raise _UploadRefused(up_size, status, ex) from ex
                 sent_bytes += up_size
                 sent_seconds += time.monotonic() - started
                 landed[f"pack-{up_sha}.pack"] = up_size

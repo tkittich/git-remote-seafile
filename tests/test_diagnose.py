@@ -253,7 +253,9 @@ class DoctorServerChecksTests(unittest.TestCase):
     def test_the_flags_reach_the_check(self):
         with patch.object(cli, "_doctor", return_value=0) as doctor:
             cli._cmd_doctor(["--upload-limit", "--max-mib", "8", "seafile://lib/x"])
-        doctor.assert_called_once_with("seafile://lib/x", upload_limit=True, max_mib=8)
+        doctor.assert_called_once_with(
+            "seafile://lib/x", upload_limit=True, max_mib=8, create_library=False, set_history=None
+        )
 
 
 if __name__ == "__main__":

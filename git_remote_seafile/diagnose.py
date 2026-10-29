@@ -200,6 +200,37 @@ def upload_attempt(client: Any, repo_id: str, directory: str) -> Callable[[int],
     return attempt
 
 
+#: A refusal this small is not a body limit worth splitting a push over.
+SPLIT_FLOOR_BYTES = 4 * MIB
+
+#: An upload that failed on the connection, not on a status, is read as a size
+#: refusal only for a body at least this big: a proxy that refuses a body closes
+#: the socket while it is being sent, but a reset on a small body is the network.
+RESET_MEANS_LIMIT_BYTES = 8 * MIB
+
+
+def size_refusal(exc: BaseException, size: int) -> str | None:
+    """How a failed upload of *size* bytes reads as a body limit: ``"413"``, ``"reset"`` or None."""
+    text = str(exc)
+    if "HTTP 413" in text:
+        return "413"
+    if size >= RESET_MEANS_LIMIT_BYTES and "HTTP " not in text and "Connection" in text:
+        return "reset"
+    return None
+
+
+def split_cap_bytes(refused_size: int, current_cap: int | None) -> int | None:
+    """The pack-size cap to retry with after a refusal of *refused_size* bytes, or None to give up.
+
+    Half of what was refused (or of the cap, if that was already smaller), so a
+    server that takes 48 MiB is found in a handful of rebuilds rather than one
+    per MiB.  Below :data:`SPLIT_FLOOR_BYTES` splitting stops helping.
+    """
+    base = min(refused_size, current_cap) if current_cap else refused_size
+    smaller = (base // 2) // MIB * MIB
+    return smaller if smaller >= SPLIT_FLOOR_BYTES else None
+
+
 def chunk_warning(accepted: int) -> bool:
     """True when the limit is below one chunk of a chunked upload.
 
