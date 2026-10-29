@@ -107,6 +107,16 @@ class SeafileAPIError(Exception):
     pass
 
 
+class SeafilePermanentError(SeafileAPIError):
+    """An API failure that asking again cannot change.
+
+    A missing library, a refused token and an encrypted library are the same
+    on the second try; retrying them only prints a Warning: that makes a plain
+    mistake look like a flaky server.  Subclass of :class:`SeafileAPIError`, so
+    every existing handler keeps working.
+    """
+
+
 class TransferAborted(Exception):
     """Raised by a progress callback to stop the transfer it observes.
 
@@ -766,7 +776,7 @@ class SeafileClient:
         """
         rid = self._resolve_repo_id(name_or_id)
         if rid in self._encrypted_repo_ids:
-            raise SeafileAPIError(
+            raise SeafilePermanentError(
                 f"Seafile library '{name_or_id}' is encrypted. Encrypted libraries are not "
                 "supported: the server will not serve their files over the web API without "
                 "the library password. Use an unencrypted library for the remote."
@@ -782,7 +792,7 @@ class SeafileClient:
         if resp.status_code != 200:
             if resp.status_code in (401, 403):
                 detail = resp.text.strip() or "Unauthorized"
-                raise SeafileAPIError(
+                raise SeafilePermanentError(
                     f"Failed to list repos: HTTP {resp.status_code} ({detail}).\n"
                     "Hint: check or refresh your token with 'git-remote-seafile check-auth' "
                     "or log in via the Seafile desktop client."
@@ -831,8 +841,14 @@ class SeafileClient:
             suggestions = difflib.get_close_matches(name_or_id, names, n=3, cutoff=0.5)
             hint = f" Did you mean: {', '.join(suggestions)}?" if suggestions else ""
             available = f" Available libraries: {', '.join(sorted(names))}." if names else ""
-            raise SeafileAPIError(
-                f"Seafile library not found: '{name_or_id}'.{hint}{available}"
+            # No close match usually means the library was never made: nothing
+            # creates one on first push, and the listing alone does not say so.
+            create = (
+                "" if suggestions
+                else " If it does not exist yet, create it in the Seafile web UI first."
+            )
+            raise SeafilePermanentError(
+                f"Seafile library not found: '{name_or_id}'.{hint}{available}{create}"
             )
 
         if len(matches) == 1:

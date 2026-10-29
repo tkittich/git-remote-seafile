@@ -18,7 +18,7 @@ try:
 except ImportError:  # package-style: python -m unittest tests.test_helper
     from tests._helpers import make_helper
 
-from git_remote_seafile.client import SeafileAPIError
+from git_remote_seafile.client import SeafileAPIError, SeafilePermanentError
 from git_remote_seafile.config import RemoteConfig
 from git_remote_seafile.safety import SafetyError, check_preflight_safety
 from git_remote_seafile.git_util import GitError
@@ -1752,6 +1752,28 @@ class TestRemoteHelper(unittest.TestCase):
             h.cmd_list()
         self.assertIn(f"{'a' * 40} refs/heads/main", out.getvalue())
         self.assertIn("retrying once", err.getvalue())
+
+    def test_listing_does_not_retry_an_error_a_second_try_cannot_change(self):
+        # A library that does not exist is the same on the second listing; the
+        # retry used to print "retrying once" and fail identically.
+        h = make_helper()
+        h.client = MagicMock()
+        h.repo_id = "repo1"
+        h.repo_path = "/git-repo"
+        calls = {"n": 0}
+
+        def missing(c, r, p, ns, **kw):
+            calls["n"] += 1
+            raise SeafilePermanentError("Seafile library not found: 'nolib'.")
+
+        err = io.StringIO()
+        with patch("git_remote_seafile.helper.iter_refs", side_effect=missing), \
+                patch("git_remote_seafile.helper.time.sleep"), \
+                patch("sys.stdout", io.StringIO()), patch("sys.stderr", err):
+            with self.assertRaises(SeafilePermanentError):
+                h.cmd_list()
+        self.assertEqual(calls["n"], 1)
+        self.assertNotIn("retrying once", err.getvalue())
 
     def test_listing_fails_rather_than_advertise_part_of_the_repository(self):
         h = make_helper()

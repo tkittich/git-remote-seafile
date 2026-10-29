@@ -14,6 +14,7 @@ from .client import (
     REF_WRITE_READ_TIMEOUT_SECONDS,
     SeafileClient,
     SeafileAPIError,
+    SeafilePermanentError,
     TransferAborted,
 )
 from .config import RemoteConfig
@@ -421,6 +422,10 @@ class RemoteHelper:
             try:
                 self._discover_refs(discovered_refs)
                 break
+            except SeafilePermanentError:
+                # A missing library or a refused token is the same on the second
+                # try; the retry only added a Warning: that read like a flaky server.
+                raise
             except SeafileAPIError as ex:
                 # A refs directory that its parent listed and that then 404s is
                 # a branch deleted between the two requests (the second listing

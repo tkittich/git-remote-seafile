@@ -16,6 +16,7 @@ from git_remote_seafile.client import (
     SeafileAPIError,
     SeafileAuthError,
     SeafileClient,
+    SeafilePermanentError,
     StreamingMultipartFile,
 )
 
@@ -558,6 +559,9 @@ class TestClientAPI(unittest.TestCase):
         self.assertIn("Seafile library not found: 'zzzzzzzz'", msg)
         self.assertNotIn("Did you mean", msg)
         self.assertIn("Available libraries: Documents", msg)
+        # Nothing creates a library on first push, so say where it is made.
+        self.assertIn("create it in the Seafile web UI", msg)
+        self.assertIsInstance(ctx.exception, SeafilePermanentError)
 
     def test_get_repo_id_duplicate_owned_beats_shared(self):
         mock_resp = MagicMock(status_code=200)
