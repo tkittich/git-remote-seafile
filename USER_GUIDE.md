@@ -217,6 +217,15 @@ The six alternatives people reach for first — a live working tree in a synced 
 > stages through `--pathspec-from-file`; without exclusions it stages with a
 > plain `git add`, where 2.20 is enough.
 
+### Recommended: an isolated tool install
+`uv` and `pipx` each install the package into its own environment and put `git-remote-seafile` and `git-seafile-snapshot` on your `PATH`, which is where Git has to find the helper:
+```bash
+uv tool install git+https://github.com/tkittich/git-remote-seafile.git
+# or
+pipx install git+https://github.com/tkittich/git-remote-seafile.git
+```
+To upgrade, repeat the command with `--force`. Then run `git-remote-seafile doctor` to check the login. The two sections below install from a checkout, for development.
+
 ### Windows Installation
 1. Clone or download `git-remote-seafile`:
    ```powershell

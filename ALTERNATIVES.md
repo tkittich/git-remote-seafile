@@ -110,6 +110,7 @@ Before developing `git-remote-seafile`, extensive real-world testing and diagnos
 | **Live Sync in Seafile** | ❌ 1,500+ cycles/day | ❌ Freezes `.git/*.lock` | ❌ 1,749 SFConflict files | Normal Git CLI | ❌ Unusable |
 | **Sync Pause / Resume** | ⚠️ High on resume | ❌ Collisions on unpause | ❌ Destructive conflicts | Manual toggle | ❌ Unviable |
 | **Seafile Ignore Rules** | ❌ Buggy on dot-dirs | ❌ Doesn't fix synced dirs | ❌ Desyncs `.git/` from code | Config file | ❌ Unviable |
+| **Patched Sync Daemon** (`vacaboja/seafile` inotify fork) | ❌ Still syncs `.git/` | ❌ Still syncs `.git/*.lock`, freezing secondary machines | ❌ Multi-file commits sync out of order (`fatal: bad object HEAD`) | Linux only; pins `seafile-daemon` (9.0.18+1) via `apt-mark hold` | ❌ Incomplete: fixes an inotify drop bug, not the concurrency model |
 | **OneDrive / Dropbox** | ❌ File placeholder lag | ❌ Corrupts refs & index | ❌ Broken commit graphs | Normal Git CLI | ❌ Unusable |
 | **Git Bundles in Sync** | ✅ Zero | ✅ Safe single file | ⚠️ Manual unpack | ❌ Manual bundle cmds | ⚠️ Archive only |
 | **Bare Repo in Sync** | ⚠️ Moderate churn | ❌ Ref file conflicts | ❌ Async ref collisions | Standard Git CLI | ❌ Fragile |

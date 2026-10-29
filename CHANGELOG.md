@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Ease of use: fewer first-run surprises, no new settings, nothing about what is stored changes.
+
+### Added
+- **`git-remote-seafile config`** prints every behavioural setting (`seafile.*` git config keys and their environment variables), the value in force and where it comes from (default, git config, environment). It uses the helper's own readers, so the trusted-scope keys show what the helper would use.
+
+### Changed
+- **A library that does not exist is no longer retried.** The ref listing retried any API error once, so a plain mistake printed `Warning: ... retrying once.` and then failed identically. A missing library, a refused token while listing libraries and an encrypted library now fail at once, and a miss with no close match says libraries are created in the Seafile web UI.
+- **`git seafile-snapshot` with nowhere to push prints a `Warning:`** (it printed one quiet line and exited 0), so `--exit-warnings` returns 3 for a scheduled job whose remote was never set. `--no-push` on purpose keeps the old line.
+- **`git seafile-snapshot --help` groups the options** under everyday options, restore and verify, scheduled runs, housekeeping and advanced options, before the payload groups.
+- **The README leads with a five-step quick start** (`uv tool install` or `pipx install`, `doctor`, `git remote add`, `git push`, `git clone`); the comparison and the alternatives tables live in `ALTERNATIVES.md` only, which gains the patched-daemon row they had here.
+
 ## [0.9.18] - 2026-10-28
 
 The fixes from a three-reviewer targeted review of v0.9.17. The one that matters: a retention run could delete the objects of a branch the helper's listing had skipped, even in the mode that exists to prevent that.
