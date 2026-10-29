@@ -319,6 +319,8 @@ No manual configuration or token entry is required!
 
 ### Method B: Configuration File (`~/.git-seafile.json`)
 Ideal for headless servers, secondary machines, or CI runners:
+
+**The easy way:** run `git-remote-seafile login`. It asks for the server, your username and password (and a two-factor code if the server wants one), gets a token from the server's own token endpoint and writes this file with owner-only permissions. The password is read from the terminal, sent once and never stored; plain `http://` servers other than localhost are refused, since the password would travel readable. The file holds one account, so logging in to a second server replaces the first (with a note). By hand:
 Create `~/.git-seafile.json` in your user home directory:
 ```json
 {

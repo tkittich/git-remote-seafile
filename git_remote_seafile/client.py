@@ -634,12 +634,13 @@ class SeafileClient:
             detail = " (" + "; ".join(skipped) + ")" if skipped else ""
             return (
                 f"Could not find Seafile credentials for '{self.server_url}'{detail}. "
-                "Set SEAFILE_TOKEN or configure ~/.git-seafile.json"
+                "Set SEAFILE_TOKEN or configure ~/.git-seafile.json "
+                "(or run 'git-remote-seafile login')"
             )
         if require_token:
             return (
                 "Could not find Seafile credentials. Set SEAFILE_SERVER and SEAFILE_TOKEN "
-                "or configure ~/.git-seafile.json"
+                "or configure ~/.git-seafile.json (or run 'git-remote-seafile login')"
             )
         return (
             "Could not determine the Seafile server URL. Set SEAFILE_SERVER or "

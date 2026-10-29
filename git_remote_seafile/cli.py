@@ -55,6 +55,9 @@ _COMMANDS: tuple[tuple[str, str, str, tuple[tuple[str, str], ...]], ...] = (
      "Test connection and discover refs", ()),
     ("check-safety", "git-remote-seafile check-safety <seafile://url>",
      "Run pre-flight safety checks (Trap 1 & 2)", ()),
+    ("login", "git-remote-seafile login [<server>] [--user NAME]",
+     "Sign in with your username and password and save the API token (no desktop client needed)",
+     (("--user NAME", "The account to sign in as (asked for when omitted)"),)),
     ("check-auth", "git-remote-seafile check-auth",
      "Verify active Seafile login", ()),
     ("gc", "git-remote-seafile gc <seafile://url> [--min-packs N | --tail]",
@@ -845,6 +848,16 @@ def _cmd_snapshot(rest: list[str]) -> int:
         return int(exc.code) if isinstance(exc.code, int) else (0 if exc.code is None else 2)
 
 
+def _cmd_login(rest: list[str]) -> int:
+    from .login import run_login
+    known = ""
+    try:
+        known = SeafileClient(require_credentials=False).server_url
+    except Exception:
+        pass
+    return run_login(rest, known_server=known)
+
+
 def _cmd_config(rest: list[str]) -> int:
     if rest:
         return _usage("config")
@@ -864,6 +877,7 @@ _HANDLERS = {
     "config": _cmd_config,
     "test": _cmd_test,
     "check-safety": _cmd_check_safety,
+    "login": _cmd_login,
     "check-auth": _cmd_check_auth,
     "gc": _cmd_gc,
     "repair": _cmd_repair,

@@ -32,7 +32,7 @@ git clone seafile://code/myproject
 
 `code` is a library on your Seafile server. It is **not created for you**: make it once in the web UI (**New Library**), leave it **unsynced** in the desktop client, and set its history to a few days (*Library settings -> History Setting*) -- Git is already the history, see [User Guide 8.0.1](USER_GUIDE.md#801-library-history-setting). Nothing else needs configuring; every setting has a default, and `git-remote-seafile config` shows the ones in force.
 
-No desktop client (a server, CI)? Set `SEAFILE_SERVER` and `SEAFILE_TOKEN`, or write `~/.git-seafile.json` -- [User Guide 6](USER_GUIDE.md#6-authentication--configuration). Installing from a checkout instead: `pip install -e .`. This repository ships wheels and sdists as [GitHub Release](https://github.com/tkittich/git-remote-seafile/releases) assets; PyPI publication is deferred to the official Seafile repository once this code is merged upstream.
+No desktop client? Run `git-remote-seafile login`. For a script or CI set `SEAFILE_SERVER` and `SEAFILE_TOKEN`, or write `~/.git-seafile.json` -- [User Guide 6](USER_GUIDE.md#6-authentication--configuration). Installing from a checkout instead: `pip install -e .`. This repository ships wheels and sdists as [GitHub Release](https://github.com/tkittich/git-remote-seafile/releases) assets; PyPI publication is deferred to the official Seafile repository once this code is merged upstream.
 
 Something not working? `git-remote-seafile doctor <url>` checks, in order, the login, how the URL is read, the safety guards and write access, and says which step failed.
 
@@ -67,6 +67,7 @@ Something not working? `git-remote-seafile doctor <url>` checks, in order, the l
 
 | Command | Description |
 | :--- | :--- |
+| `git-remote-seafile login [server] [--user NAME]` | Sign in with your username and password (and a two-factor code if the server asks) and save the API token to `~/.git-seafile.json`. For machines without the Seafile desktop client; the password is never stored. |
 | `git-remote-seafile check-auth` | Verify authentication credentials against the Seafile server. |
 | `git-remote-seafile config` | Show every behavioural setting (`seafile.*` git config keys and their environment variables), its effective value and where the value comes from. |
 | `git-remote-seafile check-safety <url>` | Test pre-flight safety guardrails (Trap 1 & 2 path collisions). |
