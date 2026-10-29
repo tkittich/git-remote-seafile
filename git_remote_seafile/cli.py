@@ -82,6 +82,11 @@ _COMMANDS: tuple[tuple[str, str, str, tuple[tuple[str, str], ...]], ...] = (
      (("--dry-run", "Report the broken refs without uploading anything"),)),
     ("lfs-transfer", "git-remote-seafile lfs-transfer <seafile://url>",
      "Git LFS Custom Transfer Agent", ()),
+    ("lfs-setup", "git-remote-seafile lfs-setup [<seafile://url>] [--all-remotes]",
+     "Point Git LFS in this repository at Seafile (the library comes from its seafile:// remote)",
+     (("--all-remotes",
+       "Also set lfs.standalonetransferagent when the repository has non-Seafile remotes "
+       "(it applies to every remote)"),)),
     ("set-head", "git-remote-seafile set-head <seafile://url> <branch>",
      "Set default branch (HEAD) on remote", ()),
     ("lock-status", "git-remote-seafile lock-status <seafile://url>",
@@ -949,6 +954,11 @@ def _cmd_login(rest: list[str]) -> int:
     return run_login(rest, known_server=known)
 
 
+def _cmd_lfs_setup(rest: list[str]) -> int:
+    from .lfs_setup import run_lfs_setup
+    return run_lfs_setup(rest)
+
+
 def _cmd_config(rest: list[str]) -> int:
     if rest:
         return _usage("config")
@@ -973,6 +983,7 @@ _HANDLERS = {
     "gc": _cmd_gc,
     "repair": _cmd_repair,
     "lfs-transfer": _cmd_lfs_transfer,
+    "lfs-setup": _cmd_lfs_setup,
     "set-head": _cmd_set_head,
     "lock-status": _cmd_lock_status,
     "unlock": _cmd_unlock,

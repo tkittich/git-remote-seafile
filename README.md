@@ -75,6 +75,7 @@ Something not working? `git-remote-seafile doctor <url>` checks, in order, the l
 | `git-remote-seafile lock-status <url>` | Inspect remote repository lock status and lease holder details. |
 | `git-remote-seafile unlock <url> [--force]` | Release a held lock or forcibly break an abandoned lock. |
 | `git-remote-seafile gc <url> [--min-packs N]` | Consolidate and delta-compress remote packfiles. Fail-closed: refuses to compact if any pack fails to download or verify, or if refs sit outside heads/tags. An automatic version runs by default (`seafile.autogc`, on): after a qualifying push it tail-merges only the small packs (below half of `seafile.gcmaxpackmib`) inline, within a bounded download budget — large packs are frozen and never count toward the threshold. Set `git config seafile.autogc false` to be only warned. |
+| `git-remote-seafile lfs-setup [url] [--all-remotes]` | Point Git LFS in the current repository at Seafile: writes the four `lfs.*` settings, taking the library from the repository's own `seafile://` remote. Safe to re-run; it will not send other remotes' large files to Seafile unless told to. |
 | `git-remote-seafile lfs-transfer <url>` | Git LFS Custom Transfer Agent—invoked by Git LFS itself once you point it here (`git config lfs.customtransfer.seafile.*`, see [USER_GUIDE.md](USER_GUIDE.md)). No manual invocation needed. |
 | `git-remote-seafile set-head <url> <branch>` | Set default branch (`HEAD`) pointer after verifying branch exists. |
 | `git-remote-seafile test <url>` | Discover refs and verify connectivity without cloning. |

@@ -767,7 +767,9 @@ Another client's push arriving during a merge waits for the lock and, after `sea
 `git-remote-seafile` implements the official **Git LFS Custom Transfer Agent** protocol. You can store multi-gigabyte models, datasets, or video assets in Seafile while keeping Git repository history fast and light.
 
 ### 11.1 Configure Git LFS in Your Repository
-In your local repository:
+**The easy way:** in the repository, run `git-remote-seafile lfs-setup`. It reads the library from the repository's `seafile://` remote (or from a URL you pass), writes the settings below, and is safe to run again, which is also how you repoint LFS after the remote moves. If the repository has other remotes it leaves `lfs.standalonetransferagent` alone and warns (see the warning below); `--all-remotes` sets it anyway. It also warns when `git-remote-seafile` is not on `PATH` or Git LFS is not installed.
+
+By hand, in your local repository:
 ```bash
 # 1. Enable custom transfer agent
 git config lfs.customtransfer.seafile.path git-remote-seafile
