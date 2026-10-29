@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 from .helper import RemoteHelper
-from .client import SeafileAuthError, SeafileClient
+from .client import SeafileAuthError, SeafileClient, SeafilePermanentError
 from .lock import RemoteLock, RepositoryLockedError
 from .safety import (
     SafetyError,
@@ -30,6 +30,12 @@ from .diagnose import (
     recommended_pack_mib,
     upload_attempt,
 )
+from .library_setup import (
+    RECOMMENDED_HISTORY_DAYS,
+    create_library as make_library,
+    history_finding,
+    looks_like_library_id,
+)
 from .units import format_bytes
 from .url import mask_url
 
@@ -41,9 +47,13 @@ from .url import mask_url
 # nowhere -- `--min-packs` and `--force` appeared only in the strings that
 # happened to print when the command was called wrongly.
 _COMMANDS: tuple[tuple[str, str, str, tuple[tuple[str, str], ...]], ...] = (
-    ("doctor", "git-remote-seafile doctor [<seafile://url>] [--upload-limit [--max-mib N]]",
+    ("doctor", "git-remote-seafile doctor [<seafile://url>] [--create-library] [--set-history DAYS] [--upload-limit [--max-mib N]]",
      "Check login, library, safety, write access and conflict copies in one go",
-     (("--upload-limit",
+     (("--create-library",
+       f"Create the library when it does not exist (with {RECOMMENDED_HISTORY_DAYS} days of "
+       "history); on a terminal doctor asks instead"),
+      ("--set-history DAYS", "Change how many days of history the library keeps (1 to 3650)"),
+      ("--upload-limit",
        "Also measure the largest single upload the server accepts and print the "
        "seafile.gcmaxpackmib that fits (uploads up to 1023 MiB of zeros into a "
        "scratch folder, deleted afterwards)"),
@@ -233,7 +243,65 @@ def _account_email(resp: Any) -> str | None:
     return str(info.get("email") or "(no email reported)")
 
 
-def _doctor(url: str | None, *, upload_limit: bool = False, max_mib: int | None = None) -> int:
+def _ensure_library(helper: Any, create: bool) -> str | None:
+    """Make sure the library exists, creating it when asked; an error message, or None.
+
+    The one place a missing library is not simply reported: a first-time user
+    reads "not found" as a dead end, and the web-UI step it sends them to is
+    exactly what ``--create-library`` does (with a short history, which the
+    README asks for as well).
+    """
+    try:
+        _ = helper.repo_id  # resolving it is what raises for a missing library
+        return None
+    except SeafilePermanentError as ex:
+        name = helper.library_name
+        if not str(ex).startswith("Seafile library not found") or looks_like_library_id(name):
+            return str(ex)
+        if not create and sys.stdin.isatty():
+            print(f"       {ex}")
+            try:
+                answer = input(f"Create library '{name}' on {helper.client.server_url} now? [y/N] ")
+            except (EOFError, KeyboardInterrupt):
+                # Windows reports the NUL device as a terminal; no answer is a no.
+                print()
+                answer = ""
+            create = answer.strip().lower() in ("y", "yes")
+        if not create:
+            print(f"Hint: re-run with --create-library to create '{name}'")
+            return str(ex)
+        try:
+            rid, history_set = make_library(helper.client, name)
+        except Exception as create_ex:
+            return f"could not create library '{name}': {create_ex}"
+        helper.repo_id = rid
+        print(f"[ ok ] created library '{name}'"
+              + (f", keeping {RECOMMENDED_HISTORY_DAYS} days of history" if history_set else ""))
+        if not history_set:
+            print(f"Warning: the history of '{name}' could not be set; "
+                  "set it in the web UI (Library settings -> History Setting)")
+        return None
+    except Exception as ex:
+        return str(ex)
+
+
+def _doctor_history(helper: Any, set_history: int | None) -> None:
+    """Report (and with ``--set-history`` change) how long the library keeps history."""
+    if set_history is not None:
+        if helper.client.set_history_limit(helper.repo_id, set_history):
+            print(f"[ ok ] the library now keeps {set_history} days of history")
+        else:
+            print(f"Warning: the server did not accept a history of {set_history} days; "
+                  "set it in the web UI (Library settings -> History Setting)")
+    level, text = history_finding(helper.client.get_history_limit(helper.repo_id))
+    if level == "ok":
+        print(f"[ ok ] {text}")
+    elif level == "warn":
+        print(f"Warning: {text}")
+
+
+def _doctor(url: str | None, *, upload_limit: bool = False, max_mib: int | None = None,
+            create_library: bool = False, set_history: int | None = None) -> int:
     """Run every first-use check in order and say what to do next.
 
     Stops at the first failing step: each step needs the one before it.  With no
@@ -277,6 +345,10 @@ def _doctor(url: str | None, *, upload_limit: bool = False, max_mib: int | None 
     if helper.path_defaulted:
         print(f"       (no path was given; '{helper.repo_path}' is the default)")
 
+    problem = _ensure_library(helper, create_library)
+    if problem:
+        return fail(problem)
+
     try:
         wt = get_local_work_tree()
         check_preflight_safety(
@@ -302,6 +374,7 @@ def _doctor(url: str | None, *, upload_limit: bool = False, max_mib: int | None 
     if landed != PROBE_BYTES or not removed:
         return fail(f"write probe did not round-trip cleanly in {helper.repo_path}")
     ok(f"can write and delete in {helper.repo_path}")
+    _doctor_history(helper, set_history)
 
     try:
         copies, capped = find_conflict_copies(helper.client, helper.repo_id, helper.repo_path)
@@ -431,7 +504,7 @@ def _cmd_check_auth(rest: list[str]) -> int:
 
 
 def _cmd_doctor(rest: list[str]) -> int:
-    positional = _positional_args(rest, value_options=("--max-mib",))
+    positional = _positional_args(rest, value_options=("--max-mib", "--set-history"))
     max_mib: int | None = None
     for index, arg in enumerate(rest):
         raw = (rest[index + 1] if index + 1 < len(rest) else "") if arg == "--max-mib"             else arg.split("=", 1)[1] if arg.startswith("--max-mib=") else None
@@ -450,8 +523,26 @@ def _cmd_doctor(rest: list[str]) -> int:
     if max_mib is not None and "--upload-limit" not in rest:
         sys.stderr.write("Error: --max-mib only applies with --upload-limit\n")
         return 2
-    return _doctor(positional[0] if positional else None,
-                   upload_limit="--upload-limit" in rest, max_mib=max_mib)
+    set_history: int | None = None
+    for index, arg in enumerate(rest):
+        raw = (rest[index + 1] if index + 1 < len(rest) else "") if arg == "--set-history"             else arg.split("=", 1)[1] if arg.startswith("--set-history=") else None
+        if raw is None:
+            continue
+        try:
+            set_history = int(raw)
+        except ValueError:
+            set_history = 0
+        if not 1 <= set_history <= 3650:
+            sys.stderr.write(
+                f"Error: --set-history needs a whole number of days from 1 to 3650, got '{raw}'\n"
+            )
+            return 2
+    url = positional[0] if positional else None
+    if url is None and (set_history is not None or "--create-library" in rest):
+        sys.stderr.write("Error: --create-library and --set-history need a <seafile://url> to act on\n")
+        return 2
+    return _doctor(url, upload_limit="--upload-limit" in rest, max_mib=max_mib,
+                   create_library="--create-library" in rest, set_history=set_history)
 
 
 def _cmd_check_safety(rest: list[str]) -> int:

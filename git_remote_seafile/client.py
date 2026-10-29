@@ -1515,6 +1515,50 @@ class SeafileClient:
             return True
         return False
 
+    def create_library(self, name: str) -> str:
+        """Create an unencrypted library called *name* and return its id."""
+        resp = self.session.post(
+            f"{self.server_url}/api2/repos/", data={"name": name}, timeout=self.timeout
+        )
+        if resp.status_code not in (200, 201):
+            raise SeafileAPIError(
+                f"Failed to create library '{name}': HTTP {resp.status_code} {resp.text.strip()[:200]}"
+            )
+        try:
+            body = resp.json()
+        except ValueError:
+            body = None
+        rid = (body.get("repo_id") or body.get("id")) if isinstance(body, dict) else None
+        if not isinstance(rid, str) or not rid:
+            raise SeafileAPIError(
+                f"The server created '{name}' but did not return its id; check the Seafile web UI"
+            )
+        self._repos_cache[name] = rid
+        return rid
+
+    def get_history_limit(self, repo_id: str) -> int | None:
+        """How many days of history the library keeps (-1 all, 0 none), or None if unreadable."""
+        try:
+            resp = self.session.get(
+                f"{self.server_url}/api2/repos/{repo_id}/history-limit/", timeout=self.timeout
+            )
+            days = resp.json().get("keep_days") if resp.status_code == 200 else None
+        except (requests.RequestException, ValueError, AttributeError):
+            return None
+        return days if isinstance(days, int) and not isinstance(days, bool) else None
+
+    def set_history_limit(self, repo_id: str, days: int) -> bool:
+        """Keep *days* days of history (-1 all, 0 none); True when the server accepted it."""
+        try:
+            resp = self.session.put(
+                f"{self.server_url}/api2/repos/{repo_id}/history-limit/",
+                data={"keep_days": str(days)},
+                timeout=self.timeout,
+            )
+        except requests.RequestException:
+            return False
+        return resp.status_code == 200
+
     def _forget_dirs_under(self, repo_id: str, path: str) -> None:
         """Drop the "this directory exists" memory for *path* and everything below it.
 

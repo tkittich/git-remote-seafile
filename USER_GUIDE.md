@@ -366,6 +366,12 @@ git-remote-seafile doctor seafile://code/myproject
 It reports the login, **how the URL was interpreted** (server, library, path), the safety guards, a write-and-delete probe inside the repository path, and a walk of that path for **Seafile conflict copies** (a copy under `refs/` stops `gc` for good; the check lists them and fails until they are resolved, [RUNBOOK §5](RUNBOOK.md)). With no URL it checks only the login.
 
 ```bash
+git-remote-seafile doctor seafile://code/myproject --create-library
+git-remote-seafile doctor seafile://code/myproject --set-history 30
+```
+`--create-library` creates the library when it does not exist, unencrypted and with 30 days of history (without the flag, doctor on a terminal asks; a script gets a hint). `doctor` also reads the library's history setting and prints a `Warning:` when it keeps everything (removed packs then stay on the server) or nothing (no undo for a mistaken `gc`); `--set-history DAYS` changes it. See [8.0.1](#801-library-history-setting).
+
+```bash
 git-remote-seafile doctor seafile://code/myproject --upload-limit
 ```
 `--upload-limit` also measures **the largest single upload the server accepts**. The default pack cap (`seafile.gcmaxpackmib`, 1 GiB) is one deployment's number: a reverse proxy with a smaller body limit (nginx's `client_max_body_size`) turns every large push into a failure after the lock is taken. The probe uploads zeros into a scratch folder under the repository path, largest first (one upload in the usual case where nothing limits it, then a search between 1 MiB and the largest body tried), deletes them, and prints the cap that fits with a fifth to spare: `git config seafile.gcmaxpackmib 76`. It exits 1 when your cap is larger than the limit. `--max-mib N` lowers the largest body tried (default 1023: from 1 GiB the client sends 128 MiB chunks, a different request). A proxy usually answers 413 and closes the connection while the body is still being sent, so the log of tries may say "the connection was closed during the upload" instead of a status; that is a refusal too. A limit below 128 MiB also refuses the chunks, and a file of 1 GiB or more cannot then be pushed at all; the probe says so. Measured on the author's server (CE 13.0.28): 1023 MiB accepted in one upload.
