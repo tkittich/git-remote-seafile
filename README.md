@@ -162,6 +162,7 @@ git clone seafile://seafile.example.com/code/myproject
 | Command | Description |
 | :--- | :--- |
 | `git-remote-seafile check-auth` | Verify authentication credentials against the Seafile server. |
+| `git-remote-seafile config` | Show every behavioural setting (`seafile.*` git config keys and their environment variables), its effective value and where the value comes from. |
 | `git-remote-seafile check-safety <url>` | Test pre-flight safety guardrails (Trap 1 & 2 path collisions). |
 | `git-remote-seafile doctor [url] [--upload-limit]` | One-shot first-use check: login, how the URL is interpreted, safety guards, a write/delete probe and a search for conflict copies; `--upload-limit` also measures the largest upload the server or its proxy accepts and prints the matching `seafile.gcmaxpackmib`. |
 | `git-remote-seafile lock-status <url>` | Inspect remote repository lock status and lease holder details. |

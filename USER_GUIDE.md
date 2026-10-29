@@ -384,6 +384,8 @@ Every subcommand follows one convention, so scripts can rely on it:
 | `seafile.locktimeout` | — | `15` | Seconds to wait for the remote lock *since the queue last moved*: a waiter whose turn is getting closer keeps waiting, so a push behind several others can wait longer in total (capped at the larger of 10 x this and 120 s). |
 | `seafile.locklease` | — | `60` | Duration in seconds before an inactive lock lease is considered expired. |
 
+`git-remote-seafile config` prints this table for your machine: each setting, the value in force and where it comes from (the environment, your git config, or the default).
+
 ```bash
 # Examples
 git config seafile.autogc false

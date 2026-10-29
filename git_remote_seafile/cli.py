@@ -49,6 +49,8 @@ _COMMANDS: tuple[tuple[str, str, str, tuple[tuple[str, str], ...]], ...] = (
        "scratch folder, deleted afterwards)"),
       ("--max-mib N", "With --upload-limit: the largest body to try (default 1023, the most "
                       "one request can be before the client sends chunks)"))),
+    ("config", "git-remote-seafile config",
+     "Show every behavioural setting, its value and where the value comes from", ()),
     ("test", "git-remote-seafile test <seafile://url>",
      "Test connection and discover refs", ()),
     ("check-safety", "git-remote-seafile check-safety <seafile://url>",
@@ -843,6 +845,14 @@ def _cmd_snapshot(rest: list[str]) -> int:
         return int(exc.code) if isinstance(exc.code, int) else (0 if exc.code is None else 2)
 
 
+def _cmd_config(rest: list[str]) -> int:
+    if rest:
+        return _usage("config")
+    from .settings_report import effective_settings, format_report
+    print(format_report(effective_settings()))
+    return 0
+
+
 def _cmd_version(rest: list[str]) -> int:
     from . import __version__
     print(f"git-remote-seafile v{__version__}")
@@ -851,6 +861,7 @@ def _cmd_version(rest: list[str]) -> int:
 
 _HANDLERS = {
     "doctor": _cmd_doctor,
+    "config": _cmd_config,
     "test": _cmd_test,
     "check-safety": _cmd_check_safety,
     "check-auth": _cmd_check_auth,
