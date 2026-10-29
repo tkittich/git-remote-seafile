@@ -796,7 +796,7 @@ class SeafileClient:
                 raise SeafilePermanentError(
                     f"Failed to list repos: HTTP {resp.status_code} ({detail}).\n"
                     "Hint: check or refresh your token with 'git-remote-seafile check-auth' "
-                    "or log in via the Seafile desktop client."
+                    "or log in again with 'git-remote-seafile login' (or the Seafile desktop client)."
                 )
             raise SeafileAPIError(f"Failed to list repos: HTTP {resp.status_code} {resp.text}")
 

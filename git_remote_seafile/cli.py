@@ -327,7 +327,7 @@ def _doctor(url: str | None, *, upload_limit: bool = False, max_mib: int | None 
     except Exception as ex:
         return fail(f"no usable login: {ex}")
     if resp.status_code != 200:
-        return fail(f"{client.server_url} rejected the token (HTTP {resp.status_code}); log in again")
+        return fail(f"{client.server_url} rejected the token (HTTP {resp.status_code}); run 'git-remote-seafile login' to sign in again")
     email = _account_email(resp)
     if email is None:
         return fail(

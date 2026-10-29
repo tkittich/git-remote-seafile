@@ -164,6 +164,23 @@ class TestHistory(unittest.TestCase):
         self.assertIn("whole number of days from 1 to 3650", err.getvalue())
 
 
+class TestAuthHintsNameLogin(unittest.TestCase):
+    def test_doctor_with_a_rejected_token_says_how_to_sign_in_again(self):
+        helper = _Helper(exists=True)
+        helper.client.session.get.return_value = MagicMock(status_code=401)
+        code, out, _ = run_doctor(helper)
+        self.assertEqual(code, 1)
+        self.assertIn("rejected the token (HTTP 401); run 'git-remote-seafile login'", out)
+
+    def test_a_refused_library_listing_names_login(self):
+        client = SeafileClient(server_url="https://s.example", token="t", require_credentials=False)
+        client.session = MagicMock()
+        client.session.get.return_value = MagicMock(status_code=401, text="")
+        with self.assertRaises(SeafilePermanentError) as ctx:
+            client.get_repo_id("code")
+        self.assertIn("log in again with 'git-remote-seafile login'", str(ctx.exception))
+
+
 class TestClientLibraryCalls(unittest.TestCase):
     def setUp(self):
         self.client = SeafileClient(server_url="https://s.example", token="t", require_credentials=False)
