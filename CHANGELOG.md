@@ -7,8 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Found by walking the README quick start on a clean Debian user (pipx, nothing else), plus the V7 lead from the 0.9.17 review.
+
+### Fixed
+- **`--payload-gc --payload-delete` could delete live objects when it read a damaged vault in place (ROADMAP V7).** `cat-file --batch-check` words a commit with no manifest and a commit whose manifest blob is gone the same way (`<spec> missing`, measured), so a vault with a deleted object file lost a manifest silently and its payload objects looked unused (shown: 0 referenced objects instead of 1). Retention now refuses a shallow or partial vault, and for one read in place lists every reachable object and refuses on a missing one. A remote's history was already covered by git's own connectivity check on fetch. PAYLOAD.md A35.
+
+### Added
+- **`doctor` warns when a repository's Git LFS settings name a library its remote no longer does** (the library is spelled in both places, so a moved remote left large files going to the old one). It points at `lfs-setup`.
+- **Scheduler recipes** for cron, a systemd user timer and Windows Task Scheduler, with the exit-code convention as the alert: [SNAPSHOT_GUIDE.md](SNAPSHOT_GUIDE.md) section 10.
+
 ### Changed
-- **The documents are reorganized, with nothing removed.** The snapshot chapter (User Guide section 15, a quarter of the guide) is now [SNAPSHOT_GUIDE.md](SNAPSHOT_GUIDE.md), renumbered 1 to 9; `USER_GUIDE.md` keeps a section 15 stub with a table from the old numbers, so notes that cite `§15.9` still lead somewhere. The per-release "Upgrading to…" notes moved from the middle of User Guide section 5 to [UPGRADING.md](UPGRADING.md), and the User Guide has a table of contents. Both new files ship in the sdist.
+- **The credentials warning is said when the set of paths is new, not on every run.** It was documented as per-run, and it made `--exit-warnings` exit 3 for ever on any tree with a `.env`, so a scheduled job could not tell "something is wrong" from "as before". The vault remembers a digest of what it last warned about; a changed set warns again, and a dry run never uses the warning up. A run that relied on seeing the warning every time will see it once.
+- **`git seafile-snapshot help`** prints the help (and `-h` still does): git reads `git seafile-snapshot --help` itself and looks for a man page, which the tool does not ship. The help says so.
+- **The "library not found" message names `doctor <url> --create-library`**, and `doctor`'s hint comes after its `[FAIL]` line, not before.
+- **The documents are reorganized, with nothing removed.** The snapshot chapter (User Guide section 15, a quarter of the guide) is now [SNAPSHOT_GUIDE.md](SNAPSHOT_GUIDE.md), renumbered 1 to 9 (its section 10, scheduling, is new); `USER_GUIDE.md` keeps a section 15 stub with a table from the old numbers, so notes that cite `§15.9` still lead somewhere. The per-release "Upgrading to…" notes moved from the middle of User Guide section 5 to [UPGRADING.md](UPGRADING.md), and the User Guide has a table of contents. Both new files ship in the sdist.
 
 ## [0.9.19] - 2026-10-29
 

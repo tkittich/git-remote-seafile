@@ -15,6 +15,7 @@ How to take, restore and verify whole-tree snapshots of a working directory, ign
 - [7. What it costs](#7-what-it-costs)
 - [8. Keeping the vault small](#8-keeping-the-vault-small)
 - [9. Large payloads: payload mode](#9-large-payloads-payload-mode)
+- [10. Running it on a schedule](#10-running-it-on-a-schedule)
 
 ---
 
@@ -382,3 +383,93 @@ What to know:
 The specification, the requirements and the review that shaped it are
 [PAYLOAD.md](PAYLOAD.md); the measurements are in
 [SNAPSHOT.md section 15.1](SNAPSHOT.md).
+
+
+## 10. Running it on a schedule
+
+A backup that depends on remembering to run it is not one. After the first run by hand -- which
+chooses the remote, answers the exclusion question and is remembered by the vault -- a scheduled job
+is the bare command from inside the source (or `git seafile-snapshot /path/to/source` from anywhere).
+
+Three things to settle first:
+
+- **Credentials the job can see.** The scheduler runs as a user, often with a smaller environment than
+  your shell. The Seafile desktop client's account is found automatically for that same user;
+  otherwise run `git-remote-seafile login` as that user (it writes `~/.git-seafile.json`) or set
+  `SEAFILE_SERVER` and `SEAFILE_TOKEN` in the job.
+- **A way to hear about trouble.** Run with `--exit-warnings`: the exit code is `0` for a clean run,
+  `1` for a failure and `3` for a run that completed but printed a `Warning:`. Every scheduler below
+  shows the last exit code, so "not 0" is the alert. `--json` makes the output one document for a
+  log shipper. The warning that a file looks like a credential is said when that set of files is new, not on every
+  run, so a tree with a `.env` does not exit `3` for ever.
+- **A full path to the command.** A scheduler's `PATH` is short. `uv tool install` and `pipx install`
+  put `git-seafile-snapshot` in `~/.local/bin` (`%USERPROFILE%\.local\bin` on Windows).
+
+Once a week is also a good moment for `git seafile-snapshot --restore-drill`, which restores the newest
+snapshot into a temporary directory, checks it byte for byte and deletes it ([section 4](#4-restoring-and-verifying)).
+
+### Linux and macOS: cron
+
+```cron
+# crontab -e: every night at 02:30; the log is the only place output goes
+30 2 * * *  cd "$HOME/code/myproject" && "$HOME/.local/bin/git-seafile-snapshot" --exit-warnings >> "$HOME/snapshot-myproject.log" 2>&1
+```
+
+cron's `PATH` does not include `~/.local/bin`, hence the full path to the tool. Git itself must be
+on cron's `PATH` (`/usr/bin` normally is).
+
+### Linux: a systemd user timer
+
+`~/.config/systemd/user/snapshot-myproject.service`:
+
+```ini
+[Unit]
+Description=Snapshot myproject to Seafile
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/code/myproject
+ExecStart=%h/.local/bin/git-seafile-snapshot --exit-warnings
+```
+
+`~/.config/systemd/user/snapshot-myproject.timer`:
+
+```ini
+[Unit]
+Description=Nightly snapshot of myproject
+
+[Timer]
+OnCalendar=*-*-* 02:30:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+```
+
+```bash
+systemctl --user daemon-reload
+systemctl --user enable --now snapshot-myproject.timer
+systemctl --user status snapshot-myproject.service     # a run that exited 1 or 3 shows as failed
+journalctl --user -u snapshot-myproject.service        # its output
+```
+
+`Persistent=true` runs a missed snapshot at the next opportunity (the machine was off at 02:30).
+
+### Windows: Task Scheduler
+
+From PowerShell, as the user whose Seafile login the job should use:
+
+```powershell
+$run     = '/c "cd /d C:\code\myproject && %USERPROFILE%\.local\bin\git-seafile-snapshot.exe --exit-warnings >> %USERPROFILE%\snapshot-myproject.log 2>&1"'
+$action  = New-ScheduledTaskAction -Execute cmd.exe -Argument $run
+$trigger = New-ScheduledTaskTrigger -Daily -At 2:30am
+$settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -RunOnlyIfNetworkAvailable
+Register-ScheduledTask -TaskName 'Seafile snapshot myproject' -Action $action -Trigger $trigger -Settings $settings
+```
+
+`-StartWhenAvailable` runs a missed snapshot when the machine is next on. The task's *Last Run Result*
+in Task Scheduler is the exit code (`0`, `1` or `3`). The `cmd.exe /c` wrapper exists only to keep a log; without it the
+output is discarded.
+
+Do not point a schedule at a source inside a Seafile-synced folder: the tool refuses it, and
+[the Golden Rule](USER_GUIDE.md#2-the-golden-rule-working-tree-placement) says why.
