@@ -49,6 +49,8 @@ _SOURCE = _ROOT / "git_remote_seafile"
 _DOC_NAMES = (
     "README.md",
     "USER_GUIDE.md",
+    "SNAPSHOT_GUIDE.md",
+    "UPGRADING.md",
     "DESIGN.md",
     "SECURITY.md",
     "RUNBOOK.md",

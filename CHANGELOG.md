@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **The documents are reorganized, with nothing removed.** The snapshot chapter (User Guide section 15, a quarter of the guide) is now [SNAPSHOT_GUIDE.md](SNAPSHOT_GUIDE.md), renumbered 1 to 9; `USER_GUIDE.md` keeps a section 15 stub with a table from the old numbers, so notes that cite `§15.9` still lead somewhere. The per-release "Upgrading to…" notes moved from the middle of User Guide section 5 to [UPGRADING.md](UPGRADING.md), and the User Guide has a table of contents. Both new files ship in the sdist.
+
 ## [0.9.19] - 2026-10-29
 
 The first run needs less looking up. Four new commands or flags (`login`, `lfs-setup`, `config`, `doctor --create-library`), a push that survives a proxy's size limit instead of failing after the lock is taken, and a snapshot that no longer reports success when it has nowhere to push. No new settings, and nothing about what is stored changes.

@@ -19,6 +19,7 @@ no runtime dependency except `requests`, no dev dependencies.
 | `tools/seafile_snapshot.py` | hand-written wrapper that runs the generated module from a checkout |
 | `tests/` | `unittest` suite; `e2e_harness.py` is an in-process Seafile stub |
 | `PAYLOAD.md`, `SNAPSHOT.md`, `DESIGN.md` | specifications; the code is held to them |
+| `USER_GUIDE.md`, `SNAPSHOT_GUIDE.md`, `UPGRADING.md` | the user-facing guides; `SNAPSHOT_GUIDE.md` is the old User Guide section 15 (a stub with a map stays there), `UPGRADING.md` holds the per-release "what may change" notes |
 | `CHANGELOG.md`, `.github/release-notes/` | per-release notes (checked by tests) |
 
 ## Gates (all must be green before a commit that touches code)

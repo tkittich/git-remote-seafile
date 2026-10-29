@@ -9,6 +9,8 @@ include LICENSE
 include README.md
 include CHANGELOG.md
 include USER_GUIDE.md
+include SNAPSHOT_GUIDE.md
+include UPGRADING.md
 include ALTERNATIVES.md
 include DESIGN.md
 include SECURITY.md

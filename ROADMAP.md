@@ -34,7 +34,7 @@
 | **Seafile version matrix** | docs | A compatibility table; only CE 13.0.28 is measured. | S | None | backlog |
 | **Drill against the live tree** | `90_restore.py` | `--restore-drill --source` compares sampled restored files with the live ones and reports differences as a Note. | S | Low | backlog |
 | **Real-server test for library creation** | `tests/test_realserver.py` | `doctor --create-library` and the history setting were checked by hand against CE 13.0.28 (a created library read back 30 days; deleted afterwards); a self-cleaning test would keep it checked. Widens the tier from a folder to a library, so the delete must be guarded to a `grs-*` name the test created. | S | Low | backlog |
-| **Split the snapshot chapter out of the User Guide** | docs | §15 is a quarter of `USER_GUIDE.md` and overlaps `SNAPSHOT.md`. A separate how-to guide, with `SNAPSHOT.md` kept as the design, needs redirect stubs: the README, CHANGELOG, release notes and tests link to its section numbers. | M | Low | backlog |
+| **Split the snapshot chapter out of the User Guide** | docs | **Done:** the chapter is `SNAPSHOT_GUIDE.md`; `USER_GUIDE.md` keeps a section 15 stub with a map from the old numbers (15.1 to 15.9), so release notes that cite them still lead somewhere. The per-release upgrade notes moved to `UPGRADING.md` and the User Guide gained a table of contents. | M | Low | done |
 
 ### 1.1 Deferred polish (v0.8.0 review cycle — cosmetic, no behavioral stake)
 

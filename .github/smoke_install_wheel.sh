@@ -12,7 +12,7 @@
 #   2. the wheel installs into a clean virtual environment
 #   3. the installed helper runs
 #   4. the wheel ships *no* top-level `tools/` -- it carries the helper only
-#   5. the sdist *does* ship `tools/` -- USER_GUIDE section 15 sends users to the
+#   5. the sdist *does* ship `tools/` -- SNAPSHOT_GUIDE.md sends users to the
 #      sdist precisely because the wheel lacks it, so the two must disagree on
 #      purpose rather than by accident
 #
@@ -70,7 +70,7 @@ wanted = "tools/seafile_snapshot.py"
 names = tarfile.open(sys.argv[1]).getnames()
 if not any(name.endswith(wanted) for name in names):
     sys.exit(
-        f"the sdist does not ship {wanted}; USER_GUIDE section 15 sends users "
+        f"the sdist does not ship {wanted}; SNAPSHOT_GUIDE.md sends users "
         "to the sdist for exactly that file"
     )
 print(f"ok: the sdist ships {wanted}")

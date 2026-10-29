@@ -143,7 +143,7 @@ jobs:
     # ever opened it: a wheel that cannot be installed, whose metadata renders
     # wrong on the Release page, or that grew a `tools/` directory would have
     # been published unchecked (D3).  The script also asserts the wheel and the
-    # sdist disagree about `tools/` on purpose -- USER_GUIDE section 15 sends
+    # sdist disagree about `tools/` on purpose -- SNAPSHOT_GUIDE.md sends
     # users to the sdist for it.  Run it by hand with
     # `bash .github/smoke_install_wheel.sh dist` after a local build.
     - name: Smoke-install the built distributions
