@@ -22,7 +22,7 @@
 
 | ID / Source | Component | Description & Impact | Effort | Risk | Planned Target |
 |---|---|---|:---:|:---:|:---:|
-| **`git credential` fallback** | `client.py` | Ask `git credential fill/approve/reject` when no token is configured, so any OS helper (Windows Credential Manager, Keychain, libsecret) works with no new dependency. The cheap first step of the credential-store row. | M | Medium | backlog |
+| **`git credential` fallback** | `client.py` | (0.9.19's `login` removes the hand-written token step, not the plaintext file.) Ask `git credential fill/approve/reject` when no token is configured, so any OS helper (Windows Credential Manager, Keychain, libsecret) works with no new dependency. The cheap first step of the credential-store row. | M | Medium | backlog |
 | **`--status` (read-only)** | snapshot tool | **Done (2026-10-27):** `--status` reports the last snapshot's time and size, what changed in the source since it, the settings the next run would use (resolved through the run's own ladder), the vault lock, and names the quota as not-reported (no credential surface). The change comparison is a named stat heuristic against the two records the tip itself carries — the payload manifest (size+mtime) and `mtimes.json` (mtime) — not the per-machine hash cache, so it works cross-machine; the report states both error directions (a change that keeps its recorded stats hides — size and mtime, and for git-stored files of a snapshot taken before `mtimes.json` gained its additive `sizes` key, mtime alone; touched files show), and compares the tip with the vault's own record of its last push (`snapshot.pushed`), which is what this vault did and not a look at the server. SNAPSHOT.md §4 gains the contract; `--json` mode `status` carries the counts. | M | Low | done |
 | **`--payload-gc` retention presets** | `76_payload_gc.py` | `--keep-last N` / `--keep-days D` over `--payload-keep`'s count. | S | Low | backlog |
 | **`--restore --only <path>`** | `90_restore.py` | Partial restore of one folder from a large snapshot. | M | Medium | backlog |
@@ -33,6 +33,8 @@
 | **Scheduled CI against a Seafile container** | `.github/` | **Partly done (see below):** `realserver.yml` + `seafile-ci.yml` + `tools/realserver_ci.py` stand up a throwaway CE container, run `tests.test_realserver` against it and delete the scratch library — but the workflow could not be exercised before landing (no Docker where it was written), so it is dispatch-only until one green manual run (**first green run 2026-10-28**, the sixth dispatch: 7 of 7 tests against Seafile CE 13.0, about two minutes end to end; the five before it found the missing `pip install`, the 12.0-versus-13.0 variable names, a hostname with a port, and a suite that strips its credentials on purpose; enabling the weekly cron in the workflow header is the maintainer's call); the workflow header carries the commented-out weekly cron and the likely failure suspects. | M | Low | first green run |
 | **Seafile version matrix** | docs | A compatibility table; only CE 13.0.28 is measured. | S | None | backlog |
 | **Drill against the live tree** | `90_restore.py` | `--restore-drill --source` compares sampled restored files with the live ones and reports differences as a Note. | S | Low | backlog |
+| **Real-server test for library creation** | `tests/test_realserver.py` | `doctor --create-library` and the history setting were checked by hand against CE 13.0.28 (a created library read back 30 days; deleted afterwards); a self-cleaning test would keep it checked. Widens the tier from a folder to a library, so the delete must be guarded to a `grs-*` name the test created. | S | Low | backlog |
+| **Split the snapshot chapter out of the User Guide** | docs | §15 is a quarter of `USER_GUIDE.md` and overlaps `SNAPSHOT.md`. A separate how-to guide, with `SNAPSHOT.md` kept as the design, needs redirect stubs: the README, CHANGELOG, release notes and tests link to its section numbers. | M | Low | backlog |
 
 ### 1.1 Deferred polish (v0.8.0 review cycle — cosmetic, no behavioral stake)
 
@@ -368,6 +370,27 @@ One line per capability — see [CHANGELOG.md](CHANGELOG.md) for the full detail
 
 **v0.9.12 (2026-10-22) — a backup you can prove restores; scripting.**
 - `--restore-drill [N|all]`; `--json` and `--exit-warnings` (exit 3, opt-in); hashing, payload restore and `--payload-verify` print rate and time left; the hash cache is saved while a tree is hashed, so a killed pass keeps its work.
+
+**v0.9.13 (2026-10-26) — the six-model review round.**
+- A lease renewed through long phases, an upload that stops when its push is already doomed, a fetch that cannot wedge itself, payload objects that survive a real server's rename; refusals for shallow pushes and for ref names the server would store differently; `--rebuild-index`.
+
+**v0.9.14 (2026-10-26) — the rest of that round.**
+- The retention grace runs on the server's time, a torn marker cannot erase the history-rewrite fence, the lock fails closed over an unreadable ticket, a restore refuses a volume with under 1 GiB free; CI drops to nine legs.
+
+**v0.9.15 (2026-10-27) — `--status` and `repair`.**
+- `git seafile-snapshot --status` and `git-remote-seafile repair`; a push of the other object format is refused; `-working-tree-encoding` is pinned in the vault; fixes from four reviews.
+
+**v0.9.16 (2026-10-28) — the tail merge stops deferring.**
+- The automatic tail merge merges what fits its budget, a ref write is one short attempt, a push reads thousands of refs without losing its lease, a restore on Windows goes around names it cannot hold.
+
+**v0.9.17 (2026-10-28) — the doctor's server checks.**
+- `doctor` finds Seafile conflict copies and measures the largest accepted upload (`--upload-limit`); `--payload-gc` fixes; a real-server test tier against a CE 13.0 container.
+
+**v0.9.18 (2026-10-28) — a listing that cannot skip.**
+- A strict listing stops at a ref it cannot read, a gc mark cannot expire early, `--payload-verify` checks free space, `doctor` says when a cleanup or a walk did not finish.
+
+**v0.9.19 (unreleased) — the first run needs less looking up.**
+- `login`, `config` and `lfs-setup`; `doctor --create-library` and `--set-history` and a history finding; a refused pack is rebuilt in smaller packs; a missing library is not retried; the snapshot tool warns when it has nowhere to push, groups its `--help`, and asks about reproducible directories on a first run at a terminal; the README leads with a quick start.
 
 ---
 

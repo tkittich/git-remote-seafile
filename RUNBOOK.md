@@ -114,6 +114,31 @@ git-remote-seafile check-safety seafile://code/myproject
 
 ---
 
+### 2.1 The server refuses large uploads (HTTP 413)
+
+**Symptom.** `Warning: the server refused an upload of N MiB (HTTP 413)` (or `the connection was
+closed`), then smaller uploads, then `Notice: this push went through in packs of at most ...`.
+
+A reverse proxy in front of Seafile limits the request body (nginx's `client_max_body_size`) and a
+pack is bigger. The push copes: it deletes what that attempt uploaded, rebuilds with a cap half the
+size and tries again, up to six times, and after a 413 it keeps the cap that worked as
+`seafile.gcmaxpackmib` in that repository. Nothing to do.
+
+To choose the number yourself, or to apply it to every repository, measure the limit and set it
+globally:
+
+```bash
+git-remote-seafile doctor seafile://code/myproject --upload-limit
+git config --global seafile.gcmaxpackmib <the number it prints>
+```
+
+If the push still fails after six tries, the limit is below 4 MiB or the failure is not a size
+limit: read the error it ends with, or raise `client_max_body_size` (a limit below 128 MiB also
+refuses the chunks of a file of 1 GiB or more). If the process was killed while it cleaned up, an
+orphan `.idx` may remain; section 4 covers it.
+
+---
+
 ## 3. Stray or Conflicting Refs
 
 ### 3.1 A ref is a file in one place and a directory in another

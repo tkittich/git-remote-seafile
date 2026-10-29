@@ -198,6 +198,14 @@ repository **tracks** a file it matches (`build` would otherwise drop a committe
 `tools/build/make.py`); the run names the file and the `--exclude` that drops it
 anyway. An explicit `--exclude` is always honoured.
 
+**The one exception asks.** A *first* run at a terminal -- no vault yet, no `--exclude`,
+`--default-excludes` or `--no-default-excludes`, and not `--json` or `--exit-warnings` -- lists
+the reproducible directories it found (the recommended names, and every virtualenv found by
+`pyvenv.cfg`; never a directory holding a file the source's own repository tracks) with their
+sizes, and asks `[Y/n]`. A yes is `--default-excludes`. The omission is then a decision the
+person just made, not a quiet one, which is what the paragraph above forbids. A scheduled or piped
+run never asks, and the default stays "capture everything".
+
 **What no flag can capture.** Named pipes, sockets and device nodes have no
 content a snapshot could store, and git skips them. They are the one kind of
 omission that is **not** reported: the run's file count simply lacks them
@@ -249,6 +257,10 @@ silent it refuses instead:
 - **`--code-remote <name>` must name a real remote** of the source, so a typo
   fails before the snapshot instead of after it.
 - **`--no-push` with `--remote`** is contradictory and refused.
+- **No remote at all** (none given, none remembered, none derivable from the source's
+  `seafile://` remote) ends the run with a `Warning:` naming `--remote seafile://<library>/<name>-vault`,
+  so `--exit-warnings` returns 3: a backup that stays on the machine it protects must not look
+  healthy. `--no-push` on purpose keeps the quiet line.
 - **Flags that would be ignored are errors.** `--ref` without `--restore` is
   the sharp one: a run meant to restore an *old* snapshot would otherwise
   quietly take a *new* one. The snapshot-only and restore-only flag sets are

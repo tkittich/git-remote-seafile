@@ -53,7 +53,8 @@ that yields **both** a server and a token:
 3. **The local Seafile desktop client** — the `accounts.db` SQLite database written by the client,
    read read-only.
 
-Nothing else is consulted, and no credential is ever written by the helper.
+Nothing else is consulted. The helper writes a credential in exactly one case, when you ask it
+to: `git-remote-seafile login` ([below](#signing-in-with-login)).
 
 ### A token is only sent to the server it names
 
@@ -101,6 +102,26 @@ chmod 600 ~/.git-seafile.json
 On Windows the file inherits the ACL of your user profile; no separate check is performed. If you
 would rather not keep a long-lived token on disk at all, prefer the desktop client's `accounts.db`
 (the helper reads it read-only) or a CI secret injected as environment variables.
+
+### Signing in with `login`
+
+`git-remote-seafile login` is the one command that handles a password and the one that writes
+`~/.git-seafile.json`. What it does, and what it does not:
+
+- The password is read from the terminal without echo, sent once to the server's own
+  `/api2/auth-token/` endpoint, and dropped. It is never stored, logged, printed or placed on a
+  command line, so unlike the `curl -d` recipe it replaces it does not end up in your shell history.
+- It refuses to run without a terminal, and it refuses a plain `http://` server other than loopback
+  **before** asking for the password: a password sent over HTTP can be read on the way.
+- A two-factor code, when the server asks for one, goes in the `X-SEAFILE-OTP` header of a second
+  request.
+- The token is written to a temporary file in your home directory and renamed into place, so an
+  interruption cannot leave half a token. On POSIX the file is mode 0600; on Windows it inherits the
+  ACL of your profile. Other keys already in the file are kept. The file holds one account, so
+  signing in to another server replaces the first, with a note.
+- The token is then used exactly like a hand-written one: only for the server it names
+  ([above](#a-token-is-only-sent-to-the-server-it-names)). Revoke it from the Seafile Web UI
+  (*Settings* -> *API Token*).
 
 ### Transfer links and where the token goes
 
@@ -249,6 +270,8 @@ check worth running for a program you are about to hand a token to.
   from the client's perspective, put [`git-remote-gcrypt`](https://spwhitton.name/tech/code/git-remote-gcrypt/)
   in front of this helper.
 - **Traffic analysis.** The server sees which repository is pushed to and when.
+- **A compromised terminal or keylogger during `login`.** The password is typed into the process;
+  anything that can read it there can read it.
 - **A hostile `~/.git-seafile.json` or `accounts.db`.** If an attacker can write those, they can
   already act as you.
 
@@ -279,6 +302,8 @@ to run at any time, including while another client holds the lock.
 - [ ] Use `https://` for every remote. Treat a plain-HTTP warning as an error to fix.
 - [ ] In CI, set `SEAFILE_SERVER` **and** `SEAFILE_TOKEN` together, from the CI secret store.
 - [ ] `chmod 600 ~/.git-seafile.json` if you keep a token on disk.
+- [ ] Sign in with `git-remote-seafile login` rather than fetching a token with `curl -d`, which
+      leaves the password in your shell history.
 - [ ] For a self-hosted instance, point `REQUESTS_CA_BUNDLE` at your CA rather than disabling
       verification (which is not possible anyway).
 - [ ] Set `NO_PROXY` to include an internal Seafile host when a proxy is configured.
