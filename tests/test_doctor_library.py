@@ -177,6 +177,21 @@ class TestHistory(unittest.TestCase):
         self.assertIn("whole number of days from 1 to 3650", err.getvalue())
 
 
+class TestDoctorFlagsAStaleLfsLibrary(unittest.TestCase):
+    def test_a_repository_whose_lfs_points_at_the_old_library_is_warned_about(self):
+        stale = ("seafile://old/proj", ["seafile://code/proj"])
+        with patch("git_remote_seafile.lfs_setup.stale_lfs_destination", return_value=stale):
+            code, out, _ = run_doctor(_Helper(exists=True))
+        self.assertEqual(code, 0, out)
+        self.assertIn("Git LFS in this repository sends large files to seafile://old/proj", out)
+        self.assertIn("run 'git-remote-seafile lfs-setup'", out)
+
+    def test_nothing_is_said_when_lfs_agrees(self):
+        with patch("git_remote_seafile.lfs_setup.stale_lfs_destination", return_value=None):
+            code, out, _ = run_doctor(_Helper(exists=True))
+        self.assertNotIn("Git LFS", out)
+
+
 class TestAuthHintsNameLogin(unittest.TestCase):
     def test_doctor_with_a_rejected_token_says_how_to_sign_in_again(self):
         helper = _Helper(exists=True)

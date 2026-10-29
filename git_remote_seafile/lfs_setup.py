@@ -51,6 +51,27 @@ def _set(key: str, value: str) -> bool:
     return True
 
 
+def stale_lfs_destination() -> tuple[str, list[str]] | None:
+    """``(configured, remotes)`` when this repository's LFS agent names a place none of its Seafile remotes does.
+
+    The library is spelled twice -- in the remote and in ``lfs.customtransfer.seafile.args`` -- so a
+    remote that was renamed or moved leaves large files going to the old library, and the first sign
+    is a failed push of a large file.  ``None`` outside a repository, with no agent configured, with
+    no ``seafile://`` remote to compare against, or when they agree.
+    """
+    _dir, code = _git("rev-parse", "--git-dir")
+    if code != 0:
+        return None
+    args, code = _git("config", "--local", "--get", f"{AGENT}.args")
+    if code != 0 or not args.startswith("lfs-transfer "):
+        return None
+    configured = args[len("lfs-transfer "):].strip()
+    remotes = sorted({url for _n, url in repository_remotes() if url.lower().startswith("seafile://")})
+    if not remotes or configured.rstrip("/") in {r.rstrip("/") for r in remotes}:
+        return None
+    return configured, remotes
+
+
 def run_lfs_setup(rest: list[str]) -> int:
     positional = [a for a in rest if not a.startswith("-")]
     unknown = [a for a in rest if a.startswith("-") and a != "--all-remotes"]

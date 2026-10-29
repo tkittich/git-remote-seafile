@@ -10,7 +10,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from git_remote_seafile.lfs_setup import run_lfs_setup
+from git_remote_seafile.lfs_setup import run_lfs_setup, stale_lfs_destination
 
 
 def git(repo, *args):
@@ -142,6 +142,41 @@ class TestLfsSetup(_Repo):
         with patch("git_remote_seafile.lfs_setup._git", side_effect=fake):
             rc, out, err = self.setup_lfs()
         self.assertIn("Git LFS itself is not installed", out)
+
+
+class TestStaleLfsDestination(_Repo):
+    def test_a_remote_that_moved_leaves_lfs_pointing_at_the_old_library(self):
+        git(self.repo, "remote", "add", "origin", "seafile://old/proj")
+        self.setup_lfs()
+        git(self.repo, "remote", "set-url", "origin", "seafile://code/proj")
+        self.assertEqual(stale_lfs_destination(), ("seafile://old/proj", ["seafile://code/proj"]))
+
+    def test_it_is_quiet_when_they_agree_or_there_is_nothing_to_compare(self):
+        self.assertIsNone(stale_lfs_destination())                     # no agent
+        git(self.repo, "remote", "add", "origin", "seafile://code/proj")
+        self.assertIsNone(stale_lfs_destination())                     # still no agent
+        self.setup_lfs()
+        self.assertIsNone(stale_lfs_destination())                     # agree
+        git(self.repo, "remote", "remove", "origin")
+        self.assertIsNone(stale_lfs_destination())                     # no seafile remote left
+        git(self.repo, "remote", "add", "gh", "https://github.com/x/y.git")
+        self.assertIsNone(stale_lfs_destination())                     # only another forge
+
+    def test_a_trailing_slash_is_the_same_place(self):
+        git(self.repo, "remote", "add", "origin", "seafile://code/proj/")
+        self.setup_lfs()
+        git(self.repo, "remote", "set-url", "origin", "seafile://code/proj")
+        self.assertIsNone(stale_lfs_destination())
+
+    def test_outside_a_repository_it_says_nothing(self):
+        with tempfile.TemporaryDirectory() as bare:
+            cwd = os.getcwd()
+            os.chdir(bare)
+            try:
+                with patch.dict(os.environ, {"GIT_CEILING_DIRECTORIES": str(Path(bare).parent)}):
+                    self.assertIsNone(stale_lfs_destination())
+            finally:
+                os.chdir(cwd)
 
 
 if __name__ == "__main__":

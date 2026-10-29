@@ -306,6 +306,19 @@ def _doctor_history(helper: Any, set_history: int | None) -> None:
         print(f"Warning: {text}")
 
 
+def _doctor_lfs() -> None:
+    """Warn when this repository's Git LFS settings point at a library its remote no longer names."""
+    from .lfs_setup import stale_lfs_destination
+    stale = stale_lfs_destination()
+    if stale:
+        configured, remotes = stale
+        print(
+            f"Warning: Git LFS in this repository sends large files to {mask_url(configured)}, but its "
+            f"seafile:// remote is {', '.join(mask_url(r) for r in remotes)}; run "
+            "'git-remote-seafile lfs-setup' to point LFS at the right library"
+        )
+
+
 def _doctor(url: str | None, *, upload_limit: bool = False, max_mib: int | None = None,
             create_library: bool = False, set_history: int | None = None) -> int:
     """Run every first-use check in order and say what to do next.
@@ -381,6 +394,7 @@ def _doctor(url: str | None, *, upload_limit: bool = False, max_mib: int | None 
         return fail(f"write probe did not round-trip cleanly in {helper.repo_path}")
     ok(f"can write and delete in {helper.repo_path}")
     _doctor_history(helper, set_history)
+    _doctor_lfs()
 
     try:
         copies, capped = find_conflict_copies(helper.client, helper.repo_id, helper.repo_path)
