@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.9.20] - 2026-10-29
+## [0.9.20] - 2026-10-30
 
 One data-safety fix and what a clean-machine walk of the README quick start (Debian, pipx, nothing else) turned up. The fix: retention could decide a live payload object was unused when it read a damaged vault in place (ROADMAP V7). The 0.9.19 pack split is now proven against a real nginx limit, and the real-server tier grew two tests. No new settings, and nothing about what is stored changes.
 
