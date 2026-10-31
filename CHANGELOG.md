@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.21] - 2026-10-31
+
+The automation contract in one page, and the maintainer gates in one command. Nothing about what is stored changes, no setting is renamed, and no shipped code changes at all: every commit is documentation or developer tooling, so an upgrade is a reinstall and nothing else.
+
+### Added
+- **AUTOMATION.md — the one-page contract for schedulers, scripts and AI agents.** Assembles what was already true and already tested but documented across four files: the exit codes (including opt-in `3` with `--exit-warnings`), the message levels and what automation should do with each, the `--json` document with a real quoted `--status` run, `jq` recipes, the guarantee that an unattended run never asks a question, credentials from the environment, and a table of what an agent may run without asking (read-only commands), on a schedule (additive ones), or only with a human (retention's deletions, lock breaks, the `--allow-*` bypasses). The quoted document surfaced the three-valued `result.status.pushed` — `true`, `false` with a count, or `null` when nothing is recorded — and the page documents that `null` fails the alert recipe rather than reading as all clear.
+- **`tools/gates.py` — one entry point for the whole pre-commit sequence.** Build the snapshot tool from its parts, ruff, mypy (the native pass and CI's Linux/3.11 pass), the docs guards, and the test suite, in order, echoing each command and stopping at the first failure. The gate list had lived in AGENTS.md as seven commands every session retyped, and a command piped through `tail` reported the pipe's exit status, which let a red suite scroll away as green.
+
+### Changed
+- **The maintainer documents are wired to each other.** AGENTS.md's Where|What table now names `RUNBOOK.md`, the ROADMAP backlog and the review-round lifecycle (`review-prompt.md` → `REVIEW.<model>-v<X.Y.Z>.md` → triage into ROADMAP §1 → `archive/`); CONTRIBUTING's real-server section records the measured divergences from the stub (a 502 under burst, the silent create-or-duplicate rename, listings that ignore paging, a killed chunked upload leaving no partial file); `review-prompt.md` is tracked instead of ignored-by-accident; a `CLAUDE.md` pointer sends every agent harness to AGENTS.md.
+- **`tools/build_snapshot.py --check` prints the five largest snapshot-tool parts against the 700-line limit**, so the numbers stopped aging in AGENTS.md (which claimed 694 for a part now at 690).
+- **AGENTS.md's "things that have bitten before" grew the test-writing traps**: patches stopped anywhere but on the patcher, guard tests that survive their guard's deletion, tests pasted into the wrong class, `Path.write_text`'s CRLF translation on Windows, and platform-gated file-metadata assertions.
+
 ## [0.9.20] - 2026-10-30
 
 One data-safety fix and what a clean-machine walk of the README quick start (Debian, pipx, nothing else) turned up. The fix: retention could decide a live payload object was unused when it read a damaged vault in place (ROADMAP V7). The 0.9.19 pack split is now proven against a real nginx limit, and the real-server tier grew two tests. No new settings, and nothing about what is stored changes.
@@ -1940,6 +1953,7 @@ Data-loss and silent-failure fixes, and the Python floor raised to 3.9.
   with zero-config desktop-client token discovery, distributed locking, remote
   packfile compaction, and a Git LFS custom transfer agent.
 
+[0.9.21]: https://github.com/tkittich/git-remote-seafile/compare/v0.9.20...v0.9.21
 [0.9.20]: https://github.com/tkittich/git-remote-seafile/compare/v0.9.19...v0.9.20
 [0.9.19]: https://github.com/tkittich/git-remote-seafile/compare/v0.9.18...v0.9.19
 [0.9.18]: https://github.com/tkittich/git-remote-seafile/compare/v0.9.17...v0.9.18

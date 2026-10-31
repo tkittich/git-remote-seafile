@@ -395,6 +395,9 @@ One line per capability — see [CHANGELOG.md](CHANGELOG.md) for the full detail
 **v0.9.20 (2026-10-30) — a damaged vault cannot hide a manifest; the quick start, walked.**
 - Retention refuses a shallow, partial or damaged vault read in place (V7); the credentials warning is said when it is new; `git seafile-snapshot help`; `doctor` flags a stale LFS library; scheduler recipes; the snapshot chapter and the upgrade notes in files of their own; the pack split proven against a real nginx limit and a self-cleaning `--create-library` test in the real-server tier.
 
+**v0.9.21 (2026-10-31) — the automation contract, assembled; the gates, one command.**
+- AUTOMATION.md (exit codes, message levels, `--json` with the three-valued `result.status.pushed`, and what an agent may run without asking); `tools/gates.py` runs the pre-commit sequence and reports part sizes; AGENTS.md's table wires the RUNBOOK, the ROADMAP backlog and the review lifecycle, CONTRIBUTING records the measured real-server behaviours, `review-prompt.md` is tracked, and a CLAUDE.md pointer joins the agent docs. No shipped code changes.
+
 ---
 
 ## 3. Future Milestones (v1.0.0 horizon; tracked in §1)
