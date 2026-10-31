@@ -30,6 +30,9 @@ Usage::
     python tools/build_snapshot.py            # (re)write git_remote_seafile/snapshot_tool.py
     python tools/build_snapshot.py --check    # exit 1 if the generated file is stale
 
+Either way the largest parts are printed against the ``MAX_PART_LINES`` limit,
+so a contributor can see where the headroom is without counting.
+
 The generated file is committed, so a clone or the sdist runs without a build
 step, and the test suite fails when it drifts from the parts.
 """
@@ -47,6 +50,12 @@ PARTS_DIR = _TOOLS / "_snapshot"
 #: runs as `git-seafile-snapshot` / `git-remote-seafile snapshot`.  The file
 #: tools/seafile_snapshot.py is a thin wrapper around it.
 OUTPUT = _TOOLS.parent / "git_remote_seafile" / "snapshot_tool.py"
+
+#: A part past this size has stopped being a cohesive unit; split it by
+#: cohesion.  ``tests/test_snapshot_build.py`` enforces it, and the size report
+#: printed by this tool carries the live numbers, so nobody has to keep them
+#: written down in a document where they age.
+MAX_PART_LINES = 700
 
 
 def part_paths() -> list[Path]:
@@ -72,6 +81,22 @@ def _normalised(path: Path) -> str:
     return path.read_text(encoding="utf-8").replace("\r\n", "\n")
 
 
+def largest_parts(count: int = 5) -> list[tuple[str, int]]:
+    """The ``count`` longest parts and their line counts, longest first."""
+    sized = [
+        (path.name, len(path.read_text(encoding="utf-8").splitlines()))
+        for path in part_paths()
+    ]
+    sized.sort(key=lambda pair: pair[1], reverse=True)
+    return sized[:count]
+
+
+def _size_report() -> str:
+    """One line of headroom against ``MAX_PART_LINES``, for --check and build."""
+    sizes = ", ".join(f"{name} {lines}" for name, lines in largest_parts())
+    return f"largest parts (limit {MAX_PART_LINES} lines): {sizes}"
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument(
@@ -86,6 +111,7 @@ def main(argv: list[str] | None = None) -> int:
         current = _normalised(OUTPUT) if OUTPUT.exists() else ""
         if current == generated:
             print(f"{OUTPUT.name} is up to date ({len(part_paths())} parts)")
+            print(_size_report())
             return 0
         diff = difflib.unified_diff(
             current.splitlines(), generated.splitlines(),
@@ -106,6 +132,7 @@ def main(argv: list[str] | None = None) -> int:
 
     OUTPUT.write_text(generated, encoding="utf-8", newline="\n")
     print(f"wrote {OUTPUT} from {len(part_paths())} parts ({len(generated.splitlines())} lines)")
+    print(_size_report())
     return 0
 
 

@@ -20,9 +20,6 @@ sys.path.insert(0, str(_TOOLS))
 
 import build_snapshot  # noqa: E402
 
-#: A part past this size has stopped being a cohesive unit; split it by cohesion.
-_MAX_PART_LINES = 700
-
 
 def _generated_text() -> str:
     return build_snapshot.OUTPUT.read_text(encoding="utf-8").replace("\r\n", "\n")
@@ -56,13 +53,25 @@ class TestPartsStayCohesive(unittest.TestCase):
         self.assertEqual(len(prefixes), len(set(prefixes)), f"duplicate part prefix in {names}")
 
     def test_no_part_has_grown_back_into_a_monolith(self):
+        # The limit lives in build_snapshot.py so --check can print the live
+        # sizes against it; the constant here would be a second copy.
         for path in build_snapshot.part_paths():
             lines = len(path.read_text(encoding="utf-8").splitlines())
             with self.subTest(part=path.name):
                 self.assertLessEqual(
-                    lines, _MAX_PART_LINES,
+                    lines, build_snapshot.MAX_PART_LINES,
                     f"{path.name} is {lines} lines; split it by cohesion",
                 )
+
+    def test_the_size_report_names_the_real_largest_part(self):
+        # --check's headroom line is only useful if it is true; a report that
+        # silently ordered or counted wrong would flatter every part.
+        top_name, top_lines = build_snapshot.largest_parts(1)[0]
+        manual_lines, manual_name = max(
+            (len(path.read_text(encoding="utf-8").splitlines()), path.name)
+            for path in build_snapshot.part_paths()
+        )
+        self.assertEqual((top_lines, top_name), (manual_lines, manual_name))
 
     def test_imports_live_in_one_part(self):
         # Fragments share a namespace; scattering imports across them makes it
