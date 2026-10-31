@@ -57,6 +57,12 @@ REVIEW*.md
 PROPOSALS.md
 archive/
 .workbuddy-ai/
+# review-prompt.md is process, not forensics: every review round is run from
+# it, so it belongs in the repository.  The negation also makes that explicit
+# where `REVIEW*.md` above never matched this lowercase name (a case-sensitive
+# filesystem) and the file floated as untracked noise instead of being ignored
+# on purpose.
+!review-prompt.md
 # `tools/` holds developer and diagnostic tooling that ships with the source
 # distribution: the parallel test runner, the docs-guard verifier, and the
 # Seafile sync-client doctor.  Each is named in MANIFEST.in, and each has tests
