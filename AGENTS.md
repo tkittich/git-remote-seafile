@@ -21,6 +21,9 @@ no runtime dependency except `requests`, no dev dependencies.
 | `PAYLOAD.md`, `SNAPSHOT.md`, `DESIGN.md` | specifications; the code is held to them |
 | `USER_GUIDE.md`, `SNAPSHOT_GUIDE.md`, `UPGRADING.md` | the user-facing guides; `SNAPSHOT_GUIDE.md` is the old User Guide section 15 (a stub with a map stays there), `UPGRADING.md` holds the per-release "what may change" notes |
 | `CHANGELOG.md`, `.github/release-notes/` | per-release notes (checked by tests) |
+| `RUNBOOK.md` | the operations runbook: §0 is three diagnostics, then a recipe per failure mode |
+| `ROADMAP.md` | §1 is the live backlog — review findings become its rows; §2 records what shipped, by release |
+| `review-prompt.md`, `REVIEW.*.md`, `archive/` | the prompt every review round is run from; reports land in root as `REVIEW.<model>-v<X.Y.Z>.md`, are triaged into ROADMAP §1, then move to `archive/` |
 
 ## Gates (all must be green before a commit that touches code)
 
@@ -78,6 +81,8 @@ identity and the first CI failures of a release have always been environmental.
   background `git gc --auto` can race with temp-directory removal. A Debian WSL
   distribution is the quickest way to reproduce (copy the tree there; run with a
   `.git` present, or `tests.test_git_util` errors for the wrong reason).
+  Test assertions on file metadata (mtime, size, inode) are part of this: gate
+  them on the platform or round them, never assert one platform's exact values.
 - **A default is not a request.** Anything that comes from a default or from a
   remembered setting (payload mode, remote, excludes) must never turn a run that
   worked into an error; only flags typed on the command line are validated
@@ -94,6 +99,23 @@ identity and the first CI failures of a release have always been environmental.
   `ruff` finds the damage; a NUL byte in a test file is a SyntaxError.
 - **Check `git status` before `git add -A`.** A scratch file in the root
   (`empty`, `REVIEW.*.tmp`) is easy to commit.
+- **A patch undone anywhere but on the patcher stays live.** A `patch(...)`
+  whose `stop()` was skipped — or spent on the mock it returned — leaks into
+  every later test and fails somewhere unrelated. Use `with patch(...)` or
+  `addCleanup(patcher.stop)` so every exit path undoes it.
+- **A guard test must go red when its guard is deleted.** More than one test
+  named after a guard kept passing after the guard was removed: it asserted
+  the guard was *called*, not that the run was *refused*. Assert on the
+  observable refusal (the message, the exit code, the file that must not
+  exist), and once per guard, delete the guard and watch the test fail.
+- **A test runs in whatever class receives it.** A method pasted into the
+  wrong class runs under the wrong fixtures, or — pasted into a class that is
+  then subclassed — twice. Put a new test in the class whose `setUp` it needs
+  (the no-subclass rule above exists because `unittest` inherits tests).
+- **`Path.write_text` translates newlines on Windows.** The platform default
+  writes `\r\n` for `\n`, which corrupts any fixture the code hashes or
+  byte-compares. Pass `newline="\n"` (or use `write_bytes`); this is the
+  test-side face of the LF rule above.
 
 ## Real-server tests (opt-in)
 
