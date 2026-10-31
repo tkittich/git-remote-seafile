@@ -124,6 +124,12 @@ works under one unique `grs-*` top-level folder and deletes it. Do the same for 
 ad-hoc smoke test: scratch work goes only in a scratch library, under a unique
 `grs-*` folder, removed afterwards. Never print tokens.
 
+The deployment differs from the stub in ways that were measured, not assumed —
+nginx answers 502 to a burst of concurrent writes, an upload onto a taken name
+is renamed rather than refused, the listing endpoint ignores paging
+parameters. CONTRIBUTING.md ("Testing against a real Seafile server") carries
+the list; read it before trusting a stub-green change to server semantics.
+
 **Never run anything that deletes or rewrites data (`--payload-gc --payload-delete`,
 `--payload-keep`, `--reset-to-remote`, library deletes) against a library that holds
 real data**, even to test. Read-only commands (`--payload-verify`, report-only

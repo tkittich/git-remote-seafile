@@ -116,6 +116,25 @@ simultaneous same-path uploads leave `(SFConflict ...)` copies -- the reason the
 lock exists. Run it before a release,
 and whenever the stub's `do_DELETE`/`do_POST` semantics are changed.
 
+The stub is also *more forgiving* than the deployment, and each difference
+below was measured against the test server (CE 13.0.28 behind nginx) rather
+than assumed. Read this list before trusting a stub-green change to anything
+that talks to the server:
+
+* a burst of eight concurrent uploads draws `502` from nginx — a green stub
+  run says nothing about burst behaviour; the real-server tests throttle
+  and retry around it;
+* an upload onto a taken name is silently renamed (`name (1).ext`), never
+  refused — which is why payload objects are proven by reading back what the
+  listing shows, and why `refs.py` hunts conflict copies at all
+  (ROADMAP S21 measures the rename on `replace=0` too);
+* the directory-listing endpoint ignores paging parameters and was measured
+  whole at 5,000 entries (ROADMAP S1) — that is one deployment's answer,
+  not a protocol guarantee;
+* a killed upload on the chunked (1 GiB+) path left no partial file under
+  its final name — observed once, so treat it as the expected behaviour,
+  not a promise.
+
 ---
 
 ## The snapshot tool is one module to users and several parts to maintainers
