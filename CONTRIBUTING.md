@@ -25,6 +25,25 @@ Thank you for your interest in improving `git-remote-seafile`! We welcome bug re
 
 ---
 
+## The Whole Gate Sequence
+
+Before a commit that touches code, one command runs every gate in order —
+build the snapshot tool from its parts, ruff, mypy (the native pass and CI's
+Linux/3.11 pass), the docs guards, and the test suite — echoing each command
+and stopping at the first failure:
+
+```bash
+python tools/gates.py --list   # print the commands it runs
+python tools/gates.py          # run them
+python tools/gates.py -k e2e   # area-scoped: -k reaches the suite step only
+```
+
+The list of gates lives in `tools/gates.py` itself, so it cannot drift out of
+step with this page or with AGENTS.md; the sections below explain each check on
+its own.
+
+---
+
 ## Running Tests
 
 Run the test suite using Python's standard `unittest`:

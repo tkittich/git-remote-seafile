@@ -25,21 +25,22 @@ no runtime dependency except `requests`, no dev dependencies.
 ## Gates (all must be green before a commit that touches code)
 
 ```bash
-python tools/build_snapshot.py            # after editing any tools/_snapshot/*.py
-python -m ruff check .
-mypy                                      # and: mypy --platform linux --python-version 3.11
-python tools/build_snapshot.py --check
-python tools/verify_docs_guards.py        # and: python -m unittest tests.test_docs_consistency
-python tools/run_tests_parallel.py -j 0   # the whole suite; several minutes
+python tools/gates.py    # build, ruff, mypy ×2, docs guards, suite — in order
 ```
 
-Run the full suite **before a release and when code outside the area you changed
-is touched**. For a change confined to one area, run that area's module(s) plus
-`tests.test_snapshot_build` and `tests.test_docs_consistency` — for the payload
-code that is `python tools/run_tests_parallel.py -j 0 -k test_snapshot_payload`
-(five classes, about 2 minutes; the class is the unit of parallel work, so keep
-new test classes modest). Do not re-run the full suite just to be sure; it takes
-about 2 minutes now, so run it once before a commit that touches shared code.
+That is the whole sequence: `tools/gates.py` runs the seven gates, echoes each
+command, and stops at the first failure; `--list` prints the commands it runs,
+and `-k <substring>` reaches the suite step only. Run it bare — through a pipe
+(`| tail`) the exit status is the pipe's, and a red suite scrolled off the top
+reads as green.
+
+Run the full suite (no `-k`) **before a release and when code outside the area
+you changed is touched**. For a change confined to one area, run that area's
+module(s) plus `tests.test_snapshot_build` and `tests.test_docs_consistency` —
+for the payload code that is `python tools/gates.py -k test_snapshot_payload`
+(five classes; the class is the unit of parallel work, so keep new test classes
+modest). Do not re-run the full suite just to be sure; run it once before a
+commit that touches shared code.
 
 Also worth one run per release: the suite with an empty git config
 (`GIT_CONFIG_GLOBAL=<empty file> GIT_CONFIG_NOSYSTEM=1`), because CI runners have no
