@@ -22,7 +22,7 @@
 16. [Acknowledgments & Inspirations](#16-acknowledgments--inspirations)
 17. [AI Disclosure & Authorship](#17-ai-disclosure--authorship)
 
-Other guides: [SNAPSHOT_GUIDE.md](SNAPSHOT_GUIDE.md) (whole-tree snapshots), [UPGRADING.md](UPGRADING.md) (what changes between releases), [RUNBOOK.md](RUNBOOK.md) (recovery), [SECURITY.md](SECURITY.md) (credentials and threat model).
+Other guides: [SNAPSHOT_GUIDE.md](SNAPSHOT_GUIDE.md) (whole-tree snapshots), [AUTOMATION.md](AUTOMATION.md) (running it from cron, CI or an AI agent: the exit-code and `--json` contract, and what an agent may run without asking), [UPGRADING.md](UPGRADING.md) (what changes between releases), [RUNBOOK.md](RUNBOOK.md) (recovery), [SECURITY.md](SECURITY.md) (credentials and threat model).
 
 ---
 

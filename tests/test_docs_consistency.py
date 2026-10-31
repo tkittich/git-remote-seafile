@@ -50,6 +50,7 @@ _DOC_NAMES = (
     "README.md",
     "USER_GUIDE.md",
     "SNAPSHOT_GUIDE.md",
+    "AUTOMATION.md",
     "UPGRADING.md",
     "DESIGN.md",
     "SECURITY.md",

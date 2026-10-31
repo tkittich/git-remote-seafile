@@ -10,6 +10,7 @@ include README.md
 include CHANGELOG.md
 include USER_GUIDE.md
 include SNAPSHOT_GUIDE.md
+include AUTOMATION.md
 include UPGRADING.md
 include ALTERNATIVES.md
 include DESIGN.md
