@@ -26,6 +26,7 @@ import io
 import json
 import os
 import pathlib
+import re
 import shutil
 import socket
 import subprocess
@@ -2828,6 +2829,193 @@ class StagingRampTests(unittest.TestCase):
         self.assertEqual(ramp.level, 2)
         ramp.finished(2.5, 500, 3.5)       # started before the window opened at 3.0
         self.assertEqual(ramp._batches, 0)
+
+
+class IncrementalStagingTests(_SnapshotFixture):
+    """``git add`` is given the paths that changed, not every path of the tree.
+
+    A path list is matched against every index entry, so listing 222,000 paths
+    on a tree that had 2,600 new ones cost 22 minutes (measured on scratch
+    repositories: 20,000 / 40,000 / 80,000 listed paths took 3.9 / 18 / 76 s, a
+    plain ``git add .`` 0.1 s).  These tests hold the list to what changed and
+    the tree to what the full list would have produced.
+    """
+
+    EXCLUDE = ("--exclude", "node_modules")
+
+    def setUp(self):
+        super().setUp()
+        for i in range(12):
+            (self.code / f"f{i:02d}.txt").write_bytes(f"file {i}\n".encode() * 20)
+
+    def _adds(self, *extra: object) -> tuple[int, str, list[set[str]]]:
+        """Run the tool; return rc, stderr and the path list of each ``add`` it made."""
+        lists: list[set[str]] = []
+        real = snap.git
+
+        def spy(git_dir, work_tree, args, **kw):
+            if args[:1] == ["add"] and "--pathspec-from-file=-" in args:
+                lists.append({p for p in kw["stdin"].split("\0") if p})
+            return real(git_dir, work_tree, args, **kw)
+
+        with unittest.mock.patch.object(snap, "git", spy):
+            rc, _, err = self.snapshot(*self.EXCLUDE, *extra)
+        return rc, err, lists
+
+    def test_a_first_run_lists_every_kept_path(self):
+        rc, err, lists = self._adds()
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(len(lists), 1)
+        self.assertEqual(lists[0], self.tree())
+        self.assertIn(f"staging: {len(lists[0])} of {len(lists[0])} path(s) are new or changed", err)
+
+    def test_a_later_run_lists_only_what_is_new_or_modified(self):
+        self.assertEqual(self._adds()[0], 0)
+        (self.code / "f03.txt").write_bytes(b"edited\n")
+        (self.code / "brand-new.txt").write_bytes(b"new\n")
+        rc, err, lists = self._adds()
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(lists, [{"f03.txt", "brand-new.txt"}],
+                         "unchanged paths were handed to git add again")
+        total = len(self.tree())
+        self.assertIn(f"staging: 2 of {total} path(s) are new or changed", err)
+
+    def test_an_unchanged_tree_runs_no_add(self):
+        self.assertEqual(self._adds()[0], 0)
+        rc, err, lists = self._adds()
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(lists, [])
+        self.assertIn("staging: 0 of ", err)
+
+    def test_the_tree_is_what_the_full_list_gives(self):
+        """Edits, additions, a deletion and a new exclude across runs, against a
+        vault that stages everything from nothing."""
+        self.assertEqual(self._adds()[0], 0)
+        (self.code / "f01.txt").write_bytes(b"edited\n")
+        (self.code / "f02.txt").unlink()
+        (self.code / "sub").mkdir()
+        (self.code / "sub" / "n.txt").write_bytes(b"n\n")
+        self.assertEqual(self._adds()[0], 0)
+        (self.code / "sub" / "n.txt").write_bytes(b"n again\n")
+        rc, err, _ = self._adds("--exclude", "dist")
+        self.assertEqual(rc, 0, err)
+        fresh = self.tmp / "fresh"
+        rc, _, err = self.run_tool("--source", self.code, "--vault", fresh,
+                                   *self.EXCLUDE, "--exclude", "dist")
+        self.assertEqual(rc, 0, err)
+        tree = lambda v: _git(v, "rev-parse", f"{BRANCH}^{{tree}}").stdout.strip()  # noqa: E731
+        self.assertEqual(tree(self.vault), tree(fresh))
+        self.assertNotIn("f02.txt", self.tree())
+        self.assertNotIn("dist/bundle.js", self.tree())
+
+    def test_a_touched_file_is_brought_up_to_date_not_read_every_run(self):
+        """Same bytes, new modification time: ``ls-files -m`` alone would keep
+        reporting it and re-read it on every run, as it never refreshes the index."""
+        self.assertEqual(self._adds()[0], 0)
+        target = self.code / "f05.txt"
+        later = target.stat().st_mtime + 3600
+        os.utime(target, (later, later))
+        rc, err, lists = self._adds()
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(lists, [], "a file with unchanged bytes was staged")
+        shown = _git(self.vault, "--work-tree", str(self.code), "ls-files", "--debug",
+                     "--", "f05.txt").stdout
+        match = re.search(r"mtime:\s*(\d+):", shown)
+        self.assertIsNotNone(match, shown)
+        self.assertEqual(int(match.group(1)), int(later))
+
+    @unittest.skipIf(os.name == "nt", "Windows always takes the filtered route (junction check)")
+    def test_the_unfiltered_route_is_unchanged(self):
+        """No excludes: ``add -A -f .`` as before, no path list."""
+        lists: list[object] = []
+        real = snap.git
+
+        def spy(git_dir, work_tree, args, **kw):
+            if args[:1] == ["add"]:
+                lists.append(args)
+            return real(git_dir, work_tree, args, **kw)
+
+        with unittest.mock.patch.object(snap, "git", spy):
+            rc, _, err = self.snapshot()
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(lists, [["add", "-A", "-f", "."]])
+
+
+class ChangedWhileReadTests(_SnapshotFixture):
+    """A file that changed under ``git add`` is tried again before the run is lost.
+
+    Reported on a 222,000-file tree: ``short read while indexing`` on a scratch
+    file 22 minutes in, and the whole pass thrown away.
+    """
+
+    SHORT = ("git add -A -f . failed (rc=128)\nerror: short read while indexing "
+             ".scratch/extend/lane_B.last\nfatal: updating files failed")
+
+    def setUp(self):
+        super().setUp()
+        patcher = unittest.mock.patch.object(snap, "_READ_RETRY_PAUSE_SECONDS", 0.0)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _flaky(self, failures: int, message: str):
+        calls: list[int] = []
+
+        def run():
+            calls.append(1)
+            if len(calls) <= failures:
+                raise snap.SnapshotError(message)
+            return "done"
+
+        return run, calls
+
+    def test_a_file_that_settles_lets_the_run_continue(self):
+        run, calls = self._flaky(2, self.SHORT)
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self.assertEqual(snap.add_retrying(run), "done")
+        self.assertEqual(len(calls), 3)
+        self.assertIn("staging: .scratch/extend/lane_B.last changed while git was reading it; "
+                      "trying again in 0 s (1 of 2)", err.getvalue())
+        self.assertIn("(2 of 2)", err.getvalue())
+
+    def test_a_file_that_keeps_changing_fails_with_gits_message(self):
+        run, calls = self._flaky(99, self.SHORT)
+        with contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(snap.SnapshotError) as caught:
+                snap.add_retrying(run)
+        self.assertEqual(len(calls), 3)
+        self.assertIn("short read while indexing", str(caught.exception))
+
+    def test_the_unnamed_variant_is_retried_too(self):
+        run, calls = self._flaky(1, "git add failed\nfatal: unstable object source data for x")
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self.assertEqual(snap.add_retrying(run), "done")
+        self.assertIn("staging: a file changed while git was reading it", err.getvalue())
+
+    def test_any_other_failure_is_not_retried(self):
+        run, calls = self._flaky(99, "git add failed\nfatal: Unable to create index.lock")
+        with self.assertRaises(snap.SnapshotError):
+            snap.add_retrying(run)
+        self.assertEqual(len(calls), 1)
+
+    def test_a_run_survives_one_short_read_end_to_end(self):
+        real = snap.git
+        seen: list[int] = []
+
+        def spy(git_dir, work_tree, args, **kw):
+            if args[:2] == ["add", "-A"]:
+                seen.append(1)
+                if len(seen) == 1:
+                    raise snap.SnapshotError(self.SHORT)
+            return real(git_dir, work_tree, args, **kw)
+
+        with unittest.mock.patch.object(snap, "git", spy):
+            rc, _, err = self.snapshot()
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(len(seen), 2)
+        self.assertIn("trying again", err)
+        self.assertIn("README.md", self.tree())
 
 
 class LargePayloadProfileTests(unittest.TestCase):

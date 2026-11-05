@@ -98,6 +98,74 @@ def stall_limit_after_prewrite(seconds: float) -> float:
     return max(_stall_limit_from_env(), 3.0 * seconds)
 
 
+def _listed_changes(git_dir: Path, work_tree: Path) -> "dict[str, None]":
+    """Untracked (ignored ones included) and modified paths, as ``ls-files`` spells them.
+
+    A nested repository comes back with its trailing slash.  Deleted files are
+    listed as modified; whoever uses the result drops them against a list of what
+    exists.
+    """
+    found: dict[str, None] = {}
+    for flag in ("-o", "-m"):
+        listing = git(git_dir, work_tree, ["ls-files", "-z", flag], cwd=work_tree).stdout
+        for entry in listing.split("\0"):
+            if entry:
+                found[entry] = None
+    return found
+
+
+def paths_to_stage(git_dir: Path, work_tree: Path, kept: list[str]) -> list[str]:
+    """The members of *kept* that ``git add`` has anything to do for, in *kept*'s order.
+
+    Handing ``git add`` a path list makes it match every path of the list against
+    every path of the index, so the cost grows with the square of the tree:
+    measured with every path of an unchanged tree listed, 20,000 files took 3.9 s,
+    40,000 took 18 s and 80,000 took 76 s, against 0.1 s for ``git add .`` -- and
+    222,000 files, 2,600 of them new, took 22 minutes.  An unchanged tracked file
+    needs nothing from ``add`` (its stat data in the index already says so), so
+    only the untracked and modified ones are listed.
+
+    ``update-index --refresh`` goes first: a file that was only touched (new
+    modification time, same bytes) is brought up to date in the index, as ``add``
+    would have, instead of being read again by every later run.
+    """
+    git(git_dir, work_tree, ["update-index", "-q", "--refresh"], cwd=work_tree, check=False)
+    changed = {entry.rstrip("/") for entry in _listed_changes(git_dir, work_tree)}
+    return [path for path in kept if path in changed]
+
+
+#: ``git add`` fails when a file shrinks or is replaced between its stat and its
+#: read.  A file that was being written a moment ago is usually still when the
+#: run is a minute old, so the same add is tried again before the run is given up.
+_CHANGED_WHILE_READ = ("short read while indexing", "unstable object source data")
+_READ_RETRIES = 2
+_READ_RETRY_PAUSE_SECONDS = 2.0
+
+
+def add_retrying(run: "Callable[[], Any]") -> Any:
+    """``run()``, tried again (twice, after a pause) when git saw a file change mid-read.
+
+    Only that failure is retried.  The first attempt left no index behind, and
+    the objects it wrote are reused, so a retry costs little; a file that is
+    still changing on the last try fails the run with git's own message.
+    """
+    for attempt in range(_READ_RETRIES + 1):
+        try:
+            return run()
+        except SnapshotError as exc:
+            text = str(exc)
+            if attempt == _READ_RETRIES or not any(m in text for m in _CHANGED_WHILE_READ):
+                raise
+            named = re.search(r"short read while indexing (.+)", text)
+            print(
+                f"staging: {named.group(1).strip() if named else 'a file'} changed while git was "
+                f"reading it; trying again in {_READ_RETRY_PAUSE_SECONDS:g} s "
+                f"({attempt + 1} of {_READ_RETRIES})",
+                file=sys.stderr,
+            )
+            time.sleep(_READ_RETRY_PAUSE_SECONDS)
+
+
 def _prewrite_candidates(
     git_dir: Path, work_tree: Path, only: "set[str] | None"
 ) -> list[tuple[str, int]]:
@@ -111,14 +179,10 @@ def _prewrite_candidates(
     text, and a FIFO would hang it.  A name ``--stdin-paths`` cannot carry (a
     newline, or a leading quote it would unquote) is left to ``add``.
     """
-    found: dict[str, None] = {}
-    for flag in ("-o", "-m"):
-        listing = git(git_dir, work_tree, ["ls-files", "-z", flag], cwd=work_tree).stdout
-        for entry in listing.split("\0"):
-            if entry and not entry.endswith("/"):
-                found[entry] = None
     out: list[tuple[str, int]] = []
-    for path in found:
+    for path in _listed_changes(git_dir, work_tree):
+        if path.endswith("/"):
+            continue
         if only is not None and path not in only:
             continue
         if "\n" in path or "\r" in path or path.startswith('"'):

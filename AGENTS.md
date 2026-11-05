@@ -166,6 +166,11 @@ real data**, even to test. Read-only commands (`--payload-verify`, report-only
   machines (fast, saturating, slow) and goes red when its rule is deleted. Nothing so far
   has been measured on a spinning disk or a slow link -- the development machine is NVMe --
   so a speed-up that is only proven here must be able to back out.
+- **A long path list given to git is quadratic.** `git add --pathspec-from-file` matches
+  every listed path against every index entry: 80,000 listed paths on an unchanged tree
+  took 76 s, `git add .` 0.1 s. Hand git the paths that *changed* (`paths_to_stage`), never
+  the whole tree, and measure an incremental run on a warm index -- the fresh-tree
+  measurements that justified the parallel pre-write said nothing about it.
 - **A new message needs a test** that triggers it and quotes three words in a row of
   its text. `tests/untested_messages.txt` lists the older messages that have none; it
   may only shrink, and a new message is not added to it to get past the check.

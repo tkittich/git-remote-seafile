@@ -234,7 +234,7 @@ def build_snapshot(
         if prewritten:
             stall = stall_limit_after_prewrite(spent)
         try:
-            added = git(
+            added = add_retrying(lambda: git(
                 git_dir,
                 work_tree,
                 ["add", "-A", "-f", "."],
@@ -243,7 +243,7 @@ def build_snapshot(
                 measure_dir=git_dir / "objects",
                 expect_bytes=staging_bytes,
                 stall_limit=stall,
-            )
+            ))
             unreadable.extend(unreadable_directories(added.stderr))
         except SnapshotError as exc:
             # A directory with its own .git and no commit cannot be recorded
@@ -293,25 +293,35 @@ def build_snapshot(
             and not is_clock_probe_debris(path)
         ]
         kept_set = set(kept)
-        if kept and not prewritten:
+        # Only the new and modified paths go to `add` (see paths_to_stage): the
+        # rest of `kept` is already in the index, and listing it all made a run
+        # on 222,000 files spend 22 minutes matching paths.
+        to_stage = paths_to_stage(git_dir, work_tree, kept) if kept else []
+        if kept:
+            print(
+                f"staging: {len(to_stage)} of {len(kept)} path(s) are new or changed; "
+                "the rest are already in the vault index",
+                file=sys.stderr,
+            )
+        if to_stage and not prewritten:
             wrote, spent = prewrite_objects(
-                git_dir, work_tree, only=kept_set, expect_bytes=staging_bytes
+                git_dir, work_tree, only=set(to_stage), expect_bytes=staging_bytes
             )
             if wrote:
                 stall = stall_limit_after_prewrite(spent)
-        if kept:
+        if to_stage:
             try:
-                added = git(
+                added = add_retrying(lambda: git(
                     git_dir,
                     work_tree,
                     ["add", "-A", "-f", "--pathspec-from-file=-", "--pathspec-file-nul"],
                     cwd=work_tree,
-                    stdin="\0".join(kept) + "\0",
+                    stdin="\0".join(to_stage) + "\0",
                     status="staging the tree",
                     measure_dir=git_dir / "objects",
                     expect_bytes=staging_bytes,
                     stall_limit=stall,
-                )
+                ))
                 unreadable.extend(unreadable_directories(added.stderr))
             except SnapshotError as exc:
                 if "does not have a commit checked out" not in str(exc):
