@@ -2657,13 +2657,48 @@ class ParallelStagingTests(_SnapshotFixture):
         self.assertIn("parallel git processes", err)
         self.assertEqual(self._tree_id(self.tmp / "v-par"), self._tree_id(self.tmp / "v-serial"))
 
+    def test_the_add_after_a_prewrite_is_not_killed_for_writing_nothing(self):
+        """Measured: the object store is byte-identical across that add, so the
+        no-growth watchdog saw a dead step on any disk slower than its limit."""
+        self.assertEqual(snap.stall_limit_after_prewrite(10.0), snap._stall_limit_from_env())
+        self.assertEqual(snap.stall_limit_after_prewrite(2000.0), 6000.0)
+        calls = []
+        real = snap.git
+
+        def spy(git_dir, work_tree, args, **kw):
+            if args[:2] == ["add", "-A"]:
+                calls.append(kw.get("stall_limit", snap._UNSET_STALL))
+            return real(git_dir, work_tree, args, **kw)
+
+        with unittest.mock.patch.object(snap, "git", spy):
+            rc, _, err = self._run_in(self.vault, "4")
+        self.assertEqual(rc, 0, err)
+        self.assertIn("parallel git processes", err)
+        self.assertEqual(len(calls), 1)
+        self.assertNotIsInstance(calls[0], snap._UnsetStall,
+                                 "the add after a pre-write kept the no-growth default")
+
+    def test_without_a_prewrite_the_add_keeps_the_usual_limit(self):
+        calls = []
+        real = snap.git
+
+        def spy(git_dir, work_tree, args, **kw):
+            if args[:2] == ["add", "-A"]:
+                calls.append(kw.get("stall_limit", snap._UNSET_STALL))
+            return real(git_dir, work_tree, args, **kw)
+
+        with unittest.mock.patch.object(snap, "git", spy),                 unittest.mock.patch.object(snap, "_PREWRITE_MIN_FILES", 10 ** 6):
+            rc, _, err = self._run_in(self.vault, "4")
+        self.assertEqual(rc, 0, err)
+        self.assertIsInstance(calls[0], snap._UnsetStall)
+
     def test_the_step_itself_writes_the_objects(self):
         """Without this the tests above pass with a step that does nothing."""
         bare = self.tmp / "bare"
         _git(self.tmp, "init", "-q", "--bare", str(bare))
         with unittest.mock.patch.dict(os.environ, {"SEAFILE_SNAPSHOT_STAGE_WORKERS": "3"}):
             with contextlib.redirect_stderr(io.StringIO()):
-                count = snap.prewrite_objects(bare, self.code)
+                count, _spent = snap.prewrite_objects(bare, self.code)
         self.assertGreaterEqual(count, 12)
         blob = _git(bare, "hash-object", "--no-filters", str(self.code / "f01.txt")).stdout.strip()
         self.assertEqual(_git(bare, "cat-file", "-e", blob).returncode, 0)

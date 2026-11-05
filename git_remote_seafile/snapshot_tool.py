@@ -2227,6 +2227,20 @@ class _Ramp:
         self._reset(ended)
 
 
+def stall_limit_after_prewrite(seconds: float) -> float:
+    """The no-progress limit for the ``git add`` that follows a pre-write.
+
+    The watchdog counts bytes newly present under ``objects``.  After a
+    pre-write that final ``add`` writes nothing -- every object is already
+    there (measured: the object store is byte-identical before and after) -- so
+    on a disk where reading the tree back takes longer than the limit, a
+    healthy run would be killed as stalled.  Reading and hashing what was just
+    written cannot take much longer than writing it did, so the limit is the
+    larger of the usual one and three times the write pass.
+    """
+    return max(_stall_limit_from_env(), 3.0 * seconds)
+
+
 def _prewrite_candidates(
     git_dir: Path, work_tree: Path, only: "set[str] | None"
 ) -> list[tuple[str, int]]:
@@ -2283,7 +2297,7 @@ def prewrite_objects(
     work_tree: Path,
     only: "set[str] | None" = None,
     expect_bytes: int = 0,
-) -> int:
+) -> "tuple[int, float]":
     """Write the loose objects ``git add`` is about to write, several at a time.
 
     ``git add`` hashes, deflates and writes one file after another.  Measured on
@@ -2300,14 +2314,15 @@ def prewrite_objects(
     the unwritten files are written by the ``add`` that follows, and that
     ``add`` owns every error message.  ``only`` limits the step to the paths the
     caller has already decided to stage, so an excluded file is never opened.
-    Returns the number of files handed to workers (0 when the step was skipped).
+    Returns ``(files handed to workers, seconds spent)``; ``(0, 0.0)`` when the step
+    was skipped.
     """
     ceiling, forced = prewrite_workers()
     if ceiling < 2:
-        return 0
+        return 0, 0.0
     files = _prewrite_candidates(git_dir, work_tree, only)
     if len(files) < _PREWRITE_MIN_FILES:
-        return 0
+        return 0, 0.0
     batches = _prewrite_batches(files)
     total = sum(n for _, n in files)
     ceiling = min(ceiling, len(batches))
@@ -2376,7 +2391,7 @@ def prewrite_objects(
             f"{ramp.level} parallel git process(es) (files/s by process count: {tried})",
             file=sys.stderr,
         )
-    return written
+    return written, time.monotonic() - start
 
 
 #: How many paths to hand to a single ``update-index`` invocation.  A tree can
@@ -2604,8 +2619,14 @@ def build_snapshot(
     excluded: list[str] = []
     unreadable: list[str] = []
     prewritten = False
+    # After a pre-write the final add writes no object, so growth cannot show it
+    # is alive; its limit follows the time the write pass took.
+    stall: "float | None | _UnsetStall" = _UNSET_STALL
     if not filtered:
-        prewritten = bool(prewrite_objects(git_dir, work_tree, expect_bytes=staging_bytes))
+        wrote, spent = prewrite_objects(git_dir, work_tree, expect_bytes=staging_bytes)
+        prewritten = bool(wrote)
+        if prewritten:
+            stall = stall_limit_after_prewrite(spent)
         try:
             added = git(
                 git_dir,
@@ -2615,6 +2636,7 @@ def build_snapshot(
                 status="staging the tree",
                 measure_dir=git_dir / "objects",
                 expect_bytes=staging_bytes,
+                stall_limit=stall,
             )
             unreadable.extend(unreadable_directories(added.stderr))
         except SnapshotError as exc:
@@ -2666,7 +2688,11 @@ def build_snapshot(
         ]
         kept_set = set(kept)
         if kept and not prewritten:
-            prewrite_objects(git_dir, work_tree, only=kept_set, expect_bytes=staging_bytes)
+            wrote, spent = prewrite_objects(
+                git_dir, work_tree, only=kept_set, expect_bytes=staging_bytes
+            )
+            if wrote:
+                stall = stall_limit_after_prewrite(spent)
         if kept:
             try:
                 added = git(
@@ -2678,6 +2704,7 @@ def build_snapshot(
                     status="staging the tree",
                     measure_dir=git_dir / "objects",
                     expect_bytes=staging_bytes,
+                    stall_limit=stall,
                 )
                 unreadable.extend(unreadable_directories(added.stderr))
             except SnapshotError as exc:

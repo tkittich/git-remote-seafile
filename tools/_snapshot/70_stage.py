@@ -225,8 +225,14 @@ def build_snapshot(
     excluded: list[str] = []
     unreadable: list[str] = []
     prewritten = False
+    # After a pre-write the final add writes no object, so growth cannot show it
+    # is alive; its limit follows the time the write pass took.
+    stall: "float | None | _UnsetStall" = _UNSET_STALL
     if not filtered:
-        prewritten = bool(prewrite_objects(git_dir, work_tree, expect_bytes=staging_bytes))
+        wrote, spent = prewrite_objects(git_dir, work_tree, expect_bytes=staging_bytes)
+        prewritten = bool(wrote)
+        if prewritten:
+            stall = stall_limit_after_prewrite(spent)
         try:
             added = git(
                 git_dir,
@@ -236,6 +242,7 @@ def build_snapshot(
                 status="staging the tree",
                 measure_dir=git_dir / "objects",
                 expect_bytes=staging_bytes,
+                stall_limit=stall,
             )
             unreadable.extend(unreadable_directories(added.stderr))
         except SnapshotError as exc:
@@ -287,7 +294,11 @@ def build_snapshot(
         ]
         kept_set = set(kept)
         if kept and not prewritten:
-            prewrite_objects(git_dir, work_tree, only=kept_set, expect_bytes=staging_bytes)
+            wrote, spent = prewrite_objects(
+                git_dir, work_tree, only=kept_set, expect_bytes=staging_bytes
+            )
+            if wrote:
+                stall = stall_limit_after_prewrite(spent)
         if kept:
             try:
                 added = git(
@@ -299,6 +310,7 @@ def build_snapshot(
                     status="staging the tree",
                     measure_dir=git_dir / "objects",
                     expect_bytes=staging_bytes,
+                    stall_limit=stall,
                 )
                 unreadable.extend(unreadable_directories(added.stderr))
             except SnapshotError as exc:
