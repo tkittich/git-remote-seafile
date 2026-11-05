@@ -2605,6 +2605,25 @@ class StaleGitLockHintTests(unittest.TestCase):
         self.assertIn("Nothing was snapshotted", message)
         self.assertIn("--exclude it", message)
 
+    def test_a_short_read_while_indexing_names_the_file_and_what_was_lost(self):
+        """Seen 27 minutes into staging 222,000 files: git said only which file."""
+        proc = unittest.mock.MagicMock(
+            returncode=128, stdout="",
+            stderr=(
+                "error: short read while indexing .scratch/strict_scope_mutation.py\n"
+                "error: .scratch/strict_scope_mutation.py: failed to insert into database\n"
+                "error: unable to index file '.scratch/strict_scope_mutation.py'\n"
+                "fatal: adding files failed\n"
+            ),
+        )
+        with unittest.mock.patch.object(snap, "_run", return_value=proc):
+            with self.assertRaises(snap.SnapshotError) as ctx:
+                snap.git(pathlib.Path("V/.git"), None, ["add", "-A"], cwd=pathlib.Path("."))
+        message = str(ctx.exception)
+        self.assertIn(".scratch/strict_scope_mutation.py changed while git", message)
+        self.assertIn("Nothing was snapshotted", message)
+        self.assertIn("--exclude it", message)
+
 
 class LargePayloadProfileTests(unittest.TestCase):
     """A first-run sample decides once whether the vault should skip deflate and

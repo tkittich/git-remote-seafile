@@ -424,6 +424,19 @@ def git(
                 "Nothing was snapshotted; run again. If it keeps happening, something is "
                 "writing to the tree all the time (a database, a log): --exclude it."
             )
+        # The same race as above, caught by a different check: the file shrank
+        # (or was replaced) between git's stat and its read.  Unlike the
+        # "unstable" message this one names the file, and it was seen 27 minutes
+        # into staging a 222,000-file tree, so the hint says what was lost.
+        short = re.search(r"short read while indexing (.+)", detail)
+        if short:
+            hint = (
+                f"\n{short.group(1).strip()} changed while git was reading it. Nothing was "
+                "snapshotted and this staging pass is not kept, so a long run starts over; "
+                "objects already written are reused, which makes the next pass faster. "
+                "If that file is always being written (a scratch file, a log, a database), "
+                "--exclude it, or run when the tool that writes it is stopped."
+            )
         raise SnapshotError(
             f"git {' '.join(args)} failed (rc={proc.returncode})\n{detail}{hint}"
         )

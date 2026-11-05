@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **A file that shrank while `git add` read it failed with no explanation.** Git's `short read while indexing <file>` (seen 27 minutes into staging a 222,000-file tree, from a scratch file another tool was rewriting) is now recognised like `unstable object source data`: the error names the file, says nothing was snapshotted, and points at `--exclude`.
+
 ## [0.9.21] - 2026-10-31
 
 The automation contract in one page, and the maintainer gates in one command. Nothing about what is stored changes, no setting is renamed, and no shipped code changes at all: every commit is documentation or developer tooling, so an upgrade is a reinstall and nothing else.

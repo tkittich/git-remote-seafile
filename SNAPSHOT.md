@@ -581,7 +581,9 @@ problem, not a Git one.
 that changes while git reads it **stops the run**: git itself refuses with
 `fatal: confused by unstable object source data` (six times out of six when a
 6-48 MiB file was rewritten under `git add`), the run reports it with a hint and
-exits non-zero, and no snapshot is made. So a snapshot is never torn, but a tree
+exits non-zero, and no snapshot is made. A file that shrinks under the read fails
+the same way with `error: short read while indexing <file>`, and that message names
+the file. So a snapshot is never torn, but a tree
 that is always being written (a database, a log) needs `--exclude` for that file.
 Files that change *between* the reads of different files give a snapshot that is
 internally consistent but not a point-in-time image of the whole tree.
