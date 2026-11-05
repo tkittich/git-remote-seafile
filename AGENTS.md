@@ -23,7 +23,7 @@ no runtime dependency except `requests`, no dev dependencies.
 | `CHANGELOG.md`, `.github/release-notes/` | per-release notes (checked by tests) |
 | `RUNBOOK.md` | the operations runbook: §0 is three diagnostics, then a recipe per failure mode |
 | `ROADMAP.md` | §1 is the live backlog — review findings become its rows; §2 records what shipped, by release |
-| `review-prompt.md`, `REVIEW.*.md`, `archive/` | the prompt every review round is run from; reports land in root as `REVIEW.<model>-v<X.Y.Z>.md`, are triaged into ROADMAP §1, then move to `archive/` |
+| `review-prompt.md`, `REVIEW.*.md`, `archive/` | the prompt every review round is run from; reports land in root as `REVIEW.<commit>.<model>.md` (the commit is the reviewed checkout's short hash), are triaged into ROADMAP §1, then move to `archive/` |
 
 ## Gates (all must be green before a commit that touches code)
 
@@ -171,6 +171,12 @@ real data**, even to test. Read-only commands (`--payload-verify`, report-only
   took 76 s, `git add .` 0.1 s. Hand git the paths that *changed* (`paths_to_stage`), never
   the whole tree, and measure an incremental run on a warm index -- the fresh-tree
   measurements that justified the parallel pre-write said nothing about it.
+  `update-index` is the way round it for a long list, but it is not `add`: it refuses a
+  directory, stops on a path that has gone, and cannot tell a nested repository from a
+  file. SNAPSHOT.md section 5 ("Git's own costs") has the table; the routes are compared
+  by `ExoticReplacementTests` and `SpecialFileAndNameTests`, and a change to either
+  command's arguments must keep both green. `tools/measure_pathspec_cost.py` repeats the
+  measurement.
 - **A new message needs a test** that triggers it and quotes three words in a row of
   its text. `tests/untested_messages.txt` lists the older messages that have none; it
   may only shrink, and a new message is not added to it to get past the check.
