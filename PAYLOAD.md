@@ -322,8 +322,9 @@ faithful path. It lives beside the vault, never inside the helper's directory.
 `--payload-min-size [SIZE|auto]` (`0` = off; a bare flag means `auto`), `--no-payload`
 (off, remembered), `--payload-auto-ratio R|measure` (the `auto` sample cut-off, default 0.9,
 remembered; measured once for a new vault),
-`--payload-jobs N` (default 3; measured: one upload 32 MiB/s, three 53 MiB/s, five
-no better), `--payload-gc`, `--payload-delete`, `--payload-grace-days N`.
+`--payload-jobs N` (exactly N uploads at once; default: found by measuring -- starts at 3,
+climbs while the aggregate rate grows, up to 16, backs off on a 429/502/503/504; measured
+on the test server: 1 upload 27 MiB/s, 2 about 40, 4 about 45, 8 about 62, 12 about 65), `--payload-gc`, `--payload-delete`, `--payload-grace-days N`.
 Combinations that would be silently ignored are refused. An explicit
 `--payload-min-size` is incompatible with `--no-push`.
 
@@ -455,6 +456,7 @@ data, or surprise. Disposition is one of **fixed**, **handled**, **specified**
 | A23 | An encrypted library | the client refuses it | **handled** |
 | A24 | A server that rewrites object names | would break "listing proves presence" | **handled**: names are lowercase hex; verified on the real server |
 | A25 | `--payload-jobs` very large on a flaky link | many partial uploads | **handled**: pool is bounded; failure stops the queue |
+| A25b | The server pushes back on parallel uploads (429/502/503/504) | a run that fails for going too fast | **handled**: the level is halved for the rest of the run and the object is queued again (twice at most); `tests/test_snapshot_climb.py` |
 | A26 | A report-only `--payload-gc` after every run | cost of listing 256 directories; a failing report failing the run; a history download | **handled**: at most once per `--payload-report-days` (7), last in the run (after the settings are remembered), never fatal, never deletes, and reads the history from the local vault so it downloads nothing; `test_a_failing_report_never_fails_the_run_that_pushed`, `test_the_routine_report_reads_the_local_vault_not_the_remote` |
 | A27 | A restore path over 260 characters on Windows | file skipped or `git checkout` fails | **handled**: payload files use extended-length paths and git runs with `core.longpaths=true`; `test_the_vault_and_the_restored_clone_allow_long_paths` |
 | A28 | The run is killed (not interrupted) while a large tree is hashed | the hours of hashing are lost; the next run reads everything again | **handled**: the hash cache is saved about once a minute while hashing (`_CHECKPOINT_SECONDS`) and, as before, whenever the upload then fails; a stale entry still fails the size/mtime/inode/ctime/device key; `test_a_killed_hashing_pass_keeps_what_it_hashed` |

@@ -350,7 +350,7 @@ What to know:
   the last 7 days; `--payload-report-days N` changes the period and `0` turns it off. A
   report that fails is a note, not a failed run, and nothing is deleted without
   `--payload-gc --payload-delete`.
-- **Uploads are parallel and verified.** `--payload-jobs N` (default 3). Each object
+- **Uploads are parallel and verified, and as parallel as the link allows.** Without `--payload-jobs N` the run starts at 3 uploads and doubles while the aggregate rate (bytes per second over ten-second windows) grows by 15%, trying up to 16 and stopping after two levels in a row that did not help; it then settles on the best level it saw and prints `payload: settled on 12 parallel upload(s) (MiB/s by count: 3: 55, 6: 71, 12: 82, 16: 91)`. Two flat steps are allowed because a real server showed a shelf at 3-4 and a 30% rise at 8. A `429`, `502`, `503` or `504` from the server halves the level for the rest of the run and queues the object again (a `Note:` says so); only after that fails twice is it an error. A typed `--payload-jobs N` is used exactly, with no measuring. Each object
   goes up under a temporary name, is hashed as it is sent, and is renamed to its hash
   only if the bytes match; the whole set is re-checked just before the vault is pushed.
 - **Look at it, or audit it.** `--payload-view` builds a browsable directory of real
