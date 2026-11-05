@@ -134,6 +134,51 @@ def paths_to_stage(git_dir: Path, work_tree: Path, kept: list[str]) -> list[str]
     return [path for path in kept if path in changed]
 
 
+#: From this many paths the list goes to ``update-index`` instead of ``add``.  Both
+#: hash the same bytes, apply the same filters and record the same stat data (they
+#: share ``index_path``), but ``add`` matches every listed path against the index and
+#: ``update-index --stdin`` does not.  With the objects already written, a first run
+#: on scratch trees took 14.1 s with ``add`` and 10.1 s with ``update-index`` for
+#: 20,000 files, and 121.5 s against 43.0 s for 80,000 (identical trees); the
+#: first grows faster than the file count, the second with it.
+_INDEX_ROUTE_MIN_PATHS = 10_000
+
+
+def staging_command(
+    paths: list[str], work_tree: Path
+) -> "tuple[list[str], str, list[str]]":
+    """``(git arguments, stdin, displaced)``: how to record *paths* in the index.
+
+    ``--replace`` is what ``add`` passes too: a file that took the place of a
+    directory (or the reverse) drops the entries it displaces.  Deletions are not
+    this command's job in either form; the caller drops stale entries itself.
+
+    ``update-index`` refuses a path that is a directory on disk ("is a directory
+    - add individual files instead"), where ``add`` copes.  Such a path is a
+    tracked file that was replaced by a directory.  It is left out of the list
+    and returned as *displaced*, for the caller to remove from the index first:
+    the files inside the directory are listed on their own, but a directory that
+    is empty, or holds only excluded files, would otherwise leave the old file
+    in the snapshot (found by running both routes on such a tree; ``add`` drops
+    it).  ``displaced`` is empty for the ``add`` route, which does this itself.
+    """
+    if len(paths) >= _INDEX_ROUTE_MIN_PATHS:
+        directories = [p for p in paths if _is_plain_directory(work_tree / p)]
+        gone = set(directories)
+        listed = [p for p in paths if p not in gone]
+        return (["update-index", "--add", "--replace", "-z", "--stdin"],
+                "\0".join(listed) + "\0", directories)
+    return (["add", "-A", "-f", "--pathspec-from-file=-", "--pathspec-file-nul"],
+            "\0".join(paths) + "\0", [])
+
+
+def _is_plain_directory(path: Path) -> bool:
+    try:
+        return stat.S_ISDIR(os.lstat(path).st_mode)
+    except OSError:
+        return False
+
+
 #: ``git add`` fails when a file shrinks or is replaced between its stat and its
 #: read.  A file that was being written a moment ago is usually still when the
 #: run is a minute old, so the same add is tried again before the run is given up.

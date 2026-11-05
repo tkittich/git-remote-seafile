@@ -2941,6 +2941,151 @@ class IncrementalStagingTests(_SnapshotFixture):
         self.assertEqual(lists, [["add", "-A", "-f", "."]])
 
 
+class LongListStagingTests(_SnapshotFixture):
+    """A long path list goes to ``update-index``, which does not match every path
+    against the index the way ``add`` does (first run, objects written, scratch
+    trees: 121.5 s against 43.0 s for 80,000 files, identical trees)."""
+
+    EXCLUDE = ("--exclude", "node_modules")
+
+    def setUp(self):
+        super().setUp()
+        for i in range(12):
+            (self.code / f"f{i:02d}.txt").write_bytes(f"file {i}\n".encode() * 20)
+
+    def _run(self, vault, threshold, *extra):
+        """Run with the route threshold set; return rc, stderr, the staging verbs used."""
+        verbs: list[list[str]] = []
+        real = snap.git
+
+        def spy(git_dir, work_tree, args, **kw):
+            if args[:1] in (["add"], ["update-index"]) and "stdin" in kw and kw["stdin"]:
+                if "--pathspec-from-file=-" in args or "--stdin" in args and "--add" in args:
+                    verbs.append(list(args))
+            return real(git_dir, work_tree, args, **kw)
+
+        with unittest.mock.patch.object(snap, "_INDEX_ROUTE_MIN_PATHS", threshold):
+            with unittest.mock.patch.object(snap, "git", spy):
+                rc, _, err = self.run_tool("--source", self.code, "--vault", vault,
+                                           *self.EXCLUDE, *extra)
+        return rc, err, verbs
+
+    def _tree_id(self, vault):
+        return _git(vault, "rev-parse", f"{BRANCH}^{{tree}}").stdout.strip()
+
+    def test_the_threshold_picks_the_command(self):
+        few = snap.staging_command(["a", "b"], self.code)
+        self.assertEqual(few[0][0], "add")
+        many = snap.staging_command([f"p{i}" for i in range(snap._INDEX_ROUTE_MIN_PATHS)], self.code)
+        self.assertEqual(many[0], ["update-index", "--add", "--replace", "-z", "--stdin"])
+        self.assertTrue(many[1].endswith("\0"))
+        self.assertEqual(many[1].count("\0"), snap._INDEX_ROUTE_MIN_PATHS)
+
+    def test_a_directory_is_left_out_of_the_update_index_list(self):
+        (self.code / "was-a-file").mkdir()
+        (self.code / "was-a-file" / "inside.txt").write_bytes(b"x\n")
+        with unittest.mock.patch.object(snap, "_INDEX_ROUTE_MIN_PATHS", 2):
+            args, stdin, displaced = snap.staging_command(["was-a-file", "README.md"], self.code)
+        self.assertEqual(args[0], "update-index")
+        self.assertEqual(stdin, "README.md\0")
+        self.assertEqual(displaced, ["was-a-file"])
+        self.assertEqual(snap.staging_command(["was-a-file", "README.md"], self.code)[2], [])
+
+    def test_a_file_replaced_by_a_directory_with_nothing_to_stage_leaves_the_snapshot(self):
+        """The case the route got wrong first: ``update-index`` has nothing to
+        replace the old file entry with when the directory is empty, or holds only
+        excluded files, so the entry stayed and the snapshot kept a file that no
+        longer exists.  ``add`` drops it; both routes must give the same tree."""
+        def evolve(vault, threshold, only_excluded):
+            self.assertEqual(self._run(vault, threshold)[0], 0)
+            (self.code / "f06.txt").unlink()
+            (self.code / "f06.txt").mkdir()
+            if only_excluded:
+                (self.code / "f06.txt" / "node_modules").write_bytes(b"excluded\n")
+            (self.code / "f07.txt").write_bytes(b"edited\n")
+            rc, err, _ = self._run(vault, threshold)
+            self.assertEqual(rc, 0, err)
+            return self._tree_id(vault), _git(vault, "ls-tree", "-r", "--name-only", BRANCH).stdout.split()
+
+        for only_excluded in (False, True):
+            with self.subTest(only_excluded=only_excluded):
+                def restore_files():
+                    for i in range(12):
+                        path = self.code / f"f{i:02d}.txt"
+                        if path.is_dir():
+                            shutil.rmtree(path)
+                        path.write_bytes(f"file {i}\n".encode() * 20)
+
+                restore_files()
+                via_index = evolve(self.tmp / f"vi-{only_excluded}", 2, only_excluded)
+                restore_files()
+                via_add = evolve(self.tmp / f"va-{only_excluded}", 10 ** 9, only_excluded)
+                self.assertEqual(via_index, via_add)
+                self.assertNotIn("f06.txt", via_index[1])
+
+    def test_a_long_list_uses_update_index_and_records_the_same_tree(self):
+        rc, err, verbs = self._run(self.tmp / "v-index", 3)
+        self.assertEqual(rc, 0, err)
+        self.assertEqual([v[0] for v in verbs], ["update-index"])
+        rc, err, verbs = self._run(self.tmp / "v-add", 10 ** 9)
+        self.assertEqual(rc, 0, err)
+        self.assertEqual([v[0] for v in verbs], ["add"])
+        self.assertEqual(self._tree_id(self.tmp / "v-index"), self._tree_id(self.tmp / "v-add"))
+
+    def test_the_two_routes_agree_across_edits_deletions_and_a_file_for_a_directory(self):
+        def evolve(vault, threshold):
+            self.assertEqual(self._run(vault, threshold)[0], 0)
+            (self.code / "f01.txt").write_bytes(b"edited\n")
+            (self.code / "f02.txt").unlink()
+            (self.code / "tree").mkdir()
+            (self.code / "tree" / "leaf.txt").write_bytes(b"leaf\n")
+            self.assertEqual(self._run(vault, threshold)[0], 0)
+            shutil.rmtree(self.code / "tree")
+            (self.code / "tree").write_bytes(b"now a file\n")   # a file where a directory was
+            (self.code / "f03.txt").unlink()
+            (self.code / "f03.txt").mkdir()                      # and a directory where a file was
+            (self.code / "f03.txt" / "inside.txt").write_bytes(b"inside\n")
+            rc, err, _ = self._run(vault, threshold)
+            self.assertEqual(rc, 0, err)
+            return self._tree_id(vault)
+
+        via_index = evolve(self.tmp / "v-index", 3)
+        # Back to the starting tree for the other route.
+        shutil.rmtree(self.code / "f03.txt")
+        (self.code / "f03.txt").write_bytes(b"file 3\n" * 20)
+        (self.code / "f02.txt").write_bytes(b"file 2\n" * 20)
+        (self.code / "f01.txt").write_bytes(b"file 1\n" * 20)
+        (self.code / "tree").unlink()
+        via_add = evolve(self.tmp / "v-add", 10 ** 9)
+        self.assertEqual(via_index, via_add)
+        tree = _git(self.tmp / "v-index", "ls-tree", "-r", "--name-only", BRANCH).stdout.split()
+        self.assertIn("tree", tree)
+        self.assertIn("f03.txt/inside.txt", tree)
+        self.assertNotIn("tree/leaf.txt", tree)
+
+    def test_a_file_that_changes_under_update_index_is_retried(self):
+        real = snap.git
+        seen: list[int] = []
+
+        def spy(git_dir, work_tree, args, **kw):
+            if args[:2] == ["update-index", "--add"]:
+                seen.append(1)
+                if len(seen) == 1:
+                    raise snap.SnapshotError(
+                        "git update-index failed (rc=128)\nerror: short read while indexing "
+                        "f04.txt\nfatal: Unable to process path f04.txt")
+            return real(git_dir, work_tree, args, **kw)
+
+        with unittest.mock.patch.object(snap, "_READ_RETRY_PAUSE_SECONDS", 0.0):
+            with unittest.mock.patch.object(snap, "_INDEX_ROUTE_MIN_PATHS", 3):
+                with unittest.mock.patch.object(snap, "git", spy):
+                    rc, _, err = self.run_tool("--source", self.code, "--vault", self.vault,
+                                               *self.EXCLUDE)
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(len(seen), 2)
+        self.assertIn("f04.txt changed while git was reading it", err)
+
+
 class ChangedWhileReadTests(_SnapshotFixture):
     """A file that changed under ``git add`` is tried again before the run is lost.
 

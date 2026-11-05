@@ -310,13 +310,16 @@ def build_snapshot(
             if wrote:
                 stall = stall_limit_after_prewrite(spent)
         if to_stage:
+            stage_args, stage_stdin, displaced = staging_command(to_stage, work_tree)
+            if displaced:
+                drop_from_index(git_dir, work_tree, displaced)
             try:
                 added = add_retrying(lambda: git(
                     git_dir,
                     work_tree,
-                    ["add", "-A", "-f", "--pathspec-from-file=-", "--pathspec-file-nul"],
+                    stage_args,
                     cwd=work_tree,
-                    stdin="\0".join(to_stage) + "\0",
+                    stdin=stage_stdin,
                     status="staging the tree",
                     measure_dir=git_dir / "objects",
                     expect_bytes=staging_bytes,
