@@ -15,6 +15,7 @@ _PREWRITE_BATCH_BYTES = 128 * 1024 * 1024
 #: the same time; the disk, not the CPU, is the limit by then.
 _PREWRITE_MAX_WORKERS = 16
 
+
 def prewrite_workers() -> "tuple[int, bool]":
     """``(ceiling, forced)``: how many ``git hash-object`` processes may write at once.
 
@@ -25,21 +26,8 @@ def prewrite_workers() -> "tuple[int, bool]":
     because a setting from the environment must never fail a run that works.
     """
     default = max(1, min(_PREWRITE_MAX_WORKERS, os.cpu_count() or 1))
-    raw = os.environ.get("SEAFILE_SNAPSHOT_STAGE_WORKERS", "").strip()
-    if not raw:
-        return default, False
-    try:
-        value = int(raw)
-    except ValueError:
-        value = 0
-    if value < 1:
-        print(
-            f"Warning: SEAFILE_SNAPSHOT_STAGE_WORKERS={raw!r} is not a whole number "
-            f"of at least 1; using {default}.",
-            file=sys.stderr,
-        )
-        return default, False
-    return value, True
+    return env_workers("SEAFILE_SNAPSHOT_STAGE_WORKERS",
+                       os.environ.get("SEAFILE_SNAPSHOT_STAGE_WORKERS", ""), default)
 
 
 class _Ramp:

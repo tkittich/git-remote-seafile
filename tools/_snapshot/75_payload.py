@@ -112,15 +112,24 @@ def _api(call: Any, what: str) -> Any:
         raise SnapshotError(f"{what} failed: {type(exc).__name__}: {exc}") from None
 
 
-def _sha256_file(path: Path) -> str:
+def _sha256_file(
+    path: Path, meter: "_ByteMeter | None" = None, cancel: "threading.Event | None" = None
+) -> str:
+    """SHA-256 of *path*.  *meter* counts the bytes as they are read (the search for
+    how many files to hash at once reads it); *cancel*, once set, stops the read
+    between blocks so a run that has already failed does not finish a 100 GiB file."""
     digest = hashlib.sha256()
     try:
         with open(path, "rb") as fh:
             while True:
+                if cancel is not None and cancel.is_set():
+                    raise SnapshotError(f"hashing of {path} was stopped")
                 block = fh.read(_PAYLOAD_HASH_BLOCK)
                 if not block:
                     break
                 digest.update(block)
+                if meter is not None:
+                    meter.add(len(block))
     except OSError as exc:
         # A file another process holds open exclusively (a database, a GIS
         # project on Windows) cannot be read; a backup that skipped it quietly

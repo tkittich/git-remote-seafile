@@ -556,15 +556,21 @@ def build_manifest(
     to_hash = 0 if quiet else sum(
         candidates[rel][0] for rel in candidates if not vouched(rel)[1]
     )
-    hashed = 0
-    started_at = last_pulse = last_checkpoint = time.monotonic()
-    for index, rel in enumerate(sorted(candidates), 1):
-        size, mtime_ns, mode, ino, *rest = candidates[rel]
+    hashed = [0]
+    started_at = time.monotonic()
+    pulse = [started_at, started_at]       # when the last progress line / checkpoint went out
+    order = sorted(candidates)
+    position = {rel: n for n, rel in enumerate(order, 1)}
+    meter = _ByteMeter()
+    cancel = threading.Event()
+    lock = threading.Lock()
+    todo: list[str] = []
+    for rel in order:
+        _size, _mtime, _mode, _ino, *rest = candidates[rel]
         dev = rest[0] if rest else None
         ctime_ns = rest[1] if len(rest) > 1 else None
         old, trusted = vouched(rel)
         if trusted:
-            digest = str(old["sha256"])
             fresh[rel] = dict(old)
             if ctime_ns is not None:
                 fresh[rel]["ctime"] = ctime_ns
@@ -572,34 +578,45 @@ def build_manifest(
                 fresh[rel]["dev"] = dev
         else:
             stale += isinstance(old.get("sha256"), str)
-            if not quiet:
-                print(f"hashing [{index}/{total}] {rel} ({human_bytes(size)})", flush=True)
-            started = time.time_ns() + clock_offset_ns
-            digest = _sha256_file(source / rel)
-            hashed += size
+            todo.append(rel)
+
+    def hash_one(rel: str) -> None:
+        size, mtime_ns, _mode, ino, *rest = candidates[rel]
+        dev = rest[0] if rest else None
+        ctime_ns = rest[1] if len(rest) > 1 else None
+        if not quiet:
+            with lock:
+                print(f"hashing [{position[rel]}/{total}] {rel} ({human_bytes(size)})", flush=True)
+        started = time.time_ns() + clock_offset_ns
+        digest = _sha256_file(source / rel, meter, cancel)
+        entry: dict[str, int | str] = {
+            "size": size, "mtime_ns": mtime_ns, "ino": ino, "sha256": digest, "at": started,
+        }
+        if ctime_ns is not None:
+            entry["ctime"] = ctime_ns
+        if dev is not None:
+            entry["dev"] = dev
+        if clock_offset_ns:
+            entry["fs"] = True
+        with lock:
+            fresh[rel] = entry
+            hashed[0] += size
             now = time.monotonic()
-            if not quiet and now - last_pulse >= _PULSE_SECONDS:
-                last_pulse = now
-                print(_progress_line(hashed, to_hash, now - started_at, "hashed"), flush=True)
-            if checkpoint is not None and now - last_checkpoint >= _CHECKPOINT_SECONDS:
-                last_checkpoint = now
-                checkpoint({**cache, **fresh, rel: {
-                    "size": size, "mtime_ns": mtime_ns, "ino": ino, "sha256": digest,
-                    "at": started, **({"ctime": ctime_ns} if ctime_ns is not None else {}),
-                    **({"dev": dev} if dev is not None else {}),
-                    **({"fs": True} if clock_offset_ns else {}),
-                }})
-            fresh[rel] = {
-                "size": size, "mtime_ns": mtime_ns, "ino": ino, "sha256": digest, "at": started,
-            }
-            if ctime_ns is not None:
-                fresh[rel]["ctime"] = ctime_ns
-            if dev is not None:
-                fresh[rel]["dev"] = dev
-            if clock_offset_ns:
-                fresh[rel]["fs"] = True
+            if not quiet and now - pulse[0] >= _PULSE_SECONDS:
+                pulse[0] = now
+                print(_progress_line(hashed[0], to_hash, now - started_at, "hashed"), flush=True)
+            if checkpoint is not None and now - pulse[1] >= _CHECKPOINT_SECONDS:
+                pulse[1] = now
+                checkpoint({**cache, **fresh})
+
+    run_hashing(
+        todo, {rel: candidates[rel][0] for rel in todo}, hash_one, meter, cancel, quiet=quiet
+    )
+    for rel in order:
+        size, mtime_ns, mode, _ino, *_rest = candidates[rel]
         entries.append(
-            {"path": rel, "size": size, "mode": mode, "sha256": digest, "mtime_ns": mtime_ns}
+            {"path": rel, "size": size, "mode": mode, "sha256": fresh[rel]["sha256"],
+             "mtime_ns": mtime_ns}
         )
     if coarse[0] and not quiet:
         print(

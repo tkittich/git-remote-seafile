@@ -89,7 +89,9 @@ class _Climber:
 class _RateWindow:
     """Turns ``(time, bytes so far)`` samples into one throughput reading per level."""
 
-    def __init__(self) -> None:
+    def __init__(self, settle: "float | None" = None, window: "float | None" = None) -> None:
+        # Resolved when used, not at import: a test (or a caller) can still change the module's.
+        self._settle_for, self._window_for = settle, window
         self.reset(0.0)
 
     def reset(self, now: float) -> None:
@@ -108,10 +110,12 @@ class _RateWindow:
             self.reset(now)
             return None
         if self._armed_at is None:
-            if now - self._since >= _CLIMB_SETTLE_SECONDS:
+            settle = _CLIMB_SETTLE_SECONDS if self._settle_for is None else self._settle_for
+            if now - self._since >= settle:
                 self._armed_at, self._armed_total = now, total
             return None
-        if now - self._armed_at >= _CLIMB_WINDOW_SECONDS:
+        window = _CLIMB_WINDOW_SECONDS if self._window_for is None else self._window_for
+        if now - self._armed_at >= window:
             return (total - self._armed_total) / (now - self._armed_at)
         return None
 
@@ -134,6 +138,34 @@ def throttle_status(text: str) -> "str | None":
     return found.group(1) if found else None
 
 
+def env_workers(name: str, raw: str, default: int) -> "tuple[int, bool]":
+    """``(count, typed)`` from *raw*, the value of environment variable *name*, else the default.
+
+    The caller reads the variable itself, with the name spelled out where it is
+    read, so the docs guard that cross-checks documented against consulted
+    variables can see it.
+
+    A typed number is a setting, so it beats any measurement (exactly that many,
+    no search; ``1`` is the plain serial path).  A bad value falls back to the
+    default with a warning, because a setting from the environment must never
+    fail a run that works.
+    """
+    raw = raw.strip()
+    if not raw:
+        return default, False
+    try:
+        value = int(raw)
+    except ValueError:
+        value = 0
+    if value < 1:
+        print(
+            f"Warning: {name}={raw!r} is not a whole number of at least 1; using {default}.",
+            file=sys.stderr,
+        )
+        return default, False
+    return value, True
+
+
 def climb_line(climber: _Climber, noun: str) -> str:
     """What the search found, in one line (the run's record of what it chose)."""
     by_count = ", ".join(f"{n}: {r / 1048576:.0f}" for n, r in climber.rates.items())
@@ -153,6 +185,11 @@ def run_climbing(
     noun: str = "upload",
     clock: "Callable[[], float]" = time.monotonic,
     poll: float = 1.0,
+    forced: bool = False,
+    say: "Callable[[str], None] | None" = None,
+    abort: "Callable[[], None] | None" = None,
+    settle: "float | None" = None,
+    window_seconds: "float | None" = None,
 ) -> _Climber:
     """Run ``work(item)`` over *items*, with a parallelism that is searched for.
 
@@ -161,10 +198,17 @@ def run_climbing(
     pushed back.  A throttled item goes to the front of the queue again, at most
     twice, and the level is halved for the rest of the run (when it was above
     one); once the tries are spent ``exhausted(item, message)`` is called.
-    One line says what was found, so a slow run can be read afterwards.
+    One line (to *say*, default ``print``) tells what was found, so a slow run
+    can be read afterwards.  ``forced`` runs exactly *ceiling* workers with no
+    search.  An exception from ``work`` stops the run: *abort* is called first, so
+    workers still running can stop at their next block instead of finishing a
+    file that may take minutes.
     """
-    climber = _Climber(ceiling, start)
-    window = _RateWindow()
+    if say is None:
+        def say(line: str) -> None:
+            print(line, flush=True)
+    climber = _Climber(ceiling, start, forced)
+    window = _RateWindow(settle, window_seconds)
     window.reset(clock())
     queue = list(reversed(items))      # pop() from the end = the front of the order
     running: "dict[Any, str]" = {}
@@ -198,10 +242,9 @@ def run_climbing(
                     tries[item] = tries.get(item, 0) + 1
                     queue.append(item)
                     if climber.throttled(now):
-                        print(
+                        say(
                             f"Note: the server pushed back ({outcome[1][:80]}); "
-                            f"limiting this run to {climber.level} parallel {noun}s",
-                            flush=True,
+                            f"limiting this run to {climber.level} parallel {noun}s"
                         )
                         window.reset(now)
                     resume_at = now + _THROTTLE_PAUSE_SECONDS
@@ -214,9 +257,13 @@ def run_climbing(
                     window.reset(now)
                     if climber.settled and not said:
                         said = True
-                        print(climb_line(climber, noun), flush=True)
+                        say(climb_line(climber, noun))
+    except BaseException:
+        if abort is not None:
+            abort()
+        raise
     finally:
         pool.shutdown(wait=True, cancel_futures=True)
     if climber.rates and not said:
-        print(climb_line(climber, noun), flush=True)
+        say(climb_line(climber, noun))
     return climber

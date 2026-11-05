@@ -12,6 +12,7 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import io
+import os
 import pathlib
 import shutil
 import sys
@@ -280,6 +281,157 @@ class AdaptiveUploadTests(unittest.TestCase):
         while reader.read(300):
             pass
         self.assertEqual(meter.total, 1000)
+
+
+
+class ParallelHashingTests(unittest.TestCase):
+    """Hashing the payload files several at a time (``67_hashing.py``)."""
+
+    def setUp(self):
+        self.tmp = pathlib.Path(tempfile.mkdtemp(prefix="grs-hash-"))
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        for i in range(24):
+            (self.tmp / f"p{i:02d}.bin").write_bytes(bytes([i]) * (1000 + 37 * (i % 5)))
+        patcher = unittest.mock.patch.object(snap, "_HASH_MIN_BYTES", 0)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _candidates(self):
+        out = {}
+        for path in sorted(self.tmp.glob("*.bin")):
+            st = path.lstat()
+            out[path.name] = (st.st_size, st.st_mtime_ns, "100644", st.st_ino, st.st_dev,
+                              st.st_ctime_ns)
+        return out
+
+    def _build(self, workers: str):
+        out = io.StringIO()
+        with unittest.mock.patch.dict(os.environ, {"SEAFILE_SNAPSHOT_HASH_WORKERS": workers}):
+            with contextlib.redirect_stdout(out):
+                manifest, fresh = snap.build_manifest(self._candidates(), self.tmp, {}, 1)
+        return manifest, fresh, out.getvalue()
+
+    def test_the_manifest_is_the_same_whatever_the_parallelism(self):
+        serial, fresh_serial, said = self._build("1")
+        self.assertNotIn("parallel hashers", said)
+        parallel, fresh_parallel, said = self._build("4")
+        self.assertIn("4 parallel hashers", said)
+        self.assertEqual(parallel, serial)
+        for entry in parallel["files"]:       # against hashlib itself, not against the other mode
+            expected = hashlib.sha256((self.tmp / entry["path"]).read_bytes()).hexdigest()
+            self.assertEqual(entry["sha256"], expected, entry["path"])
+        self.assertEqual([f["path"] for f in parallel["files"]], sorted(f["path"] for f in parallel["files"]))
+        strip = lambda cache: {k: {a: b for a, b in v.items() if a != "at"} for k, v in cache.items()}  # noqa: E731
+        self.assertEqual(strip(fresh_parallel), strip(fresh_serial))
+
+    def test_the_hash_cache_entries_carry_the_same_fields_either_way(self):
+        _, fresh, _ = self._build("4")
+        entry = fresh["p00.bin"]
+        self.assertEqual(set(entry), {"size", "mtime_ns", "ino", "sha256", "at", "ctime", "dev"})
+
+    def test_an_unreadable_file_stops_the_run_naming_it_in_both_modes(self):
+        victim = self.tmp / "p07.bin"
+        cands = self._candidates()
+        victim.unlink()
+        for workers in ("1", "4"):
+            with unittest.mock.patch.dict(os.environ, {"SEAFILE_SNAPSHOT_HASH_WORKERS": workers}):
+                with contextlib.redirect_stdout(io.StringIO()):
+                    with self.assertRaises(snap.SnapshotError) as ctx:
+                        snap.build_manifest(cands, self.tmp, {}, 1)
+            self.assertIn("p07.bin", str(ctx.exception), workers)
+
+    def test_a_set_cancel_stops_a_read_between_blocks(self):
+        stop = threading.Event()
+        stop.set()
+        with self.assertRaises(snap.SnapshotError) as ctx:
+            snap._sha256_file(self.tmp / "p00.bin", None, stop)
+        self.assertIn("was stopped", str(ctx.exception))
+
+    def test_a_failure_calls_abort_before_waiting_for_the_workers(self):
+        order = []
+
+        def work(item):
+            if item == "bad":
+                raise snap.SnapshotError("boom")
+            time.sleep(0.05)
+            return None
+
+        with self.assertRaises(snap.SnapshotError):
+            snap.run_climbing(["bad", "x", "y"], work, ceiling=3, meter=snap._ByteMeter(),
+                              exhausted=lambda *_: None, start=3, say=lambda _l: None,
+                              abort=lambda: order.append("abort"))
+        self.assertEqual(order, ["abort"])
+
+    def _run(self, work, n=300, workers=None, cpus=8):
+        sizes = {str(i): MIB for i in range(n)}
+        said = []
+        env = {"SEAFILE_SNAPSHOT_HASH_WORKERS": workers or ""}
+        with unittest.mock.patch.dict(os.environ, env),                 unittest.mock.patch.object(snap.os, "cpu_count", return_value=cpus),                 unittest.mock.patch.object(snap, "_HASH_SETTLE_SECONDS", 0.05),                 unittest.mock.patch.object(snap, "_HASH_WINDOW_SECONDS", 0.12),                 contextlib.redirect_stdout(io.StringIO()) as out:
+            meter = snap._ByteMeter()
+            snap.run_hashing([str(i) for i in range(n)], sizes, lambda r: work(r, meter), meter,
+                             threading.Event())
+            said = out.getvalue()
+        return said
+
+    def test_a_typed_count_is_used_exactly_and_every_file_is_hashed_once(self):
+        seen, live, peak, lock = [], [0], [0], threading.Lock()
+
+        def work(rel, meter):
+            with lock:
+                live[0] += 1
+                peak[0] = max(peak[0], live[0])
+                seen.append(rel)
+            time.sleep(0.01)
+            meter.add(MIB)
+            with lock:
+                live[0] -= 1
+
+        said = self._run(work, n=60, workers="3")
+        self.assertEqual(sorted(seen), sorted(str(i) for i in range(60)))
+        self.assertEqual(len(seen), 60)
+        self.assertLessEqual(peak[0], 3)
+        self.assertGreaterEqual(peak[0], 2)
+        self.assertIn("3 parallel hashers", said)
+        self.assertNotIn("found by measuring", said)
+
+    def test_a_disk_that_serialises_every_reader_is_left_at_one(self):
+        """The spinning-disk case: more readers only queue behind one another."""
+        disk = threading.Lock()
+
+        def work(rel, meter):
+            with disk:
+                time.sleep(0.01)
+                meter.add(MIB)
+
+        said = self._run(work, n=200)
+        self.assertIn("settled on 1 parallel hasher", said)
+
+    def test_a_disk_that_scales_gets_more_readers(self):
+        def work(rel, meter):
+            time.sleep(0.01)
+            meter.add(MIB)
+
+        said = self._run(work, n=400)
+        self.assertIn("found by measuring", said)
+        self.assertNotIn("settled on 1 parallel hasher", said)
+
+    def test_a_small_set_is_hashed_serially_in_the_order_given(self):
+        order = []
+        with unittest.mock.patch.object(snap, "_HASH_MIN_BYTES", 10 ** 9):
+            meter = snap._ByteMeter()
+            snap.run_hashing(["c", "a", "b"], {"a": 1, "b": 1, "c": 1},
+                             lambda rel: order.append(rel), meter, threading.Event())
+        self.assertEqual(order, ["c", "a", "b"])
+
+    def test_the_stage_and_hash_settings_share_one_bad_value_warning(self):
+        for name, fn in (("SEAFILE_SNAPSHOT_HASH_WORKERS", snap.hash_workers),
+                         ("SEAFILE_SNAPSHOT_STAGE_WORKERS", snap.prewrite_workers)):
+            err = io.StringIO()
+            with unittest.mock.patch.dict(os.environ, {name: "lots"}),                     contextlib.redirect_stderr(err):
+                count, typed = fn()
+            self.assertFalse(typed)
+            self.assertGreaterEqual(count, 1)
+            self.assertIn(name, err.getvalue())
 
 
 if __name__ == "__main__":

@@ -246,11 +246,11 @@ class ResumeAndProgressTests(_ReportFixture):
         calls = []
         real = snap._sha256_file
 
-        def second_one_dies(path):
+        def second_one_dies(path, *rest):
             calls.append(path)
             if len(calls) == 2:
                 raise KeyboardInterrupt
-            return real(path)
+            return real(path, *rest)
 
         with unittest.mock.patch.object(snap, "_CHECKPOINT_SECONDS", 0.0), \
                 unittest.mock.patch.object(snap, "_sha256_file", second_one_dies):

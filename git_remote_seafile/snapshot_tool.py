@@ -1909,6 +1909,81 @@ def commit_tree(
     return git(git_dir, work_tree, args, cwd=work_tree).stdout.strip()
 
 
+#: Less than this to hash and the serial loop is done in about a second, so a
+#: search for the right parallelism would only add start-up cost.
+_HASH_MIN_BYTES = 512 * 1024 * 1024
+
+#: The most files hashed at once.  Measured on a 24-core NVMe machine (page
+#: cache, so CPU only): 906, 1579, 2815, 4209 and 5140 MiB/s at 1, 2, 4, 8 and
+#: 16 threads.  A disk slower than that is found by the search, not assumed.
+_HASH_MAX_WORKERS = 16
+
+#: Hashing is steady and its files are quick, so a reading needs far less time
+#: than an upload's ten-second window; a 6 GiB tree is hashed in under five
+#: seconds, which the upload's 14 seconds per level would never have measured.
+_HASH_SETTLE_SECONDS = 1.0
+_HASH_WINDOW_SECONDS = 3.0
+
+
+def hash_workers() -> "tuple[int, bool]":
+    """``(ceiling, typed)`` for hashing: ``SEAFILE_SNAPSHOT_HASH_WORKERS`` or the CPU count.
+
+    ``1`` is the plain serial loop, exactly as before the search existed.
+    """
+    return env_workers(
+        "SEAFILE_SNAPSHOT_HASH_WORKERS", os.environ.get("SEAFILE_SNAPSHOT_HASH_WORKERS", ""),
+        max(1, min(_HASH_MAX_WORKERS, os.cpu_count() or 1)),
+    )
+
+
+def run_hashing(
+    todo: "list[str]",
+    sizes: "dict[str, int]",
+    work: "Callable[[str], None]",
+    meter: _ByteMeter,
+    cancel: threading.Event,
+    *,
+    quiet: bool = False,
+) -> None:
+    """Call ``work(rel)`` for each path in *todo*, hashing several at a time where that pays.
+
+    A first run over a large tree is hours of ``sha256`` on one core when the
+    disk could feed several.  Whether it can is a property of the disk, so the
+    number of files in flight is searched for (:func:`run_climbing`), starting
+    at one: on a spinning disk the search finds that more only seeks, and costs
+    a few ten-second windows of a run that is disk-bound anyway.  Below
+    ``_HASH_MIN_BYTES``, with one file, or with ``SEAFILE_SNAPSHOT_HASH_WORKERS=1``
+    this is the plain loop in the order given.  The manifest does not depend on
+    any of it: the caller assembles its entries in path order afterwards.
+    """
+    ceiling, typed = hash_workers()
+    total = sum(sizes[rel] for rel in todo)
+    if ceiling < 2 or len(todo) < 2 or total < _HASH_MIN_BYTES:
+        for rel in todo:
+            work(rel)
+        return
+
+    def say(line: str) -> None:
+        if not quiet:
+            print(line, flush=True)
+
+    ceiling = min(ceiling, len(todo))
+    say(
+        f"payload: hashing {len(todo)} file(s) ({human_bytes(total)}) with "
+        + (f"{ceiling} parallel hashers" if typed
+           else f"up to {ceiling} parallel hashers, found by measuring")
+    )
+
+    # Largest first: the last file in flight is then a small one, not a 100 GiB
+    # tail that leaves every other core idle.
+    run_climbing(
+        sorted(todo, key=lambda rel: (-sizes[rel], rel)), work,
+        ceiling=ceiling, meter=meter, exhausted=lambda *_: None,
+        start=1, noun="hasher", forced=typed, say=say, abort=cancel.set,
+        settle=_HASH_SETTLE_SECONDS, window_seconds=_HASH_WINDOW_SECONDS,
+    )
+
+
 #: A step up in parallelism is kept only if throughput grew by this factor over
 #: the best level so far.
 _RAMP_GAIN = 1.15
@@ -1998,7 +2073,9 @@ class _Climber:
 class _RateWindow:
     """Turns ``(time, bytes so far)`` samples into one throughput reading per level."""
 
-    def __init__(self) -> None:
+    def __init__(self, settle: "float | None" = None, window: "float | None" = None) -> None:
+        # Resolved when used, not at import: a test (or a caller) can still change the module's.
+        self._settle_for, self._window_for = settle, window
         self.reset(0.0)
 
     def reset(self, now: float) -> None:
@@ -2017,10 +2094,12 @@ class _RateWindow:
             self.reset(now)
             return None
         if self._armed_at is None:
-            if now - self._since >= _CLIMB_SETTLE_SECONDS:
+            settle = _CLIMB_SETTLE_SECONDS if self._settle_for is None else self._settle_for
+            if now - self._since >= settle:
                 self._armed_at, self._armed_total = now, total
             return None
-        if now - self._armed_at >= _CLIMB_WINDOW_SECONDS:
+        window = _CLIMB_WINDOW_SECONDS if self._window_for is None else self._window_for
+        if now - self._armed_at >= window:
             return (total - self._armed_total) / (now - self._armed_at)
         return None
 
@@ -2043,6 +2122,34 @@ def throttle_status(text: str) -> "str | None":
     return found.group(1) if found else None
 
 
+def env_workers(name: str, raw: str, default: int) -> "tuple[int, bool]":
+    """``(count, typed)`` from *raw*, the value of environment variable *name*, else the default.
+
+    The caller reads the variable itself, with the name spelled out where it is
+    read, so the docs guard that cross-checks documented against consulted
+    variables can see it.
+
+    A typed number is a setting, so it beats any measurement (exactly that many,
+    no search; ``1`` is the plain serial path).  A bad value falls back to the
+    default with a warning, because a setting from the environment must never
+    fail a run that works.
+    """
+    raw = raw.strip()
+    if not raw:
+        return default, False
+    try:
+        value = int(raw)
+    except ValueError:
+        value = 0
+    if value < 1:
+        print(
+            f"Warning: {name}={raw!r} is not a whole number of at least 1; using {default}.",
+            file=sys.stderr,
+        )
+        return default, False
+    return value, True
+
+
 def climb_line(climber: _Climber, noun: str) -> str:
     """What the search found, in one line (the run's record of what it chose)."""
     by_count = ", ".join(f"{n}: {r / 1048576:.0f}" for n, r in climber.rates.items())
@@ -2062,6 +2169,11 @@ def run_climbing(
     noun: str = "upload",
     clock: "Callable[[], float]" = time.monotonic,
     poll: float = 1.0,
+    forced: bool = False,
+    say: "Callable[[str], None] | None" = None,
+    abort: "Callable[[], None] | None" = None,
+    settle: "float | None" = None,
+    window_seconds: "float | None" = None,
 ) -> _Climber:
     """Run ``work(item)`` over *items*, with a parallelism that is searched for.
 
@@ -2070,10 +2182,17 @@ def run_climbing(
     pushed back.  A throttled item goes to the front of the queue again, at most
     twice, and the level is halved for the rest of the run (when it was above
     one); once the tries are spent ``exhausted(item, message)`` is called.
-    One line says what was found, so a slow run can be read afterwards.
+    One line (to *say*, default ``print``) tells what was found, so a slow run
+    can be read afterwards.  ``forced`` runs exactly *ceiling* workers with no
+    search.  An exception from ``work`` stops the run: *abort* is called first, so
+    workers still running can stop at their next block instead of finishing a
+    file that may take minutes.
     """
-    climber = _Climber(ceiling, start)
-    window = _RateWindow()
+    if say is None:
+        def say(line: str) -> None:
+            print(line, flush=True)
+    climber = _Climber(ceiling, start, forced)
+    window = _RateWindow(settle, window_seconds)
     window.reset(clock())
     queue = list(reversed(items))      # pop() from the end = the front of the order
     running: "dict[Any, str]" = {}
@@ -2107,10 +2226,9 @@ def run_climbing(
                     tries[item] = tries.get(item, 0) + 1
                     queue.append(item)
                     if climber.throttled(now):
-                        print(
+                        say(
                             f"Note: the server pushed back ({outcome[1][:80]}); "
-                            f"limiting this run to {climber.level} parallel {noun}s",
-                            flush=True,
+                            f"limiting this run to {climber.level} parallel {noun}s"
                         )
                         window.reset(now)
                     resume_at = now + _THROTTLE_PAUSE_SECONDS
@@ -2123,11 +2241,15 @@ def run_climbing(
                     window.reset(now)
                     if climber.settled and not said:
                         said = True
-                        print(climb_line(climber, noun), flush=True)
+                        say(climb_line(climber, noun))
+    except BaseException:
+        if abort is not None:
+            abort()
+        raise
     finally:
         pool.shutdown(wait=True, cancel_futures=True)
     if climber.rates and not said:
-        print(climb_line(climber, noun), flush=True)
+        say(climb_line(climber, noun))
     return climber
 
 
@@ -2146,6 +2268,7 @@ _PREWRITE_BATCH_BYTES = 128 * 1024 * 1024
 #: the same time; the disk, not the CPU, is the limit by then.
 _PREWRITE_MAX_WORKERS = 16
 
+
 def prewrite_workers() -> "tuple[int, bool]":
     """``(ceiling, forced)``: how many ``git hash-object`` processes may write at once.
 
@@ -2156,21 +2279,8 @@ def prewrite_workers() -> "tuple[int, bool]":
     because a setting from the environment must never fail a run that works.
     """
     default = max(1, min(_PREWRITE_MAX_WORKERS, os.cpu_count() or 1))
-    raw = os.environ.get("SEAFILE_SNAPSHOT_STAGE_WORKERS", "").strip()
-    if not raw:
-        return default, False
-    try:
-        value = int(raw)
-    except ValueError:
-        value = 0
-    if value < 1:
-        print(
-            f"Warning: SEAFILE_SNAPSHOT_STAGE_WORKERS={raw!r} is not a whole number "
-            f"of at least 1; using {default}.",
-            file=sys.stderr,
-        )
-        return default, False
-    return value, True
+    return env_workers("SEAFILE_SNAPSHOT_STAGE_WORKERS",
+                       os.environ.get("SEAFILE_SNAPSHOT_STAGE_WORKERS", ""), default)
 
 
 class _Ramp:
@@ -4423,15 +4533,21 @@ def build_manifest(
     to_hash = 0 if quiet else sum(
         candidates[rel][0] for rel in candidates if not vouched(rel)[1]
     )
-    hashed = 0
-    started_at = last_pulse = last_checkpoint = time.monotonic()
-    for index, rel in enumerate(sorted(candidates), 1):
-        size, mtime_ns, mode, ino, *rest = candidates[rel]
+    hashed = [0]
+    started_at = time.monotonic()
+    pulse = [started_at, started_at]       # when the last progress line / checkpoint went out
+    order = sorted(candidates)
+    position = {rel: n for n, rel in enumerate(order, 1)}
+    meter = _ByteMeter()
+    cancel = threading.Event()
+    lock = threading.Lock()
+    todo: list[str] = []
+    for rel in order:
+        _size, _mtime, _mode, _ino, *rest = candidates[rel]
         dev = rest[0] if rest else None
         ctime_ns = rest[1] if len(rest) > 1 else None
         old, trusted = vouched(rel)
         if trusted:
-            digest = str(old["sha256"])
             fresh[rel] = dict(old)
             if ctime_ns is not None:
                 fresh[rel]["ctime"] = ctime_ns
@@ -4439,34 +4555,45 @@ def build_manifest(
                 fresh[rel]["dev"] = dev
         else:
             stale += isinstance(old.get("sha256"), str)
-            if not quiet:
-                print(f"hashing [{index}/{total}] {rel} ({human_bytes(size)})", flush=True)
-            started = time.time_ns() + clock_offset_ns
-            digest = _sha256_file(source / rel)
-            hashed += size
+            todo.append(rel)
+
+    def hash_one(rel: str) -> None:
+        size, mtime_ns, _mode, ino, *rest = candidates[rel]
+        dev = rest[0] if rest else None
+        ctime_ns = rest[1] if len(rest) > 1 else None
+        if not quiet:
+            with lock:
+                print(f"hashing [{position[rel]}/{total}] {rel} ({human_bytes(size)})", flush=True)
+        started = time.time_ns() + clock_offset_ns
+        digest = _sha256_file(source / rel, meter, cancel)
+        entry: dict[str, int | str] = {
+            "size": size, "mtime_ns": mtime_ns, "ino": ino, "sha256": digest, "at": started,
+        }
+        if ctime_ns is not None:
+            entry["ctime"] = ctime_ns
+        if dev is not None:
+            entry["dev"] = dev
+        if clock_offset_ns:
+            entry["fs"] = True
+        with lock:
+            fresh[rel] = entry
+            hashed[0] += size
             now = time.monotonic()
-            if not quiet and now - last_pulse >= _PULSE_SECONDS:
-                last_pulse = now
-                print(_progress_line(hashed, to_hash, now - started_at, "hashed"), flush=True)
-            if checkpoint is not None and now - last_checkpoint >= _CHECKPOINT_SECONDS:
-                last_checkpoint = now
-                checkpoint({**cache, **fresh, rel: {
-                    "size": size, "mtime_ns": mtime_ns, "ino": ino, "sha256": digest,
-                    "at": started, **({"ctime": ctime_ns} if ctime_ns is not None else {}),
-                    **({"dev": dev} if dev is not None else {}),
-                    **({"fs": True} if clock_offset_ns else {}),
-                }})
-            fresh[rel] = {
-                "size": size, "mtime_ns": mtime_ns, "ino": ino, "sha256": digest, "at": started,
-            }
-            if ctime_ns is not None:
-                fresh[rel]["ctime"] = ctime_ns
-            if dev is not None:
-                fresh[rel]["dev"] = dev
-            if clock_offset_ns:
-                fresh[rel]["fs"] = True
+            if not quiet and now - pulse[0] >= _PULSE_SECONDS:
+                pulse[0] = now
+                print(_progress_line(hashed[0], to_hash, now - started_at, "hashed"), flush=True)
+            if checkpoint is not None and now - pulse[1] >= _CHECKPOINT_SECONDS:
+                pulse[1] = now
+                checkpoint({**cache, **fresh})
+
+    run_hashing(
+        todo, {rel: candidates[rel][0] for rel in todo}, hash_one, meter, cancel, quiet=quiet
+    )
+    for rel in order:
+        size, mtime_ns, mode, _ino, *_rest = candidates[rel]
         entries.append(
-            {"path": rel, "size": size, "mode": mode, "sha256": digest, "mtime_ns": mtime_ns}
+            {"path": rel, "size": size, "mode": mode, "sha256": fresh[rel]["sha256"],
+             "mtime_ns": mtime_ns}
         )
     if coarse[0] and not quiet:
         print(
@@ -4612,15 +4739,24 @@ def _api(call: Any, what: str) -> Any:
         raise SnapshotError(f"{what} failed: {type(exc).__name__}: {exc}") from None
 
 
-def _sha256_file(path: Path) -> str:
+def _sha256_file(
+    path: Path, meter: "_ByteMeter | None" = None, cancel: "threading.Event | None" = None
+) -> str:
+    """SHA-256 of *path*.  *meter* counts the bytes as they are read (the search for
+    how many files to hash at once reads it); *cancel*, once set, stops the read
+    between blocks so a run that has already failed does not finish a 100 GiB file."""
     digest = hashlib.sha256()
     try:
         with open(path, "rb") as fh:
             while True:
+                if cancel is not None and cancel.is_set():
+                    raise SnapshotError(f"hashing of {path} was stopped")
                 block = fh.read(_PAYLOAD_HASH_BLOCK)
                 if not block:
                     break
                 digest.update(block)
+                if meter is not None:
+                    meter.add(len(block))
     except OSError as exc:
         # A file another process holds open exclusively (a database, a GIS
         # project on Windows) cannot be read; a backup that skipped it quietly
