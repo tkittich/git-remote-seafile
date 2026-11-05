@@ -2974,22 +2974,109 @@ class LongListStagingTests(_SnapshotFixture):
         return _git(vault, "rev-parse", f"{BRANCH}^{{tree}}").stdout.strip()
 
     def test_the_threshold_picks_the_command(self):
-        few = snap.staging_command(["a", "b"], self.code)
-        self.assertEqual(few[0][0], "add")
-        many = snap.staging_command([f"p{i}" for i in range(snap._INDEX_ROUTE_MIN_PATHS)], self.code)
-        self.assertEqual(many[0], ["update-index", "--add", "--replace", "-z", "--stdin"])
-        self.assertTrue(many[1].endswith("\0"))
-        self.assertEqual(many[1].count("\0"), snap._INDEX_ROUTE_MIN_PATHS)
+        few, _ = snap.staging_commands(["README.md", ".gitignore"], self.code)
+        self.assertEqual([c[0][0] for c in few], ["add"])
+        many, _ = snap.staging_commands(["README.md"] * snap._INDEX_ROUTE_MIN_PATHS, self.code)
+        self.assertEqual([c[0] for c in many],
+                         [["update-index", "--add", "--remove", "--replace", "-z", "--stdin"]])
+        self.assertTrue(many[0][1].endswith("\0"))
+        self.assertEqual(many[0][1].count("\0"), snap._INDEX_ROUTE_MIN_PATHS)
 
-    def test_a_directory_is_left_out_of_the_update_index_list(self):
+    def test_a_path_that_vanished_is_dropped_not_fatal_on_either_route(self):
+        """The list is made before a pre-write that can take many minutes.  Both
+        commands stop the whole run on a missing path (rc 128: ``add`` says the
+        pathspec did not match, ``update-index`` that it does not exist), so a
+        scratch file deleted in that time cost the run."""
+        for threshold in (10 ** 9, 2):
+            with self.subTest(threshold=threshold), unittest.mock.patch.object(
+                snap, "_INDEX_ROUTE_MIN_PATHS", threshold
+            ):
+                commands, drop_first = snap.staging_commands(
+                    ["README.md", "gone.txt", "also/gone.txt"], self.code)
+                self.assertEqual([c[1] for c in commands], ["README.md\0"])
+                self.assertEqual(drop_first, ["gone.txt", "also/gone.txt"])
+
+    def test_a_path_whose_parent_became_a_file_counts_as_vanished(self):
+        (self.code / "now-a-file").write_bytes(b"x\n")
+        commands, drop_first = snap.staging_commands(["now-a-file/inner.txt"], self.code)
+        self.assertEqual(drop_first, ["now-a-file/inner.txt"])
+        self.assertEqual(commands, [], "an empty list must run no command: add stops on it")
+
+    def _vanish_during_staging(self, threshold, tracked):
+        """Run twice; the second run's listing names a file that is deleted right after."""
+        vault = self.tmp / f"v-vanish-{threshold}-{tracked}"
+        (self.code / "f09.txt").write_bytes(b"file 9\n" * 20)   # an earlier subtest deleted it
+        (self.code / "fresh.txt").unlink(missing_ok=True)
+        self.assertEqual(self._run(vault, threshold)[0], 0)
+        (self.code / "f08.txt").write_bytes(b"edited\n")
+        (self.code / "fresh.txt").write_bytes(b"fresh\n")
+        real = snap.paths_to_stage
+
+        def listed_then_deleted(git_dir, work_tree, kept):
+            found = real(git_dir, work_tree, kept)
+            os.unlink(self.code / ("f09.txt" if tracked else "fresh.txt"))
+            return found + (["f09.txt"] if tracked else [])
+
+        with unittest.mock.patch.object(snap, "paths_to_stage", listed_then_deleted):
+            rc, err, _ = self._run(vault, threshold)
+        self.assertEqual(rc, 0, err)
+        return _git(vault, "ls-tree", "-r", "--name-only", BRANCH).stdout.split()
+
+    def test_a_tracked_file_deleted_after_the_listing_leaves_the_snapshot(self):
+        for threshold in (10 ** 9, 2):
+            with self.subTest(threshold=threshold):
+                tree = self._vanish_during_staging(threshold, tracked=True)
+                self.assertNotIn("f09.txt", tree)
+                self.assertIn("f08.txt", tree)
+
+    def test_a_new_file_deleted_after_the_listing_is_just_not_there(self):
+        for threshold in (10 ** 9, 2):
+            with self.subTest(threshold=threshold):
+                tree = self._vanish_during_staging(threshold, tracked=False)
+                self.assertNotIn("fresh.txt", tree)
+                self.assertIn("f09.txt", tree)
+
+    def test_every_listed_path_vanishing_runs_no_staging_command(self):
+        """``add`` stops on an empty list (``empty string is not a valid pathspec``)."""
+        real = snap.paths_to_stage
+
+        def listed_then_deleted(git_dir, work_tree, kept):
+            found = real(git_dir, work_tree, kept)
+            os.unlink(self.code / "fresh.txt")
+            return found
+
+        for threshold in (10 ** 9, 2):
+            vault = self.tmp / f"v-all-gone-{threshold}"
+            self.assertEqual(self._run(vault, threshold)[0], 0)
+            (self.code / "fresh.txt").write_bytes(b"fresh\n")
+            with self.subTest(threshold=threshold), unittest.mock.patch.object(
+                snap, "paths_to_stage", listed_then_deleted
+            ):
+                rc, err, verbs = self._run(vault, threshold)
+            self.assertEqual(rc, 0, err)
+            self.assertEqual(verbs, [], "a staging command ran with nothing to stage")
+
+    def test_update_index_is_told_to_remove_what_vanishes_after_the_check(self):
+        """The few milliseconds the lstat cannot cover: without ``--remove``
+        update-index stops the run on a path that is gone."""
+        with unittest.mock.patch.object(snap, "_INDEX_ROUTE_MIN_PATHS", 1):
+            commands, _drop = snap.staging_commands(["README.md"], self.code)
+        self.assertIn("--remove", commands[0][0])
+
+    def test_a_directory_goes_to_add_and_the_files_to_update_index(self):
+        """``update-index`` refuses a directory, and leaving it out lost the files of a
+        nested repository that took a file's place: the directory takes ``add``, as
+        it always did, and runs first."""
         (self.code / "was-a-file").mkdir()
         (self.code / "was-a-file" / "inside.txt").write_bytes(b"x\n")
         with unittest.mock.patch.object(snap, "_INDEX_ROUTE_MIN_PATHS", 2):
-            args, stdin, displaced = snap.staging_command(["was-a-file", "README.md"], self.code)
-        self.assertEqual(args[0], "update-index")
-        self.assertEqual(stdin, "README.md\0")
-        self.assertEqual(displaced, ["was-a-file"])
-        self.assertEqual(snap.staging_command(["was-a-file", "README.md"], self.code)[2], [])
+            commands, drop_first = snap.staging_commands(["README.md", "was-a-file"], self.code)
+        self.assertEqual([(c[0][0], c[1]) for c in commands],
+                         [("add", "was-a-file\0"), ("update-index", "README.md\0")])
+        self.assertEqual(drop_first, [])
+        with unittest.mock.patch.object(snap, "_INDEX_ROUTE_MIN_PATHS", 10 ** 9):
+            commands, _ = snap.staging_commands(["README.md", "was-a-file"], self.code)
+        self.assertEqual([(c[0][0], c[1]) for c in commands], [("add", "README.md\0was-a-file\0")])
 
     def test_a_file_replaced_by_a_directory_with_nothing_to_stage_leaves_the_snapshot(self):
         """The case the route got wrong first: ``update-index`` has nothing to
@@ -3084,6 +3171,148 @@ class LongListStagingTests(_SnapshotFixture):
         self.assertEqual(rc, 0, err)
         self.assertEqual(len(seen), 2)
         self.assertIn("f04.txt changed while git was reading it", err)
+
+
+def _can_symlink() -> bool:
+    probe = pathlib.Path(tempfile.mkdtemp(prefix="grs-symlink-probe-"))
+    try:
+        os.symlink("target", probe / "link")
+        return True
+    except (OSError, NotImplementedError):
+        return False
+    finally:
+        shutil.rmtree(probe, ignore_errors=True)
+
+
+def _nested_repo(path: pathlib.Path, commit: bool = True) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+    (path / "inner.txt").write_bytes(b"inner\n")
+    _git(path, "init", "-q")
+    if commit:
+        _git(path, "-c", "user.email=a@b", "-c", "user.name=n", "add", ".")
+        _git(path, "-c", "user.email=a@b", "-c", "user.name=n", "commit", "-qm", "i")
+
+
+def _clear(path: pathlib.Path) -> None:
+    if path.is_symlink() or path.is_file():
+        path.unlink()
+    elif path.is_dir():
+        def clear_read_only(func, target, _exc):
+            os.chmod(target, 0o700)  # a nested repository's object files are read-only on Windows
+            func(target)
+
+        if sys.version_info >= (3, 12):
+            shutil.rmtree(path, onexc=clear_read_only)
+        else:
+            shutil.rmtree(path, onerror=clear_read_only)
+
+
+class ExoticReplacementTests(_SnapshotFixture):
+    """Whatever happens to a path between two runs, the two staging routes record the same tree.
+
+    The route for a long list (``update-index``) and the one for a short list
+    (``add``) are different commands.  Each scenario starts from one tree, changes
+    it, runs both routes through the same history and compares the recorded
+    tree, modes included; the comparison is the test, so a scenario both routes
+    get wrong the same way still passes (what is recorded for a symlink on a
+    machine that cannot make one is not this class's business).  A wider set (27
+    scenarios, run on Windows and Debian) found three bugs in the first version of
+    the long-list route (a nested repository that took a file's place recorded
+    nothing, an empty directory kept the old file, a vanished path stopped the
+    run); these are the scenarios worth running every time.
+    """
+
+    EXCLUDE = ("--exclude", "node_modules")
+
+    def setUp(self):
+        super().setUp()
+        for i in range(4):
+            (self.code / f"f{i}.txt").write_bytes(f"file {i}\n".encode() * 5)
+        (self.code / "d" / "e").mkdir(parents=True)
+        (self.code / "d" / "x.txt").write_bytes(b"x\n")
+        (self.code / "d" / "e" / "y.txt").write_bytes(b"y\n")
+        self._base_names = {p.name for p in self.code.iterdir()}
+
+    def _history(self, vault, threshold, scenario):
+        setup, mutate = scenario
+        # The same tree every time: whatever an earlier scenario or route left is
+        # removed, and the base files are written again.
+        for item in list(self.code.iterdir()):
+            if item.name not in self._base_names:
+                _clear(item)
+        for name in ("f0.txt", "f1.txt", "f2.txt", "f3.txt", "d"):
+            _clear(self.code / name)
+        for i in range(4):
+            (self.code / f"f{i}.txt").write_bytes(f"file {i}\n".encode() * 5)
+        (self.code / "d" / "e").mkdir(parents=True)
+        (self.code / "d" / "x.txt").write_bytes(b"x\n")
+        (self.code / "d" / "e" / "y.txt").write_bytes(b"y\n")
+        setup(self.code)
+        with unittest.mock.patch.object(snap, "_INDEX_ROUTE_MIN_PATHS", threshold):
+            rc0, _, err0 = self.run_tool("--source", self.code, "--vault", vault,
+                                         *self.EXCLUDE, "--no-push")
+            mutate(self.code)
+            rc1, _, err1 = self.run_tool("--source", self.code, "--vault", vault,
+                                         *self.EXCLUDE, "--no-push")
+        listing = _git(vault, "ls-tree", "-r", BRANCH).stdout if rc1 == 0 else err1[-200:]
+        return rc0, rc1, listing
+
+    def _scenarios(self):
+        def nothing(code):
+            pass
+
+        def swap(old, new_text="flat\n"):
+            def mutate(code):
+                _clear(code / old)
+                (code / old).write_bytes(new_text.encode())
+            return mutate
+
+        scenarios = {
+            "a parent directory becomes a file": (nothing, swap("d")),
+            "a middle directory becomes a file": (nothing, swap("d/e")),
+            "a file becomes a directory three levels down": (
+                nothing, lambda c: (_clear(c / "f3.txt"), (c / "f3.txt" / "a" / "b").mkdir(parents=True),
+                                    (c / "f3.txt" / "a" / "b" / "c.txt").write_bytes(b"c\n"))),
+            "a file becomes a directory of one empty directory": (
+                nothing, lambda c: (_clear(c / "f3.txt"), (c / "f3.txt" / "a" / "b").mkdir(parents=True))),
+            "a file becomes a nested repository with a commit": (
+                nothing, lambda c: (_clear(c / "f1.txt"), _nested_repo(c / "f1.txt"))),
+            "a nested repository with a commit becomes a file": (
+                lambda c: _nested_repo(c / "nr"), swap("nr", "file now\n")),
+            "a whole directory is deleted": (nothing, lambda c: _clear(c / "d")),
+            "names with spaces, unicode, a dash and brackets": (
+                nothing, lambda c: [
+                    ((c / n).parent.mkdir(parents=True, exist_ok=True), (c / n).write_bytes(b"n\n"))
+                    for n in ("a b.txt", "-dash.txt", "café.txt", "sp ace/in side.txt",
+                              "[brackets].txt", "#hash.txt")]),
+            "a file becomes empty": (nothing, lambda c: (c / "f2.txt").write_bytes(b"")),
+        }
+        if _can_symlink():
+            def link(target):
+                return lambda c: (_clear(c / "f1.txt"), os.symlink(target, c / "f1.txt"))
+            scenarios.update({
+                "a file becomes a symlink": (nothing, link("f2.txt")),
+                "a symlink becomes a file": (lambda c: os.symlink("f2.txt", c / "lnk"), swap("lnk")),
+                "a symlink becomes a directory with files": (
+                    lambda c: os.symlink("f2.txt", c / "lnk"),
+                    lambda c: (_clear(c / "lnk"), (c / "lnk").mkdir(), (c / "lnk" / "a.txt").write_bytes(b"a\n"))),
+                "a symlink becomes an empty directory": (
+                    lambda c: os.symlink("f2.txt", c / "lnk"),
+                    lambda c: (_clear(c / "lnk"), (c / "lnk").mkdir())),
+                "a directory becomes a symlink": (
+                    nothing, lambda c: (_clear(c / "d"), os.symlink("f2.txt", c / "d"))),
+            })
+        return scenarios
+
+    def test_both_routes_record_the_same_tree(self):
+        # A vault of its own per scenario and route: deleting one is not reliable on
+        # Windows (git's object files are read-only), and a vault left behind with
+        # history would make the next "first run" something else.
+        for number, (name, scenario) in enumerate(self._scenarios().items()):
+            with self.subTest(scenario=name):
+                via_add = self._history(self.tmp / f"v-add-{number}", 10 ** 9, scenario)
+                via_index = self._history(self.tmp / f"v-index-{number}", 1, scenario)
+                self.assertEqual(via_index, via_add)
 
 
 class ChangedWhileReadTests(_SnapshotFixture):

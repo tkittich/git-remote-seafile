@@ -310,30 +310,34 @@ def build_snapshot(
             if wrote:
                 stall = stall_limit_after_prewrite(spent)
         if to_stage:
-            stage_args, stage_stdin, displaced = staging_command(to_stage, work_tree)
-            if displaced:
-                drop_from_index(git_dir, work_tree, displaced)
-            try:
-                added = add_retrying(lambda: git(
-                    git_dir,
-                    work_tree,
-                    stage_args,
-                    cwd=work_tree,
-                    stdin=stage_stdin,
-                    status="staging the tree",
-                    measure_dir=git_dir / "objects",
-                    expect_bytes=staging_bytes,
-                    stall_limit=stall,
-                ))
-                unreadable.extend(unreadable_directories(added.stderr))
-            except SnapshotError as exc:
-                if "does not have a commit checked out" not in str(exc):
-                    raise
-                raise SnapshotError(
-                    "a directory in the source is a git repository with no commit, which cannot "
-                    "be recorded as a commit id (--no-embedded-repos). Leave that flag out to "
-                    "capture its files, or --exclude the directory.\n" + str(exc)
-                ) from None
+            commands, drop_first = staging_commands(to_stage, work_tree)
+            if drop_first:
+                drop_from_index(git_dir, work_tree, drop_first)
+            for stage_args, stage_stdin in commands:
+                def stage_once(a: list[str] = stage_args, i: str = stage_stdin) -> Any:
+                    return git(
+                        git_dir,
+                        work_tree,
+                        a,
+                        cwd=work_tree,
+                        stdin=i,
+                        status="staging the tree",
+                        measure_dir=git_dir / "objects",
+                        expect_bytes=staging_bytes,
+                        stall_limit=stall,
+                    )
+
+                try:
+                    added = add_retrying(stage_once)
+                    unreadable.extend(unreadable_directories(added.stderr))
+                except SnapshotError as exc:
+                    if "does not have a commit checked out" not in str(exc):
+                        raise
+                    raise SnapshotError(
+                        "a directory in the source is a git repository with no commit, which cannot "
+                        "be recorded as a commit id (--no-embedded-repos). Leave that flag out to "
+                        "capture its files, or --exclude the directory.\n" + str(exc)
+                    ) from None
         # `git add` stages no deletion through a pathspec, and this index
         # persists between runs, so anything it still holds that is not in
         # `kept` -- a file deleted from the source, or one an exclude now

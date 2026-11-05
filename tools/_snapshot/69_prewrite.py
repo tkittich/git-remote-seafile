@@ -144,39 +144,64 @@ def paths_to_stage(git_dir: Path, work_tree: Path, kept: list[str]) -> list[str]
 _INDEX_ROUTE_MIN_PATHS = 10_000
 
 
-def staging_command(
+def staging_commands(
     paths: list[str], work_tree: Path
-) -> "tuple[list[str], str, list[str]]":
-    """``(git arguments, stdin, displaced)``: how to record *paths* in the index.
+) -> "tuple[list[tuple[list[str], str]], list[str]]":
+    """``([(git arguments, stdin), ...], drop_first)``: how to record *paths* in the index.
+
+    A short list is one ``add`` with every path, as it always was.  From
+    ``_INDEX_ROUTE_MIN_PATHS`` paths on, the files go to ``update-index`` and
+    **a path that is a directory on disk still goes to ``add``**: a tracked file
+    that was replaced by a directory, which is rare, so that list is short.
+    ``update-index`` refuses a directory, and skipping it was worse than refusing:
+    ``add`` records a directory that holds its own ``.git`` as a gitlink, which
+    the embedded-repository step then replaces with the repository's files, and an
+    empty directory (or one holding only excluded files) is how ``add`` learns
+    that the old file entry is gone.  Leaving the directory out lost the files of
+    a nested repository that took a file's place, and kept the old file for an
+    empty directory (both found by running the two routes through the same history
+    in ``ExoticReplacementTests``).  The directories run first, so the entries they
+    displace are gone before the files are added.
 
     ``--replace`` is what ``add`` passes too: a file that took the place of a
-    directory (or the reverse) drops the entries it displaces.  Deletions are not
-    this command's job in either form; the caller drops stale entries itself.
+    directory (or the reverse) drops the entries it displaces.
 
-    ``update-index`` refuses a path that is a directory on disk ("is a directory
-    - add individual files instead"), where ``add`` copes.  Such a path is a
-    tracked file that was replaced by a directory.  It is left out of the list
-    and returned as *displaced*, for the caller to remove from the index first:
-    the files inside the directory are listed on their own, but a directory that
-    is empty, or holds only excluded files, would otherwise leave the old file
-    in the snapshot (found by running both routes on such a tree; ``add`` drops
-    it).  ``displaced`` is empty for the ``add`` route, which does this itself.
+    A path that no longer exists is left out and returned in *drop_first*, for the
+    caller to remove from the index before staging.  The list is made before the
+    pre-write, which can run for many minutes, and a scratch file deleted in that
+    time failed the whole run (measured: ``add`` stops with ``pathspec 'x' did not
+    match any files``, ``update-index`` with ``does not exist and --remove not
+    passed``, rc 128 either way).  A file deleted from the tree is a file deleted
+    from the snapshot.  ``update-index`` is also given ``--remove``, so one that
+    vanishes in the few milliseconds after this check is dropped the same way.
+    No path left means no command: ``add`` stops on an empty list.
     """
-    if len(paths) >= _INDEX_ROUTE_MIN_PATHS:
-        directories = [p for p in paths if _is_plain_directory(work_tree / p)]
-        gone = set(directories)
-        listed = [p for p in paths if p not in gone]
-        return (["update-index", "--add", "--replace", "-z", "--stdin"],
-                "\0".join(listed) + "\0", directories)
-    return (["add", "-A", "-f", "--pathspec-from-file=-", "--pathspec-file-nul"],
-            "\0".join(paths) + "\0", [])
-
-
-def _is_plain_directory(path: Path) -> bool:
-    try:
-        return stat.S_ISDIR(os.lstat(path).st_mode)
-    except OSError:
-        return False
+    use_index = len(paths) >= _INDEX_ROUTE_MIN_PATHS
+    files: list[str] = []
+    directories: list[str] = []
+    drop_first: list[str] = []
+    for path in paths:
+        try:
+            mode = os.lstat(work_tree / path).st_mode
+        except (FileNotFoundError, NotADirectoryError):
+            drop_first.append(path)
+            continue
+        except OSError:
+            files.append(path)  # unreadable is git's to report, not ours to hide
+            continue
+        (directories if use_index and stat.S_ISDIR(mode) else files).append(path)
+    add = ["add", "-A", "-f", "--pathspec-from-file=-", "--pathspec-file-nul"]
+    commands: list[tuple[list[str], str]] = []
+    if not use_index:
+        if files:
+            commands.append((add, "\0".join(files) + "\0"))
+        return commands, drop_first
+    if directories:
+        commands.append((add, "\0".join(directories) + "\0"))
+    if files:
+        commands.append((["update-index", "--add", "--remove", "--replace", "-z", "--stdin"],
+                         "\0".join(files) + "\0"))
+    return commands, drop_first
 
 
 #: ``git add`` fails when a file shrinks or is replaced between its stat and its
