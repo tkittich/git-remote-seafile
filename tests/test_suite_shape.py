@@ -74,5 +74,40 @@ class NoTestBearingBaseClassTests(unittest.TestCase):
         self.assertEqual(offenders, [], "\n".join(offenders))
 
 
+class TemporaryTreeCleanupTests(unittest.TestCase):
+    """Tests must not leave ``grs-*`` directories behind (ROADMAP W2)."""
+
+    def test_no_test_deletes_a_tree_with_ignore_errors(self):
+        # ``shutil.rmtree(path, ignore_errors=True)`` silently leaves a git
+        # repository behind on Windows (read-only object files); 14,495
+        # directories piled up that way.  Use ``_helpers.remove_tree``.
+        offenders = [
+            path.name
+            for path in sorted(_TESTS.glob("*.py"))
+            if path.name not in ("_helpers.py", "test_suite_shape.py")
+            and "ignore_errors=True" in path.read_text(encoding="utf-8")
+        ]
+        self.assertEqual(offenders, [], "use tests/_helpers.remove_tree: " + ", ".join(offenders))
+
+    def test_remove_tree_removes_a_repository_with_read_only_objects(self):
+        import subprocess
+        import tempfile
+
+        try:
+            from _helpers import remove_tree
+        except ImportError:  # run as ``python -m unittest tests.test_suite_shape``
+            from tests._helpers import remove_tree
+
+        root = pathlib.Path(tempfile.mkdtemp(prefix="grs-cleanup-"))
+        repo = root / "repo"
+        repo.mkdir()
+        (repo / "a.txt").write_text("a")
+        for args in (["init", "-q"], ["add", "."], ["-c", "user.email=a@b", "-c", "user.name=n",
+                                                   "commit", "-qm", "x"]):
+            subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True)
+        remove_tree(root)
+        self.assertFalse(root.exists(), "the repository's read-only objects were left behind")
+
+
 if __name__ == "__main__":
     unittest.main()

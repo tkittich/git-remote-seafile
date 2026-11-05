@@ -53,6 +53,11 @@ import tempfile
 import unittest
 
 try:
+    from _helpers import remove_tree  # noqa: E402
+except ImportError:  # run as ``python -m unittest tests.<module>``
+    from tests._helpers import remove_tree  # noqa: E402
+
+try:
     # top-level import under `unittest discover tests` and the parallel runner
     from _helpers import find_bash as _find_bash  # noqa: E402
 except ImportError:  # package-style: python -m unittest tests.test_launcher
@@ -111,7 +116,7 @@ class TestSourceCheckoutLauncher(unittest.TestCase):
         self.assertTrue(LAUNCHER.is_file(), f"missing launcher: {LAUNCHER}")
 
         self.tmp = pathlib.Path(tempfile.mkdtemp(prefix="grs-launcher-"))
-        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.addCleanup(remove_tree, self.tmp)
         self.stub_dir = self.tmp / "stub-bin"
         self.stub_dir.mkdir()
 

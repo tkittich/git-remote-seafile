@@ -10,7 +10,6 @@ from __future__ import annotations
 import json
 import os
 import pathlib
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -20,6 +19,11 @@ _ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_ROOT / "tools"))
 
 import seafile_snapshot as snap  # noqa: E402
+
+try:
+    from _helpers import remove_tree  # noqa: E402
+except ImportError:  # run as ``python -m unittest tests.<module>``
+    from tests._helpers import remove_tree  # noqa: E402
 
 SHA = "a" * 64
 
@@ -31,7 +35,7 @@ def git(repo, *args, check=True):
 class TestIncompleteHistory(unittest.TestCase):
     def setUp(self):
         self.tmp = pathlib.Path(tempfile.mkdtemp(prefix="grs-history-"))
-        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.addCleanup(remove_tree, self.tmp)
         self.vault = self.tmp / "vault"
         self.vault.mkdir()
         git(self.vault, "init", "-q", "-b", "snapshot")

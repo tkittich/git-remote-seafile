@@ -14,7 +14,6 @@ import hashlib
 import io
 import os
 import pathlib
-import shutil
 import sys
 import tempfile
 import threading
@@ -25,6 +24,11 @@ import unittest.mock
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "tools"))
 
 import seafile_snapshot as snap  # noqa: E402
+
+try:
+    from _helpers import remove_tree  # noqa: E402
+except ImportError:  # run as ``python -m unittest tests.<module>``
+    from tests._helpers import remove_tree  # noqa: E402
 
 MIB = 1024 * 1024
 
@@ -199,7 +203,7 @@ class AdaptiveUploadTests(unittest.TestCase):
 
     def setUp(self):
         self.tmp = pathlib.Path(tempfile.mkdtemp(prefix="grs-climb-"))
-        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.addCleanup(remove_tree, self.tmp)
         self.todo: dict[str, dict] = {}
         for i in range(24):
             data = f"object {i}\n".encode() * 200
@@ -289,7 +293,7 @@ class ParallelHashingTests(unittest.TestCase):
 
     def setUp(self):
         self.tmp = pathlib.Path(tempfile.mkdtemp(prefix="grs-hash-"))
-        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.addCleanup(remove_tree, self.tmp)
         for i in range(24):
             (self.tmp / f"p{i:02d}.bin").write_bytes(bytes([i]) * (1000 + 37 * (i % 5)))
         patcher = unittest.mock.patch.object(snap, "_HASH_MIN_BYTES", 0)

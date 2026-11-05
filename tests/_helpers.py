@@ -9,6 +9,7 @@ from __future__ import annotations
 import os
 import pathlib
 import shutil
+import sys
 from unittest.mock import MagicMock
 
 
@@ -36,6 +37,44 @@ def find_bash() -> str | None:
     if found and "system32" not in found.replace("\\", "/").lower():
         return found
     return None
+
+
+def remove_tree(path: "str | os.PathLike[str]") -> None:
+    """Delete a directory tree a test left behind, even a read-only or locked one.
+
+    ``shutil.rmtree(path, ignore_errors=True)`` is how this suite used to clean
+    up, and on Windows it silently leaves a repository behind: git's object files
+    are read-only, so deleting them fails and the failure is swallowed.  The
+    module that probes for symlink support made a repository on every import, so
+    one full run left about 400 ``grs-*`` directories in the temporary directory
+    (14,495 had piled up).  This clears the read-only bit and retries.  A tree
+    that still cannot be removed is reported on stderr, not ignored.
+    """
+    target = os.fspath(path)
+
+    def clear_read_only(function, failed, _error):
+        try:
+            os.chmod(failed, 0o700)
+            function(failed)
+        except OSError:
+            pass  # the check below reports what is still there
+
+    def attempt() -> None:
+        if not os.path.lexists(target):
+            return
+        if os.path.islink(target) or os.path.isfile(target):
+            os.unlink(target)
+        elif sys.version_info >= (3, 12):
+            shutil.rmtree(target, onexc=clear_read_only)
+        else:
+            shutil.rmtree(target, onerror=clear_read_only)
+
+    try:
+        attempt()
+    except OSError:
+        pass
+    if os.path.lexists(target):
+        sys.stderr.write(f"remove_tree: could not remove {target}\n")
 
 
 def make_helper(**attrs):

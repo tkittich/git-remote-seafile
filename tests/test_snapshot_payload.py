@@ -37,6 +37,11 @@ import seafile_snapshot as snap  # noqa: E402
 from e2e_harness import REPO_ID, SeafileStub, make_helper_env  # noqa: E402
 from git_remote_seafile.client import SeafileClient  # noqa: E402
 
+try:
+    from _helpers import remove_tree  # noqa: E402
+except ImportError:  # run as ``python -m unittest tests.<module>``
+    from tests._helpers import remove_tree  # noqa: E402
+
 DAY = 86400
 OLD_NS = 1_600_000_000_123_456_789  # September 2020, not a whole second
 
@@ -76,7 +81,7 @@ class _PayloadFixture(unittest.TestCase):
     def setUp(self):
         self.stub.reset()
         self.case = pathlib.Path(tempfile.mkdtemp(prefix="case-", dir=self.work))
-        self.addCleanup(shutil.rmtree, self.case, ignore_errors=True)
+        self.addCleanup(remove_tree, self.case)
         self.src = self.case / "src"
         self.vault = self.case / "vault"
         (self.src / "sub").mkdir(parents=True)

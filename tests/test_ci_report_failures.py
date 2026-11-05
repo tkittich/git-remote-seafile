@@ -25,11 +25,15 @@ cover the real entry point including its exit code, which is what CI keys off.
 from __future__ import annotations
 
 import pathlib
-import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
+
+try:
+    from _helpers import remove_tree  # noqa: E402
+except ImportError:  # run as ``python -m unittest tests.<module>``
+    from tests._helpers import remove_tree  # noqa: E402
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 SCRIPT = REPO_ROOT / ".github" / "ci_report_failures.py"
@@ -75,7 +79,7 @@ class TestCiReportFailures(unittest.TestCase):
     def setUp(self):
         self.assertTrue(SCRIPT.is_file(), f"missing reporter: {SCRIPT}")
         self.tmp = pathlib.Path(tempfile.mkdtemp(prefix="grs-report-"))
-        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.addCleanup(remove_tree, self.tmp)
 
     def _run(self, output: str | None) -> subprocess.CompletedProcess:
         path = self.tmp / "unittest-output.txt"

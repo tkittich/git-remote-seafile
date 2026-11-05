@@ -40,6 +40,11 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "tools")
 
 import seafile_snapshot as snap  # noqa: E402
 
+try:
+    from _helpers import remove_tree  # noqa: E402
+except ImportError:  # run as ``python -m unittest tests.<module>``
+    from tests._helpers import remove_tree  # noqa: E402
+
 BRANCH = "snapshot"
 
 
@@ -92,7 +97,7 @@ def _symlinks_round_trip() -> bool:
     except Exception:  # any failure means "this platform cannot do it"
         return False
     finally:
-        shutil.rmtree(probe, ignore_errors=True)
+        remove_tree(probe)
 
 
 class _SnapshotFixture(unittest.TestCase):
@@ -108,7 +113,7 @@ class _SnapshotFixture(unittest.TestCase):
 
     def setUp(self):
         self.tmp = pathlib.Path(tempfile.mkdtemp(prefix="grs-snapshot-"))
-        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.addCleanup(remove_tree, self.tmp)
 
         self.code = self.tmp / "code"
         self.vault = self.tmp / "vault"
@@ -1889,7 +1894,7 @@ class SymlinkVerificationTests(unittest.TestCase):
 
     def setUp(self):
         self.tmp = pathlib.Path(tempfile.mkdtemp(prefix="grs-symlink-"))
-        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.addCleanup(remove_tree, self.tmp)
 
     def _repo_with(
         self, regular: dict[str, bytes], links: dict[str, str]
@@ -3181,7 +3186,7 @@ def _can_symlink() -> bool:
     except (OSError, NotImplementedError):
         return False
     finally:
-        shutil.rmtree(probe, ignore_errors=True)
+        remove_tree(probe)
 
 
 def _nested_repo(path: pathlib.Path, commit: bool = True) -> None:
@@ -3194,17 +3199,8 @@ def _nested_repo(path: pathlib.Path, commit: bool = True) -> None:
 
 
 def _clear(path: pathlib.Path) -> None:
-    if path.is_dir() and not path.is_symlink():
-        def clear_read_only(func, target, _exc):
-            os.chmod(target, 0o700)  # a nested repository's object files are read-only on Windows
-            func(target)
-
-        if sys.version_info >= (3, 12):
-            shutil.rmtree(path, onexc=clear_read_only)
-        else:
-            shutil.rmtree(path, onerror=clear_read_only)
-    elif os.path.lexists(path):
-        path.unlink()  # a file, a symlink (dangling too), a fifo, a socket
+    """Remove a file, link, fifo, socket or directory tree (see ``remove_tree``)."""
+    remove_tree(path)
 
 
 class _RouteComparison(_SnapshotFixture):

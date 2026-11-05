@@ -26,7 +26,6 @@ What they pin down is what the stub *cannot* predict:
 from __future__ import annotations
 
 import os
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -35,6 +34,11 @@ import time
 import unittest
 from pathlib import Path
 from urllib.parse import quote
+
+try:
+    from _helpers import remove_tree  # noqa: E402
+except ImportError:  # run as ``python -m unittest tests.<module>``
+    from tests._helpers import remove_tree  # noqa: E402
 
 _ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_ROOT))
@@ -71,7 +75,7 @@ class RealServerTests(unittest.TestCase):
         try:
             cls.client.session.delete(url, timeout=120)
         finally:
-            shutil.rmtree(cls.tmp, ignore_errors=True)
+            remove_tree(cls.tmp)
 
     # -- helpers --------------------------------------------------------------
     def _git(self, args, cwd, check=True):
@@ -568,7 +572,7 @@ class _RealServerFixture(unittest.TestCase):
         try:
             cls.client.session.delete(url, timeout=120)
         finally:
-            shutil.rmtree(cls.tmp, ignore_errors=True)
+            remove_tree(cls.tmp)
 
     def _git(self, args, cwd, check=True):
         p = subprocess.run(["git", *args], cwd=str(cwd), env=self.env,

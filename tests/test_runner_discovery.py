@@ -32,6 +32,11 @@ import sys
 import tempfile
 import unittest
 
+try:
+    from _helpers import remove_tree  # noqa: E402
+except ImportError:  # run as ``python -m unittest tests.<module>``
+    from tests._helpers import remove_tree  # noqa: E402
+
 _ROOT = pathlib.Path(__file__).resolve().parent.parent
 _TESTS = _ROOT / "tests"
 _RUNNER = _ROOT / "tools" / "run_tests_parallel.py"
@@ -123,7 +128,7 @@ class RunnerRobustnessTests(unittest.TestCase):
     def setUp(self):
         self.runner = _load_runner()
         self.tmp = pathlib.Path(tempfile.mkdtemp(prefix="grs-runner-"))
-        self.addCleanup(lambda: __import__("shutil").rmtree(self.tmp, ignore_errors=True))
+        self.addCleanup(remove_tree, self.tmp)
 
     def _sleeper(self):
         log = open(self.tmp / "job.log", "wb")

@@ -30,7 +30,6 @@ import datetime as dt
 import io
 import os
 import pathlib
-import shutil
 import sqlite3
 import sys
 import tempfile
@@ -39,6 +38,11 @@ import unittest
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "tools"))
 
 import seafile_doctor as doc  # noqa: E402
+
+try:
+    from _helpers import remove_tree  # noqa: E402
+except ImportError:  # run as ``python -m unittest tests.<module>``
+    from tests._helpers import remove_tree  # noqa: E402
 
 
 def _args(**overrides) -> argparse.Namespace:
@@ -53,7 +57,7 @@ class DoctorFixture(unittest.TestCase):
 
     def setUp(self):
         self.tmp = pathlib.Path(tempfile.mkdtemp(prefix="grs-doctor-"))
-        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.addCleanup(remove_tree, self.tmp)
         self.ccnet = self.tmp / "ccnet"
         self.ccnet.mkdir()
         self.data = self.tmp / "seafile-data"
@@ -420,7 +424,7 @@ class TestCliSurface(unittest.TestCase):
         import subprocess
 
         home = pathlib.Path(tempfile.mkdtemp(prefix="grs-doctor-home-"))
-        self.addCleanup(shutil.rmtree, home, ignore_errors=True)
+        self.addCleanup(remove_tree, home)
         # The directory the client would use is present, so `ccnet_dir()`
         # succeeds; the file that says where its data lives is not.
         (home / ".ccnet").mkdir()

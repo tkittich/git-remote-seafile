@@ -4,10 +4,14 @@ from __future__ import annotations
 
 import importlib.util
 import pathlib
-import shutil
 import subprocess
 import tempfile
 import unittest
+
+try:
+    from _helpers import remove_tree  # noqa: E402
+except ImportError:  # run as ``python -m unittest tests.<module>``
+    from tests._helpers import remove_tree  # noqa: E402
 
 _ROOT = pathlib.Path(__file__).resolve().parent.parent
 _spec = importlib.util.spec_from_file_location("release_check", _ROOT / "tools" / "release_check.py")
@@ -33,7 +37,7 @@ def _write(path: pathlib.Path, text: str) -> None:
 class ReleaseCheckTests(unittest.TestCase):
     def setUp(self):
         self.root = pathlib.Path(tempfile.mkdtemp(prefix="grs-relcheck-"))
-        self.addCleanup(shutil.rmtree, self.root, ignore_errors=True)
+        self.addCleanup(remove_tree, self.root)
         _git(self.root, "init", "-q", "-b", "main", ".")
         _write(self.root / "git_remote_seafile" / "__init__.py", '__version__ = "0.2.0"\n')
         _write(

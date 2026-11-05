@@ -38,6 +38,11 @@ import tempfile
 import unittest
 
 try:
+    from _helpers import remove_tree  # noqa: E402
+except ImportError:  # run as ``python -m unittest tests.<module>``
+    from tests._helpers import remove_tree  # noqa: E402
+
+try:
     # top-level import under `unittest discover tests` and the parallel runner
     from _helpers import find_bash as _find_bash  # noqa: E402
 except ImportError:  # package-style: python -m unittest tests.test_launcher
@@ -603,7 +608,7 @@ class TestCreateGithubReleaseScript(unittest.TestCase):
         self.assertTrue(SCRIPT.is_file(), f"missing release script: {SCRIPT}")
 
         self.tmp = pathlib.Path(tempfile.mkdtemp(prefix="grs-release-"))
-        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.addCleanup(remove_tree, self.tmp)
 
         self.log = self.tmp / "gh-argv.log"
         self.bin = self.tmp / "bin"
