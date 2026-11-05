@@ -3194,9 +3194,7 @@ def _nested_repo(path: pathlib.Path, commit: bool = True) -> None:
 
 
 def _clear(path: pathlib.Path) -> None:
-    if path.is_symlink() or path.is_file():
-        path.unlink()
-    elif path.is_dir():
+    if path.is_dir() and not path.is_symlink():
         def clear_read_only(func, target, _exc):
             os.chmod(target, 0o700)  # a nested repository's object files are read-only on Windows
             func(target)
@@ -3205,24 +3203,24 @@ def _clear(path: pathlib.Path) -> None:
             shutil.rmtree(path, onexc=clear_read_only)
         else:
             shutil.rmtree(path, onerror=clear_read_only)
+    elif os.path.lexists(path):
+        path.unlink()  # a file, a symlink (dangling too), a fifo, a socket
 
 
-class ExoticReplacementTests(_SnapshotFixture):
-    """Whatever happens to a path between two runs, the two staging routes record the same tree.
+class _RouteComparison(_SnapshotFixture):
+    """Fixture, no tests: run a scenario through both staging routes and compare.
 
     The route for a long list (``update-index``) and the one for a short list
-    (``add``) are different commands.  Each scenario starts from one tree, changes
-    it, runs both routes through the same history and compares the recorded
-    tree, modes included; the comparison is the test, so a scenario both routes
-    get wrong the same way still passes (what is recorded for a symlink on a
-    machine that cannot make one is not this class's business).  A wider set (27
-    scenarios, run on Windows and Debian) found three bugs in the first version of
-    the long-list route (a nested repository that took a file's place recorded
-    nothing, an empty directory kept the old file, a vanished path stopped the
-    run); these are the scenarios worth running every time.
+    (``add``) are different commands.  A scenario is ``(setup, mutate)``: the
+    base tree plus ``setup`` is snapshotted, ``mutate`` changes it, it is
+    snapshotted again, and the recorded tree (modes included) is the result.  The
+    comparison is the test, so a scenario both routes get wrong the same way
+    still passes -- except that a run must succeed unless the scenario is named in
+    ``EXPECTED_FAILURES`` (then both must fail, with the same exit code).
     """
 
     EXCLUDE = ("--exclude", "node_modules")
+    EXPECTED_FAILURES: "dict[str, int]" = {}
 
     def setUp(self):
         super().setUp()
@@ -3254,8 +3252,32 @@ class ExoticReplacementTests(_SnapshotFixture):
             mutate(self.code)
             rc1, _, err1 = self.run_tool("--source", self.code, "--vault", vault,
                                          *self.EXCLUDE, "--no-push")
-        listing = _git(vault, "ls-tree", "-r", BRANCH).stdout if rc1 == 0 else err1[-200:]
-        return rc0, rc1, listing
+        # The text of a failure names the command that failed, which differs by route.
+        listing = _git(vault, "ls-tree", "-r", BRANCH).stdout if rc1 == 0 else "<failed>"
+        return rc0, rc1, listing, err1[-300:]
+
+    def _check(self, scenarios):
+        # A vault of its own per scenario and route: deleting one is not reliable on
+        # Windows (git's object files are read-only), and a vault left behind with
+        # history would make the next "first run" something else.
+        for number, (name, scenario) in enumerate(scenarios.items()):
+            with self.subTest(scenario=name):
+                via_add = self._history(self.tmp / f"v-add-{number}", 10 ** 9, scenario)
+                via_index = self._history(self.tmp / f"v-index-{number}", 1, scenario)
+                self.assertEqual(via_index[:3], via_add[:3], f"add said: {via_add[3]!r}; "
+                                 f"update-index said: {via_index[3]!r}")
+                expected = self.EXPECTED_FAILURES.get(name)
+                self.assertEqual(via_add[1], expected or 0, via_add[3])
+
+
+class ExoticReplacementTests(_RouteComparison):
+    """Whatever happens to a path between two runs, the two staging routes record the same tree.
+
+    A wider set (27 scenarios, run on Windows and Debian) found three bugs in the
+    first version of the long-list route (a nested repository that took a file's
+    place recorded nothing, an empty directory kept the old file, a vanished path
+    stopped the run); these are the replacements worth running every time.
+    """
 
     def _scenarios(self):
         def nothing(code):
@@ -3305,14 +3327,102 @@ class ExoticReplacementTests(_SnapshotFixture):
         return scenarios
 
     def test_both_routes_record_the_same_tree(self):
-        # A vault of its own per scenario and route: deleting one is not reliable on
-        # Windows (git's object files are read-only), and a vault left behind with
-        # history would make the next "first run" something else.
-        for number, (name, scenario) in enumerate(self._scenarios().items()):
-            with self.subTest(scenario=name):
-                via_add = self._history(self.tmp / f"v-add-{number}", 10 ** 9, scenario)
-                via_index = self._history(self.tmp / f"v-index-{number}", 1, scenario)
-                self.assertEqual(via_index, via_add)
+        self._check(self._scenarios())
+
+
+class SpecialFileAndNameTests(_RouteComparison):
+    """The same comparison for what is odd about a file rather than about where it sits.
+
+    Attributes (the source's ``.gitattributes`` applies to the vault's index:
+    line endings, ``-text``, ``ident``), a ``.git`` *file* as a submodule leaves
+    in a directory, a path over 300 characters, bytes that changed under a restored
+    size and time (neither route can see it: both trust git's stat cache, and
+    ``--rebuild-index`` is the remedy), names that look like pathspec magic or are
+    not UTF-8, and on POSIX a fifo, a socket and a file the user cannot read.
+    Run on Windows and Debian by hand first (16 scenarios, no difference).
+    """
+
+    #: An unreadable file stops both routes (rc 1); nothing else here may.
+    EXPECTED_FAILURES = {"a file the user cannot read": 1}
+
+    def _scenarios(self):
+        def nothing(code):
+            pass
+
+        def put(code, name, data=b"x\n"):
+            path = code / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(data)
+
+        def attributes_first(code):
+            put(code, ".gitattributes", b"*.crlf text eol=crlf\n*.bin -text\n*.id ident\n*.lf text eol=lf\n")
+            put(code, "a.crlf", b"one\ntwo\n")
+            put(code, "b.bin", b"bin\r\nline\r\n")
+            put(code, "c.id", b"$Id$\n")
+            put(code, "d.lf", b"x\r\ny\r\n")
+
+        def attributes_then(code):
+            put(code, "a.crlf", b"one\ntwo\nthree\n")
+            put(code, "b.bin", b"bin\r\nline\r\nmore\r\n")
+            put(code, "c.id", b"$Id: stale $\n")
+            put(code, "d.lf", b"x\r\ny\r\nz\r\n")
+            put(code, "new.crlf", b"fresh\n")
+
+        def restored_stamp(code):
+            os.utime(code / "f2.txt", (1_000_000_000, 1_000_000_000))
+
+        def same_stamp_other_bytes(code):
+            (code / "f2.txt").write_bytes(b"FILE 2\n" * 5)
+            os.utime(code / "f2.txt", (1_000_000_000, 1_000_000_000))
+
+        scenarios = {
+            "attributes: eol, -text and ident": (attributes_first, attributes_then),
+            "an attributes file that appears after the files": (
+                lambda c: put(c, "e.crlf", b"a\nb\n"),
+                lambda c: (put(c, ".gitattributes", b"*.crlf text eol=crlf\n"),
+                           put(c, "e.crlf", b"a\nb\nc\n"))),
+            "a directory with a .git file (submodule style)": (
+                nothing, lambda c: (put(c, "sub/.git", b"gitdir: ../.git/modules/sub\n"),
+                                    put(c, "sub/code.txt"))),
+            "a tracked file becomes a directory with a .git file": (
+                nothing, lambda c: (_clear(c / "f2.txt"),
+                                    put(c, "f2.txt/.git", b"gitdir: ../.git/modules/f2\n"),
+                                    put(c, "f2.txt/code.txt"))),
+            "a path of more than 300 characters": (
+                nothing, lambda c: put(c, "/".join(["d" * 40] * 7) + "/file.txt")),
+            "same size and time, different bytes": (restored_stamp, same_stamp_other_bytes),
+            "names that look like pathspec magic": (
+                nothing, lambda c: [put(c, n) for n in ("!bang.txt", "@at.txt", "~tilde.txt", "%pct.txt")]),
+            "two hundred new files at once": (
+                nothing, lambda c: [put(c, f"bulk/{i % 20}/n{i}.txt", b"%d\n" % i) for i in range(200)]),
+        }
+        if os.name != "nt":
+            def bad_utf8(code):
+                with open(os.path.join(os.fsencode(code), b"bad_\xff.txt"), "wb") as fh:
+                    fh.write(b"x\n")
+
+            def socket_file(code):
+                import socket
+                sock = socket.socket(socket.AF_UNIX)
+                try:
+                    sock.bind(str(code / "sock"))
+                finally:
+                    sock.close()
+
+            scenarios.update({
+                "a fifo": (nothing, lambda c: os.mkfifo(c / "pipe")),
+                "a unix socket": (nothing, socket_file),
+                "a name that is not UTF-8": (nothing, bad_utf8),
+                "names with pathspec magic that only POSIX allows": (
+                    nothing, lambda c: [put(c, n) for n in (":(exclude)x.txt", ":!y.txt", ":/top.txt", "a:b.txt")]),
+            })
+            if hasattr(os, "geteuid") and os.geteuid() != 0:
+                scenarios["a file the user cannot read"] = (
+                    nothing, lambda c: (put(c, "secret.txt"), os.chmod(c / "secret.txt", 0)))
+        return scenarios
+
+    def test_both_routes_record_the_same_tree(self):
+        self._check(self._scenarios())
 
 
 class ChangedWhileReadTests(_SnapshotFixture):
