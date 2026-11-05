@@ -7,8 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed
-- **A file that shrank while `git add` read it failed with no explanation.** Git's `short read while indexing <file>` (seen 27 minutes into staging a 222,000-file tree, from a scratch file another tool was rewriting) is now recognised like `unstable object source data`: the error names the file, says nothing was snapshotted, and points at `--exclude`.
+### Changed
+- **Staging writes the objects of a large tree in parallel, with a writer count found on the disk.** `git add` hashes, deflates and writes one file at a time; on 20,000 files (254 MiB, NVMe) it took 41.6 s alone and 17 s with up to 16 `git hash-object -w` processes writing the objects first (the recorded tree is identical, checked with `write-tree`). Nothing was measured on a spinning disk, where parallel writers can only make the head seek and `git add` then reads every file a second time, so the count is not a constant: a ramp starts at one process, reads files per second over a short window, doubles only while the rate grew by 15%, falls back to the best level otherwise, and **stops the step** when two processes are no faster than one (a few hundred files read twice was the price of finding out). On the NVMe tree it measured 449, 797, 1241 and 2201 files/s at 1, 2, 4 and 8 processes. The run prints what it found: `staging: settled on 4 parallel git process(es) (files/s by process count: 1: 150, 2: 290, 4: 560, 8: 570)`. `add` still does the index update, so the stat cache and every error message are unchanged, and a failed batch is simply redone by `add`. Only untracked or modified regular files are handed to writers (never an excluded path, a symlink, or a name `--stdin-paths` cannot carry), and nothing happens below 2,000 such files. `SEAFILE_SNAPSHOT_STAGE_WORKERS=N` is a typed setting and beats the measurement (exactly N, no ramp; `1` turns the step off).
+- **Adaptation is now a stated design rule** (DESIGN.md §3.5, AGENTS.md): what depends on the machine or the link is measured during the run; a constant is only a ceiling or a first guess.
 
 ## [0.9.21] - 2026-10-31
 

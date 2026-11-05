@@ -159,6 +159,13 @@ real data**, even to test. Read-only commands (`--payload-verify`, report-only
   `tuned:`) are labels, not levels. Byte counts use `human_bytes` in the snapshot
   tool and `git_remote_seafile.units.format_bytes` in the package -- one function, two
   copies kept equal by a test -- and print KiB/MiB/GiB, never KB/MB/GB.
+- **Adapt, do not tune** (DESIGN.md §3.5). A new worker count, batch size, timeout or
+  threshold that depends on the disk, the link or the server is measured during the run,
+  with the constant as a ceiling; a typed flag or environment variable wins over the
+  measurement; the run says what it chose; and the controller is tested with made-up
+  machines (fast, saturating, slow) and goes red when its rule is deleted. Nothing so far
+  has been measured on a spinning disk or a slow link -- the development machine is NVMe --
+  so a speed-up that is only proven here must be able to back out.
 - **A new message needs a test** that triggers it and quotes three words in a row of
   its text. `tests/untested_messages.txt` lists the older messages that have none; it
   may only shrink, and a new message is not added to it to get past the check.

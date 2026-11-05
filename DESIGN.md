@@ -100,6 +100,17 @@ These hold on every code path, and each is the reason some check below exists. T
 - **Ambiguity is reported, never resolved silently.** The snapshot tool's excludes are opt-in for exactly this reason: `node_modules` is reproducible, `.env` is not, and the tool cannot tell them apart.
 - **The source tree of a capture is read-only.** The snapshot tool's vault is a *second* repository whose work-tree is the source; the source's index and refs are never written (§4.10).
 
+### 3.5 Adaptation
+
+The tools run on a laptop's NVMe drive, a spinning disk, a VPN and a Seafile behind a proxy with a body limit nobody wrote down. A constant tuned on one of them is wrong on the next, so:
+
+- **Measure the machine; do not assume it.** What depends on the disk, the link or the server (how many writers, how big a pack, whether to deflate, which files travel as payload) is chosen from a measurement taken during the run. A constant survives only as a ceiling, a first guess, or the answer when nothing can be measured. Where this already holds: the compression sample (`40_profile.py`), the link probe behind `--payload-min-size=auto`, the pack cap halved when an upload is refused, the sliding stall limit, and the writer ramp in staging (`69_prewrite.py`).
+- **Adaptation changes speed, never what is stored.** The recorded tree, the objects and the refs are identical whatever was chosen, and a measurement that fails or is inconclusive falls back to the plain path. An optimisation that cannot be switched off by its own failure does not belong here.
+- **Start cautious and grow only on evidence.** A step up is kept when it pays (a margin, not a hair) and undone when it does not, and it must never make the worst machine slower than the code without it.
+- **A typed setting beats a measurement; a default never beats a typed setting.** An explicit flag or environment variable fixes the value and turns the measuring off.
+- **Say what was chosen.** One line, so a slow run can be read afterwards ("settled on 4 ... files/s by process count").
+- **Every adaptive rule is tested on made-up machines.** A controller takes its readings as arguments, so a test can feed it a fast disk, a saturating one and a spinning one, and must go red when the rule is removed.
+
 ---
 
 ## 4. Protocol
