@@ -344,7 +344,7 @@ PART F — the recorded open items (Phase 2, after G)
 `ROADMAP.md` §1.4 is a sweep of the review archive against an older release; each row
 is marked probed or lead, §1.5 carries the v0.9.13 triage rows, §1.6 the dispositions of
 the last review (V1–V9: say whether each "done" row's named test would fail if the fix
-were removed) and §1.7 what the newest work left open (W1–W6). For every open
+were removed) and §1.7 what the newest work left open (W1–W7). For every open
 row, say CONFIRMED, FIXED SINCE (name the commit or release), STALE (the description
 no longer matches the code — say what the code does now), or MISRANKED (the severity
 or effort is wrong, and why). Then spend the rest of the part on the row marked lead,
