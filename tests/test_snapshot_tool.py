@@ -2625,6 +2625,175 @@ class StaleGitLockHintTests(unittest.TestCase):
         self.assertIn("--exclude it", message)
 
 
+class ParallelStagingTests(_SnapshotFixture):
+    """The objects are written by several ``hash-object`` processes before ``add``.
+
+    Measured: 41.6 s for 20,000 files with ``add`` alone, 17 s with 16 processes
+    writing first.  ``add`` still does the index update, so the stat cache and
+    the tree are exactly what they were; these tests hold it to that.
+    """
+
+    def setUp(self):
+        super().setUp()
+        for i in range(12):
+            (self.code / f"f{i:02d}.txt").write_bytes(f"file {i}\n".encode() * 20)
+        patcher = unittest.mock.patch.object(snap, "_PREWRITE_MIN_FILES", 3)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _run_in(self, vault: pathlib.Path, workers: str, *extra: object):
+        with unittest.mock.patch.dict(os.environ, {"SEAFILE_SNAPSHOT_STAGE_WORKERS": workers}):
+            return self.run_tool("--source", self.code, "--vault", vault, *extra)
+
+    def _tree_id(self, vault: pathlib.Path) -> str:
+        return _git(vault, "rev-parse", f"{BRANCH}^{{tree}}").stdout.strip()
+
+    def test_the_parallel_step_records_the_tree_the_serial_one_does(self):
+        rc, _, err = self._run_in(self.tmp / "v-serial", "1")
+        self.assertEqual(rc, 0, err)
+        self.assertNotIn("parallel git processes", err)
+        rc, _, err = self._run_in(self.tmp / "v-par", "4")
+        self.assertEqual(rc, 0, err)
+        self.assertIn("parallel git processes", err)
+        self.assertEqual(self._tree_id(self.tmp / "v-par"), self._tree_id(self.tmp / "v-serial"))
+
+    def test_the_step_itself_writes_the_objects(self):
+        """Without this the tests above pass with a step that does nothing."""
+        bare = self.tmp / "bare"
+        _git(self.tmp, "init", "-q", "--bare", str(bare))
+        with unittest.mock.patch.dict(os.environ, {"SEAFILE_SNAPSHOT_STAGE_WORKERS": "3"}):
+            with contextlib.redirect_stderr(io.StringIO()):
+                count = snap.prewrite_objects(bare, self.code)
+        self.assertGreaterEqual(count, 12)
+        blob = _git(bare, "hash-object", "--no-filters", str(self.code / "f01.txt")).stdout.strip()
+        self.assertEqual(_git(bare, "cat-file", "-e", blob).returncode, 0)
+
+    def test_a_disk_that_cannot_use_writers_leaves_the_rest_to_add(self):
+        """End to end: the ramp gives up, says so, and the tree is still right."""
+        (self.code / "more").mkdir()
+        for i in range(30):
+            (self.code / "more" / f"m{i:02d}.txt").write_bytes(b"more %d\n" % i * 10)
+        rc, _, err = self._run_in(self.tmp / "v-serial", "1")
+        self.assertEqual(rc, 0, err)
+        env = {"SEAFILE_SNAPSHOT_STAGE_WORKERS": ""}
+        with unittest.mock.patch.object(snap, "_PREWRITE_BATCH_FILES", 2):
+            with unittest.mock.patch.object(snap, "_RAMP_GAIN", 1000.0):
+                with unittest.mock.patch.dict(os.environ, env):
+                    rc, _, err = self.run_tool("--source", self.code, "--vault", self.tmp / "v-auto")
+        self.assertEqual(rc, 0, err)
+        self.assertIn("did not help", err)
+        self.assertEqual(self._tree_id(self.tmp / "v-auto"), self._tree_id(self.tmp / "v-serial"))
+
+    def test_an_unchanged_tree_writes_nothing_in_parallel_the_second_time(self):
+        rc, _, err = self._run_in(self.vault, "4")
+        self.assertEqual(rc, 0, err)
+        self.assertIn("parallel git processes", err)
+        rc, _, err = self._run_in(self.vault, "4")
+        self.assertEqual(rc, 0, err)
+        self.assertNotIn("parallel git processes", err)
+
+    def test_an_excluded_file_is_not_opened_by_the_parallel_step(self):
+        rc, _, err = self._run_in(self.vault, "4", "--exclude", ".env")
+        self.assertEqual(rc, 0, err)
+        self.assertIn("parallel git processes", err)
+        blob = _git(self.vault, "hash-object", "--no-filters", str(self.code / ".env")).stdout.strip()
+        self.assertNotEqual(_git(self.vault, "cat-file", "-e", blob).returncode, 0,
+                            "the excluded file's bytes reached the object store")
+
+    def test_candidates_are_the_files_add_would_have_to_write(self):
+        git_dir = self.code / ".git"
+        (self.code / "README.md").write_bytes(b"changed\n")
+        found = dict(snap._prewrite_candidates(git_dir, self.code, None))
+        self.assertIn("README.md", found)      # tracked and modified
+        self.assertIn(".env", found)           # ignored: `add -f` takes it
+        self.assertNotIn(".gitignore", found)  # tracked and unchanged
+        self.assertEqual(found["README.md"], 8)
+        only = dict(snap._prewrite_candidates(git_dir, self.code, {".env"}))
+        self.assertEqual(list(only), [".env"])
+
+    @unittest.skipIf(os.name == "nt", "symlinks need a privilege on Windows")
+    def test_a_symlink_is_left_to_add(self):
+        """``hash-object`` would store the target's bytes where ``add`` stores the link."""
+        os.symlink("README.md", self.code / "link.md")
+        found = dict(snap._prewrite_candidates(self.code / ".git", self.code, None))
+        self.assertNotIn("link.md", found)
+
+    def test_a_bad_worker_count_falls_back_with_a_warning(self):
+        with unittest.mock.patch.dict(os.environ, {"SEAFILE_SNAPSHOT_STAGE_WORKERS": "many"}):
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                workers, forced = snap.prewrite_workers()
+        self.assertGreaterEqual(workers, 1)
+        self.assertFalse(forced, "a bad value must not count as a typed setting")
+        self.assertIn("is not a whole", err.getvalue())
+
+    def test_batches_stop_at_the_file_and_byte_caps(self):
+        files = [(f"a{i}", 10) for i in range(1250)]
+        sizes = [len(b) for b in snap._prewrite_batches(files)]
+        self.assertEqual(sizes, [500, 500, 250])
+        big = [("x", 100 * 2**20), ("y", 100 * 2**20), ("z", 1)]
+        self.assertEqual([len(b) for b in snap._prewrite_batches(big)], [1, 2])
+
+
+class StagingRampTests(unittest.TestCase):
+    """The number of writers is found on the disk, not assumed from an NVMe drive.
+
+    ``_simulate`` feeds the controller a disk described by one function: the
+    files per second ``level`` writers get between them.  Nothing here touches
+    a real disk, so the slow cases are as real as the fast ones.
+    """
+
+    @staticmethod
+    def _simulate(total_rate, ceiling=16, batches=400, batch_files=500):
+        import heapq
+        ramp = snap._Ramp(ceiling, False, 0.0)
+        now, submitted, running = 0.0, 0, []
+        while True:
+            while submitted < batches and not ramp.gave_up and len(running) < ramp.level:
+                per_writer = total_rate(ramp.level) / ramp.level
+                heapq.heappush(running, (now + batch_files / per_writer, now, batch_files))
+                submitted += 1
+            if not running:
+                return ramp, submitted
+            end, began, files = heapq.heappop(running)
+            now = end
+            ramp.finished(began, files, now)
+
+    def test_a_disk_that_scales_gets_many_writers(self):
+        ramp, _ = self._simulate(lambda n: min(n, 12) * 800.0)
+        self.assertFalse(ramp.gave_up)
+        self.assertGreaterEqual(ramp.level, 8)
+
+    def test_a_disk_that_saturates_at_four_settles_at_four(self):
+        ramp, _ = self._simulate(lambda n: min(n, 4) * 400.0)
+        self.assertEqual((ramp.level, ramp.gave_up, ramp.settled), (4, False, True))
+
+    def test_a_spinning_disk_gets_no_parallel_writers_and_the_step_stops(self):
+        # Seeking between writers: two are slightly worse than one.
+        ramp, submitted = self._simulate(lambda n: 150.0 if n == 1 else 135.0)
+        self.assertTrue(ramp.gave_up)
+        self.assertEqual(ramp.level, 1)
+        self.assertLess(submitted, 10, "a disk that cannot use writers kept being fed")
+
+    def test_a_barely_better_disk_is_not_worth_the_second_read(self):
+        ramp, _ = self._simulate(lambda n: 150.0 * (1 + 0.05 * (n - 1)))
+        self.assertTrue(ramp.gave_up)
+
+    def test_a_typed_count_is_used_as_it_is_and_never_measured(self):
+        ramp = snap._Ramp(8, True, 0.0)
+        for i in range(40):
+            ramp.finished(float(i), 500, i + 1.0)
+        self.assertEqual((ramp.level, ramp.settled, ramp.gave_up), (8, True, False))
+
+    def test_work_started_before_a_window_does_not_count_towards_it(self):
+        ramp = snap._Ramp(16, False, 0.0)
+        for began in (0.0, 1.0, 2.0):
+            ramp.finished(began, 500, began + 1.0)   # 500 files/s: the window closes at 3.0
+        self.assertEqual(ramp.level, 2)
+        ramp.finished(2.5, 500, 3.5)       # started before the window opened at 3.0
+        self.assertEqual(ramp._batches, 0)
+
+
 class LargePayloadProfileTests(unittest.TestCase):
     """A first-run sample decides once whether the vault should skip deflate and
     delta search -- the two costs that made a 20 GB+ raw-data tree time out."""

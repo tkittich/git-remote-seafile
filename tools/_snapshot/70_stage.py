@@ -224,7 +224,9 @@ def build_snapshot(
     filtered = bool(excludes or skip_paths or reserved or probe_debris or behind_junction)
     excluded: list[str] = []
     unreadable: list[str] = []
+    prewritten = False
     if not filtered:
+        prewritten = bool(prewrite_objects(git_dir, work_tree, expect_bytes=staging_bytes))
         try:
             added = git(
                 git_dir,
@@ -284,6 +286,8 @@ def build_snapshot(
             and not is_clock_probe_debris(path)
         ]
         kept_set = set(kept)
+        if kept and not prewritten:
+            prewrite_objects(git_dir, work_tree, only=kept_set, expect_bytes=staging_bytes)
         if kept:
             try:
                 added = git(

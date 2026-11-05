@@ -18,7 +18,7 @@ import threading
 import time
 import unicodedata
 import zlib
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, wait
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Mapping, NamedTuple, TypedDict

@@ -82,6 +82,21 @@ def _fmt_elapsed(seconds: float) -> str:
     return f"{seconds:.1f}s"
 
 
+def _status_line(
+    status: str, elapsed: float, growth: int, measure_dir: "Path | None", expect_bytes: int
+) -> str:
+    """The heartbeat line: what is running, for how long, how much it has written."""
+    line = f"still {status} ... {_fmt_elapsed(elapsed)}"
+    if measure_dir is not None and growth > 0:
+        detail = f"{human_bytes(growth)} written to {measure_dir.name}"
+        if expect_bytes > growth:
+            rate = growth / max(elapsed, 1e-9)
+            detail += (f"; up to about {human_bytes(expect_bytes)} expected, at most "
+                       f"{_fmt_elapsed((expect_bytes - growth) / rate)} left")
+        line += f" ({detail})"
+    return line
+
+
 def _kill_tree(proc: "subprocess.Popen[Any]") -> None:
     """Kill *proc* and, where the platform lets us, what it started.
 
@@ -190,14 +205,7 @@ def _run(
         growth = max(0, _dir_size(measure_dir) - baseline) if measure_dir is not None else 0
         if growth > last_seen:
             last_seen, last_progress = growth, now
-        line = f"still {status} ... {_fmt_elapsed(now - start)}"
-        if measure_dir is not None and growth > 0:
-            detail = f"{human_bytes(growth)} written to {measure_dir.name}"
-            if expect_bytes > growth:
-                rate = growth / max(now - start, 1e-9)
-                detail += (f"; up to about {human_bytes(expect_bytes)} expected, at most "
-                           f"{_fmt_elapsed((expect_bytes - growth) / rate)} left")
-            line += f" ({detail})"
+        line = _status_line(status, now - start, growth, measure_dir, expect_bytes)
         sys.stderr.write(line + "\n")
         sys.stderr.flush()
         if limit is not None and now - last_progress >= limit:
@@ -267,14 +275,7 @@ def _run_live(
                 last_seen, last_progress = growth, now
             if status is not None and now >= next_line:
                 next_line = now + STATUS_INTERVAL
-                line = f"still {status} ... {_fmt_elapsed(now - start)}"
-                if measure_dir is not None and growth > 0:
-                    detail = f"{human_bytes(growth)} written to {measure_dir.name}"
-                    if expect_bytes > growth:
-                        rate = growth / max(now - start, 1e-9)
-                        detail += (f"; up to about {human_bytes(expect_bytes)} expected, at most "
-                                   f"{_fmt_elapsed((expect_bytes - growth) / rate)} left")
-                    line += f" ({detail})"
+                line = _status_line(status, now - start, growth, measure_dir, expect_bytes)
                 sys.stderr.write(line + "\n")
                 sys.stderr.flush()
             if limit is not None and now - last_progress >= limit:
