@@ -400,6 +400,95 @@ has passed 256 MiB takes an incremental `repack -d` + prune pair.
 > **Watch the remote's packfile count.** The helper counts only *small* packs (below half of seafile.gcmaxpackmib, default 1 GiB) and warns once their number reaches the threshold (seafile.gcthreshold, default 20). With `seafile.autogc` on (the default), a bounded tail merge consolidates them inline after each qualifying push — large packs are frozen where they stand; with it off, run `git-remote-seafile gc <url>` deliberately. A remote that is never compacted grows in bytes without bound — see the
 > large-files section below for how fast that can be.
 
+### Git's own costs, and the plumbing the staging step uses
+
+**A path list handed to `git add` costs files times paths.** Measured on scratch
+repositories (tiny files, NVMe, git 2.56.0.windows.3) with every file already
+tracked and 20 new ones:
+
+| Files in the repository | `git add` given every path | `git add .` |
+| ---: | ---: | ---: |
+| 5,000 | 0.3 s | 0.07 s |
+| 10,000 | 1.0 s | 0.08 s |
+| 20,000 | 3.9 s | 0.07 s |
+| 40,000 | 17.9 s | 0.09 s |
+| 80,000 | 75.6 s | 0.10 s |
+
+Each doubling costs about four times as much. On a first run, with the objects
+already written, a path list through `add` took 14.1 s for 20,000 files and
+121.5 s for 80,000, against 10.1 s and 43.0 s through `update-index`: 8.6 times
+for four times the files, against 4.3. The real case that exposed it was a vault
+of 222,910 files with about 2,600 new, which spent 22 minutes in staging (an
+earlier 27-minute run was the same). `python tools/measure_pathspec_cost.py`
+repeats the measurement in a temporary directory.
+
+**Why.** Git reads every argument as a pathspec, which may be a glob, carry magic
+or name a directory prefix, and for each file it considers it asks whether any
+pathspec matches; it keeps no lookup for plain paths. `GIT_LITERAL_PATHSPECS=1`,
+which this tool sets, stops the glob reading and not the loop, and the numbers
+above were taken with it set. The cost model is not new: Linus Torvalds'
+[2008 commit](https://rtime.ciirc.cvut.cz/gitweb/git.git/commit/88ea8112b4abca416993e2a3145616cd732771c8)
+describes it as about files times pathspecs, a
+[2022 report](https://lore.kernel.org/git/c5662c60-4a21-be94-8fe0-13c6730292dd@github.com/)
+shows `git add` taking about 1.5 hours on a large sparse-checkout pattern list,
+and [Elijah Newren's reply](https://public-inbox.org/git/CABPp-BFRHjF7+9T8dGG=ixsezksZUNU7pm29MG2kcLEYwE06Og@mail.gmail.com/)
+calls that matching fundamentally files times patterns. **Provenance:** those
+pages could not be fetched when this was written (a 403 and a 502), so they are
+cited from search-result summaries, and the claim that `git add` loops over its
+pathspecs is inferred from the measured scaling, not from git's source. The
+sparse-checkout report is a different code path with the same cost shape. Nothing
+found shows a fix for plain literal paths; it was still quadratic on 2.56.
+
+**What the tool does about it** (`69_prewrite.py`, `70_stage.py`):
+
+1. A run that leaves files out (an `--exclude`, and every Windows run, because of
+   the junction check) used to list every kept path. It now lists only the new and
+   modified ones (`ls-files -o -m` after an `update-index --refresh`, so a file
+   that was only touched is brought up to date and not read again). An unchanged
+   tracked file needs nothing from `add`.
+2. A list of 10,000 paths or more (a first run, a bulk change) goes to
+   `git update-index --add --remove --replace -z --stdin`, which looks each path
+   up by name.
+3. A file that changes while git reads it (`short read while indexing`,
+   `unstable object source data`) is tried again twice, two seconds apart.
+
+**`add` and `update-index` are not interchangeable.** Each row was found by a
+test, not by reading documentation:
+
+| Case | `add -A` with a path list | `update-index --add` | What the tool does |
+| :--- | :--- | :--- | :--- |
+| A path that is a directory on disk (a tracked file replaced by one) | copes: a directory holding a `.git` becomes a gitlink that the embedded-repository step turns into files; an empty directory (or one of excluded files) drops the old entry | refuses (`is a directory`); skipping it **loses the files of a nested repository** and keeps the old file for an empty directory | directories go to `add`, in a command of their own that runs first |
+| A listed path that no longer exists | stops, rc 128, nothing staged (`pathspec ... did not match any files`) | stops, rc 128, nothing staged (`does not exist and --remove not passed`) | paths are checked just before staging; a gone one is dropped from the index and the list, and `update-index` is given `--remove` for the gap after the check |
+| An empty list | stops (`empty string is not a valid pathspec`) | reads nothing and succeeds | no command is run |
+| A file where a directory was, or the reverse | replaces the entries it displaces | does so only with `--replace` | `--replace` |
+| A deleted file | not staged through a pathspec | only with `--remove` | the stale-entry step after staging drops it |
+| Hashing, line-ending and attribute filters, recorded mode and stat data | the source's `.gitattributes` applies | the same | identical blobs and modes in every comparison below |
+
+**What was compared.** The two routes were run through the same two-run history
+and their recorded trees (modes included) compared, on Windows and in Debian:
+files, symlinks and directories replacing each other, a nested repository coming
+and going, deletions, a `.git` *file* in a directory (submodule style), paths over
+300 characters, names with spaces, unicode, a leading dash, brackets, pathspec
+magic (`:(exclude)x`, `!bang`), newlines, quotes, bytes that are not UTF-8, a fifo,
+a socket, an unreadable file (both fail the same way), `eol`/`-text`/`ident`
+attributes, junctions and a directory that changes case (Windows), and hundreds of
+new files at once. No difference remains; the first version had three, which
+`ExoticReplacementTests` and `SpecialFileAndNameTests` now hold.
+
+**Not covered:** files over 4 GiB (they are payload, not git); a full disk or a
+killed run during staging (git writes its index through a lock file and renames
+it, for either command, but neither case was tried); a sharing violation from
+antivirus on Windows (expected to surface as an error from either command);
+macOS Unicode-normalised names (no Mac in reach, ROADMAP S20); clock skew and
+coarse timestamps on FAT or network shares (the stat cache, below).
+
+**One blind spot both routes share, and always had.** A file whose bytes change
+while its size and modification time are put back is not seen: git trusts its stat
+cache. `--rebuild-index` is the remedy.
+
+**Upstream.** This has not been reported to the Git project; it is a known cost
+rather than a defect, and ROADMAP W5 holds a draft decision.
+
 ## 6. Several machines, one vault
 
 A vault can be shared. Each machine fetches the remote tip **before** building,

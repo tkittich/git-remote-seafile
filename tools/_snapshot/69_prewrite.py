@@ -135,9 +135,9 @@ def paths_to_stage(git_dir: Path, work_tree: Path, kept: list[str]) -> list[str]
 
 
 #: From this many paths the list goes to ``update-index`` instead of ``add``.  Both
-#: hash the same bytes, apply the same filters and record the same stat data (they
-#: share ``index_path``), but ``add`` matches every listed path against the index and
-#: ``update-index --stdin`` does not.  With the objects already written, a first run
+#: gave the same blobs, modes and trees in every comparison (``ExoticReplacementTests``,
+#: ``SpecialFileAndNameTests``), but ``add`` matches every listed path against the
+#: index and ``update-index --stdin`` does not.  With the objects already written, a first run
 #: on scratch trees took 14.1 s with ``add`` and 10.1 s with ``update-index`` for
 #: 20,000 files, and 121.5 s against 43.0 s for 80,000 (identical trees); the
 #: first grows faster than the file count, the second with it.
