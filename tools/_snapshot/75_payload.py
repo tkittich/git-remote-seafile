@@ -138,9 +138,10 @@ class _HashingFile:
     ``complete`` says whether every byte passed through.
     """
 
-    def __init__(self, fh: Any, size: int) -> None:
+    def __init__(self, fh: Any, size: int, meter: "_ByteMeter | None" = None) -> None:
         self._fh = fh
         self._size = size
+        self._meter = meter
         self._hash = hashlib.sha256()
         self._hashed = 0
         #: True once any byte was read a second time (a retried chunk).  The
@@ -150,6 +151,8 @@ class _HashingFile:
     def read(self, size: int = -1) -> bytes:
         at = self._fh.tell()
         data = self._fh.read(size)
+        if data and self._meter is not None:
+            self._meter.add(len(data))
         if data and at < self._hashed:
             self.rewound = True
         if data and at == self._hashed:
@@ -392,17 +395,21 @@ def _progress_line(done: int, total: int, elapsed: float, verb: str = "uploaded"
 
 def _upload_all(
     client: Any, rid: str, server_url: str | None, base: str, source: Path,
-    todo: dict[str, dict[str, Any]], jobs: int, skip_changing: bool = False,
+    todo: dict[str, dict[str, Any]], jobs: int | None, skip_changing: bool = False,
 ) -> list[str]:
     """Upload each object in *todo* (``sha -> manifest entry``), *jobs* at once.
+
+    ``jobs=None`` (nothing typed) searches for the number the link can use: it
+    starts at 3, the old fixed default, and climbs while the aggregate rate
+    grows (:func:`run_climbing`).  A typed number is used exactly, as before.
 
     Returns the paths left out because they changed (always empty unless
     *skip_changing*, which turns "a file changed" from an error into a list the
     caller drops from the snapshot; a failed upload is still an error).
 
-    Largest first.  Measured on the real server: one upload runs at ~32 MiB/s and
-    three at once reach ~53 MiB/s in aggregate, so a small pool helps and a large
-    one does not.  Directories are created up front in this thread; each worker
+    Largest first.  Measured on the real server (2026-11-05, 32 MiB files): 1
+    writer 27 MiB/s, 2 about 40, 4 about 45, 8 about 62, 12 about 65 -- a shelf at
+    3-4 and a rise after it, which is why the search has patience.  Directories are created up front in this thread; each worker
     thread then uses a client of its own (a ``requests`` session is not meant to
     be shared).  The first *server* failure stops the queue and is raised once the
     running uploads have finished -- the next run resumes from what landed.  A file
@@ -432,22 +439,27 @@ def _upload_all(
     uploaded = [0]
     started = time.monotonic()
     last_pulse = [started]
+    meter = _ByteMeter()
+    seen: set[str] = set()
+    adaptive = jobs is None
 
-    def one(sha: str) -> None:
+    def one(sha: str) -> "tuple[str, str] | None":
         if failed:
-            return
+            return None
         item = todo[sha]
         rel, size = item["path"], item["size"]
         if not _unchanged(source, rel, size, item["mtime_ns"]):
             changed.append(f"{rel}: changed since it was hashed; run again")
             changed_paths.append(rel)
-            return
+            return None
         with lock:
-            counter[0] += 1
-            print(
-                f"uploading [{counter[0]}/{len(order)}] {rel} ({human_bytes(size)})",
-                flush=True,
-            )
+            if sha not in seen:      # a throttled retry is the same object, not a new one
+                seen.add(sha)
+                counter[0] += 1
+                print(
+                    f"uploading [{counter[0]}/{len(order)}] {rel} ({human_bytes(size)})",
+                    flush=True,
+                )
         directory = f"{base}/{object_dir(sha)}"
         temp = f"{sha}{_PART_SUFFIX}{os.urandom(4).hex()}"
         try:
@@ -459,13 +471,13 @@ def _upload_all(
             except OSError as exc:
                 changed.append(f"{rel}: cannot be read any more ({exc}); run again")
                 changed_paths.append(rel)
-                return
+                return None
             with fh:
-                reader = _HashingFile(fh, size)
+                reader = _HashingFile(fh, size, meter)
                 ok = worker.upload_file(rid, directory, temp, reader)
             if not ok:
                 failed.append(f"{rel}: the server did not accept the upload")
-                return
+                return None
             # A retried chunk means the digest describes the first attempt, not the
             # bytes the server kept: only a fresh read of the whole file, equal to the
             # name and with an unchanged stat, vouches for the object then.
@@ -478,7 +490,7 @@ def _upload_all(
                 worker.delete_entry(rid, f"{directory}/{temp}")
                 changed.append(f"{rel}: changed while it was being uploaded; run again")
                 changed_paths.append(rel)
-                return
+                return None
             if not _commit_object(worker, rid, directory, temp, sha, size):
                 worker.delete_entry(rid, f"{directory}/{temp}")
                 failed.append(f"{rel}: the server would not name the object")
@@ -492,10 +504,26 @@ def _upload_all(
         except OSError as exc:
             failed.append(f"{rel}: {exc}")
         except Exception as exc:  # SeafileAPIError, requests errors: reported once, below
-            failed.append(f"{rel}: {type(exc).__name__}: {exc}")
+            text = f"{rel}: {type(exc).__name__}: {exc}"
+            if adaptive and throttle_status(text):
+                try:     # the half-sent temporary; best effort, the next run sweeps it anyway
+                    cleaner = getattr(local, "client", None)
+                    if cleaner is not None:
+                        cleaner.delete_entry(rid, f"{directory}/{temp}")
+                except Exception:
+                    pass
+                return ("throttled", text)
+            failed.append(text)
+        return None
 
-    with ThreadPoolExecutor(max_workers=max(1, jobs)) as pool:
-        list(pool.map(one, order))
+    if jobs is None:
+        print(f"payload: uploading {len(order)} object(s) with up to {_UPLOAD_MAX_JOBS} parallel "
+              f"uploads, found by measuring (starting at {_UPLOAD_START_JOBS})", flush=True)
+        run_climbing(order, one, ceiling=_UPLOAD_MAX_JOBS, meter=meter,
+                     exhausted=lambda _sha, msg: failed.append(msg))
+    else:
+        with ThreadPoolExecutor(max_workers=max(1, jobs)) as pool:
+            list(pool.map(one, order))
     if failed:
         more = (f"; {len(changed)} file(s) also changed while the run was in progress"
                 if changed else "")
@@ -519,7 +547,7 @@ def verify_payload_before_push(
     remote_tip: str | None,
     tip: str,
     manifest: dict[str, Any] | None,
-    jobs: int = 3,
+    jobs: int | None = None,
 ) -> None:
     """Make sure every object a commit about to be pushed names is on the server.
 
@@ -596,7 +624,7 @@ def verify_payload_after_push(
     source: Path,
     remote: str,
     manifest: dict[str, Any] | None,
-    jobs: int = 3,
+    jobs: int | None = None,
 ) -> None:
     """Look once more, after the push, for the objects the new manifest names.
 

@@ -1909,6 +1909,228 @@ def commit_tree(
     return git(git_dir, work_tree, args, cwd=work_tree).stdout.strip()
 
 
+#: A step up in parallelism is kept only if throughput grew by this factor over
+#: the best level so far.
+_RAMP_GAIN = 1.15
+
+#: How many levels in a row may fail to beat the best before the search stops.
+#: One was not enough on the real server: 2 -> 4 writers gained 3-15% (inside
+#: the run-to-run noise) and 8 then gained 30% more, so a search that gave up
+#: at the first flat step would have stopped at 2 with 50% of the link unused.
+_RAMP_PATIENCE = 2
+
+#: Parallel uploads: the old fixed default is now the first guess, so a short
+#: upload is no slower than it was, and the ceiling is what 12 writers showed
+#: still helping a little (63-69 MiB/s against 61-63 at 8).
+_UPLOAD_START_JOBS = 3
+_UPLOAD_MAX_JOBS = 16
+
+#: A window ignores this long after a level change (slots filling, TCP slow
+#: start), then reads throughput over this long.  Bytes over time, not files
+#: completed: the queue is largest-first, and three completions of a 4 GiB file
+#: would take an hour to arrive.
+_CLIMB_SETTLE_SECONDS = 4.0
+_CLIMB_WINDOW_SECONDS = 10.0
+
+#: What a server says when it is being asked for too much at once.
+_THROTTLE_STATUS = re.compile(r"HTTP (429|502|503|504)\b")
+
+#: After a push-back the queue pauses this long, and further push-backs inside
+#: this long are the same episode (several requests were in flight together).
+_THROTTLE_PAUSE_SECONDS = 3.0
+_THROTTLE_EPISODE_SECONDS = 10.0
+
+
+class _Climber:
+    """Decides how much parallelism a machine, a disk or a link can use.
+
+    Fed one reading per level (``result``), it doubles the level while the
+    reading beats the best so far by ``_RAMP_GAIN``, stops after
+    ``_RAMP_PATIENCE`` levels in a row that did not, and settles on the best
+    level seen -- never on the last one tried.  Nothing here reads a clock or a
+    disk: the driver supplies the readings, so a test can describe any machine.
+    """
+
+    def __init__(self, ceiling: int, start: int = 1, forced: bool = False) -> None:
+        self.ceiling = max(1, ceiling)
+        self.level = min(max(1, start), self.ceiling)
+        if forced:
+            self.level = self.ceiling
+        self.settled = forced
+        self.gave_up = False
+        self.best_level = self.level
+        self.best_rate = 0.0
+        self.rates: dict[int, float] = {}
+        self._misses = 0
+        self._throttled_at = -1e9
+
+    def result(self, rate: float) -> None:
+        """The throughput measured at the current level."""
+        self.rates[self.level] = rate
+        if rate >= self.best_rate * _RAMP_GAIN:
+            self.best_level, self.best_rate = self.level, rate
+            self._misses = 0
+        else:
+            self._misses += 1
+        if self._misses >= _RAMP_PATIENCE or self.level >= self.ceiling:
+            self.level = self.best_level
+            self.settled = True
+            self.gave_up = self.best_level <= 1
+        else:
+            self.level = min(self.level * 2, self.ceiling)
+
+    def throttled(self, now: float) -> bool:
+        """The server pushed back at this level: halve it, stop searching.
+
+        Several requests in flight answer together, so a second signal within a
+        few seconds is the same episode and changes nothing.  Returns whether
+        the level changed.
+        """
+        if now - self._throttled_at < _THROTTLE_EPISODE_SECONDS or self.level <= 1:
+            return False
+        self._throttled_at = now
+        self.ceiling = max(1, self.level // 2)
+        self.level = self.best_level = self.ceiling
+        self.settled = True
+        return True
+
+
+class _RateWindow:
+    """Turns ``(time, bytes so far)`` samples into one throughput reading per level."""
+
+    def __init__(self) -> None:
+        self.reset(0.0)
+
+    def reset(self, now: float) -> None:
+        self._since = now
+        self._armed_at: "float | None" = None
+        self._armed_total = 0
+
+    def sample(self, now: float, total: int, saturated: bool) -> "float | None":
+        """Bytes per second once a full window has run, else ``None``.
+
+        ``saturated`` is whether every slot is busy and more work is queued; a
+        reading taken while slots sit empty (the tail of the queue) says
+        nothing about the level, so such a window starts over.
+        """
+        if not saturated:
+            self.reset(now)
+            return None
+        if self._armed_at is None:
+            if now - self._since >= _CLIMB_SETTLE_SECONDS:
+                self._armed_at, self._armed_total = now, total
+            return None
+        if now - self._armed_at >= _CLIMB_WINDOW_SECONDS:
+            return (total - self._armed_total) / (now - self._armed_at)
+        return None
+
+
+class _ByteMeter:
+    """A running total of bytes handed to the network, shared by every worker."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self.total = 0
+
+    def add(self, nbytes: int) -> None:
+        with self._lock:
+            self.total += nbytes
+
+
+def throttle_status(text: str) -> "str | None":
+    """``"502"`` (or 429, 503, 504) when an error message says the server pushed back."""
+    found = _THROTTLE_STATUS.search(text)
+    return found.group(1) if found else None
+
+
+def climb_line(climber: _Climber, noun: str) -> str:
+    """What the search found, in one line (the run's record of what it chose)."""
+    by_count = ", ".join(f"{n}: {r / 1048576:.0f}" for n, r in climber.rates.items())
+    head = (f"settled on {climber.level}" if climber.settled
+            else f"finished while still measuring, at {climber.level}")
+    return f"payload: {head} parallel {noun}(s) (MiB/s by count: {by_count})"
+
+
+def run_climbing(
+    items: "list[str]",
+    work: "Callable[[str], tuple[str, str] | None]",
+    *,
+    ceiling: int,
+    meter: _ByteMeter,
+    exhausted: "Callable[[str, str], None]",
+    start: int = _UPLOAD_START_JOBS,
+    noun: str = "upload",
+    clock: "Callable[[], float]" = time.monotonic,
+    poll: float = 1.0,
+) -> _Climber:
+    """Run ``work(item)`` over *items*, with a parallelism that is searched for.
+
+    ``work`` returns ``None`` when it is done with the item (success or a
+    failure it recorded itself) or ``("throttled", message)`` when the server
+    pushed back.  A throttled item goes to the front of the queue again, at most
+    twice, and the level is halved for the rest of the run (when it was above
+    one); once the tries are spent ``exhausted(item, message)`` is called.
+    One line says what was found, so a slow run can be read afterwards.
+    """
+    climber = _Climber(ceiling, start)
+    window = _RateWindow()
+    window.reset(clock())
+    queue = list(reversed(items))      # pop() from the end = the front of the order
+    running: "dict[Any, str]" = {}
+    tries: dict[str, int] = {}
+    resume_at = 0.0
+    said = False
+    pool = ThreadPoolExecutor(max_workers=climber.ceiling, thread_name_prefix=f"grs-{noun}")
+    try:
+        while queue or running:
+            now = clock()
+            while queue and len(running) < climber.level and now >= resume_at:
+                item = queue.pop()
+                running[pool.submit(work, item)] = item
+            # Judged here, with the slots just filled: after reaping, a finished
+            # upload leaves its slot empty for an instant, and judging then made
+            # every completion look like an idle tail and reset the window (the
+            # first real run never took a reading).
+            saturated = bool(queue) and len(running) >= climber.level
+            if running:
+                done, _ = wait(set(running), timeout=poll, return_when="FIRST_COMPLETED")
+            else:
+                time.sleep(min(poll, max(0.01, resume_at - now)))
+                done = set()
+            now = clock()
+            for future in done:
+                item = running.pop(future)
+                outcome = future.result()
+                if outcome is None:
+                    continue
+                if tries.get(item, 0) < 2:
+                    tries[item] = tries.get(item, 0) + 1
+                    queue.append(item)
+                    if climber.throttled(now):
+                        print(
+                            f"Note: the server pushed back ({outcome[1][:80]}); "
+                            f"limiting this run to {climber.level} parallel {noun}s",
+                            flush=True,
+                        )
+                        window.reset(now)
+                    resume_at = now + _THROTTLE_PAUSE_SECONDS
+                else:
+                    exhausted(item, outcome[1])
+            if not climber.settled:
+                rate = window.sample(now, meter.total, saturated=saturated)
+                if rate is not None:
+                    climber.result(rate)
+                    window.reset(now)
+                    if climber.settled and not said:
+                        said = True
+                        print(climb_line(climber, noun), flush=True)
+    finally:
+        pool.shutdown(wait=True, cancel_futures=True)
+    if climber.rates and not said:
+        print(climb_line(climber, noun), flush=True)
+    return climber
+
+
 #: Fewer files than this and the serial ``git add`` is quick enough that the
 #: extra processes would only add start-up cost.
 _PREWRITE_MIN_FILES = 2000
@@ -1923,10 +2145,6 @@ _PREWRITE_BATCH_BYTES = 128 * 1024 * 1024
 #: The most writers the ramp may try.  On a 24-core NVMe machine 16 and 24 took
 #: the same time; the disk, not the CPU, is the limit by then.
 _PREWRITE_MAX_WORKERS = 16
-
-#: A step up in writers is kept only if throughput grew by this factor.
-_RAMP_GAIN = 1.15
-
 
 def prewrite_workers() -> "tuple[int, bool]":
     """``(ceiling, forced)``: how many ``git hash-object`` processes may write at once.
@@ -1962,27 +2180,28 @@ class _Ramp:
     files) and nothing was measured on a spinning disk, where parallel writers
     and readers can only make the head seek -- and the files are then read a
     second time by ``git add``.  So the count is found on the disk in front of
-    us.  It starts at one writer, takes the files-per-second of a window of
-    ``2 * level + 1`` batches, and doubles only while the rate grew by
-    ``_RAMP_GAIN``.  The first level that does not pay falls back to the best
-    one so far; if that is one writer, parallelism buys nothing here and the
+    us, by :class:`_Climber`: one writer first, then doubling while the rate
+    grows.  If no level beats one writer, parallelism buys nothing here and the
     step stops (``gave_up``), leaving the rest to ``git add`` -- the price of
-    finding out was a few hundred files read twice.
+    finding out was about ten thousand files read twice.
 
-    Only batches *started* inside a window count towards it, so work left over
-    from the previous level cannot flatter the new one.  All times are passed
-    in, so a test can feed it any disk it can describe.
+    This driver takes a reading from a window of ``2 * level + 1`` finished
+    batches (files per second between the first and last completion).  Only
+    batches *started* inside a window count towards it, so work left over from
+    the previous level cannot flatter the new one.  All times are passed in, so
+    a test can feed it any disk it can describe.
     """
 
     def __init__(self, ceiling: int, forced: bool, now: float) -> None:
-        self.ceiling = max(1, ceiling)
-        self.level = self.ceiling if forced else 1
-        self.settled = forced
-        self.gave_up = False
-        self.best_level = self.level
-        self.best_rate = 0.0
-        self.rates: dict[int, float] = {}
+        self._climber = _Climber(ceiling, 1, forced)
         self._reset(now)
+
+    level = property(lambda self: self._climber.level)
+    ceiling = property(lambda self: self._climber.ceiling)
+    settled = property(lambda self: self._climber.settled)
+    gave_up = property(lambda self: self._climber.gave_up)
+    best_rate = property(lambda self: self._climber.best_rate)
+    rates = property(lambda self: self._climber.rates)
 
     def _reset(self, now: float) -> None:
         self._window_start = now
@@ -2004,19 +2223,8 @@ class _Ramp:
         self._batches += 1
         if self._batches < 2 * self.level + 1:
             return
-        rate = self._files / max(ended - self._first_end, 1e-9)
-        self.rates[self.level] = rate
-        if rate >= self.best_rate * _RAMP_GAIN:
-            self.best_rate, self.best_level = rate, self.level
-            if self.level >= self.ceiling:
-                self.settled = True
-            else:
-                self.level = min(self.level * 2, self.ceiling)
-                self._reset(ended)
-        else:
-            self.level = self.best_level
-            self.settled = True
-            self.gave_up = self.best_level == 1
+        self._climber.result(self._files / max(ended - self._first_end, 1e-9))
+        self._reset(ended)
 
 
 def _prewrite_candidates(
@@ -2155,11 +2363,10 @@ def prewrite_objects(
         raise
     pool.shutdown()
     if ramp.gave_up:
-        one, two = ramp.rates.get(1, 0.0), ramp.rates.get(2, 0.0)
+        tried = ", ".join(f"{n}: {r:.0f}" for n, r in ramp.rates.items())
         print(
-            f"staging: parallel writing did not help on this disk ({one:.0f} files/s with one "
-            f"process, {two:.0f} with two); the remaining {len(files) - written} file(s) are "
-            "left to git add",
+            f"staging: parallel writing did not help on this disk (files/s by process count: "
+            f"{tried}); the remaining {len(files) - written} file(s) are left to git add",
             file=sys.stderr,
         )
     elif not forced:
@@ -4404,9 +4611,10 @@ class _HashingFile:
     ``complete`` says whether every byte passed through.
     """
 
-    def __init__(self, fh: Any, size: int) -> None:
+    def __init__(self, fh: Any, size: int, meter: "_ByteMeter | None" = None) -> None:
         self._fh = fh
         self._size = size
+        self._meter = meter
         self._hash = hashlib.sha256()
         self._hashed = 0
         #: True once any byte was read a second time (a retried chunk).  The
@@ -4416,6 +4624,8 @@ class _HashingFile:
     def read(self, size: int = -1) -> bytes:
         at = self._fh.tell()
         data = self._fh.read(size)
+        if data and self._meter is not None:
+            self._meter.add(len(data))
         if data and at < self._hashed:
             self.rewound = True
         if data and at == self._hashed:
@@ -4658,17 +4868,21 @@ def _progress_line(done: int, total: int, elapsed: float, verb: str = "uploaded"
 
 def _upload_all(
     client: Any, rid: str, server_url: str | None, base: str, source: Path,
-    todo: dict[str, dict[str, Any]], jobs: int, skip_changing: bool = False,
+    todo: dict[str, dict[str, Any]], jobs: int | None, skip_changing: bool = False,
 ) -> list[str]:
     """Upload each object in *todo* (``sha -> manifest entry``), *jobs* at once.
+
+    ``jobs=None`` (nothing typed) searches for the number the link can use: it
+    starts at 3, the old fixed default, and climbs while the aggregate rate
+    grows (:func:`run_climbing`).  A typed number is used exactly, as before.
 
     Returns the paths left out because they changed (always empty unless
     *skip_changing*, which turns "a file changed" from an error into a list the
     caller drops from the snapshot; a failed upload is still an error).
 
-    Largest first.  Measured on the real server: one upload runs at ~32 MiB/s and
-    three at once reach ~53 MiB/s in aggregate, so a small pool helps and a large
-    one does not.  Directories are created up front in this thread; each worker
+    Largest first.  Measured on the real server (2026-11-05, 32 MiB files): 1
+    writer 27 MiB/s, 2 about 40, 4 about 45, 8 about 62, 12 about 65 -- a shelf at
+    3-4 and a rise after it, which is why the search has patience.  Directories are created up front in this thread; each worker
     thread then uses a client of its own (a ``requests`` session is not meant to
     be shared).  The first *server* failure stops the queue and is raised once the
     running uploads have finished -- the next run resumes from what landed.  A file
@@ -4698,22 +4912,27 @@ def _upload_all(
     uploaded = [0]
     started = time.monotonic()
     last_pulse = [started]
+    meter = _ByteMeter()
+    seen: set[str] = set()
+    adaptive = jobs is None
 
-    def one(sha: str) -> None:
+    def one(sha: str) -> "tuple[str, str] | None":
         if failed:
-            return
+            return None
         item = todo[sha]
         rel, size = item["path"], item["size"]
         if not _unchanged(source, rel, size, item["mtime_ns"]):
             changed.append(f"{rel}: changed since it was hashed; run again")
             changed_paths.append(rel)
-            return
+            return None
         with lock:
-            counter[0] += 1
-            print(
-                f"uploading [{counter[0]}/{len(order)}] {rel} ({human_bytes(size)})",
-                flush=True,
-            )
+            if sha not in seen:      # a throttled retry is the same object, not a new one
+                seen.add(sha)
+                counter[0] += 1
+                print(
+                    f"uploading [{counter[0]}/{len(order)}] {rel} ({human_bytes(size)})",
+                    flush=True,
+                )
         directory = f"{base}/{object_dir(sha)}"
         temp = f"{sha}{_PART_SUFFIX}{os.urandom(4).hex()}"
         try:
@@ -4725,13 +4944,13 @@ def _upload_all(
             except OSError as exc:
                 changed.append(f"{rel}: cannot be read any more ({exc}); run again")
                 changed_paths.append(rel)
-                return
+                return None
             with fh:
-                reader = _HashingFile(fh, size)
+                reader = _HashingFile(fh, size, meter)
                 ok = worker.upload_file(rid, directory, temp, reader)
             if not ok:
                 failed.append(f"{rel}: the server did not accept the upload")
-                return
+                return None
             # A retried chunk means the digest describes the first attempt, not the
             # bytes the server kept: only a fresh read of the whole file, equal to the
             # name and with an unchanged stat, vouches for the object then.
@@ -4744,7 +4963,7 @@ def _upload_all(
                 worker.delete_entry(rid, f"{directory}/{temp}")
                 changed.append(f"{rel}: changed while it was being uploaded; run again")
                 changed_paths.append(rel)
-                return
+                return None
             if not _commit_object(worker, rid, directory, temp, sha, size):
                 worker.delete_entry(rid, f"{directory}/{temp}")
                 failed.append(f"{rel}: the server would not name the object")
@@ -4758,10 +4977,26 @@ def _upload_all(
         except OSError as exc:
             failed.append(f"{rel}: {exc}")
         except Exception as exc:  # SeafileAPIError, requests errors: reported once, below
-            failed.append(f"{rel}: {type(exc).__name__}: {exc}")
+            text = f"{rel}: {type(exc).__name__}: {exc}"
+            if adaptive and throttle_status(text):
+                try:     # the half-sent temporary; best effort, the next run sweeps it anyway
+                    cleaner = getattr(local, "client", None)
+                    if cleaner is not None:
+                        cleaner.delete_entry(rid, f"{directory}/{temp}")
+                except Exception:
+                    pass
+                return ("throttled", text)
+            failed.append(text)
+        return None
 
-    with ThreadPoolExecutor(max_workers=max(1, jobs)) as pool:
-        list(pool.map(one, order))
+    if jobs is None:
+        print(f"payload: uploading {len(order)} object(s) with up to {_UPLOAD_MAX_JOBS} parallel "
+              f"uploads, found by measuring (starting at {_UPLOAD_START_JOBS})", flush=True)
+        run_climbing(order, one, ceiling=_UPLOAD_MAX_JOBS, meter=meter,
+                     exhausted=lambda _sha, msg: failed.append(msg))
+    else:
+        with ThreadPoolExecutor(max_workers=max(1, jobs)) as pool:
+            list(pool.map(one, order))
     if failed:
         more = (f"; {len(changed)} file(s) also changed while the run was in progress"
                 if changed else "")
@@ -4785,7 +5020,7 @@ def verify_payload_before_push(
     remote_tip: str | None,
     tip: str,
     manifest: dict[str, Any] | None,
-    jobs: int = 3,
+    jobs: int | None = None,
 ) -> None:
     """Make sure every object a commit about to be pushed names is on the server.
 
@@ -4862,7 +5097,7 @@ def verify_payload_after_push(
     source: Path,
     remote: str,
     manifest: dict[str, Any] | None,
-    jobs: int = 3,
+    jobs: int | None = None,
 ) -> None:
     """Look once more, after the push, for the objects the new manifest names.
 
@@ -5847,8 +6082,10 @@ def add_payload_jobs_argument(parser: Any) -> None:
         type=int,
         default=None,
         metavar="N",
-        help="payload mode: upload N files at once (default 3; measured on one server: "
-        "1 upload ~32 MiB/s, 3 at once ~53 MiB/s, so more rarely helps)",
+        help="payload mode: upload exactly N files at once (default: found by measuring -- "
+        "starts at 3 and climbs while the aggregate rate grows, up to 16, and backs off if "
+        "the server answers 429/502/503; on one server 1 upload ran ~27 MiB/s and 12 at once "
+        "~65 MiB/s)",
     )
 
 
@@ -6169,7 +6406,7 @@ def publish_payload(
     manifest: dict[str, Any],
     *,
     dry_run: bool,
-    jobs: int = 3,
+    jobs: int | None = None,
     skip_changing: bool = False,
 ) -> tuple[int, int]:
     """Make the server hold every object the manifest names.
@@ -6337,7 +6574,7 @@ def run_payload_step(
     )
     try:
         todo = publish_payload(
-            remote or "", source, manifest, dry_run=dry_run, jobs=jobs or 3,
+            remote or "", source, manifest, dry_run=dry_run, jobs=jobs,
             skip_changing=skip_changing,
         )
     finally:
@@ -9837,7 +10074,7 @@ def run_command(args: argparse.Namespace) -> int:
                 # thing to push, and `base` is where it points.
                 verify_payload_before_push(
                     git_dir, source, remote, remote_tip, commit or base or "",
-                    manifest, jobs=args.payload_jobs or 3,
+                    manifest, jobs=args.payload_jobs,
                 )
                 push_snapshot(
                     git_dir,
@@ -9853,7 +10090,7 @@ def run_command(args: argparse.Namespace) -> int:
                 if manifest is not None:
                     try:
                         verify_payload_after_push(
-                            source, remote, manifest, jobs=args.payload_jobs or 3,
+                            source, remote, manifest, jobs=args.payload_jobs,
                         )
                     except SnapshotError as exc:
                         # The push has landed; this check looks *behind* it, so

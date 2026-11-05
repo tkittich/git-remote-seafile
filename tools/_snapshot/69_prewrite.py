@@ -15,10 +15,6 @@ _PREWRITE_BATCH_BYTES = 128 * 1024 * 1024
 #: the same time; the disk, not the CPU, is the limit by then.
 _PREWRITE_MAX_WORKERS = 16
 
-#: A step up in writers is kept only if throughput grew by this factor.
-_RAMP_GAIN = 1.15
-
-
 def prewrite_workers() -> "tuple[int, bool]":
     """``(ceiling, forced)``: how many ``git hash-object`` processes may write at once.
 
@@ -53,27 +49,28 @@ class _Ramp:
     files) and nothing was measured on a spinning disk, where parallel writers
     and readers can only make the head seek -- and the files are then read a
     second time by ``git add``.  So the count is found on the disk in front of
-    us.  It starts at one writer, takes the files-per-second of a window of
-    ``2 * level + 1`` batches, and doubles only while the rate grew by
-    ``_RAMP_GAIN``.  The first level that does not pay falls back to the best
-    one so far; if that is one writer, parallelism buys nothing here and the
+    us, by :class:`_Climber`: one writer first, then doubling while the rate
+    grows.  If no level beats one writer, parallelism buys nothing here and the
     step stops (``gave_up``), leaving the rest to ``git add`` -- the price of
-    finding out was a few hundred files read twice.
+    finding out was about ten thousand files read twice.
 
-    Only batches *started* inside a window count towards it, so work left over
-    from the previous level cannot flatter the new one.  All times are passed
-    in, so a test can feed it any disk it can describe.
+    This driver takes a reading from a window of ``2 * level + 1`` finished
+    batches (files per second between the first and last completion).  Only
+    batches *started* inside a window count towards it, so work left over from
+    the previous level cannot flatter the new one.  All times are passed in, so
+    a test can feed it any disk it can describe.
     """
 
     def __init__(self, ceiling: int, forced: bool, now: float) -> None:
-        self.ceiling = max(1, ceiling)
-        self.level = self.ceiling if forced else 1
-        self.settled = forced
-        self.gave_up = False
-        self.best_level = self.level
-        self.best_rate = 0.0
-        self.rates: dict[int, float] = {}
+        self._climber = _Climber(ceiling, 1, forced)
         self._reset(now)
+
+    level = property(lambda self: self._climber.level)
+    ceiling = property(lambda self: self._climber.ceiling)
+    settled = property(lambda self: self._climber.settled)
+    gave_up = property(lambda self: self._climber.gave_up)
+    best_rate = property(lambda self: self._climber.best_rate)
+    rates = property(lambda self: self._climber.rates)
 
     def _reset(self, now: float) -> None:
         self._window_start = now
@@ -95,19 +92,8 @@ class _Ramp:
         self._batches += 1
         if self._batches < 2 * self.level + 1:
             return
-        rate = self._files / max(ended - self._first_end, 1e-9)
-        self.rates[self.level] = rate
-        if rate >= self.best_rate * _RAMP_GAIN:
-            self.best_rate, self.best_level = rate, self.level
-            if self.level >= self.ceiling:
-                self.settled = True
-            else:
-                self.level = min(self.level * 2, self.ceiling)
-                self._reset(ended)
-        else:
-            self.level = self.best_level
-            self.settled = True
-            self.gave_up = self.best_level == 1
+        self._climber.result(self._files / max(ended - self._first_end, 1e-9))
+        self._reset(ended)
 
 
 def _prewrite_candidates(
@@ -246,11 +232,10 @@ def prewrite_objects(
         raise
     pool.shutdown()
     if ramp.gave_up:
-        one, two = ramp.rates.get(1, 0.0), ramp.rates.get(2, 0.0)
+        tried = ", ".join(f"{n}: {r:.0f}" for n, r in ramp.rates.items())
         print(
-            f"staging: parallel writing did not help on this disk ({one:.0f} files/s with one "
-            f"process, {two:.0f} with two); the remaining {len(files) - written} file(s) are "
-            "left to git add",
+            f"staging: parallel writing did not help on this disk (files/s by process count: "
+            f"{tried}); the remaining {len(files) - written} file(s) are left to git add",
             file=sys.stderr,
         )
     elif not forced:

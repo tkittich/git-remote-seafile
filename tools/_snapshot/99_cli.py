@@ -621,7 +621,7 @@ def run_command(args: argparse.Namespace) -> int:
                 # thing to push, and `base` is where it points.
                 verify_payload_before_push(
                     git_dir, source, remote, remote_tip, commit or base or "",
-                    manifest, jobs=args.payload_jobs or 3,
+                    manifest, jobs=args.payload_jobs,
                 )
                 push_snapshot(
                     git_dir,
@@ -637,7 +637,7 @@ def run_command(args: argparse.Namespace) -> int:
                 if manifest is not None:
                     try:
                         verify_payload_after_push(
-                            source, remote, manifest, jobs=args.payload_jobs or 3,
+                            source, remote, manifest, jobs=args.payload_jobs,
                         )
                     except SnapshotError as exc:
                         # The push has landed; this check looks *behind* it, so

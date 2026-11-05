@@ -2773,7 +2773,8 @@ class StagingRampTests(unittest.TestCase):
         ramp, submitted = self._simulate(lambda n: 150.0 if n == 1 else 135.0)
         self.assertTrue(ramp.gave_up)
         self.assertEqual(ramp.level, 1)
-        self.assertLess(submitted, 10, "a disk that cannot use writers kept being fed")
+        # Patience costs three levels' windows (1, 2, 4 writers), then it stops.
+        self.assertLess(submitted, 30, "a disk that cannot use writers kept being fed")
 
     def test_a_barely_better_disk_is_not_worth_the_second_read(self):
         ramp, _ = self._simulate(lambda n: 150.0 * (1 + 0.05 * (n - 1)))

@@ -100,8 +100,10 @@ def add_payload_jobs_argument(parser: Any) -> None:
         type=int,
         default=None,
         metavar="N",
-        help="payload mode: upload N files at once (default 3; measured on one server: "
-        "1 upload ~32 MiB/s, 3 at once ~53 MiB/s, so more rarely helps)",
+        help="payload mode: upload exactly N files at once (default: found by measuring -- "
+        "starts at 3 and climbs while the aggregate rate grows, up to 16, and backs off if "
+        "the server answers 429/502/503; on one server 1 upload ran ~27 MiB/s and 12 at once "
+        "~65 MiB/s)",
     )
 
 
@@ -422,7 +424,7 @@ def publish_payload(
     manifest: dict[str, Any],
     *,
     dry_run: bool,
-    jobs: int = 3,
+    jobs: int | None = None,
     skip_changing: bool = False,
 ) -> tuple[int, int]:
     """Make the server hold every object the manifest names.
@@ -590,7 +592,7 @@ def run_payload_step(
     )
     try:
         todo = publish_payload(
-            remote or "", source, manifest, dry_run=dry_run, jobs=jobs or 3,
+            remote or "", source, manifest, dry_run=dry_run, jobs=jobs,
             skip_changing=skip_changing,
         )
     finally:
