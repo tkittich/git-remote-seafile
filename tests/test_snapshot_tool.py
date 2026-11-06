@@ -3316,6 +3316,19 @@ class LongListStagingTests(_SnapshotFixture):
         self.assertIn("f04.txt changed while git was reading it", err)
 
 
+def _holds_non_utf8_names() -> bool:
+    """Can this filesystem hold a name that is not UTF-8?  NTFS cannot and APFS refuses (EILSEQ)."""
+    probe = pathlib.Path(tempfile.mkdtemp(prefix="grs-name-probe-"))
+    try:
+        with open(os.path.join(os.fsencode(probe), b"bad_" + bytes([255]) + b".txt"), "wb") as handle:
+            handle.write(b"x")
+        return True
+    except (OSError, ValueError):
+        return False
+    finally:
+        remove_tree(probe)
+
+
 def _can_symlink() -> bool:
     probe = pathlib.Path(tempfile.mkdtemp(prefix="grs-symlink-probe-"))
     try:
@@ -3506,6 +3519,12 @@ class SpecialFileAndNameTests(_RouteComparison):
             os.utime(code / "f2.txt", (1_000_000_000, 1_000_000_000))
 
         def same_stamp_other_bytes(code):
+            # git compares timestamps in whole seconds (Debian's git has no nanosecond
+            # support), so an edit in the same second as the run before it, with the old
+            # size and mtime put back, is invisible to git -- but only sometimes, and which
+            # route saw it was a coin toss that failed 2 of 15 runs (and 3 CI legs).  Wait
+            # out the second: the comparison is then about the routes, deterministically.
+            time.sleep(1.1)
             (code / "f2.txt").write_bytes(b"FILE 2\n" * 5)
             os.utime(code / "f2.txt", (1_000_000_000, 1_000_000_000))
 
@@ -3543,10 +3562,11 @@ class SpecialFileAndNameTests(_RouteComparison):
                 finally:
                     sock.close()
 
+            if _holds_non_utf8_names():          # APFS refuses one: the macOS CI legs errored
+                scenarios["a name that is not UTF-8"] = (nothing, bad_utf8)
             scenarios.update({
                 "a fifo": (nothing, lambda c: os.mkfifo(c / "pipe")),
                 "a unix socket": (nothing, socket_file),
-                "a name that is not UTF-8": (nothing, bad_utf8),
                 "names with pathspec magic that only POSIX allows": (
                     nothing, lambda c: [put(c, n) for n in (":(exclude)x.txt", ":!y.txt", ":/top.txt", "a:b.txt")]),
             })
@@ -4605,7 +4625,7 @@ class OddNameAndLockFailureTests(_SnapshotFixture):
             sorted(snap.verify_restore(repo, "HEAD")), sorted(['"quoted.txt', "two\nlines.txt"])
         )
 
-    @unittest.skipIf(os.name == "nt", "NTFS cannot hold a non-UTF-8 name")
+    @unittest.skipUnless(_holds_non_utf8_names(), "this filesystem cannot hold a non-UTF-8 name")
     def test_a_non_utf8_name_survives_an_exclude_run(self):
         raw = os.fsencode(self.code) + b"/bad_\xff_name.txt"
         try:
