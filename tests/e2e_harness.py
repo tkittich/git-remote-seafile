@@ -190,6 +190,14 @@ class _Handler(BaseHTTPRequestHandler):
                 return self._send(f["raw"], b"injected failure")
             if f.get("file_404_on") and f["file_404_on"] in p:
                 return self._send(404, b"injected failure")
+            # The file host alone: the API has just given a link for the file (it exists,
+            # and the listing names it), and then the link answers 404 -- one file whose
+            # blocks the file server cannot find.  `file_404_on` fails the API as well,
+            # which reads as a genuinely missing file and could not show this.
+            if f.get("raw_404_on") and p.endswith(f["raw_404_on"]):
+                return self._send(404, b"injected failure")
+            if f.get("raw_empty_on") and p.endswith(f["raw_empty_on"]):
+                return self._send(200, b"", "application/octet-stream")
             if f.get("file_500_on") and f["file_500_on"] in p:
                 return self._send(500, b"injected failure")
             # Fail only the pack download, so the ref listing still succeeds.

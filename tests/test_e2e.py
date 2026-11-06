@@ -661,6 +661,31 @@ class TestAutoGcDoesNotDeadlock(E2ETestCase):
         self.assertIn("c2", run_git(["log", "--oneline"], dst, self.env).stdout)
 
 
+class TestAListedRefThatCannotBeReadIsNotOverwritten(E2ETestCase):
+    """Review 4f1cdd4 (opus-5.5 C1): a ref the listing names but the file host will not
+    serve (a 404 for that one file) or serves empty read as "not there", so a push of
+    unrelated history skipped the ancestry check and overwrote the branch as
+    ``[new branch]``.  The push must be refused and the remote ref left alone."""
+
+    def test_a_push_over_an_unreadable_listed_ref_is_refused(self):
+        for fault in ("raw_404_on", "raw_empty_on"):
+            with self.subTest(fault=fault):
+                self.stub.reset()
+                name = f"unreadable_{fault}"
+                a = init_repo(self.work / f"src_{name}_a", self.env)
+                commit_file(a, "a.txt", "A\n", "A", self.env)
+                run_git(["push", self.url(name), "main"], a, self.env)
+                key = f"/{name}/refs/heads/main"
+                before = self.stub.files[REPO_ID][key]
+                b = init_repo(self.work / f"src_{name}_b", self.env)
+                commit_file(b, "b.txt", "B\n", "unrelated history", self.env)
+                self.stub.faults[fault] = "/refs/heads/main"
+                proc = run_git(["push", self.url(name), "main"], b, self.env, check=False)
+                self.assertNotEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+                self.assertIn("lists this ref but its content could not be read", proc.stderr)
+                self.assertEqual(self.stub.files[REPO_ID][key], before, "the ref was overwritten")
+
+
 class TestForcePushOverDivergedHistory(E2ETestCase):
     """A force-push must work when the remote tip is unknown locally.
 

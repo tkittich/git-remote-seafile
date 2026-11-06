@@ -599,6 +599,20 @@ class RemoteHelper:
             self._refs_cache[dst] = remote_sha
         else:
             self._refs_cache.pop(dst, None)
+            # "Not there" decides that no ancestry check is needed, so it has to be
+            # true.  A ref the file host would not serve (a 404 for that one file after
+            # the API gave a link) or whose body is empty read the same as a missing
+            # one, and a push of unrelated history overwrote the branch as
+            # "[new branch]" (review 4f1cdd4, opus-5.5 C1).  The listing tells them
+            # apart; it is asked only when the ref looks absent and the push is not a
+            # plain --force, which overwrites whatever is there by request.  A lease
+            # of "must not exist" is asked too: absence is exactly its condition.
+            if not (force and dst not in self.cas_expect) and self._listed_as_file(dst):
+                return (
+                    "the remote lists this ref but its content could not be read, so it "
+                    f"cannot be checked before it is overwritten; run 'git-remote-seafile "
+                    f"test {mask_url(self.raw_url)}', and fetch once it reads"
+                )
         # The list that told git the remote's object format was read before the
         # lock; a peer of the other format may have pushed since (the first push
         # to an empty remote assumes the local format).  Re-derive it here, from
@@ -632,6 +646,23 @@ class RemoteHelper:
             except GitError:
                 return "fetch first"
         return local_sha, remote_sha
+
+    def _listed_as_file(self, dst: str) -> bool:
+        """True when *dst*'s folder lists it as a file (a missing folder lists as empty).
+
+        A listing that fails answers False, as :meth:`_remote_hash_width` does: the push
+        lists the same folders under the lock and proves its pack by a listing, so a
+        server that cannot list fails loudly there.
+        """
+        parent, _, leaf = self._full_path(dst).rpartition("/")
+        try:
+            entries = self.client.list_dir(self.repo_id, parent or "/")
+        except Exception:
+            return False
+        return any(
+            isinstance(entry, dict) and entry.get("name") == leaf and entry.get("type") == "file"
+            for entry in entries
+        )
 
     def _accept_cas(self, value: str) -> bool:
         """Record one ``option cas <ref>:<sha>``; False if it is not that shape.

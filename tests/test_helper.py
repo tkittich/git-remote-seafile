@@ -2948,11 +2948,13 @@ class TestPushRefReadBack(unittest.TestCase):
         """
         remote = _FakeRemote()
         copy = "main (SFConflict someone 2026-Oct-13-05-44-44)"
+        # `main` is listed once it is written: a listing that names it before then is a
+        # ref that exists and cannot be read, which the push now refuses to overwrite.
         remote.list_dir = lambda repo_id, path: [
             {"name": "main", "type": "file"},
             {"name": copy, "type": "file"},
             {"name": "other", "type": "file"},
-        ]
+        ] if "/git-repo/refs/heads/main" in remote.files else []
         out, err = io.StringIO(), io.StringIO()
         self._push(remote, out, err)
 

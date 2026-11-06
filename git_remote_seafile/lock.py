@@ -458,6 +458,20 @@ class RemoteLock:
             ticket_path = f"{self.lock_dir}/{name}"
             raw = self.client.get_file_text(self.repo_id, ticket_path)
             if not raw:
+                # The listing just named it.  A ticket released in between reads as
+                # absent and is gone from a second listing; one the file host would
+                # not serve (a 404 for one file, an empty body) is still listed, and
+                # reading that as "no holder" is the same failure as a truncated body
+                # below (review 4f1cdd4, opus-5.5 C1).
+                if strict and (raw == "" or any(
+                    isinstance(e, dict) and e.get("name") == name
+                    for e in self.client.list_dir(self.repo_id, self.lock_dir)
+                )):
+                    raise RuntimeError(
+                        f"the lock ticket {ticket_path} is listed but could not be read, so "
+                        "the queue cannot be trusted. Run 'git-remote-seafile lock-status "
+                        "<url>' and remove the file once no push is running"
+                    )
                 continue
             try:
                 t_info = json.loads(raw)

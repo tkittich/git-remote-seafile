@@ -1495,6 +1495,53 @@ class TestUnreadableTicketFailsClosed(unittest.TestCase):
         self.assertFalse(self.lock.verify_ownership())
         self.assertEqual(self.lock.ownership_state(), LEASE_UNKNOWN)
 
+    def _hold(self):
+        self.lock.acquired = True
+        self.lock._nonce = "mine"
+        self.lock._identity = ("own", "this-machine")
+        self.lock._order_ts = 0.0
+        self.lock._holding = True
+        self.store.put_ticket("/path/.git-lock.d/mine.json", json.loads(
+            _ticket("mine", owner="own", machine="this-machine")))
+
+    def test_a_listed_ticket_that_reads_as_absent_or_empty_is_unreadable_too(self):
+        """Review 4f1cdd4 (opus-5.5 C1): ``if not raw: continue`` ran before the strict
+        check, so a live holder's ticket the file host would not serve (a 404 for that
+        one file) or served empty was read out of the queue by the fence itself."""
+        other = "/path/.git-lock.d/other.json"
+        for case in ("empty", "404"):
+            with self.subTest(case=case):
+                self._hold()
+                self.store.files[other] = b"" if case == "empty" else _ticket(
+                    "other", owner="peer", machine="elsewhere").encode()
+                real = self.store.get_text
+                client = self.lock.client
+                client.get_file_text.side_effect = (
+                    lambda rid, path: None if path == other else real(rid, path)
+                ) if case == "404" else real
+                self.lock._preemptor_checked_at = None
+                self.assertFalse(self.lock.verify_ownership())
+                self.assertEqual(self.lock.ownership_state(), LEASE_UNKNOWN)
+                client.get_file_text.side_effect = real
+                del self.store.files[other]
+
+    def test_a_ticket_released_between_the_listing_and_the_read_is_not_an_error(self):
+        """The common case the rule above must not break: a holder releases in between,
+        so the read is absent and a second listing no longer names the ticket."""
+        self._hold()
+        other = "/path/.git-lock.d/other.json"
+        self.store.files[other] = _ticket("other", owner="peer", machine="elsewhere").encode()
+        real = self.store.get_text
+
+        def released(rid, path):
+            if path == other:
+                self.store.files.pop(other, None)
+                return None
+            return real(rid, path)
+
+        self.lock.client.get_file_text.side_effect = released
+        self.assertTrue(self.lock.verify_ownership())
+
     def test_get_status_refuses_to_read_the_queue_as_unlocked(self):
         self._plant_garbage()
         status = self.lock.get_status()
