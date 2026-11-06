@@ -54,7 +54,13 @@ RULES FOR THE WHOLE REVIEW
   the report, and say if a later commit touches a file you cite. Give the copy a name
   that does not start with `grs-` (use `review-<model>-`): the project's own cleanup
   sweeps `grs-*` directories, and one reviewer's copy was deleted under them mid-review.
-- Never contact a real server, never use real credentials. `tests/e2e_harness.py` is an
+- Never contact a real server, never use real credentials -- **and make it impossible, not
+  only forbidden**: a reviewer at 4f1cdd4 ran `check-auth` with an empty git config and the
+  machine's desktop Seafile client answered for it, one read-only request to the
+  maintainer's real server. For *every* command, not only test runs, point `HOME`,
+  `USERPROFILE`, `APPDATA`, `LOCALAPPDATA` and `CCNET_CONF_DIR` at a directory of your own
+  (`review-<model>-home`), and set `SEAFILE_SERVER`/`SEAFILE_TOKEN` to the stub's address
+  and a dummy token. `tests/e2e_harness.py` is an
   in-process Seafile stub — reproduce every claim against it, or against a local bare
   repository, and keep the script so the next person can rerun it. The stub is MORE
   LENIENT than the real server (it accepts a copy into a missing directory, it never
@@ -125,7 +131,7 @@ RULES FOR THE WHOLE REVIEW
   data reaches a place it should not), CRASH (traceback), SURPRISE (works as designed,
   surprises the operator), NIT. Five solid findings beat thirty speculative ones.
 
-FIVE QUESTIONS THAT KEEP FINDING THINGS IN THIS PROJECT. Ask each of them of every
+SIX QUESTIONS THAT KEEP FINDING THINGS IN THIS PROJECT. Ask each of them of every
 component you read; the rounds so far produced the same shapes again and again.
 1. Is that an acknowledgement or a proof? A 2xx, a listing that shows a name at a size,
    a `False` from "does it exist", a `True` returned with no evidence, a state file that
@@ -142,9 +148,17 @@ component you read; the rounds so far produced the same shapes again and again.
    Two routes that agree can both be wrong (a directory renamed by case was lost by both
    staging routes); a name check that matched `<name> (1)` never saw Seafile's real
    `<stem> (1).<ext>`. Name the cases the comparison did not cover, and run them.
+6. Which equality does this name comparison use? git under `core.ignorecase` folds ASCII
+   letters only, NTFS folds by its upcase table, APFS and HFS+ normalise Unicode, Seafile
+   stores NFC, and Python's `casefold` folds the sharp s to `ss`. A guard that compares
+   names with the wrong one drops or merges files: the 0.9.23 respelling dropped a new
+   `straße/` file beside an indexed `strasse/`. Try `ß`/`ss`, the `ﬁ` ligature, Kelvin
+   `K`/`k` and NFC/NFD `é` on every such guard.
 
 ORDER OF WORK — follow it.
-PHASE 1, specification only: Parts A and D, written down in full before you open code.
+PHASE 1, specification only: Parts A and D, written down in full before you open code. A
+Phase 1 finding cites a spec section and quotes its words; a `file:line` is added in Phase 2
+if the code confirms it.
 Do not open `git_remote_seafile/`, `tools/` or `tests/`, and do not read a prior
 `REVIEW.*.md`. If you open code first, say so in the report: the design sections are
 then the first thing to distrust, because the code will have anchored your attack.
@@ -392,7 +406,8 @@ OUTPUT — one markdown document, sections in this order.
    the wall-clock time the review took. Every runtime you state is one you measured; an
    estimate says so.
 
-Save the report in the repository root as `REVIEW.<commit>.<model>.md`, where `<commit>`
+Save the report in the root of the tree you were given (the one exception to "leave it
+untouched": `REVIEW*.md` is git-ignored there) as `REVIEW.<commit>.<model>.md`, where `<commit>`
 is `git rev-parse --short HEAD` of the checkout you reviewed and `<model>` is a short
 lower-case name for you (for example `REVIEW.1a2b3c4.gemini-3.8-flash.md`). Do not
 commit it: `REVIEW*.md` is git-ignored on purpose. If a file of that name already

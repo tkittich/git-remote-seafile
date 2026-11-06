@@ -158,6 +158,20 @@ the list; read it before trusting a stub-green change to server semantics.
 real data**, even to test. Read-only commands (`--payload-verify`, report-only
 `--payload-gc`, `--restore` into a new directory) are fine.
 
+## Review rounds
+
+- **A triage that accepts a finding gives it a ROADMAP §1 row the same day**, or writes
+  down why it will not be done. The v0.9.12 round accepted "an LFS upload is never read
+  back"; it had no row, and it was found again five rounds later (ROADMAP Y3, Y21).
+- **A fix names its siblings.** Before committing a fix, list the other paths of the same
+  shape (the other `remember_*` calls, the other reads that answer "absent", the other
+  places that fold names) and say in the commit message which were checked. The 0.9.22
+  `--no-push` fix covered two of six settings, and the four it missed were the next
+  round's finding (Y2).
+- **Compare against git and the disk, not only between the tool's own routes.** Both
+  staging routes shared the respelling that dropped a sharp-s file (Y1), so the route
+  comparison could not see it.
+
 ## Git and releases
 
 - The maintainer pushes and tags. Do not `git push`, tag, or create a release unless
