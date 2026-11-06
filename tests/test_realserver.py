@@ -190,6 +190,34 @@ class RealServerTests(unittest.TestCase):
         self._git(["pull", "-q", "--ff-only", "origin", "main"], dst)
         self.assertEqual(self._git(["rev-list", "--count", "HEAD"], dst).stdout.strip(), "5")
 
+    def test_a_missing_folder_lists_as_404_and_its_files_read_as_absent(self):
+        """What the issue 6 fix rests on, on the server itself.
+
+        A file read under a missing folder is 404 on Community Edition and 403 (one level
+        missing) or a 500 page (two or more) on Professional; the listing of the missing
+        folder is 404 on both, at any depth.  The stub's ``pro_missing_parent`` fault copies
+        the Pro answers; if a release changes them, this is the test that says so.
+        """
+        info = self.client.session.get(
+            f"{self.client.server_url}/api2/server-info/", timeout=60
+        ).json()
+        pro = "seafile-pro" in (info.get("features") or [])
+        base = f"/{self.base}/missing-folder"
+        self.client.mkdir_p(self.rid, base)
+        for depth, folder in ((1, base + "/gone"), (2, base + "/gone/deeper")):
+            with self.subTest(depth=depth):
+                self.assertEqual(self._api("GET", "dir", folder).status_code, 404)
+                status = self._api("GET", "file", folder + "/HEAD").status_code
+                expected = (403 if depth == 1 else 500) if pro else 404
+                self.assertEqual(
+                    status, expected,
+                    f"file read {depth} level(s) under a missing folder on "
+                    f"{'Pro' if pro else 'CE'} {info.get('version')}",
+                )
+                self.assertIsNone(self.client.get_file_bytes(self.rid, folder + "/HEAD"))
+        # A file that is missing from a folder that exists is a plain 404 on both.
+        self.assertEqual(self._api("GET", "file", base + "/HEAD").status_code, 404)
+
     def test_round_trip_sha1(self):
         self._round_trip("rt_sha1", "sha1")
 

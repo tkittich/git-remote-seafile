@@ -1,4 +1,4 @@
-# A Seafile CE 13.0 container for the real-server suite (`.github/workflows/realserver.yml`).
+# A Seafile CE or Pro 13.0 container for the real-server suite (`.github/workflows/realserver.yml`).
 #
 # The shape of the official 13.0 compose (https://manual.seafile.com/13.0/repo/docker/ce/seafile-server.yml
 # and its `.env`): MariaDB, Redis and the seafile image, whose nginx answers on
@@ -45,7 +45,12 @@ services:
       REDIS_PASSWORD: ""
 
   seafile:
-    image: seafileltd/seafile-mc:13.0-latest
+    # CE by default; the workflow sets SEAFILE_IMAGE to seafileltd/seafile-pro-mc:13.0-latest for
+    # the Pro leg.  Since 12.0 the Pro image is public on Docker Hub, and with no licence file Pro
+    # runs as a trial for up to three users, which is all this suite needs (no secret).  Pro's
+    # official compose differs from CE's only in the image and the optional storage and
+    # Elasticsearch settings; search is left out here as everything else above is.
+    image: ${SEAFILE_IMAGE:-seafileltd/seafile-mc:13.0-latest}
     ports:
       - "80:80"
     volumes:

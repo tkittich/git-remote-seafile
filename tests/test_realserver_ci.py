@@ -96,6 +96,21 @@ class TestRealserverCI(unittest.TestCase):
             self.assertEqual(ci._server(), "http://box:1234")
         self.assertEqual(ci._server(), "http://127.0.0.1")
 
+    def test_the_server_line_names_the_edition_from_the_features_list(self):
+        # The two answers measured on 13.0.29 (CE, and Pro with search on).
+        self.assertEqual(
+            ci.describe_server({"version": "13.0.29", "features": ["seafile-basic"]}),
+            "Seafile Community Edition 13.0.29",
+        )
+        self.assertEqual(
+            ci.describe_server(
+                {"version": "13.0.29", "features": ["seafile-basic", "seafile-pro", "file-search"]}
+            ),
+            "Seafile Professional Edition 13.0.29",
+        )
+        self.assertIn("not an object", ci.describe_server(None))
+        self.assertEqual(ci.describe_server({}), "Seafile Community Edition unknown version")
+
     def test_the_helper_home_carries_the_server_and_token_the_suite_strips_from_env(self):
         with tempfile.TemporaryDirectory() as parent:
             home = ci.helper_home(parent, "t0k")

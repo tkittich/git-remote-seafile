@@ -101,6 +101,22 @@ def auth_token(session: requests.Session) -> str:
     return token
 
 
+def describe_server(info: object) -> str:
+    """One line naming the edition and version from an ``/api2/server-info/`` answer.
+
+    The workflow runs against ``13.0-latest``, a moving tag: the log has to say which release a
+    result came from, and whether the image really was Pro (its ``features`` list names
+    ``seafile-pro``; CE's does not).
+    """
+    if not isinstance(info, dict):
+        return "Seafile (server-info answered something that is not an object)"
+    features = info.get("features")
+    pro = isinstance(features, list) and "seafile-pro" in features
+    version = info.get("version")
+    shown = version if isinstance(version, str) and version else "unknown version"
+    return f"Seafile {'Professional' if pro else 'Community'} Edition {shown}"
+
+
 def helper_home(parent: str, token: str) -> str:
     """A throwaway home whose ``.git-seafile.json`` names this server and token.
 
@@ -219,6 +235,13 @@ def main(argv: list[str] | None = None) -> int:
     sys.stdout.flush()
 
     session = requests.Session()
+    try:
+        info: object = session.get(f"{_server()}/api2/server-info/", timeout=30).json()
+    except (requests.RequestException, ValueError) as exc:
+        info = None
+        print(f"server-info could not be read: {exc}")
+    print(f"Server: {describe_server(info)}.")
+    sys.stdout.flush()
     token = auth_token(session)
 
     # Residue from an earlier failed run would make get_repo_id ambiguous;

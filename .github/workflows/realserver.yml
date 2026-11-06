@@ -38,6 +38,16 @@ jobs:
     runs-on: ubuntu-latest
     # Image pull + first boot + the suite itself; generous, but bounded.
     timeout-minutes: 60
+    # Community and Professional answer some requests differently (issue 6: a file read under a
+    # missing folder is 404 on CE, 403 or a 500 page on Pro), so the suite runs against both.
+    # Each leg is its own runner, so the two containers never share the mapped port.
+    strategy:
+      fail-fast: false
+      matrix:
+        edition: [ce, pro]
+    name: realserver (${{ matrix.edition }})
+    env:
+      SEAFILE_IMAGE: ${{ matrix.edition == 'pro' && 'seafileltd/seafile-pro-mc:13.0-latest' || 'seafileltd/seafile-mc:13.0-latest' }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
@@ -48,7 +58,7 @@ jobs:
       # imports the package under test as well as the driver's own `requests`.
       - name: Install the package under test
         run: python -m pip install .
-      - name: Start the Seafile CE container
+      - name: Start the Seafile ${{ matrix.edition }} container
         run: docker compose -f .github/seafile-ci.yml up -d
       - name: Run the real-server suite against it
         run: python tools/realserver_ci.py
