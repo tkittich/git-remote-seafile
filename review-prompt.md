@@ -12,30 +12,13 @@ work (issue 6), the container test tier and the 0.9.23 backlog — see Part G, w
 where most of your time should go.
 
 WHAT IT IS
-A Git remote helper (`seafile://<library>/<path>`) that stores a repository in a
-Seafile library — a self-hosted file-sync server — through its REST API: native
-packfiles, refs as small files, a ticket-style advisory lock built from file creation
-and the server's `Date` header because Seafile has no compare-and-swap, tail merge and
-full `gc`, a Git LFS transfer agent. Every pack it writes is capped at a configurable
-size and files of 1 GiB or more upload in `Content-Range` chunks, because a real server
-reset a single 2 GiB request. Helper commands include `login`, `config`, `lfs-setup`,
-`doctor` (which can create a library and probe a proxy's upload limit) and `repair`.
-Shipped in the same wheel: `git seafile-snapshot`, a whole-tree snapshot tool. It
-captures a directory, ignored files included, byte-exact, into a separate "vault" git
-repository and pushes it; the source stays read-only. Payload mode (on by default for a
-push to `seafile://`) keeps large files out of git: each is SHA-256-hashed as it is sent
-and stored under its hash, and the commit carries a manifest; `--restore` downloads and
-verifies every byte; `--payload-gc` is two-phase retention with a grace period;
-`--payload-verify` and `--restore-drill` read the data back rather than trusting the
-listing. Staging, hashing and uploads find their own parallelism by measuring
-(`DESIGN.md` §3.5), and a long or costly path list goes to `git update-index` instead of
-`git add`. What is stored must not change with the machine; only the speed may.
-Since `be01e37`: Seafile **Professional** answers some requests differently from
-Community Edition (a file read or delete under a missing folder is 403 or a 500 page, not
-404; folder permissions; group-owned libraries), and the helper now handles both; the
-real-server suite runs in throwaway **CE and Pro** containers in CI, with a second
-account; and the ten-item backlog of the last round (ROADMAP §1.8 X9) and the case-rename
-leftover (X2) are done.
+A Git remote helper (`seafile://<library>/<path>`) that stores a repository in a Seafile
+library through its REST API, with an advisory lock built from file creation and the
+server's `Date` header, and a whole-tree snapshot tool (`git seafile-snapshot`) shipped
+in the same wheel. Read `README.md` for the overview, `DESIGN.md` §1–§4 for how the
+helper works, `SNAPSHOT.md` and `PAYLOAD.md` for the snapshot tool and its large-file
+store, and `CHANGELOG.md` `[0.9.23]` and `[0.9.22]` for what changed since the last
+round (Seafile Professional, the CE/Pro container tier, the last round's backlog).
 
 THE DOCUMENTS ARE THE SPECIFICATION
 `DESIGN.md` (invariants §3 including §3.5 Adaptation, protocol §4, failure model §5,
@@ -53,6 +36,15 @@ code or the tests do not keep is a finding), and `ROADMAP.md` §1 (known open it
 review the parts, never the generated file.
 
 RULES FOR THE WHOLE REVIEW
+- **Several reviewers are working on this commit at the same time**, each a different
+  model, each on the whole prompt. Work independently: do not open, read, search or
+  quote another reviewer's report (`REVIEW.*.md`) or working files, in the repository
+  root or anywhere else, even if you come across them. Keep everything you make apart
+  from theirs: your copy of the repository, your scripts, scratch trees and temporary
+  directories all carry your own name (`review-<model>-...`), and you never delete,
+  move or overwrite a file or directory you did not create — another reviewer's run may
+  be using it. The same holds for containers and Docker volumes (see the container rule
+  below).
 - Work in a COPY of the repository. Leave the tree you were given untouched: no
   commits, no pushes, no edits. Make the copy with `git clone` (so the git-ignored
   earlier `REVIEW*.md` reports are not in it, and Phase 1 cannot read one by accident),
@@ -72,8 +64,14 @@ RULES FOR THE WHOLE REVIEW
   real server: `SEAFILE_IMAGE=seafileltd/seafile-pro-mc:13.0-latest docker compose -f
   .github/seafile-ci.yml up -d` (or the CE default) and `python tools/realserver_ci.py`
   give you CE or Pro to reproduce against; say which edition and version
-  (`/api2/server-info/`) each result came from. Label each finding REPRODUCED (stub,
-  container or local repository — say which) or INFERS-SERVER-BEHAVIOUR.
+  (`/api2/server-info/`) each result came from. **One container per machine:** the
+  compose file publishes port 80 and writes `127.0.0.1` into the server's links, so a
+  second one cannot start beside it. If a container is already running and you did not
+  start it, it belongs to another reviewer: do not stop, reuse or reconfigure it, and use
+  the stub instead. Start yours with `-p review-<model>` and take it down
+  (`docker compose -p review-<model> -f .github/seafile-ci.yml down -v`) when you are
+  done. Label each finding REPRODUCED (stub, container or local repository — say which)
+  or INFERS-SERVER-BEHAVIOUR.
 - **The full suite has already been run at this commit — do not run it again**, and do
   not run whole modules to "check that the tests pass". Several reviewers work on this
   commit at once, and a full run is twelve minutes or more each that finds nothing new.
@@ -88,8 +86,11 @@ RULES FOR THE WHOLE REVIEW
   `tools/measure_pathspec_cost.py` (1000 to 5000).
   Several tests are timing based (`tests/test_snapshot_climb.py`, the staging ramp
   tests): if one fails for you, run it three times and say so; a test that fails on
-  your machine and not on the maintainer's is itself a finding. Tests leave `grs-*`
-  directories in the temporary directory on Windows (ROADMAP W2): clean them up.
+  your machine and not on the maintainer's is itself a finding. Tests make `grs-*`
+  directories in the temporary directory and remove them; do **not** sweep `grs-*` by
+  pattern, because another reviewer's tests may be running in them. Point `TMPDIR` (and
+  `TEMP`/`TMP` on Windows) at a `review-<model>-tmp` directory of your own for every run,
+  and delete only that.
 - The snapshot tool is run only on scratch trees you create, with `--no-push` or against
   a local bare repository as `--remote`. `tools/measure_pathspec_cost.py` and
   `tools/gates.py --list` are safe to run. Do not point anything at a real vault.
@@ -103,6 +104,14 @@ RULES FOR THE WHOLE REVIEW
   `PAYLOAD.md` §6.1's "not changed, recorded" paragraphs, `SNAPSHOT.md` §15's
   non-goals and `DESIGN.md` §7. Re-reporting one requires showing that its stated
   reasoning is wrong, and saying so explicitly.
+- **Known, and not findings** (report one only if you show the stated reason is wrong):
+  `HANDOFF.issue-6.md` is in the tree on purpose and is deleted once the issue is
+  answered; the release date in `CHANGELOG.md` `[0.9.23]` and the ROADMAP line is a
+  placeholder until the tag; *why* Professional answers a missing folder with 403/500 is
+  inferred (its server code is closed) — the answers themselves were measured on 13.0.29;
+  removing the empty copy a simultaneous `mkdir` leaves is best-effort by design (a copy
+  that cannot be removed is named, never touched); the CE/Pro container workflow has not
+  run in CI at this commit (G7 asks what the docs should say until it has).
 - Separate what a document SAYS from what you INFER, and for an inference say what
   would have to be true. Every finding needs: `file:line` (code) or section (spec) **plus
   a verbatim quote of a few words actually on that line** — a citation whose quoted
@@ -350,12 +359,9 @@ PART H — what this prompt does not ask (Phase 2, last; suggestions, not findin
 You have now read more of this project than most people will. Say what you would do
 about it, and what the prompt left out. This part is an open invitation; it is judged on
 how useful it is, not on how many items it has.
-H1. What else should be reviewed. Name the areas this prompt does not cover and say how
-you would review each. Candidates, not a checklist: macOS (no machine in reach),
-locale-dependent git output, older Seafile releases (only 13.0 is tested), the size and
-shape of the documentation set (is anything duplicated, stale or contradicted
-elsewhere?), SECURITY.md against the code, and the test suite's runtime and flakiness as
-a cost to contributors.
+H1. What else should be reviewed: the areas this prompt does not cover (macOS, locale,
+older Seafile releases and the size of the documentation set are known gaps), and how you
+would review each.
 H2. Suggestions, at most ten, each as: what | why, with evidence | effort (S/M/L) |
 risk | what would show it worked. Rank them by value for effort. Include at least one
 thing you would **delete or stop doing**, and name the single change you would make
@@ -371,7 +377,8 @@ OUTPUT — one markdown document, sections in this order.
    the three assumptions you trust least with the experiment that would test each, and
    the questions a maintainer must answer before the next release.
 3. Part G findings, then Part B, C and E findings: a table of ID | rank | `file:line` |
-   scenario | reproduced? | smallest fix. Number them G1.1…, B1…, C1…, E1…
+   scenario | reproduced? | smallest fix. Number them G1.1…, B1…, C1…, E1…, each
+   prefixed with your `<model>` name (below): `glm-5.3-G2.1`.
 4. Part F: a table of row | your verdict | evidence.
 5. Part H: H1 (areas), H2 (suggestions) and H3 (this prompt). End H2 with a one-line
    answer: would you tag this commit as 0.9.23, and if not, which findings block it?
@@ -381,11 +388,15 @@ OUTPUT — one markdown document, sections in this order.
    not break is what stops the next round from repeating that work.
 7. What you could not check, and why; and, for everything else, whether you executed it
    or only read it. Include the commands you ran and the platform, git version, Python
-   version and (if you used a container) Seafile edition and version you ran them on.
+   version and (if you used a container) Seafile edition and version you ran them on, and
+   the wall-clock time the review took. Every runtime you state is one you measured; an
+   estimate says so.
 
 Save the report in the repository root as `REVIEW.<commit>.<model>.md`, where `<commit>`
 is `git rev-parse --short HEAD` of the checkout you reviewed and `<model>` is a short
 lower-case name for you (for example `REVIEW.1a2b3c4.gemini-3.8-flash.md`). Do not
-commit it: `REVIEW*.md` is git-ignored on purpose. Keep the part headings and the `A1`,
-`B3`, `C2`, `D4`, `E5`, `F6`, `G2.1`, `H2` numbering: rounds are compared by ID, and a
-report whose findings are unnumbered cannot be merged.
+commit it: `REVIEW*.md` is git-ignored on purpose. If a file of that name already
+exists, it is not yours: add a suffix rather than overwrite it. Keep the part headings
+and the `A1`, `B3`, `C2`, `D4`, `E5`, `F6`, `G2.1`, `H2` numbering, prefixed with your
+`<model>` name: the reports of one round are merged by ID, and a report whose findings
+are unnumbered, or whose IDs collide with another reviewer's, cannot be merged.
