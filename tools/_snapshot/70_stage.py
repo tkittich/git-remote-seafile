@@ -316,7 +316,9 @@ def build_snapshot(
                 stall = stall_limit_after_prewrite(spent)
                 add_expects = 0
         if to_stage:
-            commands, drop_first = staging_commands(to_stage, work_tree)
+            commands, drop_first = staging_commands(
+                to_stage, work_tree, index_entry_count(git_dir)
+            )
             if drop_first:
                 drop_from_index(git_dir, work_tree, drop_first)
             for stage_args, stage_stdin in commands:

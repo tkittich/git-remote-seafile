@@ -3125,6 +3125,29 @@ class LongListStagingTests(_SnapshotFixture):
         self.assertTrue(many[0][1].endswith("\0"))
         self.assertEqual(many[0][1].count("\0"), snap._INDEX_ROUTE_MIN_PATHS)
 
+    def test_a_short_list_into_a_large_index_takes_the_index_route(self):
+        """``add`` matches every listed path against the index, so its cost is paths x
+        entries (X9, triage T11): 2,600 paths into 30,000 entries was 3.82 s against 1.74 s."""
+        paths = ["README.md"] * 2_600
+        small, _ = snap.staging_commands(paths, self.code, index_entries=29_000)
+        self.assertEqual([c[0][0] for c in small], ["add"])
+        large, _ = snap.staging_commands(paths, self.code, index_entries=30_000)
+        self.assertEqual([c[0][0] for c in large], ["update-index"])
+        self.assertEqual([c[0][0] for c in snap.staging_commands(paths, self.code)[0]], ["add"],
+                         "an unknown index size keeps the path-count rule")
+
+    def test_the_index_entry_count_comes_from_the_header(self):
+        with tempfile.TemporaryDirectory() as td:
+            git_dir = pathlib.Path(td)
+            self.assertEqual(snap.index_entry_count(git_dir), 0, "no index")
+            (git_dir / "index").write_bytes(b"DIRC" + (2).to_bytes(4, "big") + (123_456).to_bytes(4, "big"))
+            self.assertEqual(snap.index_entry_count(git_dir), 123_456)
+            (git_dir / "index").write_bytes(b"JUNK" + bytes(8))
+            self.assertEqual(snap.index_entry_count(git_dir), 0, "not an index")
+        # A real index agrees with git's own count.
+        listed = _git(self.code, "ls-files", "--stage").stdout.count("\n")
+        self.assertEqual(snap.index_entry_count(self.code / ".git"), listed)
+
     def test_a_path_that_vanished_is_dropped_not_fatal_on_either_route(self):
         """The list is made before a pre-write that can take many minutes.  Both
         commands stop the whole run on a missing path (rc 128: ``add`` says the

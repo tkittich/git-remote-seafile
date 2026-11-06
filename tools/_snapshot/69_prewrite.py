@@ -154,14 +154,40 @@ def paths_to_stage(git_dir: Path, work_tree: Path, kept: list[str]) -> list[str]
 #: first grows faster than the file count, the second with it.
 _INDEX_ROUTE_MIN_PATHS = 10_000
 
+#: ...and from this many *path x index entry* pairs, whatever the path count: ``add``'s
+#: matching costs both, so a short list into a large index is slow too.  Measured
+#: (be01e37 review, DS G2.1): 2,600 changed paths into a 30,000-entry index took 3.82 s
+#: with ``add`` and 1.74 s with ``update-index``; that product, 78 million, is the
+#: switch.  A 222,000-file vault with a few hundred changes crosses it; the usual
+#: small run on a small tree does not.
+_INDEX_ROUTE_MIN_WORK = 2_600 * 30_000
+
+
+def index_entry_count(git_dir: Path) -> int:
+    """The number of entries the index records, read from its 12-byte header; 0 if unknown.
+
+    ``DIRC``, a version, then the count, big-endian -- the same in index versions 2 to 4.
+    No git process: the answer only chooses between two routes that give the same index.
+    """
+    try:
+        with open(git_dir / "index", "rb") as fh:
+            header = fh.read(12)
+    except OSError:
+        return 0
+    if len(header) < 12 or header[:4] != b"DIRC":
+        return 0
+    return int.from_bytes(header[8:12], "big")
+
 
 def staging_commands(
-    paths: list[str], work_tree: Path
+    paths: list[str], work_tree: Path, index_entries: int = 0
 ) -> "tuple[list[tuple[list[str], str]], list[str]]":
     """``([(git arguments, stdin), ...], drop_first)``: how to record *paths* in the index.
 
     A short list is one ``add`` with every path, as it always was.  From
-    ``_INDEX_ROUTE_MIN_PATHS`` paths on, the files go to ``update-index`` and
+    ``_INDEX_ROUTE_MIN_PATHS`` paths on -- or when the paths times the
+    *index_entries* already recorded reach ``_INDEX_ROUTE_MIN_WORK`` -- the files go
+    to ``update-index`` and
     **a path that is a directory on disk still goes to ``add``**: a tracked file
     that was replaced by a directory, which is rare, so that list is short.
     ``update-index`` refuses a directory, and skipping it was worse than refusing:
@@ -187,7 +213,10 @@ def staging_commands(
     vanishes in the few milliseconds after this check is dropped the same way.
     No path left means no command: ``add`` stops on an empty list.
     """
-    use_index = len(paths) >= _INDEX_ROUTE_MIN_PATHS
+    use_index = (
+        len(paths) >= _INDEX_ROUTE_MIN_PATHS
+        or len(paths) * max(0, index_entries) >= _INDEX_ROUTE_MIN_WORK
+    )
     files: list[str] = []
     directories: list[str] = []
     drop_first: list[str] = []
