@@ -103,6 +103,11 @@ class ClimberTests(unittest.TestCase):
         self.assertTrue(climber.throttled(120.0))
         self.assertEqual(climber.level, 2)
 
+    def test_a_typed_level_is_never_halved(self):
+        climber = snap._Climber(8, forced=True)
+        self.assertFalse(climber.throttled(100.0))
+        self.assertEqual(climber.level, 8)
+
     def test_one_writer_is_never_throttled_below_one(self):
         climber = snap._Climber(16, 1)
         self.assertFalse(climber.throttled(0.0))
@@ -141,12 +146,14 @@ class ClimberTests(unittest.TestCase):
 class _FakeServer:
     """Just enough of the client for ``_upload_all``; thread-safe, with an optional limit.
 
-    ``limit`` is how many uploads may run at once before the server answers 502.
+    ``limit`` is how many uploads may run at once before the server answers 502;
+    ``refuse_first`` refuses that many uploads, whatever the concurrency, then none.
     """
 
-    def __init__(self, limit: int | None = None) -> None:
+    def __init__(self, limit: int | None = None, refuse_first: int = 0) -> None:
         self.files: dict[str, bytes] = {}
         self.limit = limit
+        self.refuse_first = refuse_first
         self.active = 0
         self.peak = 0
         self.pushed_back = 0
@@ -159,7 +166,9 @@ class _FakeServer:
         with self._lock:
             self.active += 1
             self.peak = max(self.peak, self.active)
-            refuse = self.limit is not None and self.active > self.limit
+            refuse = (self.limit is not None and self.active > self.limit) or (
+                self.pushed_back < self.refuse_first
+            )
             if refuse:
                 self.pushed_back += 1
         try:
@@ -249,6 +258,22 @@ class AdaptiveUploadTests(unittest.TestCase):
         self.assertEqual(self._stored(server), set(self.todo))
         self.assertLessEqual(server.peak, 2)
         self.assertNotIn("found by measuring", said)
+
+    def test_a_typed_count_retries_a_push_back_at_the_same_level(self):
+        """Triage T19: with --payload-jobs N a 502 failed the run outright.  The object is
+        now tried again (at most twice) and the level stays the one that was typed."""
+        server = _FakeServer(refuse_first=3)
+        said = self._upload(server, 2)
+        self.assertEqual(self._stored(server), set(self.todo), "a pushed-back object was lost")
+        self.assertEqual(server.pushed_back, 3)
+        self.assertLessEqual(server.peak, 2)
+        self.assertNotIn("limiting this run to", said, "a typed count must not be lowered")
+
+    def test_a_typed_count_still_fails_when_the_push_back_never_ends(self):
+        server = _FakeServer(limit=0)
+        with self.assertRaises(snap.SnapshotError) as ctx:
+            self._upload(server, 2)
+        self.assertIn("payload upload(s) failed", str(ctx.exception))
 
     def test_a_push_back_that_never_ends_is_a_failure_after_the_tries_are_spent(self):
         server = _FakeServer(limit=0)

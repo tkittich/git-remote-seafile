@@ -450,7 +450,6 @@ def _upload_all(
     last_pulse = [started]
     meter = _ByteMeter()
     seen: set[str] = set()
-    adaptive = jobs is None
 
     def one(sha: str) -> "tuple[str, str] | None":
         if failed:
@@ -514,7 +513,7 @@ def _upload_all(
             failed.append(f"{rel}: {exc}")
         except Exception as exc:  # SeafileAPIError, requests errors: reported once, below
             text = f"{rel}: {type(exc).__name__}: {exc}"
-            if adaptive and throttle_status(text):
+            if throttle_status(text):
                 try:     # the half-sent temporary; best effort, the next run sweeps it anyway
                     cleaner = getattr(local, "client", None)
                     if cleaner is not None:
@@ -531,8 +530,10 @@ def _upload_all(
         run_climbing(order, one, ceiling=_UPLOAD_MAX_JOBS, meter=meter,
                      exhausted=lambda _sha, msg: failed.append(msg))
     else:
-        with ThreadPoolExecutor(max_workers=max(1, jobs)) as pool:
-            list(pool.map(one, order))
+        # A typed number is exact (DESIGN 3.5), but a push-back is still worth a second
+        # try: the object goes back in the queue, at most twice, at the same level (T19).
+        run_climbing(order, one, ceiling=max(1, jobs), meter=meter, forced=True,
+                     exhausted=lambda _sha, msg: failed.append(msg))
     if failed:
         more = (f"; {len(changed)} file(s) also changed while the run was in progress"
                 if changed else "")

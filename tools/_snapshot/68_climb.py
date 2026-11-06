@@ -48,6 +48,7 @@ class _Climber:
         if forced:
             self.level = self.ceiling
         self.settled = forced
+        self.forced = forced
         self.gave_up = False
         self.best_level = self.level
         self.best_rate = 0.0
@@ -75,8 +76,11 @@ class _Climber:
 
         Several requests in flight answer together, so a second signal within a
         few seconds is the same episode and changes nothing.  Returns whether
-        the level changed.
+        the level changed.  A typed level (``forced``) is never changed: the item
+        is still tried again after the pause, at the level the person chose.
         """
+        if self.forced:
+            return False
         if now - self._throttled_at < _THROTTLE_EPISODE_SECONDS or self.level <= 1:
             return False
         self._throttled_at = now
