@@ -2342,6 +2342,25 @@ class VaultMemoryTests(_SnapshotFixture):
         self.assertNotIn("pushing source repo", out)
         self.assertIn("kept locally", out)
 
+    def test_a_no_push_run_changes_no_remembered_setting(self):
+        """Review 4f1cdd4 (glm-5.3 G1.1): SNAPSHOT.md section 4 promises that ``--no-push``
+        "changes no remembered setting", but ``--exclude`` and ``--branch`` were written
+        back, so a one-off local run narrowed the next scheduled backup.  The vault's
+        config must be byte-for-byte what it was, and the next bare run must capture the
+        whole tree again."""
+        self.assertEqual(self.snapshot("--remote", self.remote)[0], 0)
+        config = self.vault / ".git" / "config"
+        before = config.read_bytes()
+        (self.code / "src").mkdir(exist_ok=True)
+        (self.code / "src" / "kept.txt").write_bytes(b"one\n")
+        rc, _, err = self.snapshot("--no-push", "--exclude", "src", "--branch", "side",
+                                   "--no-record-mtimes", "--default-excludes")
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(config.read_bytes(), before, "a --no-push run wrote a setting")
+        rc, _, err = self.snapshot()
+        self.assertEqual(rc, 0, err)
+        self.assertIn("src/kept.txt", self.tree())
+
     def test_a_dry_run_does_not_write_the_remembered_settings(self):
         self.snapshot("--dry-run", "--remote", self.remote)
         self.assertEqual(snap._read_config_key(self.vault / ".git", "snapshot.remote"), "")

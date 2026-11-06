@@ -662,21 +662,24 @@ def run_command(args: argparse.Namespace) -> int:
         # every scheduled run after it.  A preview never gets here.
         # A local-only run (--no-push) changes no remembered setting: --no-payload there
         # used to write 0, and the next scheduled push staged the large files into git.
-        remember_payload_value(vault, args.payload_min_size, dry_run=args.dry_run or args.no_push)
-        remember_payload_ratio(vault, args.payload_auto_ratio, dry_run=args.dry_run)
-        remember_tuning(vault, payload_tuning, dry_run=args.dry_run)
-        remember_record_mtimes(vault, args, dry_run=args.dry_run)
-        remember_settings(
-            vault,
-            source,
-            remote=_UNSET if args.no_push else remote,
-            code_remote=_UNSET if args.no_push else code_remote,
-            exclude=exclude,
-            branch=branch,
-            vault_config=vault_config,
-            derived=getattr(args, "derived_excludes", None),
-            default_excludes=bool(getattr(args, "default_excludes_on", False)),
-        )
+        # All of them: a --no-push --exclude narrowed the next scheduled run (glm-5.3 G1.1).
+        frozen = args.dry_run or args.no_push
+        remember_payload_value(vault, args.payload_min_size, dry_run=frozen)
+        remember_payload_ratio(vault, args.payload_auto_ratio, dry_run=frozen)
+        remember_tuning(vault, payload_tuning, dry_run=frozen)
+        remember_record_mtimes(vault, args, dry_run=frozen)
+        if not args.no_push:
+            remember_settings(
+                vault,
+                source,
+                remote=remote,
+                code_remote=code_remote,
+                exclude=exclude,
+                branch=branch,
+                vault_config=vault_config,
+                derived=getattr(args, "derived_excludes", None),
+                default_excludes=bool(getattr(args, "default_excludes_on", False)),
+            )
         # Last, after everything the run must keep: the report is optional, and
         # an interrupt during it must not lose the settings this run earned.
         if manifest is not None and remote and not args.dry_run:
