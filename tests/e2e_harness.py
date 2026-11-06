@@ -211,10 +211,15 @@ class _Handler(BaseHTTPRequestHandler):
                 if self.stub.faults.get("mkdir_duplicate") == p.rsplit("/", 1)[-1]:
                     # Seafile's mkdir is create-or-duplicate (measured on CE
                     # 13.0.28): a name another client just took answers success
-                    # and creates "<name> (1)" beside it.  The plain handler
-                    # stores nothing (the stub has no directory entries), so the
-                    # duplicate is modelled as one file under the copy.
-                    self.stub.files.setdefault(rid, {})[f"{p} (1)/dup"] = b""
+                    # and creates a copy beside it, numbered before the last
+                    # extension (".git-lock.d" -> ".git-lock (1).d", Pro 13.0.29).
+                    # The plain handler stores nothing (the stub has no directory
+                    # entries), so the copy is modelled as one file under it --
+                    # which makes it a copy that holds something, left in place.
+                    parent, _, leaf = p.rpartition("/")
+                    stem, dot, ext = leaf.rpartition(".")
+                    copy = f"{stem} (1).{ext}" if dot and stem else f"{leaf} (1)"
+                    self.stub.files.setdefault(rid, {})[f"{parent}/{copy}/dup"] = b""
             return self._send(200, b"{}")
 
         if path.startswith("/api2/repos/") and path.endswith("/file/"):

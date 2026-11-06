@@ -11,6 +11,7 @@ import time
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
+from urllib.parse import quote
 
 import requests
 
@@ -1832,28 +1833,72 @@ class TestSeafileClientOperations(unittest.TestCase):
         with self.assertRaises(SeafileAPIError):
             client2.get_repo_id("lib")
 
-    def test_mkdir_p_refuses_a_create_or_duplicate_answer(self):
-        """Seafile's mkdir on a taken name succeeds and makes "<name> (1)".
+    def _mkdir_with_siblings(self, siblings, copy_listing):
+        """``mkdir_p("/r/.git-lock.d")`` where the parent then lists *siblings*.
 
-        Measured on CE 13.0.28 (six concurrent creates -> three directories,
-        no errors).  A client that believed the 201 would upload into a
-        directory no other client lists; the loser must be told to retry.
+        Returns the client and the paths it deleted.  *copy_listing* is what a copy lists as.
         """
         client = SeafileClient(server_url="https://seafile.example.com", token="fake_token", timeout=10)
         client.session = MagicMock()
+        client._known_dirs.add(("repo1", "/r"))
 
-        listing = MagicMock(status_code=200)
-        listing.json.return_value = [{"type": "dir", "name": "lock.d (1)"}]
-        client.session.get.side_effect = [
-            MagicMock(status_code=404),   # the directory does not exist
-            listing,                      # the parent listing after the POST
-        ]
+        def get(url, timeout=None):
+            if "p=/r/.git-lock.d" in url and "(" not in url and "%28" not in url:
+                return MagicMock(status_code=404)  # the directory does not exist yet
+            resp = MagicMock(status_code=200)
+            resp.json.return_value = siblings if url.endswith("p=/r") else copy_listing
+            return resp
+
+        client.session.get.side_effect = get
         client.session.post.return_value = MagicMock(status_code=201, text="success")
+        deleted = []
 
-        with self.assertRaises(SeafileAPIError) as caught:
-            client.mkdir_p("repo1", "/lock.d")
-        self.assertIn("kept this one as a duplicate", str(caught.exception))
-        self.assertNotIn(("repo1", "/repo/lock.d"), client._known_dirs)
+        def delete(url, timeout=None):
+            deleted.append(url)
+            return MagicMock(status_code=200)
+
+        client.session.delete.side_effect = delete
+        client.mkdir_p("repo1", "/r/.git-lock.d")
+        return client, deleted
+
+    def test_mkdir_p_removes_the_empty_copy_a_simultaneous_create_left(self):
+        """Seafile's mkdir on a taken name succeeds and makes a copy beside it.
+
+        Two first pushes at once on Pro 13.0.29 left ``.git-lock (1).d`` beside
+        ``.git-lock.d``: the number goes before the extension, so the old check
+        for ``.git-lock.d (`` never saw it.  Nothing addresses the copy (every
+        request names the directory by path, and both clients queued in the one
+        lock directory), so an empty copy is removed and the push carries on.
+        """
+        siblings = [{"type": "dir", "name": ".git-lock.d"}, {"type": "dir", "name": ".git-lock (1).d"},
+                    {"type": "dir", "name": "objects"}]
+        client, deleted = self._mkdir_with_siblings(siblings, copy_listing=[])
+        self.assertEqual(len(deleted), 1, deleted)
+        self.assertIn(quote("/r/.git-lock (1).d", safe="/"), deleted[0])
+        self.assertIn(("repo1", "/r/.git-lock.d"), client._known_dirs)
+
+    def test_mkdir_p_leaves_a_copy_that_holds_something_and_says_so(self):
+        siblings = [{"type": "dir", "name": ".git-lock.d"}, {"type": "dir", "name": ".git-lock (2).d"}]
+        err = io.StringIO()
+        with patch("sys.stderr", err):
+            client, deleted = self._mkdir_with_siblings(
+                siblings, copy_listing=[{"type": "file", "name": "x.json"}]
+            )
+        self.assertEqual(deleted, [])
+        self.assertIn(".git-lock (2).d", err.getvalue())
+        self.assertIn(("repo1", "/r/.git-lock.d"), client._known_dirs)
+
+    def test_a_seafile_copy_name_is_recognised_in_both_shapes(self):
+        from git_remote_seafile.client import _is_seafile_copy_of
+
+        self.assertTrue(_is_seafile_copy_of(".git-lock.d", ".git-lock (1).d"))
+        self.assertTrue(_is_seafile_copy_of(".git-lock.d", ".git-lock.d (12)"))
+        self.assertTrue(_is_seafile_copy_of("pack", "pack (1)"))
+        self.assertTrue(_is_seafile_copy_of(".hidden", ".hidden (1)"))
+        for other in (".git-lock.d", ".git-lock (x).d", ".git-lock (1).e", "pack (1) x", "pack(1)",
+                      "objects"):
+            self.assertFalse(_is_seafile_copy_of(".git-lock.d" if "lock" in other else "pack", other),
+                             other)
 
 
 class TestClientFailsLoudly(unittest.TestCase):

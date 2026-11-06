@@ -23,6 +23,23 @@ from urllib3.util.retry import Retry
 from .git_util import get_git_config_bool
 from .seafile_paths import get_candidate_db_paths
 from .url import is_loopback_host, normalize_netloc
+
+
+def _is_seafile_copy_of(name: str, candidate: str) -> bool:
+    """True when *candidate* is how Seafile names a second ``mkdir`` of *name*.
+
+    The number goes before the last extension: ``.git-lock.d`` -> ``.git-lock (1).d``
+    (measured, Pro 13.0.29), ``pack`` -> ``pack (1)``.  Both shapes are accepted, so a
+    deployment that appends the number instead is caught too.
+    """
+    shapes = [(name, "")]
+    stem, dot, ext = name.rpartition(".")
+    if dot and stem:
+        shapes.append((stem, "." + ext))
+    return any(
+        re.fullmatch(re.escape(s) + r" \(\d+\)" + re.escape(e), candidate) is not None
+        for s, e in shapes
+    )
 from .sqlite_read import open_live_sqlite_ro
 
 
@@ -960,27 +977,41 @@ class SeafileClient:
             resp = self.session.post(url, data={"operation": "mkdir"}, timeout=self.timeout)
             if resp.status_code in (200, 201):
                 # Seafile's mkdir is create-or-duplicate: on a name a concurrent
-                # client just took it answers success and creates "<name> (1)"
-                # beside it (measured on CE 13.0.28: six simultaneous creates
-                # made three directories, no errors).  The loser must hear that
-                # now, before its uploads scatter into a directory no other
-                # client lists -- for the lock directory that is two clients
-                # each watching an empty queue.  One listing per *created*
-                # directory, so an established repository pays nothing.
-                marker = f"{part} ("
+                # client just took it answers success and creates a copy beside
+                # it (measured on CE 13.0.28: six simultaneous creates made three
+                # directories, no errors).  The copy is named before the last
+                # extension, "<stem> (1)<ext>": two first pushes at once on Pro
+                # 13.0.29 left ".git-lock (1).d" beside ".git-lock.d".  Nothing
+                # ever addresses the copy -- every later request names `current`
+                # by path, so both clients use the one directory (the same run:
+                # each waited on the other's lock ticket) -- and the copy is
+                # only litter.  An empty one is removed; one that holds anything
+                # is not ours to judge and is named instead.  One listing per
+                # *created* directory, so an established repository pays nothing.
+                parent = current.rpartition("/")[0] or "/"
                 try:
-                    siblings = self.list_dir(repo_id, current.rpartition("/")[0] or "/")
-                    duplicated = any(
-                        isinstance(e, dict) and str(e.get("name", "")).startswith(marker)
-                        for e in siblings
-                    )
+                    copies = [
+                        str(e.get("name")) for e in self.list_dir(repo_id, parent)
+                        if e.get("type") == "dir" and _is_seafile_copy_of(part, str(e.get("name")))
+                    ]
                 except SeafileAPIError:
-                    duplicated = False
-                if duplicated:
-                    raise SeafileAPIError(
-                        f"another client created {current} at the same moment and the server "
-                        "kept this one as a duplicate; run the command again"
-                    )
+                    copies = []
+                for copy in copies:
+                    copy_path = f"{parent.rstrip('/')}/{copy}"
+                    try:
+                        removed = (
+                            self.list_dir(repo_id, copy_path) == []
+                            and self.delete_entry(repo_id, copy_path)
+                        )
+                    except (SeafileAPIError, requests.RequestException):
+                        removed = False
+                    if not removed:
+                        sys.stderr.write(
+                            f"Warning: {copy_path} was created beside {current} by two clients "
+                            "creating it at once and could not be removed; nothing uses it, "
+                            "and it can be deleted in the web UI\n"
+                        )
+                        sys.stderr.flush()
                 self._known_dirs.add((repo_id, current))
                 continue
             if resp.status_code == 400 and "already exists" in resp.text.lower():
