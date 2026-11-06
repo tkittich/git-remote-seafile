@@ -163,7 +163,15 @@ def _listing(
     second = client.list_dir(repo_id, path)
     if second:
         return second
-    message = f"{path} exists but twice answered empty; the refs under it cannot be read"
+    # A folder made by hand where a ref belongs (issue 6: ``refs/heads/main`` made in the web
+    # UI while following the old advice to create the folders) lists as an empty directory
+    # for good; the same answer from a server listing short is the failure this guards.  The
+    # message names both so the person can tell which by looking in the web UI.
+    message = (
+        f"{path} exists but twice answered empty; the refs under it cannot be read. "
+        "If it is an empty folder (one made by hand in the web UI, for example) delete it there "
+        "and run again; if it holds refs, the server is listing it short"
+    )
     if strict:
         raise SeafileAPIError(message)
     sys.stderr.write(f"Warning: {message}\n")

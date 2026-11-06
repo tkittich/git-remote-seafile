@@ -343,6 +343,19 @@ class TestEmptyListingOfAKnownDirectory(unittest.TestCase):
                            "refs/heads", strict_listing=True))
         self.assertIn("twice answered empty", str(caught.exception))
 
+    def test_the_failure_tells_a_hand_made_folder_from_a_short_listing(self):
+        """Issue 6: a person made ``refs/heads/main`` as a folder in the web UI and got only
+        "twice answered empty", with nothing to say what to look at."""
+        from git_remote_seafile.client import SeafileAPIError
+
+        with self.assertRaises(SeafileAPIError) as caught:
+            list(iter_refs(self._tree_with_existing_empty_heads(), "rid", "/git-repo",
+                           "refs/heads", strict_listing=True))
+        message = str(caught.exception)
+        self.assertIn("made by hand in the web UI", message)
+        self.assertIn("delete it there", message)
+        self.assertIn("listing it short", message)
+
     def test_strict_gc_walk_treats_it_as_a_read_failure(self):
         from git_remote_seafile.client import SeafileAPIError
 

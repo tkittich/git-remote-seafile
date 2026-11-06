@@ -12,6 +12,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import requests
+
 from git_remote_seafile.client import (
     SeafileAPIError,
     SeafileAuthError,
@@ -307,21 +309,79 @@ class TestClientAPI(unittest.TestCase):
         resp.text = text
         return patch.object(self.client.session, "get", return_value=resp)
 
-    def test_a_403_reading_a_file_says_what_the_server_said_and_both_explanations(self):
-        """Issue 6: the first push to a new path failed with a bare ``HTTP 403`` on Seafile
-        Professional, which reads as a permission problem and hides the likelier cause."""
-        with self._answers(403, '{"error_msg": "Permission   denied."}'):
+    def _file_and_dir(self, file_status, file_text="", dir_status=404, dir_text="", dir_error=None):
+        """A session whose file reads answer *file_status* and whose directory listings answer
+        *dir_status* (or raise *dir_error*); ``self.calls`` records the URLs asked."""
+        calls: list[str] = []
+        self.calls = calls
+
+        def get(url, **_kw):
+            calls.append(url)
+            if dir_error is not None and "/dir/" in url:
+                raise dir_error
+            resp = MagicMock()
+            resp.status_code, resp.text = (file_status, file_text) if "/file/" in url else (dir_status, dir_text)
+            return resp
+
+        return patch.object(self.client.session, "get", side_effect=get)
+
+    def test_a_403_or_500_under_a_folder_the_listing_says_is_missing_is_not_found(self):
+        """Issue 6: Seafile Professional answers a file read under a missing folder with 403
+        (one level missing) or a 500 page (two or more), where Community Edition answers 404.
+        The listing of the folder still answers 404, and that is what decides."""
+        dest = Path(tempfile.gettempdir()) / "grs-unused"
+        for status in (403, 500):
+            with self.subTest(status=status), self._file_and_dir(status, "<html>Page unavailable</html>"):
+                self.assertIsNone(self.client.get_file_bytes("repo1", "/newrepo/refs/heads/main"))
+                self.assertFalse(self.client.download_file_to("repo1", "/newrepo/refs/heads/main", dest))
+                # The listing asked about is the file's own folder, nothing wider.
+                listings = [u for u in self.calls if "/dir/" in u]
+                self.assertTrue(listings and all(u.endswith("p=/newrepo/refs/heads") for u in listings), listings)
+
+    def test_a_403_under_a_folder_that_exists_stays_an_error_that_names_the_permissions(self):
+        for dir_status, dir_text in ((200, "[]"), (403, '{"error_msg":"Permission denied."}')):
+            with self.subTest(listing=dir_status), self._file_and_dir(403, '{"error_msg": "Permission   denied."}', dir_status, dir_text):
+                with self.assertRaises(SeafileAPIError) as caught:
+                    self.client.get_file_bytes("repo1", "/newrepo/HEAD")
+                message = str(caught.exception)
+                self.assertIn("Failed to get download link for /newrepo/HEAD: HTTP 403", message)
+                self.assertIn('"error_msg": "Permission denied."', message)       # whitespace folded
+                self.assertIn("may not read here", message)
+                self.assertIn("permissions on the library", message)
+                self.assertNotIn("create the folder", message)
+                with self.assertRaises(SeafileAPIError) as streamed:
+                    self.client.download_file_to("repo1", "/newrepo/HEAD", Path(tempfile.gettempdir()) / "grs-unused")
+                self.assertIn("may not read here", str(streamed.exception))
+
+    def test_a_500_under_a_folder_that_exists_stays_an_error(self):
+        with self._file_and_dir(500, "<html>Page unavailable</html>", 200, "[]"):
             with self.assertRaises(SeafileAPIError) as caught:
-                self.client.get_file_bytes("repo1", "/newrepo/HEAD")
-            message = str(caught.exception)
-            self.assertIn("Failed to get download link for /newrepo/HEAD: HTTP 403", message)
-            self.assertIn('"error_msg": "Permission denied."', message)       # whitespace folded
-            self.assertIn("may not read here", message)
-            self.assertIn("folder that does not exist yet", message)
-            self.assertIn("create the folder in the web UI", message)
-            with self.assertRaises(SeafileAPIError) as streamed:
-                self.client.download_file_to("repo1", "/newrepo/HEAD", Path(tempfile.gettempdir()) / "grs-unused")
-            self.assertIn("folder that does not exist yet", str(streamed.exception))
+                self.client.get_file_bytes("repo1", "/repo/refs/heads/main")
+        self.assertIn("HTTP 500", str(caught.exception))
+
+    def test_only_403_and_500_ask_whether_the_folder_exists(self):
+        """A proxy's 502/503/504 says nothing about the folder: no listing, no guess."""
+        for status in (401, 429, 502, 503, 504):
+            with self.subTest(status=status), self._file_and_dir(status, "gateway"):
+                with self.assertRaises(SeafileAPIError):
+                    self.client.get_file_bytes("repo1", "/newrepo/refs/heads/main")
+                self.assertEqual(len(self.calls), 1, self.calls)
+
+    def test_a_listing_that_cannot_answer_leaves_the_original_error(self):
+        for label, kwargs in (
+            ("server error", dict(dir_status=500, dir_text="boom")),
+            ("no connection", dict(dir_error=requests.ConnectionError("down"))),
+        ):
+            with self.subTest(label), self._file_and_dir(403, "no", **kwargs):
+                with self.assertRaises(SeafileAPIError) as caught:
+                    self.client.get_file_bytes("repo1", "/newrepo/refs/HEAD")
+                self.assertIn("HTTP 403", str(caught.exception))
+
+    def test_a_file_at_the_top_of_the_library_has_no_folder_to_ask_about(self):
+        with self._file_and_dir(403, "no"):
+            with self.assertRaises(SeafileAPIError):
+                self.client.get_file_bytes("repo1", "/HEAD")
+        self.assertEqual(len(self.calls), 1, self.calls)
 
     def test_a_servers_reply_is_one_printable_capped_line_without_secrets(self):
         """A proxy's HTML page flooded the message, and a server could write escape sequences

@@ -1036,14 +1036,40 @@ class SeafileClient:
         parts = urlparse(url)
         return tuple(x for x in (parts.path, parts.query) if x)
 
+    def _file_is_under_a_missing_folder(self, repo_id: str, clean_path: str, resp: requests.Response) -> bool:
+        """True when a failed file read only means that the file's folder does not exist.
+
+        Seafile Professional 13.0.29 answers a file read under a missing folder with 403 (one
+        level missing) or a 500 page (two or more), where Community Edition answers 404
+        (issue 6, measured on both; the owner and a shared user alike, under every
+        sub-folder permission).  The first push to a new path reads ``HEAD`` and the ref
+        files before any folder exists, so it stopped on the first of them.
+
+        The 403 body is the same for "no permission" and "no folder", so the file read
+        cannot say which.  The directory listing can: a missing folder lists as 404 for
+        anyone, and a folder that exists lists as 200, or 403 to a person who may not see it.
+        Only a clean 404 for the file's own folder counts.  Anything else -- another status
+        on the file (a proxy's 502 says nothing about folders), a listing that fails, a
+        file at the top of the library -- leaves the original error, so a real permission
+        problem or a flaky server is never read as "no such file": a ref wrongly read as
+        absent is a ref a push may overwrite.
+        """
+        if resp.status_code not in (403, 500):
+            return False
+        folder = clean_path.rpartition("/")[0]
+        if not folder:
+            return False
+        try:
+            return not self.dir_exists(repo_id, folder)
+        except (SeafileAPIError, requests.RequestException):
+            return False
+
     def _download_link_error(self, clean_path: str, resp: requests.Response) -> SeafileAPIError:
         """The error for a file read the server answered with something other than 200 or 404.
 
-        A 403 on the first push to a path that does not exist yet was reported on Seafile
-        Professional (issue 6): the message said only ``HTTP 403``, which reads as a
-        permission problem and sends the person to the wrong place.  Community Edition
-        answers 404 there and is handled; nothing here can tell which a given server meant,
-        so the message carries what the server said and both explanations.
+        The message carries what the server said, and for a 403 where the folder is known
+        to exist (or is unknown) it names the permissions, because a bare ``HTTP 403``
+        reads as a permission problem and the person needs to know where to look.
         """
         said = self._said(resp.text)
         message = f"Failed to get download link for {clean_path}: HTTP {resp.status_code}"
@@ -1051,10 +1077,9 @@ class SeafileClient:
             message += f" {said}"
         if resp.status_code == 403:
             message += (
-                ". Either this account may not read here, or the server answers 403 (not 404) "
-                "for a folder that does not exist yet: if this is the first push to this path, "
-                "create the folder in the web UI and push again, and run "
-                "'git-remote-seafile doctor <url>' and send its output to the issue tracker"
+                ". This account may not read here: check the permissions on the library and "
+                "on this folder. If they allow it, run 'git-remote-seafile doctor <url>' and "
+                "send its output to the issue tracker"
             )
         return SeafileAPIError(message)
 
@@ -1080,6 +1105,8 @@ class SeafileClient:
         if resp.status_code == 404:
             return None
         if resp.status_code != 200:
+            if self._file_is_under_a_missing_folder(repo_id, clean_path, resp):
+                return None
             raise self._download_link_error(clean_path, resp)
 
         dl_url = resp.text.strip().strip('"')
@@ -1472,6 +1499,8 @@ class SeafileClient:
         if resp.status_code == 404:
             return False
         if resp.status_code != 200:
+            if self._file_is_under_a_missing_folder(repo_id, clean_path, resp):
+                return False
             raise self._download_link_error(clean_path, resp)
 
         dl_url = self._adjust_url(resp.text.strip().strip('"'))

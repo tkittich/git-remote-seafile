@@ -154,6 +154,17 @@ class _Handler(BaseHTTPRequestHandler):
                 return self._send(404, b"null")
             if f.get("file_500_on") and f["file_500_on"] in p:
                 return self._send(500, b"injected failure")
+            if f.get("pro_missing_parent"):
+                # Seafile Professional 13.0.29 (measured, issue 6): a file read whose parent
+                # folder is missing is a permission failure, not a 404 -- 403 when one level
+                # is missing, a 500 page when two or more are.  The directory listing still
+                # answers 404 for the missing folder (the branch above).
+                parent = p.rpartition("/")[0] or "/"
+                if parent != "/" and not self.stub.has_under(rid, parent):
+                    grand = parent.rpartition("/")[0] or "/"
+                    if grand != "/" and not self.stub.has_under(rid, grand):
+                        return self._send(500, b"<html>Page unavailable</html>")
+                    return self._send(403, b'{"error_msg":"You do not have permission to access this file."}')
             if p not in self.stub.files.get(rid, {}):
                 return self._send(404, b"null")
             # ASCII, like a real download link (token + percent-encoded name): the

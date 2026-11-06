@@ -119,6 +119,49 @@ class TestFaultInjection(E2ETestCase):
         self.assertIn("HTTP 500", combined)
 
 
+class TestServerThatAnswersForbiddenForAMissingFolder(E2ETestCase):
+    """Seafile Professional answers a file read under a missing folder with 403 (one level
+    missing) or a 500 page (two or more), where Community Edition answers 404 (issue 6).
+    The first push to a new path read ``HEAD`` and ``refs/heads/main`` before any folder
+    existed and stopped at the first of them."""
+
+    def setUp(self):
+        super().setUp()
+        self.stub.faults["pro_missing_parent"] = 1
+
+    def test_listing_a_path_nobody_has_pushed_to_is_empty_not_an_error(self):
+        proc = run_git(["ls-remote", self.url("pro_empty")], self.work, self.env, check=False)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertEqual(proc.stdout.strip(), "")
+
+    def test_first_push_to_a_new_path_then_clone_and_second_push(self):
+        src = init_repo(self.work / "src_pro", self.env)
+        commit_file(src, "a.txt", "one\n", "c1", self.env)
+        run_git(["remote", "add", "origin", self.url("pro_repo")], src, self.env)
+        run_git(["push", "-u", "origin", "main"], src, self.env)
+
+        dst = self.work / "clone_pro"
+        run_git(["clone", self.url("pro_repo"), str(dst)], self.work, self.env)
+        self.assertIn("c1", run_git(["log", "--oneline"], dst, self.env).stdout)
+
+        commit_file(src, "b.txt", "two\n", "c2", self.env)
+        run_git(["push", "origin", "main"], src, self.env)
+        run_git(["pull", "--ff-only", "origin", "main"], dst, self.env)
+        self.assertTrue((dst / "b.txt").is_file())
+
+    def test_an_existing_ref_that_answers_500_is_still_an_error(self):
+        # The stub's 500 on a ref that exists (its parent lists fine) must stay loud: only a
+        # parent the directory listing proves missing turns a 403/500 into "not there".
+        src = init_repo(self.work / "src_pro_loud", self.env)
+        commit_file(src, "a.txt", "one\n", "c1", self.env)
+        run_git(["remote", "add", "origin", self.url("pro_loud")], src, self.env)
+        run_git(["push", "-u", "origin", "main"], src, self.env)
+        self.stub.faults["file_500_on"] = "refs/heads/main"
+        proc = run_git(["ls-remote", self.url("pro_loud")], self.work, self.env, check=False)
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("HTTP 500", proc.stdout + proc.stderr)
+
+
 class TestUnverifiedUploadCleanup(E2ETestCase):
     """A push whose pack cannot be proven present must not leave it behind.
 
