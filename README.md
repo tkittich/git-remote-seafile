@@ -6,7 +6,7 @@
 
 A transparent, zero-thrash **Git remote helper** for Seafile servers.
 
-`git-remote-seafile` allows you to use your private Seafile server (Community or Professional Edition) as an authentic, secure (HTTPS/TLS), access-controlled Git remote backend using native Git commands (`git clone`, `git push`, `git pull`).
+`git-remote-seafile` allows you to use your private Seafile server (Community or Professional Edition; both editions of 13.0 are tested on every release) as an authentic, secure (HTTPS/TLS), access-controlled Git remote backend using native Git commands (`git clone`, `git push`, `git pull`).
 
 ---
 

@@ -223,6 +223,14 @@ The six alternatives people reach for first — a live working tree in a synced 
 ### Requirements
 - Python 3.10+
 - Git 2.20+
+- A Seafile server, Community Edition or Professional. **Tested against both
+  editions of 13.0**: every release runs the real-server suite against
+  throwaway CE and Pro containers (`13.0-latest`), including a second account
+  under each Pro folder permission, group-shared and group-owned libraries,
+  and two accounts pushing first to one path at once. The two editions answer
+  some requests differently (a file read under a missing folder is 404 on CE,
+  403 or a 500 page on Pro); the helper handles both. Older servers are not
+  tested; `git-remote-seafile doctor` checks a destination before you push.
 - [`requests`](https://pypi.org/project/requests/) **2.32.4 or newer** — a
   security floor rather than a feature one. `pip install` resolves it for you;
   the number matters if you are pinning dependencies by hand or packaging this
@@ -922,6 +930,7 @@ The table below covers the common failures. For a repository that is unreadable,
 | `Warning: the server refused an upload of … (HTTP 413)` (or `the connection was closed`) | A reverse proxy's request-size limit (nginx `client_max_body_size`) is smaller than the pack | Nothing to do: the push removes what it uploaded, rebuilds in smaller packs and goes on, up to six times. After a 413 it keeps four fifths of the size that worked as `seafile.gcmaxpackmib` in that repository and says so in a `Notice:`. `doctor <url> --upload-limit` measures the exact limit; if the push gives up, the limit is below 4 MiB and the proxy needs raising ([RUNBOOK.md](RUNBOOK.md) section 2). |
 | `login`: `Error: http://… is plain HTTP` | `login` will not send a password unencrypted | Use the server's `https://` address. |
 | `HTTP 403 Forbidden` on push | Read-only library permissions | Ensure your Seafile account has Read-Write permission on the target library. |
+| `Failed to acquire lock: Failed to check dir /<folder>: HTTP 403 ... This account may not see here` (or `may not write here`, `Failed to create directory`) | The account has the library but not this folder: on Seafile Professional a folder permission (read-only, online preview or edit, invisible) applies to the folder and everything below it, and the lock is simply the first thing a push writes. | Push somewhere the account may write, or ask the library owner to change the folder permission (library settings -> Folder Permission). |
 | `Failed to get download link for /<path>/HEAD: HTTP 403` (or `HTTP 500` with an HTML page) on the **first** push to a new path | Seafile Professional answers a file read under a folder that does not exist with 403 (one level missing) or a 500 page (two or more); Community Edition answers 404 (issue 6, measured on Pro 13.0.29). Later versions ask for the folder's listing and treat a missing folder as "not there yet". A 403 that remains means the account may not read that folder. | Upgrade. If the message still appears, check the library's and the folder's permissions, then run `git-remote-seafile doctor <url>` and add its output to the issue. Do not create `refs/heads/<branch>` by hand: a folder where a ref file belongs makes every run fail with `twice answered empty`. |
 | `Push failed: Repository is locked by '<owner>' on '<machine>'` | Another client is mid-push and holds the lock | Wait for that push to finish, or raise `seafile.locktimeout`. If the other client crashed, the lease expires on its own (`seafile.locklease`, default 60s). `git-remote-seafile lock-status <url>` names the holder; `unlock <url> --force` breaks a stale lock. |
 | `the uploaded packfile could not be verified on the remote (... bytes on the remote but ... locally); no ref was updated` | The push uploaded a pack and the directory listing does not show it whole (a truncated write, a proxy that answered 2xx for a failed upload) | Nothing was published; re-run the push. If it repeats, check the server and any proxy limits (`seafile.gcmaxpackmib`, §14 *Size and storage*). |

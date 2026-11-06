@@ -25,6 +25,22 @@ from .seafile_paths import get_candidate_db_paths
 from .url import is_loopback_host, normalize_netloc
 
 
+def _denied_hint(resp: requests.Response, verb: str) -> str:
+    """What a 403 on a folder means, for the end of the error message; empty for other statuses.
+
+    A Pro folder permission (read-only, preview, cloud-edit, invisible) refuses with a bare
+    ``Permission denied.``, and the message it surfaces in starts with whatever the helper was
+    doing at the time -- "Failed to acquire lock: ..." on a push -- which points the reader at
+    the lock rather than at the folder's permissions.
+    """
+    if resp.status_code != 403:
+        return ""
+    return (
+        f". This account may not {verb} here: check the permissions on the library and on "
+        "this folder (a folder permission applies to everything below it)"
+    )
+
+
 def _is_seafile_copy_of(name: str, candidate: str) -> bool:
     """True when *candidate* is how Seafile names a second ``mkdir`` of *name*.
 
@@ -914,7 +930,10 @@ class SeafileClient:
         if resp.status_code == 404:
             return []
         if resp.status_code != 200:
-            raise SeafileAPIError(f"Failed to list dir {clean_path}: HTTP {resp.status_code} {self._said(resp.text)}")
+            raise SeafileAPIError(
+                f"Failed to list dir {clean_path}: HTTP {resp.status_code} {self._said(resp.text)}"
+                + _denied_hint(resp, "see")
+            )
         data = resp.json()
         # Normalise here, once, so no caller has to guard: a non-array response
         # is a protocol error worth naming rather than an AttributeError three
@@ -950,6 +969,7 @@ class SeafileClient:
         # the caller can decide about.
         raise SeafileAPIError(
             f"Failed to check dir {clean_path}: HTTP {resp.status_code} {self._said(resp.text)}"
+            + _denied_hint(resp, "see")
         )
 
     def evict_known_dir(self, repo_id: str, dir_path: str) -> None:
@@ -1031,6 +1051,7 @@ class SeafileClient:
 
             raise SeafileAPIError(
                 f"Failed to create directory {current}: HTTP {resp.status_code} {self._said(resp.text)}"
+                + _denied_hint(resp, "write")
             )
         return True
 
@@ -1277,7 +1298,10 @@ class SeafileClient:
             link_url = f"{self.server_url}/api2/repos/{repo_id}/upload-link/?p={quote(clean_parent, safe='/')}"
             resp = self.session.get(link_url, timeout=self.timeout)
             if resp.status_code != 200:
-                raise SeafileAPIError(f"Failed to get upload link for {clean_parent}: HTTP {resp.status_code} {self._said(resp.text)}")
+                raise SeafileAPIError(
+                    f"Failed to get upload link for {clean_parent}: HTTP {resp.status_code} "
+                    f"{self._said(resp.text)}" + _denied_hint(resp, "write")
+                )
             return self._adjust_url(resp.text.strip().strip('"'))
 
         upload_url = _get_upload_url()

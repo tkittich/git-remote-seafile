@@ -1888,6 +1888,29 @@ class TestSeafileClientOperations(unittest.TestCase):
         self.assertIn(".git-lock (2).d", err.getvalue())
         self.assertIn(("repo1", "/r/.git-lock.d"), client._known_dirs)
 
+    def test_a_folder_403_names_the_permissions_and_other_statuses_do_not(self):
+        """A Pro folder permission refuses with a bare ``Permission denied.``; on a push the
+        message starts "Failed to acquire lock:", so the hint is what points at the folder."""
+        client = SeafileClient(server_url="https://seafile.example.com", token="fake_token", timeout=10)
+        client.session = MagicMock()
+        denied = MagicMock(status_code=403, text='{"error_msg":"Permission denied."}')
+        for call, verb in ((lambda: client.dir_exists("r", "/invisible"), "see"),
+                           (lambda: client.list_dir("r", "/invisible"), "see")):
+            client.session.get.return_value = denied
+            with self.assertRaises(SeafileAPIError) as caught:
+                call()
+            self.assertIn(f"This account may not {verb} here", str(caught.exception))
+            self.assertIn("Permission denied.", str(caught.exception))
+        client.session.get.return_value = MagicMock(status_code=404)
+        client.session.post.return_value = denied
+        with self.assertRaises(SeafileAPIError) as caught:
+            client.mkdir_p("r", "/read-only/new")
+        self.assertIn("This account may not write here", str(caught.exception))
+        client.session.get.return_value = MagicMock(status_code=502, text="Bad Gateway")
+        with self.assertRaises(SeafileAPIError) as caught:
+            client.dir_exists("r", "/x")
+        self.assertNotIn("may not", str(caught.exception))
+
     def test_a_seafile_copy_name_is_recognised_in_both_shapes(self):
         from git_remote_seafile.client import _is_seafile_copy_of
 

@@ -947,6 +947,8 @@ class SharedUserTests(_RealServerFixture):
                 out = push.stdout + push.stderr
                 self.assertNotEqual(push.returncode, 0, f"{perm}: the push must be refused\n{out}")
                 self.assertIn("HTTP 403", out, f"{perm}: the refusal must name the server's answer")
+                self.assertIn("This account may not", out,
+                              f"{perm}: the refusal must point at the permissions, not the lock")
                 listed = self.client.list_dir(self.rid, f"/{self.base}/rules/{perm}")
                 self.assertNotIn("grs", [e["name"] for e in listed],
                                  f"{perm}: a refused push must leave nothing in the folder")
