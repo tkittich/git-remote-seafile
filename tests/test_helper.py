@@ -779,6 +779,23 @@ class TestRemoteHelper(unittest.TestCase):
         self.assertIn("error refs/heads/main stale info", out.getvalue())
         h.client.delete_entry.assert_not_called()
 
+    def test_a_lease_lost_while_the_ref_was_deleted_is_not_reported_ok(self):
+        h = make_helper()
+        h.client = MagicMock()
+        h.repo_id = "repo1"
+        h.repo_path = "/git-repo"
+        h._refs_cache = {}
+        h.client.get_file_text.side_effect = ["abc", None]     # there before, gone after
+        lock = MagicMock()
+        lock.verify_ownership.side_effect = [True, False]       # before the delete, after it
+        lock.ownership_state.return_value = LEASE_LOST
+        out = io.StringIO()
+        with patch("sys.stdout", out):
+            h._delete_remote_ref(lock, "refs/heads/old")
+        h.client.delete_entry.assert_called_once()
+        self.assertNotIn("ok refs/heads/old", out.getvalue())
+        self.assertIn("error refs/heads/old the lock was lost while this ref was being deleted", out.getvalue())
+
     def test_dry_run_answers_a_missing_deletion_as_a_real_push_does(self):
         h = make_helper()
         h.client = MagicMock()
@@ -1120,8 +1137,8 @@ class TestRemoteHelper(unittest.TestCase):
         h._refs_cache = {}
         lock = MagicMock()
         lock.__enter__.return_value = lock
-        # before the loop, before b1, then the lease is gone before b2
-        lock.verify_ownership.side_effect = [True, True, False]
+        # before the loop, before b1, after b1 is written, then the lease is gone before b2
+        lock.verify_ownership.side_effect = [True, True, True, False]
         lock.ownership_state.return_value = LEASE_LOST
         out, err = io.StringIO(), io.StringIO()
         with patch("sys.stdout", out), patch("sys.stderr", err), \
@@ -1132,6 +1149,32 @@ class TestRemoteHelper(unittest.TestCase):
         self.assertNotIn("b2", written, "a ref was written after the lease was lost")
         self.assertIn("ok refs/heads/b1", out.getvalue())
         self.assertIn("error refs/heads/b2 could not confirm lock ownership", out.getvalue())
+
+    @patch("git_remote_seafile.helper.rev_parse", return_value="sha_main")
+    @patch("git_remote_seafile.helper.is_ancestor", return_value=True)
+    @patch("git_remote_seafile.helper.get_objects_to_push", return_value=[])
+    def test_a_lease_lost_while_the_ref_was_written_is_not_reported_ok(self, mock_objs, mock_ancestor, mock_rev):
+        """A holder suspended between the last fence and the write can resume after another
+        client pushed, overwrite it and read back its own value.  The proof after the write is
+        what tells that from an ordinary write (REVIEW.be01e37 sonnet A1)."""
+        h = make_helper()
+        h.client = MagicMock()
+        h.client.get_file_text.return_value = None
+        h.repo_id = "repo1"
+        h.repo_path = "/git-repo"
+        h._refs_cache = {}
+        lock = MagicMock()
+        lock.__enter__.return_value = lock
+        # before the loop, before the ref, then gone once the write is done
+        lock.verify_ownership.side_effect = [True, True, False]
+        lock.ownership_state.return_value = LEASE_LOST
+        out, err = io.StringIO(), io.StringIO()
+        with patch("sys.stdout", out), patch("sys.stderr", err),                 patch("git_remote_seafile.helper.RemoteLock", return_value=lock):
+            h.cmd_push(["refs/heads/main:refs/heads/main"])
+        self.assertEqual(len(h.client.upload_file.call_args_list), 1, "the ref was written")
+        self.assertNotIn("ok refs/heads/main", out.getvalue())
+        self.assertIn("error refs/heads/main the lock was lost while this ref was being written", out.getvalue())
+        self.assertNotIn("main", h._refs_cache, "a push reported as failed must not feed the exclusion cache")
 
     # -- a landed push is not reported rejected --------------------------------
     @patch("git_remote_seafile.helper.rev_parse", return_value="sha_main")

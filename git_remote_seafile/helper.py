@@ -736,6 +736,13 @@ class RemoteHelper:
                 # file measured so; a broken or hostile server could do it for
                 # a present one).  The write path reads back; so does this.
                 _proto_error(dst, "the server accepted the delete but the ref is still there")
+            elif not lock.verify_ownership():
+                _proto_error(
+                    dst,
+                    "the lock was lost while this ref was being deleted "
+                    f"({describe_ownership_failure(lock.ownership_state())}), so another client may "
+                    "have updated it meanwhile; fetch, check the remote, and push again",
+                )
             else:
                 # Forget it here as well.  The cache is read back as a push
                 # exclusion list, and it is only truthful while the ref still
@@ -1051,7 +1058,8 @@ class RemoteHelper:
                 + "); no ref was updated"
             )
 
-    def _publish_ref(self, dst: str, local_sha: str, expected_remote_sha: str | None, force: bool) -> bool:
+    def _publish_ref(self, dst: str, local_sha: str, expected_remote_sha: str | None, force: bool,
+                     lock: Any = None) -> bool:
         """Move one remote ref and report it; True when ``ok`` was written.
 
         CAS re-check, write, read-back, conflict-copy check, default HEAD.
@@ -1123,6 +1131,24 @@ class RemoteHelper:
                     "writing it; the write is unverified.\n"
                 )
                 sys.stderr.flush()
+
+        # The fence that came before the write is moments old, but nothing bounds
+        # "moments": a process suspended between the final read and the request
+        # (a closed laptop, a paused VM) can resume after its lease was reaped and
+        # another client pushed, overwrite that push, and read back its own value
+        # -- which matches.  Proving the lease again is what tells that case from
+        # an ordinary write; a lost lease is reported, not ``ok``.
+        if lock is not None and not lock.verify_ownership():
+            reason = (
+                "the lock was lost while this ref was being written "
+                f"({describe_ownership_failure(lock.ownership_state())}), so another client may "
+                "have pushed meanwhile and this write may have replaced its commit; fetch, check "
+                "the remote, and push again"
+            )
+            _proto_error(dst, reason)
+            sys.stderr.write(f"\nPush error for {dst}: {reason}\n")
+            sys.stderr.flush()
+            return False
 
         # A concurrent writer leaves its copy *beside* the ref, and the
         # read-back above cannot see that: it reads our path, which holds one of
@@ -1376,7 +1402,7 @@ class RemoteHelper:
                             reported.add(upd.dst)
                             continue
                         try:
-                            self._publish_ref(upd.dst, upd.local_sha, upd.expected, upd.force)
+                            self._publish_ref(upd.dst, upd.local_sha, upd.expected, upd.force, lock)
                         except Exception as ex:
                             _proto_error(upd.dst, ex)
                             sys.stderr.write(f"\nPush error for {upd.dst}: {ex}\n")
