@@ -32,7 +32,13 @@ class LoginError(Exception):
 
 
 def _is_loopback(server: str) -> bool:
-    host = normalize_netloc(server).rsplit(":", 1)[0]
+    # The host as a URL parser reads it: cutting the port off the netloc at the last
+    # colon turned `[::1]` into `:` (review 4f1cdd4, deepseek-v4.1-flash G1.1), so
+    # `http://[::1]` was refused while the client treats it as loopback.
+    try:
+        host = urlparse(server if "://" in server else f"//{server}").hostname or ""
+    except ValueError:
+        return False
     return is_loopback_host(host)
 
 

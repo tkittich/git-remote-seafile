@@ -121,7 +121,10 @@ class TestLogin(_Fixture):
             with self.subTest(server=server):
                 with self.assertRaises(LoginError):
                     normalise_server(server)
-        for server in ("http://127.0.0.1:8000", "http://localhost", "http://[::1]:8000"):
+        # `http://[::1]` with no port lost its host to a cut at the last colon
+        # (review 4f1cdd4, deepseek-v4.1-flash G1.1).
+        for server in ("http://127.0.0.1:8000", "http://localhost", "http://[::1]:8000",
+                       "http://[::1]", "http://LOCALHOST."):
             with self.subTest(server=server):
                 self.assertEqual(normalise_server(server), server)
 
