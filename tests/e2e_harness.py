@@ -154,11 +154,15 @@ class _Handler(BaseHTTPRequestHandler):
                 return self._send(404, b"null")
             if f.get("file_500_on") and f["file_500_on"] in p:
                 return self._send(500, b"injected failure")
-            if f.get("pro_missing_parent"):
+            if f.get("pro_missing_parent") or os.environ.get("GRS_STUB_PRO"):
                 # Seafile Professional 13.0.29 (measured, issue 6): a file read whose parent
                 # folder is missing is a permission failure, not a 404 -- 403 when one level
                 # is missing, a 500 page when two or more are.  The directory listing still
-                # answers 404 for the missing folder (the branch above).
+                # answers 404 for the missing folder (the branch above).  GRS_STUB_PRO=1 turns
+                # this on for every stub in the run, so the whole suite can be swept against
+                # Pro's answers: `GRS_STUB_PRO=1 python tools/run_tests_parallel.py` passed
+                # whole on 2026-11-06 (every flow -- push, clone, lock, gc, LFS, repair,
+                # snapshot, payload -- reads only through the two calls the fix covers).
                 parent = p.rpartition("/")[0] or "/"
                 if parent != "/" and not self.stub.has_under(rid, parent):
                     grand = parent.rpartition("/")[0] or "/"
