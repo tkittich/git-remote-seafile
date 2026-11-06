@@ -796,6 +796,23 @@ class TestRemoteHelper(unittest.TestCase):
         self.assertNotIn("ok refs/heads/old", out.getvalue())
         self.assertIn("error refs/heads/old the lock was lost while this ref was being deleted", out.getvalue())
 
+    def test_an_unproven_lease_after_a_delete_is_a_warning_not_a_failure(self):
+        """The delete twin of the case above (deepseek-v4.1-flash B1)."""
+        h = make_helper()
+        h.client = MagicMock()
+        h.repo_id = "repo1"
+        h.repo_path = "/git-repo"
+        h._refs_cache = {}
+        h.client.get_file_text.side_effect = ["abc", None]
+        lock = MagicMock()
+        lock.verify_ownership.side_effect = [True, False]
+        lock.ownership_state.return_value = LEASE_UNKNOWN
+        out, err = io.StringIO(), io.StringIO()
+        with patch("sys.stdout", out), patch("sys.stderr", err):
+            h._delete_remote_ref(lock, "refs/heads/old")
+        self.assertIn("ok refs/heads/old", out.getvalue())
+        self.assertIn("was deleted, but the lock could not be proven", err.getvalue())
+
     def test_dry_run_answers_a_missing_deletion_as_a_real_push_does(self):
         h = make_helper()
         h.client = MagicMock()
@@ -1175,6 +1192,35 @@ class TestRemoteHelper(unittest.TestCase):
         self.assertNotIn("ok refs/heads/main", out.getvalue())
         self.assertIn("error refs/heads/main the lock was lost while this ref was being written", out.getvalue())
         self.assertNotIn("main", h._refs_cache, "a push reported as failed must not feed the exclusion cache")
+        self.assertIn("only in that client's clone until it pushes again", out.getvalue())
+
+    @patch("git_remote_seafile.helper.rev_parse", return_value="sha_main")
+    @patch("git_remote_seafile.helper.is_ancestor", return_value=True)
+    @patch("git_remote_seafile.helper.get_objects_to_push", return_value=[])
+    def test_an_unproven_lease_after_a_read_back_write_is_a_warning_not_a_failure(
+        self, mock_objs, mock_ancestor, mock_rev
+    ):
+        """Review 4f1cdd4 (deepseek-v4.1-flash B1): LEASE_UNKNOWN (the ticket could not be
+        read or rewritten) after a write that was read back was reported as a lost lock.
+        It proves nothing either way, which is a warning, the read-back's own rule."""
+        h = make_helper()
+        h.client = MagicMock()
+        h.repo_id = "repo1"
+        h.repo_path = "/git-repo"
+        h._refs_cache = {}
+        h.client.get_file_text.side_effect = (
+            lambda rid, path: "sha_main" if h.client.upload_file.called and path.endswith("main") else None
+        )
+        lock = MagicMock()
+        lock.__enter__.return_value = lock
+        lock.verify_ownership.side_effect = [True, True, False]
+        lock.ownership_state.return_value = LEASE_UNKNOWN
+        out, err = io.StringIO(), io.StringIO()
+        with patch("sys.stdout", out), patch("sys.stderr", err), \
+                patch("git_remote_seafile.helper.RemoteLock", return_value=lock):
+            h.cmd_push(["refs/heads/main:refs/heads/main"])
+        self.assertIn("ok refs/heads/main", out.getvalue())
+        self.assertIn("written and read back, but the lock could not be proven", err.getvalue())
 
     # -- a landed push is not reported rejected --------------------------------
     @patch("git_remote_seafile.helper.rev_parse", return_value="sha_main")

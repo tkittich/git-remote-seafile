@@ -22,6 +22,7 @@ from .diagnose import MIB, PACK_HEADROOM, size_refusal, split_cap_bytes
 from .lock import (
     LEASE_LOST,
     LEASE_PREEMPTED,
+    LEASE_UNKNOWN,
     RemoteLock,
     describe_ownership_failure,
 )
@@ -82,6 +83,17 @@ def _flatten(text: object) -> str:
     failed push turns into an invented one.
     """
     return str(text).replace("\r", " ").replace("\n", " ").strip()
+
+
+#: The error after a ref write or delete whose lease was then proven lost.  The client
+#: whose push this one may have replaced was told ``ok``; its commits are only in its
+#: own clone until it pushes again, which is what the reader has to pass on (review
+#: 4f1cdd4, opus-5.5 A4).
+_LEASE_LOST_AFTER_WRITE = (
+    "the lock was lost while this ref was being {verb} ({why}), so another client may have "
+    "pushed meanwhile and this change may have replaced its commit, which is then only in "
+    "that client's clone until it pushes again; fetch, check the remote, and push again"
+)
 
 
 def _proto_error(dst: str, message: object) -> None:
@@ -767,14 +779,18 @@ class RemoteHelper:
                 # file measured so; a broken or hostile server could do it for
                 # a present one).  The write path reads back; so does this.
                 _proto_error(dst, "the server accepted the delete but the ref is still there")
-            elif not lock.verify_ownership():
-                _proto_error(
-                    dst,
-                    "the lock was lost while this ref was being deleted "
-                    f"({describe_ownership_failure(lock.ownership_state())}), so another client may "
-                    "have updated it meanwhile; fetch, check the remote, and push again",
-                )
+            elif not lock.verify_ownership() and lock.ownership_state() != LEASE_UNKNOWN:
+                _proto_error(dst, _LEASE_LOST_AFTER_WRITE.format(
+                    verb="deleted", why=describe_ownership_failure(lock.ownership_state())
+                ))
             else:
+                if lock.ownership_state() == LEASE_UNKNOWN:
+                    # The same rule as after a write: unproven is not lost (B1 above).
+                    sys.stderr.write(
+                        f"Warning: {dst} was deleted, but the lock could not be proven "
+                        f"afterwards ({describe_ownership_failure(LEASE_UNKNOWN)}).\n"
+                    )
+                    sys.stderr.flush()
                 # Forget it here as well.  The cache is read back as a push
                 # exclusion list, and it is only truthful while the ref still
                 # exists on the remote -- a stale SHA would have a later push
@@ -1168,18 +1184,29 @@ class RemoteHelper:
         # (a closed laptop, a paused VM) can resume after its lease was reaped and
         # another client pushed, overwrite that push, and read back its own value
         # -- which matches.  Proving the lease again is what tells that case from
-        # an ordinary write; a lost lease is reported, not ``ok``.
+        # an ordinary write; a lost lease is reported, not ``ok``.  A lease that
+        # could not be *proven* either way (LEASE_UNKNOWN: the ticket could not be
+        # read or rewritten) is a transport failure after a write that was read back:
+        # the same rule as an unverifiable read-back, a warning (review 4f1cdd4,
+        # deepseek-v4.1-flash B1).  A suspended holder's reaped ticket reads as
+        # LEASE_LOST, so that case still fails.
         if lock is not None and not lock.verify_ownership():
-            reason = (
-                "the lock was lost while this ref was being written "
-                f"({describe_ownership_failure(lock.ownership_state())}), so another client may "
-                "have pushed meanwhile and this write may have replaced its commit; fetch, check "
-                "the remote, and push again"
-            )
-            _proto_error(dst, reason)
-            sys.stderr.write(f"\nPush error for {dst}: {reason}\n")
-            sys.stderr.flush()
-            return False
+            state = lock.ownership_state()
+            if state == LEASE_UNKNOWN:
+                sys.stderr.write(
+                    f"Warning: {dst} was written and read back, but the lock could not be "
+                    f"proven afterwards ({describe_ownership_failure(state)}); if another "
+                    "client pushed at the same moment, fetch and check the remote.\n"
+                )
+                sys.stderr.flush()
+            else:
+                reason = _LEASE_LOST_AFTER_WRITE.format(
+                    verb="written", why=describe_ownership_failure(state)
+                )
+                _proto_error(dst, reason)
+                sys.stderr.write(f"\nPush error for {dst}: {reason}\n")
+                sys.stderr.flush()
+                return False
 
         # A concurrent writer leaves its copy *beside* the ref, and the
         # read-back above cannot see that: it reads our path, which holds one of
