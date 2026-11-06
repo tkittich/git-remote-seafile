@@ -224,9 +224,10 @@ The six alternatives people reach for first — a live working tree in a synced 
 - Python 3.10+
 - Git 2.20+
 - A Seafile server, Community Edition or Professional. **Tested against both
-  editions of 13.0**: every release runs the real-server suite against
-  throwaway CE and Pro containers (`13.0-latest`), including a second account
-  under each Pro folder permission, group-shared and group-owned libraries,
+  editions of 13.0**: the real-server suite passed by hand against CE 13.0.29
+  and Pro 13.0.29 (2026-11-06), and a container workflow that runs it against
+  throwaway CE and Pro containers (`13.0-latest`) is dispatched by hand. It
+  covers a second account under each Pro folder permission, group-shared and group-owned libraries,
   and two accounts pushing first to one path at once. The two editions answer
   some requests differently (a file read under a missing folder is 404 on CE,
   403 or a 500 page on Pro); the helper handles both. Older servers are not
@@ -948,7 +949,7 @@ The table below covers the common failures. For a repository that is unreadable,
 
 ### Known Limitations and What They Mean for You
 
-These are the places where the tool, Git, or Seafile stops short. None is hidden: each is either reported at run time or listed here with what to do. "Measured" means observed on a real server (Seafile CE 13.0.28) rather than inferred; see [DESIGN.md](DESIGN.md) §4.3.1 for the evidence.
+These are the places where the tool, Git, or Seafile stops short. None is hidden: each is either reported at run time or listed here with what to do. "Measured" means observed on a real server (Seafile CE 13.0.28 or 13.0.29, and Pro 13.0.29 where a row says so) rather than inferred; see [DESIGN.md](DESIGN.md) §4.3.1 for the evidence.
 
 #### Concurrency and consistency
 
@@ -977,8 +978,9 @@ These are the places where the tool, Git, or Seafile stops short. None is hidden
 | Limitation | What it means for you | What to do |
 | :--- | :--- | :--- |
 | **Encrypted libraries are refused.** | The helper stops with a clear message; the server serves their files only after a password the helper cannot supply. | Use an unencrypted library. For at-rest encryption, encrypt the volume or use a tool built for it. |
-| **Validated against one server.** Seafile CE 13.0.28 was exercised (round trip, SHA-1 and SHA-256, concurrency, large files). Pro-only features, clustered or object-store backends, and releases other than CE 13.0.x are *expected* to work on the documented `/api2` surface but are not tested. | A problem on another deployment is not unexpected, just unreported. | Run `git-remote-seafile doctor <url>` first; report what it prints. |
+| **Validated against both editions of 13.0, by hand.** The real-server suite passed against CE 13.0.29 and Pro 13.0.29 (CE 13.0.28 before it): round trip, SHA-1 and SHA-256, concurrency, large files, Pro folder permissions. Clustered or object-store backends and releases before 13.0 are *expected* to work on the documented `/api2` surface but are not tested. | A problem on another deployment is not unexpected, just unreported. | Run `git-remote-seafile doctor <url>` first; report what it prints. |
 | **Seafile's server-side file locking is not used.** It is Pro-only and its owner is the Seafile user, not the machine. | No change to behaviour. | None. |
+| **On Pro, a folder permission inside a repository is not seen through.** A folder set *invisible* for an account (or any rule below `refs/` or a vault's `refs/`) may be left out of that account's listings; whether it is has not been measured. `gc` and `--payload-delete` decide what to keep from the refs they can list. | Run by an account that cannot see every ref, `gc` could repack without the hidden branches' commits, and retention could delete objects only a hidden snapshot names. | Put folder permissions on folders that hold whole repositories, never inside one, and run `gc` and `--payload-delete` as the library owner. |
 | **The first push to an empty remote decides the object format.** With no refs there is nothing to infer SHA-256 from. | A SHA-256 repository works, but the format is only visible once a ref exists. | None; it is correct after the first push. |
 | **A deleted or renamed library is noticed late.** The library id is cached for the process, so the failure appears at the point of use with the server's error. | A confusing 404 rather than "library not found". | Re-run; the cache is per process. |
 | **Server time has one-second resolution.** The lock orders clients by the server's `Date`, never the local clock. | Two pushes inside the same second are ordered by tie-breaks, not by who was "first". | None; it is a fairness detail, not a correctness one. |

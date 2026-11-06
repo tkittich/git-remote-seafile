@@ -642,6 +642,12 @@ makes the contrast real rather than assumed.
 
 ## 8. Caveats and inherent limits
 
+**A vault on a share used by two machines keeps a crashed run's lock.** The
+vault lock (`seafile-snapshot.lock` in the vault's git directory) is reclaimed
+when its holder is dead *on the same host*; another host cannot tell a dead
+process from a live one, so it refuses. The file names the `hostname pid` that
+holds it: once that run is known to be gone, delete the file by hand.
+
 **Nested Git repositories are captured as their files, not their history.**
 `git add` records a directory containing its own `.git` as a single commit
 reference (mode `160000`), and that commit is not copied into the vault.

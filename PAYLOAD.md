@@ -48,7 +48,7 @@ encryption and retention policy.
 | R7 | A restore never writes outside its destination, whatever the manifest says. | `test_manifest_paths_that_could_escape_or_run_code_are_refused` |
 | R8 | Corruption of a stored object is detected at restore, never accepted. | `test_corrupt_payload_fails_the_restore_and_leaves_nothing_behind` |
 | R9 | A run that cannot read a file *or a directory* stops and names it; nothing is skipped silently. (git only warns for a directory, so the tool reads that warning.) | `test_an_unreadable_file_names_itself`, `test_a_directory_that_cannot_be_read_stops_the_run_and_is_named` (POSIX permissions) |
-| R10 | A payload vault never silently starts staging its large files into git. | `test_a_vault_that_used_payload_still_refuses_when_it_cannot_stay_in_it`, `test_a_fresh_vault_on_another_machine_follows_the_default` |
+| R10 | A payload vault never silently starts staging its large files into git. | `test_a_vault_that_used_payload_still_refuses_when_it_cannot_stay_in_it`, `test_a_fresh_vault_on_another_machine_follows_the_default`, `test_a_flagless_run_is_refused_before_the_code_repository_is_pushed` (the second site, before the code push) |
 | R11 | Payload mode is on by default, and a tree with no qualifying file is snapshotted exactly as without it (no manifest, no server directory; since 0.9.2 the tree also holds the times record `.seafile-payload/mtimes.json`, which is not part of payload mode); where it cannot work (no remote, a remote that is not `seafile://`, `--no-push`) the default stays off instead of failing. | `test_a_tree_with_nothing_big_is_snapshotted_as_without_payload_mode`, `test_the_default_stays_off_where_payload_mode_cannot_work` |
 
 ## 4. Decisions
@@ -206,7 +206,9 @@ captured). *Known
 limit:* a mount type this list does not know is treated as local, so the
 rule there is the machine-clock one; `--payload-rehash` is the audit. (macOS is
 read from `mount`: smbfs, nfs, afpfs and webdav.) A file with a future mtime is
-rehashed on every run (a cost, not a risk). A filesystem with no change time of
+rehashed on every run (a cost, not a risk); a clock stepped *back* is the unsafe
+direction, since an edit's mtime can then fall before the recorded hash time, so run
+`--payload-rehash` once after correcting a clock that was ahead. A filesystem with no change time of
 its own — the FAT family keeps one timestamp in the directory entry, and a
 volume or API that answers the change-time query with the modification time
 does the same — cannot move the key on an in-place edit either, so such a file
@@ -273,7 +275,9 @@ reports; with `--payload-delete` it **marks, and later deletes, in two phases**:
   of -1" would otherwise call the grace period over at once;
 - **a deletion needs a server clock it can trust:** it stops, with nothing marked or deleted, when the
   server sent no `Date` header (only this machine's clock would remain) or when the server's clock and
-  this machine's differ by more than a day (one of them has stepped, which collapses the grace period;
+  this machine's differ by more than a day (one of them has stepped, which collapses the grace period --
+  a step smaller than that day goes unseen and shortens the period by as much, so keep
+  `--payload-grace-days` at 2 or more where the server's clock is not kept by NTP;
   `test_a_delete_is_refused_when_the_server_clock_has_stepped_a_day_away`). A report still runs;
 - it reads the manifest of **every commit reachable from every branch and tag of the remote**
   (fetched into a scratch repository, with `SEAFILE_STRICT_REFS=1` so the helper's

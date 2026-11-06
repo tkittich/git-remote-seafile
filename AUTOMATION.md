@@ -118,7 +118,7 @@ vault's remembered settings.
 
 | Run freely — read-only | Run on a schedule — mutating, additive | Ask the human first |
 |:---|:---|:---|
-| `--status`, `--dry-run`, `--payload-verify`, `--restore-drill`, `--payload-view`, `git-remote-seafile doctor`, `check-safety`, `lock-status`, `check-auth`, `config` | a snapshot (push included); `git-remote-seafile gc`; `set-head`; `--restore --into` a **new, empty** directory | `--payload-gc --payload-delete` and any `--payload-keep` change; `unlock --force`; `--reset-to-remote`; any `--allow-*` or `--payload-accept-loss` bypass; `doctor --create-library`; restoring anywhere a human's files might already be |
+| `--status`, `--payload-verify`, `--restore-drill`, `check-safety`, `lock-status`, `check-auth`, `config` | a snapshot (push included); `--dry-run` (initialises a missing vault on disk); `git-remote-seafile doctor` (writes and removes one probe file on the server); `--payload-view` (server-side copies, charged to quota at full size); `git-remote-seafile gc`; `set-head`; `--restore --into` a **new, empty** directory | `--payload-gc --payload-delete` and any `--payload-keep` change; `unlock --force`; `--reset-to-remote`; any `--allow-*` or `--payload-accept-loss` bypass; `doctor --create-library`; restoring anywhere a human's files might already be |
 
 The right column is not politeness, it is the shape of the commands: payload
 retention deletes server-side objects, `--force` breaks a lock another machine
