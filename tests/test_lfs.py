@@ -25,6 +25,10 @@ class TestLFSTransferAgent(unittest.TestCase):
 
     def test_lfs_upload_success(self):
         mock_client = MagicMock()
+        # Before the upload the object is absent; afterwards the listing shows it whole.
+        mock_client.list_dir.side_effect = [
+            [], [{"type": "file", "name": "1234567890abcdef", "size": len(b"SAMPLE-LFS-CONTENT")}],
+        ]
         agent = LFSTransferAgent(mock_client, "repo1", "/git-test")
         try:
             with tempfile.NamedTemporaryFile(delete=False) as tf:
@@ -353,3 +357,40 @@ class TestLFSTransferAgent(unittest.TestCase):
         finally:
             agent._temp_dir.cleanup()
 
+    def test_an_upload_the_server_acknowledges_but_does_not_hold_is_an_error(self):
+        """Review 4f1cdd4 (glm-5.3 G6.1): a 2xx was the whole proof, so a proxy that
+        answered success for a failed upload made git-lfs record the object as pushed.
+        The listing must show the object at its size, or the upload is reported failed."""
+        for listed in ([], [{"type": "file", "name": "oid123", "size": 3}]):
+            with self.subTest(listed=listed):
+                mock_client = MagicMock()
+                mock_client.list_dir.side_effect = [[], listed]
+                agent = LFSTransferAgent(mock_client, "repo1", "/git-test")
+                temp_path = tempfile.mktemp()
+                Path(temp_path).write_bytes(b"DATA")
+                try:
+                    stdout_buf = io.StringIO()
+                    with patch("sys.stdout", stdout_buf):
+                        agent.handle_upload({"event": "upload", "oid": "oid123", "path": temp_path})
+                    resp = [json.loads(x) for x in stdout_buf.getvalue().splitlines() if x][-1]
+                    self.assertEqual(resp["event"], "complete")
+                    self.assertIn("error", resp)
+                    self.assertIn("the server accepted the upload but lists", resp["error"]["message"])
+                finally:
+                    agent._temp_dir.cleanup()
+                    Path(temp_path).unlink(missing_ok=True)
+
+    def test_a_json_line_that_is_not_an_object_is_skipped_not_fatal(self):
+        """Review 4f1cdd4 (deepseek-v4.1-flash G6.1): ``[1]`` is valid JSON with no event;
+        ``msg.get`` raised and the agent died with a traceback."""
+        agent = LFSTransferAgent(MagicMock(), "repo1", "/git-test")
+        try:
+            stdout_buf, stderr_buf = io.StringIO(), io.StringIO()
+            lines = ['[1, 2]', '"x"', '3', '{"event": "init"}', '{"event": "terminate"}']
+            stdin = io.StringIO("".join(line + "\n" for line in lines))
+            with patch("sys.stdin", stdin), patch("sys.stdout", stdout_buf), patch("sys.stderr", stderr_buf):
+                agent.run()
+            self.assertEqual([json.loads(x) for x in stdout_buf.getvalue().splitlines() if x], [{}])
+            self.assertIn("a JSON line that is not an object", stderr_buf.getvalue())
+        finally:
+            agent._temp_dir.cleanup()

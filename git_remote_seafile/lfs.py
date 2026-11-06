@@ -164,6 +164,23 @@ class LFSTransferAgent:
                 self.repo_id, parent_dir, filename, Path(local_path), replace=True,
                 progress_callback=throttle.callback,
             )
+            # A 2xx is an acknowledgement, not a proof: a proxy that answers success for a
+            # failed upload made git-lfs record the object as pushed, and `git lfs prune`
+            # may then remove the only copy.  Every other transfer reads back; so does
+            # this one, with the listing the skip above already trusts (review 4f1cdd4,
+            # glm-5.3 G6.1, first reported at v0.9.12).
+            listed = next(
+                (e for e in self.client.list_dir(self.repo_id, parent_dir)
+                 if isinstance(e, dict) and e.get("name") == filename),
+                None,
+            )
+            held = listed.get("size") if listed else None
+            if held != local_size:
+                raise RuntimeError(
+                    f"the server accepted the upload but lists {filename} "
+                    + ("not at all" if listed is None else f"at {held} bytes")
+                    + f" instead of {local_size}; nothing was stored, push again"
+                )
             last_bytes = throttle.last_bytes
             final_delta = local_size - last_bytes
             if final_delta > 0:
@@ -278,6 +295,13 @@ class LFSTransferAgent:
                 # A silent skip here would look exactly like a hung transfer if
                 # the protocol ever desyncs; name the line so it is diagnosable.
                 sys.stderr.write(f"git-remote-seafile lfs: ignoring malformed JSON line: {line[:200]}\n")
+                sys.stderr.flush()
+                continue
+            if not isinstance(msg, dict):
+                # Valid JSON that is not an object ("[1]", "3") has no event to read;
+                # `msg.get` raised and the agent died with a traceback (review 4f1cdd4,
+                # deepseek-v4.1-flash G6.1).
+                sys.stderr.write(f"git-remote-seafile lfs: ignoring a JSON line that is not an object: {line[:200]}\n")
                 sys.stderr.flush()
                 continue
 
