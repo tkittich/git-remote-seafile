@@ -1766,6 +1766,23 @@ class PayloadRetentionTests(_PayloadFixture):
         self.assertIn(orphan, self.server_files(),
                       "the local clock jump reached the grace comparison")
 
+    def test_a_delete_is_refused_when_the_server_gave_no_clock(self):
+        """A server with no ``Date`` leaves only this machine's clock, which the grace
+        period must not depend on (REVIEW.be01e37 deepseek E1).  A report still runs."""
+        self.assertEqual(self.snapshot()[0], 0)
+        orphan = self.orphan()
+        no_clock = unittest.mock.patch.object(
+            SeafileClient, "server_time_measured",
+            new_callable=unittest.mock.PropertyMock, return_value=False)
+        with no_clock:
+            rc, out, err = self.gc("--payload-delete", "--payload-grace-days", "1")
+            self.assertNotEqual(rc, 0, out + err)
+            self.assertIn("there is no server clock", out + err)
+            self.assertIn(orphan, self.server_files())
+            self.assertNotIn(f"{self.base}/gc-pending.json", self.server_files())
+            rc, out, err = self.gc()
+            self.assertEqual(rc, 0, out + err)
+
     def test_a_report_run_seeds_the_fence_baseline(self):
         """The first delete run had nothing to compare against (ROADMAP S2).
 

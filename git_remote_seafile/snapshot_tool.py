@@ -5546,6 +5546,22 @@ def _grace_now(client: Any) -> float:
     except Exception:
         return time.time()
 
+
+def _require_server_clock(client: Any, delete: bool) -> None:
+    """Refuse a deletion that would be timed on this machine's clock.
+
+    A server that sends no ``Date`` leaves only the local clock, the one thing
+    the grace period must not depend on.  A report may go on with it (it deletes
+    nothing); a deletion stops (REVIEW.be01e37 deepseek E1).
+    """
+    if delete and not getattr(client, "server_time_measured", True):
+        raise SnapshotError(
+            "the server sent no Date header, so there is no server clock to time the grace "
+            "period on, and this machine's clock is exactly what it must not depend on; "
+            "nothing was deleted. Run the report (without --payload-delete), or put a proxy "
+            "that adds Date in front of the server"
+        )
+
 #: An object, or the temporary an interrupted upload left beside it.
 _COLLECTABLE_NAME = re.compile(r"^[0-9a-f]{64}(\.part-[0-9a-f]+)?$")
 DEFAULT_GRACE_DAYS = 7.0
@@ -6051,6 +6067,7 @@ def payload_gc(
         raise SnapshotError(f"{base}/{_PENDING_NAME} is unreadable; remove it and run again") from None
     if not isinstance(pending_raw, dict):
         raise SnapshotError(f"{base}/{_PENDING_NAME} is not an object; remove it and run again")
+    _require_server_clock(client, delete)
     now = _grace_now(client)
     # A stamp that cannot be a time this tool wrote (zero, negative, in the future,
     # a boolean, NaN) is not trusted: "now - stamp" would call the grace period over

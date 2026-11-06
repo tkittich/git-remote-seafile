@@ -409,6 +409,11 @@ class SeafileClient:
             except Exception:
                 pass
 
+    @property
+    def server_time_measured(self) -> bool:
+        """True once a ``Date`` header has been seen, so ``get_server_time`` is the server's clock."""
+        return self._server_time_offset is not None
+
     def get_server_time(self) -> float:
         """Estimated server timestamp, from the offset learned off ``Date`` headers.
 
