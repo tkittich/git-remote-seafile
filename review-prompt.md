@@ -53,14 +53,27 @@ review the parts, never the generated file.
 
 RULES FOR THE WHOLE REVIEW
 - Work in a COPY of the repository. Leave the tree you were given untouched: no
-  commits, no pushes, no edits. Never contact a real server, never use real
+  commits, no pushes, no edits. Make the copy with `git clone` (so the git-ignored
+  earlier `REVIEW*.md` reports are not in it, and Phase 1 cannot read one by accident),
+  then copy over any uncommitted or untracked files the maintainer told you about, and
+  say which commit and which extra files you reviewed. HEAD may move while you work (a
+  maintainer commits, a cleanup lands): keep reviewing the commit you copied, name it in
+  the report, and say if a later commit touches a file you cite. Give the copy a name
+  that does not start with `grs-` (use `review-<model>-`): the project's own cleanup
+  sweeps `grs-*` directories, and one reviewer's copy was deleted under them mid-review.
+  Never contact a real server, never use real
   credentials. `tests/e2e_harness.py` is an in-process Seafile stub — reproduce every
   claim against it, or against a local bare repository, and keep the script so the
   next person can rerun it. The stub is MORE LENIENT than the real server (it accepts a
   copy into a missing directory, it never truncates a listing, it never rewrites a name
   you asked for), so label each finding REPRODUCED or INFERS-SERVER-BEHAVIOUR.
 - Run only the tests for the area you review: `python -m unittest tests.<module>`.
-  `tests.test_snapshot_payload` takes a few minutes; the full suite is not wanted.
+  `tests.test_snapshot_payload` takes about ten minutes, and each route-comparison class
+  (`ExoticReplacementTests`, `SpecialFileAndNameTests`) 100 to 300 seconds on Windows
+  (the five staging classes together take about five); budget for that, run them in the
+  background, and do not use that copy for anything else meanwhile. The full suite is
+  not wanted. On a slow or antivirus-scanned disk use the smaller sizes of
+  `tools/measure_pathspec_cost.py` (1000 to 5000) rather than its defaults.
   Several new tests are timing based (`tests/test_snapshot_climb.py`, the staging ramp
   tests): if one fails for you, run it three times and say so; a test that fails on
   your machine and not on the maintainer's is itself a finding (Part G5). Tests leave
@@ -71,7 +84,11 @@ RULES FOR THE WHOLE REVIEW
 - If you can read web pages, say so, and do the one task in Part G7 that needs it.
   `tools/build_snapshot.py` regenerates the tool if you edit a part — and `--check`
   tells you whether the generated file is stale, which is how an earlier reviewer's
-  stray edit got caught.
+  stray edit got caught. The tests import the **generated** `snapshot_tool.py`, so a
+  mutation of a part (deleting a guard) tests nothing until you run
+  `python tools/build_snapshot.py`, and again after restoring it. Run mutations in a
+  copy of their own: a background mutation run rewrites the generated file under any
+  experiment that imports it from the same copy.
 - The recorded dispositions are settled ground. Re-reporting one requires showing that
   its stated reasoning is wrong, and saying so explicitly; §1.2's won't-do rows,
   `PAYLOAD.md` §6.1's "not changed, recorded" paragraphs, `SNAPSHOT.md` §15's
@@ -185,7 +202,10 @@ exists (a path `lstat` cannot read for another reason, a case-insensitive rename
 first version of this route had three bugs found only by running both routes through
 one history; `ExoticReplacementTests` and `SpecialFileAndNameTests` are that
 comparison. List five replacement or special-file cases they do not cover, run them on
-your platform, and report any difference. For five guards of your choice (the directory
+your platform, and report any difference. Those classes compare one route with the other,
+so a case both routes get wrong the same way passes (a directory renamed by case, with a
+new file in it, was lost by both): also compare an incremental history against a fresh
+run on the final tree, and the final tree against what is on disk. For five guards of your choice (the directory
 command, the vanished-path check, `--remove`, `--replace`, the empty-list guard, the
 retry, the refresh) delete the guard and report whether a named test fails.
 
@@ -386,7 +406,9 @@ OUTPUT — one markdown document, sections in this order.
    scenario | reproduced? | smallest fix. Number them G1.1…, B1…, C1…, E1…
 4. Part F: a table of row | your verdict | evidence.
 5. Part H: H1 (areas), H2 (suggestions) and H3 (this prompt).
-6. What you checked and found sound: one line each. This is not filler — the
+6. What you checked and found sound: one line each, and for every part with no finding
+   a line saying that and what you attacked there (a part with an empty table is not
+   one you skipped). This is not filler — the
    2026-10-25 sweep of the archive found that most findings in its newest documents were
    already fixed or already guarded, and a named list of paths you attacked and could not
    break is what stops the next round from repeating that work.
