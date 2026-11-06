@@ -228,11 +228,16 @@ def build_snapshot(
     # After a pre-write the final add writes no object, so growth cannot show it
     # is alive; its limit follows the time the write pass took.
     stall: "float | None | _UnsetStall" = _UNSET_STALL
+    # What the final add is still expected to write.  After a pre-write that is nothing:
+    # the heartbeat extrapolates from growth, and growth near zero against the whole
+    # tree's size read "at most 11h27m left" on a run that finished in two minutes.
+    add_expects = staging_bytes
     if not filtered:
         wrote, spent = prewrite_objects(git_dir, work_tree, expect_bytes=staging_bytes)
         prewritten = bool(wrote)
         if prewritten:
             stall = stall_limit_after_prewrite(spent)
+            add_expects = 0
         try:
             added = add_retrying(lambda: git(
                 git_dir,
@@ -241,7 +246,7 @@ def build_snapshot(
                 cwd=work_tree,
                 status="staging the tree",
                 measure_dir=git_dir / "objects",
-                expect_bytes=staging_bytes,
+                expect_bytes=add_expects,
                 stall_limit=stall,
             ))
             unreadable.extend(unreadable_directories(added.stderr))
@@ -309,6 +314,7 @@ def build_snapshot(
             )
             if wrote:
                 stall = stall_limit_after_prewrite(spent)
+                add_expects = 0
         if to_stage:
             commands, drop_first = staging_commands(to_stage, work_tree)
             if drop_first:
@@ -323,7 +329,7 @@ def build_snapshot(
                         stdin=i,
                         status="staging the tree",
                         measure_dir=git_dir / "objects",
-                        expect_bytes=staging_bytes,
+                        expect_bytes=add_expects,
                         stall_limit=stall,
                     )
 

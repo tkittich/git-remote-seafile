@@ -2774,9 +2774,12 @@ class ParallelStagingTests(_SnapshotFixture):
         calls = []
         real = snap.git
 
+        expects = []
+
         def spy(git_dir, work_tree, args, **kw):
             if args[:2] == ["add", "-A"]:
                 calls.append(kw.get("stall_limit", snap._UNSET_STALL))
+                expects.append(kw.get("expect_bytes"))
             return real(git_dir, work_tree, args, **kw)
 
         with unittest.mock.patch.object(snap, "git", spy):
@@ -2786,6 +2789,9 @@ class ParallelStagingTests(_SnapshotFixture):
         self.assertEqual(len(calls), 1)
         self.assertNotIsInstance(calls[0], snap._UnsetStall,
                                  "the add after a pre-write kept the no-growth default")
+        # It writes nothing, so it must not be shown as having the whole tree still to write:
+        # "at most 11h27m left" was printed on a 226,000-file run that took two minutes.
+        self.assertEqual(expects, [0])
 
     def test_a_raised_stall_limit_says_so_and_the_usual_one_is_quiet(self):
         """DESIGN 3.5 "say what was chosen": a kill on an unmeasured disk must be readable."""
