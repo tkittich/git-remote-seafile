@@ -71,7 +71,7 @@ class TestLfsSetup(_Repo):
     def test_a_url_with_a_double_quote_is_refused(self):
         rc, _out, err = self.setup_lfs('seafile://code/a"b')
         self.assertEqual(rc, 2)
-        self.assertIn("double quote", err)
+        self.assertIn("contains a double quote", err)
         self.assertEqual(self.cfg("lfs.customtransfer.seafile.args"), "")
 
     def test_the_transfer_agent_refuses_a_url_git_lfs_split(self):
