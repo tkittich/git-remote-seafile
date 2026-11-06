@@ -2700,6 +2700,15 @@ class ParallelStagingTests(_SnapshotFixture):
         self.assertNotIsInstance(calls[0], snap._UnsetStall,
                                  "the add after a pre-write kept the no-growth default")
 
+    def test_a_raised_stall_limit_says_so_and_the_usual_one_is_quiet(self):
+        """DESIGN 3.5 "say what was chosen": a kill on an unmeasured disk must be readable."""
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            self.assertEqual(snap.stall_limit_after_prewrite(2000.0), 6000.0)
+        self.assertIn("may go 6000 s without writing anything", err.getvalue())
+        with contextlib.redirect_stderr(io.StringIO()) as quiet:
+            snap.stall_limit_after_prewrite(10.0)
+        self.assertEqual(quiet.getvalue(), "")
+
     def test_without_a_prewrite_the_add_keeps_the_usual_limit(self):
         calls = []
         real = snap.git

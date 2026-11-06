@@ -2361,7 +2361,18 @@ def stall_limit_after_prewrite(seconds: float) -> float:
     written cannot take much longer than writing it did, so the limit is the
     larger of the usual one and three times the write pass.
     """
-    return max(_stall_limit_from_env(), 3.0 * seconds)
+    usual = _stall_limit_from_env()
+    limit = max(usual, 3.0 * seconds)
+    if limit > usual:
+        # DESIGN section 3.5: say what was chosen.  A run killed by this limit on a
+        # disk nobody has measured is otherwise indistinguishable from a hung one.
+        print(
+            f"staging: the write pass took {seconds:.0f} s, so the final add may go "
+            f"{limit:.0f} s without writing anything (the usual limit is {usual:g} s; "
+            "SEAFILE_SNAPSHOT_STALL_LIMIT sets it)",
+            file=sys.stderr,
+        )
+    return limit
 
 
 def _listed_changes(git_dir: Path, work_tree: Path) -> "dict[str, None]":
