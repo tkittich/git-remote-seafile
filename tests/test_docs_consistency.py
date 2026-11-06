@@ -523,6 +523,23 @@ class TestSdistManifest(unittest.TestCase):
                     "in the source distribution",
                 )
 
+    def test_every_tool_a_shipped_document_names_is_in_the_manifest(self):
+        """SNAPSHOT.md tells a reader to run ``tools/measure_pathspec_cost.py``, and the
+        sdist did not hold it (review 4f1cdd4: glm-5.3 G5.1, deepseek-v4.1-flash G5.2).
+        Every ``tools/<name>.py`` a shipped document names must reach the sdist."""
+        named = set()
+        for name in _DOC_NAMES:
+            path = _ROOT / name
+            if path.is_file():
+                named.update(re.findall(r"tools/[A-Za-z0-9_]+\.py", path.read_text(encoding="utf-8")))
+        self.assertTrue(named, "the scan found no tool at all, so it scans nothing")
+        for tool in sorted(named):
+            if not (_ROOT / tool).is_file():
+                continue
+            with self.subTest(tool=tool):
+                self.assertTrue(self._is_covered(tool), f"{tool} is named in a shipped document "
+                                "but MANIFEST.in does not include it")
+
     def test_the_source_checkout_launcher_is_in_the_manifest(self):
         self.assertTrue(
             self._is_covered("bin/git-remote-seafile"),
