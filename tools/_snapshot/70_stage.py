@@ -318,7 +318,7 @@ def build_snapshot(
         folded = git(git_dir, work_tree, ["config", "--bool", "core.ignorecase"],
                      cwd=work_tree, check=False).stdout.strip() == "true"
         if to_stage and folded:
-            to_stage = spell_like_index(to_stage, index_paths(git_dir, work_tree))
+            to_stage = spell_like_index(to_stage, index_paths(git_dir, work_tree), work_tree)
         if to_stage:
             commands, drop_first = staging_commands(
                 to_stage, work_tree, index_entry_count(git_dir)
@@ -359,10 +359,13 @@ def build_snapshot(
         # spelling it first met, so a new file in a directory renamed `d` -> `D` is
         # indexed as `d/new.txt` while the listing says `D/new.txt`.  Compared as
         # written, the file just staged was "stale" and was dropped, on every run.
-        kept_known = {p.casefold() for p in kept_set} if folded else kept_set
+        # The comparison is git's own (ASCII letters only, `ignorecase_key`):
+        # `casefold` kept an indexed `STRASSE.txt` for a disk that holds only the
+        # sharp-s spelling, a different file there.
+        kept_known = {ignorecase_key(p) for p in kept_set} if folded else kept_set
         stale = [
             path for path in indexed.split("\0")
-            if path and (path.casefold() if folded else path) not in kept_known
+            if path and (ignorecase_key(path) if folded else path) not in kept_known
         ]
         if stale:
             drop_from_index(git_dir, work_tree, stale)

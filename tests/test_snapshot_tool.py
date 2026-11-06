@@ -3121,6 +3121,56 @@ class IncrementalStagingTests(_SnapshotFixture):
                 recorded = {name.casefold() for name in self.tree()}
                 self.assertTrue({"d/x.txt", "d/new.txt"} <= recorded, recorded)
 
+    @unittest.skipIf(sys.platform == "darwin", "APFS may fold the sharp s itself")
+    def test_a_name_git_does_not_fold_is_not_respelled_onto_another(self):
+        """Review 4f1cdd4 (opus-5.5 G3.1): ``casefold`` maps the sharp s to ``ss``, git and
+        NTFS do not.  With ``strasse/`` indexed, a new ``stra\\u00dfe/b.txt`` was respelled
+        to ``strasse/b.txt``, which does not exist, and left out without a word ("no
+        changes").  ``core.ignorecase`` is set by hand so a case-sensitive disk runs it too;
+        ``git add`` records all four paths, so the snapshot must as well -- and an indexed
+        ``STRASSE.txt`` deleted from the disk is not kept alive by the other spelling."""
+        sharp = "straße"
+        for route, threshold in (("add", 10 ** 9), ("update-index", 1)):
+            with self.subTest(route=route):
+                for name in ("strasse", sharp, "STRASSE.txt", sharp + ".txt", "gone.txt"):
+                    target = self.code / name
+                    if target.is_dir():
+                        shutil.rmtree(target)
+                    elif target.exists():
+                        target.unlink()
+                (self.code / "strasse").mkdir()
+                (self.code / "strasse" / "a.txt").write_bytes(b"a\n")
+                (self.code / "STRASSE.txt").write_bytes(b"T\n")
+                with unittest.mock.patch.object(snap, "_INDEX_ROUTE_MIN_PATHS", threshold):
+                    self.assertEqual(self.snapshot(*self.EXCLUDE)[0], 0)
+                    _git(self.vault, "config", "core.ignorecase", "true")
+                    (self.code / sharp).mkdir()
+                    (self.code / sharp / "b.txt").write_bytes(b"b\n")
+                    (self.code / (sharp + ".txt")).write_bytes(b"t\n")
+                    rc, _, err = self.snapshot(*self.EXCLUDE)
+                    self.assertEqual(rc, 0, err)
+                    recorded = set(self.tree())
+                    for path in ("strasse/a.txt", "STRASSE.txt", f"{sharp}/b.txt", f"{sharp}.txt"):
+                        self.assertIn(path, recorded, f"{route}: {path} missing from {recorded}")
+                    (self.code / "STRASSE.txt").unlink()
+                    rc, _, err = self.snapshot(*self.EXCLUDE)
+                self.assertEqual(rc, 0, err)
+                self.assertNotIn("STRASSE.txt", set(self.tree()), f"{route}: a deleted file stayed")
+
+    def test_the_index_spelling_follows_git_and_the_disk(self):
+        """The unit under the test above: ASCII letters fold, nothing else does, and a
+        respelling the disk does not resolve is not made."""
+        self.assertEqual(snap.ignorecase_key("D/Straße.TXT"), "d/straße.txt")
+        indexed = ["strasse/a.txt", "STRASSE.txt", "d/x.txt"]
+        self.assertEqual(
+            snap.spell_like_index(["straße/b.txt", "straße.txt", "D/new.txt"], indexed),
+            ["straße/b.txt", "straße.txt", "d/new.txt"],
+        )
+        (self.code / "D").mkdir()
+        (self.code / "D" / "new.txt").write_bytes(b"n\n")
+        expected = "d/new.txt" if (self.code / "d" / "new.txt").exists() else "D/new.txt"
+        self.assertEqual(snap.spell_like_index(["D/new.txt"], indexed, self.code), [expected])
+
     @unittest.skipIf(os.name == "nt", "Windows always takes the filtered route (junction check)")
     def test_the_unfiltered_route_is_unchanged(self):
         """No excludes: ``add -A -f .`` as before, no path list."""

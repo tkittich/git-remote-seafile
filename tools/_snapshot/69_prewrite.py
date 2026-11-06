@@ -179,7 +179,23 @@ def index_entry_count(git_dir: Path) -> int:
     return int.from_bytes(header[8:12], "big")
 
 
-def spell_like_index(paths: list[str], indexed: list[str]) -> list[str]:
+#: How git compares names under ``core.ignorecase``: ASCII letters only (its name hash
+#: and ``fspathcmp`` fold A-Z and nothing else).  ``str.casefold`` is wider -- sharp s
+#: (U+00DF) is ``ss``, the ligature U+FB01 is ``fi`` -- and NTFS keeps those as
+#: different names, so a fold that wide respelled a new ``stra<U+00DF>e/b.txt`` onto
+#: ``strasse/b.txt``, which does not exist, and the file was dropped from the snapshot
+#: without a word (review 4f1cdd4, opus-5.5 G3.1).
+_GIT_CASE_FOLD = str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz")
+
+
+def ignorecase_key(path: str) -> str:
+    """*path* as git compares it under ``core.ignorecase``: ASCII letters folded, nothing else."""
+    return path.translate(_GIT_CASE_FOLD)
+
+
+def spell_like_index(
+    paths: list[str], indexed: list[str], work_tree: "Path | None" = None
+) -> list[str]:
     """*paths*, each spelled the way the index already spells it or its directories.
 
     Only for a vault where git ignores case (``core.ignorecase``).  There ``git add``
@@ -189,26 +205,36 @@ def spell_like_index(paths: list[str], indexed: list[str]) -> list[str]:
     ``D/new.txt`` beside ``d/x.txt`` -- two directories in the tree, and two on a
     restore to a filesystem that keeps case (ROADMAP X2).  Spelling the list the
     way ``add`` would makes the two routes record the same tree.
+
+    Names are compared the way git compares them (:func:`ignorecase_key`), and with
+    *work_tree* a respelling is kept only when the respelled path is there on disk: a
+    spelling the filesystem does not resolve to the same file would name a path that
+    does not exist, and staging drops a path that does not exist.
     """
-    files = {path.casefold(): path for path in indexed}
+    files = {ignorecase_key(path): path for path in indexed}
     folders: dict[str, str] = {}
     for path in indexed:
         parts = path.split("/")[:-1]
         for depth in range(1, len(parts) + 1):
             folder = "/".join(parts[:depth])
-            folders.setdefault(folder.casefold(), folder)
+            folders.setdefault(ignorecase_key(folder), folder)
+    def resolves(respelled: str) -> bool:
+        return work_tree is None or os.path.lexists(work_tree / respelled)
+
     spelled = []
     for path in paths:
-        known = files.get(path.casefold())
-        if known is not None:
+        known = files.get(ignorecase_key(path))
+        if known is not None and (known == path or resolves(known)):
             spelled.append(known)
             continue
         parts = path.split("/")
         respelled = path
         for depth in range(len(parts) - 1, 0, -1):
-            known_folder = folders.get("/".join(parts[:depth]).casefold())
+            known_folder = folders.get(ignorecase_key("/".join(parts[:depth])))
             if known_folder is not None:
-                respelled = known_folder + "/" + "/".join(parts[depth:])
+                candidate = known_folder + "/" + "/".join(parts[depth:])
+                if candidate == path or resolves(candidate):
+                    respelled = candidate
                 break
         spelled.append(respelled)
     return spelled
