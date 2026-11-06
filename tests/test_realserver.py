@@ -66,24 +66,24 @@ def _helper_env(tmp: Path, server_url: str, base: str) -> dict:
     for key in ("SEAFILE_SERVER", "SEAFILE_TOKEN"):
         if os.environ.get(key, "").strip():
             env[key] = os.environ[key]
-    _require_the_same_server(env, tmp, server_url, base)
+    _require_the_same_server(env, tmp, server_url)
     return env
 
 
-def _require_the_same_server(env: dict, tmp: Path, server_url: str, base: str) -> None:
+def _require_the_same_server(env: dict, tmp: Path, server_url: str) -> None:
     """Stop the class before any push unless a helper process finds ``server_url`` too.
 
-    ``doctor``'s first line names the server the helper logged in to.  It writes and deletes a
-    probe under the path it is given, and leaves that folder: the path is inside the class's
-    own scratch folder, which ``tearDownClass`` removes.
+    ``check-auth`` names the server the helper authenticated with and writes nothing.  The
+    guard used ``doctor``, which uploads and deletes a probe -- on whichever server the helper
+    found, which is the wrong one exactly when this guard fires (review 4f1cdd4, glm-5.3 G4.1).
     """
     proc = subprocess.run(
-        ["git-remote-seafile", "doctor", f"seafile://{_LIBRARY}/{base}/whoami"],
+        ["git-remote-seafile", "check-auth"],
         cwd=str(tmp), env=env, capture_output=True, text=True, timeout=300,
     )
     lines = (proc.stdout + proc.stderr).strip().splitlines()
-    first = next((line for line in lines if "logged in to" in line), "")
-    if f"logged in to {server_url.rstrip('/')}" not in first:
+    first = next((line for line in lines if "Authenticated successfully with" in line), "")
+    if f"Authenticated successfully with {server_url.rstrip('/')} as" not in first:
         raise RuntimeError(
             f"refusing to run: the helper processes would log in elsewhere than {server_url} "
             f"({first or (lines[0] if lines else 'doctor printed nothing')!r}); pass the same "
@@ -101,7 +101,12 @@ class RealServerTests(unittest.TestCase):
         cls.rid = cls.client.get_repo_id(_LIBRARY)
         cls.base = "grs-realserver-" + time.strftime("%Y%m%d%H%M%S") + f"-{os.getpid()}"
         cls.tmp = Path(tempfile.mkdtemp(prefix="grs-real-"))
-        cls.env = _helper_env(cls.tmp, cls.client.server_url, cls.base)
+        try:
+            cls.env = _helper_env(cls.tmp, cls.client.server_url, cls.base)
+        except BaseException:
+            # unittest does not call tearDownClass when setUpClass raises.
+            remove_tree(cls.tmp)
+            raise
 
     @classmethod
     def tearDownClass(cls):
@@ -634,7 +639,12 @@ class _RealServerFixture(unittest.TestCase):
         cls.rid = cls.client.get_repo_id(_LIBRARY)
         cls.base = "grs-realserver-" + time.strftime("%Y%m%d%H%M%S") + f"-{os.getpid()}"
         cls.tmp = Path(tempfile.mkdtemp(prefix="grs-real-"))
-        cls.env = _helper_env(cls.tmp, cls.client.server_url, cls.base)
+        try:
+            cls.env = _helper_env(cls.tmp, cls.client.server_url, cls.base)
+        except BaseException:
+            # unittest does not call tearDownClass when setUpClass raises.
+            remove_tree(cls.tmp)
+            raise
 
     @classmethod
     def tearDownClass(cls):
@@ -854,7 +864,7 @@ class SharedUserTests(_RealServerFixture):
                 cls.client.mkdir_p(cls.rid, folder)
                 if perm != "none" and cls._rules_supported:
                     cls._rule(folder, perm)
-            _require_the_same_server(cls.env2, cls.tmp, cls.client.server_url, cls.base + "/rules/rw")
+            _require_the_same_server(cls.env2, cls.tmp, cls.client.server_url)
         except BaseException:
             cls.tearDownClass()
             raise
@@ -979,9 +989,14 @@ class SharedUserTests(_RealServerFixture):
                 dst = self.tmp / f"race{rnd}_clone"
                 self._git(["clone", "-q", url, str(dst)], self.tmp)
                 self._git(["fsck", "--strict"], dst)
-                names = [e["name"] for e in self.client.list_dir(self.rid, "/" + path)]
-                self.assertFalse([n for n in names if " (" in n or "SFConflict" in n],
-                                 f"the race left copies beside the repository: {names}")
+                # Inside the repository, and in the two folders the race created above it:
+                # a simultaneous mkdir of `repo` leaves `repo (1)` in `race<N>`, and of
+                # `race<N>` leaves `race<N> (1)` in the base, which a listing of the
+                # repository alone never sees (review 4f1cdd4, glm-5.3 G4.2).
+                for folder in (path, f"{self.base}/race{rnd}", self.base):
+                    names = [e["name"] for e in self.client.list_dir(self.rid, "/" + folder)]
+                    self.assertFalse([n for n in names if " (" in n or "SFConflict" in n],
+                                     f"the race left copies in /{folder}: {names}")
 
     def _require_library_create(self):
         if os.environ.get("SEAFILE_TEST_ALLOW_LIBRARY_CREATE") != "1":
