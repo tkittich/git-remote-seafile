@@ -149,14 +149,17 @@ rules are the exception: use `grs-*` sub-folders of them, never touch the folder
    dispatch of the workflow (the maintainer's; first runs fail environmentally, see the workflow's
    own notes): the second-account creation (`POST /api/v2.1/admin/users/`) and Pro booting without
    Elasticsearch are the two untried steps.
-4. **Release** (maintainer's call): version bump, release notes `.github/release-notes/vX.Y.Z.md`,
-   gates (Windows and the Debian full suite), push, wait for CI green, the real-server workflow on
-   CE and Pro, `python tools/release_check.py`, tag. Fold anything else found here into the same
-   version.
+4. **An outside review round first, then the release** (the maintainer's decision, 2026-11-06).
+   0.9.23 is prepared in the tree (version, CHANGELOG `[0.9.23]`, release notes, UPGRADING,
+   ROADMAP) but **not pushed or tagged**. `review-prompt.md` is written for this pre-release round.
+   After the round: triage, fold the fixes into 0.9.23, **correct the release date** in CHANGELOG
+   and the ROADMAP line if the day has changed, gates on Windows and the Debian full suite, push,
+   CI green, dispatch the real-server workflow (its first CE/Pro run; enable the weekly schedule
+   once both legs are green), `python tools/release_check.py`, tag, then post the issue reply.
 
 ## Where the evidence is
 
 - The stub fault `pro_missing_parent` (`tests/e2e_harness.py`), `TestServerThatAnswersForbiddenForAMissingFolder`
   (`tests/test_e2e.py`), and the client unit tests in `tests/test_client.py` (`TestClientAPI`,
   `_file_and_dir`). Deleting the listing check turns nine of them red (checked by hand).
-- `USER_GUIDE.md` troubleshooting row for the 403/500; `CHANGELOG.md` `[Unreleased]`.
+- `USER_GUIDE.md` troubleshooting row for the 403/500; `CHANGELOG.md` `[0.9.23]`; `DESIGN.md` §4.3 items 5 and 7.

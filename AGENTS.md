@@ -90,6 +90,10 @@ identity and the first CI failures of a release have always been environmental.
 - **The stub is more lenient than the server** (for example, a copy into a missing
   directory). Anything touching server semantics deserves a run against a real
   server; see below.
+- **"404 means not there" is a CE fact, not a Seafile one.** Professional answers a
+  file read or delete under a missing folder with 403 or a 500 page (issue 6). Any new
+  "absent" decision runs against both: `GRS_STUB_PRO=1` makes the whole stub suite
+  answer the Pro way, and the container workflow runs CE and Pro.
 - **Line endings are LF** (`.gitattributes`). Edit with tools that preserve them.
 - **Shell quoting.** On Windows, heredocs through the Bash tool collapse
   backslashes (a `\n` in a script's string literal becomes a real newline, a
@@ -133,6 +137,15 @@ identity and the first CI failures of a release have always been environmental.
 works under one unique `grs-*` top-level folder and deletes it. Do the same for any
 ad-hoc smoke test: scratch work goes only in a scratch library, under a unique
 `grs-*` folder, removed afterwards. Never print tokens.
+
+Pass `SEAFILE_SERVER`/`SEAFILE_TOKEN` on the command that needs them, and never an
+empty `SEAFILE_TOKEN`: it is ignored and the helper falls back to the desktop client's
+account, which may be a real server. The suite passes both on to the helper processes it
+starts and refuses to run unless they log in to the same server as the test itself. A
+second account (`SEAFILE_TEST_SECOND_TOKEN`, `SEAFILE_TEST_SECOND_EMAIL`) enables the
+folder-permission, group and race tests; the container workflow
+(`.github/workflows/realserver.yml`, CE and Pro) creates one. Server addresses, accounts
+and tokens never go into the repository or a commit message.
 
 The deployment differs from the stub in ways that were measured, not assumed —
 nginx answers 502 to a burst of concurrent writes, an upload onto a taken name

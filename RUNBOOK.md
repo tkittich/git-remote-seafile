@@ -89,6 +89,14 @@ lost race is *loud*. See [DESIGN.md](DESIGN.md) §4.4.
 > let the desktop client's account supply it; `git-remote-seafile doctor` prints the server it
 > resolved. See [USER_GUIDE.md](USER_GUIDE.md) section 7.1.
 
+> **HTTP 403 ending `This account may not see here` (or `write here`)** is a permission, not a
+> fault: the account has the library but not this folder. On Seafile Professional a folder
+> permission (read-only, online preview or edit, invisible) applies to everything below it, and
+> the lock is just the first thing a push writes, so the message often starts `Failed to acquire
+> lock:`. Push somewhere the account may write, or have the library owner change the folder
+> permission. A 403 on the **first push to a new path** with no folder permissions involved was
+> issue 6 (Pro answers a missing folder with 403); versions from 0.9.23 handle it.
+
 **Symptom.** `error <dst> fetch first`, `error <dst> non-fast-forward`, or
 `error <dst> safety check failed: …`.
 
@@ -229,9 +237,11 @@ Compaction refuses to delete anything until it has proven the consolidated packf
 the expected size, so a failed run leaves the repository exactly as it was.
 
 > **Scratch space.** Compaction downloads every pack, repacks them, and re-uploads from the system
-> temporary directory (`TMPDIR`, or `TEMP`/`TMP` on Windows). Budget roughly 2–3× the repository's
-> packed size there. On a small `tmpfs` this fails late — and after the lock is taken, so the lock
-> must be released (§1) before retrying.
+> temporary directory (`TMPDIR`, or `TEMP`/`TMP` on Windows). It needs about twice the packs' size
+> there, and `gc`, `gc --tail` and `repair` check that before the first download: a refusal names
+> what is needed and what is free, and releases the lock as it stops. Point `TMPDIR` at a larger
+> disk, or pass `--allow-low-disk` to try anyway (a run that then fills the disk fails part-way and
+> leaves the remote as it was; release the lock (§1) if it was killed rather than stopped).
 
 ---
 

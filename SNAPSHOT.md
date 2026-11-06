@@ -461,7 +461,12 @@ Nothing found shows a fix for plain literal paths; it was still quadratic on 2.5
    tracked file needs nothing from `add`.
 2. A list of 10,000 paths or more (a first run, a bulk change) goes to
    `git update-index --add --remove --replace -z --stdin`, which looks each path
-   up by name.
+   up by name -- and so does a shorter list into a large index, from 78 million
+   path-by-entry pairs (2,600 paths into 30,000 entries: 3.82 s with `add`,
+   1.74 s with `update-index`, measured by a reviewer), the entry count read from
+   the index's header. Where git ignores case (`core.ignorecase`), the list is
+   first spelled the way `add` would file it: after the index's spelling of each
+   path's directories, so a directory renamed by case stays one directory.
 3. A file that changes while git reads it (`short read while indexing`,
    `unstable object source data`) is tried again twice, two seconds apart.
 

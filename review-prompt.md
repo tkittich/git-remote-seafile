@@ -1,6 +1,9 @@
-You are an independent reviewer of `git-remote-seafile`, at the commit the tag `v0.9.23`
-names (`git rev-parse v0.9.23`; if you were given a later commit, review that and say
-which). Another model wrote the code, the tests and the specifications, and has reviewed
+You are an independent reviewer of `git-remote-seafile`, at the commit you were given
+(`git log -1`). **This is a pre-release round**: version 0.9.23 is prepared in that
+commit (`__version__`, `CHANGELOG.md` `[0.9.23]`, `.github/release-notes/v0.9.23.md`,
+`UPGRADING.md`) but not tagged, and it will not be until your findings are triaged — so
+the release files are under review too, and a finding there is cheap to fix. Another
+model wrote the code, the tests and the specifications, and has reviewed
 them itself over a dozen rounds: assume all three share blind spots. The last outside
 review was a full round at commit `be01e37` (2026-11-05, five reviewers); its triage is
 settled and is listed in Part F as dispositions. **Everything since `be01e37` has had no
@@ -160,7 +163,7 @@ killed runs; very large inputs; nested repositories and embedded repositories; s
 and every requirement whose "how it is checked" column would not catch a violation.
 
 PART G — everything since `be01e37` (Phase 2, first and longest)
-The map: `git log --oneline be01e37..v0.9.23`, `git diff --stat be01e37 v0.9.23 --
+The map: `git log --oneline be01e37..HEAD`, `git diff --stat be01e37 HEAD --
 git_remote_seafile tools tests .github`, and `CHANGELOG.md` `[0.9.23]` and `[0.9.22]`.
 Nobody but the author has read any of it. Number findings G1…, G2… by the sub-area below,
 e.g. G2.1.
@@ -219,11 +222,18 @@ client's `accounts.db` for a token: a hostile or corrupt database, a locked one,
 from another client version) and `lfs.py` (the transfer agent: hostile pointers and
 oids, paths, partial downloads, what reaches git-lfs on stdout).
 
-G7. Documents for the same period. `CHANGELOG.md` `[0.9.23]` and `[0.9.22]` against
-`git log` (an entry with no commit, a commit with no entry, a number that does not match
-what a test or script prints); `UPGRADING.md`'s entries for both; the CE/Pro
-differences in CONTRIBUTING against the tests that pin them; USER_GUIDE's tested-servers
-claim against the workflow.
+G7. Documents for the same period, and the release itself. `CHANGELOG.md` `[0.9.23]`
+and `[0.9.22]` against `git log` (an entry with no commit, a commit with no entry, a
+number that does not match what a test or script prints); `UPGRADING.md`'s entries for
+both (would an operator learn every behaviour that may surface for them?); the release
+notes against the changelog (a claim in one and not the other, a claim stronger than the
+evidence); the CE/Pro differences in CONTRIBUTING and `DESIGN.md` §4.3 (items 5 and 7,
+the compatibility matrix) against the tests that pin them; USER_GUIDE's tested-servers
+claim against the workflow (it has been written, and passed by hand against a Pro
+server, but at the time of this commit the CE/Pro matrix has not run in CI: say what
+that claim should say until it has); the AGENTS.md and RUNBOOK additions; and
+`python tools/release_check.py` (expected to warn that HEAD is untagged — report anything
+else it says).
 
 PART B — code of the helper (Phase 2)
 Scope: `git_remote_seafile/{helper,client,lock,gc,packs,refs,git_util,safety,url,config,
@@ -357,7 +367,8 @@ OUTPUT — one markdown document, sections in this order.
 3. Part G findings, then Part B, C and E findings: a table of ID | rank | `file:line` |
    scenario | reproduced? | smallest fix. Number them G1.1…, B1…, C1…, E1…
 4. Part F: a table of row | your verdict | evidence.
-5. Part H: H1 (areas), H2 (suggestions) and H3 (this prompt).
+5. Part H: H1 (areas), H2 (suggestions) and H3 (this prompt). End H2 with a one-line
+   answer: would you tag this commit as 0.9.23, and if not, which findings block it?
 6. What you checked and found sound: one line each, and for every part with no finding
    a line saying that and what you attacked there (a part with an empty table is not
    one you skipped). This is not filler — a named list of paths you attacked and could

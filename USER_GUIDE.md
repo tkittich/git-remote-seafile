@@ -772,6 +772,9 @@ By hand, in your local repository:
 # 1. Enable custom transfer agent
 git config lfs.customtransfer.seafile.path git-remote-seafile
 git config lfs.customtransfer.seafile.args "lfs-transfer seafile://code/myproject"
+#    A URL with a space ("My Library") must be quoted inside the value, because
+#    git-lfs splits it on whitespace: 'lfs-transfer "seafile://My Library/proj"'.
+#    lfs-setup does this for you; lfs-transfer refuses a URL that arrives split.
 git config lfs.customtransfer.seafile.direction both
 git config lfs.standalonetransferagent seafile
 
@@ -939,7 +942,7 @@ The table below covers the common failures. For a repository that is unreadable,
 | `error <ref> stale info` | `git push --force-with-lease` and the remote moved since you last fetched | `git fetch`, look at what landed, and push again. |
 | `Warning: the ref <name> is listed but its content could not be read (missing or empty); it is not advertised` | A ref file the server lists could not be downloaded (a transient failure, or a damaged file) | Re-run. A branch that is missing from `git ls-remote` for this reason is *not* gone; do not run `gc` until it reads. `gc` refuses in this state. |
 | `refusing to compact ...: git reads back N of M mirrored refs` / `... was listed by its parent directory but is now missing (404)` | `gc` could not prove it knows every ref, so it stopped before deleting anything | Nothing was deleted. Re-run once the listing is stable; it is the guard working. |
-| `fatal: bad object <sha>` on clone or checkout | A ref names objects no remote packfile carries — a pack was removed out of band, or an upload was interrupted after the ref landed | From a clone that holds the objects (`git fsck --full` proves it): `git-remote-seafile repair <url> --dry-run` names the broken refs, and re-running without `--dry-run` uploads what they need. It never deletes and never rewrites a ref; the manual alternative is [RUNBOOK.md](RUNBOOK.md) §3.2. |
+| `fatal: bad object <sha>` on clone or checkout | A ref names objects no remote packfile carries — a pack was removed out of band, or an upload was interrupted after the ref landed | From a clone that holds the objects (`git fsck --full` proves it): `git-remote-seafile repair <url> --dry-run` names the broken refs, and re-running without `--dry-run` uploads what they need. It never deletes and never rewrites a ref; the manual alternative is [RUNBOOK.md](RUNBOOK.md) §3.2. `repair` downloads every remote pack first and refuses, naming what it needs, when the temporary directory cannot hold about twice them (`--allow-low-disk` starts anyway). |
 | `the server returned a transfer link with an unreadable host` | A download or upload link had a backslash, userinfo or control character in its host | The helper will not send anything to it. Check the server's `SERVICE_URL` / `FILE_SERVER_ROOT` settings. |
 | `N director(ies) could not be read, so what is under them is not in the snapshot` | The snapshot tool met a directory it cannot open (a permission, an ACL) | Make it readable, or `--exclude` it on purpose. |
 

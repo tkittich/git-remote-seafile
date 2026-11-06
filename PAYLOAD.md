@@ -327,7 +327,8 @@ faithful path. It lives beside the vault, never inside the helper's directory.
 (off, remembered), `--payload-auto-ratio R|measure` (the `auto` sample cut-off, default 0.9,
 remembered; measured once for a new vault),
 `--payload-jobs N` (exactly N uploads at once; default: found by measuring -- starts at 3,
-climbs while the aggregate rate grows, up to 16, backs off on a 429/502/503/504; measured
+climbs while the aggregate rate grows, up to 16, backs off on a 429/502/503/504; either way a
+pushed-back object is queued again, at most twice, and a typed N is never lowered; measured
 on the test server: 1 upload 27 MiB/s, 2 about 40, 4 about 45, 8 about 62, 12 about 65), `--payload-gc`, `--payload-delete`, `--payload-grace-days N`.
 Combinations that would be silently ignored are refused. An explicit
 `--payload-min-size` is incompatible with `--no-push`. **A `--no-push` run on a vault whose
