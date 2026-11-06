@@ -1517,7 +1517,7 @@ class TestUnreadableTicketFailsClosed(unittest.TestCase):
                 real = self.store.get_text
                 client = self.lock.client
                 client.get_file_text.side_effect = (
-                    lambda rid, path: None if path == other else real(rid, path)
+                    lambda rid, path, real=real: None if path == other else real(rid, path)
                 ) if case == "404" else real
                 self.lock._preemptor_checked_at = None
                 self.assertFalse(self.lock.verify_ownership())
