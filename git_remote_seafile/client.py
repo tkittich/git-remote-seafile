@@ -1003,6 +1003,29 @@ class SeafileClient:
             )
         return True
 
+    @staticmethod
+    def _download_link_error(clean_path: str, resp: requests.Response) -> SeafileAPIError:
+        """The error for a file read the server answered with something other than 200 or 404.
+
+        A 403 on the first push to a path that does not exist yet was reported on Seafile
+        Professional (issue 6): the message said only ``HTTP 403``, which reads as a
+        permission problem and sends the person to the wrong place.  Community Edition
+        answers 404 there and is handled; nothing here can tell which a given server meant,
+        so the message carries what the server said and both explanations.
+        """
+        said = " ".join((resp.text or "").split())[:200]
+        message = f"Failed to get download link for {clean_path}: HTTP {resp.status_code}"
+        if said:
+            message += f" {said}"
+        if resp.status_code == 403:
+            message += (
+                ". Either this account may not read here, or the server answers 403 (not 404) "
+                "for a folder that does not exist yet: if this is the first push to this path, "
+                "create the folder in the web UI and push again, and run "
+                "'git-remote-seafile doctor <url>' and send its output to the issue tracker"
+            )
+        return SeafileAPIError(message)
+
     def get_file_text(self, repo_id: str, file_path: str) -> str | None:
         """Download file and return as string, or None if not found."""
         data = self.get_file_bytes(repo_id, file_path, max_bytes=MAX_TEXT_FILE_BYTES)
@@ -1025,7 +1048,7 @@ class SeafileClient:
         if resp.status_code == 404:
             return None
         if resp.status_code != 200:
-            raise SeafileAPIError(f"Failed to get download link for {clean_path}: HTTP {resp.status_code}")
+            raise self._download_link_error(clean_path, resp)
 
         dl_url = resp.text.strip().strip('"')
         dl_url = self._adjust_url(dl_url)
@@ -1414,7 +1437,7 @@ class SeafileClient:
         if resp.status_code == 404:
             return False
         if resp.status_code != 200:
-            raise SeafileAPIError(f"Failed to get download link for {clean_path}: HTTP {resp.status_code}")
+            raise self._download_link_error(clean_path, resp)
 
         dl_url = self._adjust_url(resp.text.strip().strip('"'))
         file_resp = self._xfer("get", dl_url, timeout=self.timeout, stream=True)

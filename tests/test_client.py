@@ -301,6 +301,37 @@ class TestClientAPI(unittest.TestCase):
     def setUp(self):
         self.client = SeafileClient(server_url="https://seafile.example.com", token="test-tok")
 
+    def _answers(self, status: int, text: str = ""):
+        resp = MagicMock()
+        resp.status_code = status
+        resp.text = text
+        return patch.object(self.client.session, "get", return_value=resp)
+
+    def test_a_403_reading_a_file_says_what_the_server_said_and_both_explanations(self):
+        """Issue 6: the first push to a new path failed with a bare ``HTTP 403`` on Seafile
+        Professional, which reads as a permission problem and hides the likelier cause."""
+        with self._answers(403, '{"error_msg": "Permission   denied."}'):
+            with self.assertRaises(SeafileAPIError) as caught:
+                self.client.get_file_bytes("repo1", "/newrepo/HEAD")
+            message = str(caught.exception)
+            self.assertIn("Failed to get download link for /newrepo/HEAD: HTTP 403", message)
+            self.assertIn('"error_msg": "Permission denied."', message)       # whitespace folded
+            self.assertIn("may not read here", message)
+            self.assertIn("folder that does not exist yet", message)
+            self.assertIn("create the folder in the web UI", message)
+            with self.assertRaises(SeafileAPIError) as streamed:
+                self.client.download_file_to("repo1", "/newrepo/HEAD", Path(tempfile.gettempdir()) / "grs-unused")
+            self.assertIn("folder that does not exist yet", str(streamed.exception))
+
+    def test_other_statuses_keep_the_short_message_and_a_404_is_still_not_found(self):
+        with self._answers(500, "internal error"):
+            with self.assertRaises(SeafileAPIError) as caught:
+                self.client.get_file_bytes("repo1", "/r/HEAD")
+        self.assertIn("HTTP 500 internal error", str(caught.exception))
+        self.assertNotIn("create the folder", str(caught.exception))
+        with self._answers(404):
+            self.assertIsNone(self.client.get_file_bytes("repo1", "/r/HEAD"))
+
     def test_adjust_url_leaves_a_foreign_host_alone_by_default(self):
         """A clustered Seafile serves files from its own host -- trust it.
 
