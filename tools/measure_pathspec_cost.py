@@ -34,11 +34,22 @@ from pathlib import Path
 NEW_FILES = 20
 
 
+class StepFailed(Exception):
+    """A git step failed: which one, and what git said."""
+
+
 def git(root: Path, *args: str, data: bytes | None = None) -> bytes:
+    """Run git in *root*; a failure names the command and git's own message.
+
+    A bare ``CalledProcessError`` traceback was all a reviewer got when an antivirus held
+    a file in the scratch tree (triage T22): the step and git's stderr are what say so.
+    """
     env = dict(os.environ, GIT_LITERAL_PATHSPECS="1")
-    return subprocess.run(
-        ["git", *args], cwd=root, env=env, input=data, check=True, capture_output=True
-    ).stdout
+    proc = subprocess.run(["git", *args], cwd=root, env=env, input=data, capture_output=True)
+    if proc.returncode != 0:
+        said = proc.stderr.decode("utf-8", "replace").strip() or "(no message)"
+        raise StepFailed(f"git {' '.join(args[:3])} failed in {root} (exit {proc.returncode}): {said}")
+    return proc.stdout
 
 
 def make_tree(root: Path, count: int) -> None:
@@ -101,7 +112,17 @@ def main(argv: list[str]) -> int:
     print(f"{'files':>8} {'add + every path':>18} {'update-index + all':>20} {'add .':>8}  growth of add")
     previous: float | None = None
     for count in sizes:
-        add_list, index_list, add_dot = measure(count)
+        try:
+            add_list, index_list, add_dot = measure(count)
+        except StepFailed as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            print(
+                "(a file held open by another program -- an antivirus scanning the "
+                "scratch tree, for example -- fails a step this way; run again, or exclude the "
+                "temporary directory from the scan)",
+                file=sys.stderr,
+            )
+            return 1
         growth = f"x{add_list / previous:.1f}" if previous else ""
         print(f"{count:>8} {add_list:>17.2f}s {index_list:>19.2f}s {add_dot:>7.2f}s  {growth}")
         previous = add_list
