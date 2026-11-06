@@ -3917,6 +3917,42 @@ def require_complete_history(repo: Path, *, walk: bool) -> None:
         )
 
 
+#: A retention run refuses to delete when the server's clock and this machine's differ
+#: by more than this: one of them has stepped, and a step is exactly what turns "marked
+#: seconds ago" into "marked a week ago" (PAYLOAD D9).
+_MAX_CLOCK_SKEW_SECONDS = 86400.0
+
+
+def _require_server_clock(client: Any, delete: bool) -> None:
+    """Refuse a deletion whose grace period would not be timed on a sane server clock.
+
+    A server that sends no ``Date`` leaves only this machine's clock, the one thing
+    the grace period must not depend on; a server whose clock is a day or more away
+    from this machine's has stepped (an NTP correction, a restored VM snapshot, a
+    proxy rewriting ``Date``) or this machine has.  A report may go on either way
+    (it deletes nothing); a deletion stops (REVIEW.be01e37 deepseek E1, sonnet D2).
+    """
+    if not delete:
+        return
+    if not getattr(client, "server_time_measured", True):
+        raise SnapshotError(
+            "the server sent no Date header, so there is no server clock to time the grace "
+            "period on, and this machine's clock is exactly what it must not depend on; "
+            "nothing was deleted. Run the report (without --payload-delete), or put a proxy "
+            "that adds Date in front of the server"
+        )
+    try:
+        skew = abs(float(client.get_server_time()) - time.time())
+    except Exception:
+        return
+    if skew > _MAX_CLOCK_SKEW_SECONDS:
+        raise SnapshotError(
+            f"the server's clock and this machine's differ by {skew / 3600:.1f} hours; one of them "
+            "has stepped, and a step is what turns an object marked seconds ago into one marked "
+            "days ago. Nothing was deleted. Correct the clock that is wrong and run again"
+        )
+
+
 # -- Modification times of the files git stores (see 70_stage.py) ------------------
 #
 # Git records content and a mode, not a timestamp, so a restore used to give
@@ -5572,21 +5608,6 @@ def _grace_now(client: Any) -> float:
     except Exception:
         return time.time()
 
-
-def _require_server_clock(client: Any, delete: bool) -> None:
-    """Refuse a deletion that would be timed on this machine's clock.
-
-    A server that sends no ``Date`` leaves only the local clock, the one thing
-    the grace period must not depend on.  A report may go on with it (it deletes
-    nothing); a deletion stops (REVIEW.be01e37 deepseek E1).
-    """
-    if delete and not getattr(client, "server_time_measured", True):
-        raise SnapshotError(
-            "the server sent no Date header, so there is no server clock to time the grace "
-            "period on, and this machine's clock is exactly what it must not depend on; "
-            "nothing was deleted. Run the report (without --payload-delete), or put a proxy "
-            "that adds Date in front of the server"
-        )
 
 #: An object, or the temporary an interrupted upload left beside it.
 _COLLECTABLE_NAME = re.compile(r"^[0-9a-f]{64}(\.part-[0-9a-f]+)?$")
