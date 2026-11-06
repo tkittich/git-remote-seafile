@@ -345,7 +345,7 @@ def refuse_flagless_payload_vault(
             "git; running without --payload-min-size would stage them into git instead. "
             "Repeat the flag (--payload-min-size "
             f"{'auto' if previous.get('rule') == 'auto' else previous.get('min_size', 'SIZE')}), "
-            "or pass --no-payload (--payload-min-size 0) to leave payload mode deliberately. A --no-push snapshot cannot use payload mode, since its files exist only on the server: for a local-only snapshot use --no-payload, or drop --no-push"
+            "or pass --no-payload (--payload-min-size 0) to leave payload mode deliberately. A --no-push snapshot cannot use payload mode, since its files exist only on the server: for a local-only snapshot use --no-payload (the large files then go into git history, and a later push publishes them; the vault keeps its payload setting), or drop --no-push"
         )
 
 
@@ -516,7 +516,7 @@ def run_payload_step(
             "in git; running without --payload-min-size would stage them into git "
             "instead. Repeat the flag (--payload-min-size "
             f"{'auto' if previous.get('rule') == 'auto' else previous.get('min_size', 'SIZE')}), "
-            "or pass --no-payload (--payload-min-size 0) to leave payload mode deliberately. A --no-push snapshot cannot use payload mode, since its files exist only on the server: for a local-only snapshot use --no-payload, or drop --no-push"
+            "or pass --no-payload (--payload-min-size 0) to leave payload mode deliberately. A --no-push snapshot cannot use payload mode, since its files exist only on the server: for a local-only snapshot use --no-payload (the large files then go into git history, and a later push publishes them; the vault keeps its payload setting), or drop --no-push"
         )
     if not min_size:
         return None, (0, 0)

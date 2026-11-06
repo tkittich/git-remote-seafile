@@ -660,7 +660,9 @@ def run_command(args: argparse.Namespace) -> int:
         # successful run leaves the next one with nothing to type -- and a typo'd
         # --remote that failed to push does not become the vault's remote for
         # every scheduled run after it.  A preview never gets here.
-        remember_payload_value(vault, args.payload_min_size, dry_run=args.dry_run)
+        # A local-only run (--no-push) changes no remembered setting: --no-payload there
+        # used to write 0, and the next scheduled push staged the large files into git.
+        remember_payload_value(vault, args.payload_min_size, dry_run=args.dry_run or args.no_push)
         remember_payload_ratio(vault, args.payload_auto_ratio, dry_run=args.dry_run)
         remember_tuning(vault, payload_tuning, dry_run=args.dry_run)
         remember_record_mtimes(vault, args, dry_run=args.dry_run)

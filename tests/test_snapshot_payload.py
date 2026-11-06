@@ -1161,6 +1161,23 @@ class PayloadDefaultAndSafeguardTests(_PayloadFixture):
         rc, out, err = self.run_tool(self.src, "--vault", other, "--no-push")
         self.assertEqual(rc, 0, out + err)
 
+    def test_a_local_only_no_payload_run_does_not_unhook_the_vault_from_payload_mode(self):
+        """The refusal's own advice (``--no-payload --no-push``) used to write 0 into the vault,
+        and the next scheduled push staged the large files into git (REVIEW.be01e37 sonnet X10)."""
+        self.assertEqual(self.bare()[0], 0)
+        self.assertEqual(_git(self.vault, "config", "snapshot.payload").strip(), "auto")
+        (self.src / "small.txt").write_bytes(b"local only\n")
+        with unittest.mock.patch.object(snap, "_AUTO_UPPER", 8000), \
+                unittest.mock.patch.object(snap, "_AUTO_LOWER", 2000):
+            rc, out, err = self.run_tool(self.src, "--vault", self.vault, "--no-push", "--no-payload")
+        self.assertEqual(rc, 0, out + err)
+        self.assertEqual(_git(self.vault, "config", "snapshot.payload").strip(), "auto")
+        (self.src / "small.txt").write_bytes(b"pushed again\n")
+        rc, out, err = self.bare()
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn(".seafile-payload/manifest.json",
+                      _git(self.vault, "ls-tree", "-r", "--name-only", "snapshot"))
+
     def test_the_default_stays_off_where_payload_mode_cannot_work(self):
         # No remote at all: a purely local snapshot.
         with unittest.mock.patch.object(snap, "_AUTO_UPPER", 8000), \

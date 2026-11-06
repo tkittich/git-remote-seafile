@@ -326,7 +326,13 @@ remembered; measured once for a new vault),
 climbs while the aggregate rate grows, up to 16, backs off on a 429/502/503/504; measured
 on the test server: 1 upload 27 MiB/s, 2 about 40, 4 about 45, 8 about 62, 12 about 65), `--payload-gc`, `--payload-delete`, `--payload-grace-days N`.
 Combinations that would be silently ignored are refused. An explicit
-`--payload-min-size` is incompatible with `--no-push`.
+`--payload-min-size` is incompatible with `--no-push`. **A `--no-push` run on a vault whose
+last snapshot used payload mode is refused** (R10 wins over "a default is not a request": a
+local-only run cannot upload, and quietly staging the large files into git is the worse
+outcome), and the message names the ways out. `--no-payload --no-push` takes a local-only
+snapshot with the large files in git history, which a later push publishes; it **does not
+change the remembered setting**, because a local-only run changes none (it used to write 0,
+and the next scheduled push staged the large files into git; REVIEW.be01e37 sonnet X10).
 
 **On by default.** With no flag, the value is what the vault remembered, else `auto`
 -- but only when the run pushes to a `seafile://` remote; otherwise the default stays
