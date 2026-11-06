@@ -224,11 +224,16 @@ def split_cap_bytes(refused_size: int, current_cap: int | None) -> int | None:
 
     Half of what was refused (or of the cap, if that was already smaller), so a
     server that takes 48 MiB is found in a handful of rebuilds rather than one
-    per MiB.  Below :data:`SPLIT_FLOOR_BYTES` splitting stops helping.
+    per MiB.  Below :data:`SPLIT_FLOOR_BYTES` splitting stops helping, so a half that
+    lands under it is raised to the floor, which is tried once: a 6 MiB refusal (or a
+    remembered 6 MiB cap) retries at the floor rather than giving up (triage T17).  Only
+    a refusal at or under the floor itself ends the retries.
     """
     base = min(refused_size, current_cap) if current_cap else refused_size
+    if base <= SPLIT_FLOOR_BYTES:
+        return None
     smaller = (base // 2) // MIB * MIB
-    return smaller if smaller >= SPLIT_FLOOR_BYTES else None
+    return max(smaller, SPLIT_FLOOR_BYTES)
 
 
 def chunk_warning(accepted: int) -> bool:

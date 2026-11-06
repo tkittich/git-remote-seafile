@@ -12,7 +12,7 @@ except ImportError:  # package-style: python -m unittest tests.test_pack_split
     from tests._helpers import make_helper
 
 from git_remote_seafile.client import SeafileAPIError, TransferAborted
-from git_remote_seafile.diagnose import MIB, size_refusal, split_cap_bytes
+from git_remote_seafile.diagnose import MIB, SPLIT_FLOOR_BYTES, size_refusal, split_cap_bytes
 from git_remote_seafile.helper import _PendingUpdate
 
 PACK = 40 * MIB
@@ -36,7 +36,13 @@ class TestSizeRefusal(unittest.TestCase):
         self.assertEqual(split_cap_bytes(40 * MIB, None), 20 * MIB)
         self.assertEqual(split_cap_bytes(40 * MIB, 10 * MIB), 5 * MIB)   # a smaller cap is the base
         self.assertEqual(split_cap_bytes(40 * MIB + 5, None), 20 * MIB)
-        self.assertIsNone(split_cap_bytes(6 * MIB, None))                  # 3 MiB is under the floor
+        # Half would be under the floor: the floor is tried once instead of giving up (T17)...
+        self.assertEqual(split_cap_bytes(6 * MIB, None), SPLIT_FLOOR_BYTES)
+        self.assertEqual(split_cap_bytes(40 * MIB, 6 * MIB), SPLIT_FLOOR_BYTES)
+        # ...and a refusal at the floor (or a cap already there) ends the retries.
+        self.assertIsNone(split_cap_bytes(SPLIT_FLOOR_BYTES, None))
+        self.assertIsNone(split_cap_bytes(40 * MIB, SPLIT_FLOOR_BYTES))
+        self.assertIsNone(split_cap_bytes(3 * MIB, None))
 
 
 class TestSplitOnRefusal(unittest.TestCase):
