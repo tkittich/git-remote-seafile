@@ -74,12 +74,18 @@ RULES FOR THE WHOLE REVIEW
   give you CE or Pro to reproduce against; say which edition and version
   (`/api2/server-info/`) each result came from. Label each finding REPRODUCED (stub,
   container or local repository — say which) or INFERS-SERVER-BEHAVIOUR.
-- Run only the tests for the area you review: `python -m unittest tests.<module>`.
-  `tests.test_snapshot_payload` takes about ten minutes, and each route-comparison class
-  (`ExoticReplacementTests`, `SpecialFileAndNameTests`) 100 to 300 seconds on Windows;
-  budget for that, run them in the background, and do not use that copy for anything
-  else meanwhile. The full suite is not wanted. On a slow or antivirus-scanned disk use
-  the smaller sizes of `tools/measure_pathspec_cost.py` (1000 to 5000).
+- **The full suite has already been run at this commit — do not run it again**, and do
+  not run whole modules to "check that the tests pass". Several reviewers work on this
+  commit at once, and a full run is twelve minutes or more each that finds nothing new.
+  Done by the maintainer: `python tools/gates.py` on Windows 11 (build check, ruff, mypy,
+  the docs guards and all 1,601 tests: green) and the whole suite on Debian (WSL) with an
+  empty git config. Run a test only to do something those runs could not: reproduce a
+  finding, run a mutation (delete a guard, watch its test), or try a case no test covers —
+  one named test or class at a time (`python -m unittest tests.<module>.<Class>.<test>`).
+  `tests.test_snapshot_payload` takes about ten minutes and each route-comparison class
+  (`ExoticReplacementTests`, `SpecialFileAndNameTests`) 100 to 300 seconds on Windows, so
+  name the test you need. On a slow or antivirus-scanned disk use the smaller sizes of
+  `tools/measure_pathspec_cost.py` (1000 to 5000).
   Several tests are timing based (`tests/test_snapshot_climb.py`, the staging ramp
   tests): if one fails for you, run it three times and say so; a test that fails on
   your machine and not on the maintainer's is itself a finding. Tests leave `grs-*`
