@@ -706,6 +706,29 @@ class TestCloneCompletenessProbes(unittest.TestCase):
         self.assertTrue(is_shallow_repository())
         self.assertTrue(objects_may_be_incomplete())
 
+    def test_a_clone_that_borrows_objects_is_reported_incomplete(self):
+        """`git clone --shared` (objects/info/alternates) resolves the tip through another
+        store; a skipped download would leave this clone depending on it (DS A3)."""
+        src = self._two_commit_source()
+        dst = self.root / "borrowing"
+        subprocess.run(["git", "clone", "--shared", str(src), str(dst)],
+                       check=True, capture_output=True)
+        self.assertTrue((dst / ".git" / "objects" / "info" / "alternates").is_file())
+
+        os.chdir(str(dst))
+        self.assertFalse(is_shallow_repository())
+        self.assertFalse(has_promisor_remote())
+        self.assertTrue(objects_may_be_incomplete())
+
+    def test_borrowing_through_the_environment_is_reported_incomplete(self):
+        src = self._two_commit_source()
+        dst = self.root / "full-env"
+        subprocess.run(["git", "clone", str(src), str(dst)], check=True, capture_output=True)
+        os.chdir(str(dst))
+        self.assertFalse(objects_may_be_incomplete())
+        with patch.dict(os.environ, {"GIT_ALTERNATE_OBJECT_DIRECTORIES": str(src / ".git" / "objects")}):
+            self.assertTrue(objects_may_be_incomplete())
+
     def test_a_promisor_remote_is_reported_incomplete(self):
         """The key `git clone --filter=blob:none` records on its remote."""
         src = self._two_commit_source()

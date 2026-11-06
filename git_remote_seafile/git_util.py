@@ -575,9 +575,19 @@ def objects_may_be_incomplete() -> bool:
     repository git cannot read -- the answer is True, because the cost of a
     redundant download is bandwidth while the cost of a wrong skip is a broken
     checkout.
+
+    A repository that borrows objects (``objects/info/alternates``, or
+    ``GIT_ALTERNATE_OBJECT_DIRECTORIES``) counts too: the tip and its history can
+    resolve through the *other* store, and a skipped download leaves this clone
+    depending on objects it does not hold -- gone when that store is moved or
+    pruned (be01e37 review, DS A3).
     """
     try:
         if is_shallow_repository():
+            return True
+        if os.environ.get("GIT_ALTERNATE_OBJECT_DIRECTORIES", "").strip():
+            return True
+        if (get_git_dir() / "objects" / "info" / "alternates").is_file():
             return True
         return has_promisor_remote()
     except Exception:
