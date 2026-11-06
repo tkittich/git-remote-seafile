@@ -528,7 +528,7 @@ def run_command(args: argparse.Namespace) -> int:
                     remote=remote, from_default=payload_default,
                 ))
             if excluded:
-                print(f"excluded: {len(excluded)} path(s) left out")
+                print(excluded_summary(excluded))
 
             suggest_excludes(git_dir, source, excluded)
 

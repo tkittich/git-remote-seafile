@@ -573,6 +573,24 @@ def find_virtualenvs(source: Path, excludes: list[str]) -> list[str]:
     return sorted(found)
 
 
+def excluded_summary(excluded: list[str], limit: int = 5) -> str:
+    """``excluded: N path(s) left out (dir, dir, ...)``: the omission, named.
+
+    A count alone let ``--default-excludes`` drop a never-committed ``src/build``
+    without the person ever seeing the name.  The directories are the parents of
+    the excluded files with those inside another listed one folded away.
+    """
+    parents = {path.rsplit("/", 1)[0] if "/" in path else path for path in excluded}
+
+    def inside_another(directory: str) -> bool:
+        parts = directory.split("/")
+        return any("/".join(parts[:n]) in parents for n in range(1, len(parts)))
+
+    top = sorted(d for d in parents if not inside_another(d))
+    shown = ", ".join(top[:limit]) + (f" and {len(top) - limit} more" if len(top) > limit else "")
+    return f"excluded: {len(excluded)} path(s) left out ({shown})"
+
+
 def suggest_excludes(
     git_dir: Path, work_tree: Path, excluded: list[str]
 ) -> list[str]:

@@ -1614,6 +1614,22 @@ class FirstRunExcludePromptTests(_SnapshotFixture):
         self.assertEqual([rel for rel, _ in snap.reproducible_candidates(self.code)],
                          ["dist", "node_modules"])
 
+    def test_the_omission_is_named_not_only_counted(self):
+        """Found by a review: ``--default-excludes`` dropped a never-committed ``src/build``
+        and the run said only "3 path(s) left out"."""
+        self.assertEqual(
+            snap.excluded_summary(["src/build/a.py", "src/build/b/c.py", "dist/x"]),
+            "excluded: 3 path(s) left out (dist, src/build)",
+        )
+        many = [f"d{i}/f" for i in range(7)]
+        self.assertTrue(snap.excluded_summary(many).endswith("(d0, d1, d2, d3, d4 and 2 more)"))
+        (self.code / "src" / "build").mkdir(parents=True)
+        (self.code / "src" / "build" / "make.py").write_bytes(b"print(1)\n")
+        rc, out, err = self.run_tool("--source", self.code, "--vault", self.vault, "--no-push",
+                                     "--default-excludes")
+        self.assertEqual(rc, 0, err)
+        self.assertRegex(out, r"excluded: \d+ path\(s\) left out \(.*src/build")
+
     def test_a_virtualenv_is_offered_by_what_makes_it_one(self):
         venv = self.code / "env-audit"
         venv.mkdir()
