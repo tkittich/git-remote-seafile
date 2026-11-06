@@ -51,6 +51,25 @@ def _set(key: str, value: str) -> bool:
     return True
 
 
+def agent_args(url: str) -> str:
+    """The ``args`` value that hands git-lfs *url* as one argument.
+
+    git-lfs splits ``lfs.customtransfer.<name>.args`` on whitespace and honours double
+    quotes (measured with git-lfs 3.8.1: ``lfs-transfer seafile://lib/a b`` reached the
+    agent as three arguments, ``lfs-transfer "seafile://lib/a b"`` as two).  A library
+    name with a space -- "My Library" -- was cut at the space (triage T24).
+    """
+    return f'lfs-transfer "{url}"' if any(c.isspace() for c in url) else f"lfs-transfer {url}"
+
+
+def url_from_args(args: str) -> str:
+    """The URL an ``args`` value written by :func:`agent_args` (or by hand) names."""
+    rest = args[len("lfs-transfer "):].strip() if args.startswith("lfs-transfer ") else args.strip()
+    if len(rest) >= 2 and rest[0] == rest[-1] == '"':
+        rest = rest[1:-1]
+    return rest
+
+
 def stale_lfs_destination() -> tuple[str, list[str]] | None:
     """``(configured, remotes)`` when this repository's LFS agent names a place none of its Seafile remotes does.
 
@@ -65,7 +84,7 @@ def stale_lfs_destination() -> tuple[str, list[str]] | None:
     args, code = _git("config", "--local", "--get", f"{AGENT}.args")
     if code != 0 or not args.startswith("lfs-transfer "):
         return None
-    configured = args[len("lfs-transfer "):].strip()
+    configured = url_from_args(args)
     remotes = sorted({url for _n, url in repository_remotes() if url.lower().startswith("seafile://")})
     if not remotes or configured.rstrip("/") in {r.rstrip("/") for r in remotes}:
         return None
@@ -105,11 +124,18 @@ def run_lfs_setup(rest: list[str]) -> int:
         )
         return 1
 
+    if '"' in url:
+        # Quoting is how a space survives git-lfs's splitting; a quote inside the URL
+        # would end it early, so it is refused rather than written broken.
+        sys.stderr.write(f"Error: the URL {mask_url(url)} contains a double quote, which git-lfs "
+                         "cannot be handed intact.\n")
+        return 2
+
     previous, _ = _git("config", "--local", "--get", f"{AGENT}.args")
     try:
         changed = [
             _set(f"{AGENT}.path", "git-remote-seafile"),
-            _set(f"{AGENT}.args", f"lfs-transfer {url}"),
+            _set(f"{AGENT}.args", agent_args(url)),
             _set(f"{AGENT}.direction", "both"),
         ]
         others = sorted({f"{n} ({mask_url(u)})" for n, u in remotes if not u.lower().startswith("seafile://")})
@@ -120,7 +146,7 @@ def run_lfs_setup(rest: list[str]) -> int:
         sys.stderr.write(f"Error: {ex}\n")
         return 1
 
-    old = previous.removeprefix("lfs-transfer ").strip()
+    old = url_from_args(previous)
     if previous and old != url:
         print(f"Note: the LFS destination was {mask_url(old)}; it is now {mask_url(url)}.")
     print(

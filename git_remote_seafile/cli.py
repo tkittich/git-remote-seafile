@@ -784,6 +784,15 @@ def _cmd_lfs_transfer(rest: list[str]) -> int:
     positional = _positional_args(rest)
     if not positional:
         return _usage("lfs-transfer")
+    if len(positional) > 1:
+        # git-lfs splits the configured args on whitespace: a URL with a space, written
+        # unquoted by lfs-setup before 0.9.23, arrives in pieces, and taking the first
+        # piece stored large files in the wrong place (triage T24).
+        return _error(
+            "lfs-transfer was given more than one URL (" + " ".join(positional) + "); a space in "
+            "the URL was probably split by git-lfs. Run 'git-remote-seafile lfs-setup' again, "
+            "which quotes it"
+        )
     try:
         helper = RemoteHelper("lfs", positional[0])
         from .lfs import LFSTransferAgent

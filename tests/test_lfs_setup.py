@@ -55,6 +55,34 @@ class TestLfsSetup(_Repo):
         self.assertEqual(self.cfg("lfs.standalonetransferagent"), "seafile")
         self.assertIn("now stores large files in seafile://code/proj", out)
 
+    def test_a_library_name_with_a_space_is_quoted_so_git_lfs_keeps_it_whole(self):
+        """Triage T24, measured with git-lfs 3.8.1: unquoted, ``seafile://My Library/proj``
+        reached the agent as ``seafile://My`` and ``Library/proj``; quoted, as one argument."""
+        git(self.repo, "remote", "add", "origin", "seafile://My Library/proj")
+        rc, out, err = self.setup_lfs()
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(self.cfg("lfs.customtransfer.seafile.args"),
+                         'lfs-transfer "seafile://My Library/proj"')
+        self.assertIsNone(stale_lfs_destination(), "the quoted value must read back as the remote")
+        rc, out, err = self.setup_lfs()
+        self.assertEqual(rc, 0, err)
+        self.assertIn("nothing to change", out)
+
+    def test_a_url_with_a_double_quote_is_refused(self):
+        rc, _out, err = self.setup_lfs('seafile://code/a"b')
+        self.assertEqual(rc, 2)
+        self.assertIn("double quote", err)
+        self.assertEqual(self.cfg("lfs.customtransfer.seafile.args"), "")
+
+    def test_the_transfer_agent_refuses_a_url_git_lfs_split(self):
+        from git_remote_seafile.cli import _cmd_lfs_transfer
+        err = io.StringIO()
+        with patch("sys.stderr", err), patch("sys.stdout", io.StringIO()):
+            rc = _cmd_lfs_transfer(["seafile://My", "Library/proj"])
+        self.assertNotEqual(rc, 0)
+        self.assertIn("more than one URL", err.getvalue())
+        self.assertIn("lfs-setup", err.getvalue())
+
     def test_running_it_again_changes_nothing_and_says_so(self):
         git(self.repo, "remote", "add", "origin", "seafile://code/proj")
         self.setup_lfs()
