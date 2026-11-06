@@ -116,6 +116,19 @@ simultaneous same-path uploads leave `(SFConflict ...)` copies -- the reason the
 lock exists. Run it before a release,
 and whenever the stub's `do_DELETE`/`do_POST` semantics are changed.
 
+With a second account on the same server (`SEAFILE_TEST_SECOND_TOKEN` and
+`SEAFILE_TEST_SECOND_EMAIL`, the id `/api2/account/info/` gives that account),
+`SharedUserTests` also covers a shared user pushing under each folder
+permission (Pro), a library shared to a group, a group-owned library (Pro), and
+two accounts making the first push to one new path at once; the group cases
+also need `SEAFILE_TEST_ALLOW_LIBRARY_CREATE=1`. The suite refuses to start
+unless a helper process logs in to the same server as the test itself.
+
+The container workflow (`.github/workflows/realserver.yml`, dispatched by hand)
+runs all of it against throwaway **CE and Pro** containers on `13.0-latest`:
+since 12.0 the Pro image is public, and without a licence file it runs as a
+three-user trial, so no secret is involved. The log names the exact version.
+
 The stub is also *more forgiving* than the deployment, and each difference
 below was measured against the test server (CE 13.0.28 behind nginx) rather
 than assumed. Read this list before trusting a stub-green change to anything
@@ -132,11 +145,20 @@ that talks to the server:
   whole at 5,000 entries (ROADMAP S1) — that is one deployment's answer,
   not a protocol guarantee;
 * **Seafile Professional (13.0.29) is not Community Edition on a missing folder** (issue 6):
-  a file read under a folder that does not exist answers 403 (one level
-  missing) or a 500 page (two or more), where CE answers 404; only the
-  directory listing still says 404 for the missing folder. The stub imitates
-  it with `faults["pro_missing_parent"]`; a real-server test on Pro is still
-  to be written (see HANDOFF.issue-6.md);
+  a file read *or a file delete* under a folder that does not exist answers 403
+  (one level missing) or a 500 page (two or more), where CE answers 404 (read)
+  or 200 (delete); the directory listing says 404 for the missing folder on
+  both. The stub imitates the read with `faults["pro_missing_parent"]`, and
+  `GRS_STUB_PRO=1` turns it on for a whole run;
+  `test_a_missing_folder_lists_as_404_and_its_files_read_as_absent` pins it on
+  the real server;
+* `mkdir` of a name that exists (or that another client creates at the same
+  moment) succeeds and makes a numbered copy, numbered **before the last
+  extension**: `.git-lock.d` became `.git-lock (1).d` (Pro 13.0.29), `pack`
+  becomes `pack (1)`. The stub's mkdir creates nothing;
+* on Pro, a folder permission is `/api2/repos/<id>/user-folder-perm/`
+  (`user_email`, `folder_path`, `permission`); sharing a sub-folder with a
+  lesser permission does not restrict a user who has the library read-write;
 * a killed upload on the chunked (1 GiB+) path left no partial file under
   its final name — observed once, so treat it as the expected behaviour,
   not a promise.

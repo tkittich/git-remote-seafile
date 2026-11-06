@@ -116,6 +116,7 @@ _RETIRED_KEYS = frozenset({"seafile.locksettle", "seafile.gcmaxmib"})
 _TEST_ONLY_ENV = frozenset({
     "SEAFILE_TEST_LOCK_SETTLE", "SEAFILE_TEST_LIBRARY",
     "SEAFILE_TEST_ALLOW_LIBRARY_CREATE", "SEAFILE_TEST_BODY_LIMIT_MIB",
+    "SEAFILE_TEST_SECOND_TOKEN", "SEAFILE_TEST_SECOND_EMAIL",
 })
 
 _CODE_SUBCOMMAND_EQ = re.compile(r'args\[0\]\s*==\s*"([^"]+)"')

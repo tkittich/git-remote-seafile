@@ -47,24 +47,61 @@ sys.path.insert(0, str(_ROOT / "tests"))
 _LIBRARY = os.environ.get("SEAFILE_TEST_LIBRARY", "").strip()
 
 
+def _helper_env(tmp: Path, server_url: str, base: str) -> dict:
+    """The environment for the helper processes a test starts: the same server as ``self.client``.
+
+    The harness points the helper at a stub (``SEAFILE_SERVER``/``SEAFILE_TOKEN``), which is
+    dropped here so the helper finds the real server the way a user's would.  When the run
+    itself was given ``SEAFILE_SERVER``/``SEAFILE_TOKEN``, those are what the in-process client
+    used, so they are passed on: dropping them sent the git-driven tests to whatever the
+    config file or the desktop client's ``accounts.db`` names -- a different server from the
+    one the test reads back from and cleans up (2026-11-06, caught before any push).
+    """
+    from e2e_harness import make_helper_env
+
+    env = make_helper_env(tmp / "bin", server_url, _ROOT)
+    for key in ("SEAFILE_SERVER", "SEAFILE_TOKEN", "SEAFILE_TEST_LOCK_SETTLE",
+                "SEAFILE_SKIP_SAFETY_CHECKS"):
+        env.pop(key, None)
+    for key in ("SEAFILE_SERVER", "SEAFILE_TOKEN"):
+        if os.environ.get(key, "").strip():
+            env[key] = os.environ[key]
+    _require_the_same_server(env, tmp, server_url, base)
+    return env
+
+
+def _require_the_same_server(env: dict, tmp: Path, server_url: str, base: str) -> None:
+    """Stop the class before any push unless a helper process finds ``server_url`` too.
+
+    ``doctor``'s first line names the server the helper logged in to.  It writes and deletes a
+    probe under the path it is given, and leaves that folder: the path is inside the class's
+    own scratch folder, which ``tearDownClass`` removes.
+    """
+    proc = subprocess.run(
+        ["git-remote-seafile", "doctor", f"seafile://{_LIBRARY}/{base}/whoami"],
+        cwd=str(tmp), env=env, capture_output=True, text=True, timeout=300,
+    )
+    lines = (proc.stdout + proc.stderr).strip().splitlines()
+    first = next((line for line in lines if "logged in to" in line), "")
+    if f"logged in to {server_url.rstrip('/')}" not in first:
+        raise RuntimeError(
+            f"refusing to run: the helper processes would log in elsewhere than {server_url} "
+            f"({first or (lines[0] if lines else 'doctor printed nothing')!r}); pass the same "
+            "SEAFILE_SERVER and SEAFILE_TOKEN to both, or put them in the config file"
+        )
+
+
 @unittest.skipUnless(_LIBRARY, "set SEAFILE_TEST_LIBRARY to a scratch library to run these")
 class RealServerTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        from e2e_harness import make_helper_env
         from git_remote_seafile.client import SeafileClient
 
         cls.client = SeafileClient()  # server and token from the usual sources
         cls.rid = cls.client.get_repo_id(_LIBRARY)
         cls.base = "grs-realserver-" + time.strftime("%Y%m%d%H%M%S") + f"-{os.getpid()}"
         cls.tmp = Path(tempfile.mkdtemp(prefix="grs-real-"))
-        env = make_helper_env(cls.tmp / "bin", cls.client.server_url, _ROOT)
-        for key in ("SEAFILE_SERVER", "SEAFILE_TOKEN", "SEAFILE_TEST_LOCK_SETTLE",
-                    "SEAFILE_SKIP_SAFETY_CHECKS"):
-            env.pop(key, None)
-        # The harness points the helper at a stub; here it must find the real
-        # server the same way a user's would.
-        cls.env = env
+        cls.env = _helper_env(cls.tmp, cls.client.server_url, cls.base)
 
     @classmethod
     def tearDownClass(cls):
@@ -107,6 +144,15 @@ class RealServerTests(unittest.TestCase):
                f"?p={quote(path, safe='/')}")
         return self.client.session.request(method, url, timeout=60, **kw)
 
+    def _server_info(self) -> dict:
+        info = self.client.session.get(
+            f"{self.client.server_url}/api2/server-info/", timeout=60
+        ).json()
+        return info if isinstance(info, dict) else {}
+
+    def _is_pro(self) -> bool:
+        return "seafile-pro" in (self._server_info().get("features") or [])
+
     # -- API semantics the stub copies -----------------------------------------
     def test_api_semantics_the_stub_encodes(self):
         base = f"/{self.base}/api"
@@ -127,8 +173,14 @@ class RealServerTests(unittest.TestCase):
         self.assertEqual(self._api("DELETE", "file", base + "/a").status_code, 200)
         self.assertEqual(self.client.list_dir(self.rid, base + "/a"), [])
         # ... and a delete of something that is not there still answers 200,
-        # which is why the helper reads a ref before deleting it.
-        self.assertEqual(self._api("DELETE", "file", base + "/a/b/f.txt").status_code, 200)
+        # which is why the helper reads a ref before deleting it.  Every delete the
+        # helper makes is inside a folder that exists, where both editions say 200.
+        self.assertEqual(self._api("DELETE", "file", base + "/gone.txt").status_code, 200)
+        # Under a folder that is itself gone, Professional answers the way it answers a
+        # file read there (issue 6): 403 one level down, a 500 page two levels down
+        # (measured on 13.0.29); Community Edition still says 200.
+        deep = self._api("DELETE", "file", base + "/a/b/f.txt").status_code
+        self.assertEqual(deep, 500 if self._is_pro() else 200)
 
     def test_a_listing_of_more_than_a_thousand_entries_is_complete_and_unpaged(self):
         # The helper treats the array a listing returns as the whole directory.
@@ -198,10 +250,8 @@ class RealServerTests(unittest.TestCase):
         folder is 404 on both, at any depth.  The stub's ``pro_missing_parent`` fault copies
         the Pro answers; if a release changes them, this is the test that says so.
         """
-        info = self.client.session.get(
-            f"{self.client.server_url}/api2/server-info/", timeout=60
-        ).json()
-        pro = "seafile-pro" in (info.get("features") or [])
+        info = self._server_info()
+        pro = self._is_pro()
         base = f"/{self.base}/missing-folder"
         self.client.mkdir_p(self.rid, base)
         for depth, folder in ((1, base + "/gone"), (2, base + "/gone/deeper")):
@@ -578,18 +628,13 @@ class _RealServerFixture(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        from e2e_harness import make_helper_env
         from git_remote_seafile.client import SeafileClient
 
         cls.client = SeafileClient()
         cls.rid = cls.client.get_repo_id(_LIBRARY)
         cls.base = "grs-realserver-" + time.strftime("%Y%m%d%H%M%S") + f"-{os.getpid()}"
         cls.tmp = Path(tempfile.mkdtemp(prefix="grs-real-"))
-        env = make_helper_env(cls.tmp / "bin", cls.client.server_url, _ROOT)
-        for key in ("SEAFILE_SERVER", "SEAFILE_TOKEN", "SEAFILE_TEST_LOCK_SETTLE",
-                    "SEAFILE_SKIP_SAFETY_CHECKS"):
-            env.pop(key, None)
-        cls.env = env
+        cls.env = _helper_env(cls.tmp, cls.client.server_url, cls.base)
 
     @classmethod
     def tearDownClass(cls):
@@ -757,6 +802,244 @@ class ProxyBodyLimitTests(_RealServerFixture):
             self._add_random(repo, "more", 3, size)
             second = self._git(["push", "origin", "main"], repo)
             self.assertNotIn("refused an upload", second.stderr)
+
+
+_SECOND_TOKEN = os.environ.get("SEAFILE_TEST_SECOND_TOKEN", "").strip()
+_SECOND_EMAIL = os.environ.get("SEAFILE_TEST_SECOND_EMAIL", "").strip()
+
+
+@unittest.skipUnless(
+    _LIBRARY and _SECOND_TOKEN and _SECOND_EMAIL,
+    "set SEAFILE_TEST_LIBRARY, SEAFILE_TEST_SECOND_TOKEN and SEAFILE_TEST_SECOND_EMAIL (a second "
+    "account on the same server; the container workflow creates one)",
+)
+class SharedUserTests(_RealServerFixture):
+    """A second account: sub-folder permissions, groups, and two first pushes at once.
+
+    The scratch library is shared with the second account read-write (unless it already is,
+    in which case the share is left as found), and on Professional each folder under
+    ``<base>/rules`` gets one folder permission (``/api2/repos/<id>/user-folder-perm/``, a
+    Pro feature; a share of the sub-folder with a lesser permission does *not* restrict a
+    user who has the library read-write, measured on Pro 13.0.29).  On Seafile Pro a file read under a missing folder answers 403
+    whatever the permissions (issue 6), so these are the cases where "missing" and "denied"
+    look alike from the file read and only the listing tells them apart: a push must work
+    where the rules allow it and fail loudly, naming the 403, where they do not.
+
+    The group cases create a group, a library and (on Pro) a department, so they also need
+    ``SEAFILE_TEST_ALLOW_LIBRARY_CREATE=1``; everything they make is removed.
+    """
+
+    RULES = ("r", "rw", "preview", "cloud-edit", "invisible")
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.env2 = dict(cls.env)
+        cls.env2["SEAFILE_SERVER"] = cls.client.server_url
+        cls.env2["SEAFILE_TOKEN"] = _SECOND_TOKEN
+        cls._rules: list[str] = []
+        cls._rules_supported = True
+        cls._made_library_share = False
+        try:
+            existing = cls._admin("GET", f"/api2/repos/{cls.rid}/dir/shared_items/",
+                                  params={"p": "/", "share_type": "user"})
+            shared = existing.status_code == 200 and any(
+                (s.get("user_info") or {}).get("name") == _SECOND_EMAIL for s in existing.json()
+            )
+            if not shared:
+                cls._share("/", "rw")
+                cls._made_library_share = True
+            for perm in cls.RULES + ("none",):
+                folder = f"/{cls.base}/rules/{perm}"
+                cls.client.mkdir_p(cls.rid, folder)
+                if perm != "none" and cls._rules_supported:
+                    cls._rule(folder, perm)
+            _require_the_same_server(cls.env2, cls.tmp, cls.client.server_url, cls.base + "/rules/rw")
+        except BaseException:
+            cls.tearDownClass()
+            raise
+
+    @classmethod
+    def tearDownClass(cls):
+        try:
+            for folder in getattr(cls, "_rules", []):
+                cls._admin("DELETE", f"/api2/repos/{cls.rid}/user-folder-perm/",
+                           data={"user_email": _SECOND_EMAIL, "folder_path": folder})
+            if getattr(cls, "_made_library_share", False):
+                cls._admin("DELETE", f"/api2/repos/{cls.rid}/dir/shared_items/",
+                           params={"p": "/", "share_type": "user", "username": _SECOND_EMAIL})
+        finally:
+            super().tearDownClass()
+
+    # -- helpers --------------------------------------------------------------
+    @classmethod
+    def _admin(cls, method, path, **kw):
+        return cls.client.session.request(method, cls.client.server_url + path, timeout=120, **kw)
+
+    @classmethod
+    def _share(cls, path, permission, repo_id=None):
+        resp = cls._admin(
+            "PUT", f"/api2/repos/{repo_id or cls.rid}/dir/shared_items/", params={"p": path},
+            data={"share_type": "user", "username": _SECOND_EMAIL, "permission": permission},
+        )
+        if resp.status_code != 200 or resp.json().get("failed"):
+            raise AssertionError(f"sharing {path} as {permission!r} failed: {resp.status_code} "
+                                 f"{resp.text[:300]}")
+
+    @classmethod
+    def _rule(cls, folder, permission):
+        """A folder permission for the second account; CE has none (404), which is remembered."""
+        resp = cls._admin("POST", f"/api2/repos/{cls.rid}/user-folder-perm/",
+                          data={"user_email": _SECOND_EMAIL, "folder_path": folder,
+                                "permission": permission})
+        if resp.status_code == 404:
+            cls._rules_supported = False
+            return
+        if resp.status_code != 200 or resp.json().get("failed"):
+            raise AssertionError(f"folder permission {permission!r} on {folder} failed: "
+                                 f"{resp.status_code} {resp.text[:300]}")
+        cls._rules.append(folder)
+
+    def _new_repo(self, name, content):
+        path = self.tmp / name
+        path.mkdir()
+        for args in (["init", "-q", "-b", "main", "."], ["config", "user.email", "t@t"],
+                     ["config", "user.name", "T"], ["config", "core.autocrlf", "false"]):
+            self._git(args, path)
+        (path / "a.txt").write_text(content)
+        self._git(["add", "a.txt"], path)
+        self._git(["commit", "-q", "-m", content.strip()], path)
+        return path
+
+    def _as(self, env, args, cwd):
+        return subprocess.run(["git", *args], cwd=str(cwd), env=env, capture_output=True,
+                              text=True, timeout=1800)
+
+    def _round_trip(self, env, url, tag):
+        """First push, clone, second push, fetch: the whole first-use path for one account."""
+        src = self._new_repo(f"src_{tag}", f"{tag}\n")
+        push = self._as(env, ["push", url, "main"], src)
+        self.assertEqual(push.returncode, 0, f"{tag}: first push\n{push.stdout}{push.stderr}")
+        dst = self.tmp / f"clone_{tag}"
+        clone = self._as(env, ["clone", "-q", url, str(dst)], self.tmp)
+        self.assertEqual(clone.returncode, 0, f"{tag}: clone\n{clone.stderr}")
+        (src / "b.txt").write_text("two\n")
+        self._git(["add", "b.txt"], src)
+        self._git(["commit", "-q", "-m", "two"], src)
+        second = self._as(env, ["push", url, "main"], src)
+        self.assertEqual(second.returncode, 0, f"{tag}: second push\n{second.stderr}")
+        fetch = self._as(env, ["pull", "-q", "--ff-only", url, "main"], dst)
+        self.assertEqual(fetch.returncode, 0, f"{tag}: pull\n{fetch.stderr}")
+        self.assertTrue((dst / "b.txt").is_file(), tag)
+
+    # -- tests ----------------------------------------------------------------
+    def test_a_shared_user_pushes_where_the_rules_allow_and_is_refused_loudly_elsewhere(self):
+        if not self._rules_supported:
+            self.skipTest("no folder permissions on this server (user-folder-perm is Pro only)")
+        for perm in self.RULES + ("none",):
+            with self.subTest(rule=perm):
+                url = f"seafile://{_LIBRARY}/{self.base}/rules/{perm}/grs/repo"
+                if perm in ("rw", "none"):
+                    self._round_trip(self.env2, url, f"rule_{perm.replace('-', '_')}")
+                    continue
+                src = self._new_repo(f"src_denied_{perm.replace('-', '_')}", f"{perm}\n")
+                push = self._as(self.env2, ["push", url, "main"], src)
+                out = push.stdout + push.stderr
+                self.assertNotEqual(push.returncode, 0, f"{perm}: the push must be refused\n{out}")
+                self.assertIn("HTTP 403", out, f"{perm}: the refusal must name the server's answer")
+                listed = self.client.list_dir(self.rid, f"/{self.base}/rules/{perm}")
+                self.assertNotIn("grs", [e["name"] for e in listed],
+                                 f"{perm}: a refused push must leave nothing in the folder")
+
+    def test_two_accounts_pushing_first_to_one_new_path_leave_one_history_and_no_copies(self):
+        for rnd in range(3):
+            with self.subTest(round=rnd):
+                path = f"{self.base}/race{rnd}/repo"
+                url = f"seafile://{_LIBRARY}/{path}"
+                repos = {"owner": (self.env, self._new_repo(f"race{rnd}_owner", f"owner {rnd}\n")),
+                         "second": (self.env2, self._new_repo(f"race{rnd}_second", f"second {rnd}\n"))}
+                results: dict[str, subprocess.CompletedProcess] = {}
+
+                def push(who, env, repo, url=url, results=results):
+                    results[who] = self._as(env, ["push", url, "main"], repo)
+
+                threads = [threading.Thread(target=push, args=(w, e, r)) for w, (e, r) in repos.items()]
+                for t in threads:
+                    t.start()
+                for t in threads:
+                    t.join()
+                codes = {w: p.returncode for w, p in results.items()}
+                self.assertEqual(sorted(codes.values()), [0, 1],
+                                 f"exactly one first push wins: {codes}\n" +
+                                 "\n".join(p.stderr for p in results.values()))
+                loser = next(p for p in results.values() if p.returncode)
+                self.assertIn("rejected", loser.stdout + loser.stderr)
+                dst = self.tmp / f"race{rnd}_clone"
+                self._git(["clone", "-q", url, str(dst)], self.tmp)
+                self._git(["fsck", "--strict"], dst)
+                names = [e["name"] for e in self.client.list_dir(self.rid, "/" + path)]
+                self.assertFalse([n for n in names if " (" in n or "SFConflict" in n],
+                                 f"the race left copies beside the repository: {names}")
+
+    def _require_library_create(self):
+        if os.environ.get("SEAFILE_TEST_ALLOW_LIBRARY_CREATE") != "1":
+            self.skipTest("creates a group and a library: set SEAFILE_TEST_ALLOW_LIBRARY_CREATE=1")
+
+    def _new_group(self, name):
+        resp = self._admin("POST", "/api/v2.1/groups/", data={"name": name})
+        self.assertEqual(resp.status_code, 201, resp.text[:300])
+        gid = resp.json()["id"]
+        self.addCleanup(self._admin, "DELETE", f"/api/v2.1/groups/{gid}/")
+        resp = self._admin("POST", f"/api/v2.1/groups/{gid}/members/", data={"email": _SECOND_EMAIL})
+        self.assertEqual(resp.status_code, 201, resp.text[:300])
+        return gid
+
+    def test_a_library_shared_to_a_group_works_for_a_member(self):
+        import secrets
+
+        self._require_library_create()
+        name = "grs-group-" + secrets.token_hex(4)
+        gid = self._new_group(name)
+        resp = self._admin("POST", "/api2/repos/", data={"name": name})
+        self.assertEqual(resp.status_code, 200, resp.text[:300])
+        repo_id = resp.json()["repo_id"]
+        self.addCleanup(self._admin, "DELETE", f"/api2/repos/{repo_id}/")
+        resp = self._admin("PUT", f"/api2/repos/{repo_id}/dir/shared_items/", params={"p": "/"},
+                           data={"share_type": "group", "group_id": str(gid), "permission": "rw"})
+        self.assertEqual(resp.status_code, 200, resp.text[:300])
+        self.assertFalse(resp.json().get("failed"), resp.text[:300])
+        self._round_trip(self.env2, f"seafile://{name}/deep/repo", "group_shared")
+
+    def test_a_group_owned_library_works_for_a_member_and_the_owner(self):
+        """Group-owned libraries live in departments, a Professional feature: skipped on CE."""
+        import secrets
+
+        self._require_library_create()
+        name = "grs-dept-" + secrets.token_hex(4)
+        resp = self._admin("POST", "/api/v2.1/admin/address-book/groups/",
+                           data={"group_name": name, "group_owner": "system admin",
+                                 "parent_group": "-1"})
+        if resp.status_code != 200:
+            self.skipTest(f"no departments on this server (HTTP {resp.status_code}): Pro only")
+        did = resp.json()["id"]
+        self.addCleanup(self._admin, "DELETE", f"/api/v2.1/admin/address-book/groups/{did}/")
+        owner = self._admin("GET", "/api2/account/info/").json()["email"]
+        for email in (owner, _SECOND_EMAIL):
+            resp = self._admin("POST", f"/api/v2.1/admin/groups/{did}/members/", data={"email": email})
+            self.assertEqual(resp.status_code, 200, resp.text[:300])
+        resp = self._admin("PUT", f"/api/v2.1/admin/groups/{did}/members/{owner}/",
+                           data={"is_admin": "true"})
+        self.assertEqual(resp.status_code, 200, resp.text[:300])
+        # The field is ``name``: ``repo_name`` answers 400 "name invalid." (Pro 13.0.29).
+        resp = self._admin("POST", f"/api/v2.1/groups/{did}/group-owned-libraries/",
+                           data={"name": name, "permission": "rw"})
+        self.assertEqual(resp.status_code, 200, resp.text[:300])
+        repo_id = resp.json()["id"]
+        # Cleanups run last-in first-out: the library goes before its department.
+        self.addCleanup(self._admin, "DELETE",
+                        f"/api/v2.1/groups/{did}/group-owned-libraries/{repo_id}/")
+        self._round_trip(self.env2, f"seafile://{name}/repo", "dept_member")
+        self._round_trip(self.env, f"seafile://{name}/deep/repo", "dept_owner")
 
 
 if __name__ == "__main__":

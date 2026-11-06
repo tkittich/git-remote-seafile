@@ -86,8 +86,8 @@ def wait_for_seahub(deadline: float) -> None:
     )
 
 
-def auth_token(session: requests.Session) -> str:
-    email, password = _admin()
+def auth_token(session: requests.Session, account: tuple[str, str] | None = None) -> str:
+    email, password = account or _admin()
     resp = session.post(
         f"{_server()}/api2/auth-token/",
         data={"username": email, "password": password},
@@ -115,6 +115,35 @@ def describe_server(info: object) -> str:
     version = info.get("version")
     shown = version if isinstance(version, str) and version else "unknown version"
     return f"Seafile {'Professional' if pro else 'Community'} Edition {shown}"
+
+
+#: The second account the shared-user tests act as.  Throwaway like the admin's: it exists only
+#: in the runner's container.  Pro's trial allows three accounts; this is the second.
+SECOND_ACCOUNT = ("second@grs.invalid", "grs-ci-second")
+
+
+def create_second_user(session: requests.Session, token: str) -> tuple[str, str]:
+    """Create the second account, and return its id (as the API spells it) and its token.
+
+    The id comes from the account's own ``/api2/account/info/``: Seafile 13 may give an account
+    an internal id (``...@auth.local``) other than the address it was created with, and sharing
+    takes the id.  An account left by an earlier run on the same container is reused.
+    """
+    email, password = SECOND_ACCOUNT
+    resp = session.post(
+        f"{_server()}/api/v2.1/admin/users/",
+        headers=_headers(token),
+        data={"email": email, "password": password, "name": "grs second"},
+        timeout=30,
+    )
+    if resp.status_code not in (200, 201) and "exist" not in resp.text.lower():
+        raise SystemExit(f"creating the second account failed: HTTP {resp.status_code}: {resp.text[:200]}")
+    second = auth_token(session, SECOND_ACCOUNT)
+    info = session.get(f"{_server()}/api2/account/info/", headers=_headers(second), timeout=30)
+    account_id = info.json().get("email") if info.status_code == 200 else None
+    if not isinstance(account_id, str) or not account_id:
+        raise SystemExit(f"the second account's info answered HTTP {info.status_code}: {info.text[:200]}")
+    return account_id, second
 
 
 def helper_home(parent: str, token: str) -> str:
@@ -272,6 +301,10 @@ def main(argv: list[str] | None = None) -> int:
         # is a finding about the server, not about this script.
         command, opt_ins = suite_command(body_limit)
         env.update(opt_ins)
+        if body_limit is None:
+            second_id, second_token = create_second_user(session, token)
+            env["SEAFILE_TEST_SECOND_EMAIL"] = second_id
+            env["SEAFILE_TEST_SECOND_TOKEN"] = second_token
         proc = subprocess.run(command, cwd=str(ROOT), env=env)
         status = proc.returncode
     finally:

@@ -96,6 +96,18 @@ class TestRealserverCI(unittest.TestCase):
             self.assertEqual(ci._server(), "http://box:1234")
         self.assertEqual(ci._server(), "http://127.0.0.1")
 
+    def test_the_second_account_is_named_by_the_id_its_own_info_gives(self):
+        # One fake answers both POSTs (the account, then its token).
+        session = _Session(get_resp=_Resp(200, payload={"email": "abc@auth.local"}),
+                           post_resp=_Resp(200, payload={"token": "tok2"}))
+        self.assertEqual(ci.create_second_user(session, "t0k"), ("abc@auth.local", "tok2"))
+
+    def test_a_refused_second_account_exits_naming_the_answer(self):
+        session = _Session(post_resp=_Resp(403, text="Permission denied."))
+        with self.assertRaises(SystemExit) as caught:
+            ci.create_second_user(session, "t0k")
+        self.assertIn("HTTP 403", str(caught.exception))
+
     def test_the_server_line_names_the_edition_from_the_features_list(self):
         # The two answers measured on 13.0.29 (CE, and Pro with search on).
         self.assertEqual(

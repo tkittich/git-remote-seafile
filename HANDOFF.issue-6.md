@@ -94,13 +94,23 @@ addresses, accounts, libraries and tokens are **not** in this repository and mus
 it (nor to commit messages): ask the maintainer. Everything that has to be repeatable belongs in the
 throwaway CI containers (`.github/seafile-ci.yml`), which is where the to-do below moves it.
 
-Useful API facts for setting up a test, measured on Pro 13.0.29:
+Useful API facts for setting up a test, measured on Pro 13.0.29 (all of them are now exercised by
+`SharedUserTests` in `tests/test_realserver.py`, which is the place to look first):
 
+- a **folder permission** is `POST /api2/repos/<id>/user-folder-perm/` (form `user_email`,
+  `folder_path`, `permission` one of `r`, `rw`, `preview`, `cloud-edit`, `invisible`); remove with
+  `DELETE` and `user_email`, `folder_path`. It is a Pro feature. (An earlier note here said these
+  routes do not exist and that a sub-folder *share* is the rule: wrong. A share of a sub-folder with
+  a lesser permission does not restrict a user who has the library read-write.)
 - share a library with a user: `PUT /api2/repos/<id>/dir/shared_items/?p=/` (form
-  `share_type=user`, `username`, `permission=rw`); a sub-folder rule is the same call with
-  `p=/<folder>` and `permission` one of `r`, `rw`, `preview`, `cloud-edit`, `invisible`; remove with
-  `DELETE` and the same parameters. On a library that is not group-owned, a folder permission *is*
-  such a sub-folder share; the `user-folder-perm` routes do not exist there.
+  `share_type=user`, `username` = the id `/api2/account/info/` gives, `permission=rw`); with a
+  group: `share_type=group`, `group_id`.
+- group-owned libraries need a **department** (`POST /api/v2.1/admin/address-book/groups/`,
+  `group_name`, `group_owner=system admin`, `parent_group=-1`); the library is
+  `POST /api/v2.1/groups/<dept>/group-owned-libraries/` with the field **`name`** (`repo_name`
+  answers 400 "name invalid."); an ordinary group answers 403 "No group quota.".
+- `mkdir` of a name that exists makes a numbered copy (`grs-x (1)`), even when nothing else is
+  running: create each folder once.
 - **Never use `git-remote-seafile login`** against a manual test server: it refuses plain HTTP, and
   it writes `~/.git-seafile.json`, which can send real remotes that name no server to the test one.
 
@@ -116,28 +126,29 @@ rules are the exception: use `grs-*` sub-folders of them, never touch the folder
 ## Still to do, in this order
 
 1. **Answer the issue** (draft above) when the release is ready, not before; ask for the version.
-2. **More Pro cases.** Done so far (2026-11-06):
+2. **More Pro cases: done (2026-11-06).**
    - *Code audit:* every file read (helper, lock tickets, refs, gc, LFS, repair, snapshot, payload)
      goes through `get_file_bytes` / `download_file_to`, the two the fix covers. Listings, `mkdir_p`
      and uploads use `dir/` only, which Pro answers 404 for a missing folder at every depth.
-     `rename_entry` / `delete_entry` / `copy_entries` act only on paths just listed or uploaded.
-   - *Stub sweep:* the whole suite passes with the stub answering every file read like Pro
-     (`GRS_STUB_PRO=1`, see `tests/e2e_harness.py`).
-   - *Manual Pro runs* (owner, a shared user under each sub-folder rule, gc, the snapshot tool's first
-     run with payload, two users' first push at once, group-shared and group-owned libraries): in
-     progress; results are written up here without server details.
-3. **Move all of it into the CI tier before the release** (the maintainer's decision, 2026-11-06):
-   - since 12.0 the Pro image `seafileltd/seafile-pro-mc` is public on Docker Hub, and without a
-     licence file Pro runs as a trial with up to three users, so no secret is needed; the Pro
-     compose file is the CE one with another image (Elasticsearch is a separate, optional file);
-   - run `tests.test_realserver` against CE and Pro (`13.0-latest`, the version printed from
-     `/api2/server-info/`); every test there pushes to a new path, so on Pro each one is a first
-     push under a missing folder (red on 0.9.22);
-   - pin the missing-folder answers in `test_api_semantics_the_stub_encodes` (listing 404 at depth
-     1 and 2; file read 404 on CE, 403 or 500 on Pro);
-   - create a second user, sub-folder rules and a group through the admin API in the container, and
-     test a shared user under each rule, group-shared and group-owned libraries, and two users'
-     concurrent first push; then add a Pro line to CONTRIBUTING's list of stub differences.
+     `rename_entry` / `delete_entry` / `copy_entries` act only on paths just listed or uploaded, in
+     folders that exist (Pro's `DELETE file/` under a missing folder is 403/500 too, never reached).
+   - *Stub sweep:* the whole suite passes with `GRS_STUB_PRO=1`.
+   - *Manual Pro runs*, all as expected: owner first push two levels deep, clone, second push, gc,
+     lock-status; the snapshot tool's first run with payload, `--payload-verify all`, restore
+     `--verify`; a shared user under each folder permission (rw and no rule work; r, preview,
+     cloud-edit and invisible are refused with the server's 403, and the refusal names the folder);
+     a group-shared and a group-owned library; two accounts' first push to one path at once (one
+     wins, the other is an ordinary `rejected (fetch first)`, fsck clean).
+   - *Found on the way and fixed:* the duplicate-folder check missed Seafile's real naming
+     (`.git-lock (1).d`), see CHANGELOG; the real-server suite could send its git-driven tests to a
+     different server than the one named in `SEAFILE_SERVER` (fixed, with a guard); Pro answers a
+     file delete under a missing folder like a read (test made edition-aware).
+3. **The CI tier: written, not yet dispatched.** `realserver.yml` is a `ce`/`pro` matrix (public
+   Pro image, three-user trial, no secret); the driver creates a second account; `SharedUserTests`
+   and the missing-folder test passed against a Pro 13.0.29 server by hand. What is left is a
+   dispatch of the workflow (the maintainer's; first runs fail environmentally, see the workflow's
+   own notes): the second-account creation (`POST /api/v2.1/admin/users/`) and Pro booting without
+   Elasticsearch are the two untried steps.
 4. **Release** (maintainer's call): version bump, release notes `.github/release-notes/vX.Y.Z.md`,
    gates (Windows and the Debian full suite), push, wait for CI green, the real-server workflow on
    CE and Pro, `python tools/release_check.py`, tag. Fold anything else found here into the same
