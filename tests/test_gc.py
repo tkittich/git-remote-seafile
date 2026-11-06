@@ -1686,6 +1686,67 @@ class TestGitFailuresNameTheCause(unittest.TestCase):
         self.assertNotIn("returned non-zero exit status", text)
 
 
+class TestScratchSpaceIsCheckedBeforeAnyDownload(unittest.TestCase):
+    """gc, a tail merge and repair download into the temporary directory under the lock
+    (triage T15): a disk that cannot hold the packs is a refusal before the first byte."""
+
+    GIB = 1024 ** 3
+
+    def _client(self):
+        client = MagicMock()
+        client.list_dir.side_effect = lambda repo_id, path: (
+            [{"name": f"pack-{i}.pack", "size": 10 * self.GIB} for i in range(3)]
+            + [{"name": f"pack-{i}.idx", "size": 1024} for i in range(3)]
+            if "objects/pack" in path
+            else [{"type": "file", "name": "main"}] if "refs/heads" in path
+            else []
+        )
+        client.get_file_text.return_value = "sha-main"
+        client.download_file_to.side_effect = OSError("downloaded")
+        return client
+
+    @staticmethod
+    def _free(free):
+        return patch.object(gc_module.shutil, "disk_usage",
+                            return_value=MagicMock(free=free, total=free, used=0))
+
+    def test_the_shortfall_names_the_need_the_free_space_and_the_override(self):
+        with self._free(100):
+            why = gc_module.scratch_shortfall(gc_module.scratch_needed(10 * self.GIB))
+        self.assertIn("20.1 GiB", why)
+        self.assertIn("--allow-low-disk", why)
+        with self._free(100 * self.GIB):
+            self.assertIsNone(gc_module.scratch_shortfall(gc_module.scratch_needed(10 * self.GIB)))
+        with patch.object(gc_module.shutil, "disk_usage", side_effect=OSError("no such dir")):
+            self.assertIsNone(gc_module.scratch_shortfall(1), "a check that cannot answer must not block")
+
+    def test_a_full_gc_refuses_before_downloading_and_the_override_goes_ahead(self):
+        client = self._client()
+        with self._free(self.GIB):
+            res = compact_repository(client, "repo1", "/path", min_packs=2, verbose=False)
+        self.assertEqual(res["status"], "error")
+        self.assertIn("Compaction not started", res["message"])
+        client.download_file_to.assert_not_called()
+        deleted = [c.args[1] for c in client.delete_entry.call_args_list]
+        self.assertFalse([p for p in deleted if "objects/pack" in p], deleted)
+
+        with self._free(self.GIB), patch("git_remote_seafile.gc.run_git_checked"):
+            compact_repository(client, "repo1", "/path", min_packs=2, verbose=False,
+                               allow_low_disk=True)
+        client.download_file_to.assert_called()
+
+    def test_the_automatic_tail_merge_skips_and_the_asked_for_one_fails(self):
+        cfg = RemoteConfig(lock_timeout=15, lock_lease=60, lock_settle=0, auto_gc=True,
+                           gc_threshold=2, gc_max_mib=1 << 30, gc_max_pack_mib=1 << 20)
+        for respect_budget, status in ((True, "skipped"), (False, "error")):
+            client = self._client()
+            with self._free(self.GIB):
+                res = tail_merge(client, "repo1", "/path", config=cfg, verbose=False,
+                                 respect_budget=respect_budget)
+            self.assertEqual(res["status"], status, res)
+            self.assertIn("Tail merge not started", res["message"])
+            client.download_file_to.assert_not_called()
+
 
 class TestPhasePulse(unittest.TestCase):
     """The long captured phases say they are alive (ROADMAP S13).

@@ -12,7 +12,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from git_remote_seafile.config import RemoteConfig
 from git_remote_seafile.client import SeafileAPIError
@@ -112,6 +112,21 @@ def _repair(client, clone: Path, **kwargs):
 
 
 class TestRepair(unittest.TestCase):
+    def test_a_disk_too_small_for_the_packs_is_a_refusal_before_any_download(self):
+        """Triage T15: repair downloads every pack under the lock."""
+        with tempfile.TemporaryDirectory() as td:
+            clone, sha = _history(Path(td))
+            client = _StubClient({"main": sha})
+            client.pack_files["pack-" + "a" * 40 + ".pack"] = b"x" * 1000
+            client.download_file_to = MagicMock(side_effect=AssertionError("downloaded"))
+            tiny = MagicMock(free=10, total=10, used=0)
+            with patch("git_remote_seafile.gc.shutil.disk_usage", return_value=tiny):
+                res = _repair(client, clone)
+            self.assertEqual(res["status"], "error")
+            self.assertIn("Repair not started", res["message"])
+            self.assertIn("--allow-low-disk", res["message"])
+            self.assertEqual(client.uploaded, [])
+
     def test_broken_ref_is_repaired_and_then_the_remote_is_clean(self):
         """The full arc: broken -> dry-run -> repaired -> clean.
 

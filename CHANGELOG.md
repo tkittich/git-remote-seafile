@@ -21,6 +21,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **A real-server run given `SEAFILE_SERVER`/`SEAFILE_TOKEN` no longer sends its git-driven tests somewhere else.** The suite dropped those variables from the git processes it started (they point at the stub in the harness), so the helper fell back to `~/.git-seafile.json` or the desktop client's account while the test itself read and cleaned up on the named server. They are now passed on, and every class first runs `doctor` and refuses to start unless the helper logs in to the same server. Found before any push went astray.
 - **`GRS_STUB_PRO=1` makes every stub answer file reads the way Pro does**; the whole suite passes in that mode.
 
+### Added
+- **`gc`, `gc --tail` and `repair` check the scratch space before downloading anything** (ROADMAP X9, triage T15). They download every pack into the temporary directory under the remote lock and write the repacked one beside it; a disk that filled half-way wasted the download and kept every other pusher waiting. They now refuse first when about twice the packs' size is not free, naming what they need, what is free and where (`TMPDIR`, or `TEMP` on Windows, moves it); `--allow-low-disk` starts anyway, and the automatic tail merge after a push skips instead. A free space that cannot be read does not block.
+
+
 ## [0.9.22] - 2026-11-06
 
 Staging that scales and transfers that adapt. A run that leaves files out of a 222,910-file vault (2,600 of them new) spent 22 minutes in `git add`, which matches every path it is given against every file it knows; it now stages only what changed, and a long list goes through `git update-index`. Object writing, payload uploads and payload hashing find their own parallelism by measuring instead of using a fixed number. What is stored does not change: the recorded trees were compared across both staging routes in more than forty scenarios on Windows and Debian. Nothing here has been measured on a spinning disk or a slow link.

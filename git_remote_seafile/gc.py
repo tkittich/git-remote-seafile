@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+import shutil
 import sys
 import tempfile
 import time
@@ -29,6 +30,42 @@ _MIRRORED_PREFIXES = tuple(f"{ns}/" for ns in REF_NAMESPACES)
 #: for the ones tail merge writes; the hash is the only part whose length says
 #: which object format the pack is in.
 _PACK_HASH_RE = re.compile(r"([0-9a-f]{64}|[0-9a-f]{40})\.pack$")
+
+
+#: Scratch headroom on top of twice the packs: the scratch repository's own files, git's
+#: temporary objects, and the margin a filesystem needs to stay usable.
+SCRATCH_MARGIN_BYTES = 64 * 1024 * 1024
+
+
+def scratch_needed(pack_bytes: int) -> int:
+    """Local space a run that downloads *pack_bytes* of packs (and their indexes) needs.
+
+    The downloads, plus the repacked output, which is at most as large again: two
+    times, and a margin.
+    """
+    return 2 * max(0, pack_bytes) + SCRATCH_MARGIN_BYTES
+
+
+def scratch_shortfall(needed: int, where: str | None = None) -> str | None:
+    """Why the scratch directory cannot hold *needed* bytes, or ``None`` when it can.
+
+    gc, a tail merge and repair download packs into the system temporary directory while
+    they hold the remote lock; running out of space there half-way wastes the download and
+    keeps every other pusher waiting (T15).  ``None`` too when the free space cannot be read:
+    a check that cannot answer must not block the run.
+    """
+    place = where or tempfile.gettempdir()
+    try:
+        free = shutil.disk_usage(place).free
+    except OSError:
+        return None
+    if free >= needed:
+        return None
+    return (
+        f"it needs about {format_bytes(needed)} of scratch space in {place} and "
+        f"{format_bytes(free)} is free; free some space or point TMPDIR (TEMP on Windows) "
+        "elsewhere, or pass --allow-low-disk to try anyway"
+    )
 
 
 def detect_object_format(pack_names: list[str]) -> str:
@@ -509,6 +546,7 @@ def tail_merge(
     verbose: bool = True,
     respect_budget: bool = True,
     link_mibs: float | None = None,
+    allow_low_disk: bool = False,
 ) -> dict[str, Any]:
     """Merge the remote's small ("movable") packfiles.
 
@@ -655,6 +693,17 @@ def tail_merge(
                 f"Tailing remote repository ({len(movable)} movable packfiles, "
                 f"{frozen_count} frozen{later})...\n"
             )
+
+        short = None if allow_low_disk else scratch_shortfall(scratch_needed(total_movable))
+        if short:
+            # The automatic run (inside a push) skips: the push itself succeeded, and a
+            # merge that cannot fit is better tried later than failed half-way.
+            return {
+                "status": "skipped" if respect_budget else "error",
+                "movable_packs": len(movable),
+                "frozen_packs": frozen_count,
+                "message": f"Tail merge not started: {short}.",
+            }
 
         with tempfile.TemporaryDirectory(prefix="git-seaf-tailmerge-") as td:
             tmp = Path(td)
@@ -856,6 +905,7 @@ def compact_repository(
     verbose: bool = True,
     config: RemoteConfig | None = None,
     max_total_bytes: int | None = None,
+    allow_low_disk: bool = False,
 ) -> dict[str, Any]:
     """Consolidate multiple small packfiles on Seafile into a single optimized packfile.
 
@@ -964,6 +1014,17 @@ def compact_repository(
                     "from the remote first."
                 ),
             }
+
+        if not allow_low_disk:
+            all_bytes = sum(int(e.get("size") or 0) for e in entries
+                            if str(e.get("name", "")).endswith((".pack", ".idx")))
+            short = scratch_shortfall(scratch_needed(all_bytes))
+            if short:
+                return {
+                    "status": "error",
+                    "count": len(old_packs),
+                    "message": f"Compaction not started: {short}.",
+                }
 
         if verbose:
             sys.stderr.write(f"Starting compaction for {len(old_packs)} packfiles...\n")

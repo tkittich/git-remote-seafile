@@ -70,16 +70,21 @@ _COMMANDS: tuple[tuple[str, str, str, tuple[tuple[str, str], ...]], ...] = (
      (("--user NAME", "The account to sign in as (asked for when omitted)"),)),
     ("check-auth", "git-remote-seafile check-auth",
      "Verify active Seafile login", ()),
-    ("gc", "git-remote-seafile gc <seafile://url> [--min-packs N | --tail]",
+    ("gc", "git-remote-seafile gc <seafile://url> [--min-packs N | --tail] [--allow-low-disk]",
      "Compact multiple remote packfiles",
      (("--min-packs N",
        "Only compact when the remote holds at least N packfiles (default: 2)"),
       ("--tail",
        "Run exactly what seafile.autogc runs: merge only the small packfiles, "
-       "leave large ones in place, no pruning"))),
-    ("repair", "git-remote-seafile repair <seafile://url> [--dry-run]",
+       "leave large ones in place, no pruning"),
+      ("--allow-low-disk",
+       "Start even when the temporary directory looks too small for the download "
+       "(about twice the packs' size)"))),
+    ("repair", "git-remote-seafile repair <seafile://url> [--dry-run] [--allow-low-disk]",
      "Restore refs whose objects no remote packfile carries, from this clone",
-     (("--dry-run", "Report the broken refs without uploading anything"),)),
+     (("--dry-run", "Report the broken refs without uploading anything"),
+      ("--allow-low-disk",
+       "Start even when the temporary directory looks too small for the download"))),
     ("lfs-transfer", "git-remote-seafile lfs-transfer <seafile://url>",
      "Git LFS Custom Transfer Agent", ()),
     ("lfs-setup", "git-remote-seafile lfs-setup [<seafile://url>] [--all-remotes]",
@@ -640,7 +645,7 @@ def _cmd_test(rest: list[str]) -> int:
         return _error(f"Test failed: {ex}")
 
 
-def _gc_tail(url: str) -> int:
+def _gc_tail(url: str, allow_low_disk: bool = False) -> int:
     """``gc --tail``: the automatic tier, on demand.
 
     Lets a user run, test or schedule exactly what ``seafile.autogc`` does.
@@ -654,7 +659,7 @@ def _gc_tail(url: str) -> int:
         helper = RemoteHelper("gc", url)
         res = tail_merge(
             helper.client, helper.repo_id, helper.repo_path, config=RemoteConfig.load(),
-            respect_budget=False,
+            respect_budget=False, allow_low_disk=allow_low_disk,
         )
     except Exception as ex:
         return _error(f"Tail merge failed: {ex}")
@@ -682,8 +687,9 @@ def _cmd_gc(rest: list[str]) -> int:
     if not positional:
         return _usage("gc")
     url = positional[0]
+    allow_low_disk = "--allow-low-disk" in rest
     if "--tail" in rest:
-        return _gc_tail(url)
+        return _gc_tail(url, allow_low_disk)
     min_packs = _parse_min_packs(rest)
     try:
         from .config import RemoteConfig
@@ -695,6 +701,7 @@ def _cmd_gc(rest: list[str]) -> int:
             helper.repo_path,
             min_packs=min_packs,
             config=RemoteConfig.load(),
+            allow_low_disk=allow_low_disk,
         )
     except Exception as ex:
         return _error(f"Compaction failed: {ex}")
@@ -744,6 +751,7 @@ def _cmd_repair(rest: list[str]) -> int:
             helper.repo_path,
             dry_run=dry_run,
             config=RemoteConfig.load(),
+            allow_low_disk="--allow-low-disk" in rest,
         )
     except Exception as ex:
         return _error(f"Repair failed: {ex}")

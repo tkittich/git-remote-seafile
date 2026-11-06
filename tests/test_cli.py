@@ -611,7 +611,7 @@ class TestCLISetHeadAndLFSTransfer(unittest.TestCase):
                 code = main()
                 self.assertEqual(code, 0)
                 mock_compact.assert_called_with(
-                    mock_helper.client, "repo1", "/git-repo", min_packs=5, config=ANY
+                    mock_helper.client, "repo1", "/git-repo", min_packs=5, config=ANY, allow_low_disk=False
                 )
 
             # Invalid non-integer
@@ -621,7 +621,7 @@ class TestCLISetHeadAndLFSTransfer(unittest.TestCase):
                     self.assertEqual(code, 0)
                     self.assertIn("invalid --min-packs value", mock_err.getvalue())
                     mock_compact.assert_called_with(
-                        mock_helper.client, "repo1", "/git-repo", min_packs=2, config=ANY
+                        mock_helper.client, "repo1", "/git-repo", min_packs=2, config=ANY, allow_low_disk=False
                     )
 
             # Invalid non-positive integer
@@ -631,7 +631,7 @@ class TestCLISetHeadAndLFSTransfer(unittest.TestCase):
                     self.assertEqual(code, 0)
                     self.assertIn("--min-packs must be a positive integer", mock_err.getvalue())
                     mock_compact.assert_called_with(
-                        mock_helper.client, "repo1", "/git-repo", min_packs=2, config=ANY
+                        mock_helper.client, "repo1", "/git-repo", min_packs=2, config=ANY, allow_low_disk=False
                     )
 
             # Missing integer value
@@ -641,7 +641,7 @@ class TestCLISetHeadAndLFSTransfer(unittest.TestCase):
                     self.assertEqual(code, 0)
                     self.assertIn("--min-packs requires an integer value", mock_err.getvalue())
                     mock_compact.assert_called_with(
-                        mock_helper.client, "repo1", "/git-repo", min_packs=2, config=ANY
+                        mock_helper.client, "repo1", "/git-repo", min_packs=2, config=ANY, allow_low_disk=False
                     )
 
     @patch("git_remote_seafile.cli.RemoteHelper")

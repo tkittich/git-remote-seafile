@@ -34,6 +34,8 @@ from .gc import (
     _init_scratch,
     _phase_pulse,
     _upload_new_packs,
+    scratch_needed,
+    scratch_shortfall,
 )
 from .git_util import (
     HEX_SHA_RE,
@@ -216,6 +218,7 @@ def repair_remote(
     verbose: bool = True,
     config: RemoteConfig | None = None,
     local_repo: Path | None = None,
+    allow_low_disk: bool = False,
 ) -> dict[str, Any]:
     """Restore every ref whose tip no remote packfile carries.
 
@@ -260,6 +263,13 @@ def repair_remote(
 
         def on_download_progress(transferred: int, total: int) -> None:
             maybe_renew()
+
+        if not allow_low_disk:
+            short = scratch_shortfall(
+                scratch_needed(sum(pack_sizes.values()) + sum(idx_sizes.values()))
+            )
+            if short:
+                return {"status": "error", "message": f"Repair not started: {short}."}
 
         with tempfile.TemporaryDirectory(prefix="git-seaf-repair-") as td:
             tmp = Path(td)
