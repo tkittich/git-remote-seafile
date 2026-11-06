@@ -22,6 +22,7 @@ ref-update semantics -- a stub would test the stub.
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import io
 import json
 import os
@@ -4712,6 +4713,32 @@ class StatusTests(_SnapshotFixture):
         # form of an 8.3 short name (RUNNER~1) on a Windows runner.
         self.assertIn(f"source        : {self.code.resolve()}", out)
         self.assertIn("payload mode  : off", out)
+
+    def _fingerprint(self) -> dict[str, tuple[int, int, str]]:
+        """Every file of the vault and of the source: size, mtime and content hash."""
+        seen: dict[str, tuple[int, int, str]] = {}
+        for root in (self.vault, self.code):
+            for path in sorted(root.rglob("*")):
+                if path.is_file():
+                    info = path.stat()
+                    seen[str(path)] = (info.st_size, info.st_mtime_ns,
+                                       hashlib.sha256(path.read_bytes()).hexdigest())
+        return seen
+
+    def test_status_and_maintain_write_nothing(self):
+        """Both are documented as read-only, and only reviewers' one-off runs held it (T23):
+        not the vault's index or config, not a lock file, not the source."""
+        self.assertEqual(self.snapshot("--no-push", "--record-mtimes")[0], 0)
+        (self.code / "later.txt").write_text("a change status should count, not record\n")
+        before = self._fingerprint()
+        rc, out, err = self.status()
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn("1 new", out)
+        rc, out, err = self.run_tool("--source", self.code, "--vault", self.vault, "--maintain")
+        self.assertEqual(rc, 0, out + err)
+        after = self._fingerprint()
+        changed = sorted(p for p in set(before) | set(after) if before.get(p) != after.get(p))
+        self.assertEqual(changed, [], "a read-only mode wrote to the vault or the source")
 
     def test_a_fresh_snapshot_reports_zero_changes(self):
         self.assertEqual(self.snapshot("--no-push", "--record-mtimes")[0], 0)
