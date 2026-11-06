@@ -198,7 +198,7 @@ def main(argv: list[str] | None = None) -> int:
     version = package_version(root)
     notes = root / ".github" / "release-notes" / f"v{version}.md"
     title = notes.read_text(encoding="utf-8").splitlines()[0][2:].strip()
-    print(f"\nReady. Tag with:\n{push_recipe(root, version, title)}")
+    print(f"\nReady. Tag with:\n{push_recipe(root, str(version), title)}")
     return 0
 
 
