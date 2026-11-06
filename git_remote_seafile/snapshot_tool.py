@@ -2449,6 +2449,41 @@ def index_entry_count(git_dir: Path) -> int:
     return int.from_bytes(header[8:12], "big")
 
 
+def spell_like_index(paths: list[str], indexed: list[str]) -> list[str]:
+    """*paths*, each spelled the way the index already spells it or its directories.
+
+    Only for a vault where git ignores case (``core.ignorecase``).  There ``git add``
+    files a new path under the spelling the index already has for its directory:
+    after ``d`` -> ``D`` on disk, ``D/new.txt`` is recorded as ``d/new.txt``.
+    ``update-index`` takes the path as given, so the long-list route recorded
+    ``D/new.txt`` beside ``d/x.txt`` -- two directories in the tree, and two on a
+    restore to a filesystem that keeps case (ROADMAP X2).  Spelling the list the
+    way ``add`` would makes the two routes record the same tree.
+    """
+    files = {path.casefold(): path for path in indexed}
+    folders: dict[str, str] = {}
+    for path in indexed:
+        parts = path.split("/")[:-1]
+        for depth in range(1, len(parts) + 1):
+            folder = "/".join(parts[:depth])
+            folders.setdefault(folder.casefold(), folder)
+    spelled = []
+    for path in paths:
+        known = files.get(path.casefold())
+        if known is not None:
+            spelled.append(known)
+            continue
+        parts = path.split("/")
+        respelled = path
+        for depth in range(len(parts) - 1, 0, -1):
+            known_folder = folders.get("/".join(parts[:depth]).casefold())
+            if known_folder is not None:
+                respelled = known_folder + "/" + "/".join(parts[depth:])
+                break
+        spelled.append(respelled)
+    return spelled
+
+
 def staging_commands(
     paths: list[str], work_tree: Path, index_entries: int = 0
 ) -> "tuple[list[tuple[list[str], str]], list[str]]":
@@ -3010,6 +3045,10 @@ def build_snapshot(
             if wrote:
                 stall = stall_limit_after_prewrite(spent)
                 add_expects = 0
+        folded = git(git_dir, work_tree, ["config", "--bool", "core.ignorecase"],
+                     cwd=work_tree, check=False).stdout.strip() == "true"
+        if to_stage and folded:
+            to_stage = spell_like_index(to_stage, index_paths(git_dir, work_tree))
         if to_stage:
             commands, drop_first = staging_commands(
                 to_stage, work_tree, index_entry_count(git_dir)
@@ -3050,8 +3089,6 @@ def build_snapshot(
         # spelling it first met, so a new file in a directory renamed `d` -> `D` is
         # indexed as `d/new.txt` while the listing says `D/new.txt`.  Compared as
         # written, the file just staged was "stale" and was dropped, on every run.
-        folded = git(git_dir, work_tree, ["config", "--bool", "core.ignorecase"],
-                     cwd=work_tree, check=False).stdout.strip() == "true"
         kept_known = {p.casefold() for p in kept_set} if folded else kept_set
         stale = [
             path for path in indexed.split("\0")

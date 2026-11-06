@@ -3096,6 +3096,31 @@ class IncrementalStagingTests(_SnapshotFixture):
         self.assertIn("d/new.txt", recorded)
         self.assertIn("d/x.txt", recorded)
 
+    @unittest.skipUnless(sys.platform in ("win32", "darwin"), "needs a filesystem that ignores case")
+    def test_both_routes_record_one_spelling_after_a_rename_by_case(self):
+        """ROADMAP X2: on the ``update-index`` route the same rename recorded ``D/new.txt``
+        beside ``d/x.txt`` -- two directories in the tree, two on a restore to a filesystem
+        that keeps case.  Both routes must record what ``git add`` does: one spelling."""
+        for route, threshold in (("add", 10 ** 9), ("update-index", 1)):
+            with self.subTest(route=route):
+                for name in ("d", "D", "tmp_d"):
+                    if (self.code / name).exists():
+                        shutil.rmtree(self.code / name)
+                (self.code / "d").mkdir()
+                (self.code / "d" / "x.txt").write_bytes(b"x\n")
+                with unittest.mock.patch.object(snap, "_INDEX_ROUTE_MIN_PATHS", threshold):
+                    self.assertEqual(self.snapshot(*self.EXCLUDE)[0], 0)
+                    os.rename(self.code / "d", self.code / "tmp_d")
+                    os.rename(self.code / "tmp_d", self.code / "D")
+                    (self.code / "D" / "new.txt").write_bytes(b"new\n")
+                    rc, _, err = self.snapshot(*self.EXCLUDE)
+                self.assertEqual(rc, 0, err)
+                tops = {name.split("/")[0] for name in self.tree() if "/" in name
+                        and name.split("/")[0].casefold() == "d"}
+                self.assertEqual(len(tops), 1, f"{route}: the tree spells the directory {tops}")
+                recorded = {name.casefold() for name in self.tree()}
+                self.assertTrue({"d/x.txt", "d/new.txt"} <= recorded, recorded)
+
     @unittest.skipIf(os.name == "nt", "Windows always takes the filtered route (junction check)")
     def test_the_unfiltered_route_is_unchanged(self):
         """No excludes: ``add -A -f .`` as before, no path list."""
