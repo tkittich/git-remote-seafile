@@ -55,6 +55,15 @@ class ReleaseCheckTests(unittest.TestCase):
         _git(self.root, "tag", "v0.1.0")
         _git(self.root, "tag", "v0.9.0")  # numeric order: v0.9.0 is above v0.2.0
 
+    def test_the_recipe_names_only_remotes_the_checkout_has(self):
+        """Review 4f1cdd4 (glm-5.3 G5.2): `git push mirror` was printed for a checkout
+        with no `mirror` remote, a command that fails."""
+        recipe = rc.push_recipe(self.root, "0.2.0", "v0.2.0 - A Title")
+        self.assertIn("git push origin v0.2.0", recipe)
+        self.assertNotIn("git push mirror", recipe)
+        _git(self.root, "remote", "add", "mirror", "https://example.invalid/m.git")
+        self.assertIn("git push mirror", rc.push_recipe(self.root, "0.2.0", "v0.2.0 - A Title"))
+
     def failed(self, results) -> dict[str, str]:
         return {name: detail for status, name, detail in results if status == "FAIL"}
 

@@ -166,6 +166,22 @@ def check(root: Path, tag: str | None = None) -> list[Result]:
     return results
 
 
+def push_recipe(root: Path, version: str, title: str) -> str:
+    """The commands that tag and publish, naming only remotes this checkout has.
+
+    The recipe printed ``git push mirror`` whatever the remotes were, and a checkout
+    that pushes through two URLs of ``origin`` has no ``mirror`` (review 4f1cdd4,
+    glm-5.3 G5.2).
+    """
+    _rc, out = _git(root, "remote")
+    remotes = out.split()
+    # Titles carry backticks, which a double-quoted shell argument would run.
+    lines = [f"git tag -a v{version} -m {shlex.quote(title)}", f"git push origin v{version}",
+             "git push origin"]
+    lines += [f"git push {name}" for name in remotes if name == "mirror"]
+    return "\n".join(f"  {line}" for line in lines)
+
+
 def main(argv: list[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     if len(args) > 1 or (args and args[0] in ("-h", "--help")):
@@ -182,9 +198,7 @@ def main(argv: list[str] | None = None) -> int:
     version = package_version(root)
     notes = root / ".github" / "release-notes" / f"v{version}.md"
     title = notes.read_text(encoding="utf-8").splitlines()[0][2:].strip()
-    # Titles carry backticks, which a double-quoted shell argument would run.
-    print(f"\nReady. Tag with:\n  git tag -a v{version} -m {shlex.quote(title)}\n"
-          f"  git push origin v{version}\n  git push origin\n  git push mirror")
+    print(f"\nReady. Tag with:\n{push_recipe(root, version, title)}")
     return 0
 
 
