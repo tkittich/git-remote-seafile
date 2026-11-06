@@ -1659,8 +1659,11 @@ class FirstRunExcludePromptTests(_SnapshotFixture):
         for rel in ("a/build/x.o", "b/build/y.o", "b/package.json"):
             (plain / rel).parent.mkdir(parents=True, exist_ok=True)
             (plain / rel).write_bytes(b"o")
-        rc, out, err = self.run_tool("--source", plain, "--vault", self.tmp / "pv", "--no-push",
-                                     "--default-excludes")
+        identity = self.tmp / "identity.gitconfig"        # CI has none, and a plain directory brings none
+        identity.write_bytes(b"[user]" + bytes([10]) + b"	name = t" + bytes([10]) + b"	email = t@example.com" + bytes([10]))
+        with unittest.mock.patch.dict(os.environ, {"GIT_CONFIG_GLOBAL": str(identity)}):
+            rc, out, err = self.run_tool("--source", plain, "--vault", self.tmp / "pv", "--no-push",
+                                         "--default-excludes")
         self.assertEqual(rc, 0, err)
         tree = {n for n in _git(self.tmp / "pv", "ls-tree", "-r", "--name-only", BRANCH).stdout.split()}
         self.assertIn("a/build/x.o", tree)          # nothing says a build makes it

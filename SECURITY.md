@@ -137,7 +137,9 @@ the first sees `api-host`, the second connects to `other`. A link whose authorit
 userinfo or a control character is refused outright, and a link to any other host is sent through a
 session that carries no `Authorization` header. A transfer link's path is itself a short-lived
 bearer token, so a failed transfer is reported by origin only and URL passwords are masked in every
-message that names the URL.
+message that names the URL. What a server said in an error is shown as one printable line of at most
+200 characters: control characters (terminal escape sequences) become `?`, and the account token and
+the link's path and query are removed if the server echoed them.
 
 The helper also treats what a repository holds as hostile: pack names are lowercase hex only, a ref
 whose listed size is over 4 KiB is not read, text files declared over 16 MiB are refused, and the

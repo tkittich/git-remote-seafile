@@ -55,24 +55,37 @@ def remove_tree(path: "str | os.PathLike[str]") -> None:
     def clear_read_only(function, failed, _error):
         try:
             os.chmod(failed, 0o700)
-            function(failed)
         except OSError:
+            pass
+        try:
+            if function is os.open:
+                # rmtree could not open an entry: a directory it may not read (chmod above
+                # lets the second pass in) or a fifo or socket, which is only unlinked.
+                if os.path.islink(failed) or not os.path.isdir(failed):
+                    os.unlink(failed)
+            else:
+                function(failed)
+        except Exception:
             pass  # the check below reports what is still there
 
     def attempt() -> None:
         if not os.path.lexists(target):
             return
-        if os.path.islink(target) or os.path.isfile(target):
+        # Anything that is not a real directory is unlinked: rmtree opens its argument, and
+        # opening a fifo blocks for ever (it hung the macOS 3.10 CI job for 30 minutes) while
+        # a socket cannot be opened at all.
+        if os.path.islink(target) or not os.path.isdir(target):
             os.unlink(target)
         elif sys.version_info >= (3, 12):
             shutil.rmtree(target, onexc=clear_read_only)
         else:
             shutil.rmtree(target, onerror=clear_read_only)
 
-    try:
-        attempt()
-    except OSError:
-        pass
+    for _pass in range(2):      # the second pass finds the directories the first made readable
+        try:
+            attempt()
+        except OSError:
+            pass
     if os.path.lexists(target):
         sys.stderr.write(f"remove_tree: could not remove {target}\n")
 

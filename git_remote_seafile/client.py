@@ -803,7 +803,7 @@ class SeafileClient:
                     "Hint: check or refresh your token with 'git-remote-seafile check-auth' "
                     "or log in again with 'git-remote-seafile login' (or the Seafile desktop client)."
                 )
-            raise SeafileAPIError(f"Failed to list repos: HTTP {resp.status_code} {resp.text}")
+            raise SeafileAPIError(f"Failed to list repos: HTTP {resp.status_code} {self._said(resp.text)}")
 
         repos = resp.json()
         if not isinstance(repos, list):
@@ -897,7 +897,7 @@ class SeafileClient:
         if resp.status_code == 404:
             return []
         if resp.status_code != 200:
-            raise SeafileAPIError(f"Failed to list dir {clean_path}: HTTP {resp.status_code} {resp.text}")
+            raise SeafileAPIError(f"Failed to list dir {clean_path}: HTTP {resp.status_code} {self._said(resp.text)}")
         data = resp.json()
         # Normalise here, once, so no caller has to guard: a non-array response
         # is a protocol error worth naming rather than an AttributeError three
@@ -932,7 +932,7 @@ class SeafileClient:
         # so the two now agree: 200 is yes, 404 is no, anything else is an error
         # the caller can decide about.
         raise SeafileAPIError(
-            f"Failed to check dir {clean_path}: HTTP {resp.status_code} {resp.text}"
+            f"Failed to check dir {clean_path}: HTTP {resp.status_code} {self._said(resp.text)}"
         )
 
     def evict_known_dir(self, repo_id: str, dir_path: str) -> None:
@@ -999,12 +999,44 @@ class SeafileClient:
                 continue
 
             raise SeafileAPIError(
-                f"Failed to create directory {current}: HTTP {resp.status_code} {resp.text}"
+                f"Failed to create directory {current}: HTTP {resp.status_code} {self._said(resp.text)}"
             )
         return True
 
+    def _said(self, text: object, *secrets: str) -> str:
+        """A server's reply made safe to put in a message: one line, printable, short, no secrets.
+
+        Replies went into messages whole: a proxy's HTML error page flooded the line, and a
+        hostile or broken server could put terminal escape sequences (clear screen, set the
+        title) on the person's terminal.  Whitespace is folded, any other control character
+        becomes ``?``, the result is cut at 200 characters, and the account token and any
+        string in *secrets* (a transfer link's path and query, which are bearer tokens) are
+        replaced if the server echoed them back.
+        """
+        raw = text.decode("utf-8", "replace") if isinstance(text, (bytes, bytearray)) else str(text or "")
+        for secret in (self.token, *secrets):
+            if secret and len(secret) >= 8:
+                raw = raw.replace(secret, "<removed>")
+        clean = "".join(ch if ch.isprintable() else (" " if ch.isspace() else "?") for ch in raw)
+        return " ".join(clean.split())[:200]
+
     @staticmethod
-    def _download_link_error(clean_path: str, resp: requests.Response) -> SeafileAPIError:
+    def _body_sample(resp: requests.Response) -> bytes:
+        """Up to 1 KiB of a response body, without reading a streamed one to its end."""
+        try:
+            if getattr(resp, "_content_consumed", False):
+                return bytes(resp.content[:1024])
+            return bytes(resp.raw.read(1024, decode_content=True))
+        except Exception:
+            return b""
+
+    @staticmethod
+    def _link_secrets(url: str) -> tuple[str, ...]:
+        """The parts of a transfer link that are bearer tokens: its path and its query."""
+        parts = urlparse(url)
+        return tuple(x for x in (parts.path, parts.query) if x)
+
+    def _download_link_error(self, clean_path: str, resp: requests.Response) -> SeafileAPIError:
         """The error for a file read the server answered with something other than 200 or 404.
 
         A 403 on the first push to a path that does not exist yet was reported on Seafile
@@ -1013,7 +1045,7 @@ class SeafileClient:
         answers 404 there and is handled; nothing here can tell which a given server meant,
         so the message carries what the server said and both explanations.
         """
-        said = " ".join((resp.text or "").split())[:200]
+        said = self._said(resp.text)
         message = f"Failed to get download link for {clean_path}: HTTP {resp.status_code}"
         if said:
             message += f" {said}"
@@ -1057,9 +1089,10 @@ class SeafileClient:
             if file_resp.status_code == 404:
                 return None
             if file_resp.status_code != 200:
+                said = self._said(self._body_sample(file_resp), *self._link_secrets(dl_url))
                 raise SeafileAPIError(
                     f"Failed to download {clean_path}: HTTP {file_resp.status_code} "
-                    f"(GET {self._error_origin(dl_url)})"
+                    f"(GET {self._error_origin(dl_url)})" + (f" {said}" if said else "")
                 )
             if max_bytes is not None:
                 try:
@@ -1186,7 +1219,7 @@ class SeafileClient:
             link_url = f"{self.server_url}/api2/repos/{repo_id}/upload-link/?p={quote(clean_parent, safe='/')}"
             resp = self.session.get(link_url, timeout=self.timeout)
             if resp.status_code != 200:
-                raise SeafileAPIError(f"Failed to get upload link for {clean_parent}: HTTP {resp.status_code} {resp.text}")
+                raise SeafileAPIError(f"Failed to get upload link for {clean_parent}: HTTP {resp.status_code} {self._said(resp.text)}")
             return self._adjust_url(resp.text.strip().strip('"'))
 
         upload_url = _get_upload_url()
@@ -1286,7 +1319,8 @@ class SeafileClient:
                     return True
                 last_error = (
                     f"HTTP {up_resp.status_code} "
-                    f"(POST {self._error_origin(upload_url)}) {up_resp.text}"
+                    f"(POST {self._error_origin(upload_url)}) "
+                    f"{self._said(up_resp.text, *self._link_secrets(upload_url))}"
                 )
                 if up_resp.status_code < 500:
                     break
@@ -1300,7 +1334,8 @@ class SeafileClient:
                 raise SeafileAPIError(
                     f"Failed to upload {filename} to {clean_parent}: "
                     f"HTTP {up_resp.status_code} "
-                    f"(POST {self._error_origin(upload_url)}) {up_resp.text}"
+                    f"(POST {self._error_origin(upload_url)}) "
+                    f"{self._said(up_resp.text, *self._link_secrets(upload_url))}"
                 )
             raise SeafileAPIError(
                 f"Failed to upload {filename} to {clean_parent}: {last_error} "
@@ -1380,7 +1415,7 @@ class SeafileClient:
                 if resp.status_code == 200:
                     last_error = ""
                     break
-                last_error = f"HTTP {resp.status_code} {resp.text[:200]}"
+                last_error = f"HTTP {resp.status_code} {self._said(resp.text, *self._link_secrets(upload_url))}"
                 if resp.status_code < 500:
                     break
             if last_error:
@@ -1445,9 +1480,10 @@ class SeafileClient:
             if file_resp.status_code == 404:
                 return False
             if file_resp.status_code != 200:
+                said = self._said(self._body_sample(file_resp), *self._link_secrets(dl_url))
                 raise SeafileAPIError(
                     f"Failed to download {clean_path}: HTTP {file_resp.status_code} "
-                    f"(GET {self._error_origin(dl_url)})"
+                    f"(GET {self._error_origin(dl_url)})" + (f" {said}" if said else "")
                 )
 
             dest_path = Path(dest)
@@ -1551,7 +1587,7 @@ class SeafileClient:
         )
         if resp.status_code not in (200, 201):
             raise SeafileAPIError(
-                f"Failed to create library '{name}': HTTP {resp.status_code} {resp.text.strip()[:200]}"
+                f"Failed to create library '{name}': HTTP {resp.status_code} {self._said(resp.text)}"
             )
         try:
             body = resp.json()

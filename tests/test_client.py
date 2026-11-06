@@ -323,6 +323,54 @@ class TestClientAPI(unittest.TestCase):
                 self.client.download_file_to("repo1", "/newrepo/HEAD", Path(tempfile.gettempdir()) / "grs-unused")
             self.assertIn("folder that does not exist yet", str(streamed.exception))
 
+    def test_a_servers_reply_is_one_printable_capped_line_without_secrets(self):
+        """A proxy's HTML page flooded the message, and a server could write escape sequences
+        (clear the screen, set the title) to the person's terminal through it."""
+        said = self.client._said("\x1b[2J\x1b]0;pwned\x07  <html>\n\tbad" + " gateway" * 60)
+        self.assertNotIn("\x1b", said)
+        self.assertNotIn("\x07", said)
+        self.assertNotIn("\n", said)
+        self.assertLessEqual(len(said), 200)
+        self.assertTrue(said.startswith("?[2J?]0;pwned? <html> bad gateway"))
+        # Echoed secrets are removed: the account token and the parts of a transfer link.
+        link = "https://files.example.net:8082/upload-api/aaaabbbbcccc?token=ddddeeeeffff"
+        text = f"bad request for {link} with Authorization: Token test-tok-123456"
+        self.client.token = "test-tok-123456"
+        said = self.client._said(text, *self.client._link_secrets(link))
+        self.assertNotIn("aaaabbbbcccc", said)
+        self.assertNotIn("ddddeeeeffff", said)
+        self.assertNotIn("test-tok-123456", said)
+        self.assertEqual(self.client._said(None), "")
+        self.assertEqual(self.client._said(b"caf\xc3\xa9"), "café")
+
+    def test_every_api_error_that_prints_a_reply_cleans_it(self):
+        flood = "\x1b[31m" + "<html>proxy error</html> " * 40
+        with self._answers(502, flood):
+            for call in (lambda: self.client.list_dir("repo1", "/r"),
+                         lambda: self.client.dir_exists("repo1", "/r"),
+                         lambda: self.client.get_file_bytes("repo1", "/r/HEAD")):
+                with self.assertRaises(SeafileAPIError) as caught:
+                    call()
+                message = str(caught.exception)
+                self.assertNotIn("\x1b", message)
+                self.assertLess(len(message), 400, message)
+
+    def test_a_failed_transfer_names_the_origin_and_what_the_file_host_said_but_not_the_link(self):
+        link = "https://files.example.net:8082/seafhttp/files/aaaabbbbcccc/HEAD"
+        link_resp = MagicMock(status_code=200, text=f'"{link}"')
+        transfer = MagicMock(status_code=413)
+        transfer.raw.read.return_value = f"Too large: {link} \x1b[2J".encode()
+        transfer._content_consumed = False
+        with patch.object(self.client.session, "get", return_value=link_resp), \
+                patch.object(self.client, "_xfer", return_value=transfer):
+            with self.assertRaises(SeafileAPIError) as caught:
+                self.client.get_file_bytes("repo1", "/r/HEAD")
+        message = str(caught.exception)
+        self.assertIn("HTTP 413 (GET https://files.example.net:8082)", message)
+        self.assertIn("Too large", message)
+        self.assertNotIn("aaaabbbbcccc", message)
+        self.assertNotIn("\x1b", message)
+
     def test_other_statuses_keep_the_short_message_and_a_404_is_still_not_found(self):
         with self._answers(500, "internal error"):
             with self.assertRaises(SeafileAPIError) as caught:
