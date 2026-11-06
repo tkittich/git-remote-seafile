@@ -226,7 +226,9 @@ def fetch_pack_artifact(
                 f"exceeds in-memory buffer limit ({MAX_IN_MEMORY_PACK_BYTES} bytes)."
             )
         data = client.get_file_bytes(repo_id, remote_path)
-        if data:
+        # ``b""`` is an answer, not an absence: the file is there and empty, which is
+        # reported as such below rather than as "missing" (triage T18).
+        if data is not None:
             dest.write_bytes(data)
             downloaded = True
     if not downloaded:

@@ -87,6 +87,22 @@ class TestPacksModule(unittest.TestCase):
             )
         self.assertEqual(reason, "empty")
 
+    def test_an_empty_body_on_the_fallback_read_is_empty_and_none_is_missing(self):
+        """Triage T18: the in-memory fallback treated ``b""`` as nothing downloaded."""
+        import tempfile
+        from pathlib import Path
+
+        from git_remote_seafile.packs import fetch_pack_artifact
+
+        for body, expected in ((b"", "empty"), (None, "missing")):
+            client = MagicMock(spec=["get_file_bytes"])
+            client.get_file_bytes.return_value = body
+            with tempfile.TemporaryDirectory() as td:
+                reason = fetch_pack_artifact(
+                    client, "r1", "/git-repo/objects/pack/pack-1.pack", Path(td) / "pack-1.pack"
+                )
+            self.assertEqual(reason, expected, repr(body))
+
     def test_fetch_and_install_pack_with_none_git_dir(self):
         from git_remote_seafile.packs import fetch_and_install_pack
         client = MagicMock()
