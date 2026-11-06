@@ -77,6 +77,51 @@ def _checkout_around(repo: Path, rev: str, skipped: list[str], *, detach: bool) 
             )
 
 
+def links_written_as_text(repo: Path, rev: str, mismatched: list[str]) -> list[str]:
+    """The *mismatched* paths that are symbolic links the checkout could only write as text.
+
+    Without ``core.symlinks`` (Windows outside Developer Mode) git checks a link out
+    as a regular file holding its target.  That is a platform that cannot represent
+    the entry, the same class as a name Windows cannot hold: the vault is intact and
+    the rest of the restore is verified, so it is reported and the restore goes on
+    (REVIEW.be01e37 deepseek D1).  Only when git itself decided it cannot make links
+    (``core.symlinks`` is false in the clone) and the file holds exactly the blob;
+    with symlinks enabled the same mismatch is still a defect.
+    """
+    if not mismatched:
+        return []
+    setting = _run(
+        ["git", "-C", str(repo), "config", "--bool", "core.symlinks"],
+        text=True, encoding="utf-8", errors="replace",
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    )
+    if setting.stdout.strip() != "false":
+        return []
+    listing = _run(
+        ["git", "-C", str(repo), "ls-tree", "-r", "-z", "--full-tree", rev],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    )
+    links: dict[str, str] = {}
+    for entry in listing.stdout.split(b"\0"):
+        meta, _, path = entry.partition(b"\t")
+        fields = meta.split()
+        if len(fields) >= 3 and fields[0] == b"120000":
+            links[path.decode("utf-8", errors="surrogateescape")] = fields[2].decode("ascii")
+    found: list[str] = []
+    for name in mismatched:
+        sha = links.get(name)
+        on_disk = repo / name
+        if sha is None or on_disk.is_symlink() or not on_disk.is_file():
+            continue
+        blob = _run(
+            ["git", "-C", str(repo), "cat-file", "blob", sha],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        if blob.returncode == 0 and blob.stdout == on_disk.read_bytes():
+            found.append(name)
+    return found
+
+
 def _checkout(repo: Path, rev: str, *, detach: bool = False) -> list[str]:
     """Check *rev* out; return the paths that could not be written (names this OS cannot hold)."""
     if rev.startswith("-"):
@@ -495,6 +540,17 @@ def _restore(
     # A restore that differs from the snapshot is not a restore, and the
     # autocrlf class of bug is invisible to `git status` -- so check the bytes.
     mismatched = verify_restore(into, verified_rev, set(unholdable))
+    as_text = links_written_as_text(into, verified_rev, mismatched)
+    if as_text:
+        shown = "\n".join(f"  {path}" for path in as_text[:10])
+        more = f"\n  ... and {len(as_text) - 10} more" if len(as_text) > 10 else ""
+        print(
+            f"\nWarning: {len(as_text)} symbolic link(s) in this snapshot were written as text files "
+            f"holding their target, because this machine cannot create links (core.symlinks is "
+            f"false):\n{shown}{more}\nTurn on Developer Mode, or restore on Linux or macOS, to get "
+            "real links; everything else was restored and is verified below."
+        )
+        mismatched = [path for path in mismatched if path not in set(as_text)]
     if mismatched:
         shown = "\n".join(f"  {path}" for path in mismatched[:20])
         extra = (
@@ -532,6 +588,7 @@ def _restore(
     print(
         f"verified byte-exact against {verified_rev[:12]}"
         + (f" ({len(unholdable)} unrepresentable name(s) excluded)" if unholdable else "")
+        + (f" ({len(as_text)} link(s) written as text)" if as_text else "")
     )
 
 

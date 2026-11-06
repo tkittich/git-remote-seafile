@@ -702,11 +702,14 @@ is the link target, recorded even when the source checkout has
 `core.symlinks=false` — and a restore on Linux or macOS rebuilds real links.
 Windows is the exception: without `core.symlinks` enabled (Developer Mode, or an
 elevated process) `git checkout` writes a regular text file containing the
-target path instead. The restore's byte verification names that as a mismatch,
-and because the check runs on every restore — not only under `--verify` — the
-run stops there rather than reporting success over a tree of text files. The
-vault is intact: enabling `core.symlinks` and restoring again reproduces the
-links.
+target path instead. That is a platform that cannot represent the entry, the same
+class as a name Windows cannot hold: the restore reports each such link in a
+`Warning:` (exit 3 under `--exit-warnings`), restores and verifies everything else,
+and says on its last line how many links were written as text. It does this only
+when git itself decided it cannot make links (`core.symlinks` is false in the clone)
+and the file holds exactly the link's target; any other difference is still a
+defect and stops the run. The vault is intact: enabling `core.symlinks` and
+restoring again reproduces the links.
 
 **Case-insensitive filesystems** — Windows and macOS can collapse `Foo.txt` and
 `foo.txt`; Git will warn, but the snapshot may not round-trip both.

@@ -2030,6 +2030,39 @@ class SymlinkVerificationTests(unittest.TestCase):
         repo = self._repo_with({"data.txt": b"unrelated bytes\n"}, {"a": "target"})
         self.assertEqual(snap.verify_restore(repo, "main"), ["a"])
 
+    @unittest.skipIf(_symlinks_round_trip(), "this machine can make links, so nothing is written as text")
+    def test_a_whole_restore_goes_on_past_a_link_it_can_only_write_as_text(self):
+        repo = self._repo_with({"data.txt": b"plain" + bytes([10])}, {"lnk": "data.txt"})
+        _git(repo, "branch", "-m", "main", BRANCH)
+        out, err = io.StringIO(), io.StringIO()
+        into = self.tmp / "restored"
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = snap.main(["--restore", "--remote", str(repo), "--into", str(into)])
+        self.assertEqual(rc, 0, err.getvalue() + out.getvalue())
+        self.assertIn("written as text files", out.getvalue())
+        self.assertIn("lnk", out.getvalue())
+        self.assertEqual((into / "data.txt").read_bytes(), b"plain" + bytes([10]))
+        self.assertIn("(1 link(s) written as text)", out.getvalue())
+
+    def test_a_link_git_could_only_write_as_text_is_reported_not_fatal(self):
+        """Windows without Developer Mode: the same class as a name it cannot hold.
+
+        The vault is intact and the rest of the restore is verified, so one symlink must not
+        fail the whole restore (and take ``--restore-drill`` with it) -- REVIEW.be01e37 deepseek D1.
+        """
+        repo = self._repo_with({"data.txt": b"unrelated bytes\n"}, {"a": "target"})
+        (repo / "a").write_bytes(b"target")                      # what git writes without symlinks
+        _git(repo, "config", "core.symlinks", "false")
+        self.assertEqual(snap.links_written_as_text(repo, "main", ["a"]), ["a"])
+        # Only a link: a regular file that differs is still a defect.
+        self.assertEqual(snap.links_written_as_text(repo, "main", ["data.txt"]), [])
+        # Only when git itself cannot make links, and only if the file holds the blob.
+        (repo / "a").write_bytes(b"something else")
+        self.assertEqual(snap.links_written_as_text(repo, "main", ["a"]), [])
+        (repo / "a").write_bytes(b"target")
+        _git(repo, "config", "core.symlinks", "true")
+        self.assertEqual(snap.links_written_as_text(repo, "main", ["a"]), [])
+
 
 @unittest.skipUnless(
     _symlinks_round_trip(), "this machine cannot round-trip a symlink"
