@@ -2833,15 +2833,21 @@ class ParallelStagingTests(_SnapshotFixture):
                                      kw.get("expect_bytes")))
                     return real(git_dir, work_tree, args, **kw)
 
+                # The value, not only "a limit was set": a site that passed the plain
+                # usual limit kept the test green, because max(usual, 3 x spent) is the
+                # usual one in a run this short (review 4f1cdd4, glm-5.3 G1.2).
+                raised = 98765.0
                 with unittest.mock.patch.object(snap, "git", spy), \
-                        unittest.mock.patch.object(snap, "_junction_filter", lambda _w: None):
+                        unittest.mock.patch.object(snap, "_junction_filter", lambda _w: None), \
+                        unittest.mock.patch.object(snap, "stall_limit_after_prewrite",
+                                                   lambda _spent, raised=raised: raised):
                     rc, _, err = self._run_in(self.tmp / f"v-{route}", "4", *extra)
                 self.assertEqual(rc, 0, err)
                 self.assertEqual(len(seen), 1, seen)
                 args, stall, expects = seen[0]
                 self.assertEqual(args[-1] == ".", plain, f"{route}: took the other route {args}")
-                self.assertNotIsInstance(stall, snap._UnsetStall,
-                                         f"{route}: the add after a pre-write kept the default")
+                self.assertEqual(stall, raised, f"{route}: the add after a pre-write did not get "
+                                 "the raised limit")
                 self.assertEqual(expects, 0, route)
 
     def test_a_raised_stall_limit_says_so_and_the_usual_one_is_quiet(self):
