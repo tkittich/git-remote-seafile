@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Fixes from the outside review of `be01e37` (four reports, triaged in `REVIEW.TRIAGE-be01e37.md`). Nothing here changes what a snapshot stores except the case-rename fix, which stops a file being lost.
+
+### Fixed
+
+- **`login` no longer follows a redirect with the password.** `requests.post` re-sent `username` and `password` on a 307/308 to whatever host answered and saved that host's token as the server's (reproduced with two loopback servers). Any 3xx now stops the login and names the target.
+- **A name that merely starts with `127.` is no longer "loopback".** `http://127.example.com` passed the test in `login` (plain HTTP accepted for a password) and silenced the client's plain-HTTP warning. One `is_loopback_host()` (`localhost` or a loopback address) serves both.
+- **A new file in a directory renamed by case is no longer dropped from the snapshot.** On Windows and macOS (`core.ignorecase`) the index keeps the old spelling, so a file added under `D/` after `d/` was renamed was staged as `d/new.txt` and then removed as stale, every run, with "no changes". Windows and macOS (with any exclude) were affected. The two staging routes agreed about this case, which is why the route comparison never saw it.
+- **`--payload-delete` refuses to time the grace period on this machine's clock.** A server that sends no `Date` header left only the local clock, which the grace period exists to avoid; the run now stops with nothing marked or deleted. A report still runs.
+
+### Changed
+
+- **`excluded:` names the directories it left out** (up to five), not only a count: `--default-excludes` had dropped a never-committed `src/build` without the name ever appearing. Which untracked directories the recommended names may drop remains open (ROADMAP X6).
+- **The final add's raised no-progress limit is printed** when it exceeds the usual one (DESIGN 3.5, "say what was chosen").
+
+### Documentation
+
+- SNAPSHOT.md section 5: the three pathspec sources were read by the review round, with what each says and does not say; `--status`'s third hidden change (mode alone) and the restore not verifying the execute bit; a touched payload file does make a commit (R4, section 8).
+- PAYLOAD.md A6: a machine offline longer than the grace period loses what it uploaded but did not push.
+- USER_GUIDE.md and DESIGN.md: a proxy limit below the size of one object under 1 GiB stops the push; the non-numeric-port refusal needs a library and a path after the host in the bare form.
+- RUNBOOK.md section 8 is "Partly Implemented", as DESIGN.md section 7 says.
+
 ## [0.9.22] - 2026-11-06
 
 Staging that scales and transfers that adapt. A run that leaves files out of a 222,910-file vault (2,600 of them new) spent 22 minutes in `git add`, which matches every path it is given against every file it knows; it now stages only what changed, and a long list goes through `git update-index`. Object writing, payload uploads and payload hashing find their own parallelism by measuring instead of using a fixed number. What is stored does not change: the recorded trees were compared across both staging routes in more than forty scenarios on Windows and Debian. Nothing here has been measured on a spinning disk or a slow link.

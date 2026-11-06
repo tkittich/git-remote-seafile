@@ -314,7 +314,11 @@ reads as unchanged there although the next run commits it (this is the racy wind
 the snapshot run closes by re-hashing what it stages) — and a file whose time changed
 without its content shows as changed though the next run would find nothing new (the
 run reuses the parent's record for a byte-identical tree, which is why an old record
-stays size-less until the tree changes).
+stays size-less until the tree changes). A change of **mode alone** (`chmod +x`: neither
+size nor mtime moves) is a third change it cannot see, though the next run records it; and
+a restore applies the recorded mode without checking it, so on a filesystem that has no
+execute bit (FAT, some SMB mounts) the restored tree differs from the source in that one
+respect.
 
 It reads only local state: the remote is never contacted. Whether the newest snapshot
 has left this machine is answered from a record the vault keeps instead: after every
@@ -432,12 +436,16 @@ describes it as about files times pathspecs, a
 [2022 report](https://lore.kernel.org/git/c5662c60-4a21-be94-8fe0-13c6730292dd@github.com/)
 shows `git add` taking about 1.5 hours on a large sparse-checkout pattern list,
 and [Elijah Newren's reply](https://public-inbox.org/git/CABPp-BFRHjF7+9T8dGG=ixsezksZUNU7pm29MG2kcLEYwE06Og@mail.gmail.com/)
-calls that matching fundamentally files times patterns. **Provenance:** those
-pages could not be fetched when this was written (a 403 and a 502), so they are
-cited from search-result summaries, and the claim that `git add` loops over its
-pathspecs is inferred from the measured scaling, not from git's source. The
-sparse-checkout report is a different code path with the same cost shape. Nothing
-found shows a fix for plain literal paths; it was still quadratic on 2.56.
+calls non-cone pattern matching fundamentally O(N*M). **Provenance:** this
+section first cited the three pages from search summaries (a 403 and a 502 when it was
+written); three independent reviewers read all of them on 2026-11-05 and 06 and agree
+with the summaries. Torvalds' message says the cost is "approximately O(n*m), where n is
+the size of the working tree, and m is the number of pathspecs", which is the loop
+described here. Newren's reply is about non-cone sparse-checkout patterns, a different
+path with the same cost shape, and proposes no exact-path lookup for plain literal paths.
+That `git add` loops over its pathspecs rests on Torvalds' message and the measured
+scaling; git's own source (`dir.c`, `pathspec.c`, `builtin/add.c`) was not read here.
+Nothing found shows a fix for plain literal paths; it was still quadratic on 2.56.
 
 **What the tool does about it** (`69_prewrite.py`, `70_stage.py`):
 
@@ -713,8 +721,10 @@ system may rebuild everything once. Directory times are not recorded.
 
 **Empty directories are not captured.** Git does not track them.
 
-**Touching a file without changing its content produces no commit** — the vault
-is content-addressed, not timestamped. If you want a heartbeat record of "a
+**Touching a git-stored file without changing its content produces no commit** — the
+vault is content-addressed, not timestamped. A payload file is the exception: its
+modification time is part of the manifest, so touching it (same bytes) hashes it again
+and makes a new commit, with no upload. If you want a heartbeat record of "a
 backup ran", this tool will not give you one.
 
 **There is no retention policy.** Every snapshot is kept forever; nothing

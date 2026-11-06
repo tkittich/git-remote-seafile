@@ -1021,9 +1021,11 @@ class RemoteHelper:
 
         An upload that answered 2xx is not evidence the bytes are there: a
         truncated write, or a proxy that answered for a quota error, looks the
-        same from here.  ``gc`` already proves its new pack this way before it
-        deletes anything; the push does it before it publishes a ref, because
-        a ref naming a pack that is not there is a repository nobody can clone.
+        same from here.  This proves the *size* only: ``gc`` goes further (it
+        downloads its new pack and compares SHA-256 before deleting anything),
+        and a push deliberately does not (DESIGN section 4.5, a recorded cost
+        decision).  The check runs before a ref is published, because a ref naming
+        a pack that is not there is a repository nobody can clone.
         """
         listing = self.client.list_dir(self.repo_id, pack_dir)
         remote = {

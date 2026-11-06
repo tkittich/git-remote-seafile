@@ -351,14 +351,15 @@ and open an issue rather than raising the number a third time.
 
 ---
 
-## 8. A Repository Health Command (Proposed, Not Implemented)
+## 8. A Repository Health Command (Partly Implemented)
 
 The manual procedures above — listing refs, spotting an orphaned pack, finding a stale ticket — are
-exactly what a health command should automate. A `fsck`-style subcommand that reports stray refs,
-orphaned `.git-lock.d` tickets, packfiles without indexes, and refs whose objects are missing is
-**proposed but not implemented**; it is recorded as a non-goal in [DESIGN.md](DESIGN.md) §7.
+what a health command should automate. `git-remote-seafile doctor <url>` already reports conflict
+copies anywhere under the repository path (§5; [DESIGN.md](DESIGN.md) §7). A full `fsck`-style
+subcommand that also reports stray refs, orphaned `.git-lock.d` tickets, packfiles without indexes
+and refs whose objects are missing is **not implemented**.
 
-Until it exists, §0's three diagnostics plus a Web UI listing cover the same ground by hand.
+Until it exists, §0's three diagnostics plus a Web UI listing cover the rest by hand.
 
 ---
 
