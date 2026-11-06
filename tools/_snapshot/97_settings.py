@@ -87,6 +87,7 @@ class _Remembered(TypedDict, total=False):
     code_remote: str
     branch: str
     exclude: list[str]
+    default_excludes: bool
 
 
 def remembered_settings(vault: Path, source: Path) -> _Remembered:
@@ -140,6 +141,8 @@ def remembered_settings(vault: Path, source: Path) -> _Remembered:
     excludes = [v for v in config.get("snapshot.exclude", []) if v]
     if excludes:
         remembered["exclude"] = excludes
+    if first("snapshot.defaultexcludes") == "true":
+        remembered["default_excludes"] = True
     return remembered
 
 
@@ -160,6 +163,8 @@ def remember_settings(
     exclude: list[str],
     branch: str,
     vault_config: dict[str, list[str]] | None = None,
+    derived: "list[str] | None" = None,
+    default_excludes: bool = False,
 ) -> None:
     """Persist the resolved choices into the vault's own config.
 
@@ -197,7 +202,10 @@ def remember_settings(
         # twice; the stored list is what --default-excludes and the printed
         # report read back, so keep it a set of unique values in first-seen
         # order (SNAP-12).
-        ("snapshot.exclude", list(dict.fromkeys(exclude)), False),
+        # Only what a person typed: what --default-excludes expanded to is worked out
+        # again on every run, and the choice itself is the next key.
+        ("snapshot.exclude", [e for e in dict.fromkeys(exclude) if e not in set(derived or ())], False),
+        ("snapshot.defaultexcludes", ["true"] if default_excludes else [], False),
     ]
     suppressed = {key for key, value in (("snapshot.remote", remote),
                                          ("snapshot.coderemote", code_remote))

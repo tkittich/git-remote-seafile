@@ -210,10 +210,17 @@ def resolve_snapshot_settings(
     exclude = list(args.exclude) if args.exclude is not None else list(
         remembered.get("exclude") or []
     )
-    if args.default_excludes:
+    # Typed on this command line, else what the vault remembered (a default is not a
+    # request, but a choice the vault already holds is repeated).  What it expands to
+    # is worked out again on every run and is not itself remembered, so a directory
+    # that later gains source is not left out for ever.
+    use_default = (args.default_excludes if args.default_excludes is not None
+                   else bool(remembered.get("default_excludes")))
+    derived: list[str] = []
+    if use_default:
         tracked: list[str] | None = None
         for pattern in RECOMMENDED_EXCLUDES:
-            if pattern in exclude:
+            if pattern in exclude or pattern in _AMBIGUOUS_NAMES:
                 continue
             # The list is a guess about reproducible output; the source's own
             # repository knows better.  "build" must not drop a tracked
@@ -230,11 +237,27 @@ def resolve_snapshot_settings(
                     flush=True,
                 )
                 continue
-            exclude.append(pattern)
+            derived.append(pattern)
+        # build, dist and venv are source in some projects: decided per directory.
+        for rel in ambiguous_directories(source):
+            if any(exclude_matches(rel, pat) for pat in [*exclude, *derived]):
+                continue
+            if is_reproducible_directory(source, rel):
+                derived.append(rel)
+            else:
+                print(
+                    f"Note: --default-excludes keeps '{rel}' for this run: git does not ignore "
+                    "everything in it (or, outside a git repository, no project file sits beside "
+                    f"it), so it may be source. Pass --exclude '{rel}' to leave it out anyway.",
+                    flush=True,
+                )
         # Named by what makes it one, not by what it is called (.venv-audit, env).
-        for venv in find_virtualenvs(source, exclude):
-            if venv not in exclude:
-                exclude.append(venv)
+        for venv in find_virtualenvs(source, [*exclude, *derived]):
+            if venv not in exclude and venv not in derived:
+                derived.append(venv)
+        exclude.extend(d for d in derived if d not in exclude)
+    args.derived_excludes = derived
+    args.default_excludes_on = use_default
 
     # Everything that can be checked before a single byte is written: a typo in
     # a remote name or a vault inside a synced folder is far cheaper to catch

@@ -3235,22 +3235,37 @@ def find_virtualenvs(source: Path, excludes: list[str]) -> list[str]:
     return sorted(found)
 
 
-def excluded_summary(excluded: list[str], limit: int = 5) -> str:
-    """``excluded: N path(s) left out (dir, dir, ...)``: the omission, named.
+def excluded_summary(excluded: list[str], excludes: "list[str] | tuple[str, ...]" = (),
+                     limit: int = 12) -> str:
+    """What an exclude left out, by name: a count, then each excluded directory with its files.
 
     A count alone let ``--default-excludes`` drop a never-committed ``src/build``
-    without the person ever seeing the name.  The directories are the parents of
-    the excluded files with those inside another listed one folded away.
+    without the person ever seeing the name.  Each path is credited to the
+    shallowest directory an exclude pattern matches (so ``node_modules`` is one line,
+    not one per package), to the glob when a file matched one (``*.pyc``), and
+    otherwise to its own directory.
     """
-    parents = {path.rsplit("/", 1)[0] if "/" in path else path for path in excluded}
+    def label(path: str) -> str:
+        parts = path.split("/")
+        for n in range(1, len(parts) + 1):
+            prefix = "/".join(parts[:n])
+            for pattern in excludes:
+                if exclude_matches(prefix, pattern):
+                    if n == len(parts) and any(ch in pattern for ch in "*?["):
+                        return pattern
+                    return prefix
+        return "/".join(parts[:-1]) or path
 
-    def inside_another(directory: str) -> bool:
-        parts = directory.split("/")
-        return any("/".join(parts[:n]) in parents for n in range(1, len(parts)))
-
-    top = sorted(d for d in parents if not inside_another(d))
-    shown = ", ".join(top[:limit]) + (f" and {len(top) - limit} more" if len(top) > limit else "")
-    return f"excluded: {len(excluded)} path(s) left out ({shown})"
+    counts: dict[str, int] = {}
+    for path in excluded:
+        name = label(path)
+        counts[name] = counts.get(name, 0) + 1
+    lines = [f"excluded: {len(excluded)} path(s) left out:"]
+    for name in sorted(counts)[:limit]:
+        lines.append(f"  {name}  ({counts[name]} file(s))")
+    if len(counts) > limit:
+        lines.append(f"  ... and {len(counts) - limit} more")
+    return chr(10).join(lines)
 
 
 def suggest_excludes(
@@ -8766,6 +8781,57 @@ _OFFERED_DIRECTORY_NAMES = frozenset(
     p for p in RECOMMENDED_EXCLUDES if not any(ch in p for ch in "*?[")
 )
 
+#: Names that are reproducible output in one project and source in another
+#: (``src/build/make.py``, a ``dist`` of hand-signed releases, a package called
+#: ``venv``).  ``--default-excludes`` decides these one directory at a time.
+_AMBIGUOUS_NAMES = frozenset({"build", "dist", "venv"})
+
+#: Outside a git repository a directory of this kind is build output only when it
+#: sits beside a file that says a build produces it.
+_PROJECT_MARKERS = (
+    "pyproject.toml", "setup.py", "setup.cfg", "package.json", "CMakeLists.txt",
+    "Makefile", "Cargo.toml", "pom.xml", "build.gradle", "go.mod",
+)
+
+
+def ambiguous_directories(source: Path) -> list[str]:
+    """Directories under *source* named like an ambiguous recommended exclude, as ``a/b`` paths."""
+    found: list[str] = []
+    root = str(source)
+    for dirpath, dirnames, _files in os.walk(root):
+        rel = os.path.relpath(dirpath, root).replace(os.sep, "/")
+        keep = []
+        for name in dirnames:
+            if name in (".git", "node_modules", "__pycache__"):
+                continue
+            if name in _AMBIGUOUS_NAMES:
+                found.append(name if rel == "." else f"{rel}/{name}")
+                continue
+            keep.append(name)
+        dirnames[:] = keep
+    return sorted(found)
+
+
+def is_reproducible_directory(source: Path, rel: str) -> bool:
+    """Whether *rel* is output that can be rebuilt, so leaving it out loses nothing.
+
+    In a git repository: git has nothing to commit under it -- nothing tracked and
+    nothing untracked that is not ignored.  A ``build/`` that holds a committed
+    script, or new source the user has not committed yet, is not.  Outside a
+    repository git cannot say, so a project file must sit beside it.  Cannot tell
+    means no: the directory is captured and named (REVIEW.be01e37 sonnet D1).
+    """
+    if (source / ".git").exists():
+        proc = _run(
+            ["git", "--literal-pathspecs", "-C", str(source), "ls-files", "-z", "-c", "-o",
+             "--exclude-standard", "--", rel],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+        )
+        return proc.returncode == 0 and not proc.stdout.strip(b"\0")
+    parent = source / rel.rpartition("/")[0]
+    return any((parent / marker).is_file() for marker in _PROJECT_MARKERS)
+
+
 #: Measuring the candidates must not make the prompt the slow part of a first run.
 _MEASURE_SECONDS = 5.0
 
@@ -8808,7 +8874,10 @@ def reproducible_candidates(source: Path) -> list[tuple[str, int | None]]:
     for dirpath, dirnames, filenames in os.walk(root):
         rel = os.path.relpath(dirpath, root).replace(os.sep, "/")
         if rel != "." and ("pyvenv.cfg" in filenames or os.path.basename(dirpath) in _OFFERED_DIRECTORY_NAMES):
-            if not any(path.startswith(rel + "/") for path in tracked):
+            if (not any(path.startswith(rel + "/") for path in tracked)
+                    and (os.path.basename(dirpath) not in _AMBIGUOUS_NAMES
+                         or "pyvenv.cfg" in filenames
+                         or is_reproducible_directory(source, rel))):
                 found.append((rel, _directory_bytes(dirpath, deadline)))
             dirnames[:] = []
             continue
@@ -8836,7 +8905,8 @@ def offer_default_excludes(
     worked.  A yes sets ``--default-excludes``, whose own rules (tracked files
     kept, virtualenvs found by ``pyvenv.cfg``, remembered by the vault) then apply.
     """
-    if args.default_excludes is not None or args.exclude is not None or remembered.get("exclude"):
+    if (args.default_excludes is not None or args.exclude is not None
+            or remembered.get("exclude") or remembered.get("default_excludes")):
         return
     if (vault / ".git").exists() or args.maintain or args.status or args.json or args.exit_warnings:
         return
@@ -9231,10 +9301,17 @@ def resolve_snapshot_settings(
     exclude = list(args.exclude) if args.exclude is not None else list(
         remembered.get("exclude") or []
     )
-    if args.default_excludes:
+    # Typed on this command line, else what the vault remembered (a default is not a
+    # request, but a choice the vault already holds is repeated).  What it expands to
+    # is worked out again on every run and is not itself remembered, so a directory
+    # that later gains source is not left out for ever.
+    use_default = (args.default_excludes if args.default_excludes is not None
+                   else bool(remembered.get("default_excludes")))
+    derived: list[str] = []
+    if use_default:
         tracked: list[str] | None = None
         for pattern in RECOMMENDED_EXCLUDES:
-            if pattern in exclude:
+            if pattern in exclude or pattern in _AMBIGUOUS_NAMES:
                 continue
             # The list is a guess about reproducible output; the source's own
             # repository knows better.  "build" must not drop a tracked
@@ -9251,11 +9328,27 @@ def resolve_snapshot_settings(
                     flush=True,
                 )
                 continue
-            exclude.append(pattern)
+            derived.append(pattern)
+        # build, dist and venv are source in some projects: decided per directory.
+        for rel in ambiguous_directories(source):
+            if any(exclude_matches(rel, pat) for pat in [*exclude, *derived]):
+                continue
+            if is_reproducible_directory(source, rel):
+                derived.append(rel)
+            else:
+                print(
+                    f"Note: --default-excludes keeps '{rel}' for this run: git does not ignore "
+                    "everything in it (or, outside a git repository, no project file sits beside "
+                    f"it), so it may be source. Pass --exclude '{rel}' to leave it out anyway.",
+                    flush=True,
+                )
         # Named by what makes it one, not by what it is called (.venv-audit, env).
-        for venv in find_virtualenvs(source, exclude):
-            if venv not in exclude:
-                exclude.append(venv)
+        for venv in find_virtualenvs(source, [*exclude, *derived]):
+            if venv not in exclude and venv not in derived:
+                derived.append(venv)
+        exclude.extend(d for d in derived if d not in exclude)
+    args.derived_excludes = derived
+    args.default_excludes_on = use_default
 
     # Everything that can be checked before a single byte is written: a typo in
     # a remote name or a vault inside a synced folder is far cheaper to catch
@@ -9431,6 +9524,7 @@ class _Remembered(TypedDict, total=False):
     code_remote: str
     branch: str
     exclude: list[str]
+    default_excludes: bool
 
 
 def remembered_settings(vault: Path, source: Path) -> _Remembered:
@@ -9484,6 +9578,8 @@ def remembered_settings(vault: Path, source: Path) -> _Remembered:
     excludes = [v for v in config.get("snapshot.exclude", []) if v]
     if excludes:
         remembered["exclude"] = excludes
+    if first("snapshot.defaultexcludes") == "true":
+        remembered["default_excludes"] = True
     return remembered
 
 
@@ -9504,6 +9600,8 @@ def remember_settings(
     exclude: list[str],
     branch: str,
     vault_config: dict[str, list[str]] | None = None,
+    derived: "list[str] | None" = None,
+    default_excludes: bool = False,
 ) -> None:
     """Persist the resolved choices into the vault's own config.
 
@@ -9541,7 +9639,10 @@ def remember_settings(
         # twice; the stored list is what --default-excludes and the printed
         # report read back, so keep it a set of unique values in first-seen
         # order (SNAP-12).
-        ("snapshot.exclude", list(dict.fromkeys(exclude)), False),
+        # Only what a person typed: what --default-excludes expanded to is worked out
+        # again on every run, and the choice itself is the next key.
+        ("snapshot.exclude", [e for e in dict.fromkeys(exclude) if e not in set(derived or ())], False),
+        ("snapshot.defaultexcludes", ["true"] if default_excludes else [], False),
     ]
     suppressed = {key for key, value in (("snapshot.remote", remote),
                                          ("snapshot.coderemote", code_remote))
@@ -9937,8 +10038,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=None,
         help="add the recommended exclusions on top of any --exclude "
         f"({', '.join(RECOMMENDED_EXCLUDES)}) and any Python virtualenv (a "
-        "directory holding a pyvenv.cfg, whatever its name). A pattern is kept for the run "
-        "when the source's own git repository tracks a file it matches. Not on by default: a snapshot is "
+        "directory holding a pyvenv.cfg, whatever its name). build, dist and venv are left out "
+        "only where git ignores everything in them (outside a repository: a project file beside them), "
+        "and the run names what was left out; remembered as a choice. Not on by default: a snapshot is "
         "a backup, and silently dropping files is how a backup fails at the one "
         "moment it mattered",
     )
@@ -10362,7 +10464,7 @@ def run_command(args: argparse.Namespace) -> int:
                     remote=remote, from_default=payload_default,
                 ))
             if excluded:
-                print(excluded_summary(excluded))
+                print(excluded_summary(excluded, exclude))
 
             suggest_excludes(git_dir, source, excluded)
 
@@ -10505,6 +10607,8 @@ def run_command(args: argparse.Namespace) -> int:
             exclude=exclude,
             branch=branch,
             vault_config=vault_config,
+            derived=getattr(args, "derived_excludes", None),
+            default_excludes=bool(getattr(args, "default_excludes_on", False)),
         )
         # Last, after everything the run must keep: the report is optional, and
         # an interrupt during it must not lose the settings this run earned.

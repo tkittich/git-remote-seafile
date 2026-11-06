@@ -5,6 +5,57 @@ _OFFERED_DIRECTORY_NAMES = frozenset(
     p for p in RECOMMENDED_EXCLUDES if not any(ch in p for ch in "*?[")
 )
 
+#: Names that are reproducible output in one project and source in another
+#: (``src/build/make.py``, a ``dist`` of hand-signed releases, a package called
+#: ``venv``).  ``--default-excludes`` decides these one directory at a time.
+_AMBIGUOUS_NAMES = frozenset({"build", "dist", "venv"})
+
+#: Outside a git repository a directory of this kind is build output only when it
+#: sits beside a file that says a build produces it.
+_PROJECT_MARKERS = (
+    "pyproject.toml", "setup.py", "setup.cfg", "package.json", "CMakeLists.txt",
+    "Makefile", "Cargo.toml", "pom.xml", "build.gradle", "go.mod",
+)
+
+
+def ambiguous_directories(source: Path) -> list[str]:
+    """Directories under *source* named like an ambiguous recommended exclude, as ``a/b`` paths."""
+    found: list[str] = []
+    root = str(source)
+    for dirpath, dirnames, _files in os.walk(root):
+        rel = os.path.relpath(dirpath, root).replace(os.sep, "/")
+        keep = []
+        for name in dirnames:
+            if name in (".git", "node_modules", "__pycache__"):
+                continue
+            if name in _AMBIGUOUS_NAMES:
+                found.append(name if rel == "." else f"{rel}/{name}")
+                continue
+            keep.append(name)
+        dirnames[:] = keep
+    return sorted(found)
+
+
+def is_reproducible_directory(source: Path, rel: str) -> bool:
+    """Whether *rel* is output that can be rebuilt, so leaving it out loses nothing.
+
+    In a git repository: git has nothing to commit under it -- nothing tracked and
+    nothing untracked that is not ignored.  A ``build/`` that holds a committed
+    script, or new source the user has not committed yet, is not.  Outside a
+    repository git cannot say, so a project file must sit beside it.  Cannot tell
+    means no: the directory is captured and named (REVIEW.be01e37 sonnet D1).
+    """
+    if (source / ".git").exists():
+        proc = _run(
+            ["git", "--literal-pathspecs", "-C", str(source), "ls-files", "-z", "-c", "-o",
+             "--exclude-standard", "--", rel],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+        )
+        return proc.returncode == 0 and not proc.stdout.strip(b"\0")
+    parent = source / rel.rpartition("/")[0]
+    return any((parent / marker).is_file() for marker in _PROJECT_MARKERS)
+
+
 #: Measuring the candidates must not make the prompt the slow part of a first run.
 _MEASURE_SECONDS = 5.0
 
@@ -47,7 +98,10 @@ def reproducible_candidates(source: Path) -> list[tuple[str, int | None]]:
     for dirpath, dirnames, filenames in os.walk(root):
         rel = os.path.relpath(dirpath, root).replace(os.sep, "/")
         if rel != "." and ("pyvenv.cfg" in filenames or os.path.basename(dirpath) in _OFFERED_DIRECTORY_NAMES):
-            if not any(path.startswith(rel + "/") for path in tracked):
+            if (not any(path.startswith(rel + "/") for path in tracked)
+                    and (os.path.basename(dirpath) not in _AMBIGUOUS_NAMES
+                         or "pyvenv.cfg" in filenames
+                         or is_reproducible_directory(source, rel))):
                 found.append((rel, _directory_bytes(dirpath, deadline)))
             dirnames[:] = []
             continue
@@ -75,7 +129,8 @@ def offer_default_excludes(
     worked.  A yes sets ``--default-excludes``, whose own rules (tracked files
     kept, virtualenvs found by ``pyvenv.cfg``, remembered by the vault) then apply.
     """
-    if args.default_excludes is not None or args.exclude is not None or remembered.get("exclude"):
+    if (args.default_excludes is not None or args.exclude is not None
+            or remembered.get("exclude") or remembered.get("default_excludes")):
         return
     if (vault / ".git").exists() or args.maintain or args.status or args.json or args.exit_warnings:
         return

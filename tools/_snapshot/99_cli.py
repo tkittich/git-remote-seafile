@@ -103,8 +103,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=None,
         help="add the recommended exclusions on top of any --exclude "
         f"({', '.join(RECOMMENDED_EXCLUDES)}) and any Python virtualenv (a "
-        "directory holding a pyvenv.cfg, whatever its name). A pattern is kept for the run "
-        "when the source's own git repository tracks a file it matches. Not on by default: a snapshot is "
+        "directory holding a pyvenv.cfg, whatever its name). build, dist and venv are left out "
+        "only where git ignores everything in them (outside a repository: a project file beside them), "
+        "and the run names what was left out; remembered as a choice. Not on by default: a snapshot is "
         "a backup, and silently dropping files is how a backup fails at the one "
         "moment it mattered",
     )
@@ -528,7 +529,7 @@ def run_command(args: argparse.Namespace) -> int:
                     remote=remote, from_default=payload_default,
                 ))
             if excluded:
-                print(excluded_summary(excluded))
+                print(excluded_summary(excluded, exclude))
 
             suggest_excludes(git_dir, source, excluded)
 
@@ -671,6 +672,8 @@ def run_command(args: argparse.Namespace) -> int:
             exclude=exclude,
             branch=branch,
             vault_config=vault_config,
+            derived=getattr(args, "derived_excludes", None),
+            default_excludes=bool(getattr(args, "default_excludes_on", False)),
         )
         # Last, after everything the run must keep: the report is optional, and
         # an interrupt during it must not lose the settings this run earned.

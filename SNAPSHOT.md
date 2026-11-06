@@ -191,17 +191,22 @@ backing up.  Leave it out next time with --default-excludes, or explicitly:
 
 `--default-excludes` adds the recommended set (`node_modules`, `venv`, `.venv`,
 `__pycache__`, `*.pyc`, `dist`, `build`) on top of anything passed to
-`--exclude`. Excludes are remembered with everything else, so one
-`--default-excludes` run keeps them until they are overridden explicitly. A
-recommended pattern is left out of the list for a run when the source's own git
-repository **tracks** a file it matches (`build` would otherwise drop a committed
-`tools/build/make.py`); the run names the file and the `--exclude` that drops it
-anyway. An explicit `--exclude` is always honoured.
+`--exclude`. The vault remembers the *choice* (`snapshot.defaultexcludes`), not what it
+expanded to, and works the expansion out again on every run, so a directory that later
+gains source is not left out for ever. `build`, `dist` and `venv` are source in some
+projects (`src/build/make.py`, a `dist` of hand-signed releases), so they are decided one
+directory at a time: left out only where git has nothing to commit under them (everything
+inside is ignored), or, in a tree that is not a repository, where a project file
+(`package.json`, `pyproject.toml`, `Makefile`...) sits beside them. Any other is captured
+and named in a `Note:` with the `--exclude` that drops it anyway. `node_modules`,
+`__pycache__`, `*.pyc` and virtualenvs (by `pyvenv.cfg`) stay by name, with the tracked-file
+guard. Every run that leaves something out lists it, directory by directory with its file
+count, so nothing is dropped unseen. An explicit `--exclude` is always honoured.
 
 **The one exception asks.** A *first* run at a terminal -- no vault yet, no `--exclude`,
 `--default-excludes` or `--no-default-excludes`, and not `--json` or `--exit-warnings` -- lists
 the reproducible directories it found (the recommended names, and every virtualenv found by
-`pyvenv.cfg`; never a directory holding a file the source's own repository tracks) with their
+`pyvenv.cfg`; never a directory holding a file the source's own repository tracks, and `build`, `dist` and `venv` only where git ignores everything in them) with their
 sizes, and asks `[Y/n]`. A yes is `--default-excludes`. The omission is then a decision the
 person just made, not a quiet one, which is what the paragraph above forbids. A scheduled or piped
 run never asks, and the default stays "capture everything".

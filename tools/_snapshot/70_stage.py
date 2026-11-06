@@ -573,22 +573,37 @@ def find_virtualenvs(source: Path, excludes: list[str]) -> list[str]:
     return sorted(found)
 
 
-def excluded_summary(excluded: list[str], limit: int = 5) -> str:
-    """``excluded: N path(s) left out (dir, dir, ...)``: the omission, named.
+def excluded_summary(excluded: list[str], excludes: "list[str] | tuple[str, ...]" = (),
+                     limit: int = 12) -> str:
+    """What an exclude left out, by name: a count, then each excluded directory with its files.
 
     A count alone let ``--default-excludes`` drop a never-committed ``src/build``
-    without the person ever seeing the name.  The directories are the parents of
-    the excluded files with those inside another listed one folded away.
+    without the person ever seeing the name.  Each path is credited to the
+    shallowest directory an exclude pattern matches (so ``node_modules`` is one line,
+    not one per package), to the glob when a file matched one (``*.pyc``), and
+    otherwise to its own directory.
     """
-    parents = {path.rsplit("/", 1)[0] if "/" in path else path for path in excluded}
+    def label(path: str) -> str:
+        parts = path.split("/")
+        for n in range(1, len(parts) + 1):
+            prefix = "/".join(parts[:n])
+            for pattern in excludes:
+                if exclude_matches(prefix, pattern):
+                    if n == len(parts) and any(ch in pattern for ch in "*?["):
+                        return pattern
+                    return prefix
+        return "/".join(parts[:-1]) or path
 
-    def inside_another(directory: str) -> bool:
-        parts = directory.split("/")
-        return any("/".join(parts[:n]) in parents for n in range(1, len(parts)))
-
-    top = sorted(d for d in parents if not inside_another(d))
-    shown = ", ".join(top[:limit]) + (f" and {len(top) - limit} more" if len(top) > limit else "")
-    return f"excluded: {len(excluded)} path(s) left out ({shown})"
+    counts: dict[str, int] = {}
+    for path in excluded:
+        name = label(path)
+        counts[name] = counts.get(name, 0) + 1
+    lines = [f"excluded: {len(excluded)} path(s) left out:"]
+    for name in sorted(counts)[:limit]:
+        lines.append(f"  {name}  ({counts[name]} file(s))")
+    if len(counts) > limit:
+        lines.append(f"  ... and {len(counts) - limit} more")
+    return chr(10).join(lines)
 
 
 def suggest_excludes(

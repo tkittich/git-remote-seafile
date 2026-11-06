@@ -123,7 +123,9 @@ class _SnapshotFixture(unittest.TestCase):
         # "\n" to "\r\n", so a fixture meant to be LF would silently be CRLF --
         # and every byte-exactness assertion below would then be testing the
         # wrong thing.
-        (self.code / ".gitignore").write_bytes(b"node_modules/\n*.log\n.env\n")
+        # dist/ is ignored build output here; --default-excludes leaves out only the
+        # directories git ignores (an untracked, unignored dist/ may be source).
+        (self.code / ".gitignore").write_bytes(b"node_modules/\n*.log\n.env\ndist/\n")
         (self.code / ".env").write_bytes(b"SECRET=abc\n")
         (self.code / "app.log").write_bytes(b"log\n")
         (self.code / "README.md").write_bytes(b"hello\n")
@@ -1614,21 +1616,73 @@ class FirstRunExcludePromptTests(_SnapshotFixture):
         self.assertEqual([rel for rel, _ in snap.reproducible_candidates(self.code)],
                          ["dist", "node_modules"])
 
-    def test_the_omission_is_named_not_only_counted(self):
+    def test_the_omission_is_named_with_the_files_it_holds(self):
         """Found by a review: ``--default-excludes`` dropped a never-committed ``src/build``
         and the run said only "3 path(s) left out"."""
         self.assertEqual(
-            snap.excluded_summary(["src/build/a.py", "src/build/b/c.py", "dist/x"]),
-            "excluded: 3 path(s) left out (dist, src/build)",
+            snap.excluded_summary(["src/build/a.py", "src/build/b/c.py", "dist/x", "m/a.pyc", "m/b.pyc"],
+                                  ["src/build", "dist", "*.pyc"]),
+            "excluded: 5 path(s) left out:" + chr(10) + "  *.pyc  (2 file(s))" + chr(10)
+            + "  dist  (1 file(s))" + chr(10) + "  src/build  (2 file(s))",
         )
-        many = [f"d{i}/f" for i in range(7)]
-        self.assertTrue(snap.excluded_summary(many).endswith("(d0, d1, d2, d3, d4 and 2 more)"))
-        (self.code / "src" / "build").mkdir(parents=True)
-        (self.code / "src" / "build" / "make.py").write_bytes(b"print(1)\n")
+        many = [f"d{i}/f" for i in range(14)]
+        self.assertTrue(snap.excluded_summary(many, []).endswith("  ... and 2 more"))
         rc, out, err = self.run_tool("--source", self.code, "--vault", self.vault, "--no-push",
                                      "--default-excludes")
         self.assertEqual(rc, 0, err)
-        self.assertRegex(out, r"excluded: \d+ path\(s\) left out \(.*src/build")
+        self.assertRegex(out, r"excluded: \d+ path\(s\) left out:")
+        self.assertIn("  node_modules  (1 file(s))", out)
+
+    def test_untracked_source_under_a_build_directory_is_kept_and_named(self):
+        """The review's case: a ``src/build`` nobody has committed is the work a snapshot is for."""
+        (self.code / "src" / "build").mkdir(parents=True)
+        (self.code / "src" / "build" / "make.py").write_bytes(b"print(1)" + bytes([10]))
+        rc, out, err = self.run_tool("--source", self.code, "--vault", self.vault, "--no-push",
+                                     "--default-excludes")
+        self.assertEqual(rc, 0, err)
+        self.assertIn("src/build/make.py", self.tree())
+        self.assertIn("keeps 'src/build' for this run", out)
+        self.assertNotIn("node_modules/pkg/a.js", self.tree())    # the rest of the list applies
+
+    def test_an_ignored_build_directory_is_left_out_and_listed(self):
+        (self.code / ".gitignore").write_bytes(b"node_modules/" + bytes([10]) + b"dist/" + bytes([10]) + b"build/" + bytes([10]))
+        (self.code / "build").mkdir()
+        (self.code / "build" / "out.bin").write_bytes(b"x")
+        rc, out, err = self.run_tool("--source", self.code, "--vault", self.vault, "--no-push",
+                                     "--default-excludes")
+        self.assertEqual(rc, 0, err)
+        self.assertNotIn("build/out.bin", self.tree())
+        self.assertIn("build  (1 file(s))", out)
+
+    def test_outside_a_repository_a_build_directory_needs_a_project_file_beside_it(self):
+        plain = self.tmp / "plain"
+        for rel in ("a/build/x.o", "b/build/y.o", "b/package.json"):
+            (plain / rel).parent.mkdir(parents=True, exist_ok=True)
+            (plain / rel).write_bytes(b"o")
+        rc, out, err = self.run_tool("--source", plain, "--vault", self.tmp / "pv", "--no-push",
+                                     "--default-excludes")
+        self.assertEqual(rc, 0, err)
+        tree = {n for n in _git(self.tmp / "pv", "ls-tree", "-r", "--name-only", BRANCH).stdout.split()}
+        self.assertIn("a/build/x.o", tree)          # nothing says a build makes it
+        self.assertNotIn("b/build/y.o", tree)       # package.json sits beside it
+        self.assertIn("keeps 'a/build' for this run", out)
+
+    def test_the_choice_is_remembered_and_what_it_expanded_to_is_not(self):
+        args = ("--source", self.code, "--vault", self.vault, "--remote", self.remote)
+        self.assertEqual(self.run_tool(*args, "--default-excludes")[0], 0)
+        self.assertEqual(_git(self.vault, "config", "snapshot.defaultexcludes").stdout.strip(), "true")
+        self.assertNotEqual(_git(self.vault, "config", "--get-all", "snapshot.exclude").returncode, 0)
+        # A directory that gains source later is not left out for ever.
+        (self.code / "src" / "build").mkdir(parents=True)
+        (self.code / "src" / "build" / "late.py").write_bytes(b"x")
+        rc, out, err = self.run_tool(*args)                       # no flag: the vault remembers
+        self.assertEqual(rc, 0, err)
+        self.assertIn("src/build/late.py", self.tree())
+        self.assertNotIn("node_modules/pkg/a.js", self.tree())
+        rc, out, err = self.run_tool(*args, "--no-default-excludes")
+        self.assertEqual(rc, 0, err)
+        self.assertIn("node_modules/pkg/a.js", self.tree())
+        self.assertNotEqual(_git(self.vault, "config", "snapshot.defaultexcludes").returncode, 0)
 
     def test_a_virtualenv_is_offered_by_what_makes_it_one(self):
         venv = self.code / "env-audit"
@@ -2295,8 +2349,8 @@ class BareRunTests(_SnapshotFixture):
         self.assertEqual(rc, 0, err)
         tree = self.tree()
         self.assertIn("tools/build/make.py", tree)
-        self.assertIn("keeps 'build' for this run", out)
-        self.assertIn("tracks 'tools/build/make.py'", out)
+        self.assertIn("keeps 'tools/build' for this run", out)
+        self.assertIn("git does not ignore everything in it", out)
         # the rest of the list still applies, and untracked output is still left out
         self.assertNotIn("node_modules/pkg/a.js", tree)
         self.assertNotIn("dist/bundle.js", tree)
