@@ -21,6 +21,10 @@ def resolve_paths(source: Path, vault: Path) -> tuple[Path, Path]:
     return source, vault
 
 
+#: How long to wait before the one retry of a `git init` that failed silently.
+_INIT_RETRY_SECONDS = 1.0
+
+
 def ensure_vault(vault: Path, branch: str) -> Path:
     """Create the vault repository if it does not exist yet."""
     git_dir = vault / ".git"
@@ -28,18 +32,27 @@ def ensure_vault(vault: Path, branch: str) -> Path:
         return git_dir
 
     vault.mkdir(parents=True, exist_ok=True)
-    proc = _run(
-        ["git", "init", "-q", str(vault)],
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
+    for attempt in (1, 2):
+        proc = _run(
+            ["git", "init", "-q", str(vault)],
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        detail = (proc.stderr or proc.stdout).strip()
+        # `git init` is safe to repeat.  Once, under the load of a full test run
+        # on Windows, it exited 1 and printed nothing (ROADMAP W7); with nothing
+        # said there is nothing to act on, so it is tried again after a pause.
+        if proc.returncode == 0 or detail or attempt == 2:
+            break
+        time.sleep(_INIT_RETRY_SECONDS)
     if proc.returncode != 0:
         raise SnapshotError(
             f"git init failed in {vault} (rc={proc.returncode})\n"
-            f"{(proc.stderr or proc.stdout).strip()}"
+            + (detail or "git printed nothing, even on a second try; another process (a virus "
+               "scanner, a sync client) may be holding the directory. Run again.")
         )
     # Name the branch with `symbolic-ref`, not `git init -b`.  `-b` is Git 2.28
     # and this tool is documented to run on Git 2.20 (USER_GUIDE section 5); the

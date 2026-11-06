@@ -3498,6 +3498,57 @@ class ChangedWhileReadTests(_SnapshotFixture):
         self.assertIn("README.md", self.tree())
 
 
+class SilentInitFailureTests(unittest.TestCase):
+    """``git init`` that exits 1 and says nothing is tried once more (ROADMAP W7).
+
+    Seen once in a full test run on Windows: ``git init failed in <vault> (rc=1)``
+    with no stderr, and the same test passed alone and on the next run.
+    """
+
+    def setUp(self):
+        self.tmp = pathlib.Path(tempfile.mkdtemp(prefix="grs-init-"))
+        self.addCleanup(remove_tree, self.tmp)
+        patcher = unittest.mock.patch.object(snap, "_INIT_RETRY_SECONDS", 0.0)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _fail_first(self, count, stderr=""):
+        real = snap._run
+        calls = []
+
+        def run(argv, **kw):
+            if argv[:2] == ["git", "init"]:
+                calls.append(1)
+                if len(calls) <= count:
+                    return subprocess.CompletedProcess(argv, 1, "", stderr)
+            return real(argv, **kw)
+
+        return run, calls
+
+    def test_a_silent_failure_is_tried_again_and_the_run_goes_on(self):
+        run, calls = self._fail_first(1)
+        with unittest.mock.patch.object(snap, "_run", run):
+            git_dir = snap.ensure_vault(self.tmp / "vault", BRANCH)
+        self.assertTrue(git_dir.is_dir())
+        self.assertEqual(len(calls), 2)
+
+    def test_two_silent_failures_say_that_git_printed_nothing(self):
+        run, calls = self._fail_first(2)
+        with unittest.mock.patch.object(snap, "_run", run):
+            with self.assertRaises(snap.SnapshotError) as caught:
+                snap.ensure_vault(self.tmp / "vault", BRANCH)
+        self.assertEqual(len(calls), 2)
+        self.assertIn("git printed nothing", str(caught.exception))
+
+    def test_a_failure_with_a_message_is_not_retried(self):
+        run, calls = self._fail_first(5, stderr="fatal: cannot mkdir .git: Permission denied")
+        with unittest.mock.patch.object(snap, "_run", run):
+            with self.assertRaises(snap.SnapshotError) as caught:
+                snap.ensure_vault(self.tmp / "vault", BRANCH)
+        self.assertEqual(len(calls), 1)
+        self.assertIn("Permission denied", str(caught.exception))
+
+
 class LargePayloadProfileTests(unittest.TestCase):
     """A first-run sample decides once whether the vault should skip deflate and
     delta search -- the two costs that made a 20 GB+ raw-data tree time out."""
