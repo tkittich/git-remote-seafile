@@ -131,6 +131,12 @@ that talks to the server:
 * the directory-listing endpoint ignores paging parameters and was measured
   whole at 5,000 entries (ROADMAP S1) — that is one deployment's answer,
   not a protocol guarantee;
+* **Seafile Professional (13.0.29) is not Community Edition on a missing folder** (issue 6):
+  a file read under a folder that does not exist answers 403 (one level
+  missing) or a 500 page (two or more), where CE answers 404; only the
+  directory listing still says 404 for the missing folder. The stub imitates
+  it with `faults["pro_missing_parent"]`; a real-server test on Pro is still
+  to be written (see HANDOFF.issue-6.md);
 * a killed upload on the chunked (1 GiB+) path left no partial file under
   its final name — observed once, so treat it as the expected behaviour,
   not a promise.
