@@ -433,6 +433,9 @@ One line per capability — see [CHANGELOG.md](CHANGELOG.md) for the full detail
 **v0.9.22 (2026-11-06) — staging that scales; transfers that adapt.**
 - Staging lists only the new and modified paths and sends a long list through `update-index` (a path list handed to `git add` costs files times paths: 22 minutes on a 222,910-file vault); loose objects are written in parallel with a writer count found on the disk; `--payload-jobs` and payload hashing find their own parallelism; a file that changes mid-read is retried and a vanished one is dropped; SNAPSHOT.md "Git's own costs" and `tools/measure_pathspec_cost.py`; the route-comparison tests; test temp directories no longer leak. Open after it: ROADMAP 1.7 W3-W6.
 
+**v0.9.23 (2026-11-06) — Seafile Professional, handled and tested.**
+- A file read under a missing folder is 403 or a 500 page on Pro (issue 6): the folder's listing decides; a duplicate folder from a simultaneous mkdir is removed; a folder 403 names the permissions; the real-server suite runs in CE and Pro containers with a second account, folder permissions, groups and a first-push race; the last round's backlog (X9: scratch space before gc/repair, LFS URLs with a space, the route by work, the split floor, typed payload jobs, alternates) and X2 (a case rename on the update-index route); the next review prompt (X11).
+
 ---
 
 ## 3. Future Milestones (v1.0.0 horizon; tracked in §1)

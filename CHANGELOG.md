@@ -5,7 +5,9 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.9.23] - 2026-11-06
+
+Seafile Professional, handled and tested. On Pro a file read or delete under a folder that does not exist answers 403 or a 500 page instead of 404, so the first push to a new path failed (issue 6); the helper now asks the folder's listing, and a real permission refusal still stops it, now naming the permissions. The real-server suite runs against throwaway CE and Pro containers with a second account, folder permissions, group-shared and group-owned libraries and two accounts racing a first push. The rest is the last review round's backlog: a scratch-space check before `gc` and `repair`, a URL with a space kept whole for Git LFS, a staging route chosen by the work, a case rename recorded as one directory, and five smaller fixes.
 
 ### Fixed
 - **The first push to a new path works on Seafile Professional (issue 6).** Pro answers a file read under a folder that does not exist with **403** `You do not have permission to access this file.` when one level is missing and with a **500** HTML page when two or more are, where Community Edition answers 404 (measured on Pro 13.0.29 and CE 13.0.29 with the same requests; for the library owner and for a shared user, and under read-only, read-write, preview, cloud-edit and invisible sub-folder permissions alike). The helper reads `HEAD` and the ref files before any folder exists, and stopped at the first of them. A 403 or 500 on a file read now asks for the listing of the file's own folder, which answers 404 for a missing folder and 200, or 403 to someone who may not see it, for one that exists: only a clean 404 counts as "the file is not there". Every other case keeps the error: another status (a proxy's 502), a folder that lists, a listing that fails, a file at the top of the library. A ref wrongly read as absent is a ref a push may overwrite, so the check is narrow. The real helper pushed, cloned and pushed again on Pro as the owner and as a shared user; a user without access to a folder still gets `Failed to check dir /invisible: HTTP 403` or `Failed to create directory ...: HTTP 403`. Deleting the listing check turns nine tests red. `TestServerThatAnswersForbiddenForAMissingFolder` runs it through real git against the stub's new `pro_missing_parent` fault.
@@ -16,6 +18,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`lfs-setup` keeps a library name with a space whole** (ROADMAP X9, triage T24, now verified). git-lfs splits `lfs.customtransfer.seafile.args` on whitespace (measured with git-lfs 3.8.1): `lfs-transfer seafile://My Library/proj` reached the agent as `seafile://My` and `Library/proj`, and the agent took the first piece, so large files went to the wrong library or failed. `lfs-setup` now writes such a URL in double quotes, which git-lfs honours, and refuses a URL that contains a double quote; `lfs-transfer` refuses more than one URL instead of taking the first, so a setting written by an earlier version fails loudly until `lfs-setup` is run again.
 - **A clone that borrows objects no longer skips a fetch's download** (ROADMAP X9, be01e37 review DS A3). With `objects/info/alternates` (`git clone --shared`, `--reference`) or `GIT_ALTERNATE_OBJECT_DIRECTORIES`, the requested tips can resolve through the other repository's store; skipping the download left this clone depending on objects it did not hold, lost when that store is moved or pruned. The skip is now withheld there, as it already was for shallow and partial clones.
 - **A directory renamed by case is one directory in the snapshot on both staging routes** (ROADMAP X2). Where git ignores case (Windows, macOS), renaming `d` to `D` and adding a file left the long-list (`update-index`) route recording `D/new.txt` beside `d/x.txt`: two directories in the tree, and two on a restore to a filesystem that keeps case. That route now spells new paths the way `git add` does under `core.ignorecase` -- after the index's existing spelling of their directories -- so both routes record the same tree. A rename by case alone is still not a change, as in git itself.
+
+### Added
+- **`gc`, `gc --tail` and `repair` check the scratch space before downloading anything** (ROADMAP X9, triage T15). They download every pack into the temporary directory under the remote lock and write the repacked one beside it; a disk that filled half-way wasted the download and kept every other pusher waiting. They now refuse first when about twice the packs' size is not free, naming what they need, what is free and where (`TMPDIR`, or `TEMP` on Windows, moves it); `--allow-low-disk` starts anyway, and the automatic tail merge after a push skips instead. A free space that cannot be read does not block.
 
 ### Changed
 - **The 403 message no longer tells people to create folders by hand.** That advice (0.9.22) sent the reporter of issue 6 to make `refs/heads/main` as a *folder*, after which every run failed with `exists but twice answered empty`. A 403 that survives the folder check now says the account may not read there and names the library and folder permissions. The `twice answered empty` error now says what to look at: an empty folder made by hand in the web UI (delete it there) or, if it holds refs, a server listing it short.
@@ -30,10 +35,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`GRS_STUB_PRO=1` makes every stub answer file reads the way Pro does**; the whole suite passes in that mode.
 - **Each staging route's raised stall limit has its own test** (ROADMAP X9, triage T20). The one test took the filtered route on Windows and the plain one on POSIX, so deleting either site passed on the other platform; both routes are now driven on every platform, and removing either site fails its own case.
 - **`--status` and `--maintain` are tested to write nothing** (ROADMAP X9, triage T23): every file of the vault and the source keeps its size, time and bytes across both, with a change in the source for `--status` to count. Only reviewers' one-off runs held it before.
-
-### Added
-- **`gc`, `gc --tail` and `repair` check the scratch space before downloading anything** (ROADMAP X9, triage T15). They download every pack into the temporary directory under the remote lock and write the repacked one beside it; a disk that filled half-way wasted the download and kept every other pusher waiting. They now refuse first when about twice the packs' size is not free, naming what they need, what is free and where (`TMPDIR`, or `TEMP` on Windows, moves it); `--allow-low-disk` starts anyway, and the automatic tail merge after a push skips instead. A free space that cannot be read does not block.
-
 
 ## [0.9.22] - 2026-11-06
 
@@ -2024,6 +2025,7 @@ Data-loss and silent-failure fixes, and the Python floor raised to 3.9.
   with zero-config desktop-client token discovery, distributed locking, remote
   packfile compaction, and a Git LFS custom transfer agent.
 
+[0.9.23]: https://github.com/tkittich/git-remote-seafile/compare/v0.9.22...v0.9.23
 [0.9.22]: https://github.com/tkittich/git-remote-seafile/compare/v0.9.21...v0.9.22
 [0.9.21]: https://github.com/tkittich/git-remote-seafile/compare/v0.9.20...v0.9.21
 [0.9.20]: https://github.com/tkittich/git-remote-seafile/compare/v0.9.19...v0.9.20
