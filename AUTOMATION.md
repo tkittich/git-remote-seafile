@@ -96,10 +96,18 @@ that it warned; later runs exit `0` unless the set of such files changes.
 Treat a single exit `3` on a first run as "show the human the warnings once",
 not as a broken job.
 
+Two more things a scheduler can see. `--default-excludes` that keeps a `build`,
+`dist` or `venv` directory because it may be source prints a `Note:` (not a
+`Warning:`, so exit `0`), and every run that leaves something out lists it by
+directory or glob. A restore onto Windows without `core.symlinks` prints a
+`Warning:` for each link it could only write as a text file, so
+`--restore --exit-warnings` exits `3`; `--payload-delete` that finds no server clock
+(or one a day from yours) is an `Error:` and exits `1` with nothing deleted.
+
 ## An unattended run never asks a question
 
 The first-run question about reproducible directories (`node_modules`,
-virtualenvs, `dist` — with sizes) is asked only at a terminal; when stdin or
+virtualenvs, and `build`, `dist` or `venv` where git ignores everything in them — with sizes) is asked only at a terminal; when stdin or
 stdout is not a tty, or the run is `--json`, `--status` or `--maintain`, it is
 skipped and the run captures **everything**, then says what it noticed. An
 agent therefore cannot hang on a prompt, and also cannot silently inherit the

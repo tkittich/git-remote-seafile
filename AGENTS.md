@@ -103,6 +103,16 @@ identity and the first CI failures of a release have always been environmental.
   whose `stop()` was skipped — or spent on the mock it returned — leaks into
   every later test and fails somewhere unrelated. Use `with patch(...)` or
   `addCleanup(patcher.stop)` so every exit path undoes it.
+- **Two routes that agree can both be wrong.** The route-comparison classes compare
+  `add` with `update-index`; a directory renamed by case, with a new file in it, was lost
+  by both and passed. Also compare an incremental history with a fresh run on the final
+  tree, and the tree with what is on disk.
+- **`git add -A` does not take what you did not name.** Adding `tools tests` leaves the
+  regenerated `git_remote_seafile/snapshot_tool.py` behind (a release check caught it);
+  `python tools/build_snapshot.py --check` and `git status` before the commit.
+- **Heredocs through the Bash tool eat backslashes and apostrophes** (see the trap
+  above): write an edit script with the Write tool and run it, and read back any line that
+  holds a backslash escape (`\n`).
 - **A guard test must go red when its guard is deleted.** More than one test
   named after a guard kept passing after the guard was removed: it asserted
   the guard was *called*, not that the run was *refused*. Assert on the

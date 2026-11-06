@@ -130,7 +130,7 @@ Defaults are resolved most-specific-first:
 
 ### 2.1 What is *not* excluded by default
 
-Nothing, unless you say so. **On your first run at a terminal** (no vault yet, no `--exclude`, `--default-excludes` or `--no-default-excludes` given, not `--json` or `--exit-warnings`) the tool lists the reproducible directories it found, each with its size, and asks `Leave them out of this and later snapshots? [Y/n]`. A yes is the same as `--default-excludes` (committed source is kept, virtualenvs are found by `pyvenv.cfg`, the vault remembers it); a no captures everything. It never asks again, and an unattended run never asks. Without that answer the tool captures the whole tree, including `node_modules/`, `dist/` and `__pycache__/`, and then **tells you** what it noticed:
+Nothing, unless you say so. **On your first run at a terminal** (no vault yet, no `--exclude`, `--default-excludes` or `--no-default-excludes` given, not `--json` or `--exit-warnings`) the tool lists the reproducible directories it found, each with its size, and asks `Leave them out of this and later snapshots? [Y/n]`. A yes is the same as `--default-excludes` (committed source is kept, virtualenvs are found by `pyvenv.cfg`, `build`, `dist` and `venv` are offered only where git ignores everything in them, the vault remembers it); a no captures everything. It never asks again, and an unattended run never asks. Without that answer the tool captures the whole tree, including `node_modules/`, `dist/` and `__pycache__/`, and then **tells you** what it noticed:
 
 ```
 Warning: the snapshot includes reproducible build output that is usually not worth
@@ -138,7 +138,19 @@ backing up.  Leave it out next time with --default-excludes, or explicitly:
   --exclude 'build' --exclude 'dist' --exclude 'node_modules' --exclude '*.pyc'
 ```
 
-This is deliberate. A snapshot is a backup, and the one failure that cannot be forgiven is a backup that quietly omitted the file that mattered. `node_modules` is reproducible; `.env` is not; the tool cannot tell them apart, so it does not try. `--default-excludes` adds exactly the set above, on top of anything you passed to `--exclude`.
+This is deliberate. A snapshot is a backup, and the one failure that cannot be forgiven is a backup that quietly omitted the file that mattered. `node_modules` is reproducible; `.env` is not; the tool cannot tell them apart, so it does not try. `--default-excludes` adds exactly the set above, on top of anything you passed to `--exclude`, with two safeguards because some of those names are source in some projects (`src/build/make.py`, a `dist` of hand-signed releases, a package called `venv`):
+
+- **`build`, `dist` and `venv` are decided one directory at a time.** A directory of that name is left out only where git has nothing to commit under it (everything inside is ignored), or, in a tree that is not a git repository, where a project file (`package.json`, `pyproject.toml`, `Makefile`, `Cargo.toml` and the like) sits beside it. Any other is **captured**, and the run says so: `Note: --default-excludes keeps 'src/build' for this run ... Pass --exclude 'src/build' to leave it out anyway.` An explicit `--exclude` is always honoured. `node_modules`, `__pycache__`, `*.pyc` and virtualenvs (found by `pyvenv.cfg`) stay excluded by name, except where the source's own repository tracks a file inside.
+- **Nothing is left out unseen.** The vault remembers that you chose `--default-excludes`, not what it expanded to, so the directories are worked out again on every run (a `build/` that later gains source stops being left out), and every run that leaves something out lists it, one line per directory or glob with its file count:
+
+```
+excluded: 4112 path(s) left out:
+  *.pyc  (40 file(s))
+  node_modules  (4071 file(s))
+  pkg/dist  (1 file(s))
+```
+
+A vault made by an earlier version remembered the expanded patterns (`build`, `dist`...) as ordinary excludes and keeps applying them; run once with `--no-default-excludes`, then with `--default-excludes`, to switch it to the per-directory rule.
 
 ## 3. Byte-exactness, and why it needs enforcing
 
@@ -203,7 +215,7 @@ which hashes the bytes as they lie on disk. That is the only one of Git's three 
 | `git hash-object --no-filters` | the raw bytes on disk | **No** — and it holds for *any* checkout, including one you made by hand |
 
 > [!NOTE]
-> **A symlink restored onto Windows without `core.symlinks` fails that check, and the restore aborts.** Git checks a `120000` entry out as a plain text file whose contents are the target path, so the verification finds no link to read and names the path as a mismatch. Because the check runs on **every** restore — not only under `--verify` — the run stops there rather than quietly handing back a tree of files where the source had links. The blobs are intact: enabling `core.symlinks` (Developer Mode, or an elevated process) and restoring again reproduces the links. Symlinks are verified by reading the link itself, never by `hash-object`, which on POSIX would follow the link and hash its target.
+> **A symlink restored onto Windows without `core.symlinks` is written as a text file, and the restore says so.** Git checks a `120000` entry out as a plain text file whose contents are the target path. That is a platform that cannot represent the entry, the same class as a name Windows cannot hold: the restore prints a `Warning:` listing each such link (exit 3 under `--exit-warnings`), restores and verifies everything else, and ends with `(N link(s) written as text)`. It does this only when git itself reports `core.symlinks=false` and the file holds exactly the link's target; any other difference is still a mismatch and stops the run. The blobs are intact: enabling `core.symlinks` (Developer Mode, or an elevated process) and restoring again reproduces the links. Symlinks are verified by reading the link itself, never by `hash-object`, which on POSIX would follow the link and hash its target.
 
 ## 5. What the tool refuses to do
 
@@ -334,8 +346,10 @@ What to know:
   manifest; a renamed or duplicated file uploads nothing.
 - **A payload vault cannot take a snapshot without pushing.** The objects must be on the
   server before a commit names them, so `--no-push` is refused on a vault that uses
-  payload mode (and `--no-push --no-payload` stages the large files into git, which is
-  the cost payload mode exists to avoid). `--dry-run` previews without pushing.
+  payload mode (and `--no-push --no-payload` stages the large files into git history, which
+  a later push publishes: the cost payload mode exists to avoid. That run leaves the
+  vault's remembered payload setting alone, so the next scheduled push is a payload run
+  again). `--dry-run` previews without pushing.
 - **`--payload-verify` audits the newest snapshot only.** Objects that only older or
   tagged snapshots reference are found damaged at restore time, not before.
 - **Tags are pins, but only if they are on the remote.** `git tag` in the vault is local;

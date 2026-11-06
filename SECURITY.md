@@ -84,7 +84,7 @@ will fail to authenticate, by design.
 
 A token sent over plain `http://` is readable by anything on the network path. Because the scheme is
 the user's choice in the URL, the helper **warns on every adoption** rather than refusing — naming
-the server the token is about to travel to, on `stderr`. Loopback is exempt: a desktop client on
+the server the token is about to travel to, on `stderr`. Loopback (`localhost` or a loopback address, not a name that starts with `127.`) is exempt: a desktop client on
 `http://localhost` is not on a network path, and warning on every operation there would train users
 to ignore the message.
 
@@ -112,7 +112,12 @@ would rather not keep a long-lived token on disk at all, prefer the desktop clie
   `/api2/auth-token/` endpoint, and dropped. It is never stored, logged, printed or placed on a
   command line, so unlike the `curl -d` recipe it replaces it does not end up in your shell history.
 - It refuses to run without a terminal, and it refuses a plain `http://` server other than loopback
-  **before** asking for the password: a password sent over HTTP can be read on the way.
+  **before** asking for the password: a password sent over HTTP can be read on the way. Loopback means
+  `localhost` or a loopback *address* (`127.0.0.0/8`, `::1`); a name that merely starts with `127.`
+  (`127.example.com`) is a public name and is refused.
+- It never follows a redirect. A 307 or 308 re-sends the request body, which is the password, to
+  whatever host the answer names, and the token that host returned would be saved as this server's, so
+  any 3xx ends the login with a message naming the target (use the address the server answers on).
 - A two-factor code, when the server asks for one, goes in the `X-SEAFILE-OTP` header of a second
   request.
 - The token is written to a temporary file in your home directory and renamed into place, so an
