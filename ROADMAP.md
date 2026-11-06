@@ -260,7 +260,7 @@ The cause was a path list handed to `git add` (CHANGELOG, Unreleased), found by 
 | **W6** | `tests/` | **Open, untried:** the route comparison does not cover files over 4 GiB, a full disk or a kill during staging, an antivirus sharing violation on Windows, macOS Unicode-normalised names (S20), or FAT / network-share timestamps. The first two can be made with a loop device or a tiny tmpfs and `kill -9` on Linux; the rest need machines that are not in reach. | M | Low | backlog |
 | **W7** | `30_vault.py` | **Mitigated (0.9.22), cause not found:** once, in a full gate run on 2026-11-06, `ByteExactnessTests.test_a_source_working_tree_encoding_cannot_corrupt_the_backup` failed with `git init failed in ...ault (rc=1)` and no stderr (the class took 233 s against 40 s alone; it passed alone twice and in four later full runs). `git init -q` printed nothing, so there was nothing more to capture; `ensure_vault` now tries a silent failure once more after a second and, if it fails again, says that git printed nothing and that another process may hold the directory (`SilentInitFailureTests`). If it recurs after the retry, it is a locked directory: look at what else touches `%TEMP%` during a full run. | S | Low | done |
 
-### 1.8 From the be01e37 review round (2026-11-06; `REVIEW.be01e37.{deepseek-v4.1-flash,gemini-3.8-flash,glm-5.3,sonnet-5.5}.md`, triage in `REVIEW.TRIAGE-be01e37.md`)
+### 1.8 From the be01e37 review round (2026-11-06; `REVIEW.be01e37.{deepseek-v4.1-flash,gemini-3.8-flash,glm-5.3,sonnet-5.5}.md`, triage in `archive/REVIEW.TRIAGE-be01e37.md`)
 
 Four reports; glm's and sonnet's reproduced findings held, gemini's mostly did not (a retired key, a measured number and a limit it quoted wrongly). Rows marked Done shipped in 0.9.22 (CHANGELOG).
 
