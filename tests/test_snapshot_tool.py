@@ -1625,8 +1625,8 @@ class FirstRunExcludePromptTests(_SnapshotFixture):
             "excluded: 5 path(s) left out:" + chr(10) + "  *.pyc  (2 file(s))" + chr(10)
             + "  dist  (1 file(s))" + chr(10) + "  src/build  (2 file(s))",
         )
-        many = [f"d{i}/f" for i in range(14)]
-        self.assertTrue(snap.excluded_summary(many, []).endswith("  ... and 2 more"))
+        many = [f"d{i}/f" for i in range(34)]
+        self.assertTrue(snap.excluded_summary(many, []).endswith("  ... and 4 more"))
         rc, out, err = self.run_tool("--source", self.code, "--vault", self.vault, "--no-push",
                                      "--default-excludes")
         self.assertEqual(rc, 0, err)

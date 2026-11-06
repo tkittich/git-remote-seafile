@@ -3242,7 +3242,7 @@ def find_virtualenvs(source: Path, excludes: list[str]) -> list[str]:
 
 
 def excluded_summary(excluded: list[str], excludes: "list[str] | tuple[str, ...]" = (),
-                     limit: int = 12) -> str:
+                     limit: int = 30) -> str:
     """What an exclude left out, by name: a count, then each excluded directory with its files.
 
     A count alone let ``--default-excludes`` drop a never-committed ``src/build``
