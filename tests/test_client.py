@@ -1801,9 +1801,11 @@ class TestSeafileClientOperations(unittest.TestCase):
         client = SeafileClient(server_url="https://seafile.example.com", token="fake_token", timeout=10)
         client.session = MagicMock()
 
-        # First existence check says "absent"; the mkdir is rejected; the
-        # follow-up check finds it (someone else created it in between).
+        # First existence check says "absent"; the parent is listed (its names
+        # before the mkdir); the mkdir is rejected; the follow-up check finds it
+        # (someone else created it in between).
         client.session.get.side_effect = [
+            MagicMock(status_code=404),
             MagicMock(status_code=404),
             MagicMock(status_code=200),
         ]
@@ -1833,20 +1835,31 @@ class TestSeafileClientOperations(unittest.TestCase):
         with self.assertRaises(SeafileAPIError):
             client2.get_repo_id("lib")
 
-    def _mkdir_with_siblings(self, siblings, copy_listing):
+    def _mkdir_with_siblings(self, siblings, copy_listing, before=None, copy_status=200):
         """``mkdir_p("/r/.git-lock.d")`` where the parent then lists *siblings*.
 
-        Returns the client and the paths it deleted.  *copy_listing* is what a copy lists as.
+        *before* is what the parent listed ahead of the mkdir (by default *siblings*
+        without any ``(N)`` copy: the copy is the mkdir's own).  Returns the client and
+        the paths it deleted.  *copy_listing* is what a copy lists as, with *copy_status*.
         """
         client = SeafileClient(server_url="https://seafile.example.com", token="fake_token", timeout=10)
         client.session = MagicMock()
         client._known_dirs.add(("repo1", "/r"))
+        if before is None:
+            before = [e for e in siblings if "(" not in e["name"]]
+        parent_listings = []
 
         def get(url, timeout=None):
             if "p=/r/.git-lock.d" in url and "(" not in url and "%28" not in url:
                 return MagicMock(status_code=404)  # the directory does not exist yet
+            if not url.endswith("p=/r") and copy_status != 200:
+                return MagicMock(status_code=copy_status)
             resp = MagicMock(status_code=200)
-            resp.json.return_value = siblings if url.endswith("p=/r") else copy_listing
+            if url.endswith("p=/r"):
+                parent_listings.append(url)
+                resp.json.return_value = before if len(parent_listings) == 1 else siblings
+            else:
+                resp.json.return_value = copy_listing
             return resp
 
         client.session.get.side_effect = get
@@ -1855,7 +1868,7 @@ class TestSeafileClientOperations(unittest.TestCase):
 
         def delete(url, timeout=None):
             deleted.append(url)
-            return MagicMock(status_code=200)
+            return MagicMock(status_code=200 if copy_status == 200 else 404)
 
         client.session.delete.side_effect = delete
         client.mkdir_p("repo1", "/r/.git-lock.d")
@@ -1887,6 +1900,29 @@ class TestSeafileClientOperations(unittest.TestCase):
         self.assertEqual(deleted, [])
         self.assertIn(".git-lock (2).d", err.getvalue())
         self.assertIn(("repo1", "/r/.git-lock.d"), client._known_dirs)
+
+    def test_mkdir_p_never_removes_a_copy_named_folder_that_was_there_before(self):
+        """Review 4f1cdd4 (opus-5.5, deepseek-v4.1-flash, glm-5.3 G2.1): every empty
+        ``<name> (N)`` beside the new folder was taken for this mkdir's copy, so a
+        person's own empty ``app (1)``, or another repository of that name mid first
+        push, was deleted.  Only a name the mkdir made appear is removed."""
+        siblings = [{"type": "dir", "name": ".git-lock.d"}, {"type": "dir", "name": ".git-lock (1).d"}]
+        err = io.StringIO()
+        with patch("sys.stderr", err):
+            _client, deleted = self._mkdir_with_siblings(
+                siblings, copy_listing=[], before=[{"type": "dir", "name": ".git-lock (1).d"}]
+            )
+        self.assertEqual(deleted, [])
+        self.assertNotIn("two clients", err.getvalue())
+
+    def test_a_copy_the_other_client_already_removed_draws_no_warning(self):
+        """Both clients of a race see the same copy; the second to delete finds it gone,
+        which is what it wanted (deepseek-v4.1-flash G2.1)."""
+        siblings = [{"type": "dir", "name": ".git-lock.d"}, {"type": "dir", "name": ".git-lock (1).d"}]
+        err = io.StringIO()
+        with patch("sys.stderr", err):
+            self._mkdir_with_siblings(siblings, copy_listing=[], copy_status=404)
+        self.assertNotIn("could not be removed", err.getvalue())
 
     def test_a_folder_403_names_the_permissions_and_other_statuses_do_not(self):
         """A Pro folder permission refuses with a bare ``Permission denied.``; on a push the

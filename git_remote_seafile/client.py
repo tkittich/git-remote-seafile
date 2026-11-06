@@ -993,6 +993,18 @@ class SeafileClient:
                 self._known_dirs.add((repo_id, current))
                 continue
 
+            # What the parent held before: a `<name> (N)` folder already there is not a
+            # copy this mkdir made -- a person's own, or another repository named that
+            # way mid first push -- and was deleted as one (review 4f1cdd4: opus-5.5,
+            # deepseek-v4.1-flash and glm-5.3 G2.1).  A listing that fails leaves the
+            # set unknown, and then nothing is removed.
+            parent = current.rpartition("/")[0] or "/"
+            try:
+                before: set[str] | None = {
+                    str(e.get("name")) for e in self.list_dir(repo_id, parent)
+                }
+            except (SeafileAPIError, requests.RequestException):
+                before = None
             url = f"{self.server_url}/api2/repos/{repo_id}/dir/?p={quote(current, safe='/')}"
             resp = self.session.post(url, data={"operation": "mkdir"}, timeout=self.timeout)
             if resp.status_code in (200, 201):
@@ -1007,14 +1019,15 @@ class SeafileClient:
                 # each waited on the other's lock ticket) -- and the copy is
                 # only litter.  An empty one is removed; one that holds anything
                 # is not ours to judge and is named instead.  One listing per
-                # *created* directory, so an established repository pays nothing.
-                parent = current.rpartition("/")[0] or "/"
+                # *created* directory (two, with the one before), so an established
+                # repository pays nothing.
                 try:
-                    copies = [
+                    copies = [] if before is None else [
                         str(e.get("name")) for e in self.list_dir(repo_id, parent)
-                        if e.get("type") == "dir" and _is_seafile_copy_of(part, str(e.get("name")))
+                        if e.get("type") == "dir" and str(e.get("name")) not in before
+                        and _is_seafile_copy_of(part, str(e.get("name")))
                     ]
-                except SeafileAPIError:
+                except (SeafileAPIError, requests.RequestException):
                     copies = []
                 for copy in copies:
                     copy_path = f"{parent.rstrip('/')}/{copy}"
@@ -1025,6 +1038,13 @@ class SeafileClient:
                         )
                     except (SeafileAPIError, requests.RequestException):
                         removed = False
+                    if not removed:
+                        # The other client of the pair saw the same copy and may have
+                        # removed it first: gone is what was wanted, not a warning.
+                        try:
+                            removed = not self.dir_exists(repo_id, copy_path)
+                        except (SeafileAPIError, requests.RequestException):
+                            removed = False
                     if not removed:
                         sys.stderr.write(
                             f"Warning: {copy_path} was created beside {current} by two clients "
