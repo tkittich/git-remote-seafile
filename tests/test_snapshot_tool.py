@@ -2929,6 +2929,23 @@ class IncrementalStagingTests(_SnapshotFixture):
         self.assertIsNotNone(match, shown)
         self.assertEqual(int(match.group(1)), int(later))
 
+    @unittest.skipUnless(sys.platform in ("win32", "darwin"), "needs a filesystem that ignores case")
+    def test_a_new_file_in_a_directory_renamed_by_case_is_not_lost(self):
+        """Found by a review: the index keeps ``d/``, the listing says ``D/new.txt``, and the
+        file just staged as ``d/new.txt`` was dropped as stale on every run.  The two routes
+        agree about this case (both lost it), so only a comparison with the disk sees it."""
+        (self.code / "d").mkdir()
+        (self.code / "d" / "x.txt").write_bytes(b"x\n")
+        self.assertEqual(self.snapshot(*self.EXCLUDE)[0], 0)
+        os.rename(self.code / "d", self.code / "tmp_d")
+        os.rename(self.code / "tmp_d", self.code / "D")
+        (self.code / "D" / "new.txt").write_bytes(b"new\n")
+        rc, _, err = self.snapshot(*self.EXCLUDE)
+        self.assertEqual(rc, 0, err)
+        recorded = {name.casefold() for name in self.tree()}
+        self.assertIn("d/new.txt", recorded)
+        self.assertIn("d/x.txt", recorded)
+
     @unittest.skipIf(os.name == "nt", "Windows always takes the filtered route (junction check)")
     def test_the_unfiltered_route_is_unchanged(self):
         """No excludes: ``add -A -f .`` as before, no path list."""

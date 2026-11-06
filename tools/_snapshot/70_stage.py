@@ -343,8 +343,16 @@ def build_snapshot(
         # `kept` -- a file deleted from the source, or one an exclude now
         # covers -- has to be dropped explicitly.
         indexed = git(git_dir, work_tree, ["ls-files", "-z"], cwd=work_tree).stdout
+        # Where git ignores case (Windows, macOS: core.ignorecase) the index keeps the
+        # spelling it first met, so a new file in a directory renamed `d` -> `D` is
+        # indexed as `d/new.txt` while the listing says `D/new.txt`.  Compared as
+        # written, the file just staged was "stale" and was dropped, on every run.
+        folded = git(git_dir, work_tree, ["config", "--bool", "core.ignorecase"],
+                     cwd=work_tree, check=False).stdout.strip() == "true"
+        kept_known = {p.casefold() for p in kept_set} if folded else kept_set
         stale = [
-            path for path in indexed.split("\0") if path and path not in kept_set
+            path for path in indexed.split("\0")
+            if path and (path.casefold() if folded else path) not in kept_known
         ]
         if stale:
             drop_from_index(git_dir, work_tree, stale)
