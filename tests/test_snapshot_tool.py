@@ -2796,6 +2796,34 @@ class ParallelStagingTests(_SnapshotFixture):
         # "at most 11h27m left" was printed on a 226,000-file run that took two minutes.
         self.assertEqual(expects, [0])
 
+    def test_both_staging_routes_raise_the_stall_limit_after_a_prewrite(self):
+        """Triage T20: the two sites that raise the limit (the plain ``add -A .`` and the
+        filtered ``--pathspec-from-file`` route) were held jointly by the test above, which
+        takes one route on Windows (the junction check always filters) and the other on
+        POSIX.  Each route is driven here on every platform, and asserted to be the one taken."""
+        for route, extra, plain in (("plain", (), True),
+                                    ("filtered", ("--exclude", "no-such-dir"), False)):
+            with self.subTest(route=route):
+                seen = []
+                real = snap.git
+
+                def spy(git_dir, work_tree, args, seen=seen, real=real, **kw):
+                    if args[:2] == ["add", "-A"]:
+                        seen.append((list(args), kw.get("stall_limit", snap._UNSET_STALL),
+                                     kw.get("expect_bytes")))
+                    return real(git_dir, work_tree, args, **kw)
+
+                with unittest.mock.patch.object(snap, "git", spy), \
+                        unittest.mock.patch.object(snap, "_junction_filter", lambda _w: None):
+                    rc, _, err = self._run_in(self.tmp / f"v-{route}", "4", *extra)
+                self.assertEqual(rc, 0, err)
+                self.assertEqual(len(seen), 1, seen)
+                args, stall, expects = seen[0]
+                self.assertEqual(args[-1] == ".", plain, f"{route}: took the other route {args}")
+                self.assertNotIsInstance(stall, snap._UnsetStall,
+                                         f"{route}: the add after a pre-write kept the default")
+                self.assertEqual(expects, 0, route)
+
     def test_a_raised_stall_limit_says_so_and_the_usual_one_is_quiet(self):
         """DESIGN 3.5 "say what was chosen": a kill on an unmeasured disk must be readable."""
         with contextlib.redirect_stderr(io.StringIO()) as err:
