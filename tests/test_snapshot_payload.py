@@ -1800,6 +1800,27 @@ class PayloadRetentionTests(_PayloadFixture):
             rc, out, err = self.gc()
             self.assertEqual(rc, 0, out + err)
 
+    def test_a_delete_is_refused_when_the_server_clock_has_stepped_a_day_away(self):
+        """A server clock step collapses a 7-day grace period (REVIEW.be01e37 sonnet D2)."""
+        self.assertEqual(self.snapshot()[0], 0)
+        orphan = self.orphan()
+        real_now = time.time
+        stepped = unittest.mock.patch.object(
+            SeafileClient, "get_server_time", lambda self_: real_now() + 8 * DAY)
+        with stepped:
+            rc, out, err = self.gc("--payload-delete", "--payload-grace-days", "1")
+            self.assertNotEqual(rc, 0, out + err)
+            self.assertIn("differ by 192.0 hours", out + err)
+            self.assertIn(orphan, self.server_files())
+            self.assertNotIn(f"{self.base}/gc-pending.json", self.server_files())
+            rc, out, err = self.gc()                       # the report still runs
+            self.assertEqual(rc, 0, out + err)
+        slightly = unittest.mock.patch.object(
+            SeafileClient, "get_server_time", lambda self_: real_now() + 3600)
+        with slightly:                                     # an hour of skew is ordinary
+            rc, out, err = self.gc("--payload-delete", "--payload-grace-days", "1")
+            self.assertEqual(rc, 0, out + err)
+
     def test_a_report_run_seeds_the_fence_baseline(self):
         """The first delete run had nothing to compare against (ROADMAP S2).
 

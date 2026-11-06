@@ -271,6 +271,10 @@ reports; with `--payload-delete` it **marks, and later deletes, in two phases**:
   mark whose time cannot be one this tool wrote (zero, negative, more than a day
   ahead, not a number) is marked afresh with a `Warning:` -- "now minus a stamp
   of -1" would otherwise call the grace period over at once;
+- **a deletion needs a server clock it can trust:** it stops, with nothing marked or deleted, when the
+  server sent no `Date` header (only this machine's clock would remain) or when the server's clock and
+  this machine's differ by more than a day (one of them has stepped, which collapses the grace period;
+  `test_a_delete_is_refused_when_the_server_clock_has_stepped_a_day_away`). A report still runs;
 - it reads the manifest of **every commit reachable from every branch and tag of the remote**
   (fetched into a scratch repository, with `SEAFILE_STRICT_REFS=1` so the helper's
   listing fails rather than skip a ref it cannot read -- a skipped branch would make
