@@ -288,6 +288,12 @@ class TestClientCredentials(unittest.TestCase):
             SeafileClient(server_url="http://localhost:8000")
         self.assertEqual(err.getvalue(), "")
 
+    def test_a_public_name_starting_with_127_is_not_loopback(self):
+        with tempfile.TemporaryDirectory() as td,              patch.dict("os.environ", {"SEAFILE_SERVER": "http://127.example.org",
+                                       "SEAFILE_TOKEN": "t"}, clear=True),              patch("git_remote_seafile.client.get_candidate_db_paths", return_value=[]),              patch("pathlib.Path.home", return_value=Path(td)),              patch("sys.stderr", new_callable=io.StringIO) as err:
+            SeafileClient(server_url="http://127.example.org")
+        self.assertIn("plain HTTP", err.getvalue())
+
 
 class TestClientAPI(unittest.TestCase):
     """Test Seafile REST API methods with mocked requests."""

@@ -16,10 +16,11 @@ import sys
 import tempfile
 from pathlib import Path
 from typing import Any, Callable
+from urllib.parse import urlparse
 
 import requests
 
-from .url import normalize_netloc
+from .url import is_loopback_host, normalize_netloc
 
 OTP_HEADER = "X-SEAFILE-OTP"
 CONFIG_NAME = ".git-seafile.json"
@@ -31,8 +32,8 @@ class LoginError(Exception):
 
 
 def _is_loopback(server: str) -> bool:
-    host = normalize_netloc(server).rsplit(":", 1)[0].strip("[]").lower()
-    return host == "localhost" or host == "::1" or host.startswith("127.")
+    host = normalize_netloc(server).rsplit(":", 1)[0]
+    return is_loopback_host(host)
 
 
 def normalise_server(raw: str) -> str:
@@ -65,14 +66,26 @@ def request_token(
     headers = {OTP_HEADER: otp} if otp else {}
     do_post = post or requests.post
     try:
-        return do_post(
+        # Never follow a redirect: a 307/308 re-sends the body, and the body is the
+        # password, to whatever host the answer names -- whose token would then be
+        # saved as this server's.
+        resp = do_post(
             f"{server}/api2/auth-token/",
             data={"username": username, "password": password},
             headers=headers,
             timeout=TIMEOUT_SECONDS,
+            allow_redirects=False,
         )
     except requests.RequestException as ex:
         raise LoginError(f"cannot reach {server}: {type(ex).__name__}") from None
+    status = getattr(resp, "status_code", 0)
+    if isinstance(status, int) and 300 <= status < 400:
+        target = urlparse(str(resp.headers.get("Location", ""))).netloc or "another address"
+        raise LoginError(
+            f"{server} redirected the login to {target}; the password was not sent there. "
+            "Use the address the server answers on (its https:// address, without a redirect)"
+        )
+    return resp
 
 
 def _needs_otp(resp: Any) -> bool:

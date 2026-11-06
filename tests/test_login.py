@@ -115,6 +115,25 @@ class TestLogin(_Fixture):
         post.assert_not_called()
         self.assertEqual(normalise_server("http://localhost:8000"), "http://localhost:8000")
 
+    def test_a_public_name_that_starts_with_127_is_not_loopback(self):
+        # A prefix test accepted these, and a password then travelled over plain HTTP.
+        for server in ("http://127.example.com", "http://127.0.0.1.nip.io", "http://localhost.example.com"):
+            with self.subTest(server=server):
+                with self.assertRaises(LoginError):
+                    normalise_server(server)
+        for server in ("http://127.0.0.1:8000", "http://localhost", "http://[::1]:8000"):
+            with self.subTest(server=server):
+                self.assertEqual(normalise_server(server), server)
+
+    def test_a_redirect_is_not_followed_and_the_password_is_not_sent_on(self):
+        post = MagicMock(return_value=_resp(307, headers={"Location": "https://elsewhere.example/api2/auth-token/"}))
+        rc, out, err = self.login(["seafile.example.com", "--user", "u"], [], post)
+        self.assertEqual(rc, 1)
+        self.assertIn("redirected the login to elsewhere.example", err)
+        self.assertFalse(self.config.exists())
+        self.assertIs(post.call_args.kwargs["allow_redirects"], False)
+        self.assertEqual(post.call_count, 1)
+
     def test_it_needs_a_terminal(self):
         err = io.StringIO()
         with patch("sys.stderr", err):

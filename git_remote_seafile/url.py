@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ipaddress
 import re
 from dataclasses import dataclass
 from urllib.parse import unquote, urlparse
@@ -33,6 +34,22 @@ def _port_or_none(parsed, url: str) -> int | None:
         raise ValueError(
             f"Invalid Seafile URL format: invalid port in '{parsed.netloc}': {url}"
         ) from None
+
+
+def is_loopback_host(host: str) -> bool:
+    """True for ``localhost`` and for a loopback *address* (127.0.0.0/8, ::1), never for a name.
+
+    A prefix test (``startswith("127.")``) accepts ``127.example.com``, a public
+    name, and the plain-HTTP exemptions built on it would then send a password or
+    a token across the network without a word.
+    """
+    name = host.strip().strip("[]").rstrip(".").lower()
+    if name == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(name).is_loopback
+    except ValueError:
+        return False
 
 
 def normalize_netloc(url_or_netloc: str) -> str:

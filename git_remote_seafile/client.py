@@ -22,7 +22,7 @@ from urllib3.util.retry import Retry
 
 from .git_util import get_git_config_bool
 from .seafile_paths import get_candidate_db_paths
-from .url import normalize_netloc
+from .url import is_loopback_host, normalize_netloc
 from .sqlite_read import open_live_sqlite_ro
 
 
@@ -447,7 +447,7 @@ class SeafileClient:
         if not token or not self.server_url.startswith("http://"):
             return
         host = (urlparse(self.server_url).hostname or "").lower()
-        if host == "localhost" or host == "::1" or host.startswith("127."):
+        if is_loopback_host(host):
             return
         sys.stderr.write(
             f"Warning: {source} is being sent to {self.server_url} over plain HTTP, "
