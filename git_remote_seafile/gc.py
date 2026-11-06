@@ -37,13 +37,17 @@ _PACK_HASH_RE = re.compile(r"([0-9a-f]{64}|[0-9a-f]{40})\.pack$")
 SCRATCH_MARGIN_BYTES = 64 * 1024 * 1024
 
 
-def scratch_needed(pack_bytes: int) -> int:
+def scratch_needed(pack_bytes: int, read_back: int = 0) -> int:
     """Local space a run that downloads *pack_bytes* of packs (and their indexes) needs.
 
     The downloads, plus the repacked output, which is at most as large again: two
-    times, and a margin.
+    times, and a margin.  *read_back* is a third copy a run holds at its peak: the
+    tail merge keeps its downloads beside the merged pack and then downloads each new
+    pack once more for the SHA-256 comparison, so it passes its largest new pack here
+    (review 4f1cdd4, opus-5.5 G3.2).  A full gc does not: ``repack -ad`` has dropped
+    the downloads by the time it reads back.
     """
-    return 2 * max(0, pack_bytes) + SCRATCH_MARGIN_BYTES
+    return 2 * max(0, pack_bytes) + max(0, read_back) + SCRATCH_MARGIN_BYTES
 
 
 def scratch_shortfall(needed: int, where: str | None = None) -> str | None:
@@ -694,7 +698,9 @@ def tail_merge(
                 f"{frozen_count} frozen{later})...\n"
             )
 
-        short = None if allow_low_disk else scratch_shortfall(scratch_needed(total_movable))
+        short = None if allow_low_disk else scratch_shortfall(
+            scratch_needed(total_movable, read_back=min(total_movable, cfg.max_pack_bytes))
+        )
         if short:
             # The automatic run (inside a push) skips: the push itself succeeded, and a
             # merge that cannot fit is better tried later than failed half-way.

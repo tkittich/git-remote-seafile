@@ -1748,6 +1748,22 @@ class TestScratchSpaceIsCheckedBeforeAnyDownload(unittest.TestCase):
             client.download_file_to.assert_not_called()
 
 
+    def test_the_tail_merge_counts_the_read_back_copy(self):
+        """Review 4f1cdd4 (opus-5.5 G3.2): the downloads stay beside the merged pack and
+        the read-back downloads the new pack once more, so the peak is about three times
+        the movable packs.  Free space between two and three times them must refuse."""
+        cfg = RemoteConfig(lock_timeout=15, lock_lease=60, lock_settle=0, auto_gc=True,
+                           gc_threshold=2, gc_max_mib=1 << 30, gc_max_pack_mib=1 << 20)
+        client = self._client()
+        movable = 30 * self.GIB
+        between = gc_module.scratch_needed(movable) + self.GIB
+        with self._free(between):
+            res = tail_merge(client, "repo1", "/path", config=cfg, verbose=False,
+                             respect_budget=False)
+        self.assertEqual(res["status"], "error", res)
+        self.assertIn("Tail merge not started", res["message"])
+        client.download_file_to.assert_not_called()
+
 class TestPhasePulse(unittest.TestCase):
     """The long captured phases say they are alive (ROADMAP S13).
 
