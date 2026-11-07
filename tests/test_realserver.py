@@ -149,14 +149,16 @@ class RealServerTests(unittest.TestCase):
                f"?p={quote(path, safe='/')}")
         return self.client.session.request(method, url, timeout=60, **kw)
 
-    def _server_info(self) -> dict:
-        info = self.client.session.get(
-            f"{self.client.server_url}/api2/server-info/", timeout=60
+    @classmethod
+    def _server_info(cls) -> dict:
+        info = cls.client.session.get(
+            f"{cls.client.server_url}/api2/server-info/", timeout=60
         ).json()
         return info if isinstance(info, dict) else {}
 
-    def _is_pro(self) -> bool:
-        return "seafile-pro" in (self._server_info().get("features") or [])
+    @classmethod
+    def _is_pro(cls) -> bool:
+        return "seafile-pro" in (cls._server_info().get("features") or [])
 
     # -- API semantics the stub copies -----------------------------------------
     def test_api_semantics_the_stub_encodes(self):
@@ -848,7 +850,11 @@ class SharedUserTests(_RealServerFixture):
         cls.env2["SEAFILE_SERVER"] = cls.client.server_url
         cls.env2["SEAFILE_TOKEN"] = _SECOND_TOKEN
         cls._rules: list[str] = []
-        cls._rules_supported = True
+        # Folder permissions are a Pro feature.  Ask the edition rather than read
+        # the endpoint's status: CE 13.0 answers it 403 "Permission denied.", the
+        # same body as a real refusal (measured in the CE container, first run of
+        # realserver.yml), so a status cannot tell "no such feature" from "denied".
+        cls._rules_supported = cls._is_pro()
         cls._made_library_share = False
         try:
             existing = cls._admin("GET", f"/api2/repos/{cls.rid}/dir/shared_items/",
@@ -898,7 +904,10 @@ class SharedUserTests(_RealServerFixture):
 
     @classmethod
     def _rule(cls, folder, permission):
-        """A folder permission for the second account; CE has none (404), which is remembered."""
+        """A folder permission for the second account (Pro only; setUpClass asks the edition).
+
+        A 404 is still read as "no folder permissions here", for a server whose
+        features list says Pro but whose route is missing."""
         resp = cls._admin("POST", f"/api2/repos/{cls.rid}/user-folder-perm/",
                           data={"user_email": _SECOND_EMAIL, "folder_path": folder,
                                 "permission": permission})
