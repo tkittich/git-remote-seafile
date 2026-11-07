@@ -91,7 +91,7 @@ def inline_embedded_repositories(
             links.append(extra)  # a repository with no commit has no gitlink
     if not links:
         return []
-    skipped = {unicodedata.normalize("NFC", p) for p in (skip_paths or ())}
+    skipped = payload_skip_matcher(work_tree, skip_paths)
     drop_from_index(git_dir, work_tree, links)
     report: list[tuple[str, int]] = []
     for link in links:
@@ -100,7 +100,7 @@ def inline_embedded_repositories(
         files = [
             path for path in files
             if not any(exclude_matches(path, pat) for pat in excludes)
-            and unicodedata.normalize("NFC", path) not in skipped
+            and not skipped(path)
         ]
         for start in range(0, len(files), _INDEX_BATCH):
             batch = files[start : start + _INDEX_BATCH]
@@ -254,3 +254,32 @@ def handle_embedded_repositories(
             ["update-index", "--add", "--cacheinfo", f"160000,{sha},{root}"],
             cwd=work_tree,
         )
+
+
+def payload_skip_matcher(work_tree: Path, skip_paths: Any) -> Any:
+    """``skipped(path)``: is *path* one of the payload files kept out of the index?
+
+    macOS hands the walk decomposed (NFD) names while git reports them precomposed,
+    so the two are compared in one form -- but only when they are one file.  On NTFS
+    and ext4 ``cafe\u0301.bin`` and ``caf\u00e9.bin`` are two files, and comparing
+    their NFC forms alone dropped the small one from git while only the large one
+    was in the manifest: lost, exit 0 (review 06cc623, gemini E1).
+    """
+    exact = set(skip_paths or ())
+    by_form: dict[str, list[str]] = {}
+    for path in exact:
+        by_form.setdefault(unicodedata.normalize("NFC", path), []).append(path)
+
+    def skipped(path: str) -> bool:
+        if path in exact:
+            return True
+        others = by_form.get(unicodedata.normalize("NFC", path))
+        if not others:
+            return False
+        try:
+            here = os.lstat(work_tree / path)
+            return any(os.path.samestat(here, os.lstat(work_tree / other)) for other in others)
+        except OSError:
+            return False   # kept: at worst a file in git and the manifest, never in neither
+
+    return skipped

@@ -286,13 +286,13 @@ def build_snapshot(
         # Payload files are not excluded in the user's sense -- they are
         # recorded in the manifest and live on the server -- so they are
         # kept out of the index without being reported as excluded.
-        # macOS hands the walk decomposed (NFD) names while git reports them
-        # precomposed, so the two sides are compared in one form.
-        skipped = {unicodedata.normalize("NFC", p) for p in (skip_paths or ())}
+        # The two sides' Unicode forms are compared only for one file (macOS):
+        # see payload_skip_matcher.
+        skipped = payload_skip_matcher(work_tree, skip_paths)
         kept = [
             path for path in candidates
             if path not in excluded_set
-            and unicodedata.normalize("NFC", path) not in skipped
+            and not skipped(path)
             and path != PAYLOAD_RESERVED_DIR
             and not path.startswith(PAYLOAD_RESERVED_DIR + "/")
             and not is_clock_probe_debris(path)

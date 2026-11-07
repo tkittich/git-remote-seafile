@@ -221,6 +221,24 @@ class PayloadBasicsTests(_PayloadFixture):
 
 
     # -- the basics (R1, R4, R5, R8, R10) ---------------------------------------
+    def test_a_small_file_beside_a_payload_file_of_the_other_unicode_form_is_kept(self):
+        """Review 06cc623 (gemini E1): payload files were kept out of git by their NFC
+        form.  Where the disk keeps both forms apart (NTFS, ext4), a small NFD
+        ``cafe\\u0301.txt`` beside a payload-sized NFC ``caf\\u00e9.txt`` was dropped
+        from git too, and from the manifest: gone from the restore, exit 0."""
+        nfc, nfd = "café.txt", "café.txt"
+        (self.src / nfc).write_bytes(os.urandom(6000))
+        (self.src / nfd).write_bytes(b"precious small file\n")
+        names = set(os.listdir(self.src))
+        if not {nfc, nfd} <= names:
+            self.skipTest("this filesystem keeps one Unicode form of a name")
+        rc, out, err = self.snapshot()
+        self.assertEqual(rc, 0, out + err)
+        rc, out, err, into = self.restore("unicode")
+        self.assertEqual(rc, 0, out + err)
+        self.assertEqual((into / nfd).read_bytes(), b"precious small file\n")
+        self.assertEqual((into / nfc).read_bytes(), (self.src / nfc).read_bytes())
+
     def test_payload_bypasses_git_and_lands_by_hash(self):
         rc, out, err = self.snapshot()
         self.assertEqual(rc, 0, out + err)
