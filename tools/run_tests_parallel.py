@@ -103,6 +103,15 @@ _ROOT = Path(__file__).resolve().parent.parent
 _TESTS = _ROOT / "tests"
 _PATTERN = "test*.py"
 
+#: The last run's seconds per target, read to plan the next (git-ignored; a run
+#: without it -- CI, a fresh clone -- schedules as before, by class in name order).
+_TIMINGS = _ROOT / ".test-timings.json"
+#: Under ``--granularity auto``, a class that took longer than this last time is
+#: run one test per worker.  Its fixture's ``setUpClass`` is then paid per test,
+#: which the heavy classes can afford: their cost is in each test (see the
+#: docstring's measurements), and one of them was the run's whole critical path.
+_SPLIT_SECONDS = 120.0
+
 
 def _ensure_importable() -> None:
     """Put the repository root and the test directory on ``sys.path``.
@@ -128,6 +137,81 @@ def _iter_tests(suite):
             yield from _iter_tests(item)
         else:
             yield item
+
+
+def _discover_tests(pattern_filter: "str | list[str] | None" = None) -> dict[str, list[str]]:
+    """``{class target: [its test ids]}`` for the whole suite, as discovery finds it."""
+    suite = unittest.TestLoader().discover(str(_TESTS), pattern=_PATTERN)
+    by_class: dict[str, list[str]] = {}
+    for test in _iter_tests(suite):
+        test_id = test.id()
+        by_class.setdefault(test_id.rsplit(".", 1)[0], []).append(test_id)
+    if pattern_filter:
+        needles = [pattern_filter] if isinstance(pattern_filter, str) else list(pattern_filter)
+        by_class = {k: v for k, v in by_class.items()
+                    if any(n.lower() in k.lower() for n in needles)}
+    return by_class
+
+
+def _load_timings(path: Path | None = None) -> dict[str, float]:
+    """The recorded seconds per target; ``{}`` when there is no usable record."""
+    try:
+        data = json.loads((path or _TIMINGS).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {
+        k: float(v) for k, v in data.items()
+        if isinstance(k, str) and isinstance(v, (int, float)) and not isinstance(v, bool)
+    }
+
+
+def _save_timings(results: list[dict], path: Path | None = None) -> None:
+    """Merge this run's seconds into the record: per target, and per class (summed)
+    for a class that ran as single tests, so the next plan can decide again."""
+    timings = _load_timings(path)
+    per_class: dict[str, float] = {}
+    for result in results:
+        target, elapsed = result["target"], float(result.get("elapsed", 0.0))
+        timings[target] = round(elapsed, 2)
+        if result.get("split"):
+            klass = target.rsplit(".", 1)[0]
+            per_class[klass] = per_class.get(klass, 0.0) + elapsed
+    timings.update({k: round(v, 2) for k, v in per_class.items()})
+    try:
+        (path or _TIMINGS).write_text(json.dumps(timings, indent=0, sort_keys=True),
+                                      encoding="utf-8")
+    except OSError:
+        pass  # a record that cannot be written only costs the next run its plan
+
+
+def _plan(by_class: dict[str, list[str]], granularity: str,
+          timings: dict[str, float]) -> list[tuple[str, bool]]:
+    """The targets to run, longest first: ``[(target, is_a_split_test)]``.
+
+    Longest first is the whole point.  Classes were queued in name order, and the
+    payload classes sort near the end, so the four longest targets of the suite
+    (650-700 s each at 1,633 tests on 24 workers) started last and were the last to
+    finish.  How much wall time that saves was not measured cleanly: the runs that
+    tried shared the machine with another session's tests.  A target with no record sorts first: it may be
+    long, and starting it early costs nothing.  With no record at all the order is
+    the old one, by name.
+    """
+    planned: list[tuple[str, bool, float]] = []
+    for klass, tests in sorted(by_class.items()):
+        took = timings.get(klass)
+        split = granularity == "test" or (
+            granularity == "auto" and len(tests) > 1 and took is not None and took > _SPLIT_SECONDS
+        )
+        if split:
+            share = (took or 0.0) / len(tests)
+            planned.extend((t, True, timings.get(t, share)) for t in sorted(tests))
+        else:
+            planned.append((klass, False, took if took is not None else float("inf")))
+    if timings:
+        planned.sort(key=lambda item: -item[2])  # stable: ties keep name order
+    return [(target, split) for target, split, _ in planned]
 
 
 def _collect_targets(pattern_filter: str | None = None, granularity: str = "class") -> list[str]:
@@ -317,11 +401,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("-j", "--jobs", type=int, default=0,
                         help="workers to run (0 = one per CPU, default)")
-    parser.add_argument("-k", dest="filter", default=None,
+    parser.add_argument("-k", dest="filter", action="append", default=None,
                         help="only run targets whose name contains this substring")
-    parser.add_argument("--granularity", choices=("class", "test"), default="class",
-                        help="unit of work: a whole test class (default), or one "
-                             "test at a time (better balance, more start-ups)")
+    parser.add_argument("--granularity", choices=("auto", "class", "test"), default="auto",
+                        help="unit of work: auto (default: a class, but one test at a time "
+                             "for a class that took over two minutes last run, longest "
+                             "first), a whole class, or one test at a time")
     parser.add_argument("--timeout", type=float, default=1800.0,
                         help="seconds one target may run before it is killed and reported "
                              "(default 1800; 0 disables)")
@@ -341,7 +426,9 @@ def main(argv: list[str] | None = None) -> int:
     os.chdir(_ROOT)
     _ensure_importable()
 
-    targets = _collect_targets(args.filter, args.granularity)
+    plan = _plan(_discover_tests(args.filter), args.granularity, _load_timings())
+    targets = [target for target, _split in plan]
+    split_targets = {target for target, split in plan if split}
     if not targets:
         print("no test targets matched", file=sys.stderr)
         return 2
@@ -394,6 +481,7 @@ def main(argv: list[str] | None = None) -> int:
 
                 running.remove(entry)
                 result = _reap(entry, timed_out)
+                result["split"] = result["target"] in split_targets
                 results.append(result)
                 done += 1
 
@@ -420,6 +508,7 @@ def main(argv: list[str] | None = None) -> int:
             raise
 
     elapsed = time.monotonic() - started_at
+    _save_timings(results)
 
     # Print the captured log for anything that failed.  Passing runs stay quiet:
     # their logs are mostly git chatter, and 44 of them would bury the summary.

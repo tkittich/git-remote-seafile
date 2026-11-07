@@ -3521,6 +3521,28 @@ class _RouteComparison(_SnapshotFixture):
     EXCLUDE = ("--exclude", "node_modules")
     EXPECTED_FAILURES: "dict[str, int]" = {}
 
+    def __init_subclass__(cls, **kwargs):
+        """One test per scenario, so the parallel runner can spread them.
+
+        Each scenario is four runs of the tool (two routes, two runs each), and a
+        class looped over all of them in one test: ``ExoticReplacementTests`` was a
+        single test of ~500 s, the longest unit of the suite once the payload
+        classes were split.  The scenario builders use no instance state, so the
+        names are known when the class is made.
+        """
+        super().__init_subclass__(**kwargs)
+        if "_scenarios" not in vars(cls):
+            return
+        for number, name in enumerate(cls._scenarios(None)):  # type: ignore[arg-type]
+            slug = re.sub(r"[^a-z0-9]+", "_", name.lower()).strip("_")
+
+            def test(self, name=name):
+                self._check({name: self._scenarios()[name]})
+
+            test.__name__ = test.__qualname__ = f"test_{number:02d}_{slug}"
+            test.__doc__ = f"Both staging routes record the same tree: {name}."
+            setattr(cls, test.__name__, test)
+
     def setUp(self):
         super().setUp()
         for i in range(4):
@@ -3625,8 +3647,6 @@ class ExoticReplacementTests(_RouteComparison):
             })
         return scenarios
 
-    def test_both_routes_record_the_same_tree(self):
-        self._check(self._scenarios())
 
 
 class SpecialFileAndNameTests(_RouteComparison):
@@ -3727,8 +3747,6 @@ class SpecialFileAndNameTests(_RouteComparison):
                     nothing, lambda c: (put(c, "secret.txt"), os.chmod(c / "secret.txt", 0)))
         return scenarios
 
-    def test_both_routes_record_the_same_tree(self):
-        self._check(self._scenarios())
 
 
 class ChangedWhileReadTests(_SnapshotFixture):

@@ -36,7 +36,16 @@ and stopping at the first failure:
 python tools/gates.py --list   # print the commands it runs
 python tools/gates.py          # run them
 python tools/gates.py -k e2e   # area-scoped: -k reaches the suite step only
+python tools/gates.py --changed  # the suite only for what the working changes reach
 ```
+
+`--changed` runs every step but narrows the suite to the test modules the changed
+files can reach (the map is `suite_for_changes` in `tools/gates.py`); shared code,
+the stub, the test helpers and anything the map does not know run the whole suite,
+and documents alone run no suite. It is for the commits of a change in progress:
+the whole suite still runs before a push. The runner plans from the last run's
+seconds per target (`.test-timings.json`, git-ignored): the longest targets start
+first, and a class that took over two minutes runs one test per worker.
 
 The list of gates lives in `tools/gates.py` itself, so it cannot drift out of
 step with this page or with AGENTS.md; the sections below explain each check on
@@ -125,7 +134,7 @@ also need `SEAFILE_TEST_ALLOW_LIBRARY_CREATE=1`. The suite refuses to start
 unless a helper process logs in to the same server as the test itself.
 
 The container workflow (`.github/workflows/realserver.yml`, dispatched by hand)
-runs all of it against throwaway **CE and Pro** containers on `13.0-latest`:
+runs all of it against throwaway **CE and Pro** containers of 13.0, pinned by digest:
 since 12.0 the Pro image is public, and without a licence file it runs as a
 three-user trial, so no secret is involved. The log names the exact version.
 

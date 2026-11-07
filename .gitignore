@@ -74,3 +74,6 @@ archive/
 *.token
 .env
 .env.*
+
+# tools/run_tests_parallel.py: the last run's seconds per target, used to plan the next
+.test-timings.json

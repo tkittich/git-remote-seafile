@@ -94,7 +94,9 @@ class RunnerDiscoveryTests(unittest.TestCase):
             env.pop("PYTHONPATH", None)
 
         proc = subprocess.run(
-            [sys.executable, str(_RUNNER), "--list"],
+            # Class granularity: the default plan splits heavy classes by the last
+            # run's record, which this guard is not about.
+            [sys.executable, str(_RUNNER), "--list", "--granularity", "class"],
             capture_output=True,
             text=True,
             env=env,
@@ -204,6 +206,65 @@ class RunnerRobustnessTests(unittest.TestCase):
         # turning green results into a traceback after they were printed.
         text = _RUNNER.read_text(encoding="utf-8")
         self.assertIn("ignore_cleanup_errors=True", text)
+
+
+
+class PlanTests(unittest.TestCase):
+    """The order and the unit of work, from the last run's record."""
+
+    BY_CLASS = {
+        "m.Short": ["m.Short.test_a"],
+        "m.Heavy": ["m.Heavy.test_a", "m.Heavy.test_b", "m.Heavy.test_c"],
+        "m.Middle": ["m.Middle.test_a", "m.Middle.test_b"],
+        "m.New": ["m.New.test_a"],
+    }
+
+    def test_with_no_record_the_plan_is_by_class_in_name_order(self):
+        plan = _load_runner()._plan(self.BY_CLASS, "auto", {})
+        self.assertEqual(plan, [(k, False) for k in sorted(self.BY_CLASS)])
+
+    def test_a_heavy_class_runs_as_single_tests_and_the_longest_go_first(self):
+        runner = _load_runner()
+        timings = {"m.Short": 5.0, "m.Heavy": 600.0, "m.Middle": 90.0}
+        plan = runner._plan(self.BY_CLASS, "auto", timings)
+        # The class with no record first (it may be long), then the heavy class's
+        # tests (600/3 = 200 s each, over the split bound), then by time.
+        self.assertEqual([t for t, _ in plan],
+                         ["m.New", "m.Heavy.test_a", "m.Heavy.test_b", "m.Heavy.test_c",
+                          "m.Middle", "m.Short"])
+        self.assertEqual({t for t, split in plan if split},
+                         {"m.Heavy.test_a", "m.Heavy.test_b", "m.Heavy.test_c"})
+        self.assertGreater(600.0, runner._SPLIT_SECONDS)
+        self.assertLess(90.0, runner._SPLIT_SECONDS)
+
+    def test_class_granularity_never_splits_and_test_granularity_always_does(self):
+        runner = _load_runner()
+        timings = {"m.Heavy": 600.0}
+        self.assertNotIn(True, {s for _t, s in runner._plan(self.BY_CLASS, "class", timings)})
+        self.assertEqual(len(runner._plan(self.BY_CLASS, "test", timings)), 7)
+
+    def test_the_record_is_merged_and_a_split_class_is_summed(self):
+        runner = _load_runner()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = pathlib.Path(tmp) / "t.json"
+            path.write_text('{"m.Short": 5.0, "m.Other": 1.0, "bad": true}', encoding="utf-8")
+            runner._save_timings([
+                {"target": "m.Short", "elapsed": 6.0, "split": False},
+                {"target": "m.Heavy.test_a", "elapsed": 100.0, "split": True},
+                {"target": "m.Heavy.test_b", "elapsed": 50.0, "split": True},
+            ], path)
+            got = runner._load_timings(path)
+        self.assertEqual(got, {"m.Short": 6.0, "m.Other": 1.0, "m.Heavy.test_a": 100.0,
+                               "m.Heavy.test_b": 50.0, "m.Heavy": 150.0})
+
+    def test_an_unreadable_record_is_no_record(self):
+        runner = _load_runner()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = pathlib.Path(tmp) / "t.json"
+            for text in ("not json", "[1, 2]", ""):
+                path.write_text(text, encoding="utf-8")
+                self.assertEqual(runner._load_timings(path), {})
+            self.assertEqual(runner._load_timings(pathlib.Path(tmp) / "missing.json"), {})
 
 
 if __name__ == "__main__":

@@ -109,5 +109,50 @@ class TestAStaleGeneratedFileIsNamed(unittest.TestCase):
         self.assertEqual(command[1:], [str(gates._ROOT / "tools" / "build_snapshot.py")], label)
 
 
+
+class TestTheChangedMap(unittest.TestCase):
+    """``--changed``: a mistake in the map may cost time, never coverage."""
+
+    def test_shared_and_unknown_code_runs_everything(self):
+        for path in ("git_remote_seafile/client.py", "git_remote_seafile/git_util.py",
+                     "tests/e2e_harness.py", "tests/_helpers.py", "pyproject.toml",
+                     "somewhere/new.py", "git_remote_seafile/brand_new.py"):
+            with self.subTest(path=path):
+                self.assertIsNone(gates.suite_for_changes([path]))
+        # One shared file among many still runs everything.
+        self.assertIsNone(gates.suite_for_changes(["README.md", "git_remote_seafile/client.py"]))
+
+    def test_documents_alone_run_no_suite(self):
+        self.assertEqual(gates.suite_for_changes(["README.md", "DESIGN.md", "notes.txt"]), [])
+
+    def test_an_area_runs_its_modules_and_the_always_set(self):
+        got = gates.suite_for_changes(["git_remote_seafile/lock.py", "README.md"])
+        self.assertIn("test_lock", got)
+        self.assertIn("test_e2e", got)
+        self.assertIn("test_message_style", got)
+        self.assertNotIn("test_snapshot_payload", got)
+        snap = gates.suite_for_changes(["tools/_snapshot/76_payload_gc.py"])
+        self.assertIn("test_snapshot_payload", snap)
+        self.assertNotIn("test_lock", snap)
+        self.assertEqual(gates.suite_for_changes(["tests/test_url.py"]),
+                         sorted({"test_url", *[m for m in gates._ALWAYS]}))
+
+    def test_every_module_the_map_names_exists(self):
+        names = set(gates._ALWAYS) | set(gates._SNAPSHOT_TESTS)
+        names |= {m for mods in gates._TOOL_TESTS.values() for m in mods}
+        root = gates._ROOT / "tests"
+        self.assertEqual({n for n in names if not (root / f"{n}.py").exists()}, set())
+        for stem in gates._HELPER_SIDE:
+            self.assertTrue((gates._ROOT / "git_remote_seafile" / f"{stem}.py").exists(), stem)
+
+    def test_every_package_module_is_mapped_or_shared(self):
+        # A new module must be placed in the map, or it silently runs everything
+        # (safe, but the map is then out of date).
+        mapped = gates._HELPER_SIDE | {"snapshot_tool"}
+        shared = {p.rsplit("/", 1)[-1][:-3] for p in gates._SHARED if p.startswith("git_remote_seafile/")}
+        for module in (gates._ROOT / "git_remote_seafile").glob("*.py"):
+            self.assertIn(module.stem, mapped | shared, f"{module.name} is in neither")
+
+
 if __name__ == "__main__":
     unittest.main()

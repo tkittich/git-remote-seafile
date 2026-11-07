@@ -37,13 +37,18 @@ and `-k <substring>` reaches the suite step only. Run it bare — through a pipe
 (`| tail`) the exit status is the pipe's, and a red suite scrolled off the top
 reads as green.
 
-Run the full suite (no `-k`) **before a release and when code outside the area
-you changed is touched**. For a change confined to one area, run that area's
-module(s) plus `tests.test_snapshot_build` and `tests.test_docs_consistency` —
-for the payload code that is `python tools/gates.py -k test_snapshot_payload`
-(five classes; the class is the unit of parallel work, so keep new test classes
-modest). Do not re-run the full suite just to be sure; run it once before a
-commit that touches shared code.
+**While a change is in progress, run `python tools/gates.py --changed`**: every
+step, with the suite narrowed to the test modules the changed files reach (it says
+which; shared code and unmapped files run everything, documents alone run no suite).
+Run the full suite (bare `python tools/gates.py`) **before a push, before a release,
+and before a commit that touches shared code** (`client.py`, `git_util.py`,
+`url.py`, the stub, the test helpers) — and once, not again "to be sure". The full
+run takes about 13 minutes on the maintainer's machine; a single snapshot test
+starts a few hundred `git` processes, which is where the time goes. Ask the
+maintainer before any full or repeated run: other sessions may be testing on the
+same machine, and the worker count is 12 or 24 (`-j`), nothing else. A new package
+module goes into `suite_for_changes`' map
+(`test_every_package_module_is_mapped_or_shared` holds that).
 
 Also worth one run per release: the suite with an empty git config
 (`GIT_CONFIG_GLOBAL=<empty file> GIT_CONFIG_NOSYSTEM=1`), because CI runners have no
