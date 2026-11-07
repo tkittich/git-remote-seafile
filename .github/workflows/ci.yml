@@ -2,7 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [ main ]
+    # ci/<topic>: commits go there first, and main moves only to a commit CI showed
+    # green on that branch (AGENTS.md "Gates").
+    branches: [ main, "ci/**" ]
   pull_request:
     branches: [ main ]
 

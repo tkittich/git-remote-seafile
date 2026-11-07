@@ -25,7 +25,7 @@ no runtime dependency except `requests`, no dev dependencies.
 | `ROADMAP.md` | §1 is the live backlog — review findings become its rows; §2 records what shipped, by release |
 | `review-prompt.md`, `REVIEW.*.md`, `archive/` | the prompt every review round is run from; reports land in root as `REVIEW.<commit>.<model>.md` (the commit is the reviewed checkout's short hash), are triaged into ROADMAP §1, then move to `archive/` |
 
-## Gates (all must be green before a commit that touches code)
+## Gates (the full suite green before a push; the targeted one before a commit)
 
 ```bash
 python tools/gates.py    # build, ruff, mypy ×2, docs guards, suite — in order
@@ -37,18 +37,34 @@ and `-k <substring>` reaches the suite step only. Run it bare — through a pipe
 (`| tail`) the exit status is the pipe's, and a red suite scrolled off the top
 reads as green.
 
-**While a change is in progress, run `python tools/gates.py --changed`**: every
-step, with the suite narrowed to the test modules the changed files reach (it says
-which; shared code and unmapped files run everything, documents alone run no suite).
-Run the full suite (bare `python tools/gates.py`) **before a push, before a release,
-and before a commit that touches shared code** (`client.py`, `git_util.py`,
-`url.py`, the stub, the test helpers) — and once, not again "to be sure". The full
-run takes about 13 minutes on the maintainer's machine; a single snapshot test
-starts a few hundred `git` processes, which is where the time goes. Ask the
-maintainer before any full or repeated run: other sessions may be testing on the
-same machine, and the worker count is 12 or 24 (`-j`), nothing else. A new package
-module goes into `suite_for_changes`' map
+**Commit when `python tools/gates.py --changed` is green**: every step, with the
+suite narrowed to the test modules the changed files reach (it says which; shared
+code and unmapped files run everything, documents alone run no suite). Commits stay
+local until the full suite has passed on them; a failure there gets a fix-up commit,
+not a rewrite of history that is already somebody's review copy.
+
+**The full suite runs before a push, not before each commit**, and from a worktree of
+the commit, so work goes on in the checkout while it runs and no file changes under
+it:
+
+```bash
+git worktree add --detach ../seafile-gates HEAD   # a copy of what is committed
+python ../seafile-gates/tools/gates.py              # from there; remove it after
+```
+
+One full run covers every commit since the last push; it is not repeated "to be sure".
+It takes about 13 minutes on the maintainer's machine. Ask the maintainer before any
+full or repeated run: other sessions may be testing on the same machine, and the
+worker count is `-j 0` (one per CPU, the default), 12 or 24, nothing else. A new
+package module goes into `suite_for_changes`' map
 (`test_every_package_module_is_mapped_or_shared` holds that).
+
+**The other platforms are CI's.** Push the commits to a `ci/<topic>` branch first:
+`ci.yml` runs the whole matrix (Ubuntu, Windows, macOS, every Python, min-deps,
+coverage) on it, and `main` moves only to a commit that branch showed green, so a red
+run never lands on `main`. That replaces the local Debian run before a push; keep that
+for a change to environment handling (git config, locale, paths), where a local answer
+is faster than a CI round trip.
 
 Also worth one run per release: the suite with an empty git config
 (`GIT_CONFIG_GLOBAL=<empty file> GIT_CONFIG_NOSYSTEM=1`), because CI runners have no
@@ -173,6 +189,10 @@ real data**, even to test. Read-only commands (`--payload-verify`, report-only
   places that fold names) and say in the commit message which were checked. The 0.9.22
   `--no-push` fix covered two of six settings, and the four it missed were the next
   round's finding (Y2).
+- **A round starts on a commit, not on a green run.** Reviewers read the commit; the
+  prompt names the CI run for it (`ci.yml` and `realserver.yml` at that commit) as the
+  suite they need not repeat. Start the round as soon as the commit exists; a fix the
+  full run then needs is a later commit, which the triage reads alongside the reports.
 - **Compare against git and the disk, not only between the tool's own routes.** Both
   staging routes shared the respelling that dropped a sharp-s file (Y1), so the route
   comparison could not see it.
@@ -181,11 +201,12 @@ real data**, even to test. Read-only commands (`--payload-verify`, report-only
 
 - The maintainer pushes and tags. Do not `git push`, tag, or create a release unless
   asked. Commit messages end with the co-author trailer your harness specifies.
-- Make several small commits rather than one large one; each should pass the gates.
+- Make several small commits rather than one large one; each passes `gates.py --changed`,
+  and the full suite passes on the last of them before the push.
 - Release recipe is in CONTRIBUTING.md ("Tagging"): CHANGELOG `[x.y.z]`, release
   notes `.github/release-notes/vX.Y.Z.md`, version bump, gates, push, **wait for CI
-  green on the pushed commit**, `python tools/release_check.py`,
-  then tag and push the tag.
+  green on the pushed commit** (and both legs of `realserver.yml`),
+  `python tools/release_check.py` (it asks GitHub for both), then tag and push the tag.
 - Never edit a published tag's notes to hide a change; add a new release.
 
 ## Conventions

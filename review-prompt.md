@@ -82,12 +82,15 @@ RULES FOR THE WHOLE REVIEW
   (`docker compose -p review-<model> -f .github/seafile-ci.yml down -v`) when you are
   done. Label each finding REPRODUCED (stub, container or local repository — say which)
   or INFERS-SERVER-BEHAVIOUR.
-- **The full suite has already been run at this commit — do not run it again**, and do
-  not run whole modules to "check that the tests pass". Several reviewers work on this
-  commit at once, and a full run is twelve minutes or more each that finds nothing new.
+- **The full suite is run at this commit by CI and the maintainer — do not run it
+  again**, and do not run whole modules to "check that the tests pass". Several reviewers
+  work on this commit at once, and a full run is twelve minutes or more each that finds
+  nothing new. CI's runs for the commit are on GitHub (`gh run list --commit <sha>`:
+  `ci.yml` on Ubuntu, Windows and macOS, `realserver.yml` against CE and Pro); a run that
+  is red or still going when you start is the maintainer's to deal with, not a finding.
   Done by the maintainer: `python tools/gates.py` on Windows 11 (build check, ruff, mypy,
-  the docs guards and all 1,668 tests: green) and the whole suite on Debian (WSL; 1,673,
-  the symlink scenarios included) with an
+  the docs guards and all 1,671 tests: green) and, two commits earlier, the whole suite on
+  Debian (WSL; 1,673, the symlink scenarios included) with an
   empty git config. Run a test only to do something those runs could not: reproduce a
   finding, run a mutation (delete a guard, watch its test), or try a case no test covers —
   one named test or class at a time (`python -m unittest tests.<module>.<Class>.<test>`).
@@ -123,8 +126,9 @@ RULES FOR THE WHOLE REVIEW
   removing the empty copy a simultaneous `mkdir` leaves is best-effort and deliberately
   limited to the helper's own layout folders (a copy of a folder a person named is named
   in a warning and left, by the maintainer's decision); the CE/Pro container workflow is
-  dispatched by hand, its images are pinned by digest, and ROADMAP B8 records its runs
-  so far (the docs say "tested by hand" until it is green on both legs).
+  runs weekly and by hand, its images are pinned by digest, `release_check.py` requires
+  it green on both legs at the tagged commit, and ROADMAP B8 records what its first runs
+  found.
 - Separate what a document SAYS from what you INFER, and for an inference say what
   would have to be true. Every finding needs: `file:line` (code) or section (spec) **plus
   a verbatim quote of a few words actually on that line** — a citation whose quoted
@@ -239,10 +243,14 @@ G2. What the server says it holds versus what it serves.
   does not own the library (`SeafileClient.hidden_history_risk`, `cli._cmd_gc`,
   `72_payload_guards._require_whole_history`; `--allow-non-owner`,
   `--payload-allow-non-owner`), because an `invisible` folder permission leaves the
-  folder out of that account's listing (measured on Pro 13.0.29, ROADMAP B2). Which other
-  operation reads "what is there" from a listing an account may see only part of (the
-  tail merge, `repair`, `doctor`, the snapshot tool's restore and `--status`)? Is
-  "owner" the right test for a group-owned library, an admin, or a share to a group?
+  folder out of that account's listing (measured on Pro 13.0.29, ROADMAP B2). The first
+  version compared the owner's email and refused the owner too: the library info
+  answers its owner `"owner": "self"` (found by the Pro leg; the stub now answers the
+  same). Which other field of a server answer does the stub invent rather than copy?
+  Which other operation reads "what is there" from a listing an account may see only
+  part of (the tail merge, `repair`, `doctor`, the snapshot tool's restore and
+  `--status`)? Is "owner" the right test for a group-owned library, an admin, or a share
+  to a group?
 - After a ref write that was read back, a lease that cannot be proven is a warning, and a
   lost one an error (`helper._publish_ref`, `LEASE_UNKNOWN`). Is there an interleaving in
   which "unknown" hides a takeover?
@@ -275,8 +283,10 @@ first-push race test allows numbered copies above the repository only if empty a
 in a warning; `EditionProbeTests` checks, without a server, that every `cls._name` a
 set-up reads exists (a slip that failed both legs of the second CI run); B2's measurement
 of an `invisible` rule. `tools/gates.py`'s note on a rebuilt `snapshot_tool.py` that
-differs from `HEAD`. `tools/release_check.py` and `MANIFEST.in` (every tool a shipped
-document names is shipped). `.github/workflows/realserver.yml` and `.github/seafile-ci.yml`
+differs from `HEAD`. `tools/release_check.py` (it now asks GitHub through `gh` that
+`ci.yml` and both legs of `realserver.yml` passed at HEAD, and only warns without `gh`:
+can a release still be tagged on a commit nothing tested?) and `MANIFEST.in` (every tool a
+shipped document names is shipped). The real-server workflow now also runs weekly. `.github/workflows/realserver.yml` and `.github/seafile-ci.yml`
 with every image pinned by digest (ROADMAP B8): what still floats (the runner image, the
 packages `realserver_ci.py` installs), and what would a stale pin hide?
 
