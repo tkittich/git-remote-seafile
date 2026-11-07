@@ -214,7 +214,7 @@ direction, since an edit's mtime can then fall before the recorded hash time, so
 its own — the FAT family keeps one timestamp in the directory entry, and a
 volume or API that answers the change-time query with the modification time
 does the same — cannot move the key on an in-place edit either, so such a file
-(measured on vfat: `ctime == mtime` to the nanosecond) is trusted only after an
+(measured on vfat: `ctime == mtime` to the nanosecond; Windows' FAT driver reports a change time of 0, which counts the same) is trusted only after an
 hour, the same margin an unprobed share gets, and the run says how many. On
 Windows, bytes changed through a memory-mapped view leave size, mtime *and*
 NTFS's change time untouched (measured, 90 s after unmap) — no stat-based key

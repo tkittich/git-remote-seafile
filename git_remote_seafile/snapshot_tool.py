@@ -2656,7 +2656,9 @@ def spell_like_index(
             folder = "/".join(parts[:depth])
             folders.setdefault(ignorecase_key(folder), folder)
     def resolves(respelled: str) -> bool:
-        return work_tree is None or os.path.lexists(work_tree / respelled)
+        # The extended-length form: a plain stat past 260 characters answers False
+        # on a Windows without LongPathsEnabled (review 06cc623, glm G1.1).
+        return work_tree is None or os.path.lexists(extended_path(work_tree / respelled))
 
     spelled = []
     for path in paths:
@@ -4291,8 +4293,13 @@ def _require_server_clock(client: Any, delete: bool) -> None:
         )
     try:
         skew = abs(float(client.get_server_time()) - time.time())
-    except Exception:
-        return
+    except Exception as exc:
+        # Passing here skipped the hour bound without a word (review 06cc623, opus G4.1).
+        raise SnapshotError(
+            f"the server's clock could not be read ({type(exc).__name__}: {exc}), so the grace "
+            "period cannot be timed on it; nothing was deleted. Run again, or run the report "
+            "(without --payload-delete)"
+        ) from None
     if skew > _MAX_CLOCK_SKEW_SECONDS:
         raise SnapshotError(
             f"the server's clock and this machine's differ by {skew / 3600:.1f} hours; one of them "
@@ -5110,7 +5117,9 @@ def build_manifest(
             # margin doubles rather than the entry being distrusted forever,
             # which re-read the whole tree on every run of such a volume.
             window *= 2
-        if ctime_ns is not None and ctime_ns == mtime_ns:
+        # Windows' FAT driver reports a change time of 0 rather than the mtime
+        # (review 06cc623, gemini E2): no change time either way.
+        if ctime_ns is not None and (ctime_ns <= 0 or ctime_ns == mtime_ns):
             # The filesystem has no change time of its own: the FAT family
             # keeps one timestamp in the directory entry, and a volume or API
             # that reports the modification time back as the change time does
@@ -8073,7 +8082,7 @@ def sweep_probe_debris(client: Any, rid: str, directory: str, entries: list | No
     for entry in listed:
         name, mtime = entry.get("name"), entry.get("mtime")
         if (entry.get("type") == "dir" or not isinstance(name, str) or not _PROBE_NAME.match(name)
-                or not isinstance(mtime, (int, float)) or isinstance(mtime, bool)
+                or not isinstance(mtime, (int, float)) or isinstance(mtime, bool) or mtime <= 0
                 or now - mtime < _PROBE_DEBRIS_SECONDS):
             continue
         try:

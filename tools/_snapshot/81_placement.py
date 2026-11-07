@@ -156,7 +156,7 @@ def sweep_probe_debris(client: Any, rid: str, directory: str, entries: list | No
     for entry in listed:
         name, mtime = entry.get("name"), entry.get("mtime")
         if (entry.get("type") == "dir" or not isinstance(name, str) or not _PROBE_NAME.match(name)
-                or not isinstance(mtime, (int, float)) or isinstance(mtime, bool)
+                or not isinstance(mtime, (int, float)) or isinstance(mtime, bool) or mtime <= 0
                 or now - mtime < _PROBE_DEBRIS_SECONDS):
             continue
         try:

@@ -219,7 +219,9 @@ def spell_like_index(
             folder = "/".join(parts[:depth])
             folders.setdefault(ignorecase_key(folder), folder)
     def resolves(respelled: str) -> bool:
-        return work_tree is None or os.path.lexists(work_tree / respelled)
+        # The extended-length form: a plain stat past 260 characters answers False
+        # on a Windows without LongPathsEnabled (review 06cc623, glm G1.1).
+        return work_tree is None or os.path.lexists(extended_path(work_tree / respelled))
 
     spelled = []
     for path in paths:

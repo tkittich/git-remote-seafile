@@ -403,8 +403,13 @@ def _require_server_clock(client: Any, delete: bool) -> None:
         )
     try:
         skew = abs(float(client.get_server_time()) - time.time())
-    except Exception:
-        return
+    except Exception as exc:
+        # Passing here skipped the hour bound without a word (review 06cc623, opus G4.1).
+        raise SnapshotError(
+            f"the server's clock could not be read ({type(exc).__name__}: {exc}), so the grace "
+            "period cannot be timed on it; nothing was deleted. Run again, or run the report "
+            "(without --payload-delete)"
+        ) from None
     if skew > _MAX_CLOCK_SKEW_SECONDS:
         raise SnapshotError(
             f"the server's clock and this machine's differ by {skew / 3600:.1f} hours; one of them "

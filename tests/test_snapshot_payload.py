@@ -741,6 +741,11 @@ class PayloadBasicsTests(_PayloadFixture):
             rc, out, err = self.snapshot()
         self.assertEqual(rc, 0, out + err)
         self.assertIn("no change time of its own", out + err)
+        # Windows' FAT driver answers 0 instead (review 06cc623, gemini E2).
+        with unittest.mock.patch.object(snap, "change_time_ns", lambda path, st: 0):
+            rc, out, err = self.snapshot()
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn("no change time of its own", out + err)
 
         # Same size, same mtime, edited after the first hash: under the 2 s
         # racy window the entry is trusted (the mtime is a minute old) and
@@ -1716,6 +1721,8 @@ class PayloadRetentionTests(_PayloadFixture):
             {"type": "file", "name": "probe-0a1b2c3d-3.part-0a1b2c3d", "mtime": now - 60},  # running
             {"type": "file", "name": "probe-0a1b2c3d-4.part-0a1b2c3d", "mtime": True},
             {"type": "file", "name": "probe-0a1b2c3d-5.part-0a1b2c3d"},
+            {"type": "file", "name": "probe-0a1b2c3d-6.part-0a1b2c3d", "mtime": 0},   # gemini G4.1b
+            {"type": "file", "name": "probe-0a1b2c3d-7.part-0a1b2c3d", "mtime": -5.0},
             {"type": "dir", "name": name, "mtime": now - 2 * DAY},
             {"type": "file", "name": "PROBE-0a1b2c3d-1.part-0a1b2c3d", "mtime": now - 2 * DAY},
             {"type": "file", "name": "ab" * 32, "mtime": now - 2 * DAY},
@@ -1914,6 +1921,19 @@ class PayloadRetentionTests(_PayloadFixture):
         with slightly:                                     # half an hour is not refused
             rc, out, err = self.gc("--payload-delete", "--payload-grace-days", "1")
             self.assertEqual(rc, 0, out + err)
+
+    def test_a_delete_is_refused_when_the_server_clock_cannot_be_read(self):
+        # Review 06cc623 (opus G4.1): a failed clock read skipped the hour bound silently.
+        self.assertEqual(self.snapshot()[0], 0)
+        orphan = self.orphan()
+
+        def broken(self_):
+            raise RuntimeError("no Date")
+        with unittest.mock.patch.object(SeafileClient, "get_server_time", broken):
+            rc, out, err = self.gc("--payload-delete", "--payload-grace-days", "1")
+        self.assertNotEqual(rc, 0, out + err)
+        self.assertIn("clock could not be read", out + err)
+        self.assertIn(orphan, self.server_files())
 
     def test_a_report_run_seeds_the_fence_baseline(self):
         """The first delete run had nothing to compare against (ROADMAP S2).
