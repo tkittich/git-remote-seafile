@@ -704,10 +704,11 @@ def _cmd_gc(rest: list[str]) -> int:
         risk = None if "--allow-non-owner" in rest else helper.client.hidden_history_risk(
             helper.repo_id)
         if isinstance(risk, str) and risk:
+            from .client import owner_advice
+            advice = owner_advice(risk, "--allow-non-owner")
             return _error(
                 f"Compaction refused: {risk}; gc would delete the objects only those refs "
-                "reach. Nothing was changed. Run gc as the library's owner, or pass "
-                "--allow-non-owner if no folder permission applies to this account."
+                f"reach. Nothing was changed. For gc, {advice}."
             )
         from .gc import compact_repository, describe_size_delta
         res = compact_repository(

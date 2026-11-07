@@ -913,6 +913,10 @@ class SeafileClient:
         # 13.0.29: the first version compared emails and refused the owner).
         if owner == "self" or (isinstance(email, str) and email and email == owner):
             return None
+        if isinstance(owner, str) and is_group_owner(owner):
+            return (f"this library is owned by a group ({owner}), so no account is its owner, "
+                    "and on Seafile Professional a folder permission can hide refs from any "
+                    "member")
         if not (isinstance(email, str) and email and isinstance(owner, str) and owner):
             return ("the server did not say which account owns this library, and on Seafile "
                     "Professional a folder permission can hide refs from an account that is not "
@@ -1901,6 +1905,24 @@ class SeafileClient:
 #
 # Functions rather than methods so that any object with ``list_dir`` and
 # ``get_file_text``/``get_file_bytes`` -- the tests' fakes included -- answers the same.
+
+
+def is_group_owner(owner: str) -> bool:
+    """True for the owner a Seafile Professional group (department) library reports.
+
+    Such a library has no owning account: its owner reads as ``<id>@seafile_group``
+    (reviewers report ``$group:...`` as well; both are taken, and the container
+    measurement is ROADMAP B13).  Asking for "the owner" there names nobody.
+    """
+    return owner.endswith("@seafile_group") or owner.startswith("$group")
+
+
+def owner_advice(risk: str, flag: str) -> str:
+    """What to do about *risk*: run as the owner -- or, for a group library, check and pass *flag*."""
+    if "owned by a group" in risk:
+        return (f"no account can run it as the owner: check that no folder permission applies "
+                f"to this account, then pass {flag}")
+    return f"run it as the library's owner, or pass {flag} if no folder permission applies to this account"
 
 
 def is_listed_file(client: Any, repo_id: str, file_path: str) -> bool:

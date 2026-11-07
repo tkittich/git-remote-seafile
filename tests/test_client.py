@@ -2072,6 +2072,19 @@ class TestSeafileClientOperations(unittest.TestCase):
         self.assertIsNone(client_for(pro, "a@x", "a@x").hidden_history_risk("r"))
         # What the server really says to its owner (Pro 13.0.29).
         self.assertIsNone(client_for(pro, "a@x", "self").hidden_history_risk("r"))
+        # A group (department) library has no owner account: say so, and do not send
+        # anyone to "run it as the owner" (review 06cc623: opus D3, gemini A7b).
+        from git_remote_seafile.client import owner_advice
+
+        for owner in ("12@seafile_group", "$group:12"):
+            with self.subTest(owner=owner):
+                risk = client_for(pro, "a@x", owner).hidden_history_risk("r")
+                self.assertIn("owned by a group", risk)
+                advice = owner_advice(risk, "--allow-non-owner")
+                self.assertIn("no account can run it as the owner", advice)
+                self.assertIn("--allow-non-owner", advice)
+        self.assertIn("as the library's owner",
+                      owner_advice("this account (a@x) is not the library's owner (b@x)", "--f"))
         risk = client_for(pro, "a@x", "b@x").hidden_history_risk("r")
         self.assertIn("(a@x) is not the library's owner (b@x)", risk)
         for email, owner, status in (("a@x", None, 200), (None, "b@x", 200), ("a@x", "a@x", 404)):

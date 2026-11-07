@@ -4265,11 +4265,12 @@ def _require_whole_history(client: Any, rid: str, delete: bool) -> None:
     """
     risk = client.hidden_history_risk(rid) if delete else None
     if isinstance(risk, str) and risk:
+        from git_remote_seafile.client import owner_advice
+
         raise SnapshotError(
             f"{risk}; snapshots under a hidden folder would look unreferenced and their "
-            "objects would be deleted. Nothing was deleted. Run --payload-delete as the "
-            "library's owner, or pass --payload-allow-non-owner if no folder permission "
-            "applies to this account"
+            "objects would be deleted. Nothing was deleted. For --payload-delete, "
+            + owner_advice(risk, "--payload-allow-non-owner")
         )
 
 
