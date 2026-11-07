@@ -33,6 +33,10 @@ def _read_local_config_map(repo: Path) -> dict[str, list[str]]:
     repository may use a ``.git`` *file* (a submodule or a linked worktree),
     which ``--git-dir`` cannot open.
     """
+    signature = config_file_signature(repo)
+    kept = _CONFIG_READS.get(("local", str(repo)))
+    if kept is not None and signature is not None and kept[0] == signature:
+        return {k: list(v) for k, v in kept[1].items()}
     proc = _run(
         ["git", "-C", str(repo), "config", "--local", "--null", "--list"],
         text=True,
@@ -50,6 +54,8 @@ def _read_local_config_map(repo: Path) -> dict[str, list[str]]:
         key, sep, value = entry.partition("\n")
         if sep:
             found.setdefault(key, []).append(value)
+    if signature is not None:
+        _CONFIG_READS[("local", str(repo))] = (signature, {k: list(v) for k, v in found.items()})
     return found
 
 

@@ -266,6 +266,7 @@ def main(argv: list[str] | None = None) -> int:
                 stream.reconfigure(errors="backslashreplace")
             except (OSError, ValueError):
                 pass
+    forget_config_reads()  # a caller may have changed config since the last run
     return run_reported(parse_args(help_word_to_flag(sys.argv[1:] if argv is None else argv)), run_command)
 
 

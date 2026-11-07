@@ -526,10 +526,29 @@ def find_secrets(paths: list[str]) -> list[str]:
     return found
 
 
+#: The last ``index_paths`` answer, by the index file it was read from.  A run asked
+#: for it three times over an index that had not changed (three ``ls-files`` of the
+#: whole index, seconds each on a 222,910-file vault).  git replaces the index by
+#: renaming a new file into place, so a write changes its identity and size or time.
+_INDEX_LISTING: "dict[tuple, list[str]]" = {}
+
+
 def index_paths(git_dir: Path, work_tree: Path) -> list[str]:
     """Every path staged in the vault's index."""
+    try:
+        info = (git_dir / "index").stat()
+        key: "tuple | None" = (str(git_dir), str(work_tree), info.st_ino, info.st_size,
+                               info.st_mtime_ns)
+    except OSError:
+        key = None
+    if key is not None and key in _INDEX_LISTING:
+        return list(_INDEX_LISTING[key])
     listing = git(git_dir, work_tree, ["ls-files", "-z"], cwd=work_tree).stdout
-    return [path for path in listing.split("\0") if path]
+    paths = [path for path in listing.split("\0") if path]
+    if key is not None:
+        _INDEX_LISTING.clear()
+        _INDEX_LISTING[key] = list(paths)
+    return paths
 
 
 def source_tracked_paths(source: Path) -> list[str]:

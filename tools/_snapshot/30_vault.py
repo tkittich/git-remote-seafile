@@ -76,8 +76,43 @@ def ensure_vault(vault: Path, branch: str) -> Path:
     return git_dir
 
 
+def _config_key(key: str) -> str:
+    """*key* as ``git config --list`` prints it: section and name lower case, a
+    subsection as written."""
+    section, dot, rest = key.partition(".")
+    middle, dot2, name = rest.rpartition(".")
+    if not dot:
+        return key.lower()
+    return f"{section.lower()}.{middle}.{name.lower()}" if dot2 else f"{section.lower()}.{rest.lower()}"
+
+
 def _config(path: Path, key: str) -> str:
-    """Read a git config value, with the usual global/system fallbacks."""
+    """Read a git config value, with the usual global/system fallbacks.
+
+    The last value of *key* across every scope, as ``git config --get`` answers --
+    from one ``--null --list`` per directory, kept until a git call may write config
+    (``_CONFIG_READS``).  A listing that fails falls back to asking for the key.
+    """
+    signature = config_file_signature(path)
+    cache_key = ("all", str(path))
+    kept = _CONFIG_READS.get(cache_key)
+    values = kept[1] if kept is not None and signature is not None and kept[0] == signature else None
+    if values is None:
+        listing = _run(
+            ["git", "-C", str(path), "config", "--null", "--list"],
+            text=True, encoding="utf-8", errors="replace",
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+        )
+        if listing.returncode == 0:
+            values = {}
+            for entry in listing.stdout.split("\0"):
+                if entry:
+                    name, _sep, value = entry.partition("\n")
+                    values[name] = value
+            if signature is not None:
+                _CONFIG_READS[cache_key] = (signature, values)
+    if values is not None:
+        return values.get(_config_key(key), "").strip()
     proc = _run(
         ["git", "-C", str(path), "config", "--get", key],
         text=True,
@@ -216,7 +251,9 @@ def ensure_byte_exact(
     for key, wanted in (("core.autocrlf", "false"), ("core.safecrlf", "false"),
                         ("core.longpaths", "true"), ("core.quotepath", "false"),
                         ("core.fsmonitor", "false"), ("core.untrackedCache", "false")):
-        have = (vault_config.get(key) or [""])[0]
+        # The map's keys are as `config --list` prints them, lower case: looking up
+        # `core.untrackedCache` as written never matched, and every run rewrote it.
+        have = (vault_config.get(_config_key(key)) or [""])[0]
         if have == wanted:
             continue
         git(git_dir, vault, ["config", key, wanted], cwd=vault)

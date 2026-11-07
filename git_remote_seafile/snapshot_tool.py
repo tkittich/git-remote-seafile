@@ -366,6 +366,63 @@ def _kill_tree(proc: "subprocess.Popen[Any]") -> None:
         pass
 
 
+#: Config reads kept for the rest of a run (``_config``, ``_read_local_config_map``).
+#: Every ``git config`` is its own process, ~60 ms on Windows before git does
+#: anything, and a run read about a dozen keys one at a time: 42 git processes for
+#: a 21-file tree, measured.  A kept read is used only while the repository's config
+#: file is unchanged (``config_file_signature``), so any writer is seen at once; the
+#: whole cache is also dropped at the start of every ``main()``.
+_CONFIG_READS: dict[tuple[str, str], Any] = {}
+
+#: Branch tips read this run (``current_tip``), kept until a git call that is not
+#: a known read runs: three ``rev-parse`` of one ref per run, measured.
+_TIP_READS: dict[tuple[str, str], "str | None"] = {}
+#: Manifests by commit id (``load_manifest``): a commit never changes.
+_MANIFEST_TEXT: dict[tuple[str, str], "tuple[int, str]"] = {}
+#: git commands that move no ref (anything else clears ``_TIP_READS``).
+_READS_NO_REF = frozenset({
+    "rev-parse", "ls-files", "ls-tree", "cat-file", "show", "config", "diff",
+    "count-objects", "hash-object", "write-tree", "commit-tree", "update-index", "add",
+    "status", "merge-base", "for-each-ref", "check-ignore", "log", "rev-list",
+    "verify-pack", "check-ref-format", "var", "version", "mktree", "ls-remote",
+})
+
+
+def _git_subcommand(cmd: list[str]) -> str | None:
+    """The git subcommand of *cmd* (``None`` when it is not git or has none)."""
+    if not cmd or not str(cmd[0]).lower().replace("\\", "/").rsplit("/", 1)[-1].startswith("git"):
+        return None
+    args = [str(a) for a in cmd[1:]]
+    i = 0
+    while i < len(args) and args[i].startswith("-"):
+        i += 2 if args[i] in ("-C", "-c", "--git-dir", "--work-tree", "--namespace") else 1
+    return args[i] if i < len(args) else None
+
+
+def config_file_signature(repo: Path) -> "tuple | None":
+    """Identity, size and time of *repo*'s own config file; ``None`` when it cannot be
+    found (``.git`` is a file, or not there), and then nothing is kept for it.
+
+    A cached read is good only while this is unchanged: git writes config by renaming
+    a new file into place, so any writer -- the tool, the user, a test between two
+    calls -- changes it.  The global and system files are not watched: nothing
+    rewrites them in the middle of a run.
+    """
+    for candidate in (repo / ".git" / "config", repo / "config"):
+        try:
+            info = candidate.stat()
+        except OSError:
+            continue
+        if candidate.parent.name == ".git" or (repo / "HEAD").is_file():
+            return (str(candidate), info.st_ino, info.st_size, info.st_mtime_ns)
+    return None
+
+
+def forget_config_reads() -> None:
+    _CONFIG_READS.clear()
+    _TIP_READS.clear()
+
+
 def _run(
     cmd: list[str],
     *,
@@ -410,6 +467,9 @@ def _run(
     (REVIEW.sonnet-5.5 D9, reproduced).  The reader is joined before the call
     returns; it is not a daemon and never outlives the child.
     """
+    sub = _git_subcommand(cmd)
+    if sub is not None and sub not in _READS_NO_REF:
+        _TIP_READS.clear()
     if live_stderr:
         return _run_live(
             cmd, status=status, measure_dir=measure_dir, stall_limit=stall_limit,
@@ -766,8 +826,43 @@ def ensure_vault(vault: Path, branch: str) -> Path:
     return git_dir
 
 
+def _config_key(key: str) -> str:
+    """*key* as ``git config --list`` prints it: section and name lower case, a
+    subsection as written."""
+    section, dot, rest = key.partition(".")
+    middle, dot2, name = rest.rpartition(".")
+    if not dot:
+        return key.lower()
+    return f"{section.lower()}.{middle}.{name.lower()}" if dot2 else f"{section.lower()}.{rest.lower()}"
+
+
 def _config(path: Path, key: str) -> str:
-    """Read a git config value, with the usual global/system fallbacks."""
+    """Read a git config value, with the usual global/system fallbacks.
+
+    The last value of *key* across every scope, as ``git config --get`` answers --
+    from one ``--null --list`` per directory, kept until a git call may write config
+    (``_CONFIG_READS``).  A listing that fails falls back to asking for the key.
+    """
+    signature = config_file_signature(path)
+    cache_key = ("all", str(path))
+    kept = _CONFIG_READS.get(cache_key)
+    values = kept[1] if kept is not None and signature is not None and kept[0] == signature else None
+    if values is None:
+        listing = _run(
+            ["git", "-C", str(path), "config", "--null", "--list"],
+            text=True, encoding="utf-8", errors="replace",
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+        )
+        if listing.returncode == 0:
+            values = {}
+            for entry in listing.stdout.split("\0"):
+                if entry:
+                    name, _sep, value = entry.partition("\n")
+                    values[name] = value
+            if signature is not None:
+                _CONFIG_READS[cache_key] = (signature, values)
+    if values is not None:
+        return values.get(_config_key(key), "").strip()
     proc = _run(
         ["git", "-C", str(path), "config", "--get", key],
         text=True,
@@ -906,7 +1001,9 @@ def ensure_byte_exact(
     for key, wanted in (("core.autocrlf", "false"), ("core.safecrlf", "false"),
                         ("core.longpaths", "true"), ("core.quotepath", "false"),
                         ("core.fsmonitor", "false"), ("core.untrackedCache", "false")):
-        have = (vault_config.get(key) or [""])[0]
+        # The map's keys are as `config --list` prints them, lower case: looking up
+        # `core.untrackedCache` as written never matched, and every run rewrote it.
+        have = (vault_config.get(_config_key(key)) or [""])[0]
         if have == wanted:
             continue
         git(git_dir, vault, ["config", key, wanted], cwd=vault)
@@ -1673,6 +1770,11 @@ class VaultLock:
 
 
 def current_tip(git_dir: Path, work_tree: Path, branch: str) -> str | None:
+    """The commit ``refs/heads/<branch>`` names, or ``None``; kept until a git call
+    that may move a ref (``_TIP_READS``)."""
+    key = (str(git_dir), branch)
+    if key in _TIP_READS:
+        return _TIP_READS[key]
     proc = git(
         git_dir,
         work_tree,
@@ -1680,7 +1782,9 @@ def current_tip(git_dir: Path, work_tree: Path, branch: str) -> str | None:
         cwd=work_tree,
         check=False,
     )
-    return proc.stdout.strip() or None
+    tip = proc.stdout.strip() or None
+    _TIP_READS[key] = tip
+    return tip
 
 
 def is_ancestor(git_dir: Path, work_tree: Path, older: str, newer: str) -> bool:
@@ -3282,10 +3386,29 @@ def find_secrets(paths: list[str]) -> list[str]:
     return found
 
 
+#: The last ``index_paths`` answer, by the index file it was read from.  A run asked
+#: for it three times over an index that had not changed (three ``ls-files`` of the
+#: whole index, seconds each on a 222,910-file vault).  git replaces the index by
+#: renaming a new file into place, so a write changes its identity and size or time.
+_INDEX_LISTING: "dict[tuple, list[str]]" = {}
+
+
 def index_paths(git_dir: Path, work_tree: Path) -> list[str]:
     """Every path staged in the vault's index."""
+    try:
+        info = (git_dir / "index").stat()
+        key: "tuple | None" = (str(git_dir), str(work_tree), info.st_ino, info.st_size,
+                               info.st_mtime_ns)
+    except OSError:
+        key = None
+    if key is not None and key in _INDEX_LISTING:
+        return list(_INDEX_LISTING[key])
     listing = git(git_dir, work_tree, ["ls-files", "-z"], cwd=work_tree).stdout
-    return [path for path in listing.split("\0") if path]
+    paths = [path for path in listing.split("\0") if path]
+    if key is not None:
+        _INDEX_LISTING.clear()
+        _INDEX_LISTING[key] = list(paths)
+    return paths
 
 
 def source_tracked_paths(source: Path) -> list[str]:
@@ -4429,13 +4552,24 @@ def load_manifest(git_dir: Path, work_tree: Path, rev: str | None) -> dict[str, 
     """
     if not rev:
         return None
-    proc = git(
-        git_dir, work_tree, ["show", f"{rev}:{PAYLOAD_MANIFEST}"], cwd=work_tree, check=False
-    )
-    if proc.returncode != 0:
+    # A commit id names one manifest for ever, so its text is kept (a run read it
+    # twice); a ref name moves and is read each time.  The text, not the parsed
+    # object, so a caller that changes what it got cannot change the next answer.
+    key = (str(git_dir), rev)
+    immutable = len(rev) in (40, 64) and all(c in "0123456789abcdef" for c in rev)
+    if immutable and key in _MANIFEST_TEXT:
+        returncode, text = _MANIFEST_TEXT[key]
+    else:
+        proc = git(
+            git_dir, work_tree, ["show", f"{rev}:{PAYLOAD_MANIFEST}"], cwd=work_tree, check=False
+        )
+        returncode, text = proc.returncode, proc.stdout
+        if immutable:
+            _MANIFEST_TEXT[key] = (returncode, text)
+    if returncode != 0:
         return None
     try:
-        data = json.loads(proc.stdout)
+        data = json.loads(text)
     except (ValueError, RecursionError):
         raise SnapshotError(
             f"the payload manifest in {rev[:12]} is not valid JSON; refusing to continue"
@@ -9726,6 +9860,10 @@ def _read_local_config_map(repo: Path) -> dict[str, list[str]]:
     repository may use a ``.git`` *file* (a submodule or a linked worktree),
     which ``--git-dir`` cannot open.
     """
+    signature = config_file_signature(repo)
+    kept = _CONFIG_READS.get(("local", str(repo)))
+    if kept is not None and signature is not None and kept[0] == signature:
+        return {k: list(v) for k, v in kept[1].items()}
     proc = _run(
         ["git", "-C", str(repo), "config", "--local", "--null", "--list"],
         text=True,
@@ -9743,6 +9881,8 @@ def _read_local_config_map(repo: Path) -> dict[str, list[str]]:
         key, sep, value = entry.partition("\n")
         if sep:
             found.setdefault(key, []).append(value)
+    if signature is not None:
+        _CONFIG_READS[("local", str(repo))] = (signature, {k: list(v) for k, v in found.items()})
     return found
 
 
@@ -10457,6 +10597,7 @@ def main(argv: list[str] | None = None) -> int:
                 stream.reconfigure(errors="backslashreplace")
             except (OSError, ValueError):
                 pass
+    forget_config_reads()  # a caller may have changed config since the last run
     return run_reported(parse_args(help_word_to_flag(sys.argv[1:] if argv is None else argv)), run_command)
 
 

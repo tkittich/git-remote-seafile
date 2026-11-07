@@ -1,6 +1,11 @@
 
 
 def current_tip(git_dir: Path, work_tree: Path, branch: str) -> str | None:
+    """The commit ``refs/heads/<branch>`` names, or ``None``; kept until a git call
+    that may move a ref (``_TIP_READS``)."""
+    key = (str(git_dir), branch)
+    if key in _TIP_READS:
+        return _TIP_READS[key]
     proc = git(
         git_dir,
         work_tree,
@@ -8,7 +13,9 @@ def current_tip(git_dir: Path, work_tree: Path, branch: str) -> str | None:
         cwd=work_tree,
         check=False,
     )
-    return proc.stdout.strip() or None
+    tip = proc.stdout.strip() or None
+    _TIP_READS[key] = tip
+    return tip
 
 
 def is_ancestor(git_dir: Path, work_tree: Path, older: str, newer: str) -> bool:

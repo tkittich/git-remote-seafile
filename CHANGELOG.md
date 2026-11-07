@@ -5,6 +5,14 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+- **A snapshot run starts fewer git processes** (ROADMAP B12): a run with one change on a small tree went from 42 to 31 (and 44 to 33 on the suite's fixture). Each `git` costs about 60 ms on Windows before it does anything, and on a large vault an `ls-files` re-reads the whole index. Config reads come from one `git config --null --list` per directory, kept while the repository's config file is unchanged (so a write by anyone is seen); the index listing is kept while the index file is unchanged; the branch tip until a call that may move a ref; a manifest by commit id. `GitCallBudgetTests` holds the counts.
+
+### Fixed
+- **A settled run no longer rewrites `core.untrackedCache` every time.** The vault's config map is keyed as `git config --list` prints keys, lower case, and the camel-case lookup never matched. The test that should have seen it counted only writes made with `--local`.
+
 ## [0.9.23] - 2026-11-06
 
 Seafile Professional, handled and tested. On Pro a file read or delete under a folder that does not exist answers 403 or a 500 page instead of 404, so the first push to a new path failed (issue 6); the helper now asks the folder's listing, and a real permission refusal still stops it, now naming the permissions. The real-server suite passed by hand against CE and Pro 13.0.29, and a container workflow can run it against throwaway CE and Pro containers with a second account, folder permissions, group-shared and group-owned libraries and two accounts racing a first push. The rest is the last review round's backlog: a scratch-space check before `gc` and `repair`, a URL with a space kept whole for Git LFS, a staging route chosen by the work, a case rename recorded as one directory, and five smaller fixes.
