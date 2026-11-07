@@ -155,6 +155,35 @@ class TestRepair(unittest.TestCase):
             res = _repair(client, clone)
             self.assertEqual(res["status"], "clean", res)
 
+    def test_a_lost_base_pack_under_a_surviving_tip_is_repaired(self):
+        """Review 06cc623 (gemini B1): with the base pack lost and the tip's incremental
+        pack still there, the tip *object* was present, so repair said "nothing to
+        repair" while every clone failed on the ancestors.  The history is walked."""
+        with tempfile.TemporaryDirectory() as td:
+            clone, base = _history(Path(td))
+            (clone / "b.txt").write_text("second\n", encoding="utf-8")
+            _git(clone, "add", "b.txt")
+            _git(clone, "-c", "user.email=repair@example.com", "-c", "user.name=Repair",
+                 "commit", "-q", "-m", "two")
+            tip = subprocess.run(["git", "-C", str(clone), "rev-parse", "HEAD"],
+                                 check=True, capture_output=True, text=True).stdout.strip()
+            objects = subprocess.run(
+                ["git", "-C", str(clone), "rev-list", "--objects", tip, "--not", base],
+                check=True, capture_output=True, text=True).stdout
+            out = Path(td) / "incremental"
+            out.mkdir()
+            subprocess.run(["git", "-C", str(clone), "pack-objects", "-q", str(out / "pack")],
+                           input="".join(line.split(" ")[0] + "\n" for line in objects.splitlines()),
+                           check=True, capture_output=True, text=True)
+            client = _StubClient({"main": tip},
+                                 {p.name: p.read_bytes() for p in out.glob("pack-*")})
+
+            res = _repair(client, clone, dry_run=True)
+            self.assertEqual(res["status"], "broken", res)
+            self.assertEqual(res["broken_refs"], [("refs/heads/main", tip)])
+            self.assertEqual(_repair(client, clone)["status"], "ok")
+            self.assertEqual(_repair(client, clone)["status"], "clean")
+
     def test_a_healthy_remote_is_clean_without_uploading(self):
         with tempfile.TemporaryDirectory() as td:
             clone, sha = _history(Path(td))

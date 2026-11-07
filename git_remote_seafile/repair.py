@@ -210,6 +210,32 @@ def _read_tips(
     return tips
 
 
+def _incomplete_histories(
+    bare_repo: Path, tips: list[tuple[str, str]], env: dict[str, str], renew: Any
+) -> list[tuple[str, str]]:
+    """The *tips* whose history the scratch repository cannot walk to the end.
+
+    One walk of every tip first (``rev-list --objects`` exits non-zero on the first
+    object it cannot read); only when that fails is each tip walked on its own, to
+    name the broken ones.  The repair then packs each one's whole closure from the
+    local clone, less what the remote already holds.
+    """
+    if not tips:
+        return []
+
+    def walks(shas: list[str]) -> bool:
+        renew()
+        res = run_git_checked(
+            ["-C", str(bare_repo), "rev-list", "--objects", "--quiet", "--stdin"],
+            env, input="\n".join(shas) + "\n", text=True, capture_output=True,
+        )
+        return res.returncode == 0
+
+    if walks(sorted({sha for _, sha in tips})):
+        return []
+    return [(name, sha) for name, sha in tips if not walks([sha])]
+
+
 def repair_remote(
     client: SeafileClient,
     repo_id: str,
@@ -305,6 +331,13 @@ def repair_remote(
             }
 
             broken = [(name, sha) for name, sha in tips if sha not in covered]
+            # A tip that is there is not a history that is: a lost base pack leaves
+            # the tip's own (incremental) pack, and clones fail on the ancestors it
+            # names.  Checking the tips alone answered "nothing to repair" there
+            # (review 06cc623, gemini B1), so every present tip is walked too.
+            broken += _incomplete_histories(
+                bare_repo, [(n, s) for n, s in tips if s in covered], scratch_env, maybe_renew
+            )
             if not broken:
                 return {"status": "clean", "refs": len(tips), "packs": len(pack_sizes)}
             if dry_run:
