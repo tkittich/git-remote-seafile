@@ -4026,15 +4026,19 @@ def require_complete_history(repo: Path, *, walk: bool) -> None:
 
 #: A retention run refuses to delete when the server's clock and this machine's differ
 #: by more than this: one of them has stepped, and a step is exactly what turns "marked
-#: seconds ago" into "marked a week ago" (PAYLOAD D9).
-_MAX_CLOCK_SKEW_SECONDS = 86400.0
+#: seconds ago" into "marked a week ago" (PAYLOAD D9).  An hour, not a day: a step the
+#: check cannot see shortens the grace period by as much, unseen, and two clocks kept
+#: by NTP agree to well under a second (review 4f1cdd4, deepseek-v4.1-flash D1;
+#: ROADMAP B3).  The offset is the client's median over the replies' ``Date``
+#: headers, which have one-second resolution, so an hour is far above its noise.
+_MAX_CLOCK_SKEW_SECONDS = 3600.0
 
 
 def _require_server_clock(client: Any, delete: bool) -> None:
     """Refuse a deletion whose grace period would not be timed on a sane server clock.
 
     A server that sends no ``Date`` leaves only this machine's clock, the one thing
-    the grace period must not depend on; a server whose clock is a day or more away
+    the grace period must not depend on; a server whose clock is an hour or more away
     from this machine's has stepped (an NTP correction, a restored VM snapshot, a
     proxy rewriting ``Date``) or this machine has.  A report may go on either way
     (it deletes nothing); a deletion stops (REVIEW.be01e37 deepseek E1, sonnet D2).
@@ -4056,7 +4060,7 @@ def _require_server_clock(client: Any, delete: bool) -> None:
         raise SnapshotError(
             f"the server's clock and this machine's differ by {skew / 3600:.1f} hours; one of them "
             "has stepped, and a step is what turns an object marked seconds ago into one marked "
-            "days ago. Nothing was deleted. Correct the clock that is wrong and run again"
+            "hours or days ago. Nothing was deleted. Correct the clock that is wrong and run again"
         )
 
 

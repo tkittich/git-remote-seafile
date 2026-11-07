@@ -275,10 +275,11 @@ reports; with `--payload-delete` it **marks, and later deletes, in two phases**:
   of -1" would otherwise call the grace period over at once;
 - **a deletion needs a server clock it can trust:** it stops, with nothing marked or deleted, when the
   server sent no `Date` header (only this machine's clock would remain) or when the server's clock and
-  this machine's differ by more than a day (one of them has stepped, which collapses the grace period --
-  a step smaller than that day goes unseen and shortens the period by as much, so keep
-  `--payload-grace-days` at 2 or more where the server's clock is not kept by NTP;
-  `test_a_delete_is_refused_when_the_server_clock_has_stepped_a_day_away`). A report still runs;
+  this machine's differ by more than an hour (one of them has stepped, which collapses the grace period --
+  a step smaller than that hour goes unseen and shortens the period by as much, which against a grace
+  of at least a day is small; the bound was a day before 0.9.23, and two clocks kept by NTP agree to
+  well under a second; `test_a_delete_is_refused_when_the_server_clock_is_more_than_an_hour_away`).
+  A report still runs;
 - it reads the manifest of **every commit reachable from every branch and tag of the remote**
   (fetched into a scratch repository, with `SEAFILE_STRICT_REFS=1` so the helper's
   listing fails rather than skip a ref it cannot read -- a skipped branch would make

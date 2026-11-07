@@ -1800,8 +1800,9 @@ class PayloadRetentionTests(_PayloadFixture):
             rc, out, err = self.gc()
             self.assertEqual(rc, 0, out + err)
 
-    def test_a_delete_is_refused_when_the_server_clock_has_stepped_a_day_away(self):
-        """A server clock step collapses a 7-day grace period (REVIEW.be01e37 sonnet D2)."""
+    def test_a_delete_is_refused_when_the_server_clock_is_more_than_an_hour_away(self):
+        """A server clock step collapses a 7-day grace period (REVIEW.be01e37 sonnet D2);
+        one under the bound shortens it unseen, so the bound is an hour (ROADMAP B3)."""
         self.assertEqual(self.snapshot()[0], 0)
         orphan = self.orphan()
         real_now = time.time
@@ -1815,9 +1816,17 @@ class PayloadRetentionTests(_PayloadFixture):
             self.assertNotIn(f"{self.base}/gc-pending.json", self.server_files())
             rc, out, err = self.gc()                       # the report still runs
             self.assertEqual(rc, 0, out + err)
+        two_hours = unittest.mock.patch.object(
+            SeafileClient, "get_server_time", lambda self_: real_now() - 2 * 3600)
+        with two_hours:                                    # a day was the old bound
+            rc, out, err = self.gc("--payload-delete", "--payload-grace-days", "1")
+            self.assertNotEqual(rc, 0, out + err)
+            self.assertIn("differ by 2.0 hours", out + err)
+            self.assertIn(orphan, self.server_files())
+            self.assertNotIn(f"{self.base}/gc-pending.json", self.server_files())
         slightly = unittest.mock.patch.object(
-            SeafileClient, "get_server_time", lambda self_: real_now() + 3600)
-        with slightly:                                     # an hour of skew is ordinary
+            SeafileClient, "get_server_time", lambda self_: real_now() + 1800)
+        with slightly:                                     # half an hour is not refused
             rc, out, err = self.gc("--payload-delete", "--payload-grace-days", "1")
             self.assertEqual(rc, 0, out + err)
 
