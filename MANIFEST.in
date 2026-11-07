@@ -38,6 +38,9 @@ recursive-include bin *
 # developer's working tree -- precisely the kind of accident that stops
 # happening on a clean CI checkout.
 recursive-include tests *.py
+# The message-style baseline the suite reads (review 06cc623, gemini G5.2: without it
+# test_message_style failed in an unpacked sdist).
+include tests/untested_messages.txt
 
 # Developer and diagnostic tooling that CONTRIBUTING.md and the README tell
 # people to run.  Named individually rather than grafted so that anything added

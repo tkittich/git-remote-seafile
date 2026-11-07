@@ -509,10 +509,28 @@ class TestSdistManifest(unittest.TestCase):
             if directive == "include":
                 if any(fnmatch.fnmatch(path, pattern) for pattern in parts[1:]):
                     return True
-            elif directive in ("graft", "recursive-include") and len(parts) >= 2:
+            elif directive == "graft" and len(parts) >= 2:
                 if path.startswith(parts[1].rstrip("/") + "/"):
                     return True
+            elif directive == "recursive-include" and len(parts) >= 3:
+                # The patterns count: `recursive-include tests *.py` leaves out a
+                # .txt the suite reads, and ignoring them said it was in (review
+                # 06cc623, gemini G5.2).
+                if path.startswith(parts[1].rstrip("/") + "/") and any(
+                    fnmatch.fnmatch(path.rsplit("/", 1)[-1], pattern) for pattern in parts[2:]
+                ):
+                    return True
         return False
+
+    def test_every_tracked_file_the_suite_needs_is_in_the_manifest(self):
+        import subprocess
+
+        proc = subprocess.run(["git", "-C", str(_ROOT), "ls-files", "tests"],
+                              capture_output=True, text=True)
+        if proc.returncode != 0:
+            self.skipTest("not a git checkout")
+        missing = [p for p in proc.stdout.split() if not self._is_covered(p)]
+        self.assertEqual(missing, [], "tracked test files the sdist would leave out")
 
     def test_every_shipped_document_is_in_the_manifest(self):
         for name in _DOC_NAMES:
