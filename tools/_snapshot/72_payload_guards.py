@@ -417,3 +417,20 @@ def _require_server_clock(client: Any, delete: bool) -> None:
             "has stepped, and a step is what turns an object marked seconds ago into one marked "
             "hours or days ago. Nothing was deleted. Correct the clock that is wrong and run again"
         )
+
+
+def _rule_text(rule: Any, min_size: Any, ratio: Any) -> str:
+    if rule == "auto":
+        return "auto" + (f", ratio {float(ratio):g}" if isinstance(ratio, (int, float)) else "")
+    return f"--payload-min-size {min_size}"
+
+
+def _rule_differs(previous: dict[str, Any], rule: str, min_size: Any, ratio: Any) -> bool:
+    """Whether this run's payload rule would place files differently from *previous*'s."""
+    if previous.get("rule", "size") != rule:
+        return True
+    if rule != "auto":
+        return previous.get("min_size") != min_size
+    theirs = previous.get("ratio")
+    return (isinstance(theirs, (int, float)) and not isinstance(theirs, bool)
+            and isinstance(ratio, (int, float)) and abs(float(theirs) - float(ratio)) > 1e-9)

@@ -276,6 +276,22 @@ class PayloadBasicsTests(_PayloadFixture):
         self.assertIn("uploaded 0 object(s)", out)
         self.assertEqual(self.server_files(), before)
 
+    def test_a_run_on_another_payload_rule_than_the_last_snapshot_warns(self):
+        """Review 06cc623 (gemini D4): two established vaults sharing a remote on different
+        thresholds move the files between them in and out of git on alternate runs, and
+        only a vault with no setting was refused.  A run whose rule differs from the
+        last snapshot's says so; the next run on the same rule is quiet."""
+        self.assertEqual(self.snapshot()[0], 0)                      # 1000 bytes
+        rc, out, err = self.run_tool(
+            self.src, "--vault", self.vault, "--remote", self.remote, "--payload-min-size", "6000")
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn("used a different payload rule (--payload-min-size 1000)", err)
+        self.assertIn("than this run (--payload-min-size 6000)", err)
+        rc, out, err = self.run_tool(
+            self.src, "--vault", self.vault, "--remote", self.remote, "--payload-min-size", "6000")
+        self.assertEqual(rc, 0, out + err)
+        self.assertNotIn("different payload rule", err)
+
     def test_a_payload_file_whose_only_change_is_its_mtime_is_hashed_again_and_commits(self):
         """R4's second clause.  Review 06cc623 (gemini E3b): R4's named test above
         survived dropping the mtime from the hash cache's key, since it never

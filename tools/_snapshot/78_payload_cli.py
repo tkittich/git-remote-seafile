@@ -549,6 +549,18 @@ def run_payload_step(
                 "and the payload on alternate runs. Repeat the flag the remote uses, or "
                 "pass --payload-auto-ratio <yours> to differ deliberately"
             )
+    if not from_default and previous is not None and _rule_differs(previous, rule, min_size, ratio):
+        # The guards above see only a vault with no setting; two established vaults on
+        # different settings move files between git and the payload on every
+        # alternate run, silently (review 06cc623, gemini D4; triage Q6: warn).
+        print(
+            "Warning: the last snapshot on this remote used a different payload rule "
+            f"({_rule_text(previous.get('rule'), previous.get('min_size'), previous.get('ratio'))}) "
+            f"than this run ({_rule_text(rule, min_size, ratio)}); files between the two "
+            "thresholds move between git and the payload. If another machine shares this "
+            "remote, give both the same --payload-min-size and --payload-auto-ratio",
+            file=sys.stderr, flush=True,
+        )
     if not candidates and previous is None:
         # Nothing qualifies and the vault never used payload mode: no manifest,
         # so a tree that merely *could* grow payload files is not locked into

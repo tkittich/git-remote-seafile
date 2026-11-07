@@ -135,7 +135,7 @@ it knows. *Measured (2026-10-14, synthetic; 2026-10-26 at scale, T11):* a manife
 scale: 500,000 files are ~78 MB raw and 1,000,000 files are ~156 MB raw, parsed
 in ~6 s with a ~600 MB transient peak -- survivable on a desktop, and the point
 where `--exclude`ing the bulk starts to matter. The retention mark list is
-~82 bytes an entry, so the mark list's 64 MiB read cap bites at ~750,000
+~88 bytes an entry, so the mark list's 64 MiB read cap bites at ~750,000
 marked objects; `--payload-gc` before then keeps the list small. After a
 `repack -ad`, a snapshot that changes 0.1% of the entries adds ~10 kB, 1% adds
 ~110 kB, and one that changes every entry (the hash and mtime of each) adds
@@ -371,7 +371,7 @@ Nothing here changes what a snapshot contains; each item is a refusal or a note
 | Hazard | Safeguard | Test |
 | :--- | :--- | :--- |
 | A newer tool wrote the snapshot this run builds on | every snapshot commit carries a `Git-Remote-Seafile: <version>` trailer (never in the tree, so an unchanged tree still commits nothing after an upgrade); a run warns when the base was written by a newer tool. A manifest carries `min_git_remote_seafile`, and a tool older than that refuses it | `test_every_snapshot_carries_the_tool_version_as_a_trailer`, `test_a_snapshot_by_a_newer_tool_is_warned_about`, `test_a_manifest_that_needs_a_newer_tool_is_refused` |
-| Two machines on different thresholds move files between git and payload on alternate runs | a vault with no remembered setting that finds the remote's manifest on another rule refuses, naming the flag; the default never silently picks | `test_a_fresh_vault_is_refused_when_the_remote_used_another_rule` |
+| Two machines on different thresholds move files between git and payload on alternate runs | a vault with no remembered setting that finds the remote's manifest on another rule refuses, naming the flag; the default never silently picks. Established vaults: a run whose rule differs from the last snapshot's warns, naming both | `test_a_fresh_vault_is_refused_when_the_remote_used_another_rule`, `test_a_run_on_another_payload_rule_than_the_last_snapshot_warns` |
 | `--payload-delete` from a machine that lacks snapshots which were never pushed | needs `--vault`, or `--payload-no-vault` said out loud | `test_delete_needs_a_vault_or_an_explicit_no_vault` |
 | The remote's history was rewritten (force push, deleted branch or tag) and a delete would then free objects those snapshots need | each `--payload-delete` run stores the ref tips it saw (`payload/gc-seen.json`); a later run that finds one no longer contained refuses to mark or delete until `--payload-accept-loss`. A report only prints it. A `gc-seen.json` the folder lists but that cannot be read (a 404 or an empty body) stops the run; only an unlisted one is a first run | `test_a_rewritten_history_stops_a_delete_until_it_is_accepted`, `test_a_listed_fence_baseline_the_file_host_will_not_serve_is_not_a_first_run` |
 | On Seafile Professional, a folder permission hides a branch or tag from the account running the delete (an *invisible* folder is left out of its listing, measured on 13.0.29) | a delete run by an account that does not own the library refuses, a report still runs; `--payload-allow-non-owner` says no rule applies | `test_a_delete_by_a_non_owner_on_pro_is_refused_and_a_report_still_runs` |
