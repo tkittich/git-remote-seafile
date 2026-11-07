@@ -2623,6 +2623,27 @@ class PayloadRememberVerifyViewAndClockTests(_PayloadFixture):
         self.assertFalse(any(k.startswith("/pvault-view/current/") and len(k.rsplit("/", 1)[-1]) == 64
                              for k in files), "an object name was left in the view")
 
+    def test_a_file_named_by_its_own_hash_is_not_renamed_onto_itself(self):
+        """Review 06cc623 (gemini G3.1b): in a content-addressed store a file is named by
+        its own SHA-256.  The view copied the object in under that same name and then
+        renamed it onto it, which Seafile answers by numbering it ``<sha> (1)`` (the stub
+        overwrites, so the rename calls are what is checked)."""
+        data = os.urandom(4000)
+        named = _sha(data)
+        (self.src / named).write_bytes(data)
+        self.assertEqual(self.snapshot()[0], 0)
+        renames = []
+        real = SeafileClient.rename_entry
+
+        def recording(self_, rid, path, new_name):
+            renames.append((path.rsplit("/", 1)[-1], new_name))
+            return real(self_, rid, path, new_name)
+        with unittest.mock.patch.object(SeafileClient, "rename_entry", recording):
+            rc, out, err = self.view("--payload-view-name", "cas")
+        self.assertEqual(rc, 0, out + err)
+        self.assertNotIn((named, named), renames)
+        self.assertEqual(self.server_files()[f"/pvault-view/cas/{named}"], data)
+
     def test_a_view_says_the_quota_counts_each_copy_at_full_size(self):
         """It printed "no data was transferred" and a view of one 70 MiB object
         grew the library by 70.0 MiB on a real server (blocks are shared, the

@@ -7574,6 +7574,11 @@ def _place_object(client: Any, rid: str, source_dir: str, sha: str, target: str,
     """Copy one object into *target* (it keeps its hash name) and rename it."""
     if not client.copy_entries(rid, source_dir, [sha], target):
         raise SnapshotError(f"the server refused to copy object {sha[:12]} into {target}")
+    # A file named by its own hash (a content-addressed store) is already in place:
+    # renaming it onto its own name made Seafile number it "<sha> (1)" (review
+    # 06cc623, gemini G3.1b).
+    if name == sha:
+        return
     if not client.rename_entry(rid, f"{target}/{sha}", name):
         raise SnapshotError(f"the server would not rename an object to {name!r}")
 
