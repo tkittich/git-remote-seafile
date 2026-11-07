@@ -466,7 +466,10 @@ Nothing found shows a fix for plain literal paths; it was still quadratic on 2.5
    1.74 s with `update-index`, measured by a reviewer), the entry count read from
    the index's header. Where git ignores case (`core.ignorecase`), the list is
    first spelled the way `add` would file it: after the index's spelling of each
-   path's directories, so a directory renamed by case stays one directory.
+   path's directories, so a directory renamed by case stays one directory. Names
+   are compared the way git compares them there -- A-Z folded, nothing else (not
+   Python's `casefold`, which makes `straße` equal `strasse`) -- and a respelling
+   is kept only when the respelled path exists on disk.
 3. A file that changes while git reads it (`short read while indexing`,
    `unstable object source data`) is tried again twice, two seconds apart.
 

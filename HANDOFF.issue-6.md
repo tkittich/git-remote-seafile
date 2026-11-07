@@ -17,10 +17,9 @@ permission to access this file."}`.
   file read asks for the listing of the file's own folder; only a clean **404** means "not there
   yet", and `get_file_bytes` / `download_file_to` then answer "absent" as they do for a 404.
   Everything else keeps the error. Gates were green before the commit. Not pushed, not tagged.
-- **Issue 6 has not been answered with the findings yet.** Draft below. Do not post without the
-  maintainer's yes.
-- The CHANGELOG `[Unreleased]` section holds the entry; the version is not bumped (the maintainer
-  decides 0.9.23 and tags).
+- **Issue 6 has not been answered with the findings yet.** Draft below; it says the fix lands in the next release, so it can go before the tag.
+  Do not post without the maintainer's yes.
+- The CHANGELOG `[0.9.23]` section holds the entry; 0.9.23 is prepared, not tagged.
 
 ## What was measured (Pro 13.0.29 and CE 13.0.29, same requests)
 
@@ -65,27 +64,31 @@ file, deleted afterwards), and suggested four fixes:
    lists short, and the helper itself removes `refs/heads` when the last branch goes
    (`_prune_empty_ref_parents`), so only a hand-made folder reaches it; the message now says so;
 3. create `refs/heads` before the first read -- not needed once (1) is in;
-4. better hint text -- the advice to create folders is gone (CHANGELOG `[Unreleased]`, Changed).
+4. better hint text -- the advice to create folders is gone (CHANGELOG `[0.9.23]`, Changed).
 
-## Draft reply for the issue (not posted)
+## Draft reply for the issue (not posted; on the maintainer's yes)
 
-> Thank you, your table matches what we measured on a Seafile Professional 13.0.29 test server:
-> a file read under a missing folder answers 403 (one level missing) or a 500 error page (two or
-> more), for the library owner and with no sub-folder permissions; Community Edition answers 404.
+> Thank you for probing your server. We realized only recently that the Seafile Professional
+> Docker image is public and runs as a small trial without a licence, so we could test against
+> Pro 13.0.29 ourselves. Your results match ours: a file read under a missing folder answers 403
+> when one folder level is missing and a 500 error page when two or more are, for the library
+> owner with no folder permissions, where Community Edition answers 404 for both. The missing
+> folder's own listing answers 404 on both editions.
 >
-> Your first suggestion is the fix we made: after a 403 or 500 on a file read, the helper lists the
-> file's folder, and only a 404 there (folder missing) counts as "not there yet". A folder that
-> exists, or a listing that fails, keeps the error, so a real permission denial still stops the push.
-> It is on `main` and will be in 0.9.23. The advice to create folders by hand is removed; it was
-> wrong and caused your second error.
+> Your first suggestion is the fix: after a 403 or 500 on a file read, the helper lists the file's
+> folder, and only a 404 there counts as "not there yet". A folder that exists, or a listing that
+> fails, keeps the error, so a real permission refusal still stops the push. The advice to create
+> folders by hand is removed; it was wrong and caused your second error. We tested the first push
+> on Pro as the owner and as a shared user under each folder permission.
 >
 > We kept the "exists but twice answered empty" error for an empty `refs/heads` (your second
 > suggestion): the same check stops `gc` and fetch from trusting a server that lists a folder
-> short, and the helper removes `refs/heads` itself when the last branch is deleted, so only a
-> folder made by hand gets there. The message now says to delete such a folder.
+> short, and only a folder made by hand gets there. The message now says to delete such a folder.
 >
-> Your remote is fine as it is after the workaround. If you have time, could you send the output of
-> `curl -s https://<server>/api2/server-info/` so we know which Pro version answers this way?
+> The fix should land in the next release. Your remote is fine as it is after your workaround.
+> If the next release still fails on your server, please let us know here, with the output of
+> `curl -s https://<your server>/api2/server-info/` (your Pro version) and the error the push
+> prints.
 
 ## Servers
 
@@ -151,8 +154,8 @@ rules are the exception: use `grs-*` sub-folders of them, never touch the folder
    Elasticsearch are the two untried steps.
 4. **An outside review round first, then the release** (the maintainer's decision, 2026-11-06).
    0.9.23 is prepared in the tree (version, CHANGELOG `[0.9.23]`, release notes, UPGRADING,
-   ROADMAP) but **not pushed or tagged**. `review-prompt.md` is written for this pre-release round.
-   After the round: triage, fold the fixes into 0.9.23, **correct the release date** in CHANGELOG
+   ROADMAP) but **not pushed or tagged**. The round ran on 4f1cdd4 (three reports); its fixes
+   are folded into 0.9.23 (ROADMAP section 1.9, rows Y1-Y10; backlog B1-B11). What is left: **correct the release date** in CHANGELOG
    and the ROADMAP line if the day has changed, gates on Windows and the Debian full suite, push,
    CI green, dispatch the real-server workflow (its first CE/Pro run; enable the weekly schedule
    once both legs are green), `python tools/release_check.py`, tag, then post the issue reply.

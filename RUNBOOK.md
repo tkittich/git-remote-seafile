@@ -238,7 +238,7 @@ the expected size, so a failed run leaves the repository exactly as it was.
 
 > **Scratch space.** Compaction downloads every pack, repacks them, and re-uploads from the system
 > temporary directory (`TMPDIR`, or `TEMP`/`TMP` on Windows). It needs about twice the packs' size
-> there, and `gc`, `gc --tail` and `repair` check that before the first download: a refusal names
+> there (the tail merge up to three times, for its read-back copy), and `gc`, `gc --tail` and `repair` check that before the first download: a refusal names
 > what is needed and what is free, and releases the lock as it stops. Point `TMPDIR` at a larger
 > disk, or pass `--allow-low-disk` to try anyway (a run that then fills the disk fails part-way and
 > leaves the remote as it was; release the lock (§1) if it was killed rather than stopped).
