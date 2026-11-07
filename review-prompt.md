@@ -5,15 +5,17 @@ commit (`__version__`, `CHANGELOG.md` `[0.9.23]`, `.github/release-notes/v0.9.23
 the release files are under review too, and a finding there is cheap to fix. Another
 model wrote the code, the tests and the specifications, and has reviewed
 them itself over a dozen rounds: assume all three share blind spots. The last outside
-review was a pre-release round at commit `4f1cdd4` (2026-11-07, three reviewers); its
-triage is settled and is listed in Part F as dispositions. **Everything since `4f1cdd4`
-has had no independent reader** — the twenty fixes that round produced, the backlog
-done after it (a vanished repository path, the payload clock bound, the link probe's
-debris, the gates' stale-file note, a refusal for non-owners on Professional), the
-narrowing of `mkdir_p`'s clean-up to the helper's own folders, the first runs of the
-CE/Pro container tier, and a faster test plan (`gates.py --changed`) — see Part G,
-which is where most of your time should go. The work before `4f1cdd4` (0.9.22, issue 6,
-the 0.9.23 backlog) had one outside round; Parts A–E still cover it.
+review was a second pre-release round at commit `06cc623` (2026-11-07, four reviewers);
+its triage is settled and is listed in Part F as dispositions. **Everything since
+`06cc623` has had no independent reader** — the twenty-six fixes that round produced
+(ROADMAP §1.10, Z1–Z26: a source's case rule, one reader for every state file whose
+absence decides something, the Pro owner guard's edition probe, the lease check's order,
+a remote's object format with no refs, Unicode forms beside payload files, `--no-push`,
+`repair`'s history walk, redirects, and smaller guards), three new warnings, the branch
+that makes a snapshot run start fewer git processes (B12), and the tooling (`gates.py
+--changed` from imports, `release_check.py` failing without GitHub) — see Part G, which is
+where most of your time should go, but not all of it (see ORDER OF WORK). Parts A–E
+cover everything older.
 
 WHAT IT IS
 A Git remote helper (`seafile://<library>/<path>`) that stores a repository in a Seafile
@@ -21,8 +23,7 @@ library through its REST API, with an advisory lock built from file creation and
 server's `Date` header, and a whole-tree snapshot tool (`git seafile-snapshot`) shipped
 in the same wheel. Read `README.md` for the overview, `DESIGN.md` §1–§4 for how the
 helper works, `SNAPSHOT.md` and `PAYLOAD.md` for the snapshot tool and its large-file
-store, and `CHANGELOG.md` `[0.9.23]` and `[0.9.22]` for what changed since the last
-round (Seafile Professional, the CE/Pro container tier, the last two rounds' fixes).
+store, and `CHANGELOG.md` `[0.9.23]` for what changed since the last release.
 
 THE DOCUMENTS ARE THE SPECIFICATION
 `DESIGN.md` (invariants §3 including §3.5 Adaptation, protocol §4, failure model §5,
@@ -35,7 +36,8 @@ D11, failure model §6 including §6.1's review rounds, attack table A1–A35, t
 matrix §7), `AGENTS.md` and `CONTRIBUTING.md` (what a contributor is told, including the
 list of measured differences between the stub and a real server; a rule there that the
 code or the tests do not keep is a finding), and `ROADMAP.md` §1 (known open items;
-§1.9 holds the dispositions of the last round, §1.8 those of the round before).
+§1.10 holds the dispositions of the last round, §1.9 those of the round before — the row
+IDs there, `Z1`, `Y4`, `B8`, are the ones this prompt uses).
 `git_remote_seafile/snapshot_tool.py` is the concatenation of `tools/_snapshot/NN_*.py`:
 review the parts, never the generated file.
 
@@ -51,13 +53,14 @@ RULES FOR THE WHOLE REVIEW
   below).
 - Work in a COPY of the repository. Leave the tree you were given untouched: no
   commits, no pushes, no edits. Make the copy with `git clone` (so the git-ignored
-  earlier `REVIEW*.md` reports are not in it, and Phase 1 cannot read one by accident),
-  then copy over any uncommitted or untracked files the maintainer told you about, and
-  say which commit and which extra files you reviewed. HEAD may move while you work (a
-  maintainer commits, a cleanup lands): keep reviewing the commit you copied, name it in
-  the report, and say if a later commit touches a file you cite. Give the copy a name
-  that does not start with `grs-` (use `review-<model>-`): the project's own cleanup
-  sweeps `grs-*` directories, and one reviewer's copy was deleted under them mid-review.
+  earlier `REVIEW*.md` reports are not in it, and Phase 1 cannot read one by accident).
+  **Review the commit only**: the tree you were given may hold uncommitted or untracked
+  files (the maintainer's work in progress); ignore them unless this prompt names them,
+  and say which commit you reviewed. HEAD may move while you work (a maintainer commits,
+  a cleanup lands): keep reviewing the commit you copied, name it in the report, and say
+  if a later commit touches a file you cite. Give the copy a name that does not start
+  with `grs-` (use `review-<model>-`): the project's own cleanup sweeps `grs-*`
+  directories, and one reviewer's copy was deleted under them mid-review.
 - Never contact a real server, never use real credentials -- **and make it impossible, not
   only forbidden**: a reviewer at 4f1cdd4 ran `check-auth` with an empty git config and the
   machine's desktop Seafile client answered for it, one read-only request to the
@@ -68,8 +71,10 @@ RULES FOR THE WHOLE REVIEW
   in-process Seafile stub — reproduce every claim against it, or against a local bare
   repository, and keep the script so the next person can rerun it. The stub is MORE
   LENIENT than the real server (it accepts a copy into a missing directory, it never
-  truncates a listing, it never rewrites a name you asked for, its mkdir creates
-  nothing); `GRS_STUB_PRO=1` makes its file reads answer the way Professional does.
+  truncates a listing, it never rewrites a name you asked for, its copy and rename
+  overwrite where Seafile numbers the name, its mkdir creates nothing); `GRS_STUB_PRO=1`
+  makes its file reads answer the way Professional does, and its `pro_server` and `owner`
+  faults make it report Professional and another owner.
   **If you have Docker**, a throwaway container from `.github/seafile-ci.yml` is not a
   real server: `SEAFILE_IMAGE=seafileltd/seafile-pro-mc:13.0-latest docker compose -f
   .github/seafile-ci.yml up -d` (or the CE default) and `python tools/realserver_ci.py`
@@ -80,38 +85,42 @@ RULES FOR THE WHOLE REVIEW
   start it, it belongs to another reviewer: do not stop, reuse or reconfigure it, and use
   the stub instead. Start yours with `-p review-<model>` and take it down
   (`docker compose -p review-<model> -f .github/seafile-ci.yml down -v`) when you are
-  done. Label each finding REPRODUCED (stub, container or local repository — say which)
-  or INFERS-SERVER-BEHAVIOUR.
+  done. **Without Docker** (every reviewer so far), do not conclude what a real server
+  does from the stub: a claim that depends on Seafile's answer (a status code, a
+  listing's shape, what a folder permission hides, the owner field of a group library)
+  is INFERS-SERVER-BEHAVIOUR, however well the stub reproduces it, and its smallest fix
+  names the container measurement that would settle it. Label each finding REPRODUCED
+  (stub, container or local repository — say which) or INFERS-SERVER-BEHAVIOUR.
 - **The full suite is run at this commit by CI and the maintainer — do not run it
   again**, and do not run whole modules to "check that the tests pass". Several reviewers
   work on this commit at once, and a full run is twelve minutes or more each that finds
-  nothing new. CI ran at `06cc623`, the code this round reads (later commits change only
-  this prompt): `ci.yml` green on all 13 jobs (Ubuntu, Windows, macOS, every Python,
-  min-deps, coverage) and `realserver.yml` green on both legs, CE and Pro 13.0.29. The
-  repository is public, so the runs are at
-  `https://github.com/tkittich/git-remote-seafile/commit/06cc623` (the checks) and the
-  Actions tab; `gh` will not see them from your isolated `HOME`, and that is expected.
-  Done by the maintainer: `python tools/gates.py` on Windows 11 (build check, ruff, mypy,
-  the docs guards and all 1,671 tests: green) and, two commits earlier, the whole suite on
-  Debian (WSL; 1,673, the symlink scenarios included) with an
-  empty git config. Run a test only to do something those runs could not: reproduce a
-  finding, run a mutation (delete a guard, watch its test), or try a case no test covers —
-  one named test or class at a time (`python -m unittest tests.<module>.<Class>.<test>`).
-  `tests.test_snapshot_payload` takes about ten minutes, and each route-comparison
-  scenario (`ExoticReplacementTests`, `SpecialFileAndNameTests`, one test per scenario)
-  20 to 40 seconds on Windows, so name the test you need. Use `-j 12` or `-j 24` with
-  `tools/run_tests_parallel.py`, nothing else. On a slow or antivirus-scanned disk use the smaller sizes of
+  nothing new. The repository is public: the CI runs for your commit are on its checks
+  page, `https://github.com/tkittich/git-remote-seafile/commit/<commit>` (`ci.yml`, every
+  OS and Python, and `realserver.yml`, CE and Pro 13.0.29), and in the Actions tab; `gh`
+  will not see them from your isolated `HOME`, and that is expected. If they are not
+  green there, say so in the verdict. Run a test only to do something those runs could
+  not: reproduce a finding, run a mutation (delete a guard, watch its test), or try a
+  case no test covers — one named test or class at a time (`python -m unittest
+  tests.<module>.<Class>.<test>`). With `tools/run_tests_parallel.py`, `-k` matches
+  *targets*: a class, or a single test only with `--granularity test`; a filter that
+  matches nothing exits 2 with "no test targets matched", which is not a failing test —
+  one reviewer read four such runs as killed mutations. `tests.test_snapshot_payload`
+  takes about ten minutes, and each route-comparison scenario (`ExoticReplacementTests`,
+  `SpecialFileAndNameTests`, one test per scenario) 20 to 40 seconds on Windows, so name
+  the test you need. Use `-j 12` or `-j 24` with `tools/run_tests_parallel.py`, nothing
+  else. On a slow or antivirus-scanned disk use the smaller sizes of
   `tools/measure_pathspec_cost.py` (1000 to 5000).
   Several tests are timing based (`tests/test_snapshot_climb.py`, the staging ramp
   tests): if one fails for you, run it three times and say so; a test that fails on
-  your machine and not on the maintainer's is itself a finding. Tests make `grs-*`
+  your machine and not on CI is itself a finding. Tests make `grs-*`
   directories in the temporary directory and remove them; do **not** sweep `grs-*` by
   pattern, because another reviewer's tests may be running in them. Point `TMPDIR` (and
   `TEMP`/`TMP` on Windows) at a `review-<model>-tmp` directory of your own for every run,
   and delete only that.
 - The snapshot tool is run only on scratch trees you create, with `--no-push` or against
-  a local bare repository as `--remote`. `tools/measure_pathspec_cost.py` and
-  `tools/gates.py --list` are safe to run. Do not point anything at a real vault.
+  a local bare repository as `--remote`. `tools/measure_pathspec_cost.py`,
+  `tools/gates.py --list` and `tools/release_check.py --offline` are safe to run. Do not
+  point anything at a real vault.
 - `tools/build_snapshot.py` regenerates the tool if you edit a part — and `--check`
   tells you whether the generated file is stale. The tests import the **generated**
   `snapshot_tool.py`, so a mutation of a part (deleting a guard) tests nothing until you
@@ -127,11 +136,14 @@ RULES FOR THE WHOLE REVIEW
   placeholder until the tag; *why* Professional answers a missing folder with 403/500 is
   inferred (its server code is closed) — the answers themselves were measured on 13.0.29;
   removing the empty copy a simultaneous `mkdir` leaves is best-effort and deliberately
-  limited to the helper's own layout folders (a copy of a folder a person named is named
-  in a warning and left, by the maintainer's decision); the CE/Pro container workflow is
-  runs weekly and by hand, its images are pinned by digest, `release_check.py` requires
-  it green on both legs at the tagged commit, and ROADMAP B8 records what its first runs
-  found.
+  limited to the helper's own layout folders, inside the repository's own path (a copy of
+  a folder a person named is named in a warning and left); the snapshot tool's payload
+  client still judges a layout folder by its name alone (Z16); the source's case rule is
+  judged from the first folder near the root that has a letter to flip, so a source that
+  mixes case-sensitive and folding folders is judged by one of them (Z1); a FAT change
+  time of 0 was simulated, not measured on a FAT volume (Z12); the owner a group-owned
+  Pro library reports is taken from reviewers' reports and is not yet measured (Z22,
+  Z36); the open rows Z27–Z41 are known.
 - Separate what a document SAYS from what you INFER, and for an inference say what
   would have to be true. Every finding needs: `file:line` (code) or section (spec) **plus
   a verbatim quote of a few words actually on that line** — a citation whose quoted
@@ -145,7 +157,7 @@ RULES FOR THE WHOLE REVIEW
   data reaches a place it should not), CRASH (traceback), SURPRISE (works as designed,
   surprises the operator), NIT. Five solid findings beat thirty speculative ones.
 
-SEVEN QUESTIONS THAT KEEP FINDING THINGS IN THIS PROJECT. Ask each of them of every
+TEN QUESTIONS THAT KEEP FINDING THINGS IN THIS PROJECT. Ask each of them of every
 component you read; the rounds so far produced the same shapes again and again.
 1. Is that an acknowledgement or a proof? A 2xx, a listing that shows a name at a size,
    a `False` from "does it exist", a `True` returned with no evidence, a state file that
@@ -166,13 +178,29 @@ component you read; the rounds so far produced the same shapes again and again.
    letters only, NTFS folds by its upcase table, APFS and HFS+ normalise Unicode, Seafile
    stores NFC, and Python's `casefold` folds the sharp s to `ss`. A guard that compares
    names with the wrong one drops or merges files: the 0.9.23 respelling dropped a new
-   `straße/` file beside an indexed `strasse/`. Try `ß`/`ss`, the `ﬁ` ligature, Kelvin
-   `K`/`k` and NFC/NFD `é` on every such guard.
+   `straße/` file beside an indexed `strasse/`, and the payload skip dropped an NFD file
+   beside an NFC one (Z7). Try `ß`/`ss`, the `ﬁ` ligature, Kelvin `K`/`k` and NFC/NFD `é`
+   on every such guard.
 7. Whose name is it? A folder or file the tool lays out itself (`.git-lock.d`, `pack`,
    `payload/objects/ab`) may be tidied; one a person named (the repository's path, a
    branch namespace, a payload view, a source file) may sit among their own things and
    must not be. Every delete, rename or overwrite: which kind of name can reach it, and
    what stops the other kind? `mkdir_p` removed a person's empty `app (1)` until 0.9.23.
+8. **Do the two filesystems agree?** The source, the vault, the scratch directory and a
+   restore destination can sit on different filesystems (a WSL-created folder beside an
+   NTFS vault, a FAT stick, a share, a case-sensitive APFS volume). Every rule the tool
+   learned by probing one of them — case folding, Unicode form, change time, long paths,
+   timestamps — is it applied to the one it was probed on? (Z1: the vault's case rule was
+   applied to the source.)
+9. **What is inferred from what is *not* there?** An object format read from refs when
+   there are none (Z6), "first run" read from a marker that did not download (Z2), "not
+   Professional" from an edition probe that failed (Z4), "unknown" from a queue that
+   could not be listed (Z5). Every "none found, so ...": what else could have made it
+   none?
+10. **Which siblings did the last fix leave?** For each fix since the last round, name the
+    search that would find the other sites of the same shape, run it, and say what it
+    found — then check whether the fix's guard would catch a new site, or only the ones
+    that existed when it was written.
 
 ORDER OF WORK — follow it.
 PHASE 1, specification only: Parts A and D, written down in full before you open code. A
@@ -182,7 +210,10 @@ Do not open `git_remote_seafile/`, `tools/` or `tests/`, and do not read a prior
 `REVIEW.*.md`. If you open code first, say so in the report: the design sections are
 then the first thing to distrust, because the code will have anchored your attack.
 PHASE 2, code: Part G first (it is the least reviewed), then B, C, E, F, then H. You
-may revisit A and D; mark what you changed and why.
+may revisit A and D; mark what you changed and why. **Give Parts B, C and E together at
+least a third of your Phase 2 time**: last round three of four reviewers spent nearly all
+of it on G and reported no finding in B, C or E, while the fourth found three of the
+round's worst defects there (Z6, Z7, Z11).
 
 PART A — design of the helper (Phase 1)
 Find ways the design loses commits, corrupts a repository, lets two writers silently
@@ -195,8 +226,8 @@ full `gc` while another machine pushes or fetches; ref writes, ref deletions and
 conflict copies `"(SFConflict ...)"`; interrupted runs and partial uploads; SHA-1 versus
 SHA-256 repositories; shallow, partial and borrowing (`alternates`) clones; Git LFS;
 library history, quota and server-side GC; chunked upload and the pack cap; the two
-server editions and folder permissions; and what each "measured" claim justifies and
-what it does not.
+server editions, folder permissions and group-owned libraries; redirects; and what each
+"measured" claim justifies and what it does not.
 
 PART D — design of the snapshot tool and payload mode (Phase 1)
 Find ways the design loses data, silently restores wrong data, leaks data, or does not do
@@ -206,109 +237,86 @@ clocks, timestamps and the cache that trusts them (the share-clock probe, the ra
 window, the change time, the remembered setting, the default-on conversion of an
 existing vault); a hostile or damaged manifest, marker or server response; filesystem
 differences (Windows, macOS, Linux, network shares, cloud placeholders, case folding,
-Unicode normalisation, long paths, symlinks, junctions, reparse points); interrupted and
-killed runs; very large inputs; nested repositories and embedded repositories; secrets;
-and every requirement whose "how it is checked" column would not catch a violation.
+Unicode normalisation, long paths, symlinks, junctions, reparse points — and question 8);
+interrupted and killed runs; very large inputs; nested repositories and embedded
+repositories; secrets; and every requirement whose "how it is checked" column would not
+catch a violation.
 
-PART G — everything since `4f1cdd4` (Phase 2, first and longest)
-The map: `git log --oneline 4f1cdd4..HEAD`, `git diff --stat 4f1cdd4 HEAD --
-git_remote_seafile tools tests .github`, `ROADMAP.md` §1.9 (rows Y1–Y10, B1–B11) and
-`CHANGELOG.md` `[0.9.23]`. Each change was made in a day, with a test, mostly from a
-reviewer's report. For every one: does its test fail without it (delete it and run),
-does it cover the siblings of the reported path, and did it move the failure somewhere
-quieter? Number findings G1…, G2… by the sub-area below, e.g. G2.1.
+PART G — everything since `06cc623` (Phase 2, first and longest)
+The map: `git log --oneline 06cc623..HEAD`, `git diff --stat 06cc623 HEAD` (the whole
+tree: code, tests, `.github`, `MANIFEST.in`, `pyproject.toml` and the documents),
+`ROADMAP.md` §1.10 (rows Z1–Z42, and B12 in §1.9) and `CHANGELOG.md` `[0.9.23]`. Each
+change was made in a day, with a test that was watched failing without it, mostly from
+a reviewer's report. For every one: does its test fail without it (delete it and run),
+does it cover the siblings of the reported path (question 10), and did it move the
+failure somewhere quieter? Number findings G1…, G2… by the sub-area below, e.g. G2.1.
 
-G1. Names and the index (`69_prewrite.py` `ignorecase_key`, `spell_like_index`;
-`70_stage.py`'s stale filter). Names are folded the way git folds them under
-`core.ignorecase` (A–Z only) and a respelling is kept only when the disk resolves it.
-Attack it with every fold in question 6, on both staging routes, with a directory renamed
-by case, and on a filesystem that is case-sensitive but where `core.ignorecase` is set by
-hand.
+G1. Names, filesystems and the index. The source is probed for case folding and the
+vault's `core.ignorecase` set to match (`30_vault.source_folds_case`, `ensure_case_rule`,
+Z1); payload files are kept out of git by exact path, and by Unicode form only when both
+names are one file (`71_embedded.payload_skip_matcher`, Z7); the respelling's disk check
+uses the long-path form (`69_prewrite.spell_like_index`, Z13). Attack them with question
+6 and question 8: a source whose root folds and whose subfolders do not, a source with no
+letter near the root, `--dry-run` and `--status` (which do not set the rule), a restore
+destination on another filesystem.
 
-G2. What the server says it holds versus what it serves.
-- A ref the ref directory lists but whose content cannot be read (a file-host 404 for that
-  file, an empty body) is refused, not overwritten (`helper._decide_update`,
-  `_listed_as_file`); a plain `--force` still overwrites. The lock's verification scan
-  fails closed on such a ticket (`lock._scan_tickets`, `strict`). The stub faults are
-  `raw_404_on` and `raw_empty_on` (`tests/e2e_harness.py`). Which other read decides
-  "absent" from a download alone — packs, `HEAD`, `packed-refs`, payload manifests and
-  markers, `gc-pending.json`?
-- A repository folder that vanished (moved in the web UI) is no longer an empty
-  repository: `cmd_list` fails when there is no `HEAD`, ref or pack and the clone holds
-  refs the remote's fetch refspecs store (`git_util.remote_tracking_refs`,
-  `_fetch_destinations`; the first version read only `refs/remotes/<name>/` and missed a
-  `--mirror` clone). Is that the only place a vanished path matters (`gc`, `repair`, the
-  snapshot tool's restore and retention, LFS)? Which fetches store refs a refspec does not
-  name (a command-line refspec, `remote.<name>.mirror`, `fetch.prune` with tags), and what
-  does `fetch --prune` do to them now?
-- An LFS upload is proven by listing the object at its size (`lfs.py`).
-- On Seafile Professional a full `gc` and `--payload-delete` refuse for an account that
-  does not own the library (`SeafileClient.hidden_history_risk`, `cli._cmd_gc`,
-  `72_payload_guards._require_whole_history`; `--allow-non-owner`,
-  `--payload-allow-non-owner`), because an `invisible` folder permission leaves the
-  folder out of that account's listing (measured on Pro 13.0.29, ROADMAP B2). The first
-  version compared the owner's email and refused the owner too: the library info
-  answers its owner `"owner": "self"` (found by the Pro leg; the stub now answers the
-  same). Which other field of a server answer does the stub invent rather than copy?
-  Which other operation reads "what is there" from a listing an account may see only
-  part of (the tail merge, `repair`, `doctor`, the snapshot tool's restore and
-  `--status`)? Is "owner" the right test for a group-owned library, an admin, or a share
-  to a group?
-- After a ref write that was read back, a lease that cannot be proven is a warning, and a
-  lost one an error (`helper._publish_ref`, `LEASE_UNKNOWN`). Is there an interleaving in
-  which "unknown" hides a takeover?
+G2. What the server says it holds versus what it serves, and who may see it.
+- One reader for every state file whose absence decides something
+  (`client.read_listed_text`/`read_listed_bytes`, `is_listed_file`, Z2): the payload's
+  `gc-seen.json` and `gc-pending.json`, `HEAD` on a push, `unlock --force`'s ticket; a
+  ref whose folder listing fails is refused (`helper._listed_as_file`, Z3); and a test
+  (`TestAStateFileTheFolderListsIsNeverAbsent`) lists every raw `get_file_text` /
+  `get_file_bytes` read left, each with the reason its "absent" is safe. Is each reason
+  true? Which reads of a *listing* decide "absent" (question 9)?
+- The Pro owner guard: an edition the server will not name is a risk (`hidden_history_risk`,
+  Z4); a group-owned library is named as one (`is_group_owner`, `owner_advice`, Z22); a
+  non-owner's fetch warns when a tracked branch is missing (`_warn_if_tracked_refs_may_be_hidden`,
+  `git_util.tracked_remote_names`, Z25). Which other operation reads "what is there" from a
+  listing an account may see only part of (`_prune_empty_ref_parents` is open as Z29)?
+- The lease after a write (`lock.verify_ownership`, `_lapsed_if_unknown`, Z5): a failed
+  queue scan now reads the own ticket, and "unknown" past the lease by this machine's
+  monotonic clock is lost. Is there still an interleaving in which "unknown" hides a
+  takeover, or one in which a held lease is now reported lost?
+- A remote with no refs takes its object format from its pack names (`_pack_hash_width`,
+  Z6); a push that recreates a tracked path warns (Z24); `repair` walks each present tip's
+  history (`_incomplete_histories`, Z21).
+- Redirects (`client._ScopedSession`, `_xfer`, Z11): the token is dropped outside the
+  server's URL, and a transfer that is not a GET follows no redirect. What still follows
+  one (a GET download, `login`, a `doctor` probe), and what can it carry?
 
-G3. Seafile's numbered copies (`client.mkdir_p`, `_LAYOUT_DIR_NAMES`, `_is_layout_dir`).
-The parent is listed before and after each creation; an empty copy that appeared is
-removed only for the helper's and the tool's own layout folders, and any other is named in
-a warning. Ask question 7 of it, and list every other way Seafile makes a `(N)` name the
-code meets: an upload without `replace`, a rename or copy onto a taken name
-(`75_payload.py`'s hash renames, `79_payload_view.py`), a move in the web UI, a restore from
-the library's history. Can a layout name be a person's folder (a repository whose path is
-`.../lfs`, a view named `objects`)?
+G3. Seafile's numbered copies (`client.mkdir_p`, `_is_layout_dir`, `layout_root`, Z16;
+`79_payload_view._place_object`, Z23). Ask question 7: which callers set `layout_root`,
+which do not, and what can a person name that a caller without it treats as layout?
 
-G4. The snapshot tool's backlog: `--payload-delete` refuses clocks more than an hour apart
-(`72_payload_guards._MAX_CLOCK_SKEW_SECONDS`; is the hour right for a server behind a
-proxy that rewrites `Date`, or a laptop that sleeps?); the link probe's debris is swept a
-day after it was left (`81_placement.sweep_probe_debris`, from the next probe and every
-`--payload-delete` run: can it delete a probe file another machine is uploading, or
-anything else under `payload/objects/`?); `--no-push` remembers no setting (`99_cli.py`).
+G4. The snapshot tool: `--no-push` writes nothing (`99_cli.py`, Z8 — find every other
+writer); `--status` uses the capture's walk (`82_status.py`, Z18); a run on another payload
+rule than the last snapshot's warns (`78_payload_cli.py`, Z26 — and the two established
+vaults it is meant for); a FAT change time of 0, a zero probe `mtime`, an unreadable
+server clock (Z12, Z14, Z15); PAYLOAD R4 and R7's named tests (Z19); and B12's caches
+(config per directory signature, the index listing, the tip, a manifest per commit id):
+can a cache answer for a state that changed under it?
 
-G5. The tiers and the tooling. `tools/run_tests_parallel.py` now plans from the last
-run's seconds per target (`.test-timings.json`): longest first, and a class over two
-minutes runs one test per worker; `tools/gates.py --changed` narrows the suite to the
-modules a change reaches (`suite_for_changes`): can a change escape its map and land
-untested (a test that imports a module the map does not connect, a new file)? The two
-route-comparison classes now make one test per scenario (`_RouteComparison.
-__init_subclass__`). `tests/test_realserver.py` as it is now: the edition is
-asked, not inferred from a status (CE 13.0 answers the folder-permission route 403); the
-first-push race test allows numbered copies above the repository only if empty and named
-in a warning; `EditionProbeTests` checks, without a server, that every `cls._name` a
-set-up reads exists (a slip that failed both legs of the second CI run); B2's measurement
-of an `invisible` rule. `tools/gates.py`'s note on a rebuilt `snapshot_tool.py` that
-differs from `HEAD`. `tools/release_check.py` (it now asks GitHub through `gh` that
-`ci.yml` and both legs of `realserver.yml` passed at HEAD, and only warns without `gh`:
-can a release still be tagged on a commit nothing tested?) and `MANIFEST.in` (every tool a
-shipped document names is shipped). The real-server workflow now also runs weekly. `.github/workflows/realserver.yml` and `.github/seafile-ci.yml`
-with every image pinned by digest (ROADMAP B8): what still floats (the runner image, the
-packages `realserver_ci.py` installs), and what would a stale pin hide?
+G5. The tiers and the tooling. `tools/gates.py --changed` builds its map from the imports
+(`_package_graph`, `_reached_by`, `_importers`, Z9): what does a regex over text miss or
+over-count (a dynamic import, a name in a comment, a test that runs the helper as a
+process)? `tools/release_check.py` (Z10, Z42): it fails without GitHub unless
+`--offline`, requires `origin/main`, and warns while a triage in the root has an open
+item. `MANIFEST.in` and its test (Z17). The CI images and what still floats (Z37).
 
-G6. Documents for the period: `CHANGELOG.md` `[0.9.23]` against `git log 4f1cdd4..HEAD`
+G6. Documents for the period: `CHANGELOG.md` `[0.9.23]` against `git log 06cc623..HEAD`
 (an entry with no commit, a commit with no entry); `UPGRADING.md` (would an operator learn
-every behaviour that may now surface: the refusals of G2, the warnings of G3, the clock
-bound of G4?); the release notes against the changelog; the DESIGN additions (§3.3, §4.1,
-§4.3 item 7, §4.4's fence-reuse paragraph, §4.6, §5's "An empty remote is not necessarily
-a new one") against the code; the new USER_GUIDE §14 rows against the messages the code
-prints (quote both); AGENTS.md "Review rounds"; and `python tools/release_check.py`
-(expected: it warns that HEAD is untagged, and, from your isolated `HOME`, that it could
-not ask GitHub about CI because `gh` is not signed in there — report anything else it
-says).
+every behaviour that may now surface: the new refusals, the new warnings, the case rule's
+first run on a case-sensitive source?); the release notes against the changelog; the
+DESIGN, PAYLOAD, SNAPSHOT and USER_GUIDE additions against the code (quote both);
+AGENTS.md "Review rounds"; and `python tools/release_check.py --offline` (expected: every
+check `ok` except the two CI legs, which are warnings under `--offline` — report anything
+else it says).
 
 PART B — code of the helper (Phase 2)
 Scope: `git_remote_seafile/{helper,client,lock,gc,packs,refs,git_util,safety,url,config,
-cli,seafile_paths,units,repair,diagnose,login,lfs_setup,library_setup,settings_report}.py`,
-`tools/seafile_doctor.py` and their tests (what Part G names is G, not here). In priority
-order:
+cli,seafile_paths,units,repair,diagnose,login,lfs,lfs_setup,library_setup,settings_report,
+sqlite_read}.py`, `tools/seafile_doctor.py` and their tests (what Part G names is G, not
+here). In priority order:
 1. Data loss or corruption on push, fetch, merge and `gc`: any ordering in which a
    crash, timeout, second writer or retry leaves a ref pointing at a missing object, or
    deletes something still referenced. Note the shipped shape: `gc` mirrors refs as one
@@ -318,8 +326,8 @@ order:
    that is listed but cannot be read; a fetch whose listed pack 404s
    re-lists the pack directory once and retries, and still fails loudly if the requested
    tips are then absent; lock tickets carry a per-install id and the dead-PID reclaim
-   requires it to match; `repair` restores refs whose objects no remote pack carries,
-   without touching a ref; `--force-with-lease` is honoured.
+   requires it to match; `repair` restores refs whose objects or history no remote pack
+   carries, without touching a ref; `--force-with-lease` is honoured.
 2. The lock: lease and renewal arithmetic, clock source, release on every exit path
    (exceptions, `KeyboardInterrupt`, `SIGTERM`), reentrancy, `Date` going backwards,
    starvation, two holders, a recycled pid (the ticket carries a process start time).
@@ -344,13 +352,13 @@ man in the middle can return anything at any point. Using `url.py`, `safety.py`,
 way a malicious or corrupted response, or a malicious `seafile://` URL, `.git/config`
 value, ref name, listing entry or LFS pointer, can: write outside the intended directory;
 overwrite a file git or the user cares about; make git run a different program or option;
-exhaust memory, disk or time; leak the token to another host (redirects, URL parsing,
-`server=` overrides, cross-host `Location`, transfer links); report success for data it
-did not verify; make the helper read a refusal as an absence (the issue 6 shape: which
-other status could a server send to get a ref treated as missing?); or persist a setting
-that weakens a later run. Give the exact bytes or URL, the line that mishandles them, and
-the shortest fix. Skip anything that needs the attacker to control the user's machine
-already.
+exhaust memory, disk or time; leak the token or a body to another host or path
+(redirects, URL parsing, `server=` overrides, cross-host `Location`, transfer links);
+report success for data it did not verify; make the helper read a refusal as an absence
+(the issue 6 shape: which other status could a server send to get a ref treated as
+missing?); or persist a setting that weakens a later run (`seafile.gcmaxpackmib` is open
+as Z31). Give the exact bytes or URL, the line that mishandles them, and the shortest fix.
+Skip anything that needs the attacker to control the user's machine already.
 
 PART E — code of the snapshot tool and payload mode (Phase 2)
 Scope: `tools/_snapshot/NN_*.py`, `tools/seafile_snapshot.py`, `tests/test_snapshot_*.py`.
@@ -362,7 +370,8 @@ What Part G names is G, not here. Then, newest first (`git log -- tools/_snapsho
    racy window, a clock offset)?
 2. Capture: a path that escapes the tree; a link, junction or reparse point that makes
    the walk leave it or loop; `.git` files and directories; an excluded or payload path
-   that gets in anyway; a repository that changes while it is walked.
+   that gets in anyway, or a path that is neither in git nor in the manifest; a
+   repository that changes while it is walked.
 3. Anything from the server or a manifest reaching a path, a command line or git:
    traversal, reserved names, case collisions, over-long names, NUL, a name starting with
    `-` or `"`, a name that is not UTF-8, a name git quotes.
@@ -379,39 +388,47 @@ What Part G names is G, not here. Then, newest first (`git log -- tools/_snapsho
    survivor.
 
 PART F — the recorded dispositions (Phase 2, after G)
-The last round's triage (three reports at `4f1cdd4`: deepseek-v4.1-flash, glm-5.3,
-opus-5.5) is settled as follows; the ROADMAP §1.9 row each became is in brackets. For each
-row marked done, say whether its named test fails when the fix is removed. For each row
-marked open, say CONFIRMED, FIXED SINCE, STALE (the description no longer matches the
-code — say what it does now) or MISRANKED (and why). Then spend the rest of the part on
-the ROADMAP §1 rows still open (B5, B8's remainder, B10, W3, W4, W6, S1, S20, S21) and on the
-questions no machine in reach could answer.
+The last round's triage (four reports at `06cc623`: deepseek-v4.1-flash, gemini-4-argon,
+glm-5.3, opus-5.5) is settled as follows, by ROADMAP §1.10 row. For each row marked done
+**with code**, say whether its named test fails when the fix is removed. A row marked
+**read only** is a document or a test: read it and say whether it says what the code
+does; do not mutate it. For each row marked open, say CONFIRMED, FIXED SINCE, STALE (the
+description no longer matches the code — say what it does now) or MISRANKED (and why).
+Then spend the rest of the part on the open rows (Z27–Z41, B10, S1, W3, W4, W6, S21) and
+on the questions no machine in reach could answer.
 
 | Row | Finding, short | Disposition |
 | :--- | :--- | :--- |
-| 1 | the respelling compared names with `casefold`; a new `straße/` file beside `strasse/` was dropped | done [Y1] |
-| 2 | a `--no-push` run still remembered six settings | done: remembers nothing [Y2] |
-| 3, 11 | an LFS upload proven by its 2xx alone; a non-object JSON line killed the agent | done [Y3] |
-| 4 | a listed ref read as absent on a file-host 404 or an empty body, overwritten as a new branch; the same for a lock ticket | done: refused / fails closed [Y4] |
-| 5 | `mkdir_p` deleted any empty `<name> (N)` beside a folder it made | done: only a copy its mkdir made appear, and (after the triage, the maintainer's call) only of the helper's own layout folders [Y5] |
-| 6–8, 17–19 | the tested-servers wording; AUTOMATION's read-only column; PAYLOAD D6/D9; SNAPSHOT §8; the Pro folder-permission row | done (docs) [Y6] |
-| 9, 20 | three tools missing from the sdist; `release_check` printed a remote that does not exist | done [Y7] |
-| 10 | the tail merge's scratch check missed its read-back copy | done: up to three times [Y8] |
-| 12, 13 | `login` and `http://[::1]`; an unproven lease after a proven write was an error | done [Y9] |
-| 14–16 | the real-server guard wrote to the server; set-up leaked on failure; the race test looked only inside the repository; the stall test asserted presence | done [Y10] |
-| B1 | a vanished repository path advertised as empty; `fetch --prune` deleted every tracking ref | done after the triage [B1] |
-| B3 | `--payload-delete` allowed clocks a day apart (triage Q3) | done: an hour [B3] |
-| B4 | a killed link probe left 16 MiB under `payload/objects/` | done [B4] |
-| B7, B9 | the gates passed a stale generated file; the fence's one-second reuse was undocumented | done [B7, B9] |
-| B2 | whether a Pro `invisible` rule hides refs from a non-owner's `gc` | measured (it does); done: `gc` and `--payload-delete` refuse for a non-owner on Pro [B2] |
-| B8 | floating CI images | done: pinned by digest; the weekly schedule and `release_check` requiring a green run wait for both legs green [B8] |
-| ds-A1 | two `holding` tickets fall back to `order_ts` | not accepted: deterministic, the loser fails at its next fence (§3.3); measurement in the container (Q10) |
-| ds-A2 | a cached queue scan lets a pack deletion run under preemption | not accepted as a defect: the deleted packs are proven redundant; documented [B9] |
+| Z1 | the vault's case rule applied to a case-sensitive source; one of `d/x.txt`, `D/x.txt` lost | done with code |
+| Z2, Z3 | `gc-seen.json`, `gc-pending.json`, `HEAD`, `unlock --force`'s ticket read as absent when listed but unreadable; a failed listing read a ref as absent | done with code: one reader |
+| Z4 | an unreadable edition probe read as Community Edition | done with code |
+| Z5 | a failed queue scan hid a lost lease; an unknown lease past its time | done with code |
+| Z6 | a SHA-1 push into a SHA-256 remote with no refs | done with code |
+| Z7 | an NFD file beside an NFC payload file dropped | done with code |
+| Z8 | `--no-push` wrote the profile and the secrets digest | done with code |
+| Z9 | `--changed` missed test modules; `-k` with `--changed` | done with code |
+| Z10 | `release_check` "Ready" without GitHub; any remote branch counted as pushed | done with code |
+| Z11 | the token kept on a same-host redirect; an upload re-sent to a redirect | done with code |
+| Z12–Z15 | FAT change time 0; long-path respelling; zero probe `mtime`; unreadable server clock | done with code |
+| Z16, Z23 | a repository named like a layout folder; a copy after a failed listing; a hash-named view file | done with code |
+| Z17 | the sdist lacked `tests/untested_messages.txt` | done with code (the manifest test) |
+| Z18 | `--status` reported a submodule's `.git` | done with code |
+| Z19 | R4 and R7's named tests survived their clause's removal | read only (a new test and a column) |
+| Z20 | seven stale doc lines; a commit with no CHANGELOG entry | read only |
+| Z21 | `repair` checked tips, not histories | done with code |
+| Z22 | a group-owned Pro library sent to its "owner" | done with code; the owner value unmeasured (Z36) |
+| Z24–Z26 | warn: a push recreating a tracked path; a hidden branch on Pro; another payload rule | done with code (warnings, by the maintainer's decision) |
+| Z42 | the review process rules | read only |
+| B12 | 42 git processes per snapshot run | done with code (31) |
 
 Settled ground in this part: an "unknown" lease after a write that was read back is a
-warning, not an error, and a reaped ticket reads as lost, not unknown; a plain `--force`
-overwrites a listed-but-unreadable ref because that is what it asks for; the lease check
-is deliberately not raised into acquire.
+warning while the lease is within its time by this machine's clock, and lost past it; a
+plain `--force` overwrites a listed-but-unreadable ref because that is what it asks for;
+the lease check is deliberately not raised into acquire; a missing branch, a recreated
+path and a differing payload rule warn rather than refuse, because each has a legitimate
+cause the tool cannot tell from the harmful one; gemini-4-argon's proposed fix for Z29
+(skip the prune on Pro) is not accepted, because an empty folder left behind reads as a
+failed listing.
 
 PART H — what this prompt does not ask (Phase 2, last; suggestions, not findings)
 You have now read more of this project than most people will. Say what you would do
@@ -449,6 +466,11 @@ OUTPUT — one markdown document, sections in this order.
    version and (if you used a container) Seafile edition and version you ran them on, and
    the wall-clock time the review took. Every runtime you state is one you measured; an
    estimate says so.
+
+Write as long a report as the findings need, but keep the detail where it can be rerun:
+each reproduction and mutation is a script you keep (in your `review-<model>-` directory,
+named in section 7), and the report gives the finding, the line of evidence that matters
+(the output that shows it), and the script's name — not the script's whole output.
 
 Save the report in the root of the tree you were given (the one exception to "leave it
 untouched": `REVIEW*.md` is git-ignored there) as `REVIEW.<commit>.<model>.md`, where `<commit>`
