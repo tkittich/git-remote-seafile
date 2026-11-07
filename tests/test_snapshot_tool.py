@@ -3247,6 +3247,10 @@ class IncrementalStagingTests(_SnapshotFixture):
                 vault = self.tmp / f"sensitive-vault-{route}"
                 snap.ensure_vault(vault, BRANCH)
                 _git(vault, "config", "core.ignorecase", "true")
+                # The source is no repository to inherit an identity from, and CI has
+                # no global one.
+                _git(vault, "config", "user.email", "dev@example.com")
+                _git(vault, "config", "user.name", "Dev")
                 with unittest.mock.patch.object(snap, "_INDEX_ROUTE_MIN_PATHS", threshold):
                     rc, _, err = self.run_tool("--source", source, "--vault", vault)
                     self.assertEqual(rc, 0, err)
