@@ -120,6 +120,63 @@ def _kill_tree(proc: "subprocess.Popen[Any]") -> None:
         pass
 
 
+#: Config reads kept for the rest of a run (``_config``, ``_read_local_config_map``).
+#: Every ``git config`` is its own process, ~60 ms on Windows before git does
+#: anything, and a run read about a dozen keys one at a time: 42 git processes for
+#: a 21-file tree, measured.  A kept read is used only while the repository's config
+#: file is unchanged (``config_file_signature``), so any writer is seen at once; the
+#: whole cache is also dropped at the start of every ``main()``.
+_CONFIG_READS: dict[tuple[str, str], Any] = {}
+
+#: Branch tips read this run (``current_tip``), kept until a git call that is not
+#: a known read runs: three ``rev-parse`` of one ref per run, measured.
+_TIP_READS: dict[tuple[str, str], "str | None"] = {}
+#: Manifests by commit id (``load_manifest``): a commit never changes.
+_MANIFEST_TEXT: dict[tuple[str, str], "tuple[int, str]"] = {}
+#: git commands that move no ref (anything else clears ``_TIP_READS``).
+_READS_NO_REF = frozenset({
+    "rev-parse", "ls-files", "ls-tree", "cat-file", "show", "config", "diff",
+    "count-objects", "hash-object", "write-tree", "commit-tree", "update-index", "add",
+    "status", "merge-base", "for-each-ref", "check-ignore", "log", "rev-list",
+    "verify-pack", "check-ref-format", "var", "version", "mktree", "ls-remote",
+})
+
+
+def _git_subcommand(cmd: list[str]) -> str | None:
+    """The git subcommand of *cmd* (``None`` when it is not git or has none)."""
+    if not cmd or not str(cmd[0]).lower().replace("\\", "/").rsplit("/", 1)[-1].startswith("git"):
+        return None
+    args = [str(a) for a in cmd[1:]]
+    i = 0
+    while i < len(args) and args[i].startswith("-"):
+        i += 2 if args[i] in ("-C", "-c", "--git-dir", "--work-tree", "--namespace") else 1
+    return args[i] if i < len(args) else None
+
+
+def config_file_signature(repo: Path) -> "tuple | None":
+    """Identity, size and time of *repo*'s own config file; ``None`` when it cannot be
+    found (``.git`` is a file, or not there), and then nothing is kept for it.
+
+    A cached read is good only while this is unchanged: git writes config by renaming
+    a new file into place, so any writer -- the tool, the user, a test between two
+    calls -- changes it.  The global and system files are not watched: nothing
+    rewrites them in the middle of a run.
+    """
+    for candidate in (repo / ".git" / "config", repo / "config"):
+        try:
+            info = candidate.stat()
+        except OSError:
+            continue
+        if candidate.parent.name == ".git" or (repo / "HEAD").is_file():
+            return (str(candidate), info.st_ino, info.st_size, info.st_mtime_ns)
+    return None
+
+
+def forget_config_reads() -> None:
+    _CONFIG_READS.clear()
+    _TIP_READS.clear()
+
+
 def _run(
     cmd: list[str],
     *,
@@ -164,6 +221,9 @@ def _run(
     (REVIEW.sonnet-5.5 D9, reproduced).  The reader is joined before the call
     returns; it is not a daemon and never outlives the child.
     """
+    sub = _git_subcommand(cmd)
+    if sub is not None and sub not in _READS_NO_REF:
+        _TIP_READS.clear()
     if live_stderr:
         return _run_live(
             cmd, status=status, measure_dir=measure_dir, stall_limit=stall_limit,

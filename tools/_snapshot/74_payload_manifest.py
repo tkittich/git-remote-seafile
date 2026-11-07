@@ -71,13 +71,24 @@ def load_manifest(git_dir: Path, work_tree: Path, rev: str | None) -> dict[str, 
     """
     if not rev:
         return None
-    proc = git(
-        git_dir, work_tree, ["show", f"{rev}:{PAYLOAD_MANIFEST}"], cwd=work_tree, check=False
-    )
-    if proc.returncode != 0:
+    # A commit id names one manifest for ever, so its text is kept (a run read it
+    # twice); a ref name moves and is read each time.  The text, not the parsed
+    # object, so a caller that changes what it got cannot change the next answer.
+    key = (str(git_dir), rev)
+    immutable = len(rev) in (40, 64) and all(c in "0123456789abcdef" for c in rev)
+    if immutable and key in _MANIFEST_TEXT:
+        returncode, text = _MANIFEST_TEXT[key]
+    else:
+        proc = git(
+            git_dir, work_tree, ["show", f"{rev}:{PAYLOAD_MANIFEST}"], cwd=work_tree, check=False
+        )
+        returncode, text = proc.returncode, proc.stdout
+        if immutable:
+            _MANIFEST_TEXT[key] = (returncode, text)
+    if returncode != 0:
         return None
     try:
-        data = json.loads(proc.stdout)
+        data = json.loads(text)
     except (ValueError, RecursionError):
         raise SnapshotError(
             f"the payload manifest in {rev[:12]} is not valid JSON; refusing to continue"

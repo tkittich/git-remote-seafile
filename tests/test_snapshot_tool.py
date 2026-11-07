@@ -4232,24 +4232,131 @@ class SyncedFolderGuardTests(_SnapshotFixture):
         self.assertIn("--allow-synced overrides the synced-folder guard", err)
 
 
+def _writes_config(cmd) -> bool:
+    """Whether a git command line writes config: ``config`` with a key and a value, or
+    with an option that writes.  For the spies below; the tool itself keeps a config
+    read only while the config file is unchanged, so it needs no such rule."""
+    if snap._git_subcommand(cmd) != "config":
+        return False
+    args = [str(a) for a in cmd]
+    rest = args[args.index("config") + 1:]
+    if any(a in ("--unset", "--unset-all", "--add", "--replace-all", "--remove-section",
+                 "--rename-section", "--edit", "-e") for a in rest):
+        return True
+    if any(a in ("--get", "--get-all", "--get-regexp", "--list", "-l") for a in rest):
+        return False
+    return len([a for a in rest if not a.startswith("-")]) >= 2
+
+
+class GitCallBudgetTests(_SnapshotFixture):
+    """How many git processes a run starts, and that what it keeps sees every change.
+
+    Each git process costs ~60 ms on Windows before git does anything, and on a big
+    vault an ``ls-files`` re-reads the whole index: a run on a 21-file tree started
+    42, a dozen of them the same config or index reads.  The answers are now kept
+    for the run (``_CONFIG_READS``, ``_INDEX_LISTING``, ``_TIP_READS``,
+    ``_MANIFEST_TEXT``) and dropped by whatever can change them.
+    """
+
+    def _count_git(self, *extra):
+        started: list[str] = []
+        real = snap.subprocess.Popen.__init__
+
+        def spy(proc, args, *a, **kw):
+            if isinstance(args, list) and snap._git_subcommand(args):
+                started.append(snap._git_subcommand(args))
+            real(proc, args, *a, **kw)
+
+        with unittest.mock.patch.object(snap.subprocess.Popen, "__init__", spy):
+            rc, _, err = self.snapshot(*extra)
+        self.assertEqual(rc, 0, err)
+        return started
+
+    def test_a_run_with_one_change_stays_within_its_budget(self):
+        self.snapshot()
+        (self.code / "README.md").write_bytes(b"changed\n")
+        started = self._count_git()
+        # Measured on this fixture: 33 (one is the push's own update-ref), seven of
+        # them config reads, one per question; before the caches 44, a dozen config.
+        # The margin is for a call a later feature adds on purpose, which should then
+        # raise these numbers.
+        self.assertLessEqual(len(started), 35, sorted(started))
+        self.assertLessEqual(started.count("config"), 7, sorted(started))
+
+    def test_config_reads_see_a_write(self):
+        vault = self.vault
+        self.snapshot()
+        snap.forget_config_reads()
+        self.assertEqual(snap._config(vault, "snapshot.testkey"), "")
+        snap.git(vault / ".git", vault, ["config", "snapshot.testKey", "one"], cwd=vault)
+        self.assertEqual(snap._config(vault, "snapshot.testkey"), "one")
+        self.assertEqual(snap._config(vault, "Snapshot.TESTKEY"), "one")
+        # A write the tool did not make (the user, a test, another tool) is seen at
+        # once: a kept read is good only while the config file is unchanged.
+        _git(vault, "config", "snapshot.testkey", "two")
+        self.assertEqual(snap._config(vault, "snapshot.testkey"), "two")
+        self.assertEqual(snap._read_local_config_map(vault).get("snapshot.testkey"), ["two"])
+
+    def test_config_answers_what_git_config_get_answers(self):
+        vault = self.vault
+        self.snapshot()
+        for args in (("snapshot.multi", "a"), ("--add", "snapshot.multi", "b"),
+                     ('remote.My Sub.url', "x"), ("core.valueless", "")):
+            _git(vault, "config", *args)
+        snap.forget_config_reads()
+        for key in ("snapshot.multi", "remote.My Sub.url", "REMOTE.My Sub.URL",
+                    "core.autocrlf", "user.name", "snapshot.missing", "core.valueless"):
+            with self.subTest(key=key):
+                want = subprocess.run(["git", "-C", str(vault), "config", "--get", key],
+                                      capture_output=True, text=True).stdout.strip()
+                self.assertEqual(snap._config(vault, key), want)
+
+    def test_the_index_listing_sees_a_new_entry(self):
+        self.snapshot()
+        git_dir = self.vault / ".git"
+        before = snap.index_paths(git_dir, self.code)
+        (self.code / "brand-new.txt").write_bytes(b"new\n")
+        snap.git(git_dir, self.code, ["add", "-f", "brand-new.txt"], cwd=self.code)
+        after = snap.index_paths(git_dir, self.code)
+        self.assertNotIn("brand-new.txt", before)
+        self.assertIn("brand-new.txt", after)
+
+    def test_a_tip_is_read_again_after_a_ref_moves(self):
+        self.snapshot()
+        git_dir = self.vault / ".git"
+        tip = snap.current_tip(git_dir, self.code, BRANCH)
+        self.assertIsNotNone(tip)
+        snap.git(git_dir, self.code, ["update-ref", "-d", f"refs/heads/{BRANCH}"], cwd=self.code)
+        self.assertIsNone(snap.current_tip(git_dir, self.code, BRANCH))
+
+    def test_a_manifest_is_kept_only_for_a_commit_id(self):
+        self.snapshot()
+        git_dir = self.vault / ".git"
+        tip = snap.current_tip(git_dir, self.code, BRANCH)
+        snap.load_manifest(git_dir, self.code, tip)
+        snap.load_manifest(git_dir, self.code, BRANCH)
+        self.assertIn((str(git_dir), tip), snap._MANIFEST_TEXT)
+        self.assertNotIn((str(git_dir), BRANCH), snap._MANIFEST_TEXT)
+
+
 class ConfigPlumbingTests(_SnapshotFixture):
     """The vault's remembered settings: read once, written only when changed."""
 
     def _config_writes(self):
-        """A spy around subprocess.run recording local config *writes*."""
+        """A spy around subprocess.run recording every config *write*.
+
+        It used to count only writes that passed ``--local``, and so missed
+        ``ensure_byte_exact`` rewriting ``core.untrackedCache`` on every run: the
+        map it compared against is keyed as ``config --list`` prints keys, lower
+        case, and ``core.untrackedCache`` never matched.
+        """
         calls: list[list[str]] = []
         real_run = snap.subprocess.run
 
         def spy(cmd, *args, **kwargs):
-            if (
-                isinstance(cmd, list)
-                and "config" in cmd
-                and "--local" in cmd
-                and not any(
-                    str(a).startswith("--get") or str(a) in ("--list", "--null")
-                    for a in cmd
-                )
-            ):
+            # snapshot.pushed records the tip a push sent, so it changes with every
+            # push: a write the run means to make, not a setting rewritten.
+            if isinstance(cmd, list) and _writes_config(cmd) and snap._PUSHED_KEY not in cmd:
                 calls.append([str(c) for c in cmd])
             return real_run(cmd, *args, **kwargs)
 
