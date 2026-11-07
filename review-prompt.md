@@ -86,7 +86,8 @@ RULES FOR THE WHOLE REVIEW
   not run whole modules to "check that the tests pass". Several reviewers work on this
   commit at once, and a full run is twelve minutes or more each that finds nothing new.
   Done by the maintainer: `python tools/gates.py` on Windows 11 (build check, ruff, mypy,
-  the docs guards and all 1,601 tests: green) and the whole suite on Debian (WSL) with an
+  the docs guards and all 1,668 tests: green) and the whole suite on Debian (WSL; 1,673,
+  the symlink scenarios included) with an
   empty git config. Run a test only to do something those runs could not: reproduce a
   finding, run a mutation (delete a guard, watch its test), or try a case no test covers —
   one named test or class at a time (`python -m unittest tests.<module>.<Class>.<test>`).
