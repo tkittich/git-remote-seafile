@@ -762,6 +762,30 @@ class TestAVanishedRepositoryPathIsNotAnEmptyRepository(E2ETestCase):
         again = run_git(["push", "origin", "main"], src, self.env)
         self.assertNotIn("creates the repository anew", again.stderr)
 
+    def test_a_branch_missing_on_pro_for_a_non_owner_is_warned_about(self):
+        """Review 06cc623 (glm A1): on Pro an ``invisible`` folder leaves a branch out of
+        a non-owner's listing, which reads like a deletion, and ``fetch --prune`` then
+        drops the tracking ref.  The helper cannot tell, so it warns -- and only there:
+        the same missing branch on Community Edition is an ordinary deletion."""
+        name = "hidden_branch"
+        src = init_repo(self.work / f"src_{name}", self.env)
+        commit_file(src, "a.txt", "hello\n", "initial commit", self.env)
+        run_git(["remote", "add", "origin", self.url(name)], src, self.env)
+        run_git(["push", "-u", "origin", "main", "main:feature"], src, self.env)
+        run_git(["fetch", "origin"], src, self.env)
+        del self.stub.files[REPO_ID][f"/{name}/refs/heads/feature"]   # as the listing hides it
+        quiet = run_git(["fetch", "origin"], src, self.env)
+        self.assertNotIn("not listed by the server", quiet.stderr)
+        self.stub.faults["pro_server"] = True
+        self.stub.faults["owner"] = "someone-else@example.com"
+        try:
+            loud = run_git(["fetch", "origin"], src, self.env)
+        finally:
+            self.stub.faults.pop("pro_server", None)
+            self.stub.faults.pop("owner", None)
+        self.assertIn("not listed by the server (for example refs/heads/feature)", loud.stderr)
+        self.assertIn("is not the library's owner", loud.stderr)
+
     def test_a_first_clone_and_an_anonymous_ls_remote_are_not_refused(self):
         src = self._pushed_and_moved("vanished_anon")
         clone = run_git(["clone", self.url("vanished_anon"), str(self.work / "fresh_anon")],

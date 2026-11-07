@@ -585,6 +585,36 @@ def remote_tracking_refs(remote: str) -> list[str]:
     return [line for line in out.decode("utf-8", errors="replace").splitlines() if line.strip()]
 
 
+def tracked_remote_names(remote: str) -> set[str]:
+    """The remote-side names of the branches *remote*'s fetch has stored here.
+
+    ``refs/remotes/<remote>/x`` is ``refs/heads/x`` on the remote; a ``--mirror``
+    clone stores ``refs/heads/x`` and ``refs/tags/x`` as themselves.  Other refspecs
+    are left out (empty answer, never a guess).  Empty for an anonymous URL.
+    """
+    if not remote or "://" in remote or remote.startswith("-"):
+        return set()
+    names: set[str] = set()
+    for prefix in _fetch_destinations(remote):
+        if prefix == f"refs/remotes/{remote}/":
+            source = "refs/heads/"
+        elif prefix == "refs/":
+            source = ""
+        else:
+            continue
+        out, _, code = _repo_git("for-each-ref", "--format=%(refname)", prefix)
+        if code != 0:
+            continue
+        for line in out.decode("utf-8", errors="replace").splitlines():
+            rest = line.strip()[len(prefix):]
+            if not rest or rest == "HEAD":
+                continue
+            name = source + rest
+            if name.startswith(("refs/heads/", "refs/tags/")):
+                names.add(name)
+    return names
+
+
 def has_promisor_remote() -> bool:
     """True if any remote is a promisor -- i.e. a partial or blobless clone.
 

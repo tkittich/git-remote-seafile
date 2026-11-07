@@ -57,6 +57,7 @@ from .git_util import (
     is_shallow_repository,
     objects_may_be_incomplete,
     remote_tracking_refs,
+    tracked_remote_names,
     GitError,
     rev_parse,
     get_git_dir,
@@ -351,6 +352,32 @@ class RemoteHelper:
         sys.stdout.write("\n")
         sys.stdout.flush()
 
+    def _warn_if_tracked_refs_may_be_hidden(self, advertised: set[str]) -> None:
+        """Warn when branches this clone tracks are missing and Pro could be hiding them.
+
+        On Seafile Professional an ``invisible`` folder permission leaves a branch out
+        of a non-owner's listing, and the advertisement then reads exactly like a
+        branch deleted on the server: ``git fetch --prune`` drops the tracking ref,
+        and a ``--mirror`` clone the branch (review 06cc623, glm A1, reproduced on the
+        stub).  The helper cannot tell the two apart, so it says so -- only when
+        something tracked is missing *and* the server says this account may not see
+        everything, so an ordinary deletion on Community Edition stays quiet.
+        """
+        try:
+            missing = sorted(tracked_remote_names(self.remote_name) - advertised)
+            risk = self.client.hidden_history_risk(self.repo_id) if missing else None
+        except Exception:
+            return
+        if not (missing and isinstance(risk, str) and risk):
+            return
+        sys.stderr.write(
+            f"Warning: {len(missing)} ref(s) this clone tracks from '{self.remote_name}' are "
+            f"not listed by the server (for example {missing[0]}), and {risk}. If they were "
+            "not deleted on purpose, do not fetch with --prune (or fetch.prune) from this "
+            "account: it would delete them here too.\n"
+        )
+        sys.stderr.flush()
+
     def _remote_hash_width(self, this_ref: str | None) -> int | None:
         """40 or 64 from the refs the remote holds *now*; ``None`` when there are none to read.
 
@@ -550,6 +577,9 @@ class RemoteHelper:
                     "was deleted on purpose, delete the remote's tracking branches "
                     f"(git branch -r -d {self.remote_name}/<branch>) or push to recreate it."
                 )
+        if listed_any and not for_push:
+            self._warn_if_tracked_refs_may_be_hidden({name for name, _ in discovered_refs})
+
         # A push to that same empty path still goes ahead -- it is how a deleted
         # repository is made again -- but if the folder was only *moved*, it creates a
         # one-branch repository at the old path, after which the guard above never
