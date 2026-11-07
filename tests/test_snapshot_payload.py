@@ -276,6 +276,33 @@ class PayloadBasicsTests(_PayloadFixture):
         self.assertIn("uploaded 0 object(s)", out)
         self.assertEqual(self.server_files(), before)
 
+    def test_a_payload_file_whose_only_change_is_its_mtime_is_hashed_again_and_commits(self):
+        """R4's second clause.  Review 06cc623 (gemini E3b): R4's named test above
+        survived dropping the mtime from the hash cache's key, since it never
+        touches a file.  A change time would catch a touch on its own (``utime`` moves
+        it), so this runs where there is none: the mtime alone must.  Both mtimes are
+        hours old, past every racy window."""
+        import unittest.mock
+
+        target = self.src / "big1.bin"
+        hours_ago = time.time_ns() - 3 * 3600 * 1_000_000_000
+        os.utime(target, ns=(hours_ago, hours_ago))
+        no_ctime = unittest.mock.patch.object(snap, "change_time_ns", lambda path, st: None)
+        with no_ctime:
+            self.assertEqual(self.snapshot()[0], 0)
+        before = self.server_files()
+        later = hours_ago + 3600 * 1_000_000_000
+        os.utime(target, ns=(later, later))
+        with no_ctime:
+            rc, out, err = self.snapshot()
+        self.assertEqual(rc, 0, out + err)
+        self.assertNotIn("no changes since the last snapshot", out)
+        self.assertGreaterEqual(out.count("hashing ["), 1, out)
+        self.assertIn("uploaded 0 object(s)", out)
+        added = self.server_files().keys() - before.keys()
+        self.assertEqual([k for k in added if k.startswith(self.objects + "/")], [],
+                         "an object was uploaded for a file whose bytes did not change")
+
     def test_a_same_size_edit_is_a_new_object_and_the_old_one_stays(self):
         self.assertEqual(self.snapshot()[0], 0)
         edited = bytes(b ^ 0xFF for b in self.big1)
