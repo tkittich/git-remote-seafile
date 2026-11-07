@@ -1007,6 +1007,38 @@ class SharedUserTests(_RealServerFixture):
         self.assertTrue((dst / "b.txt").is_file(), tag)
 
     # -- tests ----------------------------------------------------------------
+    def test_measure_what_an_invisible_rule_shows_the_account(self):
+        """ROADMAP B2, a measurement: does a Pro ``invisible`` folder rule hide the folder
+        from the account's listing of its parent?  If it does, a ``gc`` or
+        ``--payload-delete`` by that account would read refs under it as absent; the
+        answer decides whether those refuse for an account that is not the owner.
+        It records what the server does (the ``MEASURED`` line in the log) and fails only
+        on an answer that is neither of the two shapes the decision is written for."""
+        if not self._rules_supported:
+            self.skipTest("no folder permissions on this server (user-folder-perm is Pro only)")
+        from git_remote_seafile.client import SeafileAPIError, SeafileClient
+
+        second = SeafileClient(server_url=self.client.server_url, token=_SECOND_TOKEN)
+        parent = f"/{self.base}/rules"
+        listed = sorted(str(e.get("name")) for e in second.list_dir(self.rid, parent))
+        try:
+            inside = f"lists ({len(second.list_dir(self.rid, parent + '/invisible'))} entries)"
+        except SeafileAPIError as ex:
+            inside = f"refused ({str(ex)[:120]})"
+        hidden = "invisible" not in listed
+        print(f"\nMEASURED (B2, {self._edition()}): the parent listing "
+              f"{'omits' if hidden else 'shows'} the invisible folder; the folder itself {inside}; "
+              f"the account sees {listed}", flush=True)
+        self.assertIn("rw", listed, "the account must see a folder it may write")
+        if not hidden:
+            self.assertTrue(inside.startswith("refused"),
+                            "an invisible folder that is listed must at least refuse its contents")
+
+    @classmethod
+    def _edition(cls) -> str:
+        info = _server_info(cls.client)
+        return f"{'Pro' if _server_is_pro(cls.client) else 'CE'} {info.get('version', '?')}"
+
     def test_a_shared_user_pushes_where_the_rules_allow_and_is_refused_loudly_elsewhere(self):
         if not self._rules_supported:
             self.skipTest("no folder permissions on this server (user-folder-perm is Pro only)")
