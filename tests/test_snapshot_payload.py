@@ -1639,6 +1639,51 @@ class PayloadRetentionTests(_PayloadFixture):
         self.assertNotIn(orphan, self.server_files())
         self.assertEqual(self.object_count(), 2)
 
+    def test_a_delete_run_removes_what_a_killed_link_probe_left(self):
+        """ROADMAP B4: a run killed during the link probe left a 16 MiB ``probe-*`` in
+        ``objects/`` for good, where no payload tool reads.  A delete run now removes one
+        a day old; the stub stamps every listing with now, so the age bound is lowered."""
+        self.assertEqual(self.snapshot()[0], 0)
+        debris = f"{self.objects}/probe-0a1b2c3d-1.part-0a1b2c3d"
+        lookalike = f"{self.objects}/probe-notes.txt"
+        self.stub.files[REPO_ID][debris] = b"x" * 1024
+        self.stub.files[REPO_ID][lookalike] = b"mine"
+        objects_before = self.object_count() - 2
+        with unittest.mock.patch.object(snap, "_PROBE_DEBRIS_SECONDS", -1):
+            rc, out, err = self.gc("--payload-delete", "--payload-grace-days", "1")
+        self.assertEqual(rc, 0, out + err)
+        self.assertNotIn(debris, self.server_files())
+        self.assertIn(lookalike, self.server_files(), "a name the probe does not make is not touched")
+        self.assertIn("killed link probe", out)
+        self.assertEqual(self.object_count() - 1, objects_before)
+
+    def test_the_probe_sweep_takes_only_old_probe_files(self):
+        now = 10_000_000.0
+
+        class Fake:
+            deleted: list[str] = []
+
+            def get_server_time(self):
+                return now
+
+            def delete_entry(self, rid, path):
+                self.deleted.append(path.rsplit("/", 1)[-1])
+                return True
+
+        name = "probe-0a1b2c3d-2.part-0a1b2c3d"
+        entries = [
+            {"type": "file", "name": name, "mtime": now - 2 * DAY},                     # taken
+            {"type": "file", "name": "probe-0a1b2c3d-3.part-0a1b2c3d", "mtime": now - 60},  # running
+            {"type": "file", "name": "probe-0a1b2c3d-4.part-0a1b2c3d", "mtime": True},
+            {"type": "file", "name": "probe-0a1b2c3d-5.part-0a1b2c3d"},
+            {"type": "dir", "name": name, "mtime": now - 2 * DAY},
+            {"type": "file", "name": "PROBE-0a1b2c3d-1.part-0a1b2c3d", "mtime": now - 2 * DAY},
+            {"type": "file", "name": "ab" * 32, "mtime": now - 2 * DAY},
+        ]
+        fake = Fake()
+        self.assertEqual(snap.sweep_probe_debris(fake, "rid", "/v/payload/objects", entries), 1)
+        self.assertEqual(fake.deleted, [name])
+
     def test_a_marker_that_does_not_read_back_says_so(self):
         """The upload's 2xx is not evidence the baseline landed (S3 write half)."""
         import contextlib

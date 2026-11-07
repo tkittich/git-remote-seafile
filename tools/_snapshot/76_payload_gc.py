@@ -674,6 +674,9 @@ def payload_gc(
             "has the file, or run --payload-verify"
         )
     write_seen_tips(client, rid, base, history.tips)
+    swept = sweep_probe_debris(client, rid, f"{base}/objects")
+    if swept:
+        print(f"removed {swept} file(s) a killed link probe left in {base}/objects")
     print(f"marked {marked} newly unreferenced object(s); deleted {deleted} object(s), "
           f"{total(due)}; quota is released at once, disk after the library's history "
           f"expires and the server's GC runs")

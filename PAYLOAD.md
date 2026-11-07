@@ -93,7 +93,9 @@ both once, for a **new vault** (no earlier snapshot, nothing remembered) whose g
 4-64 MiB band is a gigabyte or more: it deflates real chunks of that band, uploads four
 16 MiB probe files (one, then three at once) directly under `payload/objects/` (outside
 the 256 fan-out directories every payload tool reads, so none of them sees one) and
-deletes them, and
+deletes them (one a killed run left is deleted by the next probe or `--payload-delete` run
+once its listed `mtime` is a day older than the server's clock; it is never referenced, so
+it needs no mark), and
 takes the break-even `single * (1/upload + 1/hash - 1/deflate)` kept between 0.5 and 0.9
 (`tuned_ratio`). The result, with the two rates, is remembered in the vault
 (`snapshot.payloadratio`, `snapshot.uplink`, `snapshot.uplink1`), so the choice is made

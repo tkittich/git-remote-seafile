@@ -132,6 +132,38 @@ def placement_lines(
 #: ~0.25 s is mostly request latency, and three streams read *slower* than one.
 _PROBE_BYTES = 16 * 1024 ** 2
 _PROBE_STREAMS = 3
+#: What ``probe_link`` names its files, and how old one must be before it counts
+#: as left by a killed probe (a probe takes seconds; ROADMAP B4).
+_PROBE_NAME = re.compile(r"^probe-[0-9a-f]{8}-\d+\.part-[0-9a-f]{8}$")
+_PROBE_DEBRIS_SECONDS = 86400
+
+
+def sweep_probe_debris(client: Any, rid: str, directory: str, entries: list | None = None) -> int:
+    """Delete the ``probe-*`` files a killed link probe left in *directory*; the count.
+
+    A probe file is never referenced by anything -- it lives beside the fan-out
+    directories, where no payload tool reads -- so it needs no mark and grace
+    period: one a day old is from a probe that died, not one running now.  Its
+    age is the listing's ``mtime`` (server-assigned) against the server's clock.
+    Best effort: a failure deletes nothing and is not reported.
+    """
+    try:
+        now = float(client.get_server_time())
+        listed = client.list_dir(rid, directory) if entries is None else entries
+    except Exception:
+        return 0
+    removed = 0
+    for entry in listed:
+        name, mtime = entry.get("name"), entry.get("mtime")
+        if (entry.get("type") == "dir" or not isinstance(name, str) or not _PROBE_NAME.match(name)
+                or not isinstance(mtime, (int, float)) or isinstance(mtime, bool)
+                or now - mtime < _PROBE_DEBRIS_SECONDS):
+            continue
+        try:
+            removed += bool(client.delete_entry(rid, f"{directory}/{name}"))
+        except Exception:
+            pass
+    return removed
 
 
 def tuned_ratio(deflate: float, upload: float, single: float) -> float:
@@ -165,7 +197,9 @@ def probe_link(remote: str, *, force: bool = False) -> dict[str, Any] | None:
         client = _open_client(server_url)
         rid = client.get_repo_id(library)
         directory = f"{base}/objects"
-        in_use = any(e.get("type") == "dir" for e in client.list_dir(rid, directory))
+        listed = client.list_dir(rid, directory)
+        sweep_probe_debris(client, rid, directory, listed)
+        in_use = any(e.get("type") == "dir" for e in listed)
         if in_use and not force:
             return {"in_use": True}
         client.mkdir_p(rid, directory)
