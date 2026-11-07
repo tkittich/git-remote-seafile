@@ -188,6 +188,18 @@ class ReleaseCheckTests(unittest.TestCase):
         _git(self.root, "fetch", "-q", "origin")
         self.assertNotIn("pushed", self.failed(rc.check(self.root)))
 
+    def test_a_triage_with_open_items_is_named(self):
+        # Review 06cc623, triage section 7: a triage's prompt feedback must not be
+        # forgotten between the fixes and the next round.
+        triage = self.root / "REVIEW.TRIAGE-abc1234.md"
+        triage.write_text("# t\n\n- [x] done\n- [ ] apply to review-prompt.md\n* [ ] two\n",
+                          encoding="utf-8")
+        warned = [d for s, n, d in rc.open_triage_items(self.root) if s == "warn"]
+        self.assertEqual(len(warned), 1)
+        self.assertIn("REVIEW.TRIAGE-abc1234.md has 2 open item(s)", warned[0])
+        triage.write_text("# t\n\n- [x] done\n", encoding="utf-8")
+        self.assertEqual(rc.open_triage_items(self.root), [])
+
     def test_missing_notes_fail(self):
         (self.root / ".github" / "release-notes" / "v0.2.0.md").unlink()
         _git(self.root, "commit", "-qam", "x")

@@ -17,6 +17,10 @@ This runs the same checks locally:
   that one case into a warning, for a check run deliberately without GitHub.
 * HEAD is on ``origin/main``: a commit only on a ``ci/<topic>`` branch is not
   what gets released.
+* no review triage in the root (``REVIEW.TRIAGE-*.md``, git-ignored) still has an
+  open checklist item (``- [ ]``): a triage's follow-ups -- the next review prompt's
+  changes above all -- were accepted and then forgotten before (a warning: the
+  files are local, so a clean checkout has none to read).
 
 Usage::
 
@@ -113,6 +117,20 @@ def workflow_results(sha: str, gh: "object" = None, *, offline: bool = False) ->
                 results.append(("ok", workflow, f"green at {sha[:7]} ({', '.join(jobs)})"))
         else:
             results.append(("ok", workflow, f"green at {sha[:7]}"))
+    return results
+
+
+_OPEN_ITEM = re.compile(r"^\s*[-*] \[ \]", re.M)
+
+
+def open_triage_items(root: Path) -> list[Result]:
+    """One warning per triage in *root* that still has an unticked ``- [ ]`` item."""
+    results: list[Result] = []
+    for triage in sorted(root.glob("REVIEW.TRIAGE-*.md")):
+        count = len(_OPEN_ITEM.findall(triage.read_text(encoding="utf-8", errors="replace")))
+        if count:
+            results.append(("warn", "triage", f"{triage.name} has {count} open item(s); finish "
+                            "or drop them, then move it to archive/"))
     return results
 
 
@@ -244,6 +262,7 @@ def check(root: Path, tag: str | None = None, *, offline: bool = False) -> list[
              "into main and push before tagging")
     else:
         warn("pushed", "HEAD is on no remote branch: push, and wait for CI green, before tagging")
+    results.extend(open_triage_items(root))
     rc, sha = _git(root, "rev-parse", "HEAD")
     if rc == 0 and sha.strip():
         results.extend(workflow_results(sha.strip(), offline=offline))

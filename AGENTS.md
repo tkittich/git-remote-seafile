@@ -189,6 +189,18 @@ real data**, even to test. Read-only commands (`--payload-verify`, report-only
   places that fold names) and say in the commit message which were checked. The 0.9.22
   `--no-push` fix covered two of six settings, and the four it missed were the next
   round's finding (Y2).
+- **A fix that closes a shape gets a guard that does not need to know the sites.** Naming
+  siblings by hand missed some three rounds running (X10 → Y2 → Z8; Y4 → Z2, Z3). Prefer a
+  test that fails for the *next* site too: the vault config compared byte for byte after
+  `--no-push`, every raw `get_file_text` read listed with its reason
+  (`TestAStateFileTheFolderListsIsNeverAbsent`), the `--changed` map derived from the
+  imports. The commit message names the search it ran for siblings (the `git grep`, or the
+  test), so a reviewer can run it again.
+- **A triage's feedback on the review prompt is a checklist, applied in the same session.**
+  The triage (`REVIEW.TRIAGE-<commit>.md`, git-ignored, in the root until the tag) lists
+  each prompt change as `- [ ]`, and the session that folds the fixes edits
+  `review-prompt.md` and ticks them. `tools/release_check.py` warns while any triage in
+  the root still has an open box; after the tag the triage moves to `archive/`.
 - **A round starts on a commit, not on a green run.** Reviewers read the commit; the
   prompt names the CI run for it (`ci.yml` and `realserver.yml` at that commit) as the
   suite they need not repeat. Start the round as soon as the commit exists; a fix the
