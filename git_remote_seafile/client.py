@@ -54,12 +54,20 @@ _LAYOUT_DIR_NAMES = frozenset({
 _HEX2 = re.compile(r"[0-9a-f]{2}")
 
 
-def _is_layout_dir(parent: str, name: str) -> bool:
+def _is_layout_dir(parent: str, name: str, root: str | None = None) -> bool:
     """True for a folder the helper or the snapshot tool lays out itself.
 
     The fixed names, and the two-hex fan-out folders under ``lfs/`` (two levels)
-    and the payload's ``objects/`` (one).
+    and the payload's ``objects/`` (one).  With *root* (the repository's own path),
+    only a folder strictly inside it: a repository a person named ``lfs`` or
+    ``db/ca`` is theirs, and a copy of it is named, not removed (review 06cc623:
+    opus G3.1, glm G3.1, gemini G3.1a).
     """
+    if root is not None:
+        path = f"{parent.rstrip('/')}/{name}"
+        top = "/" + root.strip("/")
+        if not path.startswith(top.rstrip("/") + "/"):
+            return False
     if name in _LAYOUT_DIR_NAMES:
         return True
     above = parent.rstrip("/").rpartition("/")[2]
@@ -443,6 +451,9 @@ class SeafileClient:
         self._repos_cache: dict[str, str] = {}  # name_or_id -> id
         self._encrypted_repo_ids: set[str] = set()
         self._known_dirs: set[tuple[str, str]] = set()  # (repo_id, clean_path)
+        #: The repository path whose inside the caller lays out (the helper and the
+        #: LFS agent set it); ``None`` judges a folder by its name alone.
+        self.layout_root: str | None = None
 
         # `require_credentials=False` is for commands that need to know which
         # server they are talking about but never authenticate -- `desktop-url`
@@ -1128,16 +1139,28 @@ class SeafileClient:
                 # *created* directory (two, with the one before), so an established
                 # repository pays nothing.
                 try:
-                    copies = [] if before is None else [
+                    copies = [
                         str(e.get("name")) for e in self.list_dir(repo_id, parent)
-                        if e.get("type") == "dir" and str(e.get("name")) not in before
+                        if e.get("type") == "dir" and str(e.get("name")) not in (before or ())
                         and _is_seafile_copy_of(part, str(e.get("name")))
                     ]
                 except (SeafileAPIError, requests.RequestException):
                     copies = []
                 for copy in copies:
                     copy_path = f"{parent.rstrip('/')}/{copy}"
-                    if not _is_layout_dir(parent, part):
+                    if before is None:
+                        # The listing before the mkdir failed, so whether this copy is
+                        # new cannot be told: never removed, but no longer unmentioned
+                        # either (review 06cc623, opus G3.1).
+                        sys.stderr.write(
+                            f"Warning: {copy_path} is beside {current}; it may be a numbered "
+                            "copy two clients made by creating the folder at once, or a "
+                            "folder that was there before. Nothing uses it; check it in the "
+                            "web UI\n"
+                        )
+                        sys.stderr.flush()
+                        continue
+                    if not _is_layout_dir(parent, part, self.layout_root):
                         sys.stderr.write(
                             f"Warning: {copy_path} appeared beside {current} as it was created "
                             "(Seafile makes a numbered copy when two clients create a folder at "

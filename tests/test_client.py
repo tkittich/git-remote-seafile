@@ -1840,7 +1840,7 @@ class TestSeafileClientOperations(unittest.TestCase):
             client2.get_repo_id("lib")
 
     def _mkdir_with_siblings(self, siblings, copy_listing, before=None, copy_status=200,
-                             leaf=".git-lock.d"):
+                             leaf=".git-lock.d", layout_root=None):
         """``mkdir_p("/r/<leaf>")`` where the parent then lists *siblings*.
 
         *before* is what the parent listed ahead of the mkdir (by default *siblings*
@@ -1848,6 +1848,7 @@ class TestSeafileClientOperations(unittest.TestCase):
         the paths it deleted.  *copy_listing* is what a copy lists as, with *copy_status*.
         """
         client = SeafileClient(server_url="https://seafile.example.com", token="fake_token", timeout=10)
+        client.layout_root = layout_root
         client.session = MagicMock()
         client._known_dirs.add(("repo1", "/r"))
         if before is None:
@@ -1946,6 +1947,61 @@ class TestSeafileClientOperations(unittest.TestCase):
                 siblings = [{"type": "dir", "name": leaf}, {"type": "dir", "name": copy}]
                 _client, deleted = self._mkdir_with_siblings(siblings, copy_listing=[], leaf=leaf)
                 self.assertEqual(len(deleted), 1, deleted)
+
+    def test_a_repository_named_like_a_layout_folder_is_a_persons_folder(self):
+        """Review 06cc623 (opus G3.1, glm G3.1, gemini G3.1a): the name alone decided, so
+        a repository at ``lib/lfs`` or ``lib/db/ca`` had a copy of *itself* removed
+        without the warning promised for a folder a person named."""
+        from git_remote_seafile.client import _is_layout_dir
+
+        self.assertFalse(_is_layout_dir("/lib", "lfs", root="/lib/lfs"))
+        self.assertFalse(_is_layout_dir("/lib/db", "ca", root="/lib/db/ca"))
+        self.assertTrue(_is_layout_dir("/lib/lfs", "refs", root="/lib/lfs"))
+        self.assertTrue(_is_layout_dir("/lib/lfs/lfs", "ab", root="/lib/lfs"))
+        err = io.StringIO()
+        with patch("sys.stderr", err):
+            _client, deleted = self._mkdir_with_siblings(
+                [{"type": "dir", "name": "lfs"}, {"type": "dir", "name": "lfs (1)"}],
+                copy_listing=[], leaf="lfs", layout_root="/r/lfs")
+        self.assertEqual(deleted, [])
+        self.assertIn("/r/lfs (1)", err.getvalue())
+
+    def test_a_copy_beside_a_folder_whose_parent_could_not_be_listed_first_is_named(self):
+        """Review 06cc623 (opus G3.1): with the listing before the mkdir failed, a copy
+        was neither removed nor mentioned.  It is still never removed (it may be a
+        folder that was there), but now it is named."""
+        client = SeafileClient(server_url="https://seafile.example.com", token="t", timeout=10)
+        listings = iter([SeafileAPIError("HTTP 502"),
+                         [{"type": "dir", "name": "refs"}, {"type": "dir", "name": "refs (1)"}]])
+
+        def list_dir(repo_id, path):
+            answer = next(listings)
+            if isinstance(answer, Exception):
+                raise answer
+            return answer
+        client.list_dir = list_dir
+        client.dir_exists = lambda repo_id, path: False
+        client._known_dirs.add(("repo1", "/r"))
+        client.session = MagicMock()
+        client.session.post.return_value = MagicMock(status_code=201, text="success")
+        client.delete_entry = MagicMock()
+        err = io.StringIO()
+        with patch("sys.stderr", err):
+            client.mkdir_p("repo1", "/r/refs")
+        client.delete_entry.assert_not_called()
+        self.assertIn("/r/refs (1)", err.getvalue())
+
+    def test_the_helper_and_the_lfs_agent_name_their_layout_root(self):
+        from git_remote_seafile.helper import RemoteHelper
+        from git_remote_seafile.lfs import LFSTransferAgent
+
+        with patch("git_remote_seafile.helper.SeafileClient") as made:
+            made.return_value = MagicMock()
+            helper = RemoteHelper("origin", "seafile://lib/some/lfs")
+        self.assertEqual(helper.client.layout_root, "/some/lfs")
+        client = SeafileClient(server_url="https://seafile.example.com", token="t", timeout=10)
+        LFSTransferAgent(client, "repo1", "/x/db/ca/")
+        self.assertEqual(client.layout_root, "/x/db/ca")
 
     def test_the_hex_fan_out_folders_are_layout_folders_and_lookalikes_are_not(self):
         from git_remote_seafile.client import _is_layout_dir

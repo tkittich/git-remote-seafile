@@ -63,6 +63,8 @@ class LFSTransferAgent:
         self.repo_id = repo_id
         self.repo_path = repo_path.rstrip("/")
         self.lfs_dir = f"{self.repo_path}/lfs"
+        if isinstance(client, SeafileClient):
+            client.layout_root = self.repo_path
         tmp_parent: Path | None = None
         if git_dir is not None:
             candidate = Path(git_dir) / "lfs" / "tmp"

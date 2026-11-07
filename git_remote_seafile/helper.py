@@ -267,6 +267,8 @@ class RemoteHelper:
         self.repo_path = parsed_url.repo_path
         self.path_defaulted = parsed_url.path_defaulted
         self.client = client if client is not None else SeafileClient(server_url=self.server_url)
+        if client is None:
+            self.client.layout_root = self.repo_path
         self.dry_run = False
         self._refs_cache: dict[str, str] = {}  # refname -> sha1
 
