@@ -60,6 +60,13 @@ jobs:
         run: python -m pip install .
       - name: Start the Seafile ${{ matrix.edition }} container
         run: docker compose -f .github/seafile-ci.yml up -d
+      # ROADMAP B8: the tags float, so each run records what it actually tested
+      # (the digest of every image) -- the record the pins are taken from.
+      - name: Record the image digests
+        run: |
+          for image in $(docker compose -f .github/seafile-ci.yml config --images); do
+            echo "IMAGE $image $(docker image inspect --format '{{join .RepoDigests " "}}' "$image")"
+          done
       - name: Run the real-server suite against it
         run: python tools/realserver_ci.py
       # S15: the probe that finds the largest accepted upload, against a proxy
