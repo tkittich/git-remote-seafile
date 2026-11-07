@@ -91,6 +91,66 @@ def _require_the_same_server(env: dict, tmp: Path, server_url: str) -> None:
         )
 
 
+def _server_info(client) -> dict:
+    """``/api2/server-info/`` as a dict (``{}`` for anything else)."""
+    info = client.session.get(f"{client.server_url}/api2/server-info/", timeout=60).json()
+    return info if isinstance(info, dict) else {}
+
+
+def _server_is_pro(client) -> bool:
+    """Whether the server is Seafile Professional, from its own features list.
+
+    A module function, not a method: ``SharedUserTests`` derives from the fixture,
+    not from ``RealServerTests``, and a method on the latter is not there when the
+    former's ``setUpClass`` runs -- which only a real-server run shows, since the
+    tier skips everywhere else (the second realserver.yml run, both legs).
+    """
+    return "seafile-pro" in (_server_info(client).get("features") or [])
+
+
+class EditionProbeTests(unittest.TestCase):
+    """Runs without a server, so a broken probe shows before a dispatch does."""
+
+    def _client(self, payload):
+        from unittest.mock import MagicMock
+
+        client = MagicMock()
+        client.server_url = "https://seafile.example.com"
+        client.session.get.return_value.json.return_value = payload
+        return client
+
+    def test_the_features_list_decides(self):
+        self.assertTrue(_server_is_pro(self._client({"features": ["seafile-basic", "seafile-pro"]})))
+        self.assertFalse(_server_is_pro(self._client({"features": ["seafile-basic"]})))
+        self.assertFalse(_server_is_pro(self._client({})))
+        self.assertFalse(_server_is_pro(self._client(["not", "a", "dict"])))
+
+    def test_every_class_method_a_setup_calls_exists(self):
+        # The slip this guards: setUpClass reached for a method of another class,
+        # which nothing but a real-server run executes.  Every ``cls._name`` a
+        # setUpClass/tearDownClass reads must be on the class, or assigned there.
+        import ast
+        import inspect
+        import textwrap
+
+        for cls in (RealServerTests, SharedUserTests, LibraryCreationTests, ProxyBodyLimitTests):
+            for name in ("setUpClass", "tearDownClass"):
+                if name not in vars(cls):
+                    continue
+                tree = ast.parse(textwrap.dedent(inspect.getsource(getattr(cls, name))))
+                assigned = {
+                    t.attr for n in ast.walk(tree) if isinstance(n, ast.Assign)
+                    for t in n.targets if isinstance(t, ast.Attribute)
+                }
+                for node in ast.walk(tree):
+                    if (isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name)
+                            and node.value.id == "cls" and node.attr.startswith("_")
+                            and isinstance(node.ctx, ast.Load) and node.attr not in assigned):
+                        self.assertTrue(hasattr(cls, node.attr),
+                                        f"{cls.__name__}.{name} uses cls.{node.attr}, "
+                                        "which the class does not have")
+
+
 @unittest.skipUnless(_LIBRARY, "set SEAFILE_TEST_LIBRARY to a scratch library to run these")
 class RealServerTests(unittest.TestCase):
     @classmethod
@@ -149,16 +209,11 @@ class RealServerTests(unittest.TestCase):
                f"?p={quote(path, safe='/')}")
         return self.client.session.request(method, url, timeout=60, **kw)
 
-    @classmethod
-    def _server_info(cls) -> dict:
-        info = cls.client.session.get(
-            f"{cls.client.server_url}/api2/server-info/", timeout=60
-        ).json()
-        return info if isinstance(info, dict) else {}
+    def _server_info(self) -> dict:
+        return _server_info(self.client)
 
-    @classmethod
-    def _is_pro(cls) -> bool:
-        return "seafile-pro" in (cls._server_info().get("features") or [])
+    def _is_pro(self) -> bool:
+        return _server_is_pro(self.client)
 
     # -- API semantics the stub copies -----------------------------------------
     def test_api_semantics_the_stub_encodes(self):
@@ -854,7 +909,7 @@ class SharedUserTests(_RealServerFixture):
         # the endpoint's status: CE 13.0 answers it 403 "Permission denied.", the
         # same body as a real refusal (measured in the CE container, first run of
         # realserver.yml), so a status cannot tell "no such feature" from "denied".
-        cls._rules_supported = cls._is_pro()
+        cls._rules_supported = _server_is_pro(cls.client)
         cls._made_library_share = False
         try:
             existing = cls._admin("GET", f"/api2/repos/{cls.rid}/dir/shared_items/",
@@ -998,14 +1053,28 @@ class SharedUserTests(_RealServerFixture):
                 dst = self.tmp / f"race{rnd}_clone"
                 self._git(["clone", "-q", url, str(dst)], self.tmp)
                 self._git(["fsck", "--strict"], dst)
-                # Inside the repository, and in the two folders the race created above it:
-                # a simultaneous mkdir of `repo` leaves `repo (1)` in `race<N>`, and of
-                # `race<N>` leaves `race<N> (1)` in the base, which a listing of the
-                # repository alone never sees (review 4f1cdd4, glm-5.3 G4.2).
-                for folder in (path, f"{self.base}/race{rnd}", self.base):
-                    names = [e["name"] for e in self.client.list_dir(self.rid, "/" + folder)]
-                    self.assertFalse([n for n in names if " (" in n or "SFConflict" in n],
-                                     f"the race left copies in /{folder}: {names}")
+                # Inside the repository no copy may stay: its folders are the helper's
+                # own, so a copy of one is removed.
+                names = [e["name"] for e in self.client.list_dir(self.rid, "/" + path)]
+                self.assertFalse([n for n in names if " (" in n or "SFConflict" in n],
+                                 f"the race left copies in /{path}: {names}")
+                # Above it the folders are the ones a person named (`repo`, `race<N>`),
+                # and a copy of one is named and left, not removed (the maintainer's
+                # review of 0fca23d).  A simultaneous mkdir leaves `repo (1)` in
+                # `race<N>` and `race<N> (1)` in the base, which a listing of the
+                # repository alone never sees (review 4f1cdd4, glm-5.3 G4.2): each such
+                # copy must be empty and named in a push's warning.
+                said = "".join(p.stderr for p in results.values())
+                for folder in (f"{self.base}/race{rnd}", self.base):
+                    for entry in self.client.list_dir(self.rid, "/" + folder):
+                        name = entry["name"]
+                        self.assertNotIn("SFConflict", name, f"/{folder}: {name}")
+                        if " (" not in name:
+                            continue
+                        copy = f"/{folder}/{name}"
+                        self.assertEqual(self.client.list_dir(self.rid, copy), [],
+                                         f"{copy} is not empty")
+                        self.assertIn(copy, said, f"{copy} was left without a warning")
 
     def _require_library_create(self):
         if os.environ.get("SEAFILE_TEST_ALLOW_LIBRARY_CREATE") != "1":
