@@ -2353,13 +2353,29 @@ class VaultMemoryTests(_SnapshotFixture):
         before = config.read_bytes()
         (self.code / "src").mkdir(exist_ok=True)
         (self.code / "src" / "kept.txt").write_bytes(b"one\n")
-        rc, _, err = self.snapshot("--no-push", "--exclude", "src", "--branch", "side",
-                                   "--no-record-mtimes", "--default-excludes")
+        # Review 06cc623 (gemini G4.1a): a new credential-looking file, and a profile
+        # the data would change, were written too -- the first must still be warned
+        # about by the first push.
+        (self.code / "id_rsa").write_bytes(b"-----BEGIN OPENSSH PRIVATE KEY-----\n")
+        (self.code / "bulk.dat").write_bytes(os.urandom(3 * 1024 * 1024))
+        # A small "large tree" bar, so the profile is sampled again on this run.
+        with unittest.mock.patch.object(snap, "_PROFILE_MIN_TREE_BYTES", 1024):
+            rc, out, err = self.snapshot("--no-push", "--exclude", "src", "--branch", "side",
+                                         "--no-record-mtimes", "--default-excludes")
         self.assertEqual(rc, 0, err)
+        self.assertIn("id_rsa", out)
         self.assertEqual(config.read_bytes(), before, "a --no-push run wrote a setting")
-        rc, _, err = self.snapshot()
+        rc, out, err = self.snapshot("--remote", self.remote)
         self.assertEqual(rc, 0, err)
         self.assertIn("src/kept.txt", self.tree())
+        self.assertIn("id_rsa", out, "the push was not warned about the new key file")
+
+    def test_no_object_compression_is_refused_with_no_push(self):
+        # It sets the vault's profile for every later run (glm G4.1, gemini G4.1a).
+        rc, _, err = self.snapshot("--no-push", "--no-object-compression")
+        self.assertEqual(rc, 1, err)
+        self.assertIn("--no-object-compression sets the vault's profile", err)
+        self.assertFalse((self.vault / ".git").exists())
 
     def test_a_dry_run_does_not_write_the_remembered_settings(self):
         self.snapshot("--dry-run", "--remote", self.remote)

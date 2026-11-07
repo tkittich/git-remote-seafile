@@ -396,8 +396,8 @@ def run_command(args: argparse.Namespace) -> int:
             if args.no_object_compression:
                 apply_large_payload_profile(vault, git_dir)
             else:
-                choose_profile(vault, git_dir, source, exclude, vault_config, write=True,
-                               skip=payload_skip or None)
+                choose_profile(vault, git_dir, source, exclude, vault_config,
+                               write=not args.no_push, skip=payload_skip or None)
         else:
             # The identity *check* still runs on a preview -- failing
             # early with the actionable message beats a commit-tree
@@ -558,7 +558,7 @@ def run_command(args: argparse.Namespace) -> int:
                     index_paths(git_dir, source)
                     + [item["path"] for item in (manifest or {}).get("files", [])]
                 ),
-                remember=not args.dry_run,
+                remember=not (args.dry_run or args.no_push),  # the push decides
             )
 
             # A real run's ``None`` commit *is* the "tree unchanged" signal:

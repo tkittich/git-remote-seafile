@@ -9692,6 +9692,14 @@ def validate_args(args: argparse.Namespace) -> None:
 
     if args.no_push and args.remote:
         problems.append("--no-push and --remote contradict each other")
+    if args.no_push and args.no_object_compression:
+        # The raw profile is the vault's: written, every later scheduled run stored
+        # its objects uncompressed (review 06cc623, glm G4.1, gemini G4.1a), and a
+        # --no-push run remembers nothing (SNAPSHOT section 4).
+        problems.append(
+            "--no-object-compression sets the vault's profile for every later run, which "
+            "a --no-push run does not change; run it with a push, or drop --no-push"
+        )
     if args.no_push and args.code_remote and not (args.maintain or args.restore):
         # Only the typed flag: a remembered code remote under --no-push is a
         # default, and is skipped without complaint.
@@ -10829,8 +10837,8 @@ def run_command(args: argparse.Namespace) -> int:
             if args.no_object_compression:
                 apply_large_payload_profile(vault, git_dir)
             else:
-                choose_profile(vault, git_dir, source, exclude, vault_config, write=True,
-                               skip=payload_skip or None)
+                choose_profile(vault, git_dir, source, exclude, vault_config,
+                               write=not args.no_push, skip=payload_skip or None)
         else:
             # The identity *check* still runs on a preview -- failing
             # early with the actionable message beats a commit-tree
@@ -10991,7 +10999,7 @@ def run_command(args: argparse.Namespace) -> int:
                     index_paths(git_dir, source)
                     + [item["path"] for item in (manifest or {}).get("files", [])]
                 ),
-                remember=not args.dry_run,
+                remember=not (args.dry_run or args.no_push),  # the push decides
             )
 
             # A real run's ``None`` commit *is* the "tree unchanged" signal:
