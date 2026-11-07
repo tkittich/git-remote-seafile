@@ -629,6 +629,62 @@ class TestRefsListingFailureIsNotSilent(E2ETestCase):
         )
 
 
+class TestAVanishedRepositoryPathIsNotAnEmptyRepository(E2ETestCase):
+    """A repository path that is gone on the server is not a new, empty repository.
+
+    Seafile answers 404 for the missing folder, which reads the same as "nobody has
+    pushed here yet".  A clone that tracks branches from that remote then fetched an
+    empty advertisement: `git fetch --prune` deleted every remote-tracking branch and
+    exited 0 (review 4f1cdd4, glm-5.3 B1, reproduced; ROADMAP B1).  With no HEAD, no
+    ref and no pack, and branches tracked from this remote, the listing now fails.
+    """
+
+    def _pushed_and_moved(self, name: str) -> pathlib.Path:
+        src = init_repo(self.work / f"src_{name}", self.env)
+        commit_file(src, "a.txt", "hello\n", "initial commit", self.env)
+        run_git(["remote", "add", "origin", self.url(name)], src, self.env)
+        run_git(["push", "-u", "origin", "main"], src, self.env)
+        run_git(["push", "origin", "main:feature"], src, self.env)
+        run_git(["fetch", "origin"], src, self.env)
+        # Moved in the web UI: every file under the path is gone.
+        for key in list(self.stub.files.get(REPO_ID, {})):
+            if key.startswith(f"/{name}/"):
+                del self.stub.files[REPO_ID][key]
+        return src
+
+    def _tracking(self, repo: pathlib.Path) -> list[str]:
+        out = run_git(["for-each-ref", "--format=%(refname)", "refs/remotes/origin/"],
+                      repo, self.env).stdout
+        return sorted(line for line in out.splitlines() if line.strip())
+
+    def test_fetch_prune_fails_and_keeps_the_tracking_branches(self):
+        src = self._pushed_and_moved("vanished")
+        before = self._tracking(src)
+        self.assertIn("refs/remotes/origin/feature", before)
+        proc = run_git(["fetch", "--prune", "origin"], src, self.env, check=False)
+        self.assertNotEqual(proc.returncode, 0, f"fetch --prune succeeded:\n{proc.stderr}")
+        self.assertIn("this clone tracks", proc.stderr)
+        self.assertIn("git remote set-url origin", proc.stderr)
+        self.assertEqual(self._tracking(src), before, "the tracking branches were pruned")
+
+    def test_a_push_to_the_vanished_path_is_still_allowed(self):
+        # Pushing again (the repository was deleted on purpose) is how one recreates
+        # it; only the listing for a fetch refuses.
+        src = self._pushed_and_moved("vanished_push")
+        run_git(["push", "origin", "main"], src, self.env)
+        self.assertIn("/vanished_push/refs/heads/main", self.stub.files[REPO_ID])
+
+    def test_a_first_clone_and_an_anonymous_ls_remote_are_not_refused(self):
+        src = self._pushed_and_moved("vanished_anon")
+        clone = run_git(["clone", self.url("vanished_anon"), str(self.work / "fresh_anon")],
+                        self.work, self.env, check=False)
+        self.assertEqual(clone.returncode, 0, clone.stderr)
+        # A URL rather than a remote name tracks nothing, even inside this clone.
+        listing = run_git(["ls-remote", self.url("vanished_anon")], src, self.env, check=False)
+        self.assertEqual(listing.returncode, 0, listing.stderr)
+        self.assertEqual(listing.stdout.strip(), "")
+
+
 class TestAutoGcDoesNotDeadlock(E2ETestCase):
     """`seafile.autogc` must actually compact, not stall on its own lock.
 

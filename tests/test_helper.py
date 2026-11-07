@@ -36,6 +36,11 @@ def setUpModule():
     patcher = patch("git_remote_seafile.helper.is_shallow_repository", return_value=False)
     patcher.start()
     unittest.addModuleCleanup(patcher.stop)
+    # The same for the tracking refs cmd_list consults on an empty remote (ROADMAP
+    # B1): run from this checkout, "origin" tracks real branches.
+    tracking = patch("git_remote_seafile.helper.remote_tracking_refs", return_value=[])
+    tracking.start()
+    unittest.addModuleCleanup(tracking.stop)
 
 
 class CheckoutStallWarningTests(unittest.TestCase):
@@ -1501,6 +1506,41 @@ class TestRemoteHelper(unittest.TestCase):
         output = out.getvalue()
         self.assertEqual(output.strip(), "")
         self.assertTrue(output.endswith("\n"))
+
+    def _empty_remote_helper(self, head=None):
+        h = make_helper()
+        h.client = MagicMock()
+        h.repo_id = "repo1"
+        h.repo_path = "/moved-repo"
+        h._refs_cache = {}
+        h.client.list_dir.return_value = []
+        h.client.get_file_text.return_value = head
+        return h
+
+    def test_an_empty_remote_this_clone_tracks_branches_from_is_refused(self):
+        """ROADMAP B1: no HEAD, no ref, no pack, and tracked branches = the path is gone."""
+        h = self._empty_remote_helper()
+        out = io.StringIO()
+        with patch("git_remote_seafile.helper.remote_tracking_refs",
+                   return_value=["refs/remotes/origin/main"]) as probe,                 patch("sys.stdout", out):
+            with self.assertRaises(SeafileAPIError) as caught:
+                h.cmd_list()
+        probe.assert_called_once_with(h.remote_name)
+        self.assertIn("refs/remotes/origin/main", str(caught.exception))
+        self.assertIn("git remote set-url", str(caught.exception))
+        self.assertEqual(out.getvalue(), "", "nothing may reach git before the refusal")
+
+    def test_a_push_listing_a_head_or_an_untracked_remote_is_not_refused(self):
+        tracked = ["refs/remotes/origin/main"]
+        for label, head, for_push, refs in (
+            ("for push", None, True, tracked),
+            ("a HEAD is there", "ref: refs/heads/main", False, tracked),
+            ("nothing tracked", None, False, []),
+        ):
+            with self.subTest(label):
+                h = self._empty_remote_helper(head)
+                with patch("git_remote_seafile.helper.remote_tracking_refs", return_value=refs),                         patch("sys.stdout", io.StringIO()):
+                    h.cmd_list(for_push=for_push)
 
     @patch("git_remote_seafile.helper.rev_parse", return_value="tag_sha_123")
     @patch("git_remote_seafile.helper.get_objects_to_push", return_value=[])

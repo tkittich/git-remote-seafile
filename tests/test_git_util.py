@@ -1123,3 +1123,28 @@ class TestPushPackSkipsDeltaSearchForBigBlobs(unittest.TestCase):
         self.assertLess(argv.index("-c"), argv.index("pack-objects"))
         self.assertIn(f"core.bigFileThreshold={git_util.PACK_BIG_FILE_THRESHOLD}", argv)
 
+
+
+class TestRemoteTrackingRefs(unittest.TestCase):
+    """What cmd_list asks before calling an empty remote a vanished one (ROADMAP B1)."""
+
+    def test_the_remote_s_tracking_refs_and_nothing_for_a_url_or_another_remote(self):
+        from git_remote_seafile.git_util import remote_tracking_refs
+
+        with tempfile.TemporaryDirectory(prefix="grs-tracking-") as tmp:
+            env = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
+            def git(*args):
+                return subprocess.run(["git", "-C", tmp, *args], check=True, env=env,
+                                      capture_output=True, text=True).stdout.strip()
+            git("init", "-q")
+            git("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "c")
+            sha = git("rev-parse", "HEAD")
+            git("update-ref", "refs/remotes/origin/main", sha)
+            git("update-ref", "refs/remotes/up/stream/main", sha)
+            with patch("git_remote_seafile.git_util.get_git_dir", return_value=Path(tmp) / ".git"):
+                self.assertEqual(remote_tracking_refs("origin"), ["refs/remotes/origin/main"])
+                self.assertEqual(remote_tracking_refs("up/stream"), ["refs/remotes/up/stream/main"])
+                self.assertEqual(remote_tracking_refs("other"), [])
+                self.assertEqual(remote_tracking_refs("seafile://lib/repo"), [])
+                self.assertEqual(remote_tracking_refs("--all"), [])
+                self.assertEqual(remote_tracking_refs(""), [])

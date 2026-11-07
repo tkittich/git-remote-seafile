@@ -54,6 +54,7 @@ from .git_util import (
     is_ancestor,
     is_shallow_repository,
     objects_may_be_incomplete,
+    remote_tracking_refs,
     GitError,
     rev_parse,
     get_git_dir,
@@ -499,6 +500,28 @@ class RemoteHelper:
                 "listed. Refusing to report an empty repository -- this is usually a transient "
                 "server error. Retry, or run 'git-remote-seafile test <url>' to diagnose."
             )
+
+        # Nothing at all -- no ref, no HEAD, no pack -- is a new repository, or
+        # one that is gone: Seafile answers 404 for a folder moved or deleted in
+        # the web UI exactly as for one nobody has pushed to.  A clone that tracks
+        # branches from this remote knows which it is, and an empty advertisement
+        # would make `git fetch --prune` delete every one of them and exit 0
+        # (review 4f1cdd4, glm-5.3 B1, reproduced; ROADMAP B1).  A first clone
+        # tracks nothing, and a push (for_push) is how a deleted repository is
+        # made again, so neither is refused.
+        if not listed_any and not for_push and not head_content:
+            tracked = remote_tracking_refs(self.remote_name)
+            if tracked:
+                raise SeafileAPIError(
+                    f"{self.library_name}:{self.repo_path} holds no HEAD, no refs and no "
+                    f"packfiles, but this clone tracks branches from remote "
+                    f"'{self.remote_name}' (for example {tracked[0]}): the repository was "
+                    "moved, renamed or deleted on the server, or the URL now points somewhere "
+                    "else. Nothing was fetched and no tracking branch was pruned. If it moved, "
+                    f"point the remote at it: git remote set-url {self.remote_name} <url>; if it "
+                    "was deleted on purpose, delete the remote's tracking branches "
+                    f"(git branch -r -d {self.remote_name}/<branch>) or push to recreate it."
+                )
 
         # 2. Read HEAD symbolic ref.  The target is validated before it is
         # echoed because this line goes straight to git's stdout: a HEAD file

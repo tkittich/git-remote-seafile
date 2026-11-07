@@ -543,6 +543,24 @@ def is_shallow_repository() -> bool:
     return out.decode("utf-8", errors="replace").strip().lower() == "true"
 
 
+def remote_tracking_refs(remote: str) -> list[str]:
+    """The ``refs/remotes/<remote>/`` refs of the caller's repository, at most a few.
+
+    Empty when *remote* is not a remote name (git passes the URL itself for an
+    anonymous ``git fetch <url>``), when git cannot answer, and of course when the
+    clone tracks nothing from it -- a first clone does not.  Only whether there
+    are any matters to the caller, so the count is capped.
+    """
+    if not remote or "://" in remote or remote.startswith("-"):
+        return []
+    out, _, code = _repo_git(
+        "for-each-ref", "--count=8", "--format=%(refname)", f"refs/remotes/{remote}/"
+    )
+    if code != 0:
+        return []
+    return [line for line in out.decode("utf-8", errors="replace").splitlines() if line.strip()]
+
+
 def has_promisor_remote() -> bool:
     """True if any remote is a promisor -- i.e. a partial or blobless clone.
 
