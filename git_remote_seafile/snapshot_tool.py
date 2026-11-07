@@ -8298,43 +8298,6 @@ def _status_examples(paths: list[str], limit: int = 10) -> list[str]:
     return shown
 
 
-def _status_walk_nested(work_tree: Path, nested: str, excludes: list[str]) -> list[str]:
-    """The files a snapshot captures under one embedded repository.
-
-    ``stageable_paths`` reports a nested repository as ``nested/`` and the
-    snapshot replaces the gitlink with the files under it (``71_embedded``), so
-    a change scan that skipped the subtree would call every file inside it
-    invisible.  The walk mirrors the capture's skips: the nested ``.git`` and
-    the exclude patterns; a junction or symlink is not descended (the capture
-    refuses or reports those, and a status that hang-walked a loop would be
-    worse than a slightly short answer).
-    """
-    found: list[str] = []
-    root = work_tree / nested
-    for dirpath, dirnames, filenames in os.walk(root):
-        rel = os.path.relpath(dirpath, work_tree).replace(os.sep, "/")
-        keep = []
-        for name in dirnames:
-            child = name if rel == "." else f"{rel}/{name}"
-            if child == f"{nested}/.git" or name == ".git":
-                continue
-            if any(exclude_matches(child, pat) for pat in excludes):
-                continue
-            try:
-                if getattr(os.lstat(os.path.join(dirpath, name)), "st_file_attributes", 0) & 0x400:
-                    continue
-            except (OSError, AttributeError):
-                pass
-            keep.append(name)
-        dirnames[:] = keep
-        for name in filenames:
-            child = name if rel == "." else f"{rel}/{name}"
-            if any(exclude_matches(child, pat) for pat in excludes):
-                continue
-            found.append(child)
-    return found
-
-
 def _status_junction_filter(source: Path) -> Any:
     """The run's own junction predicate on Windows (git follows a junction, a run leaves it out)."""
     return _junction_filter(source) if os.name == "nt" else None
@@ -8368,8 +8331,13 @@ def _status_inventory(
         and not (behind is not None and behind(path))
     ]
     nested = [d for d in nested if not (behind is not None and behind(d, True))]
+    # The capture's own walk (71_embedded), not a second copy of it: the copy listed a
+    # submodule's ``.git`` pointer file as new, missed unreadable folders and dropped
+    # folder symlinks the capture records (review 06cc623, gemini E3).
     for repo in nested:
-        paths.extend(_status_walk_nested(source, repo, excludes))
+        root = source / repo
+        files = _files_of_repository(root, repo, unreadable_dirs) if root.is_dir() else []
+        paths.extend(p for p in files if not any(exclude_matches(p, pat) for pat in excludes))
     return sorted(set(paths)), nested, unreadable_dirs
 
 
@@ -9696,6 +9664,7 @@ def validate_args(args: argparse.Namespace) -> None:
 
     if args.no_embedded_repos and (
         args.payload_gc or args.payload_verify is not None or args.payload_view is not None
+        or args.status or args.restore or args.maintain or args.restore_drill is not None
     ):
         problems.append("--no-embedded-repos only applies to a snapshot run")
 

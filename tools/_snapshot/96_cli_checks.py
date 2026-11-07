@@ -104,6 +104,7 @@ def validate_args(args: argparse.Namespace) -> None:
 
     if args.no_embedded_repos and (
         args.payload_gc or args.payload_verify is not None or args.payload_view is not None
+        or args.status or args.restore or args.maintain or args.restore_drill is not None
     ):
         problems.append("--no-embedded-repos only applies to a snapshot run")
 

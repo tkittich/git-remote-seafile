@@ -5249,6 +5249,27 @@ class StatusTests(_SnapshotFixture):
         self.assertIsNone(status["changed"])
         self.assertEqual(status["snapshots"], 0)
 
+    def test_a_new_repository_with_a_git_file_is_reported_as_its_files_only(self):
+        """Review 06cc623 (gemini E3): the status walked embedded repositories with its
+        own copy of the capture's walk, which skipped ``.git`` only as a folder -- so a
+        submodule's (or separate-git-dir's) ``.git`` pointer file read as new, while no
+        snapshot ever captures it."""
+        self.assertEqual(self.snapshot("--no-push", "--record-mtimes")[0], 0)
+        nested = self.code / "sub_new"
+        _git(self.tmp, "init", "-q", "--separate-git-dir", str(self.tmp / "sepgit"), str(nested))
+        self.assertTrue((nested / ".git").is_file())
+        (nested / "a.txt").write_bytes(b"a\n")
+        rc, out, err = self.status()
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn("new: sub_new/a.txt", out)
+        self.assertNotIn("sub_new/.git", out)
+        self.assertIn("1 new", out)
+
+    def test_no_embedded_repos_is_refused_where_it_cannot_apply(self):
+        rc, out, err = self.status("--no-embedded-repos")
+        self.assertEqual(rc, 1, out + err)
+        self.assertIn("--no-embedded-repos only applies to a snapshot run", err)
+
     def test_status_refuses_to_combine_with_the_other_modes(self):
         rc, out, err = self.status("--restore")
         self.assertEqual(rc, 1, out + err)
