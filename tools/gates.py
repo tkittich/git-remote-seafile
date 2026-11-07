@@ -49,6 +49,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -97,10 +98,15 @@ _SHARED = {
 #: generated tool, versions.
 _ALWAYS = ["test_message_style", "test_message_coverage", "test_suite_shape",
            "test_snapshot_build", "test_version_consistency"]
-#: The helper's protocol modules: their own tests plus the end-to-end runs.
-_HELPER_SIDE = {"helper", "packs", "refs", "lock", "gc", "repair", "lfs", "safety", "cli",
-                "diagnose", "login", "lfs_setup", "library_setup", "settings_report",
-                "config", "seafile_paths", "units", "sqlite_read"}
+#: Package modules that everything imports: a change that reaches one of them, through
+#: any chain of imports, runs the whole suite.
+_SHARED_STEMS = {"client", "git_util", "url"}
+#: Every way a file names a package module: ``import git_remote_seafile.x``,
+#: ``from git_remote_seafile.x import``, a ``mock.patch("git_remote_seafile.x....")``
+#: target, a path, and ``from git_remote_seafile import x, y``.
+_PKG_DOTTED = re.compile(r"git_remote_seafile[./](\w+)")
+_PKG_FROM = re.compile(r"from git_remote_seafile import (?:\(([^)]*)\)|([\w ,]+))")
+_RELATIVE = re.compile(r"^[ \t]*from \.(\w*) import (?:\(([^)]*)\)|([\w ,]+))", re.MULTILINE)
 _SNAPSHOT_TESTS = ["test_snapshot_tool", "test_snapshot_payload", "test_snapshot_runreport",
                    "test_snapshot_climb", "test_snapshot_history_guard", "test_snapshot_build",
                    "test_launcher"]
@@ -115,12 +121,82 @@ _TOOL_TESTS = {
 _DOC_SUFFIXES = (".md", ".txt")
 
 
+def _split_names(group: str) -> set[str]:
+    """``a, b as c,`` (possibly over several lines) -> ``{"a", "b"}``."""
+    names = set()
+    for part in group.replace("\n", ",").split(","):
+        words = part.split()
+        if words:
+            names.add(words[0])
+    return names
+
+
+def _names_in(text: str, stems: set[str]) -> set[str]:
+    """The package modules *text* names, by any of the spellings above."""
+    found = set(_PKG_DOTTED.findall(text))
+    for groups in _PKG_FROM.findall(text):
+        found.update(_split_names("".join(groups)))
+    return found & stems
+
+
+def _package_graph(root: Path) -> dict[str, set[str]]:
+    """Each package module, mapped to the package modules it imports."""
+    files = {p.stem: p for p in (root / "git_remote_seafile").glob("*.py")}
+    stems = set(files)
+    graph: dict[str, set[str]] = {}
+    for stem, path in files.items():
+        text = path.read_text(encoding="utf-8")
+        deps = _names_in(text, stems)
+        for module, *names in _RELATIVE.findall(text):
+            if module:
+                deps.add(module)
+            else:
+                deps.update(_split_names("".join(names)))
+        graph[stem] = (deps & stems) - {stem}
+    return graph
+
+
+def _reached_by(stem: str, graph: dict[str, set[str]]) -> set[str]:
+    """*stem* and every package module that imports it, directly or not.
+
+    The entry points are left out: ``__main__`` imports the CLI, and nothing
+    imports ``__main__``, so it would only make every CLI change look shared.
+    """
+    reached = {stem}
+    grew = True
+    while grew:
+        grew = False
+        for module, deps in graph.items():
+            if module not in reached and module not in ("__main__", "__init__") and deps & reached:
+                reached.add(module)
+                grew = True
+    return reached
+
+
+def _importers(reached: set[str], root: Path) -> tuple[set[str], bool]:
+    """The test modules that name a module in *reached*, and whether the snapshot
+    tool or a tool script does."""
+    tests = {p.stem for p in (root / "tests").glob("test_*.py")
+             if _names_in(p.read_text(encoding="utf-8"), reached)}
+    snapshot = any(_names_in(p.read_text(encoding="utf-8"), reached)
+                   for p in (root / "tools" / "_snapshot").glob("*.py"))
+    for tool, mods in _TOOL_TESTS.items():
+        script = root / tool
+        if script.exists() and _names_in(script.read_text(encoding="utf-8"), reached):
+            tests.update(mods)
+    return tests, snapshot
+
+
 def suite_for_changes(paths: list[str], root: Path = _ROOT) -> list[str] | None:
     """The test modules the changed *paths* can reach; ``None`` means the whole suite.
 
     Conservative by construction: a path the map does not know is ``None``, and so
     is shared code.  ``[]`` means documents only -- no suite (the docs steps run).
+    A package module is followed through the imports, not a hand-kept list: every
+    test module, snapshot part or tool script that names it -- or names a module
+    that imports it -- is reached (review 06cc623: the list missed eight).
     """
+    graph: dict[str, set[str]] | None = None
     modules: set[str] = set()
     code = False
     for raw in paths:
@@ -135,10 +211,20 @@ def suite_for_changes(paths: list[str], root: Path = _ROOT) -> list[str] | None:
             stem = name[:-3]
             if stem == "snapshot_tool":
                 modules.update(_SNAPSHOT_TESTS)
-            elif stem in _HELPER_SIDE:
-                modules.update({f"test_{stem}", "test_e2e", "test_e2e_pack_split"})
-            else:
+                continue
+            if graph is None:
+                graph = _package_graph(root)
+            if stem not in graph:
                 return None
+            reached = _reached_by(stem, graph)
+            if reached & _SHARED_STEMS:
+                return None
+            tests, snapshot = _importers(reached, root)
+            # The end-to-end runs drive the helper as a process, so they import
+            # nothing by name and still reach every helper-side module.
+            modules.update(tests | {"test_e2e", "test_e2e_pack_split"})
+            if snapshot:
+                modules.update(_SNAPSHOT_TESTS)
         elif path.startswith("tools/_snapshot/") or path == "tools/seafile_snapshot.py":
             modules.update(_SNAPSHOT_TESTS)
         elif path in _TOOL_TESTS:
@@ -210,7 +296,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "-k", dest="filter", default=None, metavar="SUBSTRING",
-        help="passed through to the suite step only, as in run_tests_parallel.py",
+        help="passed through to the suite step only, as in run_tests_parallel.py (it "
+             "matches test targets -- classes, or methods with --granularity test there)",
     )
     parser.add_argument(
         "--list", action="store_true",
@@ -222,6 +309,10 @@ def main(argv: list[str] | None = None) -> int:
              "(default: HEAD, i.e. the working changes) can reach; shared code runs it all",
     )
     args = parser.parse_args(argv)
+    if args.filter and args.changed is not None:
+        # Each narrows the suite its own way; quietly keeping one would run a suite
+        # the contributor did not ask for.
+        parser.error("-k and --changed cannot be combined: pick one way to narrow the suite")
 
     steps = list(STEPS)
     if args.filter:

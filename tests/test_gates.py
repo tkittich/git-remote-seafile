@@ -126,14 +126,14 @@ class TestTheChangedMap(unittest.TestCase):
         self.assertEqual(gates.suite_for_changes(["README.md", "DESIGN.md", "notes.txt"]), [])
 
     def test_an_area_runs_its_modules_and_the_always_set(self):
-        got = gates.suite_for_changes(["git_remote_seafile/lock.py", "README.md"])
-        self.assertIn("test_lock", got)
+        got = gates.suite_for_changes(["git_remote_seafile/lfs.py", "README.md"])
+        self.assertIn("test_lfs", got)
         self.assertIn("test_e2e", got)
         self.assertIn("test_message_style", got)
         self.assertNotIn("test_snapshot_payload", got)
         snap = gates.suite_for_changes(["tools/_snapshot/76_payload_gc.py"])
         self.assertIn("test_snapshot_payload", snap)
-        self.assertNotIn("test_lock", snap)
+        self.assertNotIn("test_lfs", snap)
         self.assertEqual(gates.suite_for_changes(["tests/test_url.py"]),
                          sorted({"test_url", *[m for m in gates._ALWAYS]}))
 
@@ -142,16 +142,59 @@ class TestTheChangedMap(unittest.TestCase):
         names |= {m for mods in gates._TOOL_TESTS.values() for m in mods}
         root = gates._ROOT / "tests"
         self.assertEqual({n for n in names if not (root / f"{n}.py").exists()}, set())
-        for stem in gates._HELPER_SIDE:
+        for stem in gates._SHARED_STEMS:
             self.assertTrue((gates._ROOT / "git_remote_seafile" / f"{stem}.py").exists(), stem)
 
-    def test_every_package_module_is_mapped_or_shared(self):
-        # A new module must be placed in the map, or it silently runs everything
-        # (safe, but the map is then out of date).
-        mapped = gates._HELPER_SIDE | {"snapshot_tool"}
-        shared = {p.rsplit("/", 1)[-1][:-3] for p in gates._SHARED if p.startswith("git_remote_seafile/")}
-        for module in (gates._ROOT / "git_remote_seafile").glob("*.py"):
-            self.assertIn(module.stem, mapped | shared, f"{module.name} is in neither")
+    def test_every_test_module_that_imports_a_changed_module_runs(self):
+        # Review 06cc623: a hand-kept map sent a change to safety.py to no snapshot
+        # test and a change to library_setup.py to no unit test at all.  Checked
+        # here with the standard library's own parser, not the map's regexes: every
+        # test module that imports a package module by any absolute form runs when
+        # that module changes.
+        import ast
+
+        root = gates._ROOT
+        for test in sorted((root / "tests").glob("test_*.py")):
+            tree = ast.parse(test.read_text(encoding="utf-8"))
+            imported: set[str] = set()
+            for node in ast.walk(tree):
+                if isinstance(node, ast.ImportFrom) and node.module:
+                    if node.module == "git_remote_seafile":
+                        imported.update(alias.name for alias in node.names)
+                    elif node.module.startswith("git_remote_seafile."):
+                        imported.add(node.module.split(".")[1])
+                elif isinstance(node, ast.Import):
+                    for alias in node.names:
+                        if alias.name.startswith("git_remote_seafile."):
+                            imported.add(alias.name.split(".")[1])
+            for stem in sorted(imported):
+                path = root / "git_remote_seafile" / f"{stem}.py"
+                if not path.exists():
+                    continue
+                with self.subTest(test=test.stem, module=stem):
+                    got = gates.suite_for_changes([f"git_remote_seafile/{stem}.py"])
+                    if got is not None:
+                        self.assertIn(test.stem, got)
+
+    def test_a_module_the_snapshot_tool_imports_runs_the_snapshot_tests(self):
+        got = gates.suite_for_changes(["git_remote_seafile/safety.py"])
+        if got is not None:
+            self.assertIn("test_snapshot_tool", got)
+            self.assertIn("test_snapshot_payload", got)
+
+    def test_a_module_shared_code_imports_is_shared(self):
+        # client.py imports seafile_paths and sqlite_read: a change to either reaches
+        # everything the client does.
+        for stem in ("seafile_paths", "sqlite_read"):
+            with self.subTest(stem=stem):
+                self.assertIsNone(gates.suite_for_changes([f"git_remote_seafile/{stem}.py"]))
+
+    def test_k_and_changed_together_are_refused(self):
+        with contextlib.redirect_stderr(io.StringIO()) as err, \
+                self.assertRaises(SystemExit) as raised:
+            gates.main(["--list", "-k", "test_url", "--changed"])
+        self.assertEqual(raised.exception.code, 2)
+        self.assertIn("cannot be combined", err.getvalue())
 
 
 if __name__ == "__main__":
