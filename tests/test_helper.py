@@ -1738,6 +1738,17 @@ class TestRemoteHelper(unittest.TestCase):
         return h
 
     @patch("git_remote_seafile.helper.rev_parse", return_value="a" * 40)
+    def test_a_remote_holding_packs_of_both_formats_refuses_a_push(self, _rev):
+        h = self._format_race_helper({})
+        h.client.list_dir.side_effect = lambda repo_id, path: (
+            [{"type": "file", "name": f"pack-{'c' * 40}.pack"},
+             {"type": "file", "name": f"pack-{'d' * 64}.pack"}]
+            if path.endswith("objects/pack") else []
+        )
+        verdict = h._decide_update("refs/heads/dev", "refs/heads/dev", force=True)
+        self.assertIn("both object formats", verdict)
+
+    @patch("git_remote_seafile.helper.rev_parse", return_value="a" * 40)
     @patch("git_remote_seafile.helper.is_ancestor", return_value=True)
     def test_a_push_of_the_other_object_format_is_refused_under_the_lock(self, mock_ancestor, _rev):
         """The format advertised by ``list`` was read before the lock.  A peer

@@ -381,8 +381,32 @@ class RemoteHelper:
                             break
         except Exception:
             width = None
+        if width is None:
+            width = self._pack_hash_width()
         self._remote_width = width
         return width
+
+    def _pack_hash_width(self) -> int | None:
+        """40 or 64 from the pack names when no ref answers; 0 when both are there.
+
+        A remote whose refs were all deleted still holds its packs, and it is not an
+        empty remote: a push of the other format then wrote 40-hex packs and refs
+        beside 64-hex ones, and gc and every clone failed (review 06cc623, gemini B3).
+        """
+        from .gc import _PACK_HASH_RE
+
+        try:
+            entries = self.client.list_dir(self.repo_id, self._full_path("objects/pack"))
+        except Exception:
+            return None
+        widths = {
+            len(m.group(1))
+            for entry in entries if isinstance(entry, dict)
+            for m in [_PACK_HASH_RE.search(str(entry.get("name", "")))] if m
+        }
+        if len(widths) > 1:
+            return 0
+        return widths.pop() if widths else None
 
     def _detect_remote_object_format(self, discovered_refs: list[tuple[str, str]]) -> str:
         """Return "sha1" or "sha256" from a non-empty ref listing.
@@ -657,6 +681,12 @@ class RemoteHelper:
         # what the remote holds now, or a 64-hex ref lands beside 40-hex ones
         # and every clone fails in index-pack.
         remote_width = self._remote_hash_width(remote_sha)
+        if remote_width == 0:
+            return (
+                "the remote repository holds packs of both object formats (sha1 and sha256), "
+                "so it cannot be pushed to safely; run 'git-remote-seafile repair <url> "
+                "--dry-run' and compare with a clone"
+            )
         if remote_width is not None and remote_width != len(local_sha):
             return (
                 f"the remote repository holds {_FORMAT_OF_WIDTH.get(remote_width, '?')} "

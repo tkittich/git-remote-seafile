@@ -103,6 +103,26 @@ class TestPushFetchRoundTrip(E2ETestCase):
         res = run_git(["rev-parse", "--show-object-format"], dst, self.env)
         self.assertEqual(res.stdout.strip(), "sha256")
 
+    def test_a_remote_with_no_refs_left_keeps_its_object_format(self):
+        """Review 06cc623 (gemini B3): with every ref of a SHA-256 remote deleted, the
+        format was read from refs alone, so a SHA-1 push went through and left 40-hex
+        packs and refs beside 64-hex packs -- gc and every clone then failed.  Its
+        packs still name the format."""
+        src = self.work / "src_noref256"
+        run_git(["init", "--object-format=sha256", "-b", "main", str(src)], self.work, self.env)
+        commit_file(src, "a.txt", "a\n", "sha256 commit", self.env)
+        run_git(["push", self.url("noref256"), "main"], src, self.env)
+        run_git(["push", self.url("noref256"), ":main"], src, self.env)
+        other = init_repo(self.work / "src_noref1", self.env)
+        commit_file(other, "b.txt", "b\n", "sha1 commit", self.env)
+        proc = run_git(["push", self.url("noref256"), "main"], other, self.env, check=False)
+        self.assertNotEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertIn("holds sha256 objects", proc.stderr)
+        packs = [p for p in self.stub.files[REPO_ID] if p.startswith("/noref256/objects/pack/")
+                 and p.endswith(".pack")]
+        self.assertTrue(packs)
+        self.assertTrue(all(len(p.rsplit("pack-", 1)[-1]) == 64 + len(".pack") for p in packs), packs)
+
 
 class TestFaultInjection(E2ETestCase):
     """Failure paths a healthy live server will never show on demand."""
