@@ -857,9 +857,20 @@ class SeafileClient:
         account or owner the server does not report is a risk too: cannot tell is
         not "safe".
         """
+        # Only an answer that names the edition settles it: a server-info that failed
+        # or came back without a feature list is "cannot tell", which on this path is a
+        # risk, not CE -- a proxy blocking that one URL switched the guard off (review
+        # 06cc623, deepseek G2.2 and glm G2.2).  Asked twice, since a refusal costs a
+        # rerun on CE.
         info = self._json_or_none("/api2/server-info/")
+        if not isinstance(info, dict) or not isinstance(info.get("features"), list):
+            info = self._json_or_none("/api2/server-info/")
         features = info.get("features") if isinstance(info, dict) else None
-        if not isinstance(features, list) or "seafile-pro" not in features:
+        if not isinstance(features, list):
+            return ("the server did not say which edition it runs (/api2/server-info/ gave no "
+                    "feature list), and on Seafile Professional a folder permission can hide "
+                    "refs from an account that is not the owner")
+        if "seafile-pro" not in features:
             return None
         account = self._json_or_none("/api2/account/info/")
         library = self._json_or_none(f"/api2/repos/{repo_id}/")

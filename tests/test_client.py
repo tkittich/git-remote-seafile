@@ -2022,10 +2022,38 @@ class TestSeafileClientOperations(unittest.TestCase):
             with self.subTest(email=email, owner=owner, status=status):
                 risk = client_for(pro, email, owner, status).hidden_history_risk("r")
                 self.assertIn("did not say which account owns", risk)
+        # No edition answer is "cannot tell", a risk (review 06cc623, deepseek G2.2, glm
+        # G2.2: it read as CE, so a proxy blocking server-info turned the guard off).
         broken = SeafileClient(server_url="https://seafile.example.com", token="t", timeout=10)
         broken.session = MagicMock()
         broken.session.get.side_effect = requests.ConnectionError("down")
-        self.assertIsNone(broken.hidden_history_risk("r"), "no edition answer: not Pro")
+        self.assertIn("did not say which edition", broken.hidden_history_risk("r") or "")
+        for answer in ({}, {"features": None}, ["seafile-pro"]):
+            with self.subTest(answer=answer):
+                odd = client_for(pro, "a@x", "b@x")
+                inner = odd.session.get.side_effect
+
+                def get(url, timeout=None, answer=answer, inner=inner):
+                    if url.endswith("/api2/server-info/"):
+                        resp = MagicMock(status_code=200)
+                        resp.json.return_value = answer
+                        return resp
+                    return inner(url, timeout)
+                odd.session.get.side_effect = get
+                self.assertIn("did not say which edition", odd.hidden_history_risk("r") or "")
+        # One failed answer is asked again: CE is not refused for a blip.
+        answers = iter([requests.ConnectionError("blip")])
+        flaky = client_for(["seafile-basic"], "a@x", "b@x")
+        inner = flaky.session.get.side_effect
+
+        def blip(url, timeout=None):
+            if url.endswith("/api2/server-info/"):
+                failure = next(answers, None)
+                if failure is not None:
+                    raise failure
+            return inner(url, timeout)
+        flaky.session.get.side_effect = blip
+        self.assertIsNone(flaky.hidden_history_risk("r"))
 
     def test_a_seafile_copy_name_is_recognised_in_both_shapes(self):
         from git_remote_seafile.client import _is_seafile_copy_of
