@@ -171,7 +171,7 @@ A `.gitignore`d file never enters a commit, so **no remote helper can carry it**
 > **Installed with the package.** `pip install git-remote-seafile` provides the helper (`git-remote-seafile`) *and* the snapshot tool as `git-seafile-snapshot` — so `git seafile-snapshot` works anywhere git finds it on `PATH` — and as `git-remote-seafile snapshot`. From a source checkout, `git seafile-snapshot` runs the same program (the file is a thin wrapper around `git_remote_seafile/snapshot_tool.py`, so existing commands and scheduled jobs keep working). (`git seafile-snapshot --help` is intercepted by git, which looks for a man page: ask with `-h`, or run `git-seafile-snapshot --help`.) The diagnostics script `tools/seafile_doctor.py` below still ships with the source and the sdist only.
 
 > [!WARNING]
-> **A snapshot copies the whole tree, so it holds what you would never commit.** The vault will contain `.env`, keys and local databases — that is the point — so push it to a library whose access matches the secrets it carries. Nested Git repositories are captured as their files, but not their `.git` (history, branches, stashes), so back that up separately. Symlinks are stored faithfully (a `120000` entry holding the target path), but a restore onto Windows without Developer Mode turns each one back into a text file containing that path. The byte-for-byte check that runs after **every** restore (not only under `--verify`) then names it as a mismatch and **aborts the restore** — the vault is intact, so re-running with `core.symlinks` enabled reproduces the links.
+> **A snapshot copies the whole tree, so it holds what you would never commit.** The vault will contain `.env`, keys and local databases — that is the point — so push it to a library whose access matches the secrets it carries. Nested Git repositories are captured as their files, but not their `.git` (history, branches, stashes), so back that up separately. Symlinks are stored faithfully (a `120000` entry holding the target path), but a restore onto Windows without Developer Mode turns each one back into a text file containing that path. The restore names each such link in a `Warning:` and carries on (exit `3` under `--exit-warnings`) — the vault is intact, so re-running with `core.symlinks` enabled reproduces the links.
 
 Every option has a default, so the first run is the only one that needs an argument — and later runs can be a bare command:
 
@@ -226,8 +226,8 @@ which needs a path argument).
 
 It copies the client's databases to a temporary directory before opening them,
 so a running client is never blocked or torn, and it never writes anything back.
-Like the snapshot tool above, it ships with the source checkout and the sdist
-rather than the wheel.
+Unlike the snapshot tool above, which the wheel installs as `git-seafile-snapshot`,
+it ships only with the source checkout and the sdist.
 
 ---
 

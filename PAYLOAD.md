@@ -135,7 +135,7 @@ it knows. *Measured (2026-10-14, synthetic; 2026-10-26 at scale, T11):* a manife
 scale: 500,000 files are ~78 MB raw and 1,000,000 files are ~156 MB raw, parsed
 in ~6 s with a ~600 MB transient peak -- survivable on a desktop, and the point
 where `--exclude`ing the bulk starts to matter. The retention mark list is
-~82 bytes an entry, so the helper's 16 MiB text-reader cap bites at ~205,000
+~82 bytes an entry, so the mark list's 64 MiB read cap bites at ~750,000
 marked objects; `--payload-gc` before then keeps the list small. After a
 `repack -ad`, a snapshot that changes 0.1% of the entries adds ~10 kB, 1% adds
 ~110 kB, and one that changes every entry (the hash and mtime of each) adds

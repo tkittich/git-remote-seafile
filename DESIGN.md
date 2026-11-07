@@ -363,7 +363,7 @@ All behavioural settings resolve through one `RemoteConfig.load()` passed to bot
 
 | Key                        | Default | Meaning                                                           |
 | -------------------------- | ------- | ----------------------------------------------------------------- |
-| `seafile.locktimeout`      | `15`    | Seconds to wait for the lock before giving up                     |
+| `seafile.locktimeout`      | `15`    | Seconds to wait for the lock *since the queue last moved* before giving up (capped at the larger of 10 x this and 120 s; USER_GUIDE §6) |
 | `seafile.locklease`        | `60`    | Lease duration in seconds                                         |
 | `seafile.autogc`           | `true`  | Tail-merge the small packs automatically after a push once their threshold is exceeded (set `false` to only be told) |
 | `seafile.gcthreshold`      | `20`    | Movable-pack count at which auto-GC triggers (§4.5) |
