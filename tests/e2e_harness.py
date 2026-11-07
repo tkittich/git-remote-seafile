@@ -139,9 +139,10 @@ class _Handler(BaseHTTPRequestHandler):
                                "features": ["seafile-basic"] + (["seafile-pro"] if pro else [])})
 
         if re.fullmatch(r"/api2/repos/[^/]+/", path):
-            # Library info: who owns it (``owner`` fault: another account does).
+            # Library info: who owns it (``owner`` fault: another account does).  The
+            # real server answers its owner ``"self"``, not the email (Pro 13.0.29).
             return self._json({"id": self._rid(), "name": REPO_NAME,
-                               "owner": f.get("owner") or "e2e@example.com"})
+                               "owner": f.get("owner") or "self"})
 
         if path.startswith("/api2/repos/") and path.endswith("/dir/"):
             if f.get("dir"):

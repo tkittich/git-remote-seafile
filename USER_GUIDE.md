@@ -224,9 +224,9 @@ The six alternatives people reach for first — a live working tree in a synced 
 - Python 3.10+
 - Git 2.20+
 - A Seafile server, Community Edition or Professional. **Tested against both
-  editions of 13.0**: the real-server suite passed by hand against CE 13.0.29
-  and Pro 13.0.29 (2026-11-06), and a container workflow that runs it against
-  throwaway CE and Pro 13.0 containers (pinned by digest) is dispatched by hand. It
+  editions of 13.0**: the real-server suite runs in CI against throwaway CE and
+  Pro 13.0.29 containers (pinned by digest; weekly, and before every release), and
+  passed by hand against both before that (2026-11-06). It
   covers a second account under each Pro folder permission, group-shared and group-owned libraries,
   and two accounts pushing first to one path at once. The two editions answer
   some requests differently (a file read under a missing folder is 404 on CE,
@@ -987,7 +987,7 @@ These are the places where the tool, Git, or Seafile stops short. None is hidden
 | Limitation | What it means for you | What to do |
 | :--- | :--- | :--- |
 | **Encrypted libraries are refused.** | The helper stops with a clear message; the server serves their files only after a password the helper cannot supply. | Use an unencrypted library. For at-rest encryption, encrypt the volume or use a tool built for it. |
-| **Validated against both editions of 13.0, by hand.** The real-server suite passed against CE 13.0.29 and Pro 13.0.29 (CE 13.0.28 before it): round trip, SHA-1 and SHA-256, concurrency, large files, Pro folder permissions. Clustered or object-store backends and releases before 13.0 are *expected* to work on the documented `/api2` surface but are not tested. | A problem on another deployment is not unexpected, just unreported. | Run `git-remote-seafile doctor <url>` first; report what it prints. |
+| **Validated against both editions of 13.0.** The real-server suite runs in CI against CE and Pro 13.0.29 containers and passed by hand before that (CE 13.0.28 before it): round trip, SHA-1 and SHA-256, concurrency, large files, Pro folder permissions. Clustered or object-store backends and releases before 13.0 are *expected* to work on the documented `/api2` surface but are not tested. | A problem on another deployment is not unexpected, just unreported. | Run `git-remote-seafile doctor <url>` first; report what it prints. |
 | **Seafile's server-side file locking is not used.** It is Pro-only and its owner is the Seafile user, not the machine. | No change to behaviour. | None. |
 | **On Pro, a folder permission inside a repository is not seen through.** A folder set *invisible* for an account is left out of that account's listing of its parent, and listing it answers 403 (measured on Pro 13.0.29). `gc` and `--payload-delete` decide what to keep from the refs they can list, so on Pro both refuse for an account that does not own the library (`--allow-non-owner`, `--payload-allow-non-owner` say no rule applies); the tail merge prunes nothing and is not affected. | Run by an account that cannot see every ref, `gc` would repack without the hidden branches' commits, and retention would delete objects only a hidden snapshot names. | Put folder permissions on folders that hold whole repositories, never inside one, and run `gc` and `--payload-delete` as the library owner. |
 | **The first push to an empty remote decides the object format.** With no refs there is nothing to infer SHA-256 from. | A SHA-256 repository works, but the format is only visible once a ref exists. | None; it is correct after the first push. |

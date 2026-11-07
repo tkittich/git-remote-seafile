@@ -133,7 +133,8 @@ two accounts making the first push to one new path at once; the group cases
 also need `SEAFILE_TEST_ALLOW_LIBRARY_CREATE=1`. The suite refuses to start
 unless a helper process logs in to the same server as the test itself.
 
-The container workflow (`.github/workflows/realserver.yml`, dispatched by hand)
+The container workflow (`.github/workflows/realserver.yml`, weekly and by hand;
+`tools/release_check.py` requires it green on both legs at the commit being tagged)
 runs all of it against throwaway **CE and Pro** containers of 13.0, pinned by digest:
 since 12.0 the Pro image is public, and without a licence file it runs as a
 three-user trial, so no secret is involved. The log names the exact version.

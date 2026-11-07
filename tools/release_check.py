@@ -9,9 +9,11 @@ This runs the same checks locally:
   ``tests/test_release_workflow.py`` require, and its compare link starts at the
   previous release tag, which exists;
 * ``CHANGELOG.md`` has the ``## [X.Y.Z]`` section and its reference link;
-* the working tree is clean, and the commit is on a remote branch (a warning
-  only: CI must be green on the pushed commit before the tag, and this cannot
-  see CI).
+* the working tree is clean, and the commit is on a remote branch;
+* CI (``ci.yml``) and both legs of the CE/Pro container tier (``realserver.yml``)
+  passed on HEAD, asked of GitHub with ``gh`` when it is installed and signed in
+  (ROADMAP B8).  A run that failed, or none at HEAD, fails the check; without
+  ``gh`` it is a warning, so the check still works offline.
 
 Usage::
 
@@ -24,6 +26,7 @@ usage error.  Standard library only.
 
 from __future__ import annotations
 
+import json
 import re
 import shlex
 import subprocess
@@ -37,6 +40,66 @@ _COMPARE = re.compile(
 )
 
 Result = tuple[str, str, str]  # (status "ok"|"FAIL"|"warn", check, detail)
+
+#: The workflows that must be green on the commit being tagged, and the jobs each
+#: must have passed (an empty tuple: every job).
+_REQUIRED_RUNS: dict[str, tuple[str, ...]] = {
+    "ci.yml": (),
+    "realserver.yml": ("realserver (ce)", "realserver (pro)"),
+}
+
+
+def _gh(*args: str) -> tuple[int, str]:
+    try:
+        proc = subprocess.run(
+            ["gh", *args], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, encoding="utf-8", errors="replace", check=False,
+        )
+    except OSError:
+        return 127, "gh is not installed"
+    return proc.returncode, proc.stdout
+
+
+def workflow_results(sha: str, gh: "object" = None) -> list[Result]:
+    """One result per required workflow: did a run at *sha* pass (every required job)?
+
+    *gh* is the ``gh`` runner (``_gh``), replaceable in tests.
+    """
+    run = gh if callable(gh) else _gh
+    results: list[Result] = []
+    for workflow, jobs in _REQUIRED_RUNS.items():
+        rc, out = run("run", "list", "--workflow", workflow, "--commit", sha,
+                      "--limit", "20", "--json", "databaseId,conclusion,status")
+        if rc != 0:
+            results.append(("warn", workflow, "could not ask GitHub (gh: "
+                            f"{out.strip().splitlines()[0] if out.strip() else rc}); check it by hand"))
+            continue
+        try:
+            runs = json.loads(out or "[]")
+        except ValueError:
+            results.append(("warn", workflow, "gh answered something that is not JSON; check by hand"))
+            continue
+        finished = [r for r in runs if isinstance(r, dict) and r.get("status") == "completed"]
+        green = [r for r in finished if r.get("conclusion") == "success"]
+        if not runs:
+            results.append(("FAIL", workflow, f"no run at {sha[:7]}: run it, and tag only once it is green"))
+        elif not green:
+            state = "still running" if len(finished) < len(runs) else "failed"
+            results.append(("FAIL", workflow, f"its run at {sha[:7]} {state}"))
+        elif jobs:
+            rc, out = run("run", "view", str(green[0]["databaseId"]), "--json", "jobs")
+            try:
+                listed = {j.get("name"): j.get("conclusion") for j in json.loads(out).get("jobs", [])}
+            except (ValueError, AttributeError):
+                listed = {}
+            missing = [j for j in jobs if listed.get(j) != "success"]
+            if rc != 0 or missing:
+                results.append(("FAIL", workflow, f"at {sha[:7]} these did not pass: {', '.join(missing)}"))
+            else:
+                results.append(("ok", workflow, f"green at {sha[:7]} ({', '.join(jobs)})"))
+        else:
+            results.append(("ok", workflow, f"green at {sha[:7]}"))
+    return results
 
 
 def _git(root: Path, *args: str) -> tuple[int, str]:
@@ -163,6 +226,9 @@ def check(root: Path, tag: str | None = None) -> list[Result]:
         ok("pushed", "HEAD is on " + out.split()[0])
     else:
         warn("pushed", "HEAD is on no remote branch: push, and wait for CI green, before tagging")
+    rc, sha = _git(root, "rev-parse", "HEAD")
+    if rc == 0 and sha.strip():
+        results.extend(workflow_results(sha.strip()))
     return results
 
 

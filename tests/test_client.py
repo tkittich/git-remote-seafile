@@ -2010,6 +2010,8 @@ class TestSeafileClientOperations(unittest.TestCase):
         pro = ["seafile-basic", "seafile-pro"]
         self.assertIsNone(client_for(["seafile-basic"], "a@x", "b@x").hidden_history_risk("r"))
         self.assertIsNone(client_for(pro, "a@x", "a@x").hidden_history_risk("r"))
+        # What the server really says to its owner (Pro 13.0.29).
+        self.assertIsNone(client_for(pro, "a@x", "self").hidden_history_risk("r"))
         risk = client_for(pro, "a@x", "b@x").hidden_history_risk("r")
         self.assertIn("(a@x) is not the library's owner (b@x)", risk)
         for email, owner, status in (("a@x", None, 200), (None, "b@x", 200), ("a@x", "a@x", 404)):

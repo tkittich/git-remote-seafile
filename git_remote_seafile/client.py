@@ -861,7 +861,9 @@ class SeafileClient:
         library = self._json_or_none(f"/api2/repos/{repo_id}/")
         email = account.get("email") if isinstance(account, dict) else None
         owner = library.get("owner") if isinstance(library, dict) else None
-        if isinstance(email, str) and email and email == owner:
+        # For its owner the library's info answers ``"owner": "self"``, not the email (measured on Pro
+        # 13.0.29: the first version compared emails and refused the owner).
+        if owner == "self" or (isinstance(email, str) and email and email == owner):
             return None
         if not (isinstance(email, str) and email and isinstance(owner, str) and owner):
             return ("the server did not say which account owns this library, and on Seafile "

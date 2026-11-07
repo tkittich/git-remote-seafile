@@ -5,8 +5,10 @@ from __future__ import annotations
 import importlib.util
 import pathlib
 import subprocess
+import json
 import tempfile
 import unittest
+import unittest.mock
 
 try:
     from _helpers import remove_tree  # noqa: E402
@@ -34,6 +36,55 @@ def _write(path: pathlib.Path, text: str) -> None:
     path.write_bytes(text.encode("utf-8"))
 
 
+class _GitHub:
+    """A stand-in for ``gh``: *runs* per workflow, *jobs* per run id."""
+
+    def __init__(self, runs=None, jobs=None, rc=0):
+        self.runs = runs if runs is not None else {
+            "ci.yml": [{"databaseId": 1, "status": "completed", "conclusion": "success"}],
+            "realserver.yml": [{"databaseId": 2, "status": "completed", "conclusion": "success"}],
+        }
+        self.jobs = jobs if jobs is not None else {
+            2: [{"name": "realserver (ce)", "conclusion": "success"},
+                {"name": "realserver (pro)", "conclusion": "success"}],
+        }
+        self.rc = rc
+
+    def __call__(self, *args):
+        if self.rc:
+            return self.rc, "gh: not logged in"
+        if args[:2] == ("run", "list"):
+            return 0, json.dumps(self.runs.get(args[args.index("--workflow") + 1], []))
+        return 0, json.dumps({"jobs": self.jobs.get(int(args[2]), [])})
+
+
+class WorkflowResultTests(unittest.TestCase):
+    """ROADMAP B8: a tag needs CI and both CE/Pro legs green at HEAD."""
+
+    def statuses(self, gh):
+        return {name: status for status, name, _ in rc.workflow_results("a" * 40, gh)}
+
+    def test_every_required_run_green_passes(self):
+        self.assertEqual(self.statuses(_GitHub()), {"ci.yml": "ok", "realserver.yml": "ok"})
+
+    def test_a_failed_leg_a_missing_run_or_a_running_one_fails(self):
+        one_leg = _GitHub(jobs={2: [{"name": "realserver (ce)", "conclusion": "success"},
+                                    {"name": "realserver (pro)", "conclusion": "failure"}]})
+        self.assertEqual(self.statuses(one_leg)["realserver.yml"], "FAIL")
+        none = _GitHub(runs={"ci.yml": [{"databaseId": 1, "status": "completed",
+                                         "conclusion": "success"}], "realserver.yml": []})
+        self.assertEqual(self.statuses(none)["realserver.yml"], "FAIL")
+        running = _GitHub(runs={"ci.yml": [{"databaseId": 1, "status": "in_progress",
+                                            "conclusion": ""}], "realserver.yml": []})
+        self.assertEqual(self.statuses(running)["ci.yml"], "FAIL")
+        red = _GitHub(runs={"ci.yml": [{"databaseId": 1, "status": "completed",
+                                        "conclusion": "failure"}], "realserver.yml": []})
+        self.assertEqual(self.statuses(red)["ci.yml"], "FAIL")
+
+    def test_without_gh_it_is_a_warning(self):
+        self.assertEqual(set(self.statuses(_GitHub(rc=127)).values()), {"warn"})
+
+
 class ReleaseCheckTests(unittest.TestCase):
     def setUp(self):
         self.root = pathlib.Path(tempfile.mkdtemp(prefix="grs-relcheck-"))
@@ -54,6 +105,11 @@ class ReleaseCheckTests(unittest.TestCase):
         _git(self.root, "commit", "-qm", "one")
         _git(self.root, "tag", "v0.1.0")
         _git(self.root, "tag", "v0.9.0")  # numeric order: v0.9.0 is above v0.2.0
+        # The CI checks ask GitHub through gh; these tests are about the files, so
+        # the answer is "every required run is green" unless a test says otherwise.
+        patcher = unittest.mock.patch.object(rc, "_gh", _GitHub())
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def test_the_recipe_names_only_remotes_the_checkout_has(self):
         """Review 4f1cdd4 (glm-5.3 G5.2): `git push mirror` was printed for a checkout
