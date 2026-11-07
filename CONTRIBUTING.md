@@ -379,14 +379,16 @@ is why the notes file is part of a release rather than an optional extra.
 First run `python tools/release_check.py`. It answers locally what the release job
 answers after the tag is public: `__version__` against the tag, the notes file's
 shape and compare-link base, the CHANGELOG section and its reference link, a clean
-tree. It prints the exact `git tag` command to use, and warns when HEAD is on no
-remote branch (it cannot see CI; wait for green before tagging).
+tree, HEAD on `origin/main`, and -- asked of GitHub with `gh` -- CI and both
+container legs green at HEAD. A `gh` that cannot answer fails the check;
+`--offline` makes that a warning, for a run made deliberately without GitHub (then
+check CI by hand). It prints the exact `git tag` command to use, naming only the
+remotes this checkout has.
 
 ```bash
 git tag -a v<x.y.z> -m "v<x.y.z> - <the release-notes title>"
 git push origin v<x.y.z>   # naming the tag is what carries it
 git push origin            # the branch
-git push mirror            # the mirror carries heads and tags
 ```
 
 **The tag message is the notes file's `# ` title, with the hash dropped.** Every

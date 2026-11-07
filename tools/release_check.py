@@ -11,14 +11,18 @@ This runs the same checks locally:
 * ``CHANGELOG.md`` has the ``## [X.Y.Z]`` section and its reference link;
 * the working tree is clean, and the commit is on a remote branch;
 * CI (``ci.yml``) and both legs of the CE/Pro container tier (``realserver.yml``)
-  passed on HEAD, asked of GitHub with ``gh`` when it is installed and signed in
-  (ROADMAP B8).  A run that failed, or none at HEAD, fails the check; without
-  ``gh`` it is a warning, so the check still works offline.
+  passed on HEAD, asked of GitHub with ``gh`` (ROADMAP B8).  A run that failed, or
+  none at HEAD, fails the check, and so does a ``gh`` that cannot answer: the
+  docs say a tag *requires* both green (review 06cc623).  ``--offline`` turns
+  that one case into a warning, for a check run deliberately without GitHub.
+* HEAD is on ``origin/main``: a commit only on a ``ci/<topic>`` branch is not
+  what gets released.
 
 Usage::
 
     python tools/release_check.py            # the version in __init__.py
     python tools/release_check.py v0.9.3     # must equal __version__
+    python tools/release_check.py --offline  # no GitHub: the CI legs are warnings
 
 Exit status: 0 when every check passes (warnings allowed), 1 otherwise, 2 for a
 usage error.  Standard library only.
@@ -35,6 +39,8 @@ from pathlib import Path
 
 _TAG = re.compile(r"^v(\d+)\.(\d+)\.(\d+)$")
 _REPO = "https://github.com/tkittich/git-remote-seafile"
+#: ``gh`` is told which repository to ask, not left to guess from the checkout's remotes.
+_SLUG = _REPO.removeprefix("https://github.com/")
 _COMPARE = re.compile(
     r"^\*\*Full Changelog\*\*: " + re.escape(_REPO) + r"/compare/(v\d+\.\d+\.\d+)\.\.\.(v\d+\.\d+\.\d+)$"
 )
@@ -60,19 +66,26 @@ def _gh(*args: str) -> tuple[int, str]:
     return proc.returncode, proc.stdout
 
 
-def workflow_results(sha: str, gh: "object" = None) -> list[Result]:
+def workflow_results(sha: str, gh: "object" = None, *, offline: bool = False) -> list[Result]:
     """One result per required workflow: did a run at *sha* pass (every required job)?
 
-    *gh* is the ``gh`` runner (``_gh``), replaceable in tests.
+    *gh* is the ``gh`` runner (``_gh``), replaceable in tests.  A ``gh`` that cannot
+    answer fails the check unless *offline*: "Ready" after skipping both CI legs
+    contradicted the docs (review 06cc623, opus G5.2, gemini G5.3).
     """
     run = gh if callable(gh) else _gh
     results: list[Result] = []
     for workflow, jobs in _REQUIRED_RUNS.items():
-        rc, out = run("run", "list", "--workflow", workflow, "--commit", sha,
+        rc, out = run("run", "list", "--repo", _SLUG, "--workflow", workflow, "--commit", sha,
                       "--limit", "20", "--json", "databaseId,conclusion,status")
         if rc != 0:
-            results.append(("warn", workflow, "could not ask GitHub (gh: "
-                            f"{out.strip().splitlines()[0] if out.strip() else rc}); check it by hand"))
+            said = out.strip().splitlines()[0] if out.strip() else rc
+            if offline:
+                results.append(("warn", workflow, f"not asked of GitHub (--offline; gh: {said}); "
+                                "check it by hand"))
+            else:
+                results.append(("FAIL", workflow, f"could not ask GitHub (gh: {said}); sign in "
+                                "with 'gh auth login', or pass --offline and check it by hand"))
             continue
         try:
             runs = json.loads(out or "[]")
@@ -87,7 +100,8 @@ def workflow_results(sha: str, gh: "object" = None) -> list[Result]:
             state = "still running" if len(finished) < len(runs) else "failed"
             results.append(("FAIL", workflow, f"its run at {sha[:7]} {state}"))
         elif jobs:
-            rc, out = run("run", "view", str(green[0]["databaseId"]), "--json", "jobs")
+            rc, out = run("run", "view", str(green[0]["databaseId"]), "--repo", _SLUG,
+                          "--json", "jobs")
             try:
                 listed = {j.get("name"): j.get("conclusion") for j in json.loads(out).get("jobs", [])}
             except (ValueError, AttributeError):
@@ -130,7 +144,7 @@ def previous_tag(root: Path, tag: str) -> str | None:
     return max(older, key=_key) if older else None
 
 
-def check(root: Path, tag: str | None = None) -> list[Result]:
+def check(root: Path, tag: str | None = None, *, offline: bool = False) -> list[Result]:
     results: list[Result] = []
 
     def ok(name: str, detail: str = "") -> None:
@@ -222,13 +236,17 @@ def check(root: Path, tag: str | None = None) -> list[Result]:
         ok("tree", "clean")
 
     rc, out = _git(root, "branch", "-r", "--contains", "HEAD")
-    if rc == 0 and out.strip():
-        ok("pushed", "HEAD is on " + out.split()[0])
+    branches = [b for b in out.split() if b != "->"] if rc == 0 else []
+    if "origin/main" in branches:
+        ok("pushed", "HEAD is on origin/main")
+    elif branches:
+        fail("pushed", f"HEAD is on {', '.join(branches[:3])} but not origin/main: merge it "
+             "into main and push before tagging")
     else:
         warn("pushed", "HEAD is on no remote branch: push, and wait for CI green, before tagging")
     rc, sha = _git(root, "rev-parse", "HEAD")
     if rc == 0 and sha.strip():
-        results.extend(workflow_results(sha.strip()))
+        results.extend(workflow_results(sha.strip(), offline=offline))
     return results
 
 
@@ -250,11 +268,13 @@ def push_recipe(root: Path, version: str, title: str) -> str:
 
 def main(argv: list[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
+    offline = "--offline" in args
+    args = [a for a in args if a != "--offline"]
     if len(args) > 1 or (args and args[0] in ("-h", "--help")):
         print(__doc__)
         return 2
     root = Path(__file__).resolve().parent.parent
-    results = check(root, args[0] if args else None)
+    results = check(root, args[0] if args else None, offline=offline)
     for status, name, detail in results:
         print(f"[{status:>4}] {name}: {detail}")
     failed = [r for r in results if r[0] == "FAIL"]

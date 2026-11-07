@@ -81,8 +81,24 @@ class WorkflowResultTests(unittest.TestCase):
                                         "conclusion": "failure"}], "realserver.yml": []})
         self.assertEqual(self.statuses(red)["ci.yml"], "FAIL")
 
-    def test_without_gh_it_is_a_warning(self):
-        self.assertEqual(set(self.statuses(_GitHub(rc=127)).values()), {"warn"})
+    def test_without_gh_it_fails_unless_offline(self):
+        # Review 06cc623 (opus G5.2, gemini G5.3): "Ready" after skipping both CI legs
+        # contradicted the docs' "requires".
+        self.assertEqual(set(self.statuses(_GitHub(rc=127)).values()), {"FAIL"})
+        offline = {name: status for status, name, _ in
+                   rc.workflow_results("a" * 40, _GitHub(rc=127), offline=True)}
+        self.assertEqual(set(offline.values()), {"warn"})
+
+    def test_gh_is_told_the_repository(self):
+        asked = []
+
+        def gh(*args):
+            asked.append(args)
+            return _GitHub()(*args)
+        rc.workflow_results("a" * 40, gh)
+        self.assertTrue(asked)
+        self.assertTrue(all(a[a.index("--repo") + 1] == "tkittich/git-remote-seafile"
+                            for a in asked), asked)
 
 
 class ReleaseCheckTests(unittest.TestCase):
@@ -158,6 +174,19 @@ class ReleaseCheckTests(unittest.TestCase):
     def test_a_dirty_tree_fails(self):
         _write(self.root / "scratch.tmp", "x")
         self.assertIn("tree", self.failed(rc.check(self.root)))
+
+    def test_a_commit_on_another_remote_branch_only_fails(self):
+        # gemini G5.3: a commit only on origin/ci/<topic> read as "pushed".
+        bare = self.root.parent / (self.root.name + "-origin.git")
+        _git(self.root.parent, "init", "-q", "--bare", str(bare))
+        self.addCleanup(remove_tree, bare)
+        _git(self.root, "remote", "add", "origin", str(bare))
+        _git(self.root, "push", "-q", "origin", "HEAD:refs/heads/ci/topic")
+        _git(self.root, "fetch", "-q", "origin")
+        self.assertIn("not origin/main", self.failed(rc.check(self.root)).get("pushed", ""))
+        _git(self.root, "push", "-q", "origin", "HEAD:refs/heads/main")
+        _git(self.root, "fetch", "-q", "origin")
+        self.assertNotIn("pushed", self.failed(rc.check(self.root)))
 
     def test_missing_notes_fail(self):
         (self.root / ".github" / "release-notes" / "v0.2.0.md").unlink()
