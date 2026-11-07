@@ -2523,5 +2523,67 @@ class TestAStateFileTheFolderListsIsNeverAbsent(unittest.TestCase):
                          "here with the reason absence is safe")
 
 
+class TestRedirectsKeepTheTokenAndTheBodyWhereTheyBelong(unittest.TestCase):
+    """Review 06cc623 (gemini C1): ``requests`` follows redirects by default.  It drops
+    the account token only on another host, so a server under a path (``/seafile``)
+    redirecting to another path of the same host handed over the token; and an upload
+    answered with a 307 was re-sent, whole, to wherever the redirect pointed."""
+
+    def _server(self, routes):
+        import http.server
+        import threading
+
+        seen: list[tuple[str, str, str | None, bytes]] = []
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *args):
+                pass
+
+            def _answer(self):
+                length = int(self.headers.get("Content-Length") or 0)
+                body = self.rfile.read(length) if length else b""
+                seen.append((self.command, self.path, self.headers.get("Authorization"), body))
+                status, location = routes.get(self.path, (200, None))
+                self.send_response(status)
+                if location:
+                    self.send_header("Location", location)
+                self.send_header("Content-Length", "2")
+                self.end_headers()
+                self.wfile.write(b"{}")
+
+            do_GET = do_POST = _answer
+
+        server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        return server, seen
+
+    def test_the_token_does_not_follow_a_redirect_out_of_the_servers_path(self):
+        server, seen = self._server({
+            "/seafile/api2/out/": (302, "/other-app/collect"),
+            "/seafile/api2/in/": (302, "/seafile/api2/landed/"),
+        })
+        port = server.server_address[1]
+        client = SeafileClient(server_url=f"http://127.0.0.1:{port}/seafile", token="SECRET")
+        client.session.get(f"http://127.0.0.1:{port}/seafile/api2/out/", timeout=10)
+        client.session.get(f"http://127.0.0.1:{port}/seafile/api2/in/", timeout=10)
+        auth = {path: header for _m, path, header, _b in seen}
+        self.assertIsNone(auth["/other-app/collect"], "the token left the server's path")
+        self.assertEqual(auth["/seafile/api2/landed/"], "Token SECRET")
+
+    def test_an_upload_answered_with_a_redirect_is_not_re_sent(self):
+        elsewhere, received = self._server({})
+        target = f"http://127.0.0.1:{elsewhere.server_address[1]}/exfil"
+        server, _seen = self._server({"/seafhttp/upload-api/tok": (307, target)})
+        port = server.server_address[1]
+        client = SeafileClient(server_url=f"http://127.0.0.1:{port}", token="SECRET")
+        with self.assertRaises(SeafileAPIError) as ctx:
+            client._xfer("post", f"http://127.0.0.1:{port}/seafhttp/upload-api/tok",
+                         data=b"PACK-BYTES", timeout=10)
+        self.assertIn("307", str(ctx.exception))
+        self.assertEqual(received, [], "the upload body was re-sent to the redirect")
+
+
 if __name__ == "__main__":
     unittest.main()

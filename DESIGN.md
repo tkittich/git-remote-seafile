@@ -223,7 +223,7 @@ Ref names are validated against measured `git check-ref-format` behaviour rather
 
 `git-remote-seafile` uses exclusively standard, stable endpoints:
 
-1. **Authentication**: Reuses existing desktop client tokens (`Accounts` table in `accounts.db`) or token headers (`Authorization: Token <token>`). Precedence is documented in [USER_GUIDE.md](USER_GUIDE.md) §6 and [SECURITY.md](SECURITY.md).
+1. **Authentication**: Reuses existing desktop client tokens (`Accounts` table in `accounts.db`) or token headers (`Authorization: Token <token>`). Precedence is documented in [USER_GUIDE.md](USER_GUIDE.md) §6 and [SECURITY.md](SECURITY.md). The token never follows a redirect out of the server's URL (its path included: a server under `/seafile` that redirects to another path of the same host gets no token there), and an upload answered with a redirect is an error, never re-sent to the new address (review 06cc623).
 2. **Directory Listing**: `GET /api2/repos/{repo-id}/dir/?p=/{repo-path}/refs/heads/`
 3. **Ref Reading**: `GET /api2/repos/{repo-id}/file/?p=/{repo-path}/refs/heads/{branch}`
 4. **Packfile & Ref Upload**:

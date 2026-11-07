@@ -11,7 +11,7 @@ from pathlib import Path
 import re
 import sys
 import time
-from typing import Any
+from typing import Any, Callable
 import uuid
 from urllib.parse import quote, urlparse, urlunparse
 
@@ -384,6 +384,28 @@ UPLOAD_CHUNK_ATTEMPTS = 3
 REF_WRITE_READ_TIMEOUT_SECONDS = 20
 
 
+class _ScopedSession(requests.Session):
+    """A session whose ``Authorization`` header never leaves the Seafile server's URL.
+
+    ``requests`` drops the header on a redirect to another host, scheme or port, but
+    keeps it on the same host: a server at ``https://host/seafile`` that redirects
+    (an SSO middleware, an open redirect) to ``https://host/other-app`` handed that
+    app the account token (review 06cc623, gemini C1).  *scope* is the server URL;
+    a redirect outside it goes on without the header.
+    """
+
+    def __init__(self, scope: Callable[[], str]) -> None:
+        super().__init__()
+        self.scope = scope   # read at redirect time: the server URL may be loaded later
+
+    def rebuild_auth(self, prepared_request: Any, response: Any) -> None:
+        super().rebuild_auth(prepared_request, response)
+        url = str(prepared_request.url or "")
+        scope = self.scope().rstrip("/")
+        if not scope or (url != scope and not url.startswith(scope + "/")):
+            prepared_request.headers.pop("Authorization", None)
+
+
 class SeafileClient:
     """Lightweight HTTP client for Seafile Web API v2.1."""
 
@@ -408,7 +430,7 @@ class SeafileClient:
         # changes its headers, cookies or adapters, and the one shared mutation,
         # the Date hook's offset list, is a GIL-atomic append/pop.  Keep it so,
         # or give each worker thread its own session.
-        self.session = requests.Session()
+        self.session: requests.Session = _ScopedSession(lambda: self.server_url)
         # File transfers go through a session as well, so they get connection
         # reuse, the `verify`/proxy settings and the retry adapter.  This second
         # one carries no Authorization header: download and upload links embed
@@ -1328,13 +1350,26 @@ class SeafileClient:
         included, and callers print exceptions.  ``from None`` also keeps the
         original out of an uncaught traceback.
         """
+        # An upload is never re-sent to wherever a 3xx points: requests would POST the
+        # whole pack, payload object or ref there, past ``force_file_host`` and the
+        # scheme check every transfer link goes through (review 06cc623, gemini C1).
+        if method != "get":
+            kwargs.setdefault("allow_redirects", False)
         try:
-            return getattr(self._transfer_session(url), method)(url, **kwargs)
+            resp = getattr(self._transfer_session(url), method)(url, **kwargs)
         except requests.RequestException as ex:
             raise SeafileAPIError(
                 f"{type(ex).__name__} during {method.upper()} {self._error_origin(url)}: "
                 f"{_scrub_transfer_error(ex, url)}"
             ) from None
+        if method != "get" and 300 <= resp.status_code < 400:
+            target = resp.headers.get("Location", "")
+            raise SeafileAPIError(
+                f"{method.upper()} {self._error_origin(url)} answered HTTP {resp.status_code}, "
+                f"a redirect to {self._error_origin(target) if target else 'nowhere'}; an "
+                "upload is not re-sent elsewhere. Check the server's SERVICE_URL / FILE_SERVER_ROOT"
+            )
+        return resp
 
     @staticmethod
     def _error_origin(url: str) -> str:
