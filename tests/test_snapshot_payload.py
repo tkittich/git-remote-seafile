@@ -1937,6 +1937,46 @@ class PayloadRetentionTests(_PayloadFixture):
         self.assertIn("Remove the file", out + err)
         self.assertIn(orphan, self.server_files(), "nothing may be deleted without the fence")
 
+    def test_a_listed_fence_baseline_the_file_host_will_not_serve_is_not_a_first_run(self):
+        """Review 06cc623 (opus G2.2, deepseek G2.3, gemini G2.1a): a `gc-seen.json` the
+        folder lists but whose download answered 404 or an empty body read as a first
+        run.  The fence was empty, and even a report run rewrote the baseline from the
+        current tips, so a later delete went ahead over a rewritten history."""
+        self.assertEqual(self.snapshot()[0], 0)
+        for fault in ("raw_404_on", "raw_empty_on"):
+            with self.subTest(fault=fault):
+                self.assertEqual(self.gc()[0], 0)          # seeds the baseline
+                seen_key = f"{self.base}/gc-seen.json"
+                before = self.stub.files[REPO_ID][seen_key]
+                self.stub.faults[fault] = "/gc-seen.json"
+                try:
+                    for args in ((), ("--payload-delete", "--payload-grace-days", "1")):
+                        rc, out, err = self.gc(*args)
+                        self.assertNotEqual(rc, 0, out + err)
+                        self.assertIn("gc-seen.json", out + err)
+                        self.assertIn("listed but its content could not be read", out + err)
+                        self.assertEqual(self.stub.files[REPO_ID][seen_key], before,
+                                         "the baseline was rewritten")
+                finally:
+                    self.stub.faults.pop(fault, None)
+
+    def test_a_listed_mark_list_the_file_host_will_not_serve_stops_the_delete(self):
+        """The mark list's sibling (gemini G2.1a): read as "no marks", the write-back
+        restarted every grace period.  Safe in direction, but the same misreading."""
+        self.assertEqual(self.snapshot()[0], 0)
+        self.orphan()
+        self.assertEqual(self.gc("--payload-delete", "--payload-grace-days", "1")[0], 0)
+        key = f"{self.base}/gc-pending.json"
+        before = self.stub.files[REPO_ID][key]
+        self.stub.faults["raw_404_on"] = "/gc-pending.json"
+        try:
+            rc, out, err = self.gc("--payload-delete", "--payload-grace-days", "1")
+        finally:
+            self.stub.faults.pop("raw_404_on", None)
+        self.assertNotEqual(rc, 0, out + err)
+        self.assertIn("listed but its content could not be read", out + err)
+        self.assertEqual(self.stub.files[REPO_ID][key], before)
+
     def test_a_push_that_lands_while_gc_is_deciding_stops_the_deletion(self):
         self.assertEqual(self.snapshot()[0], 0)
         orphan = self.orphan()

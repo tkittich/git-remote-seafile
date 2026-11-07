@@ -226,10 +226,14 @@ def read_seen_tips(client: Any, rid: str, base: str) -> dict[str, str]:
     empty history: treating it as ``{}`` erased the history-rewrite fence, and
     a delete run then marked objects that rewritten snapshots still need
     (ROADMAP S3, read half).  The remedy names the file, like the reader for
-    ``gc-pending.json`` beside it.
+    ``gc-pending.json`` beside it.  "There" is what the folder lists: a listed
+    file the file host answers 404 for, or serves empty, raises too (review
+    06cc623: it read as a first run, and even a report-only run rewrote it).
     """
+    from git_remote_seafile.client import read_listed_text
+
     try:
-        text = client.get_file_text(rid, f"{base}/{_SEEN_NAME}")
+        text = read_listed_text(client, rid, f"{base}/{_SEEN_NAME}")
     except Exception as exc:
         raise SnapshotError(
             f"could not read {base}/{_SEEN_NAME} ({type(exc).__name__}: {exc}); the "

@@ -1077,9 +1077,12 @@ class TestRemoteHelper(unittest.TestCase):
         h.client.list_dir.side_effect = RuntimeError("boom")
         h.client.get_file_text.return_value = None
 
+        # A forced push: a plain one is refused before this point, since a ref that
+        # reads absent while its folder cannot be listed cannot be checked (review
+        # 06cc623, deepseek G2.1).
         with patch("sys.stdout", io.StringIO()), patch("sys.stderr", io.StringIO()) as err, \
                 patch("git_remote_seafile.helper.RemoteLock"):
-            h.cmd_push(["refs/heads/feature:refs/heads/feature"])
+            h.cmd_push(["+refs/heads/feature:refs/heads/feature"])
 
         if mock_objs.call_args is not None:
             _, exclude = mock_objs.call_args[0]
@@ -1758,10 +1761,16 @@ class TestRemoteHelper(unittest.TestCase):
             self.assertIsInstance(verdict, tuple, refs)
 
     @patch("git_remote_seafile.helper.rev_parse", return_value="a" * 40)
-    def test_a_remote_whose_refs_cannot_be_listed_does_not_block_the_push_check(self, _rev):
+    def test_a_remote_whose_refs_cannot_be_listed_refuses_a_ref_it_cannot_check(self, _rev):
+        # The format probe's "cannot tell" withholds only its own refusal, but a ref
+        # that reads absent while its folder cannot be listed may be one the file
+        # host will not serve: overwriting it skipped the ancestry check (review
+        # 06cc623, deepseek G2.1).  A forced push goes through.
         h = self._format_race_helper({})
         h.client.list_dir.side_effect = RuntimeError("HTTP 500")
         verdict = h._decide_update("refs/heads/dev", "refs/heads/dev", force=False)
+        self.assertIn("but its content could not be read", verdict)
+        verdict = h._decide_update("refs/heads/dev", "refs/heads/dev", force=True)
         self.assertIsInstance(verdict, tuple)
 
     def test_cmd_push_delete_does_not_prune_on_an_unconfirmed_listing(self):
@@ -3093,6 +3102,43 @@ class TestPushRefReadBack(unittest.TestCase):
         self.assertIn("ok refs/heads/main", out.getvalue())
         self.assertNotIn("error", out.getvalue())
         self.assertIn("was not visible immediately after", err.getvalue())
+
+
+class TestAnAbsentLookingRefWhoseFolderCannotBeListed(unittest.TestCase):
+    """Review 06cc623 (deepseek G2.1): the ref read as absent and the listing that
+    tells "absent" from "listed but unreadable" failed; that answered "absent", so a
+    single 502 turned the Y4 refusal off and the push replaced the branch."""
+
+    def test_a_listing_that_fails_twice_refuses_the_update(self):
+        remote = _FakeRemote()
+        calls = []
+
+        def broken(repo_id, path):
+            calls.append(path)
+            raise RuntimeError("HTTP 502")
+
+        remote.list_dir = broken
+        out, err = io.StringIO(), io.StringIO()
+        TestPushRefReadBack()._push(remote, out, err)
+        self.assertIn("error refs/heads/main", out.getvalue())
+        self.assertIn("but its content could not be read", out.getvalue())
+        self.assertNotIn("/git-repo/refs/heads/main", remote.files, "the ref was written")
+        self.assertGreaterEqual(len(calls), 2, "the listing is asked again before giving up")
+
+    def test_one_failed_listing_is_retried(self):
+        remote = _FakeRemote()
+        failures = iter([RuntimeError("HTTP 502")])
+
+        def flaky(repo_id, path):
+            failure = next(failures, None)
+            if failure is not None:
+                raise failure
+            return []
+
+        remote.list_dir = flaky
+        out, err = io.StringIO(), io.StringIO()
+        TestPushRefReadBack()._push(remote, out, err)
+        self.assertIn("ok refs/heads/main", out.getvalue())
 
 
 class ProtocolErrorDisciplineTests(unittest.TestCase):

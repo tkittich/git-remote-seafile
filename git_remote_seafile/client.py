@@ -167,6 +167,10 @@ class SeafileAPIError(Exception):
     pass
 
 
+class ListedButUnreadableError(SeafileAPIError):
+    """A file its folder lists could not be read (a 404 or an empty body from the file host)."""
+
+
 class SeafilePermanentError(SeafileAPIError):
     """An API failure that asking again cannot change.
 
@@ -1234,7 +1238,11 @@ class SeafileClient:
         return SeafileAPIError(message)
 
     def get_file_text(self, repo_id: str, file_path: str) -> str | None:
-        """Download file and return as string, or None if not found."""
+        """Download file and return as string, or None if not found.
+
+        ``None`` means only that the download said so: for a state file whose
+        absence decides something, use :func:`read_listed_text`.
+        """
         data = self.get_file_bytes(repo_id, file_path, max_bytes=MAX_TEXT_FILE_BYTES)
         if data is None:
             return None
@@ -1818,3 +1826,61 @@ class SeafileClient:
             (rid, known) for rid, known in self._known_dirs
             if not (rid == repo_id and (known == path.rstrip("/") or known.startswith(prefix)))
         }
+
+
+# -- state files: "listed" decides, not a download ------------------------------------
+#
+# Functions rather than methods so that any object with ``list_dir`` and
+# ``get_file_text``/``get_file_bytes`` -- the tests' fakes included -- answers the same.
+
+
+def is_listed_file(client: Any, repo_id: str, file_path: str) -> bool:
+    """True when *file_path*'s folder lists it as a file (a missing folder lists as empty).
+
+    The listing is asked twice before giving up, and one that fails both times
+    raises: "could not tell" is the caller's to decide, never "not there".
+    """
+    parent, _, leaf = ("/" + file_path.strip("/")).rpartition("/")
+    try:
+        entries = client.list_dir(repo_id, parent or "/")
+    except Exception:
+        entries = client.list_dir(repo_id, parent or "/")
+    return any(
+        isinstance(entry, dict) and entry.get("name") == leaf and entry.get("type") == "file"
+        for entry in entries
+    )
+
+
+def _unreadable(file_path: str, got: object) -> ListedButUnreadableError:
+    how = "the download answered not found" if got is None else "an empty body"
+    return ListedButUnreadableError(f"{file_path} is listed but its content could not be read ({how})")
+
+
+def read_listed_text(client: Any, repo_id: str, file_path: str) -> str | None:
+    """A state file's text, stripped; ``None`` only when its folder does not list it.
+
+    The tool's state files (refs, ``HEAD``, lock tickets, the payload markers) are
+    never empty.  A download that comes back absent or empty while the folder still
+    lists the file -- the file host answering 404 for one file after the API gave a
+    link, or an empty body -- raises :class:`ListedButUnreadableError`: reading it as
+    "not there" overwrote a branch (review 4f1cdd4) and erased the payload's
+    history-rewrite fence (review 06cc623).
+    """
+    text = client.get_file_text(repo_id, file_path)
+    if text:
+        return text
+    if is_listed_file(client, repo_id, file_path):
+        raise _unreadable(file_path, text)
+    return None
+
+
+def read_listed_bytes(
+    client: Any, repo_id: str, file_path: str, max_bytes: int | None = None
+) -> bytes | None:
+    """:func:`read_listed_text` for a file read as bytes (the payload's mark list)."""
+    data = client.get_file_bytes(repo_id, file_path, max_bytes=max_bytes)
+    if data and data.strip():
+        return data
+    if is_listed_file(client, repo_id, file_path):
+        raise _unreadable(file_path, data)
+    return None

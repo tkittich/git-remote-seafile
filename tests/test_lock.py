@@ -965,11 +965,30 @@ class TestConcurrencyAndLocking(unittest.TestCase):
         locked = {"locked": True, "owner": "alice", "machine": "nodeA", "nonce": "a"}
         entry = [{"type": "file", "name": "a.json", "mtime": int(time.time())}]
 
+        # The sweep lists the ticket; by the time the refused delete is checked,
+        # another client has removed it and the folder no longer lists it.
+        listings = iter([entry])
+        with patch.object(RemoteLock, "get_status", return_value=locked), \
+                patch.object(lock.client, "list_dir", side_effect=lambda *a: next(listings, [])), \
+                patch.object(lock.client, "delete_entry", return_value=False):
+            self.assertTrue(lock.unlock(force=True))
+
+    def test_force_unlock_over_a_listed_ticket_that_cannot_be_read_is_a_failure(self):
+        """Review 06cc623 (gemini G2.1b): the check asked for the ticket's *content*,
+        so a ticket the file host would not serve read as gone and ``unlock --force``
+        said "not locked" while the ticket stayed.  The folder's listing decides."""
+        store = _SharedLockStore()
+        lock = RemoteLock(store.client("token123"), "repo1", "/path", timeout=5, lease=60, settle=0)
+        locked = {"locked": True, "owner": "alice", "machine": "nodeA", "nonce": "a"}
+        entry = [{"type": "file", "name": "a.json", "mtime": int(time.time())}]
+
         with patch.object(RemoteLock, "get_status", return_value=locked), \
                 patch.object(lock.client, "list_dir", return_value=entry), \
                 patch.object(lock.client, "delete_entry", return_value=False), \
                 patch.object(lock.client, "get_file_text", return_value=None):
-            self.assertTrue(lock.unlock(force=True))
+            with self.assertRaises(RepositoryLockedError) as ctx:
+                lock.unlock(force=True)
+        self.assertIn("a.json", str(ctx.exception))
 
     def test_force_unlock_raises_when_the_queue_cannot_be_listed(self):
         """A queue we could not read is 'nothing was deleted', not a success.

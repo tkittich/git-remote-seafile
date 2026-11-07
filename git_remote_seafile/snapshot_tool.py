@@ -4022,10 +4022,14 @@ def read_seen_tips(client: Any, rid: str, base: str) -> dict[str, str]:
     empty history: treating it as ``{}`` erased the history-rewrite fence, and
     a delete run then marked objects that rewritten snapshots still need
     (ROADMAP S3, read half).  The remedy names the file, like the reader for
-    ``gc-pending.json`` beside it.
+    ``gc-pending.json`` beside it.  "There" is what the folder lists: a listed
+    file the file host answers 404 for, or serves empty, raises too (review
+    06cc623: it read as a first run, and even a report-only run rewrote it).
     """
+    from git_remote_seafile.client import read_listed_text
+
     try:
-        text = client.get_file_text(rid, f"{base}/{_SEEN_NAME}")
+        text = read_listed_text(client, rid, f"{base}/{_SEEN_NAME}")
     except Exception as exc:
         raise SnapshotError(
             f"could not read {base}/{_SEEN_NAME} ({type(exc).__name__}: {exc}); the "
@@ -5893,9 +5897,15 @@ _PENDING_FUTURE_SLACK_SECONDS = 86400
 
 
 def _read_pending(client: Any, rid: str, base: str) -> str:
-    """The mark list as text ('' when there is none); too large names the way out."""
+    """The mark list as text ('' when there is none); too large names the way out.
+
+    A list the folder names but the file host will not serve is an error, not
+    "none": the write-back would restart every grace period (review 06cc623).
+    """
+    from git_remote_seafile.client import read_listed_bytes
+
     try:
-        data = client.get_file_bytes(rid, f"{base}/{_PENDING_NAME}", max_bytes=_PENDING_MAX_BYTES)
+        data = read_listed_bytes(client, rid, f"{base}/{_PENDING_NAME}", max_bytes=_PENDING_MAX_BYTES)
     except Exception as exc:
         if "refusing to read it" in str(exc):
             raise SnapshotError(

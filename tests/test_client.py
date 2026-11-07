@@ -16,11 +16,15 @@ from urllib.parse import quote
 import requests
 
 from git_remote_seafile.client import (
+    ListedButUnreadableError,
     SeafileAPIError,
     SeafileAuthError,
     SeafileClient,
     SeafilePermanentError,
     StreamingMultipartFile,
+    is_listed_file,
+    read_listed_bytes,
+    read_listed_text,
 )
 
 
@@ -2397,6 +2401,98 @@ class TestServerUnderAPath(unittest.TestCase):
             client._adjust_url("/seafhttp/files/abc/f"),
             "https://corp.example.com/seafhttp/files/abc/f",
         )
+
+
+class _ListingFake:
+    """``list_dir`` from a fixed folder, downloads from a fixed answer."""
+
+    def __init__(self, names, body):
+        self.names, self.body = names, body
+
+    def list_dir(self, repo_id, path):
+        return [{"name": n, "type": "file"} for n in self.names]
+
+    def get_file_text(self, repo_id, path):
+        return None if self.body is None else self.body.decode().strip()
+
+    def get_file_bytes(self, repo_id, path, max_bytes=None):
+        return self.body
+
+
+class TestAStateFileTheFolderListsIsNeverAbsent(unittest.TestCase):
+    """Review 06cc623: the "listed but unreadable" rule of review 4f1cdd4 was applied at
+    two readers; the payload's fence baseline, the mark list, ``HEAD`` and the lock
+    sweep each read a 404 or an empty body as "not there".  One reader now decides."""
+
+    def test_a_listed_file_that_reads_absent_or_empty_raises(self):
+        for body in (None, b"", b"  \n"):
+            for read in (read_listed_text, read_listed_bytes):
+                with self.subTest(body=body, read=read.__name__):
+                    with self.assertRaises(ListedButUnreadableError):
+                        read(_ListingFake(["HEAD"], body), "r", "/repo/HEAD")
+
+    def test_an_unlisted_file_is_absent_and_a_readable_one_is_read(self):
+        self.assertIsNone(read_listed_text(_ListingFake([], None), "r", "/repo/HEAD"))
+        self.assertIsNone(read_listed_bytes(_ListingFake([], b""), "r", "/repo/HEAD"))
+        self.assertEqual(read_listed_text(_ListingFake(["HEAD"], b"ref: x\n"), "r", "/repo/HEAD"),
+                         "ref: x")
+
+    def test_the_listing_is_asked_twice_and_then_raises(self):
+        fake = _ListingFake(["HEAD"], None)
+        calls = []
+
+        def failing(repo_id, path):
+            calls.append(path)
+            raise RuntimeError("HTTP 502")
+
+        fake.list_dir = failing
+        with self.assertRaises(RuntimeError):
+            is_listed_file(fake, "r", "/repo/HEAD")
+        self.assertEqual(calls, ["/repo", "/repo"])
+
+    def test_every_raw_read_outside_the_client_is_one_that_was_reviewed(self):
+        """A new ``get_file_text``/``get_file_bytes`` call whose ``None`` decides
+        something is the shape this round found four times.  Each raw read left is
+        listed with why ``None`` is safe there; a new one must use ``read_listed_*``
+        or join this list with its reason."""
+        import ast
+
+        reviewed = {
+            ("git_remote_seafile/cli.py", "_doctor"): "probe read-back; absence is the failure",
+            ("git_remote_seafile/cli.py", "_cmd_set_head"): "the old value is only printed",
+            ("git_remote_seafile/helper.py", "_remote_hash_width"): "only refs it listed",
+            ("git_remote_seafile/helper.py", "cmd_list"): "HEAD unreadable omits @ref only",
+            ("git_remote_seafile/helper.py", "_decide_update"): "absence asks _listed_as_file",
+            ("git_remote_seafile/helper.py", "_push_dry_run"): "a dry run writes nothing",
+            ("git_remote_seafile/helper.py", "_delete_remote_ref"): "absence deletes nothing",
+            ("git_remote_seafile/helper.py", "_still_there"): "a ref it just deleted",
+            ("git_remote_seafile/helper.py", "_warn_if_head_dangles"): "a warning only",
+            ("git_remote_seafile/helper.py", "_publish_ref"): "CAS and read-back: None fails",
+            ("git_remote_seafile/lock.py", "_scan_tickets"): "re-lists a listed ticket itself",
+            ("git_remote_seafile/lock.py", "_refresh_lease"): "own ticket gone is LOST",
+            ("git_remote_seafile/packs.py", "fetch_pack_artifact"): "None is an error there",
+            ("git_remote_seafile/refs.py", "iter_refs"): "paired with its listing",
+            ("git_remote_seafile/refs.py", "_fetch_ref"): "paired with its listing",
+            ("tools/_snapshot/72_payload_guards.py", "_read_json_marker"): "verified.json, a note",
+            ("tools/_snapshot/72_payload_guards.py", "_write_json_marker"): "read-back warning",
+        }
+        root = Path(__file__).resolve().parent.parent
+        files = [p for p in (root / "git_remote_seafile").glob("*.py")
+                 if p.name not in ("client.py", "snapshot_tool.py")]
+        files += list((root / "tools" / "_snapshot").glob("*.py"))
+        found = set()
+        for path in files:
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            for fn in ast.walk(tree):
+                if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    continue
+                for node in ast.walk(fn):
+                    if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                            and node.func.attr in ("get_file_text", "get_file_bytes")):
+                        found.add((path.relative_to(root).as_posix(), fn.name))
+        self.assertEqual(sorted(found - set(reviewed)), [],
+                         "a raw read nobody has classified: use read_listed_text, or add it "
+                         "here with the reason absence is safe")
 
 
 if __name__ == "__main__":

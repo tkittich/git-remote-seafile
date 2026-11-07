@@ -75,9 +75,15 @@ _PENDING_FUTURE_SLACK_SECONDS = 86400
 
 
 def _read_pending(client: Any, rid: str, base: str) -> str:
-    """The mark list as text ('' when there is none); too large names the way out."""
+    """The mark list as text ('' when there is none); too large names the way out.
+
+    A list the folder names but the file host will not serve is an error, not
+    "none": the write-back would restart every grace period (review 06cc623).
+    """
+    from git_remote_seafile.client import read_listed_bytes
+
     try:
-        data = client.get_file_bytes(rid, f"{base}/{_PENDING_NAME}", max_bytes=_PENDING_MAX_BYTES)
+        data = read_listed_bytes(client, rid, f"{base}/{_PENDING_NAME}", max_bytes=_PENDING_MAX_BYTES)
     except Exception as exc:
         if "refusing to read it" in str(exc):
             raise SnapshotError(

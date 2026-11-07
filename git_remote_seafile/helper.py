@@ -16,6 +16,8 @@ from .client import (
     SeafileAPIError,
     SeafilePermanentError,
     TransferAborted,
+    is_listed_file,
+    read_listed_text,
 )
 from .config import RemoteConfig
 from .diagnose import MIB, PACK_HEADROOM, size_refusal, split_cap_bytes
@@ -644,8 +646,9 @@ class RemoteHelper:
             # of "must not exist" is asked too: absence is exactly its condition.
             if not (force and dst not in self.cas_expect) and self._listed_as_file(dst):
                 return (
-                    "the remote lists this ref but its content could not be read, so it "
-                    f"cannot be checked before it is overwritten; run 'git-remote-seafile "
+                    "the remote lists this ref (or could not list its folder) but its content "
+                    "could not be read, so it cannot be checked before it is overwritten; "
+                    "run 'git-remote-seafile "
                     f"test {mask_url(self.raw_url)}', and fetch once it reads"
                 )
         # The list that told git the remote's object format was read before the
@@ -685,19 +688,15 @@ class RemoteHelper:
     def _listed_as_file(self, dst: str) -> bool:
         """True when *dst*'s folder lists it as a file (a missing folder lists as empty).
 
-        A listing that fails answers False, as :meth:`_remote_hash_width` does: the push
-        lists the same folders under the lock and proves its pack by a listing, so a
-        server that cannot list fails loudly there.
+        It is asked only when the ref already read as absent.  A listing that fails
+        twice answers True -- "cannot tell" refuses the update: a false refusal costs a
+        retry, a false absence costs another machine's branch.  Answering False let a
+        single 502 here turn the refusal off (review 06cc623, deepseek G2.1).
         """
-        parent, _, leaf = self._full_path(dst).rpartition("/")
         try:
-            entries = self.client.list_dir(self.repo_id, parent or "/")
+            return is_listed_file(self.client, self.repo_id, self._full_path(dst))
         except Exception:
-            return False
-        return any(
-            isinstance(entry, dict) and entry.get("name") == leaf and entry.get("type") == "file"
-            for entry in entries
-        )
+            return True
 
     def _accept_cas(self, value: str) -> bool:
         """Record one ``option cas <ref>:<sha>``; False if it is not that shape.
@@ -1257,7 +1256,11 @@ class RemoteHelper:
             # failure here must not turn a landed push into "remote rejected".
             try:
                 head_path = self._full_path("HEAD")
-                if not self.client.get_file_text(self.repo_id, head_path):
+                # A HEAD the folder lists but the file host will not serve raises
+                # here (to the warning below) instead of reading as "no HEAD": that
+                # replaced the default branch with the branch being pushed (review
+                # 06cc623, gemini G2.1c).
+                if read_listed_text(self.client, self.repo_id, head_path) is None:
                     self.client.upload_file(
                         self.repo_id,
                         self.repo_path,

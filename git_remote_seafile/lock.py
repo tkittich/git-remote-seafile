@@ -12,7 +12,7 @@ import time
 import uuid
 from pathlib import Path
 from typing import Any
-from .client import SeafileClient
+from .client import SeafileClient, is_listed_file
 from .config import RemoteConfig, default_lock_settle, get_git_config_int
 
 
@@ -1219,8 +1219,11 @@ class RemoteLock:
         failure to read keeps the caller's failure: this method only ever
         turns a reported failure into a success, never the other way round.
         """
+        # The listing decides, not a download: a ticket the file host will not serve
+        # is still there, and reading it as gone made `unlock --force` say "not
+        # locked" over a live ticket (review 06cc623, gemini G2.1b).
         try:
-            return self.client.get_file_text(self.repo_id, f"{self.lock_dir}/{name}") is None
+            return not is_listed_file(self.client, self.repo_id, f"{self.lock_dir}/{name}")
         except Exception:
             return False
 

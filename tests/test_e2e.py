@@ -800,8 +800,47 @@ class TestAListedRefThatCannotBeReadIsNotOverwritten(E2ETestCase):
                 self.stub.faults[fault] = "/refs/heads/main"
                 proc = run_git(["push", self.url(name), "main"], b, self.env, check=False)
                 self.assertNotEqual(proc.returncode, 0, proc.stdout + proc.stderr)
-                self.assertIn("lists this ref but its content could not be read", proc.stderr)
+                self.assertIn("but its content could not be read", proc.stderr)
                 self.assertEqual(self.stub.files[REPO_ID][key], before, "the ref was overwritten")
+
+    def test_an_unreadable_listed_head_is_not_replaced_by_a_pushed_branch(self):
+        # Review 06cc623 (gemini G2.1c): after a branch push the helper sets HEAD
+        # when there is none, and a HEAD the file host would not serve read as
+        # none -- the remote's default branch became the side branch.
+        for fault in ("raw_404_on", "raw_empty_on"):
+            with self.subTest(fault=fault):
+                self.stub.reset()
+                name = f"head_{fault}"
+                a = init_repo(self.work / f"src_{name}", self.env)
+                commit_file(a, "a.txt", "A\n", "A", self.env)
+                run_git(["push", self.url(name), "main"], a, self.env)
+                head = f"/{name}/HEAD"
+                self.assertEqual(self.stub.files[REPO_ID][head], b"ref: refs/heads/main\n")
+                run_git(["checkout", "-b", "side"], a, self.env)
+                commit_file(a, "s.txt", "S\n", "S", self.env)
+                self.stub.faults[fault] = "/HEAD"
+                proc = run_git(["push", self.url(name), "side"], a, self.env, check=False)
+                self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+                self.assertEqual(self.stub.files[REPO_ID][head], b"ref: refs/heads/main\n",
+                                 "the default branch was replaced")
+                self.assertIn("default branch (HEAD) could not be set", proc.stderr)
+
+    def test_deleting_an_unreadable_listed_ref_names_it_and_deletes_nothing(self):
+        # Review 06cc623 (glm B4.1) read the delete path's "remote ref does not
+        # exist" as misleading.  git never sends the delete: the listing does not
+        # advertise a ref it cannot read, and its warning names the cause.
+        self.stub.reset()
+        name = "delete_unreadable"
+        a = init_repo(self.work / f"src_{name}", self.env)
+        commit_file(a, "a.txt", "A\n", "A", self.env)
+        run_git(["push", self.url(name), "main", "main:other"], a, self.env)
+        key = f"/{name}/refs/heads/other"
+        before = self.stub.files[REPO_ID][key]
+        self.stub.faults["raw_404_on"] = "/refs/heads/other"
+        proc = run_git(["push", self.url(name), ":other"], a, self.env, check=False)
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("is listed but its content could not be read", proc.stderr)
+        self.assertEqual(self.stub.files[REPO_ID][key], before)
 
 
 class TestForcePushOverDivergedHistory(E2ETestCase):
