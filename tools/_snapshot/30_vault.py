@@ -266,3 +266,66 @@ def ensure_byte_exact(
     # overrides an earlier one within the same attributes file.
     if BYTE_EXACT_MARKER not in existing:
         attributes.write_text(existing + BYTE_EXACT_ATTRIBUTES, encoding="utf-8")
+
+
+#: Off only in tests that set ``core.ignorecase`` by hand to run the folding code on a
+#: case-sensitive disk; a real run always lets the source decide.
+_SOURCE_CASE_PROBE = True
+
+
+def _ascii_swapcase(name: str) -> str:
+    return "".join(c.swapcase() if c.isascii() else c for c in name)
+
+
+def source_folds_case(source: Path, limit: int = 64) -> bool | None:
+    """Whether the filesystem holding *source* treats ``a`` and ``A`` as one name.
+
+    git sets ``core.ignorecase`` by probing the folder it initialises -- the vault --
+    and the tool then staged the *source* by that answer.  A case-sensitive source
+    (a folder WSL created under ``/mnt/c``, or one with Windows' per-directory flag)
+    beside a vault on ordinary NTFS recorded one of ``d/x.txt`` and ``D/x.txt`` and
+    exited 0 (review 06cc623, opus G1.1 and gemini G1.1).  So the source is asked: an
+    entry whose name holds an ASCII letter is looked up with that letter's case
+    flipped.  Two listed spellings, or a flipped name that does not resolve to the
+    same file, mean case-sensitive.  ``None`` when no entry near the root has a
+    letter to flip (then the vault's own answer stands).
+    """
+    folders = [source]
+    seen = 0
+    while folders and seen < limit:
+        folder = folders.pop(0)
+        try:
+            with os.scandir(folder) as it:
+                entries = list(it)
+        except OSError:
+            continue
+        names = {entry.name for entry in entries}
+        for entry in entries:
+            seen += 1
+            flipped = _ascii_swapcase(entry.name)
+            if flipped == entry.name:
+                if entry.is_dir(follow_symlinks=False) and entry.name != ".git":
+                    folders.append(Path(entry.path))
+                continue
+            if flipped in names:
+                return False
+            try:
+                return os.path.samestat(os.lstat(entry.path), os.lstat(folder / flipped))
+            except OSError:
+                return False
+    return None
+
+
+def ensure_case_rule(vault: Path, git_dir: Path, source: Path,
+                     vault_config: dict[str, list[str]] | None = None) -> None:
+    """Set the vault's ``core.ignorecase`` to how the *source* folds names."""
+    if not _SOURCE_CASE_PROBE:
+        return
+    folds = source_folds_case(source)
+    if folds is None:
+        return
+    if vault_config is None:
+        vault_config = _read_local_config_map(vault)
+    wanted = "true" if folds else "false"
+    if (vault_config.get("core.ignorecase") or [""])[0] != wanted:
+        git(git_dir, vault, ["config", "core.ignorecase", wanted], cwd=vault)

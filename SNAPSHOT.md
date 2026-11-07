@@ -469,7 +469,14 @@ Nothing found shows a fix for plain literal paths; it was still quadratic on 2.5
    path's directories, so a directory renamed by case stays one directory. Names
    are compared the way git compares them there -- A-Z folded, nothing else (not
    Python's `casefold`, which makes `straße` equal `strasse`) -- and a respelling
-   is kept only when the respelled path exists on disk.
+   is kept only when the respelled path exists on disk. Whether git ignores case is
+   the *source's* answer, not the vault's: every run looks up one name near the
+   source root with its letters' case flipped and sets the vault's
+   `core.ignorecase` to match (git had probed the vault's own folder, so a
+   case-sensitive source -- a folder WSL created, or Windows' per-directory flag --
+   beside a vault on ordinary NTFS kept one of `d/x.txt` and `D/x.txt`). The probe
+   reads the root and its first folders, so a source that mixes the two kinds of
+   folder is judged by the first one it meets.
 3. A file that changes while git reads it (`short read while indexing`,
    `unstable object source data`) is tried again twice, two seconds apart.
 

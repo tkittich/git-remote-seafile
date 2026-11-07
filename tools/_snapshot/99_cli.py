@@ -392,6 +392,7 @@ def run_command(args: argparse.Namespace) -> int:
             # same settings a real run would apply.
             ensure_identity(vault, source, vault_config=vault_config)
             ensure_byte_exact(vault, git_dir, vault_config=vault_config)
+            ensure_case_rule(vault, git_dir, source, vault_config)
             if args.no_object_compression:
                 apply_large_payload_profile(vault, git_dir)
             else:

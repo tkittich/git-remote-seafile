@@ -3166,7 +3166,9 @@ class IncrementalStagingTests(_SnapshotFixture):
                 (self.code / "strasse").mkdir()
                 (self.code / "strasse" / "a.txt").write_bytes(b"a\n")
                 (self.code / "STRASSE.txt").write_bytes(b"T\n")
-                with unittest.mock.patch.object(snap, "_INDEX_ROUTE_MIN_PATHS", threshold):
+                # The source probe would set the case rule back to the disk's own.
+                with unittest.mock.patch.object(snap, "_INDEX_ROUTE_MIN_PATHS", threshold), \
+                        unittest.mock.patch.object(snap, "_SOURCE_CASE_PROBE", False):
                     self.assertEqual(self.snapshot(*self.EXCLUDE)[0], 0)
                     _git(self.vault, "config", "core.ignorecase", "true")
                     (self.code / sharp).mkdir()
@@ -3181,6 +3183,60 @@ class IncrementalStagingTests(_SnapshotFixture):
                     rc, _, err = self.snapshot(*self.EXCLUDE)
                 self.assertEqual(rc, 0, err)
                 self.assertNotIn("STRASSE.txt", set(self.tree()), f"{route}: a deleted file stayed")
+
+    def _case_sensitive_folder(self, path: pathlib.Path) -> bool:
+        """Make *path* a folder that keeps ``a`` and ``A`` apart, if this machine can."""
+        path.mkdir(parents=True, exist_ok=True)
+        if sys.platform == "win32":
+            proc = subprocess.run(["fsutil.exe", "file", "setCaseSensitiveInfo", str(path), "enable"],
+                                  capture_output=True)
+            if proc.returncode != 0:
+                return False
+        (path / "probe").write_bytes(b"")
+        sensitive = not (path / "PROBE").exists()
+        (path / "probe").unlink()
+        return sensitive
+
+    def test_the_source_decides_how_names_fold_not_the_vault(self):
+        """Review 06cc623 (opus G1.1, gemini G1.1): git set ``core.ignorecase`` by probing
+        the *vault's* folder and the tool staged the *source* by it.  A case-sensitive
+        source (a WSL-created folder, Windows' per-directory flag) beside a vault on
+        ordinary NTFS recorded one of ``d/x.txt`` and ``D/x.txt`` and exited 0, and a later
+        ``d/y.txt`` was filed under ``D/``.  The vault's rule is set to fold the way the
+        source does; on a case-sensitive disk the NTFS vault is simulated by hand."""
+        source = self.tmp / "sensitive"
+        if not self._case_sensitive_folder(source):
+            self.skipTest("this machine cannot make a case-sensitive folder")
+        (source / "d").mkdir()
+        (source / "D").mkdir()
+        (source / "d" / "x.txt").write_bytes(b"lower\n")
+        (source / "D" / "x.txt").write_bytes(b"UPPER\n")
+        self.assertIs(snap.source_folds_case(source), False)
+        for route, threshold in (("add", 10 ** 9), ("update-index", 1)):
+            with self.subTest(route=route):
+                vault = self.tmp / f"sensitive-vault-{route}"
+                snap.ensure_vault(vault, BRANCH)
+                _git(vault, "config", "core.ignorecase", "true")
+                with unittest.mock.patch.object(snap, "_INDEX_ROUTE_MIN_PATHS", threshold):
+                    rc, _, err = self.run_tool("--source", source, "--vault", vault)
+                    self.assertEqual(rc, 0, err)
+                    self.assertEqual(_git(vault, "config", "core.ignorecase").stdout.strip(), "false")
+                    (source / "d" / "y.txt").write_bytes(b"y\n")
+                    rc, _, err = self.run_tool("--source", source, "--vault", vault)
+                    self.assertEqual(rc, 0, err)
+                    (source / "d" / "y.txt").unlink()
+                recorded = set(_git(vault, "ls-tree", "-r", "--name-only", BRANCH).stdout.split())
+                self.assertEqual(recorded, {"d/x.txt", "D/x.txt", "d/y.txt"}, route)
+
+    def test_a_folding_source_is_found_to_fold(self):
+        source = self.tmp / "plain"
+        source.mkdir()
+        (source / "Name.txt").write_bytes(b"x")
+        folds = (source / "NAME.TXT").exists()
+        self.assertIs(snap.source_folds_case(source), folds)
+        (source / "Name.txt").unlink()
+        (source / "123").mkdir()
+        self.assertIsNone(snap.source_folds_case(source), "no letter to flip: cannot tell")
 
     def test_the_index_spelling_follows_git_and_the_disk(self):
         """The unit under the test above: ASCII letters fold, nothing else does, and a
