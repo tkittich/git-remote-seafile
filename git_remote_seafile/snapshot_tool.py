@@ -9439,9 +9439,14 @@ def offer_default_excludes(
 
 
 _SECRETS_KEY = "snapshot.secretsseen"
+#: Where a --no-push run remembers what it warned about: a file beside the config,
+#: not the config, which a --no-push run does not change (SNAPSHOT section 4).
+_SECRETS_LOCAL_FILE = "seafile-snapshot-secrets-seen"
 
 
-def warn_about_secrets(git_dir: Path, work_tree: Path, secrets: list[str], *, remember: bool) -> None:
+def warn_about_secrets(
+    git_dir: Path, work_tree: Path, secrets: list[str], *, remember: bool, local: bool = False
+) -> None:
     """Warn that captured paths look like credentials -- when that set is news.
 
     The warning is a decision point: the first push is the last moment to pick
@@ -9450,9 +9455,22 @@ def warn_about_secrets(git_dir: Path, work_tree: Path, secrets: list[str], *, re
     a scheduled job could no longer tell "something is wrong" from "as before".
     The vault remembers a digest of the paths it last warned about and warns
     again when the set changes; a dry run never writes the digest.
+
+    A ``--no-push`` run (*local*) keeps its own digest, in a file: it is warned
+    once like any other run, but what it saw does not silence the first push --
+    the decision the warning is for (review 06cc623, gemini G4.1a: a key file
+    first seen locally was never warned about on the way to the server).
     """
     digest = hashlib.sha256("\n".join(sorted(secrets)).encode("utf-8", "surrogateescape")).hexdigest()
-    if digest == _read_config_key(git_dir, _SECRETS_KEY):
+    local_file = git_dir / _SECRETS_LOCAL_FILE
+    if local:
+        try:
+            seen = local_file.read_text(encoding="ascii").strip()
+        except (OSError, ValueError):
+            seen = ""
+    else:
+        seen = _read_config_key(git_dir, _SECRETS_KEY)
+    if digest == seen:
         return
     if secrets:
         print(
@@ -9464,7 +9482,12 @@ def warn_about_secrets(git_dir: Path, work_tree: Path, secrets: list[str], *, re
             print(f"  {path}")
         if len(secrets) > 20:
             print(f"  ... and {len(secrets) - 20} more")
-    if remember:
+    if remember and local:
+        try:
+            local_file.write_text(digest + "\n", encoding="ascii")
+        except OSError:
+            pass   # the warning is said again next time: the safe side
+    elif remember:
         git(git_dir, work_tree, ["config", _SECRETS_KEY, digest], cwd=work_tree, check=False)
 
 
@@ -11012,7 +11035,7 @@ def run_command(args: argparse.Namespace) -> int:
                     index_paths(git_dir, source)
                     + [item["path"] for item in (manifest or {}).get("files", [])]
                 ),
-                remember=not (args.dry_run or args.no_push),  # the push decides
+                remember=not args.dry_run, local=args.no_push,
             )
 
             # A real run's ``None`` commit *is* the "tree unchanged" signal:

@@ -1424,6 +1424,20 @@ class CredentialWarningTests(_SnapshotFixture):
         rc, out, _ = self.snapshot("--no-push")
         self.assertNotIn("look like credentials", out)
 
+    def test_a_no_push_run_does_not_use_up_the_push_warning(self):
+        """Review 06cc623 (gemini G4.1a): what a --no-push run warned about silenced the
+        first push of the same files, the moment the warning is for.  A local run keeps
+        its own record; the push is warned once, and then neither again."""
+        rc, out, _ = self.snapshot("--no-push")
+        self.assertIn("look like credentials", out)
+        rc, out, _ = self.snapshot("--no-push")
+        self.assertNotIn("look like credentials", out)
+        rc, out, err = self.snapshot("--remote", self.remote)
+        self.assertEqual(rc, 0, err)
+        self.assertIn("look like credentials", out)
+        rc, out, _ = self.snapshot("--remote", self.remote)
+        self.assertNotIn("look like credentials", out)
+
     def test_a_dry_run_does_not_use_up_the_warning(self):
         self.snapshot("--dry-run")
         rc, out, _ = self.snapshot("--dry-run")

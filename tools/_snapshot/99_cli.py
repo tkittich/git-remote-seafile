@@ -558,7 +558,7 @@ def run_command(args: argparse.Namespace) -> int:
                     index_paths(git_dir, source)
                     + [item["path"] for item in (manifest or {}).get("files", [])]
                 ),
-                remember=not (args.dry_run or args.no_push),  # the push decides
+                remember=not args.dry_run, local=args.no_push,
             )
 
             # A real run's ``None`` commit *is* the "tree unchanged" signal:
