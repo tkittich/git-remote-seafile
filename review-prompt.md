@@ -111,8 +111,7 @@ RULES FOR THE WHOLE REVIEW
   non-goals and `DESIGN.md` §7. Re-reporting one requires showing that its stated
   reasoning is wrong, and saying so explicitly.
 - **Known, and not findings** (report one only if you show the stated reason is wrong):
-  `HANDOFF.issue-6.md` is in the tree on purpose and is deleted once the issue is
-  answered; the release date in `CHANGELOG.md` `[0.9.23]` and the ROADMAP line is a
+  the release date in `CHANGELOG.md` `[0.9.23]` and the ROADMAP line is a
   placeholder until the tag; *why* Professional answers a missing folder with 403/500 is
   inferred (its server code is closed) — the answers themselves were measured on 13.0.29;
   removing the empty copy a simultaneous `mkdir` leaves is best-effort by design (a copy
