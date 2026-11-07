@@ -753,8 +753,14 @@ class TestAVanishedRepositoryPathIsNotAnEmptyRepository(E2ETestCase):
         # Pushing again (the repository was deleted on purpose) is how one recreates
         # it; only the listing for a fetch refuses.
         src = self._pushed_and_moved("vanished_push")
-        run_git(["push", "origin", "main"], src, self.env)
+        proc = run_git(["push", "origin", "main"], src, self.env)
         self.assertIn("/vanished_push/refs/heads/main", self.stub.files[REPO_ID])
+        # It says so, though: a folder that was only moved would be recreated here
+        # with one branch (review 06cc623, opus A1).
+        self.assertIn("this push creates the repository anew", proc.stderr)
+        self.assertIn("git remote set-url origin", proc.stderr)
+        again = run_git(["push", "origin", "main"], src, self.env)
+        self.assertNotIn("creates the repository anew", again.stderr)
 
     def test_a_first_clone_and_an_anonymous_ls_remote_are_not_refused(self):
         src = self._pushed_and_moved("vanished_anon")

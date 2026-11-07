@@ -550,6 +550,26 @@ class RemoteHelper:
                     "was deleted on purpose, delete the remote's tracking branches "
                     f"(git branch -r -d {self.remote_name}/<branch>) or push to recreate it."
                 )
+        # A push to that same empty path still goes ahead -- it is how a deleted
+        # repository is made again -- but if the folder was only *moved*, it creates a
+        # one-branch repository at the old path, after which the guard above never
+        # fires and other clones' `fetch --prune` drop the branches not pushed again
+        # (review 06cc623, opus A1).  So it is said, once, before anything is written.
+        if not listed_any and for_push and not head_content:
+            tracked = remote_tracking_refs(self.remote_name)
+            try:
+                empty = tracked and not self._repository_has_objects()
+            except Exception:
+                empty = False
+            if empty:
+                sys.stderr.write(
+                    f"Warning: {self.library_name}:{self.repo_path} holds nothing, but this "
+                    f"clone tracks branches from remote '{self.remote_name}' (for example "
+                    f"{tracked[0]}): this push creates the repository anew. If it was moved "
+                    f"on the server, stop and point the remote at it instead: git remote "
+                    f"set-url {self.remote_name} <url>.\n"
+                )
+                sys.stderr.flush()
 
         # 2. Read HEAD symbolic ref.  The target is validated before it is
         # echoed because this line goes straight to git's stdout: a HEAD file
