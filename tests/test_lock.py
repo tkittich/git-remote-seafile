@@ -1860,3 +1860,62 @@ class TestWaitingIsBoundedByProgressNotByTheClockAlone(unittest.TestCase):
         self.assertLessEqual(len(own_uploads), 4, own_uploads)
         self.assertGreaterEqual(len(own_uploads), 2, own_uploads)
 
+
+class _QueueUnreadable:
+    """A lock folder whose listing fails, with our own ticket readable or gone."""
+
+    def __init__(self, own: str | None):
+        self.own = own
+        self.uploads: list[str] = []
+
+    def list_dir(self, repo_id, path):
+        raise RuntimeError("HTTP 502 while listing")
+
+    def get_file_text(self, repo_id, path):
+        return self.own
+
+    def upload_file(self, repo_id, parent, name, content, **kwargs):
+        self.uploads.append(name)
+        return True
+
+
+class TestAFailedQueueScanStillReadsTheOwnTicket(unittest.TestCase):
+    """Review 06cc623 (opus G2.1): verify_ownership() scanned the queue first and
+    answered UNKNOWN when the scan failed, without reading its own ticket.  A holder
+    whose ticket had been reaped after a suspend then read as "unproven" instead of
+    LOST, and a push after a read-back write reports UNKNOWN as ok plus a warning."""
+
+    def _lock(self, own):
+        lock = RemoteLock(_QueueUnreadable(own), "rid", "/repo", timeout=1, lease=60, settle=0)
+        lock.acquired, lock._nonce = True, "deadbeef"
+        lock._get_server_time = time.time
+        lock._last_proven = time.monotonic()
+        return lock
+
+    def test_a_reaped_ticket_reads_as_lost_when_the_queue_cannot_be_read(self):
+        lock = self._lock(None)
+        with patch("sys.stderr", io.StringIO()):
+            self.assertFalse(lock.verify_ownership())
+        self.assertEqual(lock.ownership_state(), LEASE_LOST)
+
+    def test_an_own_ticket_with_an_unread_queue_is_unknown_within_the_lease(self):
+        ticket = json.dumps({"nonce": "deadbeef", "timestamp": time.time(), "lease": 60})
+        lock = self._lock(ticket)
+        with patch("sys.stderr", io.StringIO()):
+            self.assertFalse(lock.verify_ownership())
+        self.assertEqual(lock.ownership_state(), LEASE_UNKNOWN)
+
+    def test_unknown_after_the_lease_ran_out_by_this_machines_clock_is_lost(self):
+        # Review 06cc623 (gemini A5): the network cannot prove the lease either way,
+        # but the time since it was last proven can.
+        lock = self._lock("not json")              # the ticket read does not settle it
+        lock._last_proven = time.monotonic() - 61
+        with patch("sys.stderr", io.StringIO()) as err:
+            self.assertFalse(lock.verify_ownership())
+        self.assertEqual(lock.ownership_state(), LEASE_LOST)
+        self.assertIn("ran out by this machine's clock", err.getvalue())
+        lock._last_proven = time.monotonic()
+        with patch("sys.stderr", io.StringIO()):
+            lock.verify_ownership()
+        self.assertEqual(lock.ownership_state(), LEASE_UNKNOWN)
+

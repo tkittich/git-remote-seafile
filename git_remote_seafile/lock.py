@@ -316,6 +316,9 @@ class RemoteLock:
         self._identity: tuple[str, str] | None = None
         self._nonce: str | None = None
         self._last_renewed: float = 0.0
+        #: When this machine last *proved* the lease (an acquire or a renewal that
+        #: wrote the ticket), on its own monotonic clock; see verify_ownership().
+        self._last_proven: float = 0.0
         #: Why the last renew()/verify_ownership() held or failed; see
         #: ownership_state() and describe_ownership_failure().
         self._last_ownership_state: str = LEASE_UNKNOWN
@@ -701,6 +704,7 @@ class RemoteLock:
                     self._preemptor_checked_at = None
                     self.acquired = True
                     self._last_renewed = time.monotonic()
+                    self._last_proven = self._last_renewed
                     return
                 else:
                     # Another ticket won
@@ -848,6 +852,7 @@ class RemoteLock:
                 replace=True,
             )
             self._last_renewed = time.monotonic()
+            self._last_proven = self._last_renewed
             return LEASE_HELD
         except Exception as ex:
             sys.stderr.write(f"Warning: Failed to renew lock lease: {ex}\n")
@@ -947,13 +952,19 @@ class RemoteLock:
         try:
             preemptor = self._queue_preemptor()
         except Exception as ex:
-            # Fail closed, and as UNKNOWN rather than LOST: a queue we could not
-            # read proves nothing about who holds the lock.
-            self._last_ownership_state = LEASE_UNKNOWN
+            # Fail closed.  A queue we could not read proves nothing about who
+            # holds the lock -- but our own ticket still can: a reaped one reads as
+            # LOST.  Reporting UNKNOWN without asking let a takeover after a
+            # suspend pass as "unproven", which a push after a read-back write
+            # reports as ok (review 06cc623, opus G2.1).
             sys.stderr.write(
                 f"Warning: could not re-read the lock queue ({ex}); ownership unproven.\n"
             )
             sys.stderr.flush()
+            state = self.renew_state()
+            if state == LEASE_HELD:
+                state = LEASE_UNKNOWN   # the lease is ours; the queue order is not proven
+            self._last_ownership_state = self._lapsed_if_unknown(state)
             return False
 
         if preemptor is not None:
@@ -965,7 +976,27 @@ class RemoteLock:
             sys.stderr.flush()
             return False
 
-        return self.renew()
+        held = self.renew()
+        self._last_ownership_state = self._lapsed_if_unknown(self._last_ownership_state)
+        return held
+
+    def _lapsed_if_unknown(self, state: str) -> str:
+        """UNKNOWN becomes LOST once this machine's own clock says the lease ran out.
+
+        The network could not prove the lease either way, but the monotonic time
+        since it was last proven can: a lease older than its length may have been
+        reaped and taken over, and "unproven" then hides exactly the takeover the
+        fence exists for (review 06cc623, gemini A5).  Within the lease, a
+        transport failure stays UNKNOWN, as DESIGN §4.1 settles.
+        """
+        if state == LEASE_UNKNOWN and time.monotonic() - self._last_proven >= self.lease:
+            sys.stderr.write(
+                "Warning: the lease ran out by this machine's clock while ownership could not "
+                "be read; another client may have taken the lock.\n"
+            )
+            sys.stderr.flush()
+            return LEASE_LOST
+        return state
 
     def release(self) -> None:
         """Release the lock by deleting this client's own ticket.
