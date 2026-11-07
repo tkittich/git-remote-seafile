@@ -85,9 +85,12 @@ RULES FOR THE WHOLE REVIEW
 - **The full suite is run at this commit by CI and the maintainer — do not run it
   again**, and do not run whole modules to "check that the tests pass". Several reviewers
   work on this commit at once, and a full run is twelve minutes or more each that finds
-  nothing new. CI's runs for the commit are on GitHub (`gh run list --commit <sha>`:
-  `ci.yml` on Ubuntu, Windows and macOS, `realserver.yml` against CE and Pro); a run that
-  is red or still going when you start is the maintainer's to deal with, not a finding.
+  nothing new. CI ran at `06cc623`, the code this round reads (later commits change only
+  this prompt): `ci.yml` green on all 13 jobs (Ubuntu, Windows, macOS, every Python,
+  min-deps, coverage) and `realserver.yml` green on both legs, CE and Pro 13.0.29. The
+  repository is public, so the runs are at
+  `https://github.com/tkittich/git-remote-seafile/commit/06cc623` (the checks) and the
+  Actions tab; `gh` will not see them from your isolated `HOME`, and that is expected.
   Done by the maintainer: `python tools/gates.py` on Windows 11 (build check, ruff, mypy,
   the docs guards and all 1,671 tests: green) and, two commits earlier, the whole suite on
   Debian (WSL; 1,673, the symlink scenarios included) with an
@@ -297,7 +300,9 @@ bound of G4?); the release notes against the changelog; the DESIGN additions (§
 §4.3 item 7, §4.4's fence-reuse paragraph, §4.6, §5's "An empty remote is not necessarily
 a new one") against the code; the new USER_GUIDE §14 rows against the messages the code
 prints (quote both); AGENTS.md "Review rounds"; and `python tools/release_check.py`
-(expected to warn that HEAD is untagged — report anything else it says).
+(expected: it warns that HEAD is untagged, and, from your isolated `HOME`, that it could
+not ask GitHub about CI because `gh` is not signed in there — report anything else it
+says).
 
 PART B — code of the helper (Phase 2)
 Scope: `git_remote_seafile/{helper,client,lock,gc,packs,refs,git_util,safety,url,config,
