@@ -381,7 +381,10 @@ What to know:
   remote really is the only copy), because a snapshot that was never pushed would
   otherwise look unused. If the remote's history was rewritten since the last delete
   run -- a force push, a deleted branch or tag -- or `--payload-keep` would expire
-  snapshots, the run refuses until you pass `--payload-accept-loss`. **A tag is a
+  snapshots, the run refuses until you pass `--payload-accept-loss`. On Seafile
+  Professional a delete run by an account that does not own the library refuses too
+  (a folder permission could hide snapshots from it); `--payload-allow-non-owner` says no
+  rule applies to that account. **A tag is a
   pin:** `git tag keep-2026-q3 <snapshot>` keeps that snapshot's objects whatever
   happens to the branch.
 - **What it checks before it starts.** A restore that would not fit the free disk is

@@ -217,5 +217,6 @@ def payload_command(args: argparse.Namespace) -> int | None:
             args.remote, vault, delete=args.payload_delete,
             grace_days=args.payload_grace_days, keep=args.payload_keep,
             accept_loss=args.payload_accept_loss, allow_low_disk=args.allow_low_disk,
+            allow_non_owner=args.payload_allow_non_owner,
         )
     return None

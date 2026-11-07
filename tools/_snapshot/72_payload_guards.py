@@ -361,6 +361,24 @@ def require_complete_history(repo: Path, *, walk: bool) -> None:
 _MAX_CLOCK_SKEW_SECONDS = 3600.0
 
 
+def _require_whole_history(client: Any, rid: str, delete: bool) -> None:
+    """Refuse a deletion by an account that may not see the whole history (ROADMAP B2).
+
+    On Seafile Professional an ``invisible`` folder permission hides the folder from
+    a non-owner's listing (measured, 13.0.29), so a branch or tag under it would
+    read as gone and its objects as unused.  A report goes on (it deletes nothing);
+    ``--payload-allow-non-owner`` says no folder permission applies to this account.
+    """
+    risk = client.hidden_history_risk(rid) if delete else None
+    if isinstance(risk, str) and risk:
+        raise SnapshotError(
+            f"{risk}; snapshots under a hidden folder would look unreferenced and their "
+            "objects would be deleted. Nothing was deleted. Run --payload-delete as the "
+            "library's owner, or pass --payload-allow-non-owner if no folder permission "
+            "applies to this account"
+        )
+
+
 def _require_server_clock(client: Any, delete: bool) -> None:
     """Refuse a deletion whose grace period would not be timed on a sane server clock.
 

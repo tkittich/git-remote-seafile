@@ -132,6 +132,17 @@ class _Handler(BaseHTTPRequestHandler):
         if path == "/api2/account/info/":
             return self._json({"email": "e2e@example.com"})
 
+        if path == "/api2/server-info/":
+            # The edition decides whether folder permissions exist (ROADMAP B2).
+            pro = bool(f.get("pro_server") or os.environ.get("GRS_STUB_PRO"))
+            return self._json({"version": "13.0.29",
+                               "features": ["seafile-basic"] + (["seafile-pro"] if pro else [])})
+
+        if re.fullmatch(r"/api2/repos/[^/]+/", path):
+            # Library info: who owns it (``owner`` fault: another account does).
+            return self._json({"id": self._rid(), "name": REPO_NAME,
+                               "owner": f.get("owner") or "e2e@example.com"})
+
         if path.startswith("/api2/repos/") and path.endswith("/dir/"):
             if f.get("dir"):
                 return self._send(f["dir"], b"injected failure")

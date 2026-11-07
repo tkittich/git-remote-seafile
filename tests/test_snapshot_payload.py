@@ -1639,6 +1639,28 @@ class PayloadRetentionTests(_PayloadFixture):
         self.assertNotIn(orphan, self.server_files())
         self.assertEqual(self.object_count(), 2)
 
+    def test_a_delete_by_a_non_owner_on_pro_is_refused_and_a_report_still_runs(self):
+        """ROADMAP B2: an invisible folder hides snapshots from a non-owner's history."""
+        self.assertEqual(self.snapshot()[0], 0)
+        orphan = self.orphan()
+        self.stub.faults.update(pro_server=1, owner="someone-else@example.com")
+        rc, out, err = self.gc("--payload-delete", "--payload-grace-days", "1")
+        self.assertNotEqual(rc, 0, out + err)
+        self.assertIn("is not the library's owner", out + err)
+        self.assertIn("--payload-allow-non-owner", out + err)
+        self.assertNotIn(f"{self.base}/gc-pending.json", self.server_files())
+        rc, out, err = self.gc()
+        self.assertEqual(rc, 0, out + err)
+        rc, out, err = self.gc("--payload-delete", "--payload-grace-days", "1",
+                               "--payload-allow-non-owner")
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn(orphan, self.server_files(), "the first delete run only marks")
+        rc, out, err = self.run_tool("--payload-gc", "--remote", self.remote,
+                                     "--payload-allow-non-owner")
+        self.assertNotEqual(rc, 0)
+        self.assertIn("--payload-allow-non-owner only applies to --payload-gc --payload-delete",
+                      out + err)
+
     def test_a_delete_run_removes_what_a_killed_link_probe_left(self):
         """ROADMAP B4: a run killed during the link probe left a 16 MiB ``probe-*`` in
         ``objects/`` for good, where no payload tool reads.  A delete run now removes one

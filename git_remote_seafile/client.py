@@ -832,6 +832,45 @@ class SeafileClient:
 
         return raw_url
 
+    def _json_or_none(self, path: str) -> Any:
+        """``GET <server><path>`` as JSON, or ``None`` for any failure (a question
+        with a safe default, never a reason to stop on its own)."""
+        try:
+            resp = self.session.get(f"{self.server_url}{path}", timeout=self.timeout)
+            return resp.json() if resp.status_code == 200 else None
+        except (requests.RequestException, ValueError):
+            return None
+
+    def hidden_history_risk(self, repo_id: str) -> str | None:
+        """Why this account may not see the library's whole history; ``None`` when it does.
+
+        On Seafile Professional a folder permission can hide part of a library from
+        an account that is not its owner: an ``invisible`` folder is left out of its
+        parent's listing (measured on Pro 13.0.29, ROADMAP B2).  A ref under such a
+        folder reads as absent, and a ``gc`` or ``--payload-delete`` run by that
+        account would delete what only that ref reaches.  Community Edition has no
+        folder permissions, and the owner is never restricted by them.  On Pro, an
+        account or owner the server does not report is a risk too: cannot tell is
+        not "safe".
+        """
+        info = self._json_or_none("/api2/server-info/")
+        features = info.get("features") if isinstance(info, dict) else None
+        if not isinstance(features, list) or "seafile-pro" not in features:
+            return None
+        account = self._json_or_none("/api2/account/info/")
+        library = self._json_or_none(f"/api2/repos/{repo_id}/")
+        email = account.get("email") if isinstance(account, dict) else None
+        owner = library.get("owner") if isinstance(library, dict) else None
+        if isinstance(email, str) and email and email == owner:
+            return None
+        if not (isinstance(email, str) and email and isinstance(owner, str) and owner):
+            return ("the server did not say which account owns this library, and on Seafile "
+                    "Professional a folder permission can hide refs from an account that is not "
+                    "the owner")
+        return (f"this account ({email}) is not the library's owner ({owner}), and on Seafile "
+                "Professional a folder permission can hide refs from it (an 'invisible' folder "
+                "is left out of its listing)")
+
     def get_repo_id(self, name_or_id: str) -> str:
         """Resolve a library name or id to its repo UUID.
 

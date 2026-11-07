@@ -70,7 +70,8 @@ _COMMANDS: tuple[tuple[str, str, str, tuple[tuple[str, str], ...]], ...] = (
      (("--user NAME", "The account to sign in as (asked for when omitted)"),)),
     ("check-auth", "git-remote-seafile check-auth",
      "Verify active Seafile login", ()),
-    ("gc", "git-remote-seafile gc <seafile://url> [--min-packs N | --tail] [--allow-low-disk]",
+    ("gc", "git-remote-seafile gc <seafile://url> [--min-packs N | --tail] [--allow-low-disk] "
+           "[--allow-non-owner]",
      "Compact multiple remote packfiles",
      (("--min-packs N",
        "Only compact when the remote holds at least N packfiles (default: 2)"),
@@ -79,7 +80,10 @@ _COMMANDS: tuple[tuple[str, str, str, tuple[tuple[str, str], ...]], ...] = (
        "leave large ones in place, no pruning"),
       ("--allow-low-disk",
        "Start even when the temporary directory looks too small for the download "
-       "(about twice the packs' size)"))),
+       "(about twice the packs' size)"),
+      ("--allow-non-owner",
+       "Compact although this account does not own the library on Seafile Professional, "
+       "where a folder permission could hide refs from it; only when none applies"))),
     ("repair", "git-remote-seafile repair <seafile://url> [--dry-run] [--allow-low-disk]",
      "Restore refs whose objects no remote packfile carries, from this clone",
      (("--dry-run", "Report the broken refs without uploading anything"),
@@ -694,6 +698,17 @@ def _cmd_gc(rest: list[str]) -> int:
     try:
         from .config import RemoteConfig
         helper = RemoteHelper("gc", url)
+        # A full gc keeps only what the refs it can list reach.  On Pro a folder
+        # permission can hide refs from an account that is not the owner (ROADMAP
+        # B2, measured); the tail merge prunes nothing, so only this path asks.
+        risk = None if "--allow-non-owner" in rest else helper.client.hidden_history_risk(
+            helper.repo_id)
+        if isinstance(risk, str) and risk:
+            return _error(
+                f"Compaction refused: {risk}; gc would delete the objects only those refs "
+                "reach. Nothing was changed. Run gc as the library's owner, or pass "
+                "--allow-non-owner if no folder permission applies to this account."
+            )
         from .gc import compact_repository, describe_size_delta
         res = compact_repository(
             helper.client,

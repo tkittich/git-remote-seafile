@@ -1987,6 +1987,40 @@ class TestSeafileClientOperations(unittest.TestCase):
             client.dir_exists("r", "/x")
         self.assertNotIn("may not", str(caught.exception))
 
+    def test_the_hidden_history_risk_is_named_only_on_pro_for_a_non_owner(self):
+        """ROADMAP B2.  CE has no folder permissions; on Pro the owner is never restricted,
+        and an account or owner the server does not report is a risk (cannot tell)."""
+        def client_for(features, email, owner, library_status=200):
+            client = SeafileClient(server_url="https://seafile.example.com", token="t", timeout=10)
+            client.session = MagicMock()
+
+            def get(url, timeout=None):
+                resp = MagicMock(status_code=200)
+                if url.endswith("/api2/server-info/"):
+                    resp.json.return_value = {"features": features}
+                elif url.endswith("/api2/account/info/"):
+                    resp.json.return_value = {"email": email} if email else {}
+                else:
+                    resp.status_code = library_status
+                    resp.json.return_value = {"owner": owner} if owner else {}
+                return resp
+            client.session.get.side_effect = get
+            return client
+
+        pro = ["seafile-basic", "seafile-pro"]
+        self.assertIsNone(client_for(["seafile-basic"], "a@x", "b@x").hidden_history_risk("r"))
+        self.assertIsNone(client_for(pro, "a@x", "a@x").hidden_history_risk("r"))
+        risk = client_for(pro, "a@x", "b@x").hidden_history_risk("r")
+        self.assertIn("(a@x) is not the library's owner (b@x)", risk)
+        for email, owner, status in (("a@x", None, 200), (None, "b@x", 200), ("a@x", "a@x", 404)):
+            with self.subTest(email=email, owner=owner, status=status):
+                risk = client_for(pro, email, owner, status).hidden_history_risk("r")
+                self.assertIn("did not say which account owns", risk)
+        broken = SeafileClient(server_url="https://seafile.example.com", token="t", timeout=10)
+        broken.session = MagicMock()
+        broken.session.get.side_effect = requests.ConnectionError("down")
+        self.assertIsNone(broken.hidden_history_risk("r"), "no edition answer: not Pro")
+
     def test_a_seafile_copy_name_is_recognised_in_both_shapes(self):
         from git_remote_seafile.client import _is_seafile_copy_of
 

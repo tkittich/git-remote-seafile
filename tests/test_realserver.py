@@ -1030,6 +1030,11 @@ class SharedUserTests(_RealServerFixture):
               f"{'omits' if hidden else 'shows'} the invisible folder; the folder itself {inside}; "
               f"the account sees {listed}", flush=True)
         self.assertIn("rw", listed, "the account must see a folder it may write")
+        # The refusal B2 led to rests on the server naming the library's owner
+        # (``/api2/repos/<id>/``) and the account: the owner is not at risk, the
+        # second account is.
+        self.assertIsNone(self.client.hidden_history_risk(self.rid))
+        self.assertIn("is not the library's owner", second.hidden_history_risk(self.rid) or "")
         if not hidden:
             self.assertTrue(inside.startswith("refused"),
                             "an invisible folder that is listed must at least refuse its contents")
@@ -1096,12 +1101,15 @@ class SharedUserTests(_RealServerFixture):
                 # `race<N>` and `race<N> (1)` in the base, which a listing of the
                 # repository alone never sees (review 4f1cdd4, glm-5.3 G4.2): each such
                 # copy must be empty and named in a push's warning.
+                # Only this round's folders: the base also holds the copies an earlier
+                # round left and named (round 1 found round 0's `race0 (1)`, Pro, the
+                # third realserver.yml run).
                 said = "".join(p.stderr for p in results.values())
-                for folder in (f"{self.base}/race{rnd}", self.base):
+                for folder, made in ((f"{self.base}/race{rnd}", "repo"), (self.base, f"race{rnd}")):
                     for entry in self.client.list_dir(self.rid, "/" + folder):
                         name = entry["name"]
                         self.assertNotIn("SFConflict", name, f"/{folder}: {name}")
-                        if " (" not in name:
+                        if not name.startswith(f"{made} ("):
                             continue
                         copy = f"/{folder}/{name}"
                         self.assertEqual(self.client.list_dir(self.rid, copy), [],

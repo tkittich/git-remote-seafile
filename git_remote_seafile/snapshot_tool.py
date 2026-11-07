@@ -4034,6 +4034,24 @@ def require_complete_history(repo: Path, *, walk: bool) -> None:
 _MAX_CLOCK_SKEW_SECONDS = 3600.0
 
 
+def _require_whole_history(client: Any, rid: str, delete: bool) -> None:
+    """Refuse a deletion by an account that may not see the whole history (ROADMAP B2).
+
+    On Seafile Professional an ``invisible`` folder permission hides the folder from
+    a non-owner's listing (measured, 13.0.29), so a branch or tag under it would
+    read as gone and its objects as unused.  A report goes on (it deletes nothing);
+    ``--payload-allow-non-owner`` says no folder permission applies to this account.
+    """
+    risk = client.hidden_history_risk(rid) if delete else None
+    if isinstance(risk, str) and risk:
+        raise SnapshotError(
+            f"{risk}; snapshots under a hidden folder would look unreferenced and their "
+            "objects would be deleted. Nothing was deleted. Run --payload-delete as the "
+            "library's owner, or pass --payload-allow-non-owner if no folder permission "
+            "applies to this account"
+        )
+
+
 def _require_server_clock(client: Any, delete: bool) -> None:
     """Refuse a deletion whose grace period would not be timed on a sane server clock.
 
@@ -5808,6 +5826,12 @@ def add_payload_gc_arguments(parser: Any) -> None:
         "snapshots",
     )
     parser.add_argument(
+        "--payload-allow-non-owner", action="store_true",
+        help="with --payload-gc --payload-delete: delete although this account does not own "
+        "the library on Seafile Professional, where a folder permission could hide snapshots "
+        "from it; say so only when no folder permission applies to this account",
+    )
+    parser.add_argument(
         "--payload-grace-days",
         type=float,
         default=DEFAULT_GRACE_DAYS,
@@ -5855,6 +5879,7 @@ def payload_gc_conflicts(args: argparse.Namespace) -> list[str]:
             )
         if not args.payload_delete:
             for flag, value in (("--payload-no-vault", args.payload_no_vault),
+                                ("--payload-allow-non-owner", args.payload_allow_non_owner),
                                 ("--payload-accept-loss", args.payload_accept_loss)):
                 if value:
                     problems.append(f"{flag} only applies to --payload-gc --payload-delete")
@@ -5862,6 +5887,7 @@ def payload_gc_conflicts(args: argparse.Namespace) -> list[str]:
             problems.append("--payload-no-vault and --vault contradict each other")
     else:
         for flag, value in (("--payload-no-vault", args.payload_no_vault),
+                            ("--payload-allow-non-owner", args.payload_allow_non_owner),
                             ("--payload-accept-loss", args.payload_accept_loss)):
             if value:
                 problems.append(f"{flag} only applies to --payload-gc")
@@ -6157,6 +6183,7 @@ def _require_room_for_history(client: Any, rid: str, repo_path: str, allow_low_d
 def payload_gc(
     remote: str, vault: Path | None, *, delete: bool, grace_days: float, keep: int | None = None,
     accept_loss: bool = False, from_vault: bool = False, allow_low_disk: bool = False,
+    allow_non_owner: bool = False,
 ) -> int:
     """Report, and with *delete* mark and later remove, unreferenced payload objects.
 
@@ -6227,6 +6254,7 @@ def payload_gc(
     if not isinstance(pending_raw, dict):
         raise SnapshotError(f"{base}/{_PENDING_NAME} is not an object; remove it and run again")
     _require_server_clock(client, delete)
+    _require_whole_history(client, rid, delete and not allow_non_owner)
     now = _grace_now(client)
     # A stamp that cannot be a time this tool wrote (zero, negative, in the future,
     # a boolean, NaN) is not trusted: "now - stamp" would call the grace period over
@@ -7406,6 +7434,7 @@ def payload_command(args: argparse.Namespace) -> int | None:
             args.remote, vault, delete=args.payload_delete,
             grace_days=args.payload_grace_days, keep=args.payload_keep,
             accept_loss=args.payload_accept_loss, allow_low_disk=args.allow_low_disk,
+            allow_non_owner=args.payload_allow_non_owner,
         )
     return None
 

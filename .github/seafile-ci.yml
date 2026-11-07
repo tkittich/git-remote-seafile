@@ -21,9 +21,14 @@
 # runner's container, for a library that is deleted at the end of every run.
 name: grs-realserver
 
+# Every image is pinned by digest (ROADMAP B8): the tags float, and a green run then
+# says nothing about what passed.  The digests are those the run of 2026-11-07 at
+# 37e6dd6 recorded (its "Record the image digests" step) and passed CE on; move them
+# on purpose, from a green run's record, never by re-pulling a tag.
+
 services:
   db:
-    image: mariadb:10.11
+    image: mariadb:10.11@sha256:d769e37960821dfdcf096954f6e7ac89f747e116c1bba98e48edd265dfc7deae
     # Root password only, as in the official compose: the seafile image creates
     # its own databases and user on first boot.
     environment:
@@ -36,7 +41,7 @@ services:
       retries: 36
 
   redis:
-    image: redis
+    image: redis@sha256:f245f4c83b84a9e9a0588da1c9456e579455310f0945d5db52cd2ba27f2000cc
     command:
       - /bin/sh
       - -c
@@ -45,12 +50,12 @@ services:
       REDIS_PASSWORD: ""
 
   seafile:
-    # CE by default; the workflow sets SEAFILE_IMAGE to seafileltd/seafile-pro-mc:13.0-latest for
+    # CE by default; the workflow sets SEAFILE_IMAGE to the pinned seafile-pro-mc image for
     # the Pro leg.  Since 12.0 the Pro image is public on Docker Hub, and with no licence file Pro
     # runs as a trial for up to three users, which is all this suite needs (no secret).  Pro's
     # official compose differs from CE's only in the image and the optional storage and
     # Elasticsearch settings; search is left out here as everything else above is.
-    image: ${SEAFILE_IMAGE:-seafileltd/seafile-mc:13.0-latest}
+    image: ${SEAFILE_IMAGE:-seafileltd/seafile-mc:13.0-latest@sha256:9506f49d5e5065082c134e6348498eed5a5866ddbd94bd5a3e479a6c285bc61a}
     ports:
       - "80:80"
     volumes:

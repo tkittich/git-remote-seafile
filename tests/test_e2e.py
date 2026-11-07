@@ -629,6 +629,46 @@ class TestRefsListingFailureIsNotSilent(E2ETestCase):
         )
 
 
+class TestGcByAnAccountThatMayNotSeeEveryRef(E2ETestCase):
+    """ROADMAP B2: on Seafile Professional an ``invisible`` folder permission leaves the
+    folder out of a non-owner's listing (measured on 13.0.29), so a full gc by that
+    account would read refs under it as absent and delete their objects.  It refuses
+    on Pro unless the account owns the library or says no rule applies to it."""
+
+    def _two_packs(self, name):
+        src = init_repo(self.work / f"src_{name}", self.env)
+        commit_file(src, "a.txt", "base\n", "base", self.env)
+        run_git(["remote", "add", "origin", self.url(name)], src, self.env)
+        run_git(["push", "-u", "origin", "main"], src, self.env)
+        commit_file(src, "b.txt", "more\n", "more", self.env)
+        run_git(["push", "origin", "main"], src, self.env)
+        return sorted(p for p in self.stub.packs(f"/{name}") if p.endswith(".pack"))
+
+    def test_a_non_owner_on_pro_is_refused_and_nothing_changes(self):
+        before = self._two_packs("gc_nonowner")
+        self.stub.faults.update(pro_server=1, owner="someone-else@example.com")
+        res = run_helper(["gc", self.url("gc_nonowner")], self.work, self.env, check=False)
+        out = res.stdout + res.stderr
+        self.assertNotEqual(res.returncode, 0, out)
+        self.assertIn("is not the library's owner (someone-else@example.com)", out)
+        self.assertIn("--allow-non-owner", out)
+        self.assertEqual(sorted(p for p in self.stub.packs("/gc_nonowner") if p.endswith(".pack")),
+                         before, "gc changed the packs it refused to compact")
+        res = run_helper(["gc", self.url("gc_nonowner"), "--allow-non-owner"],
+                         self.work, self.env, check=False)
+        self.assertIn("Compacted", res.stdout + res.stderr, res.stdout + res.stderr)
+
+    def test_the_owner_on_pro_and_anyone_on_ce_compact(self):
+        for name, faults in (("gc_owner_pro", {"pro_server": 1}),
+                             ("gc_ce_other", {"owner": "someone-else@example.com"})):
+            with self.subTest(name):
+                self.stub.reset()
+                self._two_packs(name)
+                self.stub.faults.update(faults)
+                res = run_helper(["gc", self.url(name)], self.work, self.env, check=False)
+                self.assertIn("Compacted", res.stdout + res.stderr, res.stdout + res.stderr)
+
+
 class TestAVanishedRepositoryPathIsNotAnEmptyRepository(E2ETestCase):
     """A repository path that is gone on the server is not a new, empty repository.
 

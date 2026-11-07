@@ -142,6 +142,12 @@ def add_payload_gc_arguments(parser: Any) -> None:
         "snapshots",
     )
     parser.add_argument(
+        "--payload-allow-non-owner", action="store_true",
+        help="with --payload-gc --payload-delete: delete although this account does not own "
+        "the library on Seafile Professional, where a folder permission could hide snapshots "
+        "from it; say so only when no folder permission applies to this account",
+    )
+    parser.add_argument(
         "--payload-grace-days",
         type=float,
         default=DEFAULT_GRACE_DAYS,
@@ -189,6 +195,7 @@ def payload_gc_conflicts(args: argparse.Namespace) -> list[str]:
             )
         if not args.payload_delete:
             for flag, value in (("--payload-no-vault", args.payload_no_vault),
+                                ("--payload-allow-non-owner", args.payload_allow_non_owner),
                                 ("--payload-accept-loss", args.payload_accept_loss)):
                 if value:
                     problems.append(f"{flag} only applies to --payload-gc --payload-delete")
@@ -196,6 +203,7 @@ def payload_gc_conflicts(args: argparse.Namespace) -> list[str]:
             problems.append("--payload-no-vault and --vault contradict each other")
     else:
         for flag, value in (("--payload-no-vault", args.payload_no_vault),
+                            ("--payload-allow-non-owner", args.payload_allow_non_owner),
                             ("--payload-accept-loss", args.payload_accept_loss)):
             if value:
                 problems.append(f"{flag} only applies to --payload-gc")
@@ -491,6 +499,7 @@ def _require_room_for_history(client: Any, rid: str, repo_path: str, allow_low_d
 def payload_gc(
     remote: str, vault: Path | None, *, delete: bool, grace_days: float, keep: int | None = None,
     accept_loss: bool = False, from_vault: bool = False, allow_low_disk: bool = False,
+    allow_non_owner: bool = False,
 ) -> int:
     """Report, and with *delete* mark and later remove, unreferenced payload objects.
 
@@ -561,6 +570,7 @@ def payload_gc(
     if not isinstance(pending_raw, dict):
         raise SnapshotError(f"{base}/{_PENDING_NAME} is not an object; remove it and run again")
     _require_server_clock(client, delete)
+    _require_whole_history(client, rid, delete and not allow_non_owner)
     now = _grace_now(client)
     # A stamp that cannot be a time this tool wrote (zero, negative, in the future,
     # a boolean, NaN) is not trusted: "now - stamp" would call the grace period over
