@@ -20,8 +20,13 @@ progress lines are the point of running it), and the first failure stops the
 run carrying that step's own exit code.
 
 ``build_snapshot.py --check`` is deliberately not a step: the build step has
-just rewritten the generated file, so the check cannot fail here --
-``tests/test_snapshot_build.py`` runs it against the committed file instead.
+just rewritten the generated file, so the check cannot fail here, and neither
+can ``tests/test_snapshot_build.py``, which runs it against the file *on disk*.
+What CI checks is the committed file, and a rebuilt one left out of the commit
+passes every local gate.  So after the build the driver compares the generated
+file with ``HEAD`` and, when they differ, says so after the build and again at
+the end: commit it with its parts (a warning, not a failure -- mid-change they
+differ on purpose).
 
 Usage::
 
@@ -41,6 +46,9 @@ from pathlib import Path
 _ROOT = Path(__file__).resolve().parent.parent
 
 _PY = sys.executable
+
+#: The file the first step generates, relative to the repository root.
+GENERATED = "git_remote_seafile/snapshot_tool.py"
 
 #: The gates, in order.  A label names the step in the failure line; the argv
 #: is what runs.  Kept as data (not a chain of calls) so ``--list`` and the
@@ -65,6 +73,35 @@ def _pretty(command: list[str]) -> str:
     root = str(_ROOT)
     prefix = root + os.sep
     return " ".join(arg[len(prefix):] if arg.startswith(prefix) else arg for arg in shown)
+
+
+def generated_differs_from_head(root: Path = _ROOT, path: str = GENERATED) -> str | None:
+    """A warning when *path* differs from its copy in ``HEAD``, else ``None``.
+
+    ``None`` too when git cannot tell (no repository, no ``HEAD`` yet, git
+    missing): the note is a reminder, and a reminder that cannot be computed
+    must not stop the gates.
+    """
+    # Outside a repository `git diff` exits 1 as well (it falls back to
+    # --no-index usage), so HEAD has to resolve first.
+    def git(*args: str) -> int:
+        return subprocess.run(
+            ["git", *args], cwd=str(root),
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        ).returncode
+
+    try:
+        if git("rev-parse", "--verify", "-q", "HEAD") != 0:
+            return None
+        differs = git("diff", "--quiet", "HEAD", "--", path)
+    except OSError:
+        return None
+    if differs != 1:
+        return None
+    return (
+        f"gates: note -- {path} was rebuilt and differs from the committed copy; "
+        "commit it with its parts (CI checks the committed file)."
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -95,6 +132,7 @@ def main(argv: list[str] | None = None) -> int:
     # root, so the driver behaves the same wherever it was invoked from.
     os.chdir(_ROOT)
 
+    note: str | None = None
     try:
         for index, (label, command) in enumerate(steps, 1):
             print(f"gates: [{index}/{len(steps)}] {_pretty(command)}", flush=True)
@@ -106,11 +144,17 @@ def main(argv: list[str] | None = None) -> int:
                     file=sys.stderr,
                 )
                 return code
+            if command[1:] == [str(_ROOT / "tools" / "build_snapshot.py")]:
+                note = generated_differs_from_head()
+                if note:
+                    print(note, file=sys.stderr, flush=True)
     except KeyboardInterrupt:
         # Same contract as run_tests_parallel.py: an interrupted run is 130,
         # not a traceback.
         return 130
 
+    if note:
+        print(note, file=sys.stderr)
     print("gates: all green")
     return 0
 
