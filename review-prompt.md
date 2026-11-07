@@ -5,11 +5,15 @@ commit (`__version__`, `CHANGELOG.md` `[0.9.23]`, `.github/release-notes/v0.9.23
 the release files are under review too, and a finding there is cheap to fix. Another
 model wrote the code, the tests and the specifications, and has reviewed
 them itself over a dozen rounds: assume all three share blind spots. The last outside
-review was a full round at commit `be01e37` (2026-11-05, five reviewers); its triage is
-settled and is listed in Part F as dispositions. **Everything since `be01e37` has had no
-independent reader** — the fixes that round produced (0.9.22), the Seafile Professional
-work (issue 6), the container test tier and the 0.9.23 backlog — see Part G, which is
-where most of your time should go.
+review was a pre-release round at commit `4f1cdd4` (2026-11-07, three reviewers); its
+triage is settled and is listed in Part F as dispositions. **Everything since `4f1cdd4`
+has had no independent reader** — the twenty fixes that round produced, the backlog
+done after it (a vanished repository path, the payload clock bound, the link probe's
+debris, the gates' stale-file note, a refusal for non-owners on Professional), the
+narrowing of `mkdir_p`'s clean-up to the helper's own folders, the first runs of the
+CE/Pro container tier, and a faster test plan (`gates.py --changed`) — see Part G,
+which is where most of your time should go. The work before `4f1cdd4` (0.9.22, issue 6,
+the 0.9.23 backlog) had one outside round; Parts A–E still cover it.
 
 WHAT IT IS
 A Git remote helper (`seafile://<library>/<path>`) that stores a repository in a Seafile
@@ -18,7 +22,7 @@ server's `Date` header, and a whole-tree snapshot tool (`git seafile-snapshot`) 
 in the same wheel. Read `README.md` for the overview, `DESIGN.md` §1–§4 for how the
 helper works, `SNAPSHOT.md` and `PAYLOAD.md` for the snapshot tool and its large-file
 store, and `CHANGELOG.md` `[0.9.23]` and `[0.9.22]` for what changed since the last
-round (Seafile Professional, the CE/Pro container tier, the last round's backlog).
+round (Seafile Professional, the CE/Pro container tier, the last two rounds' fixes).
 
 THE DOCUMENTS ARE THE SPECIFICATION
 `DESIGN.md` (invariants §3 including §3.5 Adaptation, protocol §4, failure model §5,
@@ -31,7 +35,7 @@ D11, failure model §6 including §6.1's review rounds, attack table A1–A35, t
 matrix §7), `AGENTS.md` and `CONTRIBUTING.md` (what a contributor is told, including the
 list of measured differences between the stub and a real server; a rule there that the
 code or the tests do not keep is a finding), and `ROADMAP.md` §1 (known open items;
-§1.8 holds the dispositions of the last round).
+§1.9 holds the dispositions of the last round, §1.8 those of the round before).
 `git_remote_seafile/snapshot_tool.py` is the concatenation of `tools/_snapshot/NN_*.py`:
 review the parts, never the generated file.
 
@@ -86,9 +90,10 @@ RULES FOR THE WHOLE REVIEW
   empty git config. Run a test only to do something those runs could not: reproduce a
   finding, run a mutation (delete a guard, watch its test), or try a case no test covers —
   one named test or class at a time (`python -m unittest tests.<module>.<Class>.<test>`).
-  `tests.test_snapshot_payload` takes about ten minutes and each route-comparison class
-  (`ExoticReplacementTests`, `SpecialFileAndNameTests`) 100 to 300 seconds on Windows, so
-  name the test you need. On a slow or antivirus-scanned disk use the smaller sizes of
+  `tests.test_snapshot_payload` takes about ten minutes, and each route-comparison
+  scenario (`ExoticReplacementTests`, `SpecialFileAndNameTests`, one test per scenario)
+  20 to 40 seconds on Windows, so name the test you need. Use `-j 12` or `-j 24` with
+  `tools/run_tests_parallel.py`, nothing else. On a slow or antivirus-scanned disk use the smaller sizes of
   `tools/measure_pathspec_cost.py` (1000 to 5000).
   Several tests are timing based (`tests/test_snapshot_climb.py`, the staging ramp
   tests): if one fails for you, run it three times and say so; a test that fails on
@@ -114,9 +119,11 @@ RULES FOR THE WHOLE REVIEW
   the release date in `CHANGELOG.md` `[0.9.23]` and the ROADMAP line is a
   placeholder until the tag; *why* Professional answers a missing folder with 403/500 is
   inferred (its server code is closed) — the answers themselves were measured on 13.0.29;
-  removing the empty copy a simultaneous `mkdir` leaves is best-effort by design (a copy
-  that cannot be removed is named, never touched); the CE/Pro container workflow has not
-  run in CI at this commit (G7 asks what the docs should say until it has).
+  removing the empty copy a simultaneous `mkdir` leaves is best-effort and deliberately
+  limited to the helper's own layout folders (a copy of a folder a person named is named
+  in a warning and left, by the maintainer's decision); the CE/Pro container workflow is
+  dispatched by hand, its images are pinned by digest, and ROADMAP B8 records its runs
+  so far (the docs say "tested by hand" until it is green on both legs).
 - Separate what a document SAYS from what you INFER, and for an inference say what
   would have to be true. Every finding needs: `file:line` (code) or section (spec) **plus
   a verbatim quote of a few words actually on that line** — a citation whose quoted
@@ -130,7 +137,7 @@ RULES FOR THE WHOLE REVIEW
   data reaches a place it should not), CRASH (traceback), SURPRISE (works as designed,
   surprises the operator), NIT. Five solid findings beat thirty speculative ones.
 
-SIX QUESTIONS THAT KEEP FINDING THINGS IN THIS PROJECT. Ask each of them of every
+SEVEN QUESTIONS THAT KEEP FINDING THINGS IN THIS PROJECT. Ask each of them of every
 component you read; the rounds so far produced the same shapes again and again.
 1. Is that an acknowledgement or a proof? A 2xx, a listing that shows a name at a size,
    a `False` from "does it exist", a `True` returned with no evidence, a state file that
@@ -153,6 +160,11 @@ component you read; the rounds so far produced the same shapes again and again.
    names with the wrong one drops or merges files: the 0.9.23 respelling dropped a new
    `straße/` file beside an indexed `strasse/`. Try `ß`/`ss`, the `ﬁ` ligature, Kelvin
    `K`/`k` and NFC/NFD `é` on every such guard.
+7. Whose name is it? A folder or file the tool lays out itself (`.git-lock.d`, `pack`,
+   `payload/objects/ab`) may be tidied; one a person named (the repository's path, a
+   branch namespace, a payload view, a source file) may sit among their own things and
+   must not be. Every delete, rename or overwrite: which kind of name can reach it, and
+   what stops the other kind? `mkdir_p` removed a person's empty `app (1)` until 0.9.23.
 
 ORDER OF WORK — follow it.
 PHASE 1, specification only: Parts A and D, written down in full before you open code. A
@@ -190,78 +202,91 @@ Unicode normalisation, long paths, symlinks, junctions, reparse points); interru
 killed runs; very large inputs; nested repositories and embedded repositories; secrets;
 and every requirement whose "how it is checked" column would not catch a violation.
 
-PART G — everything since `be01e37` (Phase 2, first and longest)
-The map: `git log --oneline be01e37..HEAD`, `git diff --stat be01e37 HEAD --
-git_remote_seafile tools tests .github`, and `CHANGELOG.md` `[0.9.23]` and `[0.9.22]`.
-Nobody but the author has read any of it. Number findings G1…, G2… by the sub-area below,
-e.g. G2.1.
+PART G — everything since `4f1cdd4` (Phase 2, first and longest)
+The map: `git log --oneline 4f1cdd4..HEAD`, `git diff --stat 4f1cdd4 HEAD --
+git_remote_seafile tools tests .github`, `ROADMAP.md` §1.9 (rows Y1–Y10, B1–B11) and
+`CHANGELOG.md` `[0.9.23]`. Each change was made in a day, with a test, mostly from a
+reviewer's report. For every one: does its test fail without it (delete it and run),
+does it cover the siblings of the reported path, and did it move the failure somewhere
+quieter? Number findings G1…, G2… by the sub-area below, e.g. G2.1.
 
-G1. The fixes of the last round (0.9.22, ROADMAP §1.8 X1–X10). Each was made in a day,
-with a test, from a reviewer's report: `login` and redirects / loopback (`login.py`,
-`url.is_loopback_host`); `--payload-delete` and the server clock
-(`72_payload_guards.py`); the stall limit after a pre-write; `--default-excludes` per
-directory (`94_first_run.py`, `96_cli_checks.py`, `97_settings.py`); the lease re-proven
-after a ref write and a delete (`helper._publish_ref`); symlinks written as text on
-restore (`90_restore.py`); `--no-push` on a payload vault (`78_payload_cli.py`). For each:
-does the test fail without the fix (delete it and run), does the fix cover the siblings
-of the reported path, and did it move the failure somewhere quieter?
+G1. Names and the index (`69_prewrite.py` `ignorecase_key`, `spell_like_index`;
+`70_stage.py`'s stale filter). Names are folded the way git folds them under
+`core.ignorecase` (A–Z only) and a respelling is kept only when the disk resolves it.
+Attack it with every fold in question 6, on both staging routes, with a directory renamed
+by case, and on a filesystem that is case-sensitive but where `core.ignorecase` is set by
+hand.
 
-G2. Seafile Professional (issue 6) and the client's answers to it (`client.py`).
-`_file_is_under_a_missing_folder`: a 403 or 500 on a file read asks for the listing of
-the file's folder, and only a clean 404 there reads as "not there yet". Attack it: a
-folder that exists but lists as 404 to this account, a listing that answers 404 for
-another reason, a race with a peer creating the folder, a file at the library root, a
-proxy that answers 500 for everything, an account whose folder permission is
-`invisible`. A ref wrongly read as absent is a ref a push may overwrite: find the
-interleaving. `mkdir_p` now removes an empty copy a simultaneous `mkdir` leaves
-(`_is_seafile_copy_of`) instead of aborting: can it remove something it did not
-create, or something in use? The 403 hints (`_denied_hint`). CONTRIBUTING lists the
-measured CE/Pro differences: which client calls would break on a third behaviour?
+G2. What the server says it holds versus what it serves.
+- A ref the ref directory lists but whose content cannot be read (a file-host 404 for that
+  file, an empty body) is refused, not overwritten (`helper._decide_update`,
+  `_listed_as_file`); a plain `--force` still overwrites. The lock's verification scan
+  fails closed on such a ticket (`lock._scan_tickets`, `strict`). The stub faults are
+  `raw_404_on` and `raw_empty_on` (`tests/e2e_harness.py`). Which other read decides
+  "absent" from a download alone — packs, `HEAD`, `packed-refs`, payload manifests and
+  markers, `gc-pending.json`?
+- A repository folder that vanished (moved in the web UI) is no longer an empty
+  repository: `cmd_list` fails when there is no `HEAD`, ref or pack and the clone holds
+  refs the remote's fetch refspecs store (`git_util.remote_tracking_refs`,
+  `_fetch_destinations`; the first version read only `refs/remotes/<name>/` and missed a
+  `--mirror` clone). Is that the only place a vanished path matters (`gc`, `repair`, the
+  snapshot tool's restore and retention, LFS)? Which fetches store refs a refspec does not
+  name (a command-line refspec, `remote.<name>.mirror`, `fetch.prune` with tags), and what
+  does `fetch --prune` do to them now?
+- An LFS upload is proven by listing the object at its size (`lfs.py`).
+- On Seafile Professional a full `gc` and `--payload-delete` refuse for an account that
+  does not own the library (`SeafileClient.hidden_history_risk`, `cli._cmd_gc`,
+  `72_payload_guards._require_whole_history`; `--allow-non-owner`,
+  `--payload-allow-non-owner`), because an `invisible` folder permission leaves the
+  folder out of that account's listing (measured on Pro 13.0.29, ROADMAP B2). Which other
+  operation reads "what is there" from a listing an account may see only part of (the
+  tail merge, `repair`, `doctor`, the snapshot tool's restore and `--status`)? Is
+  "owner" the right test for a group-owned library, an admin, or a share to a group?
+- After a ref write that was read back, a lease that cannot be proven is a warning, and a
+  lost one an error (`helper._publish_ref`, `LEASE_UNKNOWN`). Is there an interleaving in
+  which "unknown" hides a takeover?
 
-G3. The 0.9.23 backlog (X9, X2). The scratch-space check before `gc`, `gc --tail`
-and `repair` (`gc.scratch_needed`, `scratch_shortfall`: is twice the packs right for
-each, and is the check made where it should be, given the pack list is only known under
-the lock); the `update-index` route by paths x index entries (`69_prewrite.py`
-`index_entry_count`, `_INDEX_ROUTE_MIN_WORK`) and `spell_like_index` after a rename by
-case; the pack-split floor (`diagnose.split_cap_bytes`); a typed `--payload-jobs N`
-requeueing at a fixed level (`68_climb._Climber.forced`); `lfs-setup` quoting and
-`lfs-transfer` refusing a split URL (measured: git-lfs 3.8.1 splits the args on
-whitespace and honours double quotes — is that true of other git-lfs versions?); the
-fetch skip withheld for `alternates`.
+G3. Seafile's numbered copies (`client.mkdir_p`, `_LAYOUT_DIR_NAMES`, `_is_layout_dir`).
+The parent is listed before and after each creation; an empty copy that appeared is
+removed only for the helper's and the tool's own layout folders, and any other is named in
+a warning. Ask question 7 of it, and list every other way Seafile makes a `(N)` name the
+code meets: an upload without `replace`, a rename or copy onto a taken name
+(`75_payload.py`'s hash renames, `79_payload_view.py`), a move in the web UI, a restore from
+the library's history. Can a layout name be a person's folder (a repository whose path is
+`.../lfs`, a view named `objects`)?
 
-G4. The real-server and container tiers. `tests/test_realserver.py` (including
-`SharedUserTests`: folder permissions through `user-folder-perm`, groups, departments,
-two accounts racing a first push), `tools/realserver_ci.py` (creates a second account),
-`.github/seafile-ci.yml` and `.github/workflows/realserver.yml` (a CE/Pro matrix on a
-moving `13.0-latest` tag). Do the tests clean up everything they create on every exit
-path, including a failure in `setUpClass`? Can one run's leftovers break the next? Is
-any assertion true on one edition by accident? `_require_the_same_server` exists because
-a run once nearly sent its pushes to a different server than its reads: are there other
-ways the in-process client and the helper processes can disagree?
+G4. The snapshot tool's backlog: `--payload-delete` refuses clocks more than an hour apart
+(`72_payload_guards._MAX_CLOCK_SKEW_SECONDS`; is the hour right for a server behind a
+proxy that rewrites `Date`, or a laptop that sleeps?); the link probe's debris is swept a
+day after it was left (`81_placement.sweep_probe_debris`, from the next probe and every
+`--payload-delete` run: can it delete a probe file another machine is uploading, or
+anything else under `payload/objects/`?); `--no-push` remembers no setting (`99_cli.py`).
 
-G5. The release and CI tooling: `tools/gates.py`, `tools/release_check.py`,
-`.github/workflows/` (permissions, pinned actions, what a tag can publish, what a fork's
-pull request can run), packaging (`pyproject.toml`, `MANIFEST.in`, what the wheel and
-sdist contain — build them), and the minimum dependency versions against Python 3.10
-and 3.14. Could a release ship something the gates did not test?
+G5. The tiers and the tooling. `tools/run_tests_parallel.py` now plans from the last
+run's seconds per target (`.test-timings.json`): longest first, and a class over two
+minutes runs one test per worker; `tools/gates.py --changed` narrows the suite to the
+modules a change reaches (`suite_for_changes`): can a change escape its map and land
+untested (a test that imports a module the map does not connect, a new file)? The two
+route-comparison classes now make one test per scenario (`_RouteComparison.
+__init_subclass__`). `tests/test_realserver.py` as it is now: the edition is
+asked, not inferred from a status (CE 13.0 answers the folder-permission route 403); the
+first-push race test allows numbered copies above the repository only if empty and named
+in a warning; `EditionProbeTests` checks, without a server, that every `cls._name` a
+set-up reads exists (a slip that failed both legs of the second CI run); B2's measurement
+of an `invisible` rule. `tools/gates.py`'s note on a rebuilt `snapshot_tool.py` that
+differs from `HEAD`. `tools/release_check.py` and `MANIFEST.in` (every tool a shipped
+document names is shipped). `.github/workflows/realserver.yml` and `.github/seafile-ci.yml`
+with every image pinned by digest (ROADMAP B8): what still floats (the runner image, the
+packages `realserver_ci.py` installs), and what would a stale pin hide?
 
-G6. Two modules no round has read closely: `sqlite_read.py` (reads the desktop
-client's `accounts.db` for a token: a hostile or corrupt database, a locked one, one
-from another client version) and `lfs.py` (the transfer agent: hostile pointers and
-oids, paths, partial downloads, what reaches git-lfs on stdout).
-
-G7. Documents for the same period, and the release itself. `CHANGELOG.md` `[0.9.23]`
-and `[0.9.22]` against `git log` (an entry with no commit, a commit with no entry, a
-number that does not match what a test or script prints); `UPGRADING.md`'s entries for
-both (would an operator learn every behaviour that may surface for them?); the release
-notes against the changelog (a claim in one and not the other, a claim stronger than the
-evidence); the CE/Pro differences in CONTRIBUTING and `DESIGN.md` §4.3 (items 5 and 7,
-the compatibility matrix) against the tests that pin them; USER_GUIDE's tested-servers
-claim against the workflow (it has been written, and passed by hand against a Pro
-server, but at the time of this commit the CE/Pro matrix has not run in CI: say what
-that claim should say until it has); the AGENTS.md and RUNBOOK additions; and
-`python tools/release_check.py` (expected to warn that HEAD is untagged — report anything
-else it says).
+G6. Documents for the period: `CHANGELOG.md` `[0.9.23]` against `git log 4f1cdd4..HEAD`
+(an entry with no commit, a commit with no entry); `UPGRADING.md` (would an operator learn
+every behaviour that may now surface: the refusals of G2, the warnings of G3, the clock
+bound of G4?); the release notes against the changelog; the DESIGN additions (§3.3, §4.1,
+§4.3 item 7, §4.4's fence-reuse paragraph, §4.6, §5's "An empty remote is not necessarily
+a new one") against the code; the new USER_GUIDE §14 rows against the messages the code
+prints (quote both); AGENTS.md "Review rounds"; and `python tools/release_check.py`
+(expected to warn that HEAD is untagged — report anything else it says).
 
 PART B — code of the helper (Phase 2)
 Scope: `git_remote_seafile/{helper,client,lock,gc,packs,refs,git_util,safety,url,config,
@@ -273,7 +298,8 @@ order:
    deletes something still referenced. Note the shipped shape: `gc` mirrors refs as one
    `packed-refs` file, re-reads the refs before deleting and verifies the uploaded pack's
    SHA-256; a push re-reads refs under the lock, proves its packs landed, fences every
-   ref and proves the lease again after each ref write; a fetch whose listed pack 404s
+   ref and proves the lease again after each ref write, and refuses to overwrite a ref
+   that is listed but cannot be read; a fetch whose listed pack 404s
    re-lists the pack directory once and retries, and still fails loudly if the requested
    tips are then absent; lock tickets carry a per-install id and the dead-PID reclaim
    requires it to match; `repair` restores refs whose objects no remote pack carries,
@@ -337,36 +363,39 @@ What Part G names is G, not here. Then, newest first (`git log -- tools/_snapsho
    survivor.
 
 PART F — the recorded dispositions (Phase 2, after G)
-The last round's triage (rows T1–T30, from the reports of five reviewers at `be01e37`) is
-settled as follows; the ROADMAP §1.8 row each became is in brackets. For each row marked
-done, say whether its named test fails when the fix is removed. For each row marked
-open, say CONFIRMED, FIXED SINCE, STALE (the description no longer matches the code —
-say what it does now) or MISRANKED (and why). Then spend the rest of the part on
-ROADMAP §1 rows still open (W3, W4, W6, S1, S20, S21) and on the questions no machine in
-reach could answer.
+The last round's triage (three reports at `4f1cdd4`: deepseek-v4.1-flash, glm-5.3,
+opus-5.5) is settled as follows; the ROADMAP §1.9 row each became is in brackets. For each
+row marked done, say whether its named test fails when the fix is removed. For each row
+marked open, say CONFIRMED, FIXED SINCE, STALE (the description no longer matches the
+code — say what it does now) or MISRANKED (and why). Then spend the rest of the part on
+the ROADMAP §1 rows still open (B5, B8's remainder, B10, W3, W4, W6, S1, S20, S21) and on the
+questions no machine in reach could answer.
 
 | Row | Finding, short | Disposition |
 | :--- | :--- | :--- |
-| T1, T2 | `login` followed a 307/308 to another host; `127.` prefix counted as loopback | done 0.9.22 [X1] |
-| T3 | a new file in a directory renamed by case dropped as stale | done 0.9.22; the `update-index` route's two spellings done 0.9.23 [X2] |
-| T4 | `--payload-delete` on the local clock | done 0.9.22: refused without a server `Date`, or with clocks a day apart [X3] |
-| T5 | the raised stall limit after a pre-write was silent | done 0.9.22 (printed); the 3x multiplier is unmeasured on a cold read larger than RAM [X4, W3] |
-| T6, T7, T9, T21, T27 | URL port rule; pathspec sources; offline machine and the grace period; RUNBOOK §8 title; a touched payload file makes a commit | documented 0.9.22 [X5] |
-| T8 | `--status` hides a mode change; restore never verifies mode | documented 0.9.22; recording mode is backlog |
-| T10 | a proxy limit under 128 MiB and an object between it and 1 GiB cannot be pushed | documented; the chunk size following the measured limit is backlog |
-| T11 | the route switch counted paths, not paths x index entries | done 0.9.23 [X9] |
-| T12, T13 | a conflict copy of a lock ticket; the stub never makes an `(SFConflict ...)` copy | open [X7]: a stub mode is wanted |
-| T14 | restore on Windows without `core.symlinks` failed whole | done 0.9.22: reported, the restore goes on [X8] |
-| T15, T17, T18, T19, T20, T22, T23, T24 | scratch space before `gc`/`repair`; the split floor; empty vs missing download; typed `--payload-jobs` and push-back; two stall sites held by one test; the measuring script's traceback; `--status`/`--maintain` write nothing; `lfs-setup` and a space | done 0.9.23 [X9] |
-| T16 | a docstring said `gc` proves its pack the way a push does | fixed in the docstring; T3's cost decision (a push proves by size, `gc` by SHA-256) is settled and not re-opened |
-| T25, T30 | a ref write after the lease lapsed | done 0.9.22: the lease is proven again after each ref write and delete; the suspension itself was not reproduced [X7] |
-| T26 | `--default-excludes` dropped never-committed source under `build`/`dist`/`venv` | done 0.9.22: decided per directory [X6] |
-| T28 | `--status` is read-only | confirmed by the triage; pinned by a test in 0.9.23 (T23) |
-| T29 | a `--no-push` run on a payload vault is refused | deliberate: R10 wins over the "a default is not a request" rule, recorded in PAYLOAD D11 [X10] |
+| 1 | the respelling compared names with `casefold`; a new `straße/` file beside `strasse/` was dropped | done [Y1] |
+| 2 | a `--no-push` run still remembered six settings | done: remembers nothing [Y2] |
+| 3, 11 | an LFS upload proven by its 2xx alone; a non-object JSON line killed the agent | done [Y3] |
+| 4 | a listed ref read as absent on a file-host 404 or an empty body, overwritten as a new branch; the same for a lock ticket | done: refused / fails closed [Y4] |
+| 5 | `mkdir_p` deleted any empty `<name> (N)` beside a folder it made | done: only a copy its mkdir made appear, and (after the triage, the maintainer's call) only of the helper's own layout folders [Y5] |
+| 6–8, 17–19 | the tested-servers wording; AUTOMATION's read-only column; PAYLOAD D6/D9; SNAPSHOT §8; the Pro folder-permission row | done (docs) [Y6] |
+| 9, 20 | three tools missing from the sdist; `release_check` printed a remote that does not exist | done [Y7] |
+| 10 | the tail merge's scratch check missed its read-back copy | done: up to three times [Y8] |
+| 12, 13 | `login` and `http://[::1]`; an unproven lease after a proven write was an error | done [Y9] |
+| 14–16 | the real-server guard wrote to the server; set-up leaked on failure; the race test looked only inside the repository; the stall test asserted presence | done [Y10] |
+| B1 | a vanished repository path advertised as empty; `fetch --prune` deleted every tracking ref | done after the triage [B1] |
+| B3 | `--payload-delete` allowed clocks a day apart (triage Q3) | done: an hour [B3] |
+| B4 | a killed link probe left 16 MiB under `payload/objects/` | done [B4] |
+| B7, B9 | the gates passed a stale generated file; the fence's one-second reuse was undocumented | done [B7, B9] |
+| B2 | whether a Pro `invisible` rule hides refs from a non-owner's `gc` | measured (it does); done: `gc` and `--payload-delete` refuse for a non-owner on Pro [B2] |
+| B8 | floating CI images | done: pinned by digest; the weekly schedule and `release_check` requiring a green run wait for both legs green [B8] |
+| ds-A1 | two `holding` tickets fall back to `order_ts` | not accepted: deterministic, the loser fails at its next fence (§3.3); measurement in the container (Q10) |
+| ds-A2 | a cached queue scan lets a pack deletion run under preemption | not accepted as a defect: the deleted packs are proven redundant; documented [B9] |
 
-Settled ground in this part: the lease check is deliberately not raised into acquire (a
-planted garbage file must not block the lock for ever); DS A3's `alternates` answer (the
-skip is withheld) is done.
+Settled ground in this part: an "unknown" lease after a write that was read back is a
+warning, not an error, and a reaped ticket reads as lost, not unknown; a plain `--force`
+overwrites a listed-but-unreadable ref because that is what it asks for; the lease check
+is deliberately not raised into acquire.
 
 PART H — what this prompt does not ask (Phase 2, last; suggestions, not findings)
 You have now read more of this project than most people will. Say what you would do
