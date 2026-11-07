@@ -41,6 +41,33 @@ def _denied_hint(resp: requests.Response, verb: str) -> str:
     )
 
 
+#: The folders the helper and the snapshot tool lay out themselves, by name: the
+#: repository's lock directory and git layout, the LFS store and the payload store.
+#: Only a copy of one of these is removed by ``mkdir_p``.  Every other folder it
+#: creates is one a person named -- the repository's own path, a branch namespace
+#: (``refs/heads/feature/``), a payload view -- and may sit among their own files,
+#: so a copy of it is named and left (the maintainer, after review 4f1cdd4).
+_LAYOUT_DIR_NAMES = frozenset({
+    ".git-lock.d", "refs", "heads", "tags", "objects", "pack", "lfs", "payload",
+})
+
+_HEX2 = re.compile(r"[0-9a-f]{2}")
+
+
+def _is_layout_dir(parent: str, name: str) -> bool:
+    """True for a folder the helper or the snapshot tool lays out itself.
+
+    The fixed names, and the two-hex fan-out folders under ``lfs/`` (two levels)
+    and the payload's ``objects/`` (one).
+    """
+    if name in _LAYOUT_DIR_NAMES:
+        return True
+    above = parent.rstrip("/").rpartition("/")[2]
+    return _HEX2.fullmatch(name) is not None and (
+        above in ("lfs", "objects") or _HEX2.fullmatch(above) is not None
+    )
+
+
 def _is_seafile_copy_of(name: str, candidate: str) -> bool:
     """True when *candidate* is how Seafile names a second ``mkdir`` of *name*.
 
@@ -1017,8 +1044,9 @@ class SeafileClient:
                 # ever addresses the copy -- every later request names `current`
                 # by path, so both clients use the one directory (the same run:
                 # each waited on the other's lock ticket) -- and the copy is
-                # only litter.  An empty one is removed; one that holds anything
-                # is not ours to judge and is named instead.  One listing per
+                # only litter.  An empty copy of one of the helper's own layout
+                # folders is removed; a copy of a folder a person named, or one
+                # that holds anything, is not ours to judge and is named instead.  One listing per
                 # *created* directory (two, with the one before), so an established
                 # repository pays nothing.
                 try:
@@ -1031,6 +1059,15 @@ class SeafileClient:
                     copies = []
                 for copy in copies:
                     copy_path = f"{parent.rstrip('/')}/{copy}"
+                    if not _is_layout_dir(parent, part):
+                        sys.stderr.write(
+                            f"Warning: {copy_path} appeared beside {current} as it was created "
+                            "(Seafile makes a numbered copy when two clients create a folder at "
+                            "once); nothing uses it. It is not one of the helper's own folders, "
+                            "so it is left for you to delete in the web UI\n"
+                        )
+                        sys.stderr.flush()
+                        continue
                     try:
                         removed = (
                             self.list_dir(repo_id, copy_path) == []

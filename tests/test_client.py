@@ -1835,8 +1835,9 @@ class TestSeafileClientOperations(unittest.TestCase):
         with self.assertRaises(SeafileAPIError):
             client2.get_repo_id("lib")
 
-    def _mkdir_with_siblings(self, siblings, copy_listing, before=None, copy_status=200):
-        """``mkdir_p("/r/.git-lock.d")`` where the parent then lists *siblings*.
+    def _mkdir_with_siblings(self, siblings, copy_listing, before=None, copy_status=200,
+                             leaf=".git-lock.d"):
+        """``mkdir_p("/r/<leaf>")`` where the parent then lists *siblings*.
 
         *before* is what the parent listed ahead of the mkdir (by default *siblings*
         without any ``(N)`` copy: the copy is the mkdir's own).  Returns the client and
@@ -1850,7 +1851,7 @@ class TestSeafileClientOperations(unittest.TestCase):
         parent_listings = []
 
         def get(url, timeout=None):
-            if "p=/r/.git-lock.d" in url and "(" not in url and "%28" not in url:
+            if f"p=/r/{leaf}" in url and "(" not in url and "%28" not in url:
                 return MagicMock(status_code=404)  # the directory does not exist yet
             if not url.endswith("p=/r") and copy_status != 200:
                 return MagicMock(status_code=copy_status)
@@ -1871,7 +1872,7 @@ class TestSeafileClientOperations(unittest.TestCase):
             return MagicMock(status_code=200 if copy_status == 200 else 404)
 
         client.session.delete.side_effect = delete
-        client.mkdir_p("repo1", "/r/.git-lock.d")
+        client.mkdir_p("repo1", f"/r/{leaf}")
         return client, deleted
 
     def test_mkdir_p_removes_the_empty_copy_a_simultaneous_create_left(self):
@@ -1914,6 +1915,45 @@ class TestSeafileClientOperations(unittest.TestCase):
             )
         self.assertEqual(deleted, [])
         self.assertNotIn("two clients", err.getvalue())
+
+    def test_a_copy_of_a_folder_the_helper_does_not_own_is_named_not_removed(self):
+        """Only the helper's own layout folders (``.git-lock.d``, ``refs``, ``pack`` ...)
+        have copies removed.  A folder a person names -- the repository path, a branch
+        namespace, a payload view -- may sit among their own files, and a copy of it is
+        only litter, so it is named and left (the maintainer's review of 0fca23d)."""
+        for leaf in ("app", "feature", "photos"):
+            with self.subTest(leaf=leaf):
+                siblings = [{"type": "dir", "name": leaf}, {"type": "dir", "name": f"{leaf} (1)"}]
+                err = io.StringIO()
+                with patch("sys.stderr", err):
+                    client, deleted = self._mkdir_with_siblings(siblings, copy_listing=[], leaf=leaf)
+                self.assertEqual(deleted, [])
+                self.assertIn(f"/r/{leaf} (1)", err.getvalue())
+                self.assertIn("left", err.getvalue())
+                self.assertIn(("repo1", f"/r/{leaf}"), client._known_dirs)
+
+    def test_every_layout_folder_has_its_copy_removed(self):
+        from git_remote_seafile.client import _LAYOUT_DIR_NAMES
+
+        for leaf in sorted(_LAYOUT_DIR_NAMES):
+            with self.subTest(leaf=leaf):
+                stem, dot, ext = leaf.rpartition(".")
+                copy = f"{stem} (1).{ext}" if dot and stem else f"{leaf} (1)"
+                siblings = [{"type": "dir", "name": leaf}, {"type": "dir", "name": copy}]
+                _client, deleted = self._mkdir_with_siblings(siblings, copy_listing=[], leaf=leaf)
+                self.assertEqual(len(deleted), 1, deleted)
+
+    def test_the_hex_fan_out_folders_are_layout_folders_and_lookalikes_are_not(self):
+        from git_remote_seafile.client import _is_layout_dir
+
+        self.assertTrue(_is_layout_dir("/r/lfs", "ab"))
+        self.assertTrue(_is_layout_dir("/r/lfs/ab", "cd"))
+        self.assertTrue(_is_layout_dir("/v/payload/objects", "0f"))
+        self.assertTrue(_is_layout_dir("/r", ".git-lock.d"))
+        self.assertFalse(_is_layout_dir("/r", "ab"))           # a person's own "ab"
+        self.assertFalse(_is_layout_dir("/r/lfs", "AB"))       # the tool writes lower case
+        self.assertFalse(_is_layout_dir("/r/lfs", "abc"))
+        self.assertFalse(_is_layout_dir("/photos", "app"))
 
     def test_a_copy_the_other_client_already_removed_draws_no_warning(self):
         """Both clients of a race see the same copy; the second to delete finds it gone,
