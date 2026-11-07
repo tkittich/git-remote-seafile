@@ -1148,3 +1148,14 @@ class TestRemoteTrackingRefs(unittest.TestCase):
                 self.assertEqual(remote_tracking_refs("seafile://lib/repo"), [])
                 self.assertEqual(remote_tracking_refs("--all"), [])
                 self.assertEqual(remote_tracking_refs(""), [])
+                # The remote's own fetch refspecs decide: a mirror stores every ref,
+                # a custom destination is read where it points, and a negative
+                # refspec stores nothing (so the default is used).
+                git("config", "remote.mirror.fetch", "+refs/*:refs/*")
+                self.assertIn("refs/heads/" + git("branch", "--show-current"),
+                              remote_tracking_refs("mirror"))
+                git("update-ref", "refs/backup/main", sha)
+                git("config", "remote.custom.fetch", "+refs/heads/*:refs/backup/*")
+                self.assertEqual(remote_tracking_refs("custom"), ["refs/backup/main"])
+                git("config", "remote.origin.fetch", "^refs/heads/skip")
+                self.assertEqual(remote_tracking_refs("origin"), ["refs/remotes/origin/main"])

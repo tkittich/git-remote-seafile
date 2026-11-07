@@ -543,18 +543,42 @@ def is_shallow_repository() -> bool:
     return out.decode("utf-8", errors="replace").strip().lower() == "true"
 
 
-def remote_tracking_refs(remote: str) -> list[str]:
-    """The ``refs/remotes/<remote>/`` refs of the caller's repository, at most a few.
+def _fetch_destinations(remote: str) -> list[str]:
+    """Where *remote*'s configured fetch refspecs store refs, as for-each-ref patterns.
 
-    Empty when *remote* is not a remote name (git passes the URL itself for an
-    anonymous ``git fetch <url>``), when git cannot answer, and of course when the
-    clone tracks nothing from it -- a first clone does not.  Only whether there
-    are any matters to the caller, so the count is capped.
+    ``+refs/heads/*:refs/remotes/origin/*`` gives ``refs/remotes/origin/``; a mirror's
+    ``+refs/*:refs/*`` gives ``refs/``; a refspec with no destination, or a negative
+    one (``^refs/...``), stores nothing.  No refspec at all falls back to git's
+    default, ``refs/remotes/<remote>/``.
+    """
+    out, _, code = _repo_git("config", "--get-all", f"remote.{remote}.fetch")
+    specs = out.decode("utf-8", errors="replace").split() if code == 0 else []
+    patterns: list[str] = []
+    for spec in specs:
+        spec = spec.lstrip("+")
+        if spec.startswith("^") or ":" not in spec:
+            continue
+        dst = spec.split(":", 1)[1]
+        if dst.startswith("refs/"):
+            patterns.append(dst[:-1] if dst.endswith("*") else dst)
+    return patterns or [f"refs/remotes/{remote}/"]
+
+
+def remote_tracking_refs(remote: str) -> list[str]:
+    """The refs *remote*'s fetch stores in the caller's repository, at most a few.
+
+    Read from the remote's own fetch refspecs (``refs/remotes/<remote>/`` for an
+    ordinary clone, every ref for ``git clone --mirror``), since those are the refs
+    a ``fetch --prune`` of an empty listing would delete.  Empty when *remote* is
+    not a remote name (git passes the URL itself for an anonymous ``git fetch
+    <url>``), when git cannot answer, and of course when the clone tracks nothing
+    from it -- a first clone does not.  Only whether there are any matters to the
+    caller, so the count is capped.
     """
     if not remote or "://" in remote or remote.startswith("-"):
         return []
     out, _, code = _repo_git(
-        "for-each-ref", "--count=8", "--format=%(refname)", f"refs/remotes/{remote}/"
+        "for-each-ref", "--count=8", "--format=%(refname)", *_fetch_destinations(remote)
     )
     if code != 0:
         return []

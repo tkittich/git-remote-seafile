@@ -667,6 +667,28 @@ class TestAVanishedRepositoryPathIsNotAnEmptyRepository(E2ETestCase):
         self.assertIn("git remote set-url origin", proc.stderr)
         self.assertEqual(self._tracking(src), before, "the tracking branches were pruned")
 
+    def test_a_mirror_clone_keeps_its_branches(self):
+        """A mirror keeps the remote's branches in refs/heads itself (fetch refspec
+        +refs/*:refs/*), not under refs/remotes/<name>/: what the clone tracks is read
+        from the remote's fetch refspecs, or an empty listing prunes the mirror bare."""
+        self._pushed_and_moved("vanished_mirror_src")
+        # Restore the repository long enough to make the mirror, then move it again.
+        src = self.work / "src_vanished_mirror_src"
+        run_git(["push", "origin", "main", "main:feature"], src, self.env)
+        mirror = self.work / "mirror_vanished.git"
+        run_git(["clone", "--mirror", self.url("vanished_mirror_src"), str(mirror)],
+                self.work, self.env)
+        for key in list(self.stub.files.get(REPO_ID, {})):
+            if key.startswith("/vanished_mirror_src/"):
+                del self.stub.files[REPO_ID][key]
+        heads = run_git(["for-each-ref", "--format=%(refname)", "refs/heads/"], mirror,
+                        self.env).stdout.split()
+        self.assertIn("refs/heads/feature", heads)
+        proc = run_git(["fetch", "--prune", "origin"], mirror, self.env, check=False)
+        self.assertNotEqual(proc.returncode, 0, f"the mirror fetch succeeded:\n{proc.stderr}")
+        self.assertEqual(run_git(["for-each-ref", "--format=%(refname)", "refs/heads/"], mirror,
+                                 self.env).stdout.split(), heads, "the mirror was pruned")
+
     def test_a_push_to_the_vanished_path_is_still_allowed(self):
         # Pushing again (the repository was deleted on purpose) is how one recreates
         # it; only the listing for a fetch refuses.
