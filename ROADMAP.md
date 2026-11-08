@@ -1,6 +1,6 @@
 # Engineering Roadmap & Backlog
 
-**Baseline:** v0.9.14 (0.9.13: the six-model review round's fixes — a lease renewed inside long compute phases, the real server's create-or-duplicate rename honoured, a fetch skip that proves the tips' history locally, `--rebuild-index`; 0.9.0: the snapshot tool ships in the wheel and gains payload mode: large files stored by SHA-256, with gc, verify, retention and browsable views; on top of 0.8.8's measured pack cap, chunked upload, autogc, `doctor`, `gc --tail` and one output/exit convention)  
+**Baseline:** v0.9.23 (2026-11-08: Seafile Professional handled and tested in CI on CE and Pro 13.0.29, and two pre-release review rounds folded in -- ROADMAP 1.9 and 1.10; the snapshot tool starts fewer git processes). Earlier lines are in section 2.
 **Scope:** What shipped in each release line, the active backlog, and the v1.0.0 horizon.  
 **Test Suite:** all green on `tools/run_tests_parallel.py` (the runner prints the current count; it is deliberately not repeated here). **Python:** 3.10+ (3.9 EOL).
 
@@ -252,7 +252,7 @@ The cause was a path list handed to `git add` (CHANGELOG, Unreleased), found by 
 
 | ID | Component | Finding and disposition | Effort | Risk | Planned Target |
 |---|---|---|:---:|:---:|:---:|
-| **W1** | `70_stage.py`, `69_prewrite.py` | **Done (unreleased):** a first run gave `add` every path, and with the objects already written that took 14.1 s against 10.1 s for `update-index` at 20,000 files and 121.5 s against 43.0 s at 80,000 (`add` 8.6x for 4x the files, `update-index` 4.3x; identical trees). From 10,000 paths the list goes to `update-index --add --replace -z --stdin` (`staging_command`); a directory where a tracked file was still goes to `add` in its own command (`update-index` refuses a directory, and skipping one lost a nested repository's files and kept the old file for an empty directory; `ExoticReplacementTests` found both). `LongListStagingTests`. | M | Medium | done |
+| **W1** | `70_stage.py`, `69_prewrite.py` | **Done (0.9.22):** a first run gave `add` every path, and with the objects already written that took 14.1 s against 10.1 s for `update-index` at 20,000 files and 121.5 s against 43.0 s at 80,000 (`add` 8.6x for 4x the files, `update-index` 4.3x; identical trees). From 10,000 paths the list goes to `update-index --add --replace -z --stdin` (`staging_command`); a directory where a tracked file was still goes to `add` in its own command (`update-index` refuses a directory, and skipping one lost a nested repository's files and kept the old file for an empty directory; `ExoticReplacementTests` found both). `LongListStagingTests`. | M | Medium | done |
 | **W2** | `tests/` fixtures | **Done and verified (0.9.22):** the leak was `shutil.rmtree(..., ignore_errors=True)` failing on read-only `.git` files on Windows; the symlink probe made a repository on every module import, so one full run left about 400 `grs-*` directories (14,495 had piled up). All 17 uses call `tests/_helpers.remove_tree`, and `TemporaryTreeCleanupTests` fails on any new `ignore_errors=True`. A full gate run (1,538 tests) left 0 `grs-*` directories. The ACL-locked `grs-status-repro-*` directories did not come from the suite. | S | Low | done |
 | **W3** | snapshot tool | **Open, unmeasured:** every adaptive controller (`_Ramp`, `_Climber` for uploads and hashing) was proven against simulated disks and one real NVMe machine and one real server; none has run on a spinning disk or a slow link. The first real HDD or WAN run should be read start to finish (`staging:` and `payload:` lines) and its numbers added to DESIGN §3.5. | S | Medium | needs hardware |
 | **W4** | `20_gitrun.py` | **Open, not measured:** `GIT_TIMEOUT` is 600 s for tree-sized git calls (`ls-files`, `update-index --refresh`, `write-tree`). On a slow disk or a million-file tree one of them could be killed by a clock that does not follow the tree. The heartbeat and no-progress watchdog already scale for `add`; decide whether these calls should too (reading the count the run already holds), or record why not. | S | Low | backlog |
@@ -311,7 +311,7 @@ Three reports on the prepared, untagged 0.9.23. All three found the Pro fix soun
 
 ### 1.10 From the 06cc623 review round (2026-11-07; `REVIEW.06cc623.{deepseek-v4.1-flash,gemini-4-argon,glm-5.3,opus-5.5}.md`, triage in `archive/REVIEW.TRIAGE-06cc623.md`)
 
-Four reports on the prepared, untagged 0.9.23, the second round on it. Three blockers were older defects found from new angles (Z1, Z6, Z7), and three were siblings of the 4f1cdd4 round's own fixes (Z2, Z3, Z8). Rows marked Done are folded into 0.9.23; Z27-Z41 are open.
+Four reports on the prepared 0.9.23 (then untagged; released 2026-11-08 with these fixes), the second round on it. Three blockers were older defects found from new angles (Z1, Z6, Z7), and three were siblings of the 4f1cdd4 round's own fixes (Z2, Z3, Z8). Rows marked Done are folded into 0.9.23; Z27-Z41 are open.
 
 | ID | Component | Finding and disposition | Effort | Risk | Planned Target |
 |---|---|---|:---:|:---:|:---:|

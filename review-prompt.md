@@ -1,21 +1,20 @@
 You are an independent reviewer of `git-remote-seafile`, at the commit you were given
-(`git log -1`). **This is a pre-release round**: version 0.9.23 is prepared in that
-commit (`__version__`, `CHANGELOG.md` `[0.9.23]`, `.github/release-notes/v0.9.23.md`,
-`UPGRADING.md`) but not tagged, and it will not be until your findings are triaged — so
-the release files are under review too, and a finding there is cheap to fix. Another
-model wrote the code, the tests and the specifications, and has reviewed
-them itself over a dozen rounds: assume all three share blind spots. The last outside
-review was a second pre-release round at commit `06cc623` (2026-11-07, four reviewers);
-its triage is settled and is listed in Part F as dispositions. **Everything since
-`06cc623` has had no independent reader** — the twenty-six fixes that round produced
-(ROADMAP §1.10, Z1–Z26: a source's case rule, one reader for every state file whose
-absence decides something, the Pro owner guard's edition probe, the lease check's order,
-a remote's object format with no refs, Unicode forms beside payload files, `--no-push`,
-`repair`'s history walk, redirects, and smaller guards), three new warnings, the branch
-that makes a snapshot run start fewer git processes (B12), and the tooling (`gates.py
---changed` from imports, `release_check.py` failing without GitHub) — see Part G, which is
-where most of your time should go, but not all of it (see ORDER OF WORK). Parts A–E
-cover everything older.
+(`git log -1`). **This is a post-release round**: version 0.9.23 was released on
+2026-11-08 (tag `v0.9.23`, commit `a9cbd27`), and your findings go into 0.9.24. If the
+commit you were given is later than the tag, `git log --oneline v0.9.23..HEAD` is what
+has changed since; review it with the rest. Another model wrote the code, the tests and
+the specifications, and has reviewed them itself over a dozen rounds: assume all three
+share blind spots. The last outside review was a second pre-release round at commit
+`06cc623` (2026-11-07, four reviewers); its triage is settled and is listed in Part F as
+dispositions. **Everything between `06cc623` and the release has had no independent
+reader** — the twenty-six fixes that round produced (ROADMAP §1.10, Z1–Z26: a source's
+case rule, one reader for every state file whose absence decides something, the Pro
+owner guard's edition probe, the lease check's order, a remote's object format with no
+refs, Unicode forms beside payload files, `--no-push`, `repair`'s history walk,
+redirects, and smaller guards), three new warnings, the branch that makes a snapshot run
+start fewer git processes (B12), and the tooling (`gates.py --changed` from imports,
+`release_check.py` failing without GitHub) — see Part G, which is where most of your time
+should go, but not all of it (see ORDER OF WORK). Parts A–E cover everything older.
 
 WHAT IT IS
 A Git remote helper (`seafile://<library>/<path>`) that stores a repository in a Seafile
@@ -132,8 +131,7 @@ RULES FOR THE WHOLE REVIEW
   non-goals and `DESIGN.md` §7. Re-reporting one requires showing that its stated
   reasoning is wrong, and saying so explicitly.
 - **Known, and not findings** (report one only if you show the stated reason is wrong):
-  the release date in `CHANGELOG.md` `[0.9.23]` and the ROADMAP line is a
-  placeholder until the tag; *why* Professional answers a missing folder with 403/500 is
+  *why* Professional answers a missing folder with 403/500 is
   inferred (its server code is closed) — the answers themselves were measured on 13.0.29;
   removing the empty copy a simultaneous `mkdir` leaves is best-effort and deliberately
   limited to the helper's own layout folders, inside the repository's own path (a copy of
@@ -309,8 +307,8 @@ every behaviour that may now surface: the new refusals, the new warnings, the ca
 first run on a case-sensitive source?); the release notes against the changelog; the
 DESIGN, PAYLOAD, SNAPSHOT and USER_GUIDE additions against the code (quote both);
 AGENTS.md "Review rounds"; and `python tools/release_check.py --offline` (expected: every
-check `ok` except the two CI legs, which are warnings under `--offline` — report anything
-else it says).
+check `ok` except the tag, which already exists for 0.9.23, and the two CI legs, which
+are warnings under `--offline` — report anything else it says).
 
 PART B — code of the helper (Phase 2)
 Scope: `git_remote_seafile/{helper,client,lock,gc,packs,refs,git_util,safety,url,config,
@@ -456,7 +454,8 @@ OUTPUT — one markdown document, sections in this order.
    prefixed with your `<model>` name (below): `glm-5.3-G2.1`.
 4. Part F: a table of row | your verdict | evidence.
 5. Part H: H1 (areas), H2 (suggestions) and H3 (this prompt). End H2 with a one-line
-   answer: would you tag this commit as 0.9.23, and if not, which findings block it?
+   answer: which findings, if any, should block 0.9.24, and which would you ship in a
+   0.9.23.1 hot-fix instead?
 6. What you checked and found sound: one line each, and for every part with no finding
    a line saying that and what you attacked there (a part with an empty table is not
    one you skipped). This is not filler — a named list of paths you attacked and could
