@@ -503,12 +503,61 @@ attributes, junctions and a directory that changes case (Windows), and hundreds 
 new files at once. No difference remains; the first version had three, which
 `ExoticReplacementTests` and `SpecialFileAndNameTests` now hold.
 
-**Not covered:** files over 4 GiB (they are payload, not git); a full disk or a
-killed run during staging (git writes its index through a lock file and renames
-it, for either command, but neither case was tried); a sharing violation from
-antivirus on Windows (expected to surface as an error from either command);
-macOS Unicode-normalised names (no Mac in reach, ROADMAP S20); clock skew and
-coarse timestamps on FAT or network shares (the stat cache, below).
+**Not covered:** files over 4 GiB (they are payload, not git); a killed run during
+staging (git writes its index through a lock file and renames it, for either command,
+but the case was not tried); a sharing violation from antivirus on Windows (expected
+to surface as an error from either command); macOS Unicode-normalised names (no Mac
+in reach, ROADMAP S20); clock skew and coarse timestamps on network shares and on
+the *Windows* FAT and exFAT drivers (the stat cache, below). FAT32 and exFAT under
+Linux, and a full disk, were measured (next).
+
+**Measured on FAT32 and exFAT (2026-11-09; Linux `vfat` and `exfat` drivers, kernel
+6.18 in Debian 13 on WSL2, `mkfs.vfat -F 32` and `mkfs.exfat` on a loop device, git
+2.47).** These are the Linux drivers. Windows' own FAT and exFAT drivers differ (a
+change time of 0, local-time stamps) and were not measured.
+
+| Fact | FAT32 | exFAT |
+| :--- | :--- | :--- |
+| Modification time kept | floored to an *even* second (`...1.123` reads `...0`, `...5.0` reads `...4`) | 10 ms (`...1.123456789` reads `...1.12`) |
+| A rewrite 0.3 s after the first | same mtime | new mtime |
+| `st_ctime` | equals the mtime, always | while mounted the in-memory change time; **after a remount or cache eviction, the mtime again** |
+| Inode number | **changes on a remount and on a cache drop** (`echo 3 > /proc/sys/vm/drop_caches`: 467 becomes 471) | same (475 becomes 479) |
+| Case | folds, keeps the first spelling, and **a case-only rename (`B.txt` to `b.TXT`) is accepted and changes nothing** | same, non-ASCII too (`Über` and `über` are one name) |
+| Names refused (`EINVAL`) | `: * ? " < > \|`, control characters, a trailing space; a trailing dot is **silently dropped** (`dot.` becomes `dot`) | the same set, but a trailing space is kept; a trailing dot is dropped |
+| Non-ASCII | refused under the default `iocharset=ascii`; with `iocharset=utf8` accepted | accepted; NFC and NFD spellings are two files |
+| Name length | 255 bytes; fewer UTF-16 units than that for wide characters | 255 UTF-16 units (127 emoji fit, 128 do not) |
+| Largest file | 4 GiB - 1 (`EFBIG` at 4 GiB) | no limit met at 4 GiB |
+| Symlinks, hard links, fifos, xattrs | refused | refused |
+| Mode | every file `0755`, `chmod` accepted and ignored | same |
+| git's own probe | `core.filemode=false`, `core.symlinks=false`, `core.ignorecase=true` | same |
+
+What the tool did with them:
+
+* **Snapshot of a tree on either volume**: first run, "no changes", the same after the
+  inode numbers were renumbered, and one added file, all correct; a restore into a new
+  directory was byte-identical and `--verify` clean. git's racy-edit rule held (a
+  same-size rewrite right after a commit shows as modified).
+* **The payload cache keys on the inode** (`74_payload_manifest.py`, `vouched`). On a
+  FAT-family volume the inode is not an identity, so every remount, replug or cache
+  eviction makes every payload file "new" and it is hashed again. That is correct
+  and slow (hundreds of GiB re-read), not wrong; ROADMAP Z43. The payload path itself
+  needs a server and was not run on these volumes.
+* **Restoring onto FAT from Linux or macOS** is not guided: the names-Windows-cannot-hold
+  skip (`_unrepresentable_paths`) runs only when `os.name == "nt"`, so git's own
+  `error: unable to create file a:b.txt` stops the restore with `checkout of 'snapshot'
+  failed (rc=1)` and the partial restore is left in place (ROADMAP Z44).
+* **A case collision on restore reads as a tool defect**: `README` and `readme` in one
+  snapshot restored onto a folding volume stop with "this is a defect in the checkout,
+  so please report it" (ROADMAP Z45). The same text would appear on Windows and macOS.
+* **`dot.` restored as `dot` passes the byte check**: the check opens the path, and the
+  driver resolves it to the renamed file. The content is intact and the name is not.
+* A symlink restores as a text file holding its target, and the Warning names it; the
+  execute bit is lost without a word (git cannot store it on these volumes).
+* **A full disk**: a vault on a 48 MiB FAT32 volume and a 72 MiB tree. The default run
+  refuses before staging, naming both sizes. With `--allow-low-disk`, `git add` fails
+  with `unable to write loose object file: No space left on device`, the tool exits 1,
+  and the loose objects already written stay (`git fsck` reports them dangling; the
+  volume was 100% full until a `git gc --prune=now`).
 
 **One blind spot both routes share, and always had.** A file whose bytes change
 while its size and modification time are put back is not seen: git trusts its stat
