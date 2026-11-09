@@ -441,7 +441,7 @@ def _doctor(url: str | None, *, upload_limit: bool = False, max_mib: int | None 
 def _doctor_upload_limit(helper: Any, max_mib: int | None) -> int:
     """Measure the largest single upload and say what ``seafile.gcmaxpackmib`` fits."""
     import uuid
-    from .config import RemoteConfig
+    from .config import RemoteConfig, remote_name_for_url
 
     ceiling = (max_mib * MIB) if max_mib else PROBE_CEILING_BYTES
     scratch = f"{helper.repo_path.rstrip('/')}/.git-seafile-doctor-{uuid.uuid4().hex[:8]}"
@@ -462,7 +462,7 @@ def _doctor_upload_limit(helper: Any, max_mib: int | None) -> int:
             print(f"Warning: could not remove {scratch}{why}")
     for size, outcome in result.trials:
         print(f"       {format_bytes(size):>10}  " + ("accepted" if outcome is None else f"refused: {outcome}"))
-    configured = RemoteConfig.load().gc_max_pack_mib
+    configured = RemoteConfig.load(remote_name_for_url(getattr(helper, "raw_url", ""))).gc_max_pack_mib
     if result.accepted == 0:
         print(f"[FAIL] even {format_bytes(PROBE_FLOOR_BYTES)} was refused ({result.reason}); that is "
               "not a size limit, so there is no cap to recommend. Fix what the line above says first")
@@ -658,11 +658,12 @@ def _gc_tail(url: str, allow_low_disk: bool = False) -> int:
     holding the push lock for minutes, and this one was asked for.
     """
     try:
-        from .config import RemoteConfig
+        from .config import RemoteConfig, remote_name_for_url
         from .gc import describe_size_delta, tail_merge
         helper = RemoteHelper("gc", url)
         res = tail_merge(
-            helper.client, helper.repo_id, helper.repo_path, config=RemoteConfig.load(),
+            helper.client, helper.repo_id, helper.repo_path,
+            config=RemoteConfig.load(remote_name_for_url(url)),
             respect_budget=False, allow_low_disk=allow_low_disk,
         )
     except Exception as ex:
@@ -696,7 +697,7 @@ def _cmd_gc(rest: list[str]) -> int:
         return _gc_tail(url, allow_low_disk)
     min_packs = _parse_min_packs(rest)
     try:
-        from .config import RemoteConfig
+        from .config import RemoteConfig, remote_name_for_url
         helper = RemoteHelper("gc", url)
         # A full gc keeps only what the refs it can list reach.  On Pro a folder
         # permission can hide refs from an account that is not the owner (ROADMAP
@@ -716,7 +717,7 @@ def _cmd_gc(rest: list[str]) -> int:
             helper.repo_id,
             helper.repo_path,
             min_packs=min_packs,
-            config=RemoteConfig.load(),
+            config=RemoteConfig.load(remote_name_for_url(url)),
             allow_low_disk=allow_low_disk,
         )
     except Exception as ex:
@@ -758,7 +759,7 @@ def _cmd_repair(rest: list[str]) -> int:
     url = positional[0]
     dry_run = "--dry-run" in rest
     try:
-        from .config import RemoteConfig
+        from .config import RemoteConfig, remote_name_for_url
         from .repair import repair_remote
         helper = RemoteHelper("repair", url)
         res = repair_remote(
@@ -766,7 +767,7 @@ def _cmd_repair(rest: list[str]) -> int:
             helper.repo_id,
             helper.repo_path,
             dry_run=dry_run,
-            config=RemoteConfig.load(),
+            config=RemoteConfig.load(remote_name_for_url(url)),
             allow_low_disk="--allow-low-disk" in rest,
         )
     except Exception as ex:

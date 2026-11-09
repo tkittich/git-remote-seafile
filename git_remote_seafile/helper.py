@@ -19,7 +19,7 @@ from .client import (
     is_listed_file,
     read_listed_text,
 )
-from .config import RemoteConfig
+from .config import RemoteConfig, remote_cap_key
 from .diagnose import MIB, PACK_HEADROOM, size_refusal, split_cap_bytes
 from .lock import (
     LEASE_LOST,
@@ -1020,10 +1020,14 @@ class RemoteHelper:
         # Keep the fifth to spare that doctor --upload-limit leaves.
         mib = max(1, int(cap * PACK_HEADROOM) // MIB)
         kept = f"set seafile.gcmaxpackmib to {mib} to start there next time"
-        if persist:
-            _out, _err, code = run_git(["config", "--local", "seafile.gcmaxpackmib", str(mib)])
+        # Per remote (ROADMAP Z31): a refusal is one server's proxy, and the repository-wide key
+        # would also lower the cap, and the tail merge's frozen-pack line, of every other remote.
+        # A push by URL has no remote name and keeps nothing.
+        key = remote_cap_key(self.remote_name)
+        if persist and key is not None:
+            _out, _err, code = run_git(["config", "--local", key, str(mib)])
             if code == 0:
-                kept = f"seafile.gcmaxpackmib is now {mib} in this repository, so later pushes start there"
+                kept = f"{key} is now {mib} in this repository, so later pushes to this remote start there"
         sys.stderr.write(
             f"Notice: this push went through in packs of at most {format_bytes(cap)}; {kept}. "
             "'git-remote-seafile doctor <url> --upload-limit' measures the server's exact limit.\n"
@@ -1524,7 +1528,7 @@ class RemoteHelper:
         try:
             # Loaded once and reused for the push lock and the post-lock tail
             # merge, so these values resolve through one documented dataclass.
-            session_config = RemoteConfig.load()
+            session_config = RemoteConfig.load(self.remote_name)
             with RemoteLock(self.client, self.repo_id, self.repo_path, config=session_config) as lock:
                 pending = self._stage_updates(lock, push_specs, reported)
 

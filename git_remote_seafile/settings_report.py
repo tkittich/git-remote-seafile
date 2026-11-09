@@ -34,7 +34,8 @@ SETTINGS: tuple[Setting, ...] = (
     Setting("seafile.gcthreshold", None, "20", False,
             "small packs at which the merge (or the gc tip) triggers"),
     Setting("seafile.gcmaxpackmib", None, "1024", False,
-            "largest pack the helper writes, in MiB; lower it behind a proxy with a body limit"),
+            "largest pack the helper writes, in MiB; lower it behind a proxy with a body limit "
+            "(remote.<name>.seafilegcmaxpackmib sets it for one remote)"),
     Setting("seafile.locktimeout", None, "15", False,
             "seconds to wait for the remote lock"),
     Setting("seafile.locklease", None, "60", False,

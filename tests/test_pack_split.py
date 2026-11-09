@@ -94,9 +94,18 @@ class TestSplitOnRefusal(unittest.TestCase):
     def test_a_413_keeps_the_cap_that_worked_in_the_repository(self):
         err, run = self.push(limit=15 * MIB)
         # The cap that worked was 10 MiB; a fifth is kept to spare, as doctor --upload-limit does.
-        run.assert_called_once_with(["config", "--local", "seafile.gcmaxpackmib", "8"])
-        self.assertIn("seafile.gcmaxpackmib is now 8 in this repository", err)
+        # Kept beside the remote that refused (ROADMAP Z31), not in the repository-wide key.
+        run.assert_called_once_with(["config", "--local", "remote.origin.seafilegcmaxpackmib", "8"])
+        self.assertIn("remote.origin.seafilegcmaxpackmib is now 8 in this repository", err)
+        self.assertIn("later pushes to this remote start there", err)
         self.assertIn("Notice: this push went through in packs of at most 10.0 MiB", err)
+
+    def test_a_push_by_url_has_no_remote_to_keep_the_cap_for(self):
+        """Git hands the helper the URL as the remote's name when it was pushed to by URL."""
+        self.h.remote_name = "seafile://lib/repo"
+        err, run = self.push(limit=15 * MIB)
+        run.assert_not_called()
+        self.assertIn("set seafile.gcmaxpackmib to 8 to start there next time", err)
 
     def test_a_reset_is_retried_but_not_remembered(self):
         self.h.client.upload_file.side_effect = None

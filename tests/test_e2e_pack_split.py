@@ -53,8 +53,12 @@ class TestPushThroughABodyLimit(E2ETestCase):
 
         self.assertIn("the server refused an upload of", proc.stderr)
         self.assertIn("Notice: this push went through in packs of at most", proc.stderr)
-        remembered = run_git(["config", "--local", "--get", "seafile.gcmaxpackmib"], src, self.env).stdout.strip()
+        remembered = run_git(["config", "--local", "--get", "remote.origin.seafilegcmaxpackmib"],
+                             src, self.env).stdout.strip()
         self.assertTrue(1 <= int(remembered) < 10, remembered)
+        # Only that remote's key: the repository-wide one is the user's, and other remotes read it.
+        repo_wide = run_git(["config", "--local", "--get", "seafile.gcmaxpackmib"], src, self.env, check=False)
+        self.assertEqual(repo_wide.returncode, 1, repo_wide.stdout)
         packs = self.packs("split1")
         self.assertGreaterEqual(len(packs), 2, packs)
         self.assertTrue(all(size <= LIMIT for size in packs.values()), packs)
@@ -79,6 +83,26 @@ class TestPushThroughABodyLimit(E2ETestCase):
         self.assertNotIn("refused an upload", proc.stderr)
         self.assertNotIn("Notice: this push went through", proc.stderr)
 
+    def test_another_remote_of_the_repository_is_not_given_the_cap_of_the_one_that_refused(self):
+        """ROADMAP Z31: the refusal is one server's proxy; a second remote keeps its own cap."""
+        src = init_repo(self.work / "src_split4", self.env)
+        commit_file(src, "README.txt", "base\n", "base", self.env)
+        run_git(["remote", "add", "origin", self.url("split4")], src, self.env)
+        run_git(["remote", "add", "roomy", self.url("split4b")], src, self.env)
+        add_random_files(src, "big", 6, 3 * MIB, self.env)
+        self.stub.faults["max_upload"] = LIMIT
+        run_git(["push", "-u", "origin", "main"], src, self.env)
+        self.stub.faults.pop("max_upload")
+
+        self.assertIn("seafilegcmaxpackmib", run_git(["config", "--local", "--list"], src, self.env).stdout)
+        proc = run_git(["push", "roomy", "main"], src, self.env)
+
+        self.assertNotIn("refused an upload", proc.stderr)
+        # roomy was not held to origin's cap: its push is one pack of everything, over that cap.
+        packs = self.packs("split4b")
+        self.assertEqual(len(packs), 1, packs)
+        self.assertGreater(max(packs.values()), 8 * MIB, packs)
+
     def test_a_server_that_takes_everything_is_not_given_a_cap_or_a_warning(self):
         src = init_repo(self.work / "src_split3", self.env)
         commit_file(src, "README.txt", "base\n", "base", self.env)
@@ -88,8 +112,9 @@ class TestPushThroughABodyLimit(E2ETestCase):
         proc = run_git(["push", "-u", "origin", "main"], src, self.env)
 
         self.assertNotIn("refused an upload", proc.stderr)
-        proc = run_git(["config", "--local", "--get", "seafile.gcmaxpackmib"], src, self.env, check=False)
-        self.assertEqual(proc.returncode, 1)
+        for key in ("remote.origin.seafilegcmaxpackmib", "seafile.gcmaxpackmib"):
+            proc = run_git(["config", "--local", "--get", key], src, self.env, check=False)
+            self.assertEqual(proc.returncode, 1, key)
 
 
 if __name__ == "__main__":

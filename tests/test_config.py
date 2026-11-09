@@ -149,5 +149,67 @@ class TestConfigModule(unittest.TestCase):
             self.assertEqual(get_git_config_int("test.int", 0), 42)
 
 
+class TestPerRemotePackCap(unittest.TestCase):
+    """ROADMAP Z31: a 413 is one server's proxy, so the cap it teaches is kept per remote.
+
+    Real ``git config`` against a temporary global file, because the loader reads the key
+    through git and the point is which of two keys wins.
+    """
+
+    def setUp(self):
+        import tempfile
+
+        self._dir = tempfile.TemporaryDirectory(prefix="grs-cfg-")
+        self.addCleanup(self._dir.cleanup)
+        self.cfgfile = os.path.join(self._dir.name, "gitconfig")
+        env = patch.dict(os.environ, {"GIT_CONFIG_GLOBAL": self.cfgfile, "GIT_CONFIG_NOSYSTEM": "1"})
+        env.start()
+        self.addCleanup(env.stop)
+
+    def write(self, text: str) -> None:
+        with open(self.cfgfile, "wb") as handle:
+            handle.write(text.encode("utf-8"))
+
+    def test_the_remotes_own_cap_wins_and_other_remotes_keep_the_repository_wide_one(self):
+        self.write("[seafile]\n\tgcmaxpackmib = 512\n[remote \"origin\"]\n\tseafilegcmaxpackmib = 8\n")
+        self.assertEqual(RemoteConfig.load("origin").gc_max_pack_mib, 8)
+        self.assertEqual(RemoteConfig.load("origin").gc_max_mib, 16, "the download budget follows the cap in use")
+        self.assertEqual(RemoteConfig.load("mirror").gc_max_pack_mib, 512)
+        self.assertEqual(RemoteConfig.load().gc_max_pack_mib, 512)
+        self.assertEqual(RemoteConfig.load("seafile://lib/repo").gc_max_pack_mib, 512)
+
+    def test_without_either_key_the_default_stands(self):
+        self.write("")
+        self.assertEqual(RemoteConfig.load("origin").gc_max_pack_mib, 1024)
+
+    def test_an_implausible_remote_value_names_its_own_key(self):
+        self.write("[remote \"origin\"]\n\tseafilegcmaxpackmib = 0\n")
+        with patch("sys.stderr", new_callable=io.StringIO) as err:
+            cfg = RemoteConfig.load("origin")
+        self.assertEqual(cfg.gc_max_pack_mib, 1024)
+        self.assertIn("remote.origin.seafilegcmaxpackmib=0 -> 1024", err.getvalue())
+
+    def test_a_url_is_not_a_remote_name(self):
+        from git_remote_seafile.config import remote_cap_key
+
+        self.assertEqual(remote_cap_key("origin"), "remote.origin.seafilegcmaxpackmib")
+        self.assertEqual(remote_cap_key("team/mirror"), "remote.team/mirror.seafilegcmaxpackmib")
+        for not_a_name in (None, "", "seafile://lib/repo", "https://host/x"):
+            self.assertIsNone(remote_cap_key(not_a_name), not_a_name)
+
+    def test_a_command_given_only_a_url_finds_the_remote_that_has_it(self):
+        from git_remote_seafile.config import remote_name_for_url
+
+        self.write(
+            "[remote \"origin\"]\n\turl = seafile://lib/one\n"
+            "[remote \"mirror\"]\n\turl = seafile://lib/two/\n"
+        )
+        self.assertEqual(remote_name_for_url("seafile://lib/one"), "origin")
+        self.assertEqual(remote_name_for_url("seafile://lib/two"), "mirror")
+        self.assertIsNone(remote_name_for_url("seafile://lib/none"))
+        self.write("")
+        self.assertIsNone(remote_name_for_url("seafile://lib/one"))
+
+
 if __name__ == "__main__":
     unittest.main()
