@@ -398,9 +398,13 @@ What to know:
   The store line and the gc report say when `--payload-verify` last ran.
 - **What it does not do:** no encryption, no delta between versions of one file (a
   changed file is a whole new object; the server shares unchanged blocks), and a
-  file's name must be restorable on the platform you restore to (Windows names it
-  cannot hold are skipped and reported, git-stored files and payload files alike;
-  the rest of the snapshot is restored and verified).
+  file's name must be restorable on the volume you restore to (names it cannot hold are
+  skipped and reported, git-stored files and payload files alike: Windows' rules on Windows,
+  and off Windows whatever the destination is found to refuse by probing it, such as a colon,
+  a trailing space or dot or a non-ASCII name on FAT and exFAT; two names that differ only in
+  case on a volume that ignores case, and a name the volume stored under another one, are
+  reported too; the rest of the snapshot is restored and verified; the measurements are in
+  `SNAPSHOT.md` section 5).
 
 The specification, the requirements and the review that shaped it are
 [PAYLOAD.md](PAYLOAD.md); the measurements are in

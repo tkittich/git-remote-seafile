@@ -32,6 +32,7 @@ FAT32 and exFAT, measured and handled. The two filesystems were measured on Linu
 
 ### Documentation
 - **FAT32 and exFAT measured** on Linux loop devices and on Windows drives, with a full disk and a killed run (W6); the open rows they found are Z43-Z47 (`ROADMAP.md`). Z27 and Z43 have design notes.
+- **The guides and specs follow:** `PAYLOAD.md` and the `USER_GUIDE.md` limits row state the measured FAT behaviour, `SNAPSHOT_GUIDE.md` says a restore probes its destination, `DESIGN.md` describes the LFS `.part` rename, `CONTRIBUTING.md` lists the stub's fault switches and has a "Testing on FAT and exFAT" recipe, and `AGENTS.md` carries the FAT facts that bite.
 
 ## [0.9.23] - 2026-11-08
 

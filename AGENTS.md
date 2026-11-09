@@ -115,6 +115,7 @@ identity and the first CI failures of a release have always been environmental.
   file read or delete under a missing folder with 403 or a 500 page (issue 6). Any new
   "absent" decision runs against both: `GRS_STUB_PRO=1` makes the whole stub suite
   answer the Pro way, and the container workflow runs CE and Pro.
+- **FAT and exFAT are not what NTFS or ext4 teach.** Measured, not assumed (SNAPSHOT.md section 5): Windows' drivers round an mtime up to an even second and report no change time; Linux renumbers inodes on a remount or a cache trim; links, colons, trailing dots and (on a default Debian mount) non-ASCII names are refused; a case-only rename is accepted and changes nothing. A restore destination is probed, not assumed (`destination_name_problem`). CONTRIBUTING.md ("Testing on FAT and exFAT") has the loop-device recipe.
 - **Line endings are LF** (`.gitattributes`). Edit with tools that preserve them.
 - **Shell quoting.** On Windows, heredocs through the Bash tool collapse
   backslashes (a `\n` in a script's string literal becomes a real newline, a

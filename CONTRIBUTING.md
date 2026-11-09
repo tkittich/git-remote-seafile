@@ -138,6 +138,9 @@ The container workflow (`.github/workflows/realserver.yml`, weekly and by hand;
 runs all of it against throwaway **CE and Pro** containers of 13.0, pinned by digest:
 since 12.0 the Pro image is public, and without a licence file it runs as a
 three-user trial, so no secret is involved. The log names the exact version.
+`.github/workflows/realserver-latest.yml` runs the same suite monthly against the floating `13.0-latest` images, `continue-on-error`, and records the digests it tested: a red run means "look, then re-pin"; `release_check` does not read it.
+
+The stub's fault switches (`stub.faults[...]`, all cleared by `reset()`) include `dir` and `dir_404` (every or a scoped listing fails), `dir_fail_nth` with `dir_fail_status` (exactly the n-th listing since the reset fails, counted in `stub.dir_calls`), `max_upload` (a proxy's body limit), `pro_missing_parent` and `GRS_STUB_PRO=1` (Pro's answers), and `stub.conflict_copy_for` (an upload to a matching path leaves the `(SFConflict ...)` copy simultaneous writers leave).
 
 The stub is also *more forgiving* than the deployment, and each difference
 below was measured against the test server (CE 13.0.28 behind nginx) rather
@@ -174,6 +177,10 @@ that talks to the server:
   not a promise.
 
 ---
+
+## Testing on FAT and exFAT
+
+Nothing in CI runs on a FAT-family volume, and the facts differ by driver (SNAPSHOT.md section 5 has the measured tables). To repeat the measurements on Linux (a Debian WSL works): `truncate -s 6G x.img`, `mkfs.vfat -F 32 x.img` or `mkfs.exfat x.img` (`exfatprogs`), `mount -o loop[,iocharset=utf8] x.img /mnt/vol` as root, and make, mount and probe in one command, because a WSL mount does not reliably survive between calls. Debian mounts FAT with `iocharset=ascii`, which refuses every non-ASCII name; pass `iocharset=utf8` to see what Windows would hold. The Windows drivers need a real FAT32 or exFAT drive (a spare disk or a VHD from an elevated shell); remounting them needs an elevated shell too. Keep the tests that need such a volume behind a probe that skips without one.
 
 ## The snapshot tool is one module to users and several parts to maintainers
 
