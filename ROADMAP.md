@@ -1,6 +1,6 @@
 # Engineering Roadmap & Backlog
 
-**Baseline:** v0.9.23 (2026-11-08: Seafile Professional handled and tested in CI on CE and Pro 13.0.29, and two pre-release review rounds folded in -- ROADMAP 1.9 and 1.10; the snapshot tool starts fewer git processes). Earlier lines are in section 2.
+**Baseline:** v0.9.24 (2026-11-09: FAT32 and exFAT measured on Linux loop devices and Windows drives and handled -- Z43-Z47; Z28, Z30, Z31, Z34, Z35, Z38, Z40, Z41 done; Z27 and Z43 have design notes). v0.9.23 (2026-11-08) was Seafile Professional handled and tested in CI. Earlier lines are in section 2.
 **Scope:** What shipped in each release line, the active backlog, and the v1.0.0 horizon.  
 **Test Suite:** all green on `tools/run_tests_parallel.py` (the runner prints the current count; it is deliberately not repeated here). **Python:** 3.10+ (3.9 EOL).
 
@@ -520,6 +520,9 @@ One line per capability — see [CHANGELOG.md](CHANGELOG.md) for the full detail
 
 **v0.9.23 (2026-11-08) — Seafile Professional and the review backlog.**
 - A file read under a missing folder is 403 or a 500 page on Pro (issue 6): the folder's listing decides; a duplicate folder from a simultaneous mkdir is removed; a folder 403 names the permissions; the real-server suite runs in CE and Pro containers with a second account, folder permissions, groups and a first-push race; the last round's backlog (X9: scratch space before gc/repair, LFS URLs with a space, the route by work, the split floor, typed payload jobs, alternates) and X2 (a case rename on the update-index route); the next review prompt (X11); and the pre-release round on 4f1cdd4 (Y1-Y10: names folded the way git folds them, a `--no-push` run that remembers nothing, the LFS upload read back, a listed ref or ticket that cannot be read is not absent, `mkdir_p` removing only its own copy, the tested-servers wording).
+
+**v0.9.24 (2026-11-09) — FAT32 and exFAT, measured and handled.**
+- Linux loop devices and real Windows drives measured (2 s round-up of mtime on both Windows drivers, change time 0, inode renumbering on Linux, no links, names refused, a full disk, a killed run); a restore onto such a volume lists and skips the names it refuses (Z44), says when names collide in case or were changed (Z45), and a payload re-read after a remount names the inode (Z43); the pack cap a 413 teaches is per remote (Z31); the lock's settlement window follows a slow link (Z28); an LFS upload is `.part` then rename (Z30); a Pro non-owner's report notes its count (Z34); the stub fails exactly the n-th listing (Z38) and leaves `(SFConflict ...)` copies (Z33/X7), which found Z47; prose numbers are tied to constants (Z35); `release_check` warns on a failed re-run (Z41); a monthly unpinned real-server run (Z37).
 
 ---
 

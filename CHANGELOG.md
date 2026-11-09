@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.24] - 2026-11-09
+
+FAT32 and exFAT, measured and handled. The two filesystems were measured on Linux loop devices and on real Windows drives (the tables are in `SNAPSHOT.md` section 5), and what they showed is now behaviour: a restore onto a volume that refuses names lists and skips them instead of stopping at git's first error, says when a name collides in case or was changed by the volume, and a payload re-read after a remount names the inode as the cause. Alongside: the pack cap a refused upload teaches is kept per remote, the lock's settlement window follows a slow link, two machines uploading one LFS object leave no conflict copy, and a monthly run tests the unpinned Seafile images. A killed snapshot (six `SIGKILL` points) was measured to recover.
+
 ### Fixed
 - **A report-only `--payload-gc` by a Pro non-owner says its count may be too high** (ROADMAP Z34; glm-5.3 D2). A hidden folder's refs are missing from such an account's history, so objects only they reach were printed as unused with nothing to say so; the report now prints a Note naming the reason. The routine report after a push is unchanged.
 - **A restore onto a FAT or exFAT volume from Linux or macOS no longer stops at the first name the volume refuses** (ROADMAP Z44; measured on FAT32 and exFAT loop devices). Only Windows set unholdable names aside, so git's own `unable to create file a:b.txt` ended the restore and left half a tree. Off Windows the destination is now probed (a colon, a trailing space, a trailing dot, a non-ASCII name) and the names it refuses are listed and skipped, as on Windows, with the rest restored and verified.
@@ -18,6 +22,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **A payload re-read caused only by a changed inode says so** (ROADMAP Z43; measured on FAT32 and exFAT). Those volumes renumber inodes on a remount, a replug or a trimmed cache, and the payload cache keys on the inode, so every file was read again behind a generic "changed since the last run" Note. When size and modification time match and only the inode differs, the run now names that as the cause and says the contents are not in doubt.
 - **The pack cap a refused upload teaches is kept per remote** (ROADMAP Z31; gemini-4-argon C2). After an HTTP 413 the helper wrote `seafile.gcmaxpackmib`, which every remote of the repository reads and which also sets the tail merge's frozen-pack line, so one remote's proxy lowered another's cap. It now writes `remote.<name>.seafilegcmaxpackmib`, read before `seafile.gcmaxpackmib`; a push by URL has no remote name and keeps nothing (the Notice says what to set). A `seafile.gcmaxpackmib` written by an earlier release still applies and is never overwritten; `gc`, `repair` and `doctor --upload-limit` find the remote by its URL.
 - **The lock's settlement window follows a slow ticket upload** (ROADMAP Z28; opus-5.5 A2). It was a fixed second, so on a slow link a peer's ticket that was still uploading when the queue was re-read could be missed, a late and loud failure rather than a double win. The window is now the longer of one second and this client's own ticket upload time, at most ten seconds.
+
+### Tests
+- **A stub fault that fails exactly the n-th directory listing** (Z38) and `tests/test_e2e_listing_faults.py`, which fails each listing of a first push, an update and a divergent push in turn; one 404 at listing 26 fails a first push loudly and a repeat succeeds. It does not reproduce Z3 (recorded).
+- **The stub leaves `(SFConflict ...)` copies** (`stub.conflict_copy_for`, Z33/X7): the ref conflict warning and lock-ticket copies are tested end to end, and a conflict copy of a released holder's ticket was found to block other machines for one lease (Z47, pinned, not fixed).
+- **Prose numbers are read back from their constants** (Z35): the clock-skew bound, the mark-list cap and the pack-split numbers, each mutated.
+- **`release_check` warns when a green run is followed by a failed re-run** at the same commit (Z41).
+- **Real-server measurements for Z29 and Z36** are written (a `MEASURED` line each, never a failure) and wait for the next container run.
+
+### Documentation
+- **FAT32 and exFAT measured** on Linux loop devices and on Windows drives, with a full disk and a killed run (W6); the open rows they found are Z43-Z47 (`ROADMAP.md`). Z27 and Z43 have design notes.
 
 ## [0.9.23] - 2026-11-08
 
@@ -2078,6 +2092,7 @@ Data-loss and silent-failure fixes, and the Python floor raised to 3.9.
   with zero-config desktop-client token discovery, distributed locking, remote
   packfile compaction, and a Git LFS custom transfer agent.
 
+[0.9.24]: https://github.com/tkittich/git-remote-seafile/compare/v0.9.23...v0.9.24
 [0.9.23]: https://github.com/tkittich/git-remote-seafile/compare/v0.9.22...v0.9.23
 [0.9.22]: https://github.com/tkittich/git-remote-seafile/compare/v0.9.21...v0.9.22
 [0.9.21]: https://github.com/tkittich/git-remote-seafile/compare/v0.9.20...v0.9.21
