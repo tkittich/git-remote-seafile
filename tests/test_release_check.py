@@ -81,6 +81,19 @@ class WorkflowResultTests(unittest.TestCase):
                                         "conclusion": "failure"}], "realserver.yml": []})
         self.assertEqual(self.statuses(red)["ci.yml"], "FAIL")
 
+    def test_a_green_run_followed_by_a_failed_rerun_warns(self):
+        """ROADMAP Z41: the newest completed run decides, and ``gh`` lists newest first."""
+        green = {"databaseId": 1, "status": "completed", "conclusion": "success"}
+        red = {"databaseId": 3, "status": "completed", "conclusion": "failure"}
+        rerun = _GitHub(runs={"ci.yml": [red, green], "realserver.yml": [red, green]})
+        self.assertEqual(self.statuses(rerun), {"ci.yml": "warn", "realserver.yml": "warn"})
+        later_green = _GitHub(runs={"ci.yml": [green, red], "realserver.yml": [green]})
+        self.assertEqual(self.statuses(later_green)["ci.yml"], "ok")
+        # A run still going does not hide the green one behind it.
+        going = {"databaseId": 4, "status": "in_progress", "conclusion": ""}
+        self.assertEqual(self.statuses(_GitHub(runs={"ci.yml": [going, green],
+                                                     "realserver.yml": [green]}))["ci.yml"], "ok")
+
     def test_without_gh_it_fails_unless_offline(self):
         # Review 06cc623 (opus G5.2, gemini G5.3): "Ready" after skipping both CI legs
         # contradicted the docs' "requires".

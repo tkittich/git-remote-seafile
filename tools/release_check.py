@@ -103,6 +103,14 @@ def workflow_results(sha: str, gh: "object" = None, *, offline: bool = False) ->
         elif not green:
             state = "still running" if len(finished) < len(runs) else "failed"
             results.append(("FAIL", workflow, f"its run at {sha[:7]} {state}"))
+        elif finished and finished[0].get("conclusion") != "success":
+            # `gh run list` is newest first.  A green run followed by a failed re-run at
+            # the same commit is what a flaky leg looks like; the old green is not the
+            # current answer (review 06cc623, glm H2.8).  A warning, not a failure: the
+            # re-run may be the flake.
+            results.append(("warn", workflow, f"a run at {sha[:7]} was green, but the newest "
+                            f"completed run {finished[0].get('conclusion') or 'did not pass'}: "
+                            "look at it before tagging"))
         elif jobs:
             rc, out = run("run", "view", str(green[0]["databaseId"]), "--repo", _SLUG,
                           "--json", "jobs")
