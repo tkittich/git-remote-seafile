@@ -1,0 +1,58 @@
+name: real-server latest (unpinned, non-blocking)
+
+# ROADMAP Z37 (B8's remainder).  realserver.yml tests the images pinned by digest, so a green
+# run says the same server passed again; it cannot say that the *current* 13.0 image still
+# works.  This runs the same suite once a month against the floating `13.0-latest` tags, so a
+# server release that breaks us shows up as a red run here, weeks before anyone re-pins.
+#
+# It never gates anything: `continue-on-error` keeps the run from failing the job's checks,
+# tools/release_check.py reads ci.yml and realserver.yml only, and a red run here means
+# "look", then re-pin (.github/seafile-ci.yml, realserver.yml) from the digests it records.
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "43 4 1 * *"   # monthly, the 1st at 04:43 UTC
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  realserver-latest:
+    if: github.repository == 'tkittich/git-remote-seafile'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        edition: [ce, pro]
+    name: realserver latest (${{ matrix.edition }})
+    env:
+      # Deliberately not pinned by digest: that is the point of this workflow.
+      SEAFILE_IMAGE: ${{ matrix.edition == 'pro' && 'seafileltd/seafile-pro-mc:13.0-latest' || 'seafileltd/seafile-mc:13.0-latest' }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.12"
+      - name: Install the package under test
+        run: python -m pip install .
+      - name: Start the Seafile ${{ matrix.edition }} container
+        run: docker compose -f .github/seafile-ci.yml up -d
+      # The digests this run actually tested: the new pins, if it is green.
+      - name: Record the image digests
+        run: |
+          for image in $(docker compose -f .github/seafile-ci.yml config --images); do
+            echo "IMAGE $image $(docker image inspect --format '{{join .RepoDigests " "}}' "$image")"
+          done
+      - name: Run the real-server suite against it
+        run: python tools/realserver_ci.py
+      - name: Container logs and teardown
+        if: always()
+        run: |
+          docker compose -f .github/seafile-ci.yml logs --tail 300 seafile db
+          docker compose -f .github/seafile-ci.yml down -v
