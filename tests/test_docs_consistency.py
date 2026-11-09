@@ -894,5 +894,51 @@ class TestDesignIsASpecNotAChangelog(unittest.TestCase):
         )
 
 
+class TestProseNumbersMatchTheirConstants(unittest.TestCase):
+    """A number the specs state in words is read back from the constant that decides it.
+
+    ROADMAP Z35 (gemini H2.8, deepseek H2.10): the clock-skew bound was a day in the
+    prose and an hour in the code for a release, and nothing noticed.  Each check names
+    the sentence it reads, so a reworded sentence fails here and gets the check updated
+    rather than going unwatched.
+    """
+
+    @staticmethod
+    def _flat(name: str) -> str:
+        return " ".join(_read(name).split())
+
+    @staticmethod
+    def _mib(size: int) -> str:
+        mib, rest = divmod(size, 1024 * 1024)
+        assert rest == 0, f"{size} is not a whole number of MiB; teach this test the new unit"
+        return f"{mib} MiB"
+
+    def test_the_clock_skew_bound_in_payload_md(self):
+        from git_remote_seafile import snapshot_tool as snap
+
+        seconds = int(snap._MAX_CLOCK_SKEW_SECONDS)
+        words = {3600: "an hour", 86400: "a day"}.get(seconds)
+        self.assertIsNotNone(words, f"{seconds} s: teach this test how PAYLOAD.md words it")
+        self.assertIn(f"differ by more than {words}", self._flat("PAYLOAD.md"))
+
+    def test_the_mark_list_read_cap_in_payload_md(self):
+        from git_remote_seafile import snapshot_tool as snap
+
+        stated = re.search(r"mark list's (\d+ [KMG]iB) read cap", self._flat("PAYLOAD.md"))
+        self.assertIsNotNone(stated, "PAYLOAD.md no longer says \"the mark list's N MiB read cap\"")
+        self.assertEqual(stated.group(1), self._mib(snap._PENDING_MAX_BYTES))
+
+    def test_the_pack_split_numbers_in_design_md(self):
+        from git_remote_seafile.diagnose import RESET_MEANS_LIMIT_BYTES, SPLIT_FLOOR_BYTES
+        from git_remote_seafile.helper import MAX_PACK_SPLITS
+
+        text = self._flat("DESIGN.md")
+        self.assertIn(f"for a body of {self._mib(RESET_MEANS_LIMIT_BYTES)} or more", text)
+        self.assertIn(f"never below {self._mib(SPLIT_FLOOR_BYTES)}", text)
+        times = {6: "six"}.get(MAX_PACK_SPLITS)
+        self.assertIsNotNone(times, f"{MAX_PACK_SPLITS} splits: teach this test the word")
+        self.assertIn(f"at most {times} times", text)
+
+
 if __name__ == "__main__":
     unittest.main()
