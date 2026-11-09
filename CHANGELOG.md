@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Two machines uploading one LFS object at once no longer leave a conflict copy** (ROADMAP Z30; gemini-4-argon A6). Each wrote the object's final name and the server kept the loser as `<oid> (SFConflict ...)`. An object is now uploaded as `<oid>.part-<token>` and renamed, as the payload is; a copy left beside an object of the right size is removed, and a wrong-size object under the oid is replaced. A push killed mid-way can leave its `.part-` file behind; it is harmless.
+
 ### Changed
 - **The lock's settlement window follows a slow ticket upload** (ROADMAP Z28; opus-5.5 A2). It was a fixed second, so on a slow link a peer's ticket that was still uploading when the queue was re-read could be missed, a late and loud failure rather than a double win. The window is now the longer of one second and this client's own ticket upload time, at most ten seconds.
 

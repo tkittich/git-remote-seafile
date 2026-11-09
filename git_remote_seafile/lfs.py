@@ -14,6 +14,9 @@ from typing import Any, TypeGuard
 
 from .client import SeafileClient
 
+#: An upload lands under ``<oid>.part-<token>`` and is renamed onto ``<oid>``.
+PART_SUFFIX = ".part-"
+
 
 class _ProgressThrottle:
     """Forward transport progress to git-lfs without one line per chunk.
@@ -110,6 +113,47 @@ class LFSTransferAgent:
         # Acknowledge initialization with an empty JSON object
         self._send_json({})
 
+    def _drop_part(self, parent_dir: str, temp: str) -> None:
+        """Remove a half-published upload's temporary file; a leftover is harmless, so best effort."""
+        try:
+            entries = self.client.list_dir(self.repo_id, parent_dir)
+            if any(isinstance(e, dict) and e.get("name") == temp for e in entries):
+                self.client.delete_entry(self.repo_id, f"{parent_dir}/{temp}")
+        except Exception:
+            pass
+
+    def _settle_object_name(self, parent_dir: str, filename: str, size: int) -> dict | None:
+        """List the folder after the rename and leave exactly one object, at *size*, if it can.
+
+        Seafile's rename onto a taken name answers success and leaves a "<name> (1)" copy
+        (measured on CE 13.0.28, DESIGN §6): a second uploader of the same bytes finds the
+        object already there, and its copy is redundant; a same-named object of the wrong
+        size is damage, replaced by the copy.  Returns the entry now holding the name.
+        """
+        marker = f"{filename} ("
+        entries = self.client.list_dir(self.repo_id, parent_dir)
+        listed = [e for e in entries if isinstance(e, dict)]
+        held = next((e for e in listed if e.get("name") == filename), None)
+        copies = [str(e.get("name")) for e in listed if str(e.get("name", "")).startswith(marker)]
+        if not copies:
+            return held
+        if held is not None and held.get("size") == size:
+            for name in copies:
+                self.client.delete_entry(self.repo_id, f"{parent_dir}/{name}")
+            return held
+        right = next((str(e["name"]) for e in listed
+                      if str(e.get("name", "")).startswith(marker) and e.get("size") == size), None)
+        if right is None:
+            return held
+        if held is not None:
+            self.client.delete_entry(self.repo_id, f"{parent_dir}/{filename}")
+        self.client.rename_entry(self.repo_id, f"{parent_dir}/{right}", filename)
+        for name in copies:
+            if name != right:
+                self.client.delete_entry(self.repo_id, f"{parent_dir}/{name}")
+        return next((e for e in self.client.list_dir(self.repo_id, parent_dir)
+                     if isinstance(e, dict) and e.get("name") == filename), None)
+
     def handle_upload(self, msg: dict[str, Any]) -> None:
         """Upload a local file to Seafile LFS object store."""
         oid = msg.get("oid")
@@ -162,22 +206,29 @@ class LFSTransferAgent:
             # what LFS exists to avoid; the client streams it from disk.
             throttle = _ProgressThrottle(lambda so_far, delta: self._send_progress(oid, so_far, delta))
 
-            self.client.upload_file(
-                self.repo_id, parent_dir, filename, Path(local_path), replace=True,
-                progress_callback=throttle.callback,
-            )
-            # A 2xx is an acknowledgement, not a proof: a proxy that answers success for a
-            # failed upload made git-lfs record the object as pushed, and `git lfs prune`
-            # may then remove the only copy.  Every other transfer reads back; so does
-            # this one, with the listing the skip above already trusts (review 4f1cdd4,
-            # glm-5.3 G6.1, first reported at v0.9.12).
-            listed = next(
-                (e for e in self.client.list_dir(self.repo_id, parent_dir)
-                 if isinstance(e, dict) and e.get("name") == filename),
-                None,
-            )
+            # Under a name of its own, then renamed onto the object's name: two machines
+            # uploading one object at once each wrote the final name, and the server kept
+            # the loser as "<oid> (SFConflict ...)" beside it (ROADMAP Z30, gemini A6).
+            # The payload does the same (PAYLOAD.md D5).
+            temp = f"{filename}{PART_SUFFIX}{os.urandom(4).hex()}"
+            try:
+                self.client.upload_file(
+                    self.repo_id, parent_dir, temp, Path(local_path), replace=True,
+                    progress_callback=throttle.callback,
+                )
+                self.client.rename_entry(self.repo_id, f"{parent_dir}/{temp}", filename)
+                # A 2xx is an acknowledgement, not a proof: a proxy that answers success for a
+                # failed upload made git-lfs record the object as pushed, and `git lfs prune`
+                # may then remove the only copy.  Every other transfer reads back; so does
+                # this one, with the listing the skip above already trusts (review 4f1cdd4,
+                # glm-5.3 G6.1, first reported at v0.9.12).
+                listed = self._settle_object_name(parent_dir, filename, local_size)
+            except Exception:
+                self._drop_part(parent_dir, temp)
+                raise
             held = listed.get("size") if listed else None
             if held != local_size:
+                self._drop_part(parent_dir, temp)
                 raise RuntimeError(
                     f"the server accepted the upload but lists {filename} "
                     + ("not at all" if listed is None else f"at {held} bytes")

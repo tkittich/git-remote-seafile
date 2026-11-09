@@ -9,7 +9,96 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from git_remote_seafile.lfs import LFSTransferAgent
+import sys
+
+from git_remote_seafile.client import SeafileClient
+from git_remote_seafile.lfs import PART_SUFFIX, LFSTransferAgent
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from e2e_harness import REPO_ID, SeafileStub  # noqa: E402
+
+
+class TestLFSUploadAgainstTheStub(unittest.TestCase):
+    """ROADMAP Z30: an object is uploaded under a name of its own and renamed onto its oid.
+
+    Two machines uploading one object at once each wrote the final name and the server kept
+    the loser as a conflict copy.  The stub's rename answers success and leaves a "(1)" copy
+    on a taken name, as the server does, so these runs see what a race leaves.
+    """
+
+    OID = "ab" + "cd" + "e" * 60
+    DATA = b"LFS-OBJECT-BYTES" * 100
+
+    @classmethod
+    def setUpClass(cls):
+        cls.stub = SeafileStub().start()
+        cls.client = SeafileClient(server_url=cls.stub.base_url, token="t")
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.stub.stop()
+
+    def setUp(self):
+        self.stub.reset()
+        self.agent = LFSTransferAgent(self.client, REPO_ID, "/git-test")
+        self.addCleanup(self.agent._temp_dir.cleanup)
+        handle, self.local = tempfile.mkstemp()
+        Path(self.local).write_bytes(self.DATA)
+        import os
+        os.close(handle)
+        self.addCleanup(Path(self.local).unlink, missing_ok=True)
+        self.folder, self.name = self.agent._object_subpath(self.OID)
+        self.path = f"{self.folder}/{self.name}"
+        self.uploaded: list[str] = []
+        real_upload = self.client.upload_file
+
+        def recording_upload(repo_id, parent_dir, filename, *args, **kwargs):
+            self.uploaded.append(filename)
+            return real_upload(repo_id, parent_dir, filename, *args, **kwargs)
+
+        patcher = patch.object(self.client, "upload_file", recording_upload)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def stored(self) -> dict[str, bytes]:
+        return {k: v for k, v in self.stub.files.get(REPO_ID, {}).items() if k.startswith(self.folder)}
+
+    def upload(self) -> dict:
+        out = io.StringIO()
+        with patch("sys.stdout", out):
+            self.agent.handle_upload({"event": "upload", "oid": self.OID, "path": self.local})
+        return [json.loads(x) for x in out.getvalue().splitlines() if x][-1]
+
+    def test_an_object_goes_up_under_a_part_name_and_is_left_alone(self):
+        resp = self.upload()
+        self.assertNotIn("error", resp)
+        self.assertEqual(len(self.uploaded), 1)
+        self.assertTrue(self.uploaded[0].startswith(self.name + PART_SUFFIX), self.uploaded)
+        self.assertEqual(self.stored(), {self.path: self.DATA})
+
+    def test_a_peer_that_stored_the_same_bytes_first_leaves_no_conflict_copy(self):
+        real = self.client.upload_file
+
+        def peer_wins(repo_id, parent_dir, filename, *args, **kwargs):
+            real(repo_id, parent_dir, filename, *args, **kwargs)
+            self.stub.files[REPO_ID][self.path] = self.DATA  # another machine's rename landed first
+
+        with patch.object(self.client, "upload_file", peer_wins):
+            resp = self.upload()
+        self.assertNotIn("error", resp)
+        self.assertEqual(self.stored(), {self.path: self.DATA})
+
+    def test_a_damaged_object_under_the_oid_is_replaced(self):
+        self.stub.files.setdefault(REPO_ID, {})[self.path] = b"cut short"
+        resp = self.upload()
+        self.assertNotIn("error", resp)
+        self.assertEqual(self.stored(), {self.path: self.DATA})
+
+    def test_a_rename_the_server_does_not_perform_is_an_error_and_leaves_no_part_file(self):
+        with patch.object(self.client, "rename_entry", return_value=False):
+            resp = self.upload()
+        self.assertIn("the server accepted the upload but lists", resp["error"]["message"])
+        self.assertEqual(self.stored(), {})
 
 class TestLFSTransferAgent(unittest.TestCase):
     def test_lfs_init(self):
