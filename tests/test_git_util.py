@@ -1167,8 +1167,9 @@ class AdvertisedRecordTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(prefix="grs-adv-")
         self.addCleanup(self.tmp.cleanup)
-        self.git_dir = Path(self.tmp.name)
-        patcher = patch("git_remote_seafile.git_util.get_git_dir", return_value=self.git_dir)
+        self.git_dir = Path(self.tmp.name).resolve()
+        # git sets GIT_DIR for a remote helper; the record is kept only where it is set.
+        patcher = patch.dict(os.environ, {"GIT_DIR": str(self.git_dir)})
         patcher.start()
         self.addCleanup(patcher.stop)
 
@@ -1215,3 +1216,14 @@ class AdvertisedRecordTests(unittest.TestCase):
 
         (self.git_dir / "seafile-advertised").write_bytes(b"a file where the folder belongs")
         write_advertised_refs("origin", "u", ["refs/heads/main"])      # must not raise
+
+    def test_without_git_dir_nothing_is_read_or_written(self):
+        """A process git did not launch (a unit test, a script) must not touch the repository it runs in."""
+        from git_remote_seafile.git_util import advertised_record_path, read_advertised_refs, write_advertised_refs
+
+        with patch.dict(os.environ):
+            os.environ.pop("GIT_DIR", None)
+            write_advertised_refs("origin", "u", ["refs/heads/main"])
+            self.assertIsNone(advertised_record_path("origin"))
+            self.assertEqual(read_advertised_refs("origin", "u"), [])
+        self.assertEqual(list(self.git_dir.iterdir()), [])

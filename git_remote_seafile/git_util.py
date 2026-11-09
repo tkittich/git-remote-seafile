@@ -595,10 +595,13 @@ def advertised_record_path(remote: str) -> Path | None:
     """The record file for the remote named *remote*, or ``None`` for a URL or an unknown repository."""
     if not remote or "://" in remote or remote.startswith("-"):
         return None
-    try:
-        return get_git_dir() / ADVERTISED_DIR / quote(remote, safe="")
-    except Exception:
+    # Only where git launched the helper: it sets GIT_DIR for every remote helper, and the
+    # directory the process happens to be in is a guess.  Without it a unit test (or a
+    # stray import) would write into whatever repository it was run from.
+    git_dir = os.environ.get("GIT_DIR")
+    if not git_dir:
         return None
+    return Path(git_dir).resolve() / ADVERTISED_DIR / quote(remote, safe="")
 
 
 def _url_key(url: str) -> str:
