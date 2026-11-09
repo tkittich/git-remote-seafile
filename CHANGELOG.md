@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **A restore says when the destination cannot keep a name, and no longer calls it a defect** (ROADMAP Z45; measured on FAT32, exFAT and NTFS). `README` beside `readme`, restored into a folder that ignores case, ended with "this is a defect in the checkout, so please report it"; it now warns that the folder ignores case and only one of the pair could be written, and the restore carries on as it does for Windows' unholdable names. A name the volume stored under another name (`dot.` becomes `dot` on FAT) passed the byte check, which opens the path and so finds the changed name; the restore now compares a listing of the folder with the snapshot's names and warns.
 - **Two machines uploading one LFS object at once no longer leave a conflict copy** (ROADMAP Z30; gemini-4-argon A6). Each wrote the object's final name and the server kept the loser as `<oid> (SFConflict ...)`. An object is now uploaded as `<oid>.part-<token>` and renamed, as the payload is; a copy left beside an object of the right size is removed, and a wrong-size object under the oid is replaced. A push killed mid-way can leave its `.part-` file behind; it is harmless.
 
 ### Changed

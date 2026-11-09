@@ -1963,6 +1963,97 @@ class RestoreVerificationTests(_SnapshotFixture):
         )
 
 
+class RestoreNameLimitTests(_SnapshotFixture):
+    """ROADMAP Z45: a name the destination cannot keep is said so, and is not called a defect.
+
+    Measured: ``README`` and ``readme`` restored onto FAT, exFAT and NTFS ended with "this is
+    a defect in the checkout, so please report it"; ``dot.`` came back as ``dot`` and passed
+    the byte check, because opening ``dot.`` finds ``dot``.
+    """
+
+    def _folds_case(self) -> bool:
+        probe = self.tmp / "CaseProbe"
+        probe.mkdir()
+        return (self.tmp / "caseprobe").exists()
+
+    def _vault_with_twin_names(self, *names: str) -> None:
+        """A snapshot chain on ``self.remote`` whose root holds *names*, one blob each."""
+        def put(kind: str, data: bytes) -> bytes:
+            out = subprocess.run(
+                ["git", "-C", str(self.remote), "hash-object", "-w", "--literally", "-t", kind, "--stdin"],
+                input=data, check=True, capture_output=True,
+            ).stdout.decode().strip()
+            return bytes.fromhex(out)
+
+        body = b"".join(
+            f"100644 {name}".encode() + b"\0" + put("blob", f"content of {name}\n".encode())
+            for name in sorted(names, key=lambda n: n.encode())
+        )
+        env = {**os.environ, "GIT_COMMITTER_NAME": "T", "GIT_COMMITTER_EMAIL": "t@example.com",
+               "GIT_AUTHOR_NAME": "T", "GIT_AUTHOR_EMAIL": "t@example.com"}
+        commit = subprocess.run(
+            ["git", "-C", str(self.remote), "commit-tree", put("tree", body).hex(), "-m", "twins"],
+            check=True, capture_output=True, text=True, env=env,
+        ).stdout.strip()
+        _git(self.remote, "update-ref", f"refs/heads/{BRANCH}", commit)
+        _git(self.remote, "symbolic-ref", "HEAD", f"refs/heads/{BRANCH}")
+
+    def test_the_classifier_tells_a_twin_from_a_renamed_name(self):
+        collided, renamed = snap.classify_missing_names(
+            ["README", "readme", "a/dot.", "ok", "d/X", "D/x", "gone:"],
+            {"readme", "ok", "D/x"},
+            skip={"gone:"},
+        )
+        self.assertEqual(collided, ["README", "d/X"])
+        self.assertEqual(renamed, ["a/dot."])
+
+    def test_a_decomposed_listing_is_not_a_missing_name(self):
+        """HFS+ lists names decomposed: that is the same name, not an alarm."""
+        composed = "café.txt"
+        decomposed = "café.txt"
+        self.assertEqual(snap.classify_missing_names([composed], {decomposed}), ([], []))
+
+    def test_the_listing_leaves_out_the_git_directory_and_reads_names_as_listed(self):
+        (self.restored / ".git").mkdir(parents=True)
+        (self.restored / ".git" / "config").write_bytes(b"x")
+        (self.restored / "sub").mkdir()
+        (self.restored / "sub" / "f.txt").write_bytes(b"x")
+        (self.restored / "top.txt").write_bytes(b"x")
+        self.assertEqual(snap.names_on_disk(self.restored), {"sub/f.txt", "top.txt"})
+        self.assertIsNone(snap.names_on_disk(self.restored / "absent"))
+
+    def test_a_pair_that_collides_is_warned_about_and_is_not_a_defect(self):
+        self._vault_with_twin_names("README", "readme", "plain.txt")
+        if not self._folds_case():
+            # A case-sensitive destination keeps both; nothing to say.
+            rc, out, err = self.restore_to(self.restored)
+            self.assertEqual(rc, 0, out + err)
+            self.assertTrue((self.restored / "README").is_file() and (self.restored / "readme").is_file())
+            self.assertNotIn("share a name with another file", out)
+            return
+        rc, out, err = self.restore_to(self.restored)
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn("share a name with another file", out)
+        self.assertNotIn("defect in the checkout", out + err)
+        self.assertEqual((self.restored / "plain.txt").read_bytes(), b"content of plain.txt\n")
+        kept = [n for n in ("README", "readme") if n in (p.name for p in self.restored.iterdir())]
+        self.assertEqual(len(kept), 1, kept)
+
+    def test_a_name_the_volume_changed_is_reported_where_the_byte_check_cannot_see_it(self):
+        """The check opens ``dot.``, which a FAT driver resolves to ``dot``: only a listing shows it."""
+        self._vault_with_twin_names("keep.txt", "other.txt")
+        rc, out, err = self.restore_to(self.restored)
+        self.assertEqual(rc, 0, out + err)
+        self.assertNotIn("were not written under the name", out)
+        (self.restored / "other.txt").rename(self.restored / "other")   # the volume's doing, simulated
+        said = io.StringIO()
+        with contextlib.redirect_stdout(said):
+            left = snap.report_names_not_restored_as_named(self.restored, "HEAD", set(), ["other.txt"])
+        self.assertIn("were not written under the name", said.getvalue())
+        self.assertIn("other.txt", said.getvalue())
+        self.assertEqual(left, ["other.txt"], "a renamed name is a warning; the byte check still judges it")
+
+
 class SymlinkVerificationTests(unittest.TestCase):
     """``verify_restore`` must judge a symlink by *its own* blob.
 

@@ -569,11 +569,12 @@ What the tool did with the Linux-driver volumes:
   skip (`_unrepresentable_paths`) runs only when `os.name == "nt"`, so git's own
   `error: unable to create file a:b.txt` stops the restore with `checkout of 'snapshot'
   failed (rc=1)` and the partial restore is left in place (ROADMAP Z44).
-* **A case collision on restore reads as a tool defect**: `README` and `readme` in one
-  snapshot restored onto a folding volume stop with "this is a defect in the checkout,
-  so please report it" (ROADMAP Z45). The same text would appear on Windows and macOS.
-* **`dot.` restored as `dot` passes the byte check**: the check opens the path, and the
-  driver resolves it to the renamed file. The content is intact and the name is not.
+* **A case collision on restore** (`README` and `readme` in one snapshot, restored onto a
+  folding volume) stopped with "this is a defect in the checkout, so please report it",
+  and **`dot.` restored as `dot` passed the byte check** (the check opens the path, and
+  the driver resolves it to the renamed file; the content is intact, the name is not).
+  Fixed in 0.9.24 (ROADMAP Z45): the restore lists the folder, compares it with the
+  snapshot's names, and warns for each case.
 * A symlink restores as a text file holding its target, and the Warning names it; the
   execute bit is lost without a word (git cannot store it on these volumes).
 * **A full disk**: a vault on a 48 MiB FAT32 volume and a 72 MiB tree. The default run

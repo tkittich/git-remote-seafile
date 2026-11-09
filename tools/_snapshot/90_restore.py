@@ -551,6 +551,7 @@ def _restore(
             "real links; everything else was restored and is verified below."
         )
         mismatched = [path for path in mismatched if path not in set(as_text)]
+    mismatched = report_names_not_restored_as_named(into, verified_rev, set(unholdable), mismatched)
     if mismatched:
         shown = "\n".join(f"  {path}" for path in mismatched[:20])
         extra = (
