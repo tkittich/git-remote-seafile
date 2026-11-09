@@ -1998,6 +1998,71 @@ class RestoreNameLimitTests(_SnapshotFixture):
         _git(self.remote, "update-ref", f"refs/heads/{BRANCH}", commit)
         _git(self.remote, "symbolic-ref", "HEAD", f"refs/heads/{BRANCH}")
 
+    @staticmethod
+    def _fat32_like(refuse_colon=True, keep_space=False, keep_dot=False, keep_non_ascii=True):
+        """``_volume_keeps_name`` as FAT32 on Linux answers it: a colon and a trailing space
+        refused, a trailing dot dropped (measured, SNAPSHOT.md section 5); with the default
+        ``iocharset=ascii`` every non-ASCII name is refused too (``keep_non_ascii=False``)."""
+        def keeps(folder, name):
+            if any(ord(char) > 127 for char in name):
+                return keep_non_ascii
+            if ":" in name:
+                return not refuse_colon
+            if name.endswith(" "):
+                return keep_space
+            if name.endswith("."):
+                return keep_dot
+            return True
+        return keeps
+
+    def test_the_rules_are_the_ones_the_volume_enforces(self):
+        probed = snap.probed_name_problem
+        with unittest.mock.patch.object(snap, "_volume_keeps_name", self._fat32_like()):
+            fat32 = probed(self.tmp)
+        self.assertIsNotNone(fat32.__call__("a:b.txt"))
+        self.assertIsNotNone(fat32("dir/trail "))
+        self.assertIsNotNone(fat32("dot."))
+        self.assertIsNone(fat32("Normal name.txt"))
+        # exFAT on Linux keeps a trailing space but still refuses a colon and drops a dot.
+        with unittest.mock.patch.object(snap, "_volume_keeps_name", self._fat32_like(keep_space=True)):
+            exfat = probed(self.tmp)
+        self.assertIsNone(exfat("trail "))
+        self.assertIsNotNone(exfat("a:b"))
+        # Debian mounts FAT with iocharset=ascii: café cannot be created at all.
+        with unittest.mock.patch.object(
+            snap, "_volume_keeps_name", self._fat32_like(keep_space=True, keep_dot=True, keep_non_ascii=False)
+        ):
+            ascii_only = probed(self.tmp)
+        self.assertIsNotNone(ascii_only("café.txt"))
+        self.assertIsNone(ascii_only("cafe.txt"))
+        # A volume that keeps all four has no rule at all: no extra git call, no listing.
+        with unittest.mock.patch.object(
+            snap, "_volume_keeps_name",
+            self._fat32_like(refuse_colon=False, keep_space=True, keep_dot=True, keep_non_ascii=True),
+        ):
+            self.assertIsNone(probed(self.tmp))
+
+    def test_a_real_volume_is_probed_and_leaves_nothing_behind(self):
+        before = set(os.listdir(self.tmp))
+        problem = snap.probed_name_problem(self.tmp)
+        self.assertEqual(set(os.listdir(self.tmp)), before)
+        if os.name != "nt":  # ext4, tmpfs, APFS hold all three
+            self.assertTrue(problem is None or problem("plain.txt") is None)
+
+    @unittest.skipIf(os.name == "nt", "Windows has fixed rules; the probe is for volumes under Linux and macOS")
+    def test_a_restore_onto_a_volume_that_refuses_names_goes_around_them(self):
+        """ROADMAP Z44: a restore onto FAT from Linux or macOS stopped at git's first
+        ``unable to create file a:b.txt`` and left half a tree."""
+        self._vault_with_twin_names("ok.txt", "a:b.txt", "trail ")
+        with unittest.mock.patch.object(snap, "_volume_keeps_name", self._fat32_like()):
+            rc, out, err = self.restore_to(self.restored)
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn("have names this volume cannot hold", out)
+        self.assertIn("a:b.txt", out)
+        self.assertEqual((self.restored / "ok.txt").read_bytes(), b"content of ok.txt\n")
+        self.assertFalse((self.restored / "a:b.txt").exists())
+        self.assertIn("2 unrepresentable name(s) excluded", out)
+
     def test_the_classifier_tells_a_twin_from_a_renamed_name(self):
         collided, renamed = snap.classify_missing_names(
             ["README", "readme", "a/dot.", "ok", "d/X", "D/x", "gone:"],

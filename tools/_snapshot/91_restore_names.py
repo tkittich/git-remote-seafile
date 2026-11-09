@@ -1,4 +1,65 @@
 
+def _volume_keeps_name(folder: Path, name: str) -> bool:
+    """Create *name* in *folder* and say whether the folder lists it under exactly that name."""
+    try:
+        before = set(os.listdir(folder))
+        with open(folder / name, "xb"):
+            pass
+    except OSError:
+        return False  # refused (EINVAL on FAT and exFAT for a colon)
+    try:
+        created = set(os.listdir(folder)) - before
+    except OSError:
+        created = set()
+    for leftover in created:
+        try:
+            os.unlink(folder / leftover)
+        except OSError:
+            pass
+    return name in created
+
+
+def destination_name_problem(into: Path) -> "Callable[[str], str | None] | None":
+    """How to judge a name for the volume *into* lives on: a ``name -> reason`` function, or ``None``.
+
+    Windows keeps its fixed rules (:func:`windows_name_problem`).  Elsewhere the folder is
+    asked: a FAT or exFAT volume mounted on Linux or macOS refuses a colon, and FAT32
+    refuses a trailing space, which stopped a restore at git's first error and left half a
+    tree (ROADMAP Z44, measured).  Only the rules the volume enforces are applied; an ext4
+    or APFS destination answers "no problem" after three probes and the checkout runs as before.
+    """
+    if os.name == "nt":
+        return windows_name_problem
+    return probed_name_problem(into)
+
+
+def probed_name_problem(into: Path) -> "Callable[[str], str | None] | None":
+    """The rules the volume under *into* enforces, found by creating names there."""
+    stem = f"grs-probe-{os.getpid()}"
+    refuses_chars = not _volume_keeps_name(into, f"{stem}:x")
+    keeps_space = _volume_keeps_name(into, f"{stem} ")
+    keeps_dot = _volume_keeps_name(into, f"{stem}.")
+    # A FAT volume mounted with the default ``iocharset=ascii`` (Debian) refuses every
+    # non-ASCII name, which stopped a restore at ``café`` (measured, ROADMAP Z44).
+    keeps_non_ascii = _volume_keeps_name(into, f"{stem}é")
+    if not refuses_chars and keeps_space and keeps_dot and keeps_non_ascii:
+        return None
+
+    def problem(rel: str) -> "str | None":
+        for part in rel.split("/"):
+            if refuses_chars and re.search(r'[<>:"|?*\\\x00-\x1f]', part):
+                return "has a character this volume refuses"
+            if not keeps_space and part.endswith(" "):
+                return "ends with a space (this volume refuses or drops it)"
+            if not keeps_dot and part.endswith("."):
+                return "ends with a dot (this volume drops it)"
+            if not keeps_non_ascii and any(ord(char) > 127 for char in part):
+                return "has a character outside ASCII (this volume is mounted without a UTF-8 charset)"
+        return None
+
+    return problem
+
+
 def snapshot_file_names(repo: Path, rev: str) -> list[str]:
     """Every file and link path of *rev* (what a restore is meant to write), as text."""
     listing = _run(

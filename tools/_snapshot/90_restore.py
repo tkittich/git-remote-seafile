@@ -8,8 +8,9 @@ _CLONE_FLOOR_BYTES = 1024 ** 3
 
 
 def _unrepresentable_paths(repo: Path, rev: str) -> list[str]:
-    """Paths in *rev* whose names Windows cannot hold; always empty elsewhere."""
-    if os.name != "nt":
+    """Paths in *rev* whose names the destination volume cannot hold (probed off Windows)."""
+    problem = destination_name_problem(repo)
+    if problem is None:
         return []
     listing = _run(
         ["git", "-C", str(repo), "ls-tree", "-r", "-z", "--name-only", "--full-tree", rev],
@@ -19,7 +20,7 @@ def _unrepresentable_paths(repo: Path, rev: str) -> list[str]:
     if listing.returncode != 0:
         return []  # the checkout below reports whatever is wrong with the revision
     names = (p.decode("utf-8", errors="surrogateescape") for p in listing.stdout.split(b"\0") if p)
-    return [name for name in names if windows_name_problem(name) is not None]
+    return [name for name in names if problem(name) is not None]
 
 
 def _checkout_around(repo: Path, rev: str, skipped: list[str], *, detach: bool) -> None:
@@ -503,9 +504,14 @@ def _restore(
     if unholdable:
         shown = "\n".join(f"  {path}" for path in unholdable[:10])
         more = f"\n  ... and {len(unholdable) - 10} more" if len(unholdable) > 10 else ""
+        holder, elsewhere = (
+            ("Windows", "Restore on Linux or macOS")
+            if os.name == "nt"
+            else ("this volume", "Restore onto a Linux or macOS file system (not FAT, exFAT or NTFS)")
+        )
         print(
-            f"\nWarning: {len(unholdable)} file(s) in this snapshot have names Windows cannot hold "
-            f"and were not restored:\n{shown}{more}\nRestore on Linux or macOS to get them; "
+            f"\nWarning: {len(unholdable)} file(s) in this snapshot have names {holder} cannot hold "
+            f"and were not restored:\n{shown}{more}\n{elsewhere} to get them; "
             "everything else was restored and is verified below."
         )
 

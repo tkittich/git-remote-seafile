@@ -565,10 +565,11 @@ What the tool did with the Linux-driver volumes:
   eviction makes every payload file "new" and it is hashed again. That is correct
   and slow (hundreds of GiB re-read), not wrong; ROADMAP Z43. The payload path itself
   needs a server and was not run on these volumes.
-* **Restoring onto FAT from Linux or macOS** is not guided: the names-Windows-cannot-hold
-  skip (`_unrepresentable_paths`) runs only when `os.name == "nt"`, so git's own
-  `error: unable to create file a:b.txt` stops the restore with `checkout of 'snapshot'
-  failed (rc=1)` and the partial restore is left in place (ROADMAP Z44).
+* **Restoring onto FAT from Linux or macOS** was not guided: the names-Windows-cannot-hold
+  skip (`_unrepresentable_paths`) ran only when `os.name == "nt"`, so git's own
+  `error: unable to create file a:b.txt` stopped the restore with `checkout of 'snapshot'
+  failed (rc=1)` and left half a tree. Fixed in 0.9.24 (ROADMAP Z44): the destination is
+  probed for the rules it enforces and the names it refuses are listed and skipped.
 * **A case collision on restore** (`README` and `readme` in one snapshot, restored onto a
   folding volume) stopped with "this is a defect in the checkout, so please report it",
   and **`dot.` restored as `dot` passed the byte check** (the check opens the path, and
