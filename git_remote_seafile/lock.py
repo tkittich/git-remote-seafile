@@ -68,6 +68,13 @@ _TICKET_REFRESH_SECONDS = 20.0
 #: therefore caught immediately rather than once per window.
 _FENCE_REUSE_SECONDS = 1.0
 
+#: The longest the settlement window is stretched to follow this client's own ticket
+#: upload (ROADMAP Z28).  The window is how long an in-flight peer is given to land; a
+#: peer on the same link takes about as long to upload as this client just did, so on a
+#: slow link a fixed second reads the queue before the peer's ticket exists.  Bounded so a
+#: very slow upload cannot hold a push for ever.
+_SETTLE_CAP_SECONDS = 10.0
+
 
 def _queue_key(ticket: dict[str, Any]) -> tuple:
     """Sort key for the ticket queue: granted holders first, then FIFO.
@@ -587,6 +594,7 @@ class RemoteLock:
         last_position: int | None = None
         hard_cap = max(self.timeout * 10, 120.0) if self.timeout > 0 else 0.0
         last_upload: float | None = None
+        upload_seconds = 0.0
         refresh = min(_TICKET_REFRESH_SECONDS, max(1.0, self.lease / 3.0))
 
         def timed_out() -> bool:
@@ -610,6 +618,7 @@ class RemoteLock:
                 # waiting client the loudest thing in the queue.
                 if last_upload is None or time.monotonic() - last_upload >= refresh:
                     payload_bytes = json.dumps(lock_payload).encode("utf-8")
+                    upload_began = time.monotonic()
                     try:
                         self.client.upload_file(
                             self.repo_id,
@@ -626,6 +635,7 @@ class RemoteLock:
                         time.sleep(2)
                         continue
                     last_upload = time.monotonic()
+                    upload_seconds = last_upload - upload_began
 
                 # 3. Check candidate tickets in .git-lock.d
                 try:
@@ -654,7 +664,7 @@ class RemoteLock:
                     # tickets are visible -- so wait one round-trip's worth of
                     # time for any in-flight peer to land, then read it again
                     # and let the same comparison decide for both of us.
-                    time.sleep(self.settle)
+                    time.sleep(max(self.settle, min(upload_seconds, _SETTLE_CAP_SECONDS)))
                     try:
                         settled = self._scan_tickets(self._get_server_time())
                     except Exception as ex:

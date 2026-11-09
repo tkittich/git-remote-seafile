@@ -1251,6 +1251,53 @@ class TestLockSettlementWindow(unittest.TestCase):
         )
         return store
 
+    def _settle_sleep_after_an_upload_of(self, seconds: float, settle: float = 1.0) -> float:
+        """The length of the settlement sleep when this client's ticket upload took *seconds*.
+
+        The clock is simulated: the wrapped upload moves it forward, and the sleep is
+        recorded instead of taken, so the test costs no time and reads no wall clock.
+        """
+        from types import SimpleNamespace
+
+        from git_remote_seafile import lock as lock_module
+
+        offset = [0.0]
+        slept: list[float] = []
+        fake_time = SimpleNamespace(
+            monotonic=lambda: time.monotonic() + offset[0],
+            sleep=slept.append,
+            time=time.time,
+        )
+        store = _SharedLockStore()
+        client = store.client("token123")
+        real_upload = client.upload_file
+        uploads = [0]
+
+        def slow_upload(*args, **kwargs):
+            # Only the first upload is the ticket whose time sets the window.
+            uploads[0] += 1
+            if uploads[0] == 1:
+                offset[0] += seconds
+            return real_upload(*args, **kwargs)
+
+        client.upload_file = slow_upload
+        lock = RemoteLock(client, "repo1", "/path", timeout=60, lease=60, settle=settle)
+        with patch.object(lock_module, "time", fake_time):
+            lock.acquire()
+        self.assertTrue(lock.acquired)
+        self.assertEqual(len(slept), 1, slept)
+        return slept[0]
+
+    def test_the_window_follows_a_slow_ticket_upload(self):
+        """A peer on this link takes as long to land as this client did (ROADMAP Z28)."""
+        self.assertAlmostEqual(self._settle_sleep_after_an_upload_of(3.5), 3.5, delta=0.01)
+
+    def test_a_fast_upload_keeps_the_configured_window(self):
+        self.assertAlmostEqual(self._settle_sleep_after_an_upload_of(0.01), 1.0, delta=0.01)
+
+    def test_the_window_is_capped(self):
+        self.assertAlmostEqual(self._settle_sleep_after_an_upload_of(300.0), 10.0, delta=0.01)
+
     def test_a_win_on_the_first_read_is_not_yet_a_win(self):
         store = self._store_with_earlier_peer()
 

@@ -414,7 +414,7 @@ git config --global seafile.gittimeout 1800
 
 > Values that would defeat the mechanism outright are refused with a stderr warning and the documented default is used instead: a negative `seafile.locktimeout`, a zero or negative `seafile.locklease` (which would expire every lock immediately), a `seafile.gcthreshold` below 1 (which would compact on every push), a `seafile.gcmaxpackmib` below 1 (which would make even the large consolidated packs movable), and a `seafile.gittimeout` that is not a positive number of seconds (which would kill every git command outright).
 >
-> **Retired keys.** `seafile.locksettle` (the settlement window is fixed at one second — it is a race guard, and the only thing switching it off bought was a second per push) and `seafile.gcmaxmib` (the download budget is now 2 × `seafile.gcmaxpackmib`) are no longer settings. A value still present in your git config is ignored without a message (releases 0.8.8 to 0.9.2 reported it once per push).
+> **Retired keys.** `seafile.locksettle` (the settlement window is one second, longer on a slow link — it follows this client's own ticket upload, up to ten seconds — and it is a race guard, and the only thing switching it off bought was a second per push) and `seafile.gcmaxmib` (the download budget is now 2 × `seafile.gcmaxpackmib`) are no longer settings. A value still present in your git config is ignored without a message (releases 0.8.8 to 0.9.2 reported it once per push).
 
 **`seafile.skipsafetychecks` and `seafile.gittimeout` are read from the trusted scope only** — the environment, or the system and global git config. A repository shipping either key in its own `.git/config` is ignored, because a repository that could disarm a guardrail or raise a safety ceiling is a repository that has taken away the protection those settings exist to provide. See [RUNBOOK.md](RUNBOOK.md) §7 for what the timeout bounds and when to raise it.
 
@@ -728,7 +728,7 @@ Understanding how `git-remote-seafile` handles complex Git workflows and remote 
 #### 1. Batch Commits (Pushing 1 vs. 100 Commits)
 - **$O(1)$ Network Overhead**: Whether you push 1 commit or 100 commits at once, Git discovers all reachable new objects and bundles them into **a single `.pack` and `.idx` pair**.
 - **Bandwidth Efficiency**: Git applies delta compression across commits locally before upload, minimizing upload size.
-- **Latency**: the upload is a fixed 1–2 files regardless of commit batch size, so push time does not grow with the number of commits. A push does carry one fixed cost: the distributed lock's settlement window (§12, one second), which is paid before the transfer starts.
+- **Latency**: the upload is a fixed 1–2 files regardless of commit batch size, so push time does not grow with the number of commits. A push does carry one fixed cost: the distributed lock's settlement window (§12, one second; longer when this machine's own ticket upload was slower), which is paid before the transfer starts.
 
 #### 2. Rollbacks & Force Pushes (`git reset --hard`, `git push --force`)
 - **Fast & Safe**: A force-push (`+refs/heads/main`) updates the remote branch ref to the older commit SHA without uploading any unnecessary packfiles.
