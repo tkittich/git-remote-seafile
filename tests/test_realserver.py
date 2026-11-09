@@ -1162,6 +1162,33 @@ class SharedUserTests(_RealServerFixture):
         except Exception as ex:  # a measurement, not an assertion
             print(f"\nMEASURED (Z22/Z36): could not read it ({type(ex).__name__}: {str(ex)[:160]})", flush=True)
 
+    def _measure_owner_fields(self, label: str, repo_id: str) -> None:
+        """ROADMAP Z22, a measurement: what tells a group-owned library from one that is only shared?
+
+        ``/api2/repos/<id>/`` answers ``owner: "share"`` to *every* account that is not the owner
+        (the owner reads ``"self"``), so that field cannot.  Prints every key naming an owner or a
+        group in the v2.1 detail and in the account's repo list, as the member and as the admin;
+        never fails."""
+        from git_remote_seafile.client import SeafileClient
+
+        def wanted(info: object) -> dict:
+            if not isinstance(info, dict):
+                return {"unreadable": repr(info)[:80]}
+            return {k: v for k, v in info.items() if "owner" in k or "group" in k or k == "type"}
+
+        try:
+            second = SeafileClient(server_url=self.client.server_url, token=_SECOND_TOKEN)
+            for who, client in (("member", second), ("admin", self.client)):
+                detail = client._json_or_none(f"/api/v2.1/repos/{repo_id}/")
+                listing = client._json_or_none("/api/v2.1/repos/?type=mine") or {}
+                shared = client._json_or_none("/api/v2.1/repos/?type=shared") or {}
+                entries = [r for part in (listing, shared) if isinstance(part, dict)
+                           for r in (part.get("repos") or []) if isinstance(r, dict) and r.get("repo_id") == repo_id]
+                print(f"\nMEASURED (Z22, {self._edition()}): {label} library, as {who}: v2.1 detail "
+                      f"{wanted(detail)}; in the account's repo lists {[wanted(e) for e in entries]}", flush=True)
+        except Exception as ex:  # a measurement, not an assertion
+            print(f"\nMEASURED (Z22): {label}: could not read it ({type(ex).__name__}: {str(ex)[:160]})", flush=True)
+
     def test_measure_a_delete_of_a_parent_that_holds_an_invisible_child(self):
         """ROADMAP Z29, a measurement: ``_prune_empty_ref_parents`` deletes a parent it sees as empty.
         A Pro non-owner sees a folder as empty when its only child is ``invisible`` to them; does
@@ -1236,6 +1263,8 @@ class SharedUserTests(_RealServerFixture):
         self.addCleanup(self._admin, "DELETE",
                         f"/api/v2.1/groups/{did}/group-owned-libraries/{repo_id}/")
         self._measure_group_owner(repo_id)
+        self._measure_owner_fields("group-owned", repo_id)
+        self._measure_owner_fields("shared user-owned", self.rid)
         self._round_trip(self.env2, f"seafile://{name}/repo", "dept_member")
         self._round_trip(self.env, f"seafile://{name}/deep/repo", "dept_owner")
 
