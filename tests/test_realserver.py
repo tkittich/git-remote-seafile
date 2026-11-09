@@ -1145,6 +1145,68 @@ class SharedUserTests(_RealServerFixture):
         self.assertFalse(resp.json().get("failed"), resp.text[:300])
         self._round_trip(self.env2, f"seafile://{name}/deep/repo", "group_shared")
 
+    def _measure_group_owner(self, repo_id: str) -> None:
+        """ROADMAP Z22/Z36, a measurement: what ``owner`` a group-owned library reports to a member
+        and to the admin who made it, and what the owner guard says to each.  Records the
+        ``MEASURED`` line and never fails: the reviewers' value for it was never read from a server."""
+        from git_remote_seafile.client import SeafileClient
+
+        try:
+            second = SeafileClient(server_url=self.client.server_url, token=_SECOND_TOKEN)
+            as_member = (second._json_or_none(f"/api2/repos/{repo_id}/") or {}).get("owner")
+            as_admin = (self.client._json_or_none(f"/api2/repos/{repo_id}/") or {}).get("owner")
+            print(f"\nMEASURED (Z22/Z36, {self._edition()}): a group-owned library's owner reads "
+                  f"{as_member!r} to a member and {as_admin!r} to the admin who made it; the guard "
+                  f"says member: {second.hidden_history_risk(repo_id)!r}; admin: "
+                  f"{self.client.hidden_history_risk(repo_id)!r}", flush=True)
+        except Exception as ex:  # a measurement, not an assertion
+            print(f"\nMEASURED (Z22/Z36): could not read it ({type(ex).__name__}: {str(ex)[:160]})", flush=True)
+
+    def test_measure_a_delete_of_a_parent_that_holds_an_invisible_child(self):
+        """ROADMAP Z29, a measurement: ``_prune_empty_ref_parents`` deletes a parent it sees as empty.
+        A Pro non-owner sees a folder as empty when its only child is ``invisible`` to them; does
+        a ``DELETE`` of that parent take the hidden child with it?  Skipping the prune leaves
+        folders the refs listing reads as failures, so the answer decides which risk to take.
+        Records the ``MEASURED`` line; fails only if the fixture itself cannot be built."""
+        if not self._rules_supported:
+            self.skipTest("no folder permissions on this server (user-folder-perm is Pro only)")
+        from git_remote_seafile.client import SeafileClient
+
+        parent, hidden = f"/{self.base}/z29", f"/{self.base}/z29/hidden"
+        self.client.mkdir_p(self.rid, hidden)
+        self.client.upload_file(self.rid, hidden, "secret.txt", b"kept?\n", replace=True)
+        self._rule(hidden, "invisible")
+        second = SeafileClient(server_url=self.client.server_url, token=_SECOND_TOKEN)
+        seen = sorted(str(e.get("name")) for e in second.list_dir(self.rid, parent))
+        try:
+            deleted = second.delete_entry(self.rid, parent)
+            outcome = f"answered {deleted!r}"
+        except Exception as ex:
+            outcome = f"raised {type(ex).__name__}: {str(ex)[:100]}"
+        after = sorted(str(e.get("name")) for e in self.client.list_dir(self.rid, hidden)) \
+            if self.client.dir_exists(self.rid, hidden) else "gone"
+        print(f"\nMEASURED (Z29, {self._edition()}): the non-owner lists {seen} under the parent; "
+              f"DELETE of the parent {outcome}; the hidden folder afterwards: {after}", flush=True)
+
+    def test_measure_the_mtime_a_listing_reports_for_an_upload(self):
+        """ROADMAP Z36 (Z14), a measurement: is a listed ``mtime`` assigned by the server's clock,
+        and how far is it from this machine's?  The placement probe sweep skips a listed
+        ``mtime`` of 0 or less on that assumption.  Records the ``MEASURED`` line."""
+        import time as _time
+
+        folder = f"/{self.base}/z36"
+        self.client.mkdir_p(self.rid, folder)
+        before = _time.time()
+        self.client.upload_file(self.rid, folder, "probe.txt", b"x\n", replace=True)
+        after = _time.time()
+        listed = next((e for e in self.client.list_dir(self.rid, folder) if e.get("name") == "probe.txt"), {})
+        mtime = listed.get("mtime")
+        verdict = ("not listed" if not isinstance(mtime, (int, float)) else
+                   f"{mtime - after:+.1f} s from this machine's clock after the upload "
+                   f"(window {after - before:.1f} s)")
+        print(f"\nMEASURED (Z36, {self._edition()}): the listed mtime of a fresh upload is {mtime!r}: {verdict}",
+              flush=True)
+
     def test_a_group_owned_library_works_for_a_member_and_the_owner(self):
         """Group-owned libraries live in departments, a Professional feature: skipped on CE."""
         import secrets
@@ -1173,6 +1235,7 @@ class SharedUserTests(_RealServerFixture):
         # Cleanups run last-in first-out: the library goes before its department.
         self.addCleanup(self._admin, "DELETE",
                         f"/api/v2.1/groups/{did}/group-owned-libraries/{repo_id}/")
+        self._measure_group_owner(repo_id)
         self._round_trip(self.env2, f"seafile://{name}/repo", "dept_member")
         self._round_trip(self.env, f"seafile://{name}/deep/repo", "dept_owner")
 
