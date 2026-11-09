@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Tests
+- **The hashing search's serialising-disk test runs on a virtual clock** (ROADMAP Z48): it failed on macOS runners three times (two legs, two workflows) because 10 ms sleeps overshoot on a busy runner and the noise read as a gain. `run_hashing` takes a `clock`; the test's disk advances virtual time per MiB, so every level reads exactly 100 MiB/s. 120 runs under 24-way contention passed.
+
 ### Fixed
 - **A Pro account that is not the library's owner no longer deletes a folder it cannot see into** (ROADMAP Z29; measured on Pro 13.0.29 in the real-server run). Deleting the last branch under a folder pruned the emptied parent with a recursive delete; an `invisible` child makes that parent read as empty to a non-owner, and the delete took the hidden child's contents with it. The prune is now skipped for such an account (and when the owner question cannot be answered), the empty folder stays, and a `Note:` says so. The owner and Community Edition prune as before.
 

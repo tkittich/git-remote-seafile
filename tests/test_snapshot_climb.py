@@ -13,6 +13,7 @@ import contextlib
 import hashlib
 import io
 import os
+import re
 import pathlib
 import sys
 import tempfile
@@ -391,14 +392,15 @@ class ParallelHashingTests(unittest.TestCase):
                               abort=lambda: order.append("abort"))
         self.assertEqual(order, ["abort"])
 
-    def _run(self, work, n=300, workers=None, cpus=8):
+    def _run(self, work, n=300, workers=None, cpus=8, clock=None, window=0.12):
         sizes = {str(i): MIB for i in range(n)}
         said = []
         env = {"SEAFILE_SNAPSHOT_HASH_WORKERS": workers or ""}
-        with unittest.mock.patch.dict(os.environ, env),                 unittest.mock.patch.object(snap.os, "cpu_count", return_value=cpus),                 unittest.mock.patch.object(snap, "_HASH_SETTLE_SECONDS", 0.05),                 unittest.mock.patch.object(snap, "_HASH_WINDOW_SECONDS", 0.12),                 contextlib.redirect_stdout(io.StringIO()) as out:
+        with unittest.mock.patch.dict(os.environ, env),                 unittest.mock.patch.object(snap.os, "cpu_count", return_value=cpus),                 unittest.mock.patch.object(snap, "_HASH_SETTLE_SECONDS", 0.05),                 unittest.mock.patch.object(snap, "_HASH_WINDOW_SECONDS", window),                 contextlib.redirect_stdout(io.StringIO()) as out:
             meter = snap._ByteMeter()
+            extra = {} if clock is None else {"clock": clock}
             snap.run_hashing([str(i) for i in range(n)], sizes, lambda r: work(r, meter), meter,
-                             threading.Event())
+                             threading.Event(), **extra)
             said = out.getvalue()
         return said
 
@@ -424,7 +426,30 @@ class ParallelHashingTests(unittest.TestCase):
         self.assertNotIn("found by measuring", said)
 
     def test_a_disk_that_serialises_every_reader_is_left_at_one(self):
-        """The spinning-disk case: more readers only queue behind one another."""
+        """The spinning-disk case: more readers only queue behind one another.
+
+        On a virtual clock (ROADMAP Z48).  The disk is busy for 10 ms of *virtual* time per MiB
+        and one reader at a time, so its throughput is 100 MiB/s at every level and the search
+        must settle at one.  The wall-clock version of this test slept 10 ms a file and failed
+        three times running on a macOS runner whose sleeps overshot (1, 2, 4, 8 readers measured
+        17, 22, 23, 16 MiB/s): noise, read as a gain.
+        """
+        disk, virtual = threading.Lock(), [0.0]
+
+        def work(rel, meter):
+            with disk:
+                virtual[0] += 0.01
+                meter.add(MIB)
+
+        # A window of 120 files of virtual time: a reading taken a file early or late is under 1%,
+        # far inside the 15% a step up needs.
+        said = self._run(work, n=800, clock=lambda: virtual[0], window=1.2)
+        self.assertIn("settled on 1 parallel hasher", said)
+        for rate in re.findall(r"\d+: (\d+)", said.split("MiB/s by count:")[-1]):
+            self.assertAlmostEqual(int(rate), 100, delta=3, msg=said)
+
+    def test_the_same_disk_on_the_wall_clock_is_left_at_one_in_one_of_three_tries(self):
+        """The real-time path (``time.monotonic``) still drives the search; noisy runners get three tries."""
         disk = threading.Lock()
 
         def work(rel, meter):
@@ -432,10 +457,6 @@ class ParallelHashingTests(unittest.TestCase):
                 time.sleep(0.01)
                 meter.add(MIB)
 
-        # Wall-clock windows of 0.12 s: on a loaded CI runner one window can read 15% better
-        # than its neighbour by chance (it failed on two macOS legs).  The rule is that a
-        # step up needs a margin, so a disk that gives no gain settles at one in at least
-        # one of three tries; a rule that accepted noise would not.
         said = ""
         for _attempt in range(3):
             said = self._run(work, n=200)

@@ -2124,6 +2124,7 @@ def run_hashing(
     cancel: threading.Event,
     *,
     quiet: bool = False,
+    clock: "Callable[[], float]" = time.monotonic,
 ) -> None:
     """Call ``work(rel)`` for each path in *todo*, hashing several at a time where that pays.
 
@@ -2135,6 +2136,9 @@ def run_hashing(
     ``_HASH_MIN_BYTES``, with one file, or with ``SEAFILE_SNAPSHOT_HASH_WORKERS=1``
     this is the plain loop in the order given.  The manifest does not depend on
     any of it: the caller assembles its entries in path order afterwards.
+
+    ``clock`` is the time the search measures windows with; a test hands it a virtual
+    one so that the readings it describes are exact (ROADMAP Z48).
     """
     ceiling, typed = hash_workers()
     total = sum(sizes[rel] for rel in todo)
@@ -2160,7 +2164,7 @@ def run_hashing(
         sorted(todo, key=lambda rel: (-sizes[rel], rel)), work,
         ceiling=ceiling, meter=meter, exhausted=lambda *_: None,
         start=1, noun="hasher", forced=typed, say=say, abort=cancel.set,
-        settle=_HASH_SETTLE_SECONDS, window_seconds=_HASH_WINDOW_SECONDS,
+        settle=_HASH_SETTLE_SECONDS, window_seconds=_HASH_WINDOW_SECONDS, clock=clock,
     )
 
 
