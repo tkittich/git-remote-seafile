@@ -3449,8 +3449,11 @@ class IncrementalStagingTests(_SnapshotFixture):
         respelling the disk does not resolve is not made."""
         self.assertEqual(snap.ignorecase_key("D/Straße.TXT"), "d/straße.txt")
         indexed = ["strasse/a.txt", "STRASSE.txt", "d/x.txt"]
+        there = self.tmp / "respelling-target"
+        (there / "d").mkdir(parents=True)
+        (there / "d" / "new.txt").write_bytes(b"n\n")
         self.assertEqual(
-            snap.spell_like_index(["straße/b.txt", "straße.txt", "D/new.txt"], indexed),
+            snap.spell_like_index(["straße/b.txt", "straße.txt", "D/new.txt"], indexed, there),
             ["straße/b.txt", "straße.txt", "d/new.txt"],
         )
         (self.code / "D").mkdir()

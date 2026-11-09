@@ -193,9 +193,7 @@ def ignorecase_key(path: str) -> str:
     return path.translate(_GIT_CASE_FOLD)
 
 
-def spell_like_index(
-    paths: list[str], indexed: list[str], work_tree: "Path | None" = None
-) -> list[str]:
+def spell_like_index(paths: list[str], indexed: list[str], work_tree: Path) -> list[str]:
     """*paths*, each spelled the way the index already spells it or its directories.
 
     Only for a vault where git ignores case (``core.ignorecase``).  There ``git add``
@@ -206,8 +204,8 @@ def spell_like_index(
     restore to a filesystem that keeps case (ROADMAP X2).  Spelling the list the
     way ``add`` would makes the two routes record the same tree.
 
-    Names are compared the way git compares them (:func:`ignorecase_key`), and with
-    *work_tree* a respelling is kept only when the respelled path is there on disk: a
+    Names are compared the way git compares them (:func:`ignorecase_key`), and a
+    respelling is kept only when the respelled path is there on disk under *work_tree*: a
     spelling the filesystem does not resolve to the same file would name a path that
     does not exist, and staging drops a path that does not exist.
     """
@@ -221,7 +219,7 @@ def spell_like_index(
     def resolves(respelled: str) -> bool:
         # The extended-length form: a plain stat past 260 characters answers False
         # on a Windows without LongPathsEnabled (review 06cc623, glm G1.1).
-        return work_tree is None or os.path.lexists(extended_path(work_tree / respelled))
+        return os.path.lexists(extended_path(work_tree / respelled))
 
     spelled = []
     for path in paths:
