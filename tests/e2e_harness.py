@@ -145,6 +145,14 @@ class _Handler(BaseHTTPRequestHandler):
                                "owner": f.get("owner") or "self"})
 
         if path.startswith("/api2/repos/") and path.endswith("/dir/"):
+            with self.stub.dir_lock:
+                self.stub.dir_calls += 1
+                this_call = self.stub.dir_calls
+            # Exactly one listing fails: the n-th since the last reset (``dir_fail_nth``),
+            # with ``dir_fail_status`` (500 by default).  A server that is mostly healthy
+            # is what turned one 502 into a switched-off refusal (ROADMAP Z3, Z38).
+            if f.get("dir_fail_nth") == this_call:
+                return self._send(f.get("dir_fail_status", 500), b"injected failure")
             if f.get("dir"):
                 return self._send(f["dir"], b"injected failure")
             rid, p = self._rid(), self._query_p()
@@ -346,6 +354,9 @@ class SeafileStub:
     def __init__(self):
         self.files: dict[str, dict[str, bytes]] = {}
         self.faults: dict[str, int] = {}
+        #: Directory listings answered since the last reset (``dir_fail_nth`` counts them).
+        self.dir_calls = 0
+        self.dir_lock = threading.Lock()
         self.raw_hits: list[str] = []
         self.get_hooks: list[tuple[Any, Any]] = []
         self.partial: dict[tuple[str, str], bytearray] = {}
@@ -378,6 +389,7 @@ class SeafileStub:
     def reset(self) -> None:
         self.files.clear()
         self.faults.clear()
+        self.dir_calls = 0
         self.raw_hits.clear()
         self.get_hooks.clear()
         self.partial.clear()
