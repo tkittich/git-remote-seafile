@@ -578,8 +578,9 @@ def build_manifest(
     cancel = threading.Event()
     lock = threading.Lock()
     todo: list[str] = []
+    renumbered = 0
     for rel in order:
-        _size, _mtime, _mode, _ino, *rest = candidates[rel]
+        size_now, mtime_now, _mode, ino_now, *rest = candidates[rel]
         dev = rest[0] if rest else None
         ctime_ns = rest[1] if len(rest) > 1 else None
         old, trusted = vouched(rel)
@@ -590,7 +591,13 @@ def build_manifest(
             if dev is not None:
                 fresh[rel]["dev"] = dev
         else:
-            stale += isinstance(old.get("sha256"), str)
+            had_hash = isinstance(old.get("sha256"), str)
+            stale += had_hash
+            # Size and stamp unchanged, the inode not: a volume that renumbers its files
+            # (FAT and exFAT on a remount, a replug or a trimmed cache, measured; any copy
+            # to another disk) makes every cached hash look new (ROADMAP Z43).
+            renumbered += (had_hash and old.get("size") == size_now
+                           and old.get("mtime_ns") == mtime_now and old.get("ino") != ino_now)
             todo.append(rel)
 
     def hash_one(rel: str) -> None:
@@ -643,6 +650,14 @@ def build_manifest(
             f"Note: {stale} file(s) were hashed again because their size, timestamp or inode "
             "changed since the last run (or are too recent to trust); a copy tool that resets "
             "timestamps does this to every file",
+            flush=True,
+        )
+    if renumbered and not quiet:
+        print(
+            f"Note: {renumbered} file(s) were hashed again only because their inode number "
+            "changed (size and modification time are the same). FAT and exFAT volumes renumber "
+            "inodes when remounted or when the system trims its cache, and a copy to another "
+            "disk changes them too; the contents are not in doubt, they were only read again",
             flush=True,
         )
     manifest = {

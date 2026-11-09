@@ -2983,6 +2983,28 @@ class PayloadRememberVerifyViewAndClockTests(_PayloadFixture):
         # same size, same mtime, same inode -- but the inode change time moved
         self.assertFalse(self._trusted(cached={"ctime": 99}, now=now))
 
+    def _output_of_a_run_with(self, cached: dict, now: tuple) -> str:
+        path = self.case / "cache-unit.bin"
+        path.write_bytes(b"x" * 1024)
+        entry = {"size": 1024, "mtime_ns": now[1], "ino": now[3], "sha256": "a" * 64,
+                 "at": 1_700_000_000 * 1_000_000_000, "ctime": now[5], "dev": now[4]}
+        entry.update(cached)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            snap.build_manifest({"cache-unit.bin": now}, self.case, {"cache-unit.bin": entry}, 1024)
+        return out.getvalue()
+
+    def test_a_file_hashed_again_only_for_its_inode_is_named_as_that(self):
+        """ROADMAP Z43: FAT and exFAT renumber inodes on a remount or a trimmed cache (measured),
+        so every payload file reads as new; the run says why, and does not call it a change."""
+        now = (1024, self.OLD, "100644", 7, 3, 111)
+        said = self._output_of_a_run_with({"ino": 99}, now)
+        self.assertIn("hashed again only because their inode number changed", said)
+        self.assertIn("1 file(s) were hashed again only", said)
+        # A changed size or stamp is a real change: the generic note, not this one.
+        self.assertNotIn("inode number changed", self._output_of_a_run_with({"mtime_ns": self.OLD + 1_000_000_000}, now))
+        self.assertNotIn("inode number changed", self._output_of_a_run_with({}, now))
+
     def test_the_change_time_in_the_key_moves_on_a_real_in_place_edit(self):
         """Not a synthetic tuple: a file on this filesystem, rewritten in place
         with the same size, the old mtime put back.  On NTFS ``st_ctime`` is the

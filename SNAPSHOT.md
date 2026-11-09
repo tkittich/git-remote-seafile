@@ -597,6 +597,7 @@ What the tool did with the Linux-driver volumes:
   with `unable to write loose object file: No space left on device`, the tool exits 1,
   and the loose objects already written stay (`git fsck` reports them dangling; the
   volume was 100% full until a `git gc --prune=now`).
+* **The payload re-read after a remount** now has its own Note (0.9.24, ROADMAP Z43): a file whose size and mtime match and whose inode differs is counted and named as the cause.
 
 **One blind spot both routes share, and always had.** A file whose bytes change
 while its size and modification time are put back is not seen: git trusts its stat
