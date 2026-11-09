@@ -507,9 +507,19 @@ attributes, junctions and a directory that changes case (Windows), and hundreds 
 new files at once. No difference remains; the first version had three, which
 `ExoticReplacementTests` and `SpecialFileAndNameTests` now hold.
 
-**Not covered:** files over 4 GiB (they are payload, not git); a killed run during
-staging (git writes its index through a lock file and renames it, for either command,
-but the case was not tried); a sharing violation from antivirus on Windows (expected
+**A killed run (2026-11-09, Debian, a 40,000-file tree, a clean run 5.4-5.8 s).** The
+snapshot was killed with `SIGKILL` at six points from 0.3 s to 5.2 s, once taking only
+the tool and once the whole process group (a power cut's shape), and the same run was
+repeated. Every rerun ended with `git fsck` clean and a tree equal to a clean run's, and
+a third run reported no changes; the tool's own `seafile-snapshot.lock` was reclaimed each
+time ("that run is gone"). The one difference: with the **whole group killed during
+`git add`**, git's `index.lock` stayed behind in one of the six, and that rerun stopped
+at once with rc=1, `Unable to create '.../index.lock': File exists` and the hint to delete
+the file. The tool does not delete it itself (ROADMAP Z46): with only the parent killed an
+orphaned `git add` may still be running and a deleted lock would let two writers rename
+over each other's index.
+
+**Not covered:** files over 4 GiB (they are payload, not git); a sharing violation from antivirus on Windows (expected
 to surface as an error from either command); macOS Unicode-normalised names (no Mac
 in reach, ROADMAP S20); clock skew and coarse timestamps on network shares and on
 the *Windows* FAT and exFAT drivers (the stat cache, below). FAT32 and exFAT under
