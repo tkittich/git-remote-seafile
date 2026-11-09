@@ -50,17 +50,18 @@ class TestConflictCopiesThroughGit(E2ETestCase):
         self.assertNotIn("SFConflict", proc.stderr)
         self.assertEqual(self.copies(), [])
 
-    def test_copies_of_the_lock_tickets_do_not_stop_pushes_on_the_same_machine(self):
-        """Measured: the copies stay on the server (ROADMAP Z47) and the pushes still go through."""
+    def test_a_push_removes_the_conflict_copies_of_its_own_lock_ticket(self):
+        """ROADMAP Z47: the copies stayed on the server after every push (5 of 5 measured); the
+        holder now deletes the ones it has seen and those made since, at release."""
         src = self._repo("cc-ticket")
         self.stub.conflict_copy_for = ".git-lock.d"
         run_git(["push", "-u", "origin", "main"], src, self.env)
-        left = self.copies()
-        self.assertTrue(left, "the stub left no ticket copy: nothing was tested")
-        self.assertTrue(all("/.git-lock.d/" in name and name.endswith(".json") for name in left), left)
+        self.assertTrue(self.stub.conflict_copies, "the stub made no ticket copy: nothing was tested")
+        self.assertEqual(self.copies(), [], "ticket copies were left on the server")
         commit_file(src, "b.txt", "two\n", "c2", self.env)
         proc = run_git(["push", "origin", "main"], src, self.env)
         self.assertNotIn("locked by", proc.stderr)
+        self.assertEqual(self.copies(), [])
         dst = self.work / "clone-cc-ticket"
         run_git(["clone", self.url("cc-ticket"), str(dst)], self.work, self.env)
         self.assertTrue((dst / "b.txt").is_file())

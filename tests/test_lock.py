@@ -167,12 +167,55 @@ class TestConcurrencyAndLocking(unittest.TestCase):
         self.assertTrue(lock.acquired)
         self.assertNotIn("/path/.git-lock.d/bob-nonce.json", store.files)
 
+    def _copying_store(self):
+        """A store whose every upload of a ticket also leaves ``<name> (SFConflict ...).json`` beside it."""
+        class Copying(_SharedLockStore):
+            made = 0
+
+            def upload(self, repo_id, parent, filename, content, replace=True, progress_callback=None):
+                super().upload(repo_id, parent, filename, content, replace, progress_callback)
+                if filename.endswith(".json"):
+                    Copying.made += 1
+                    stem = filename[: -len(".json")]
+                    super().upload(repo_id, parent, f"{stem} (SFConflict me@x 2026-11-09-12-00-{Copying.made:02d}).json",
+                                   content, replace, progress_callback)
+                return True
+
+        return Copying()
+
+    def test_a_holder_deletes_the_conflict_copies_of_its_own_ticket_when_it_releases(self):
+        """ROADMAP Z47: simultaneous writers of one ticket leave copies; only the owner may delete them
+        (another client cannot tell a released holder's copy from a live holder's whose original was
+        reaped).  The copies a scan saw, and those made since, go with the ticket."""
+        store = self._copying_store()
+        foreign = "/path/.git-lock.d/zzzz (SFConflict bob@x 2026-11-09-11-00-00).json"
+        store.put_ticket(foreign, json.loads(_ticket("zzzz", owner="bob", holding=False)))
+        store.expire_all(120)                      # another client's old leftover: not ours to touch
+        lock = RemoteLock(store.client("t1"), "repo1", "/path", timeout=5, lease=60, settle=0)
+        lock.acquire()
+        self.assertTrue([k for k in store.files if "(SFConflict" in k and lock._nonce in k], "no copy was made")
+        lock.release()
+        mine = [k for k in store.files if lock._nonce in k]
+        self.assertEqual(mine, [], "a copy of the released ticket is left on the server")
+
+    def test_a_push_that_saw_no_copy_asks_for_no_extra_listing_at_release(self):
+        store = _SharedLockStore()
+        client = store.client("t1")
+        lock = RemoteLock(client, "repo1", "/path", timeout=5, lease=60, settle=0)
+        lock.acquire()
+        listings = client.list_dir.call_count
+        lock.release()
+        self.assertEqual(client.list_dir.call_count, listings)
+        self.assertEqual([k for k in store.files if ".git-lock.d" in k], [])
+
     def test_a_conflict_copy_of_a_released_holders_ticket_holds_the_lock_for_one_lease(self):
-        """MEASURED, not wanted (ROADMAP Z47): simultaneous writers of one ticket leave
-        ``<nonce> (SFConflict ...).json`` beside it.  The holder deletes ``<nonce>.json`` when it
-        releases, the copy stays, and the scan reads it as a live holder on another machine until
-        its lease runs out, when it is reaped.  Bounded (one lease), and a fix must keep a copy
-        whose original is still there counting, so this pins what happens today."""
+        """A copy nobody owns any more still counts as a holder until its lease runs out (ROADMAP Z47).
+
+        Simultaneous writers of one ticket leave ``<nonce> (SFConflict ...).json`` beside it.  Since
+        0.9.25 the holder deletes its own copies at release, so what is left is a holder that died
+        or a copy made after its last look; another client cannot tell such a copy from a live
+        holder whose original was reaped, so it waits out the lease (bounded) and then reaps it.
+        This pins that residue."""
         store = _SharedLockStore()
         copy = "/path/.git-lock.d/aaaa (SFConflict bob@x 2026-11-09-12-00-00).json"
         store.put_ticket(copy, json.loads(_ticket("aaaa", owner="bob", holding=True)))

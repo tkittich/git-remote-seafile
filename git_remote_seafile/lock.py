@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 from .client import SeafileClient, is_listed_file
 from .config import RemoteConfig, default_lock_settle, get_git_config_int
+from .refs import CONFLICT_MARKER
 
 
 class RepositoryLockedError(Exception):
@@ -322,6 +323,9 @@ class RemoteLock:
         self.acquired = False
         self._identity: tuple[str, str] | None = None
         self._nonce: str | None = None
+        #: Conflict copies of this client's own ticket that a scan has seen (ROADMAP Z47); the
+        #: release deletes them with the ticket.
+        self._own_copies: set[str] = set()
         self._last_renewed: float = 0.0
         #: When this machine last *proved* the lease (an acquire or a renewal that
         #: wrote the ticket), on its own monotonic clock; see verify_ownership().
@@ -465,6 +469,8 @@ class RemoteLock:
             name = entry.get("name", "")
             if not name.endswith(".json"):
                 continue
+            if self._nonce and name.startswith(f"{self._nonce}{CONFLICT_MARKER}"):
+                self._own_copies.add(name)
             ticket_path = f"{self.lock_dir}/{name}"
             raw = self.client.get_file_text(self.repo_id, ticket_path)
             if not raw:
@@ -761,11 +767,8 @@ class RemoteLock:
                     time.sleep(2)
                     continue
         finally:
-            if not self.acquired and self._nonce:
-                try:
-                    self.client.delete_entry(self.repo_id, f"{self.lock_dir}/{self._nonce}.json")
-                except Exception:
-                    pass
+            if not self.acquired:
+                self._delete_own_tickets()
 
     def renew_state(self) -> str:
         """Re-verify and refresh the lease, returning why it held or failed.
@@ -1030,11 +1033,39 @@ class RemoteLock:
         self._holding = False
         self._preemptor_cached = None
         self._preemptor_checked_at = None
-        if self._nonce:
+        self._delete_own_tickets()
+
+    def _delete_own_tickets(self) -> None:
+        """Delete this client's ticket and the conflict copies of it a scan has seen (Z47).
+
+        Simultaneous writers of one ticket leave ``<nonce> (SFConflict ...).json`` beside it
+        (measured on a real server).  Only the owner may delete them: another client cannot tell
+        a copy of a released holder's ticket from a live holder whose original was reaped, and
+        guessing wrong lets a second holder in.  A copy made after the last scan is not known
+        here and ends with its lease, as it did before (a push that saw no copy lists nothing
+        extra, so the common case costs no request).  Best effort and silent, like release().
+        """
+        if not self._nonce:
+            return
+        if self._own_copies:
+            # Copies were seen, so more were probably made since (every refresh of the ticket
+            # collides the same way): one listing catches them.  A push that saw none pays nothing.
             try:
-                self.client.delete_entry(self.repo_id, f"{self.lock_dir}/{self._nonce}.json")
+                entries = self.client.list_dir(self.repo_id, self.lock_dir)
+                prefix = f"{self._nonce}{CONFLICT_MARKER}"
+                self._own_copies.update(
+                    str(e.get("name")) for e in entries
+                    if isinstance(e, dict) and str(e.get("name", "")).startswith(prefix)
+                    and str(e.get("name", "")).endswith(".json")
+                )
             except Exception:
                 pass
+        for name in [f"{self._nonce}.json", *sorted(self._own_copies)]:
+            try:
+                self.client.delete_entry(self.repo_id, f"{self.lock_dir}/{name}")
+            except Exception:
+                pass
+        self._own_copies.clear()
 
     def get_status(self) -> dict[str, Any]:
         """Inspect current repository lock status.

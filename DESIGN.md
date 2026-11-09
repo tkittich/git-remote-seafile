@@ -293,6 +293,8 @@ The queue scan is read-only — a verification step that reaped tickets would be
 
 **Mixed-version fleets.** The grant marker takes effect once every client pushing to a repository is on v0.8.4 or later. A newer client will not preempt an older holder, but an older client ignores the marker and can still preempt a newer holder. The guarantee is a fleet property, not a per-client one.
 
+**Conflict copies of a ticket.** Simultaneous writers of one ticket path leave `<nonce> (SFConflict ...).json` beside it (measured). The scan reads a copy as a ticket, which is right while its holder is alive (the path may hold the older value and the copy the newer `holding` one), so no other client deletes one. The holder deletes its own at release: the ones a scan saw, and, when it saw any, one more listing for those made since (a push that saw none lists nothing extra). A copy left by a holder that died, or made after that listing, ends with its lease like any ticket.
+
 **Management.** Lock status is inspectable read-only via `lock-status`, which never reaps or mutates tickets, and a lock can be released or broken via `unlock` (with `--force` for emergency recovery). `lock-status` reports whether the winning ticket carries a grant marker; its absence is not an error, but it does mean the marker-based protection is not in force for that lock.
 
 **Version note.** The v0.1–v0.3 single-file lock (`.git-lock.json`) was removed in v0.7.0; the ticket queue is the only protocol, and a leftover mirror is ignored, never read and never deleted. Do not mix a v0.7.0+ helper with a v0.1–v0.3 helper on one repository: those clients predate the ticket protocol and cannot see its locks.

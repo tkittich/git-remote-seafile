@@ -261,7 +261,7 @@ repeated after the marker: `v1.0.0` becomes `v1.0.0 (SFConflict <user> <date>).0
 `release-2.1` becomes `release-2.1 (SFConflict <user> <date>).1`, measured). Through the lock this does not happen
 (nine concurrent pushers produced none); a client that bypasses the lock, or an older helper that
 predates it, can produce it. The helper now warns after a ref write when a conflict copy of that ref
-appears, and names the copy when it lists refs.
+appears, and names the copy when it lists refs. Copies of the helper's own lock ticket are deleted by the holder when it releases (0.9.25); one that outlives its holder blocks other machines for at most one lease (60 s by default) and is then reaped.
 
 **Recover.**
 
