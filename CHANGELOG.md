@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **A fetch from a repository that vanished on the server is refused whatever the refspec** (ROADMAP Z27; gemini-4-argon G2.2). The guard inferred what `git fetch --prune` would delete from `remote.<name>.fetch`, so a `git clone --bare` fetched with a refspec on the command line, and `--prune-tags`, were invisible to it and pruned every branch or tag. The helper now remembers what each remote advertised (`<git-dir>/seafile-advertised/<remote>`, per URL) and refuses an empty advertisement for one that was not empty, naming the file to delete if that was on purpose. A first fetch from a new empty remote is unaffected.
+
 ### Changed
 - **A lock holder deletes the conflict copies of its own ticket when it releases** (ROADMAP Z47). Simultaneous writers of one ticket leave `<nonce> (SFConflict ...).json` beside it; the copy of a released holder kept other machines waiting for up to one lease (60 s). The holder removes the copies it has seen and, when it saw any, those made since (one extra listing; a push that saw none pays nothing). Another client never deletes one: a copy can be the newer value of a live holder whose original was reaped.
 

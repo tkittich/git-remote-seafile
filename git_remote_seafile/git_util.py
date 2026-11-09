@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import shutil
@@ -12,6 +13,7 @@ import time
 import tempfile
 from pathlib import Path
 from typing import Any, Callable
+from urllib.parse import quote
 
 
 class GitError(Exception):
@@ -583,6 +585,69 @@ def remote_tracking_refs(remote: str) -> list[str]:
     if code != 0:
         return []
     return [line for line in out.decode("utf-8", errors="replace").splitlines() if line.strip()]
+
+
+#: Where a clone remembers what a remote advertised (ROADMAP Z27), under its git directory.
+ADVERTISED_DIR = "seafile-advertised"
+
+
+def advertised_record_path(remote: str) -> Path | None:
+    """The record file for the remote named *remote*, or ``None`` for a URL or an unknown repository."""
+    if not remote or "://" in remote or remote.startswith("-"):
+        return None
+    try:
+        return get_git_dir() / ADVERTISED_DIR / quote(remote, safe="")
+    except Exception:
+        return None
+
+
+def _url_key(url: str) -> str:
+    return hashlib.sha256(url.encode("utf-8")).hexdigest()[:16]
+
+
+def read_advertised_refs(remote: str, url: str) -> list[str]:
+    """The ref names *remote* advertised the last time it listed any, for this URL; ``[]`` if none.
+
+    ``git fetch --prune`` can delete refs the helper cannot name from configuration: the
+    refspec may be on the command line (a ``git clone --bare`` has none), and ``refs/tags/``
+    is never a configured destination.  What the remote *did* advertise is the one fact that
+    holds for every shape.  Keyed by the URL, so a remote pointed at another repository is not
+    judged by the old one's record.  Unreadable or foreign files read as no record.
+    """
+    path = advertised_record_path(remote)
+    if path is None:
+        return []
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeError):
+        return []
+    if not lines or lines[0] != f"url {_url_key(url)}":
+        return []
+    return [line for line in lines[1:] if line.startswith("refs/")]
+
+
+def write_advertised_refs(remote: str, url: str, names: list[str]) -> None:
+    """Remember the non-empty advertisement of *remote* (temp file and rename; failures are silent).
+
+    A read-only git directory, a file in the way, a full disk: the record is a safety net, and
+    a fetch that worked must not fail for want of it.  Rewritten only when it changed.
+    """
+    path = advertised_record_path(remote)
+    if path is None or not names:
+        return
+    body = "\n".join([f"url {_url_key(url)}", *sorted(set(names))]) + "\n"
+    try:
+        if path.read_text(encoding="utf-8") == body:
+            return
+    except (OSError, UnicodeError):
+        pass
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+        temp.write_bytes(body.encode("utf-8"))
+        os.replace(temp, path)
+    except OSError:
+        pass
 
 
 def tracked_remote_names(remote: str) -> set[str]:

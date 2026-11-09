@@ -56,8 +56,11 @@ from .git_util import (
     is_ancestor,
     is_shallow_repository,
     objects_may_be_incomplete,
+    advertised_record_path,
+    read_advertised_refs,
     remote_tracking_refs,
     tracked_remote_names,
+    write_advertised_refs,
     GitError,
     rev_parse,
     get_git_dir,
@@ -599,6 +602,9 @@ class RemoteHelper:
         # made again, so neither is refused.
         if not listed_any and not for_push and not head_content:
             tracked = remote_tracking_refs(self.remote_name)
+            # What this remote advertised before, for the shapes configuration cannot see: a
+            # command-line refspec (a bare clone has none) and tags (ROADMAP Z27).
+            recorded = [] if tracked else read_advertised_refs(self.remote_name, self.raw_url)
             if tracked:
                 raise SeafileAPIError(
                     f"{self.library_name}:{self.repo_path} holds no HEAD, no refs and no "
@@ -610,8 +616,20 @@ class RemoteHelper:
                     "was deleted on purpose, delete the remote's tracking branches "
                     f"(git branch -r -d {self.remote_name}/<branch>) or push to recreate it."
                 )
+            if recorded:
+                raise SeafileAPIError(
+                    f"{self.library_name}:{self.repo_path} holds no HEAD, no refs and no "
+                    f"packfiles, but this clone fetched {len(recorded)} ref(s) from remote "
+                    f"'{self.remote_name}' before (for example {recorded[0]}): the repository "
+                    "was moved, renamed or deleted on the server, or the URL now points "
+                    "somewhere else. Nothing was fetched, and a fetch --prune would have deleted "
+                    "those refs here. If it moved, point the remote at it: git remote set-url "
+                    f"{self.remote_name} <url>; if it was deleted on purpose, forget what it "
+                    f"advertised by deleting {advertised_record_path(self.remote_name)}."
+                )
         if listed_any and not for_push:
             self._warn_if_tracked_refs_may_be_hidden({name for name, _ in discovered_refs})
+            write_advertised_refs(self.remote_name, self.raw_url, [name for name, _ in discovered_refs])
 
         # A push to that same empty path still goes ahead -- it is how a deleted
         # repository is made again -- but if the folder was only *moved*, it creates a

@@ -7,6 +7,7 @@ loopback socket.  No network, no real server, no credentials.
 from __future__ import annotations
 
 import pathlib
+import shutil
 import sys
 import tempfile
 import unittest
@@ -795,6 +796,94 @@ class TestAVanishedRepositoryPathIsNotAnEmptyRepository(E2ETestCase):
         listing = run_git(["ls-remote", self.url("vanished_anon")], src, self.env, check=False)
         self.assertEqual(listing.returncode, 0, listing.stderr)
         self.assertEqual(listing.stdout.strip(), "")
+
+
+class TestAVanishedRepositoryIsRecognisedWhateverTheRefspec(E2ETestCase):
+    """ROADMAP Z27: the helper never sees a command-line refspec, so what a ``fetch --prune`` would
+    delete cannot be inferred from ``remote.<name>.fetch`` alone.  A ``git clone --bare`` has no
+    such refspec, and ``refs/tags/`` is never a configured destination.  The helper therefore
+    remembers what it advertised (``<git-dir>/seafile-advertised/<remote>``) and refuses an empty
+    advertisement for a remote that was not empty."""
+
+    def _pushed(self, name: str) -> pathlib.Path:
+        src = init_repo(self.work / f"src_{name}", self.env)
+        commit_file(src, "a.txt", "hello\n", "initial commit", self.env)
+        run_git(["remote", "add", "origin", self.url(name)], src, self.env)
+        run_git(["push", "-u", "origin", "main"], src, self.env)
+        run_git(["push", "origin", "main:feature"], src, self.env)
+        run_git(["tag", "v1"], src, self.env)
+        run_git(["push", "origin", "v1"], src, self.env)
+        return src
+
+    def _vanish(self, name: str) -> None:
+        for key in list(self.stub.files.get(REPO_ID, {})):
+            if key.startswith(f"/{name}/"):
+                del self.stub.files[REPO_ID][key]
+
+    def _refs(self, repo: pathlib.Path, pattern: str) -> list[str]:
+        return sorted(run_git(["for-each-ref", "--format=%(refname)", pattern], repo, self.env).stdout.split())
+
+    def _bare_clone_of(self, name: str) -> pathlib.Path:
+        self._pushed(name)
+        bare = self.work / f"bare_{name}.git"
+        run_git(["clone", "--bare", self.url(name), str(bare)], self.work, self.env)
+        return bare
+
+    def test_a_bare_clone_fetched_with_a_command_line_refspec_keeps_its_branches(self):
+        bare = self._bare_clone_of("rs-bare")
+        before = self._refs(bare, "refs/heads/")
+        self.assertIn("refs/heads/feature", before)
+        self._vanish("rs-bare")
+        proc = run_git(["fetch", "--prune", "origin", "+refs/heads/*:refs/heads/*"], bare, self.env, check=False)
+        self.assertNotEqual(proc.returncode, 0, f"the fetch succeeded:\n{proc.stderr}")
+        self.assertIn("this clone fetched", proc.stderr)
+        self.assertEqual(self._refs(bare, "refs/heads/"), before, "branches were pruned")
+
+    def test_prune_tags_keeps_the_tags(self):
+        bare = self._bare_clone_of("rs-tags")
+        run_git(["fetch", "origin", "+refs/tags/*:refs/tags/*"], bare, self.env)
+        before = self._refs(bare, "refs/tags/")
+        self.assertEqual(before, ["refs/tags/v1"])
+        self._vanish("rs-tags")
+        proc = run_git(["fetch", "--prune", "--prune-tags", "origin", "+refs/tags/*:refs/tags/*"],
+                       bare, self.env, check=False)
+        self.assertNotEqual(proc.returncode, 0, f"the fetch succeeded:\n{proc.stderr}")
+        self.assertEqual(self._refs(bare, "refs/tags/"), before, "tags were pruned")
+
+    def test_the_record_holds_the_names_and_is_per_remote(self):
+        bare = self._bare_clone_of("rs-record")
+        record = bare / "seafile-advertised" / "origin"
+        self.assertTrue(record.is_file(), "no record was written")
+        names = record.read_text(encoding="utf-8").splitlines()[1:]
+        self.assertEqual(names, ["refs/heads/feature", "refs/heads/main", "refs/tags/v1"])
+
+    def test_a_first_fetch_from_a_new_empty_remote_passes_in_a_repository_with_its_own_tags(self):
+        """The case that made 'include refs/tags/' naive: no record, so no refusal."""
+        src = init_repo(self.work / "src_rs_new", self.env)
+        commit_file(src, "a.txt", "x\n", "c1", self.env)
+        run_git(["tag", "mine"], src, self.env)
+        run_git(["remote", "add", "origin", self.url("rs-new-empty")], src, self.env)
+        proc = run_git(["fetch", "--prune", "origin"], src, self.env, check=False)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(self._refs(src, "refs/tags/"), ["refs/tags/mine"])
+        # --prune-tags is git's own request to drop local tags the remote lacks: an empty remote
+        # has none, git does it, and the helper must not refuse a fetch that was never at risk.
+        again = run_git(["fetch", "--prune", "--prune-tags", "origin"], src, self.env, check=False)
+        self.assertEqual(again.returncode, 0, again.stderr)
+
+    def test_a_remote_pointed_at_another_repository_is_not_judged_by_the_old_record(self):
+        bare = self._bare_clone_of("rs-moved")
+        self._vanish("rs-moved")
+        run_git(["remote", "set-url", "origin", self.url("rs-moved-elsewhere")], bare, self.env)
+        proc = run_git(["fetch", "origin", "+refs/heads/*:refs/heads/*"], bare, self.env, check=False)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+
+    def test_a_record_that_cannot_be_written_does_not_break_a_fetch(self):
+        bare = self._bare_clone_of("rs-ro")
+        shutil.rmtree(bare / "seafile-advertised")
+        (bare / "seafile-advertised").write_text("in the way\n", encoding="utf-8")
+        proc = run_git(["fetch", "origin", "+refs/heads/*:refs/heads/*"], bare, self.env, check=False)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
 
 
 class TestAutoGcDoesNotDeadlock(E2ETestCase):

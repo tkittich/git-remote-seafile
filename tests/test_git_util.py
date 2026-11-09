@@ -1159,3 +1159,59 @@ class TestRemoteTrackingRefs(unittest.TestCase):
                 self.assertEqual(remote_tracking_refs("custom"), ["refs/backup/main"])
                 git("config", "remote.origin.fetch", "^refs/heads/skip")
                 self.assertEqual(remote_tracking_refs("origin"), ["refs/remotes/origin/main"])
+
+
+class AdvertisedRecordTests(unittest.TestCase):
+    """ROADMAP Z27: what a remote advertised is remembered per remote and per URL."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(prefix="grs-adv-")
+        self.addCleanup(self.tmp.cleanup)
+        self.git_dir = Path(self.tmp.name)
+        patcher = patch("git_remote_seafile.git_util.get_git_dir", return_value=self.git_dir)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_what_was_written_is_read_back_for_the_same_url_only(self):
+        from git_remote_seafile.git_util import read_advertised_refs, write_advertised_refs
+
+        write_advertised_refs("origin", "seafile://lib/a", ["refs/tags/v1", "refs/heads/main", "refs/heads/main"])
+        self.assertEqual(read_advertised_refs("origin", "seafile://lib/a"), ["refs/heads/main", "refs/tags/v1"])
+        self.assertEqual(read_advertised_refs("origin", "seafile://lib/other"), [], "another URL is another repository")
+        self.assertEqual(read_advertised_refs("mirror", "seafile://lib/a"), [], "records are per remote")
+
+    def test_an_empty_advertisement_and_a_url_leave_no_record(self):
+        from git_remote_seafile.git_util import advertised_record_path, write_advertised_refs
+
+        write_advertised_refs("origin", "seafile://lib/a", [])
+        write_advertised_refs("seafile://lib/a", "seafile://lib/a", ["refs/heads/main"])
+        self.assertEqual(list(self.git_dir.iterdir()), [])
+        self.assertIsNone(advertised_record_path("seafile://lib/a"))
+        self.assertIsNone(advertised_record_path("-x"))
+        self.assertIsNone(advertised_record_path(""))
+
+    def test_a_remote_name_with_a_slash_stays_one_file(self):
+        from git_remote_seafile.git_util import advertised_record_path
+
+        path = advertised_record_path("team/mirror")
+        self.assertEqual(path.parent, self.git_dir / "seafile-advertised")
+        self.assertEqual(path.name, "team%2Fmirror")
+
+    def test_an_unchanged_record_is_not_rewritten_and_a_broken_one_reads_as_none(self):
+        from git_remote_seafile.git_util import advertised_record_path, read_advertised_refs, write_advertised_refs
+
+        write_advertised_refs("origin", "u", ["refs/heads/main"])
+        path = advertised_record_path("origin")
+        first = path.stat().st_mtime_ns
+        write_advertised_refs("origin", "u", ["refs/heads/main"])
+        self.assertEqual(path.stat().st_mtime_ns, first)
+        path.write_bytes(b"\xff\xfe not text")
+        self.assertEqual(read_advertised_refs("origin", "u"), [])
+        path.write_bytes(b"")
+        self.assertEqual(read_advertised_refs("origin", "u"), [])
+
+    def test_a_write_that_cannot_happen_is_silent(self):
+        from git_remote_seafile.git_util import write_advertised_refs
+
+        (self.git_dir / "seafile-advertised").write_bytes(b"a file where the folder belongs")
+        write_advertised_refs("origin", "u", ["refs/heads/main"])      # must not raise
