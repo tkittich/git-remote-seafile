@@ -2063,6 +2063,15 @@ class RestoreNameLimitTests(_SnapshotFixture):
         self.assertFalse((self.restored / "a:b.txt").exists())
         self.assertIn("2 unrepresentable name(s) excluded", out)
 
+    def test_the_advice_for_links_written_as_text_fits_the_platform(self):
+        """Developer Mode is Windows' fix; on FAT under Linux it sent a person to a setting
+        that does not exist there (ROADMAP Z44, measured)."""
+        self.assertIn("Developer Mode", snap.links_as_text_advice(windows=True))
+        off = snap.links_as_text_advice(windows=False)
+        self.assertNotIn("Developer Mode", off)
+        self.assertIn("not FAT, exFAT or NTFS", off)
+        self.assertEqual(snap.links_as_text_advice(), snap.links_as_text_advice(windows=os.name == "nt"))
+
     def test_the_classifier_tells_a_twin_from_a_renamed_name(self):
         collided, renamed = snap.classify_missing_names(
             ["README", "readme", "a/dot.", "ok", "d/X", "D/x", "gone:"],

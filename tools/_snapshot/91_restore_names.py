@@ -1,4 +1,15 @@
 
+def links_as_text_advice(windows: "bool | None" = None) -> str:
+    """What to do about symbolic links a restore could only write as text files.
+
+    On Windows a link needs Developer Mode; on a FAT, exFAT or NTFS volume under Linux or
+    macOS the volume itself cannot hold one, and Developer Mode is no advice (ROADMAP Z44).
+    """
+    if os.name == "nt" if windows is None else windows:
+        return "Turn on Developer Mode, or restore on Linux or macOS, to get real links"
+    return "Restore onto a Linux or macOS file system (not FAT, exFAT or NTFS) to get real links"
+
+
 def _volume_keeps_name(folder: Path, name: str) -> bool:
     """Create *name* in *folder* and say whether the folder lists it under exactly that name."""
     try:

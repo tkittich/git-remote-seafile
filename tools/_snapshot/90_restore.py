@@ -553,8 +553,8 @@ def _restore(
         print(
             f"\nWarning: {len(as_text)} symbolic link(s) in this snapshot were written as text files "
             f"holding their target, because this machine cannot create links (core.symlinks is "
-            f"false):\n{shown}{more}\nTurn on Developer Mode, or restore on Linux or macOS, to get "
-            "real links; everything else was restored and is verified below."
+            f"false):\n{shown}{more}\n{links_as_text_advice()}; "
+            "everything else was restored and is verified below."
         )
         mismatched = [path for path in mismatched if path not in set(as_text)]
     mismatched = report_names_not_restored_as_named(into, verified_rev, set(unholdable), mismatched)
