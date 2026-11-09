@@ -1,20 +1,19 @@
 You are an independent reviewer of `git-remote-seafile`, at the commit you were given
-(`git log -1`). **This is a post-release round**: version 0.9.23 was released on
-2026-11-08 (tag `v0.9.23`, commit `a9cbd27`), and your findings go into 0.9.24. If the
-commit you were given is later than the tag, `git log --oneline v0.9.23..HEAD` is what
-has changed since; review it with the rest. Another model wrote the code, the tests and
-the specifications, and has reviewed them itself over a dozen rounds: assume all three
-share blind spots. The last outside review was a second pre-release round at commit
-`06cc623` (2026-11-07, four reviewers); its triage is settled and is listed in Part F as
-dispositions. **Everything between `06cc623` and the release has had no independent
-reader** — the twenty-six fixes that round produced (ROADMAP §1.10, Z1–Z26: a source's
-case rule, one reader for every state file whose absence decides something, the Pro
-owner guard's edition probe, the lease check's order, a remote's object format with no
-refs, Unicode forms beside payload files, `--no-push`, `repair`'s history walk,
-redirects, and smaller guards), three new warnings, the branch that makes a snapshot run
-start fewer git processes (B12), and the tooling (`gates.py --changed` from imports,
-`release_check.py` failing without GitHub) — see Part G, which is where most of your time
-should go, but not all of it (see ORDER OF WORK). Parts A–E cover everything older.
+(`git log -1`). **This is a post-release round**: version 0.9.24 was released on
+2026-11-09 (tag `v0.9.24`, commit `b14c4f7`), and your findings go into 0.9.25. If the
+commit you were given is later than the tag, `git log --oneline v0.9.24..HEAD` is what
+has changed since (the first fixes of 0.9.25, listed in `CHANGELOG.md` `[Unreleased]`);
+review it with the rest. Another model wrote the code, the tests and the specifications,
+and has reviewed them itself over a dozen rounds: assume all three share blind spots. The
+last outside review was a second pre-release round at commit `06cc623` (2026-11-07, four
+reviewers); its triage is settled and is listed in Part F as dispositions. **Everything
+between `06cc623` and now has had no independent reader**: the twenty-six fixes that round
+produced (ROADMAP §1.10, Z1-Z26), the 0.9.23 release, and everything in 0.9.24 and after
+it. 0.9.24 is the FAT32 and exFAT release: both filesystems were measured on Linux loop
+devices and on real Windows drives (`SNAPSHOT.md` section 5 holds the tables, which are
+claims you can check), and a restore, a payload cache and a lock were changed by what they
+showed (Z28-Z48). See Part G, which is where most of your time should go, but not all of
+it (see ORDER OF WORK). Parts A-E cover everything older.
 
 WHAT IT IS
 A Git remote helper (`seafile://<library>/<path>`) that stores a repository in a Seafile
@@ -22,7 +21,7 @@ library through its REST API, with an advisory lock built from file creation and
 server's `Date` header, and a whole-tree snapshot tool (`git seafile-snapshot`) shipped
 in the same wheel. Read `README.md` for the overview, `DESIGN.md` §1–§4 for how the
 helper works, `SNAPSHOT.md` and `PAYLOAD.md` for the snapshot tool and its large-file
-store, and `CHANGELOG.md` `[0.9.23]` for what changed since the last release.
+store, and `CHANGELOG.md` `[Unreleased]`, `[0.9.24]` and `[0.9.23]` for what changed since the last review.
 
 THE DOCUMENTS ARE THE SPECIFICATION
 `DESIGN.md` (invariants §3 including §3.5 Adaptation, protocol §4, failure model §5,
@@ -243,7 +242,8 @@ catch a violation.
 PART G — everything since `06cc623` (Phase 2, first and longest)
 The map: `git log --oneline 06cc623..HEAD`, `git diff --stat 06cc623 HEAD` (the whole
 tree: code, tests, `.github`, `MANIFEST.in`, `pyproject.toml` and the documents),
-`ROADMAP.md` §1.10 (rows Z1–Z42, and B12 in §1.9) and `CHANGELOG.md` `[0.9.23]`. Each
+`ROADMAP.md` §1.10 (rows Z1-Z48, and B12 in §1.9) and `CHANGELOG.md` `[Unreleased]`,
+`[0.9.24]` and `[0.9.23]`. Each
 change was made in a day, with a test that was watched failing without it, mostly from
 a reviewer's report. For every one: does its test fail without it (delete it and run),
 does it cover the siblings of the reported path (question 10), and did it move the
@@ -267,10 +267,10 @@ G2. What the server says it holds versus what it serves, and who may see it.
   `get_file_bytes` read left, each with the reason its "absent" is safe. Is each reason
   true? Which reads of a *listing* decide "absent" (question 9)?
 - The Pro owner guard: an edition the server will not name is a risk (`hidden_history_risk`,
-  Z4); a group-owned library is named as one (`is_group_owner`, `owner_advice`, Z22); a
+  Z4); a group-owned library is meant to be named as one (`is_group_owner`, `owner_advice`, Z22; the owner value it matches was never measured, and `share` turned out to be every non-owner's); a
   non-owner's fetch warns when a tracked branch is missing (`_warn_if_tracked_refs_may_be_hidden`,
   `git_util.tracked_remote_names`, Z25). Which other operation reads "what is there" from a
-  listing an account may see only part of (`_prune_empty_ref_parents` is open as Z29)?
+  listing an account may see only part of (`_prune_empty_ref_parents` was one, Z29, now skipped for a non-owner: find the next)?
 - The lease after a write (`lock.verify_ownership`, `_lapsed_if_unknown`, Z5): a failed
   queue scan now reads the own ticket, and "unknown" past the lease by this machine's
   monotonic clock is lost. Is there still an interleaving in which "unknown" hides a
@@ -299,16 +299,71 @@ G5. The tiers and the tooling. `tools/gates.py --changed` builds its map from th
 over-count (a dynamic import, a name in a comment, a test that runs the helper as a
 process)? `tools/release_check.py` (Z10, Z42): it fails without GitHub unless
 `--offline`, requires `origin/main`, and warns while a triage in the root has an open
-item. `MANIFEST.in` and its test (Z17). The CI images and what still floats (Z37).
+item. `MANIFEST.in` and its test (Z17). The CI images and what still floats (Z37: a monthly unpinned run now, gating nothing).
 
-G6. Documents for the period: `CHANGELOG.md` `[0.9.23]` against `git log 06cc623..HEAD`
+G7. FAT, exFAT and a restore destination (0.9.24; `SNAPSHOT.md` section 5 is the spec, and
+every row of its two tables is a claim). `destination_name_problem` / `probed_name_problem`
+probe the folder restored into with four names and apply only the rules it enforces
+(`91_restore_names.py`, Z44); `classify_missing_names` / `report_names_not_restored_as_named`
+list the destination and compare it, in NFC, with the snapshot's names (Z45); a payload
+re-read caused only by an inode change is named (`74_payload_manifest.build_manifest`,
+Z43 option A). Attack the probe: a destination whose rules differ by *folder* (an ext4 mount
+under a FAT root, a case-sensitive folder on NTFS), a probe name that collides with a real
+file, a destination that cannot be written, a listing that fails halfway, Unicode that
+normalises on the way (HFS+, APFS), a name that is a prefix of another. If you have a Linux
+box, make a loop device (`CONTRIBUTING.md`, "Testing on FAT and exFAT") and restore onto it;
+say what you could not do.
+
+G8. Locks, copies and the pack cap. The settlement window follows this client's own ticket
+upload, capped at ten seconds (`lock.acquire`, Z28): can a slow upload now hold a push
+longer than `seafile.locktimeout` allows, or shorten the guard it exists for? A holder
+deletes the conflict copies of its own ticket at release, only the ones a scan saw plus one
+listing when it saw any (`lock._delete_own_tickets`, Z47): can it delete a copy that is
+another client's, or leave one that blocks others for a lease? An LFS object goes up as
+`<oid>.part-<token>` and is renamed, a copy beside an object of the right size removed and a
+wrong-size object replaced (`lfs._settle_object_name`, Z30): what if two machines rename at
+once, or the listing after the rename is stale? The pack cap a 413 teaches is kept in
+`remote.<name>.seafilegcmaxpackmib` and read before `seafile.gcmaxpackmib`
+(`config.remote_cap_key`, `RemoteConfig.load(remote_name)`, Z31): which readers still call
+`RemoteConfig.load()` without a name, and what does a remote whose name contains a slash or
+a dot do to the key?
+
+G9. What a fetch may delete, and what a delete may reach. The helper remembers what each
+remote advertised (`<git-dir>/seafile-advertised/<remote>`, per URL, `git_util.
+write_advertised_refs`/`read_advertised_refs`, Z27) and refuses an empty advertisement for a
+remote that was not empty: find a shape that is refused wrongly (a remote emptied on
+purpose, a repository re-created at the same URL, two clones sharing a git dir, a worktree)
+and a shape that still prunes. The prune of emptied ref folders is skipped for an account
+that may not see every ref (`helper._prune_empty_ref_parents`, `_risk_of_unseen_refs`, Z29,
+measured on Pro: a non-owner's recursive `DELETE` took a hidden child's contents): is there
+another recursive delete of a folder the account did not create, and what does the empty
+folder left behind do to the refs listing? A report-only `--payload-gc` by a Pro non-owner
+says its count may be too high (`72_payload_guards._require_whole_history`, Z34).
+
+G10. The tests and the tiers added in 0.9.24-0.9.25. The stub fails exactly the n-th listing
+(`dir_fail_nth`, Z38) and leaves `(SFConflict ...)` copies (`conflict_copy_for`, Z33/X7); the
+hashing search's serialising-disk test runs on a virtual clock (`run_hashing(clock=...)`,
+Z48): is the virtual clock itself a way for the test to pass while the real controller is
+wrong? Prose numbers are read back from their constants (`TestProseNumbersMatchTheirConstants`,
+Z35): which numbers in the specs are still not tied to one? `release_check` warns when a
+green run is followed by a failed re-run (Z41). `.github/workflows/realserver-latest.yml`
+(Z37) runs the unpinned images monthly and gates nothing: could it gate something by
+accident? The `MEASURED` lines in `tests/test_realserver.py` (Z22, Z29, Z36) never fail: do
+they measure what their docstrings say?
+
+G6. Documents for the period: `CHANGELOG.md` `[0.9.23]`, `[0.9.24]` and `[Unreleased]` against
+`git log 06cc623..HEAD`
 (an entry with no commit, a commit with no entry); `UPGRADING.md` (would an operator learn
 every behaviour that may now surface: the new refusals, the new warnings, the case rule's
 first run on a case-sensitive source?); the release notes against the changelog; the
 DESIGN, PAYLOAD, SNAPSHOT and USER_GUIDE additions against the code (quote both);
 AGENTS.md "Review rounds"; and `python tools/release_check.py --offline` (expected: every
-check `ok` except the tag, which already exists for 0.9.23, and the two CI legs, which
-are warnings under `--offline` — report anything else it says).
+check `ok` except the tag, which already exists for 0.9.24, the commit not being on
+`origin/main` if you are past the tag, and the two CI legs, which are warnings under
+`--offline` — report anything else it says). The guides and specs that 0.9.24 changed to
+match what was measured (`PAYLOAD.md` and the `USER_GUIDE.md` limits row on FAT,
+`SNAPSHOT_GUIDE.md` on restore destinations, `DESIGN.md` on the LFS rename, the ticket
+copies and the remembered advertisement, `CONTRIBUTING.md`, `AGENTS.md`) against the code.
 
 PART B — code of the helper (Phase 2)
 Scope: `git_remote_seafile/{helper,client,lock,gc,packs,refs,git_util,safety,url,config,
@@ -392,8 +447,8 @@ glm-5.3, opus-5.5) is settled as follows, by ROADMAP §1.10 row. For each row ma
 **read only** is a document or a test: read it and say whether it says what the code
 does; do not mutate it. For each row marked open, say CONFIRMED, FIXED SINCE, STALE (the
 description no longer matches the code — say what it does now) or MISRANKED (and why).
-Then spend the rest of the part on the open rows (Z27–Z41, B10, S1, W3, W4, W6, S21) and
-on the questions no machine in reach could answer.
+Then spend the rest of the part on the open rows (Z39, Z46, Z33's second half, B10, S1, W3,
+W4, W6's remainder, S21) and on the questions no machine in reach could answer.
 
 | Row | Finding, short | Disposition |
 | :--- | :--- | :--- |
@@ -418,15 +473,38 @@ on the questions no machine in reach could answer.
 | Z24–Z26 | warn: a push recreating a tracked path; a hidden branch on Pro; another payload rule | done with code (warnings, by the maintainer's decision) |
 | Z42 | the review process rules | read only |
 | B12 | 42 git processes per snapshot run | done with code (31) |
+| Z27 | the vanished-path guard missed a bare clone's command-line refspec and `--prune-tags` | done with code (0.9.25): the helper remembers what was advertised |
+| Z28 | the lock's settlement window was a fixed second | done with code (0.9.24), capped at ten |
+| Z29 | `_prune_empty_ref_parents` deleted a parent a Pro non-owner sees as empty | measured on Pro (a hidden child's contents were taken); done with code (0.9.25): not for a non-owner |
+| Z30 | two machines uploading one LFS object left conflict copies | done with code (0.9.24) |
+| Z31 | a 413 overwrote the repository-wide pack cap | done with code (0.9.24): per remote |
+| Z32 | NTFS folds non-ASCII case, git does not | read only (SNAPSHOT.md) |
+| Z33 | stub: duplicate-on-collision for copy and rename | half done: `(SFConflict ...)` copies yes, the stage view's copy no |
+| Z34 | a Pro non-owner's report-only `--payload-gc` under-counts | done with code (a Note) |
+| Z35 | prose numbers not tied to constants | done with code (tests; REF_WRITE timeout is stated nowhere) |
+| Z36 | real-server measurements | partly: `MEASURED` lines ran; group owner, 5,000-entry listing and an admin's view are open |
+| Z37 | unpinned images never tested | done (workflow ran once, green) |
+| Z38 | no fault that fails exactly the n-th listing | done with code; it does not reproduce Z3 (recorded) |
+| Z40 | `spell_like_index`'s test-only default; two `format_bytes` | done (the second declined: one module) |
+| Z41 | a green run then a failed re-run passed `release_check` | done with code |
+| Z43 | the payload cache re-reads everything after a FAT remount | option A done (a Note); option C open |
+| Z44, Z45 | a restore onto FAT stopped at git's first error; a case twin read as a defect; `dot.` passed the byte check | done with code (0.9.24) |
+| Z22 | a group-owned library's owner value | **corrected**: `share` is every non-owner's value, so it identifies nothing; the discriminator is unmeasured |
+| Z46 | a whole-group kill leaves git's `index.lock` | open, decision: leave it (the hint is right) |
+| Z47 | a conflict copy of a released holder's ticket blocks one lease | done with code (0.9.25): the holder deletes its own; reaping orphans was rejected as unsafe |
+| Z48 | the serialising-disk test failed on macOS runners | done with code (0.9.25): a virtual clock |
 
 Settled ground in this part: an "unknown" lease after a write that was read back is a
 warning while the lease is within its time by this machine's clock, and lost past it; a
 plain `--force` overwrites a listed-but-unreadable ref because that is what it asks for;
 the lease check is deliberately not raised into acquire; a missing branch, a recreated
 path and a differing payload rule warn rather than refuse, because each has a legitimate
-cause the tool cannot tell from the harmful one; gemini-4-argon's proposed fix for Z29
-(skip the prune on Pro) is not accepted, because an empty folder left behind reads as a
-failed listing.
+cause the tool cannot tell from the harmful one; skipping the prune for a Pro non-owner
+(gemini-4-argon's proposal for Z29, first declined) is accepted since it was measured to
+destroy hidden refs: the empty folder left behind reads as a failed listing, which is loud
+and harmless; reaping another client's ticket copies is not accepted (a live holder's newer
+refresh can be the copy); a `git fetch --prune-tags` against an empty remote deletes local
+tags by git's own rule, which the helper does not stop.
 
 PART H — what this prompt does not ask (Phase 2, last; suggestions, not findings)
 You have now read more of this project than most people will. Say what you would do
@@ -454,8 +532,8 @@ OUTPUT — one markdown document, sections in this order.
    prefixed with your `<model>` name (below): `glm-5.3-G2.1`.
 4. Part F: a table of row | your verdict | evidence.
 5. Part H: H1 (areas), H2 (suggestions) and H3 (this prompt). End H2 with a one-line
-   answer: which findings, if any, should block 0.9.24, and which would you ship in a
-   0.9.23.1 hot-fix instead?
+   answer: which findings, if any, should block 0.9.25, and which would you ship in a
+   0.9.24.1 hot-fix instead?
 6. What you checked and found sound: one line each, and for every part with no finding
    a line saying that and what you attacked there (a part with an empty table is not
    one you skipped). This is not filler — a named list of paths you attacked and could
