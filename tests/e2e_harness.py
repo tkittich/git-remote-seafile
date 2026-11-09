@@ -324,6 +324,17 @@ class _Handler(BaseHTTPRequestHandler):
                 body = '[{"id":"uploaded","name":"%s","size":%d}]' % (filename, total)
                 return self._send(200, body.encode())
             self.stub.files.setdefault(rid, {})[target] = filedata
+            marker = self.stub.conflict_copy_for
+            if marker and marker in target:
+                # What simultaneous writers leave on a real server (measured, CE 13.0.28): the
+                # path holds one value and "<name> (SFConflict <user> <date>).<last ext>" the
+                # other (ROADMAP Z33, X7).  Every upload to a matching path leaves one.
+                folder, _, leaf = target.rpartition("/")
+                stem, dot, ext = leaf.rpartition(".")
+                tag = f" (SFConflict e2e@example.com 2026-11-09-12-00-{len(self.stub.conflict_copies):02d})"
+                copy = f"{folder}/{stem}{tag}.{ext}" if dot and stem else f"{target}{tag}"
+                self.stub.files[rid][copy] = filedata
+                self.stub.conflict_copies.append(copy)
             return self._send(200, b'{"id":"uploaded"}')
 
         return self._send(404, b"{}")
@@ -357,6 +368,10 @@ class SeafileStub:
         #: Directory listings answered since the last reset (``dir_fail_nth`` counts them).
         self.dir_calls = 0
         self.dir_lock = threading.Lock()
+        #: A substring of an uploaded path that makes the upload leave a ``(SFConflict ...)``
+        #: copy beside it, and the copies left (ROADMAP Z33, X7).
+        self.conflict_copy_for = ""
+        self.conflict_copies: list[str] = []
         self.raw_hits: list[str] = []
         self.get_hooks: list[tuple[Any, Any]] = []
         self.partial: dict[tuple[str, str], bytearray] = {}
@@ -390,6 +405,8 @@ class SeafileStub:
         self.files.clear()
         self.faults.clear()
         self.dir_calls = 0
+        self.conflict_copy_for = ""
+        self.conflict_copies = []
         self.raw_hits.clear()
         self.get_hooks.clear()
         self.partial.clear()

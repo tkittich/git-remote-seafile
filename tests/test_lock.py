@@ -167,6 +167,27 @@ class TestConcurrencyAndLocking(unittest.TestCase):
         self.assertTrue(lock.acquired)
         self.assertNotIn("/path/.git-lock.d/bob-nonce.json", store.files)
 
+    def test_a_conflict_copy_of_a_released_holders_ticket_holds_the_lock_for_one_lease(self):
+        """MEASURED, not wanted (ROADMAP Z47): simultaneous writers of one ticket leave
+        ``<nonce> (SFConflict ...).json`` beside it.  The holder deletes ``<nonce>.json`` when it
+        releases, the copy stays, and the scan reads it as a live holder on another machine until
+        its lease runs out, when it is reaped.  Bounded (one lease), and a fix must keep a copy
+        whose original is still there counting, so this pins what happens today."""
+        store = _SharedLockStore()
+        copy = "/path/.git-lock.d/aaaa (SFConflict bob@x 2026-11-09-12-00-00).json"
+        store.put_ticket(copy, json.loads(_ticket("aaaa", owner="bob", holding=True)))
+
+        refused = RemoteLock(store.client("t1"), "repo1", "/path", timeout=0, lease=60, settle=0)
+        with self.assertRaises(RepositoryLockedError) as ctx:
+            refused.acquire()
+        self.assertIn("locked by 'bob'", str(ctx.exception))
+
+        store.expire_all(120)
+        later = RemoteLock(store.client("t2"), "repo1", "/path", timeout=0, lease=60, settle=0)
+        later.acquire()
+        self.assertTrue(later.acquired)
+        self.assertNotIn(copy, store.files, "an expired copy is reaped like any expired ticket")
+
     def test_corrupt_ticket_payload_is_skipped(self):
         """Corrupt JSON left by a cut mid-upload neither blocks nor crashes.
 
