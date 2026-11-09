@@ -1727,6 +1727,25 @@ class PayloadRetentionTests(_PayloadFixture):
         self.assertIn("--payload-allow-non-owner only applies to --payload-gc --payload-delete",
                       out + err)
 
+    def test_a_report_by_a_non_owner_on_pro_says_its_count_may_be_too_high(self):
+        """ROADMAP Z34: the history a non-owner reads may lack a hidden folder's refs, so
+        objects only those refs reach are printed as unused.  The report says so; the owner,
+        Community Edition and the routine report after a push stay quiet."""
+        self.assertEqual(self.snapshot()[0], 0)
+        rc, out, err = self.gc()
+        self.assertEqual(rc, 0, out + err)
+        self.assertNotIn("may count live objects as unused", out + err)
+        self.stub.faults.update(pro_server=1, owner="someone-else@example.com")
+        rc, out, err = self.gc()
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn("may count live objects as unused", out)
+        self.assertIn("is not the library's owner", out)
+        rc, out, err = self.snapshot()
+        self.assertNotIn("may count live objects as unused", out + err)
+        self.stub.faults.update(owner="self")
+        rc, out, err = self.gc()
+        self.assertNotIn("may count live objects as unused", out + err)
+
     def test_a_delete_run_removes_what_a_killed_link_probe_left(self):
         """ROADMAP B4: a run killed during the link probe left a 16 MiB ``probe-*`` in
         ``objects/`` for good, where no payload tool reads.  A delete run now removes one

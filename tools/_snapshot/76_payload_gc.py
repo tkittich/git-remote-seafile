@@ -576,7 +576,7 @@ def payload_gc(
     if not isinstance(pending_raw, dict):
         raise SnapshotError(f"{base}/{_PENDING_NAME} is not an object; remove it and run again")
     _require_server_clock(client, delete)
-    _require_whole_history(client, rid, delete and not allow_non_owner)
+    _require_whole_history(client, rid, delete, check=not (allow_non_owner or from_vault))
     now = _grace_now(client)
     # A stamp that cannot be a time this tool wrote (zero, negative, in the future,
     # a boolean, NaN) is not trusted: "now - stamp" would call the grace period over

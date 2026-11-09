@@ -476,7 +476,11 @@ Nothing found shows a fix for plain literal paths; it was still quadratic on 2.5
    case-sensitive source -- a folder WSL created, or Windows' per-directory flag --
    beside a vault on ordinary NTFS kept one of `d/x.txt` and `D/x.txt`). The probe
    reads the root and its first folders, so a source that mixes the two kinds of
-   folder is judged by the first one it meets.
+   folder is judged by the first one it meets. One limit stays, and is git's own:
+   NTFS folds case for every letter, git for A-Z only, so a folder renamed `über/` to
+   `Über/` on NTFS reaches git as two different names and is recorded under both. That
+   is a duplicate in the snapshot, not a loss, and a restore onto a folder that folds
+   case keeps one of the pair (the restore says so, ROADMAP Z45).
 3. A file that changes while git reads it (`short read while indexing`,
    `unstable object source data`) is tried again twice, two seconds apart.
 

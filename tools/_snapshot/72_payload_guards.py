@@ -365,15 +365,20 @@ def require_complete_history(repo: Path, *, walk: bool) -> None:
 _MAX_CLOCK_SKEW_SECONDS = 3600.0
 
 
-def _require_whole_history(client: Any, rid: str, delete: bool) -> None:
+def _require_whole_history(client: Any, rid: str, delete: bool, *, check: bool = True) -> None:
     """Refuse a deletion by an account that may not see the whole history (ROADMAP B2).
 
     On Seafile Professional an ``invisible`` folder permission hides the folder from
     a non-owner's listing (measured, 13.0.29), so a branch or tag under it would
-    read as gone and its objects as unused.  A report goes on (it deletes nothing);
-    ``--payload-allow-non-owner`` says no folder permission applies to this account.
+    read as gone and its objects as unused.  A report goes on (it deletes nothing) but
+    says its count may be too high (Z34); ``--payload-allow-non-owner`` says no folder
+    permission applies to this account, and *check* False skips the question.
     """
-    risk = client.hidden_history_risk(rid) if delete else None
+    risk = client.hidden_history_risk(rid) if check else None
+    if isinstance(risk, str) and risk and not delete:
+        print(f"Note: {risk}. This report may count live objects as unused; delete nothing "
+              "from it, and run --payload-gc as the library's owner for a count to rely on.")
+        return
     if isinstance(risk, str) and risk:
         from git_remote_seafile.client import owner_advice
 
