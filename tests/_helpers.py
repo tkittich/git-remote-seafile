@@ -115,6 +115,7 @@ def make_helper(**attrs):
         "repo_id": "repo1",
         "client": MagicMock(),
         "dry_run": False,
+        "_history_risk": None,
         "_refs_cache": {},
     }
     defaults.update(attrs)

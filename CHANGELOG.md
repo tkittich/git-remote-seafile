@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **A Pro account that is not the library's owner no longer deletes a folder it cannot see into** (ROADMAP Z29; measured on Pro 13.0.29 in the real-server run). Deleting the last branch under a folder pruned the emptied parent with a recursive delete; an `invisible` child makes that parent read as empty to a non-owner, and the delete took the hidden child's contents with it. The prune is now skipped for such an account (and when the owner question cannot be answered), the empty folder stays, and a `Note:` says so. The owner and Community Edition prune as before.
+
 ## [0.9.24] - 2026-11-09
 
 FAT32 and exFAT, measured and handled. The two filesystems were measured on Linux loop devices and on real Windows drives (the tables are in `SNAPSHOT.md` section 5), and what they showed is now behaviour: a restore onto a volume that refuses names lists and skips them instead of stopping at git's first error, says when a name collides in case or was changed by the volume, and a payload re-read after a remount names the inode as the cause. Alongside: the pack cap a refused upload teaches is kept per remote, the lock's settlement window follows a slow link, two machines uploading one LFS object leave no conflict copy, and a monthly run tests the unpinned Seafile images. A killed snapshot (six `SIGKILL` points) was measured to recover.

@@ -3237,5 +3237,52 @@ class ProtocolErrorDisciplineTests(unittest.TestCase):
         self.assertGreater(source.count("_proto_error("), 10)
 
 
+class PruneEmptyRefParentsTests(unittest.TestCase):
+    """ROADMAP Z29, measured on Pro 13.0.29: a non-owner's ``DELETE`` of a parent it reads as empty
+    (its only child is ``invisible`` to that account) answered success and the hidden child's
+    contents were gone.  The prune is skipped for an account that may not see every ref."""
+
+    def helper(self, risk):
+        h = make_helper()
+        h.client = MagicMock()
+        h.client.hidden_history_risk.return_value = risk
+        h.client.list_dir.return_value = []          # the parent reads as empty ...
+        h.client.dir_exists.return_value = True      # ... and exists
+        return h
+
+    def prune(self, h, ref="refs/heads/team/topic"):
+        err = io.StringIO()
+        with patch("sys.stderr", err):
+            h._prune_empty_ref_parents(ref)
+        return err.getvalue()
+
+    def test_the_owner_still_prunes_what_its_own_delete_emptied(self):
+        h = self.helper(None)
+        self.assertEqual(self.prune(h), "")
+        deleted = [c.args[1] for c in h.client.delete_entry.call_args_list]
+        self.assertEqual(deleted, ["/git-repo/refs/heads/team", "/git-repo/refs/heads"])
+
+    def test_an_account_that_may_not_see_every_ref_deletes_no_folder(self):
+        risk = "this account (b@x) is not the library's owner (a@x), and on Seafile Professional a folder permission can hide refs from it"
+        h = self.helper(risk)
+        said = self.prune(h)
+        h.client.delete_entry.assert_not_called()
+        self.assertIn("Note: left the empty folder above refs/heads/team/topic in place", said)
+        self.assertIn("is not the library's owner", said)
+
+    def test_a_question_the_server_cannot_answer_is_a_risk_not_a_pass(self):
+        h = self.helper(None)
+        h.client.hidden_history_risk.side_effect = SeafileAPIError("HTTP 502")
+        said = self.prune(h)
+        h.client.delete_entry.assert_not_called()
+        self.assertIn("could not ask the server who owns this library", said)
+
+    def test_the_question_is_asked_once_per_session(self):
+        h = self.helper("this account is not the library's owner")
+        self.prune(h)
+        self.prune(h, "refs/tags/a/b")
+        self.assertEqual(h.client.hidden_history_risk.call_count, 1)
+
+
 if __name__ == "__main__":
     unittest.main()

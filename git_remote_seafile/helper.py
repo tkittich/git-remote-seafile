@@ -271,6 +271,8 @@ class RemoteHelper:
         if client is None:
             self.client.layout_root = self.repo_path
         self.dry_run = False
+        #: ``(risk,)`` once :meth:`_risk_of_unseen_refs` has asked; ``None`` before.
+        self._history_risk: tuple[str | None] | None = None
         self._refs_cache: dict[str, str] = {}  # refname -> sha1
 
     @property
@@ -296,6 +298,20 @@ class RemoteHelper:
         clean_rel = rel_path.strip("/")
         return f"{self.repo_path}/{clean_rel}".rstrip("/")
 
+    def _risk_of_unseen_refs(self) -> str | None:
+        """Why this account may not see every ref (a Pro non-owner), asked once per session.
+
+        A failed question is a risk, not an absence of one: "cannot tell" must not switch off
+        a guard that exists for the case where the answer matters.
+        """
+        if self._history_risk is None:
+            try:
+                risk = self.client.hidden_history_risk(self.repo_id)
+            except Exception as ex:
+                risk = f"could not ask the server who owns this library ({_flatten(ex)})"
+            self._history_risk = (risk if isinstance(risk, str) and risk else None,)
+        return self._history_risk[0]
+
     def _prune_empty_ref_parents(self, ref_path: str) -> None:
         """Prune empty parent directories up to (and including) the namespace.
 
@@ -306,7 +322,24 @@ class RemoteHelper:
         the right answer for a server glitch but the wrong one for a namespace
         this tool emptied itself.  Removing the directory keeps the two
         distinguishable, and ``mkdir_p`` recreates it on the next push.
+
+        Not for an account that may not see the whole repository (Seafile Pro, not the
+        owner): a folder permission can leave a child out of that account's listing, so a
+        parent it reads as empty may hold refs it cannot see, and the delete is recursive.
+        Measured on Pro 13.0.29 (ROADMAP Z29): the non-owner's ``DELETE`` of such a parent
+        answered success and the hidden child's contents were gone.  The empty folder stays;
+        the refs listing's "exists and answers empty" guard then reports it until a branch
+        is pushed again, which is the loud, harmless failure.
         """
+        risk = self._risk_of_unseen_refs()
+        if risk:
+            sys.stderr.write(
+                f"Note: left the empty folder above {ref_path} in place: {risk}. Removing a "
+                "folder deletes everything inside it, including what this account cannot see; "
+                "the owner can remove it, or push a branch there again.\n"
+            )
+            sys.stderr.flush()
+            return
         parent = os.path.dirname(ref_path).replace("\\", "/")
         stop_points = {"refs", ""}
         while parent and parent not in stop_points:
