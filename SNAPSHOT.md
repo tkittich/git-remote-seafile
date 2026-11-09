@@ -513,8 +513,8 @@ Linux, and a full disk, were measured (next).
 
 **Measured on FAT32 and exFAT (2026-11-09; Linux `vfat` and `exfat` drivers, kernel
 6.18 in Debian 13 on WSL2, `mkfs.vfat -F 32` and `mkfs.exfat` on a loop device, git
-2.47).** These are the Linux drivers. Windows' own FAT and exFAT drivers differ (a
-change time of 0, local-time stamps) and were not measured.
+2.47).** These are the Linux drivers; the Windows drivers differ and are in the next
+table.
 
 | Fact | FAT32 | exFAT |
 | :--- | :--- | :--- |
@@ -531,7 +531,30 @@ change time of 0, local-time stamps) and were not measured.
 | Mode | every file `0755`, `chmod` accepted and ignored | same |
 | git's own probe | `core.filemode=false`, `core.symlinks=false`, `core.ignorecase=true` | same |
 
-What the tool did with them:
+**The Windows drivers (2026-11-09; Windows 11, Python 3.14, a 32 GiB FAT32 volume and
+a 32 GiB exFAT volume, both fixed drives).** The two behave alike, and unlike their Linux
+drivers:
+
+| Fact | FAT32 and exFAT on Windows |
+| :--- | :--- |
+| Modification time kept | **rounded up to the next even second**, exFAT included (`...1.123` reads `...2`, `...5.0` reads `...6`, `...4.0` stays); a file written now reads up to 2 s in the *future* |
+| A rewrite 0.3 s later | same mtime |
+| `st_ctime` | the creation time; never moves |
+| The tool's `change_time_ns` (NTFS' real change time) | **0 on both**: no change time, so the hour margin applies (Z12 was a simulation; this is the measurement) |
+| An in-place edit with the mtime put back | nothing in the key moves (change time 0, inode, size, mtime): only the hour margin and `--rebuild-index` cover it |
+| Inode | FAT32: changes on a rename (21020800 became 21020864); exFAT: kept. Not measured across a dismount (needs an elevated shell) |
+| Access time | FAT32: one day; exFAT: 2 s |
+| Names | `* ? " < > \|` refused; `x:y` is read as a stream name and fails; a trailing space or dot is **dropped by Win32** (`\\?\` paths keep the dot); 255 UTF-16 units (127 emoji fit, 128 do not); NFC and NFD are two files; `Über` and `über` are one |
+| Case-only rename (`B.txt` to `b.TXT`) | accepted and changes nothing, as on Linux |
+| Links | symlink and hard link fail with `WinError 1` |
+| A write at offset 4 GiB on FAT32 | `ENOSPC` ("No space left on device"), not a size error |
+
+On both, a snapshot of a small tree with an 8 MiB file ran in 2-3 s and a restore into
+a new folder was byte-exact. A **same-size edit made right after a snapshot was
+captured** (git's racy-edit rule, helped by the rounded-up future mtime), and an **edit
+with the mtime put back was not** (the blind spot below; `--rebuild-index` recorded it).
+
+What the tool did with the Linux-driver volumes:
 
 * **Snapshot of a tree on either volume**: first run, "no changes", the same after the
   inode numbers were renumbered, and one added file, all correct; a restore into a new
