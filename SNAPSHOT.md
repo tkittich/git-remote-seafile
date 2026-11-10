@@ -568,6 +568,23 @@ a new folder was byte-exact. A **same-size edit made right after a snapshot was
 captured** (git's racy-edit rule, helped by the rounded-up future mtime), and an **edit
 with the mtime put back was not** (the blind spot below; `--rebuild-index` recorded it).
 
+**Payload from the Windows drives (2026-11-10, against the in-process stub: the real server was
+unreachable that day, so this is the server-independent half).** A tree on T: (FAT32) and on U:
+(exFAT) with two payload files (20 and 30 MiB) and small files, three runs and a restore each:
+
+* The run says `4 file(s) are on a filesystem with no change time of its own` and, with nothing
+  changed, hashes the two payload files **again** (`were hashed again ... or are too recent to
+  trust`): a file younger than the hour margin is never vouched for. A no-change run took 3 s
+  for 50 MiB; on a large tree the first hour of a volume's life costs a full re-read per run.
+* **An in-place same-size edit with the mtime put back was caught** (`uploaded 1 object`, a
+  new manifest) *because* the file was younger than the margin; after an hour the same edit
+  would pass, which is the documented blind spot (`--payload-rehash`, `--rebuild-index`).
+* The restore was byte-exact, `payload verified: 2 file(s), SHA-256 matches the manifest`, the
+  recorded modification times were restored, and `--payload-verify all` passed. 4 of 4 and 5
+  of 5 restored files equal their source by SHA-256.
+* **Not measured:** a payload file over 4 GiB on exFAT (chunked upload to a real server) and
+  the real server's own limits; both wait for the server.
+
 What the tool did with the Linux-driver volumes:
 
 * **Snapshot of a tree on either volume**: first run, "no changes", the same after the

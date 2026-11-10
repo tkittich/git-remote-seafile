@@ -18,6 +18,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **A lock holder deletes the conflict copies of its own ticket when it releases** (ROADMAP Z47). Simultaneous writers of one ticket leave `<nonce> (SFConflict ...).json` beside it; the copy of a released holder kept other machines waiting for up to one lease (60 s). The holder removes the copies it has seen and, when it saw any, those made since (one extra listing; a push that saw none pays nothing). Another client never deletes one: a copy can be the newer value of a live holder whose original was reaped.
 
 ### Tests
+- **A listing of 5,100 entries is complete on CE and on Pro 13.0.29** (ROADMAP S1, the one open data-loss-class item): `LargeListingTests` writes 5,100 files and asserts one `list_dir` returns every name; it passed in the container run (about 4 minutes of uploads), so the suspected 5,000-entry cap is not reproduced.
+- **The test suite's timing assertions were audited** (Z50), `test_gc` no longer patches `Path.glob` for the whole process, the stub can number a server-side copy onto a taken name (Z33), and `ci.yml` has locale legs (`tr_TR.UTF-8`, and an ASCII-only process) (Z39).
 - **The hashing search's serialising-disk test runs on a virtual clock** (ROADMAP Z48): it failed on macOS runners three times (two legs, two workflows) because 10 ms sleeps overshoot on a busy runner and the noise read as a gain. `run_hashing` takes a `clock`; the test's disk advances virtual time per MiB, so every level reads exactly 100 MiB/s. 120 runs under 24-way contention passed.
 
 ### Fixed

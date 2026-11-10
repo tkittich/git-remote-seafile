@@ -155,7 +155,7 @@ that talks to the server:
   listing shows, and why `refs.py` hunts conflict copies at all
   (ROADMAP S21 measures the rename on `replace=0` too);
 * the directory-listing endpoint ignores paging parameters and was measured
-  whole at 5,000 entries (ROADMAP S1) — that is one deployment's answer,
+  whole at 5,100 entries on CE and on Pro 13.0.29, in the container run (ROADMAP S1; `LargeListingTests` asserts it) — that is one deployment's answer,
   not a protocol guarantee;
 * **Seafile Professional (13.0.29) is not Community Edition on a missing folder** (issue 6):
   a file read *or a file delete* under a folder that does not exist answers 403
