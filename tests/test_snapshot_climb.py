@@ -448,21 +448,26 @@ class ParallelHashingTests(unittest.TestCase):
         for rate in re.findall(r"\d+: (\d+)", said.split("MiB/s by count:")[-1]):
             self.assertAlmostEqual(int(rate), 100, delta=3, msg=said)
 
-    def test_the_same_disk_on_the_wall_clock_is_left_at_one_in_one_of_three_tries(self):
-        """The real-time path (``time.monotonic``) still drives the search; noisy runners get three tries."""
-        disk = threading.Lock()
+    def test_the_search_runs_on_the_real_clock_and_hashes_every_file_once(self):
+        """The default clock (``time.monotonic``) still drives the search end to end.
+
+        Asserts only what a real clock can promise on a busy runner: every file is hashed exactly
+        once, and the run says what it settled on.  *Which* count it settles on is a property of
+        the disk and the clock's noise, and is tested on the virtual clock above (ROADMAP Z48: the
+        wall-clock version of that assertion failed on macOS runners three times, once more after
+        it was kept as a smoke test).
+        """
+        disk, seen = threading.Lock(), []
 
         def work(rel, meter):
             with disk:
                 time.sleep(0.01)
+                seen.append(rel)
                 meter.add(MIB)
 
-        said = ""
-        for _attempt in range(3):
-            said = self._run(work, n=200)
-            if "settled on 1 parallel hasher" in said:
-                break
-        self.assertIn("settled on 1 parallel hasher", said)
+        said = self._run(work, n=200)
+        self.assertEqual(sorted(seen), sorted(str(i) for i in range(200)))
+        self.assertRegex(said, r"settled on \d+ parallel hasher|finished while still measuring")
 
     def test_a_disk_that_scales_gets_more_readers(self):
         def work(rel, meter):
