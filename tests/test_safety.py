@@ -854,18 +854,18 @@ class TestDiscoverLocalSyncedLibraries(unittest.TestCase):
     def test_a_missing_candidate_is_not_retried(self):
         """Seven of the eight candidate paths are absent on any machine; the
         retry loop once slept on each of them (3.5 s per discovery)."""
-        import time
-
         from git_remote_seafile import safety
 
+        # Observed, not timed: the retry loop lives in ``read_repo_properties`` (it sleeps there),
+        # and an absent candidate must never reach it.  The earlier version asserted that the
+        # discovery took under 0.9 s of wall clock, which a starved runner can exceed.
         with tempfile.TemporaryDirectory() as td:
             home = Path(td) / "empty-home"
             home.mkdir()
-            started = time.monotonic()
             with patch("pathlib.Path.home", return_value=home), \
-                    patch.object(safety, "_DISCOVERY_RETRY_SECONDS", 1.0):
+                    patch.object(safety, "read_repo_properties") as reader:
                 self.assertEqual(discover_local_synced_libraries(), [])
-        self.assertLess(time.monotonic() - started, 0.9)
+        reader.assert_not_called()
 
     def test_a_torn_first_read_is_retried(self):
         from contextlib import contextmanager
