@@ -86,6 +86,30 @@ def _pack_listing(base_entries: list[dict], uploaded_sizes: dict[str, int]) -> l
     return base_entries + [{"name": n, "size": s} for n, s in uploaded_sizes.items()]
 
 
+
+@contextlib.contextmanager
+def _glob_of_staged_packs(staged=None):
+    """Stands in for ``Path.glob`` only where gc asks for the staged packs (``pack-*...``).
+
+    The tests used to patch ``pathlib.Path.glob`` for the whole process, which answered every
+    glob in the code under test with the staged packs and so could mask an unrelated glob
+    (ROADMAP backlog, de-glob test_gc).  Here any other pattern is the real one.  Yields the
+    mock to configure: its ``return_value`` is what the staged-pack patterns return.
+    """
+    import pathlib
+
+    real = pathlib.Path.glob
+    holder = MagicMock()
+    holder.return_value = [] if staged is None else staged
+
+    def fake(self, pattern, *args, **kwargs):
+        if str(pattern).startswith("pack-"):
+            return holder(pattern)
+        return real(self, pattern, *args, **kwargs)
+
+    with patch.object(pathlib.Path, "glob", fake):
+        yield holder
+
 class TestRemoteGC(unittest.TestCase):
     def test_a_growth_is_not_reported_as_a_saving(self):
         """Compaction can enlarge a repository, and the message must not lie.
@@ -210,7 +234,7 @@ class TestRemoteGC(unittest.TestCase):
 
         mock_subprocess.side_effect = fake_subprocess
 
-        with patch("pathlib.Path.glob") as mock_glob:
+        with _glob_of_staged_packs() as mock_glob:
             p_pack = MagicMock()
             p_pack.name = "pack-abcdef1234567890abcdef1234567890abcdef12.pack"
             p_pack.read_bytes.return_value = b"NEW-PACK"
@@ -366,7 +390,7 @@ class TestRemoteGC(unittest.TestCase):
 
         mock_subprocess.side_effect = fake_subprocess
 
-        with patch("pathlib.Path.glob") as mock_glob:
+        with _glob_of_staged_packs() as mock_glob:
             p_pack = MagicMock()
             p_pack.name = "pack-sha123.pack"
             p_pack.read_bytes.return_value = b"NEW-PACK"
@@ -404,7 +428,7 @@ class TestRemoteGC(unittest.TestCase):
         mock_client.get_file_text.return_value = "sha000111"
         mock_subprocess.return_value = MagicMock(returncode=0)
 
-        with patch("pathlib.Path.glob") as mock_glob, patch("git_remote_seafile.gc.RemoteLock") as mock_lock_cls:
+        with _glob_of_staged_packs() as mock_glob, patch("git_remote_seafile.gc.RemoteLock") as mock_lock_cls:
             p_pack = MagicMock()
             p_pack.name = "pack-sha123.pack"
             p_pack.stat.return_value.st_size = 10
@@ -559,7 +583,7 @@ class TestGcRecoveryAndFencing(unittest.TestCase):
         mock_subprocess.side_effect = self._subprocess_fake()
 
         err = io.StringIO()
-        with patch("pathlib.Path.glob") as mock_glob, contextlib.redirect_stderr(err):
+        with _glob_of_staged_packs() as mock_glob, contextlib.redirect_stderr(err):
             self._one_new_pack(mock_glob)
             res = compact_repository(client, "repo1", "/path", min_packs=2, verbose=False)
 
@@ -590,7 +614,7 @@ class TestGcRecoveryAndFencing(unittest.TestCase):
         client.get_file_text.side_effect = moved_after_upload
         mock_subprocess.side_effect = self._subprocess_fake()
 
-        with patch("pathlib.Path.glob") as mock_glob:
+        with _glob_of_staged_packs() as mock_glob:
             self._one_new_pack(mock_glob)
             with self.assertRaises(RuntimeError) as ctx:
                 compact_repository(client, "repo1", "/path", min_packs=2, verbose=False)
@@ -609,7 +633,7 @@ class TestGcRecoveryAndFencing(unittest.TestCase):
         client = self._client([{"name": "pack-1.pack"}, {"name": "pack-2.pack"}])
         mock_subprocess.side_effect = self._subprocess_fake(verify_pack_rc=1)
 
-        with patch("pathlib.Path.glob") as mock_glob:
+        with _glob_of_staged_packs() as mock_glob:
             self._one_new_pack(mock_glob)
             res = compact_repository(client, "repo1", "/path", min_packs=2, verbose=False)
 
@@ -661,7 +685,7 @@ class TestGcRecoveryAndFencing(unittest.TestCase):
         mock_subprocess.side_effect = self._subprocess_fake()
 
         err = io.StringIO()
-        with patch("pathlib.Path.glob") as mock_glob, contextlib.redirect_stderr(err):
+        with _glob_of_staged_packs() as mock_glob, contextlib.redirect_stderr(err):
             self._one_new_pack(mock_glob)
             res = compact_repository(client, "repo1", "/path", min_packs=2, verbose=True)
 
@@ -720,7 +744,7 @@ class TestGcRecoveryAndFencing(unittest.TestCase):
         client.upload_file.side_effect = fake_upload
         mock_subprocess.side_effect = self._subprocess_fake()
 
-        with patch("pathlib.Path.glob") as mock_glob, patch(
+        with _glob_of_staged_packs() as mock_glob, patch(
             "git_remote_seafile.gc.RemoteLock", _CountingLock
         ):
             self._one_new_pack(mock_glob)
@@ -906,7 +930,7 @@ class TestGcRecoveryAndFencing(unittest.TestCase):
         client = self._client([{"name": "pack-1.pack"}, {"name": "pack-2.pack"}])
         mock_subprocess.side_effect = self._subprocess_fake()
 
-        with patch("pathlib.Path.glob", return_value=[]):
+        with _glob_of_staged_packs([]):
             with self.assertRaises(RuntimeError) as ctx:
                 compact_repository(client, "repo1", "/path", min_packs=2, verbose=False)
 
@@ -932,7 +956,7 @@ class TestGcRecoveryAndFencing(unittest.TestCase):
         mock_subprocess.side_effect = self._subprocess_fake(verify_pack_rc=1)
 
         err = io.StringIO()
-        with patch("pathlib.Path.glob") as mock_glob, patch(
+        with _glob_of_staged_packs() as mock_glob, patch(
             "pathlib.Path.unlink", side_effect=OSError("in use")
         ), contextlib.redirect_stderr(err):
             self._one_new_pack(mock_glob)
@@ -956,7 +980,7 @@ class TestGcRecoveryAndFencing(unittest.TestCase):
         client = self._client([{"name": f"pack-{'a' * 64}.pack"}, {"name": "pack-1.pack"}])
         mock_subprocess.side_effect = self._subprocess_fake()
 
-        with patch("pathlib.Path.glob") as mock_glob:
+        with _glob_of_staged_packs() as mock_glob:
             self._one_new_pack(mock_glob)
             res = compact_repository(client, "repo1", "/path", min_packs=2, verbose=False)
 
@@ -1136,7 +1160,7 @@ class TestGcVerifiesTheUploadBeforeDeletingAnything(unittest.TestCase):
         client.remote_size_override[self._NEW_PACK] = 3
         mock_subprocess.side_effect = self._subprocess_fake()
 
-        with patch("pathlib.Path.glob") as mock_glob:
+        with _glob_of_staged_packs() as mock_glob:
             self._staged_pack(mock_glob)
             with self.assertRaises(RuntimeError) as ctx:
                 compact_repository(client, "repo1", "/path", min_packs=2, verbose=False)
@@ -1152,7 +1176,7 @@ class TestGcVerifiesTheUploadBeforeDeletingAnything(unittest.TestCase):
         client.remote_size_override[self._NEW_PACK] = None
         mock_subprocess.side_effect = self._subprocess_fake()
 
-        with patch("pathlib.Path.glob") as mock_glob:
+        with _glob_of_staged_packs() as mock_glob:
             self._staged_pack(mock_glob)
             with self.assertRaises(RuntimeError) as ctx:
                 compact_repository(client, "repo1", "/path", min_packs=2, verbose=False)
@@ -1180,7 +1204,7 @@ class TestGcVerifiesTheUploadBeforeDeletingAnything(unittest.TestCase):
 
         client.list_dir.side_effect = flaky_list_dir
 
-        with patch("pathlib.Path.glob") as mock_glob:
+        with _glob_of_staged_packs() as mock_glob:
             self._staged_pack(mock_glob)
             with self.assertRaises(RuntimeError) as ctx:
                 compact_repository(client, "repo1", "/path", min_packs=2, verbose=False)
@@ -1207,7 +1231,7 @@ class TestGcVerifiesTheUploadBeforeDeletingAnything(unittest.TestCase):
         mock_subprocess.side_effect = self._subprocess_fake()
         err = io.StringIO()
 
-        with patch("pathlib.Path.glob") as mock_glob, patch(
+        with _glob_of_staged_packs() as mock_glob, patch(
             "git_remote_seafile.gc.RemoteLock", _FencedOnceLock
         ), contextlib.redirect_stderr(err):
             self._staged_pack(mock_glob)
