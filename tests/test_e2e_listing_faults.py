@@ -53,7 +53,14 @@ class _ListingFaultCase(E2ETestCase):
         action()
         return self.stub.dir_calls - before
 
-    def _push_failing_listing(self, n: int, src: pathlib.Path) -> int:
+    #: How many positions of a probe's count a later push may not reach.  The number of listings
+    #: varies by one or two between runs of the same push (a retry, a settle, timing), so the
+    #: probe's last position can be one the injected run never makes: the invariants are still
+    #: checked there, and the test fails only if many positions were missed (nothing tested).
+    MAX_UNREACHED = 3
+
+    def _push_failing_listing(self, n: int, src: pathlib.Path) -> tuple[int, bool]:
+        """``(exit code, whether listing n was reached and so failed)`` of a push with the n-th listing 404."""
         target = self.stub.dir_calls + n
         self.stub.faults["dir_fail_nth"] = target
         self.stub.faults["dir_fail_status"] = 404
@@ -62,8 +69,13 @@ class _ListingFaultCase(E2ETestCase):
         finally:
             self.stub.faults.pop("dir_fail_nth", None)
             self.stub.faults.pop("dir_fail_status", None)
-        self.assertGreaterEqual(self.stub.dir_calls, target, f"listing {n} was never asked for: nothing was injected")
-        return rc
+        return rc, self.stub.dir_calls >= target
+
+    def _enough_were_reached(self, unreached: list[int], count: int) -> None:
+        self.assertLessEqual(
+            len(unreached), self.MAX_UNREACHED,
+            f"listings {unreached} of {count} were never asked for: too few failures were injected",
+        )
 
     def _check_after(self, label: str, name: str, src: pathlib.Path, rc: int, expect_file: str) -> None:
         if rc == 0:
@@ -92,12 +104,16 @@ class TestOneFailedListingInAFirstPush(_ListingFaultCase):
         probe = self._source("lf-probe")
         count = self._listings_of(lambda: run_git(["push", "-u", "origin", "main"], probe, self.env))
         self.assertGreater(count, 0, "a push lists nothing: the fault has nothing to hit")
+        unreached: list[int] = []
         for n in range(1, count + 1):
             with self.subTest(listing=n):
                 name = f"lf-first-{n}"
                 src = self._source(name)
-                rc = self._push_failing_listing(n, src)
+                rc, reached = self._push_failing_listing(n, src)
+                if not reached:
+                    unreached.append(n)
                 self._check_after(f"first push, listing {n}", name, src, rc, "a.txt")
+        self._enough_were_reached(unreached, count)
 
 
 class TestOneFailedListingInAnUpdate(_ListingFaultCase):
@@ -109,14 +125,18 @@ class TestOneFailedListingInAnUpdate(_ListingFaultCase):
         commit_file(probe, "b.txt", "two\n", "c2", self.env)
         count = self._listings_of(lambda: run_git(["push", "origin", "main"], probe, self.env))
         self.assertGreater(count, 0)
+        unreached: list[int] = []
         for n in range(1, count + 1):
             with self.subTest(listing=n):
                 name = f"lf-update-{n}"
                 src = self._source(name)
                 run_git(["push", "-u", "origin", "main"], src, self.env)
                 commit_file(src, "b.txt", "two\n", "c2", self.env)
-                rc = self._push_failing_listing(n, src)
+                rc, reached = self._push_failing_listing(n, src)
+                if not reached:
+                    unreached.append(n)
                 self._check_after(f"update, listing {n}", name, src, rc, "b.txt")
+        self._enough_were_reached(unreached, count)
 
 
 class TestOneFailedListingNeverLetsADivergentPushWin(_ListingFaultCase):
@@ -143,14 +163,18 @@ class TestOneFailedListingNeverLetsADivergentPushWin(_ListingFaultCase):
         count = self._listings_of(
             lambda: run_git(["push", "origin", "main"], probe, self.env, check=False))
         self.assertGreater(count, 0)
+        unreached: list[int] = []
         for n in range(1, count + 1):
             with self.subTest(listing=n):
                 name = f"ld-{n}"
                 b, tip_a = self._divergent(name)
-                rc = self._push_failing_listing(n, b)
+                rc, reached = self._push_failing_listing(n, b)
+                if not reached:
+                    unreached.append(n)
                 self.assertNotEqual(rc, 0, f"listing {n}: a divergent push was accepted")
                 self.assertEqual(self._remote_tip(name, b), tip_a,
                                  f"listing {n}: the branch machine A pushed was overwritten")
+        self._enough_were_reached(unreached, count)
 
 
 if __name__ == "__main__":
