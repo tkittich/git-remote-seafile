@@ -34,6 +34,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import unicodedata
 import unittest
 import unittest.mock
 
@@ -2088,6 +2089,73 @@ class RestoreNameLimitTests(_SnapshotFixture):
         self.assertNotIn("Developer Mode", off)
         self.assertIn("not FAT, exFAT or NTFS", off)
         self.assertEqual(snap.links_as_text_advice(), snap.links_as_text_advice(windows=os.name == "nt"))
+
+    def test_a_twin_is_not_a_defect_whichever_spelling_the_byte_check_names(self):
+        """Review 853a7a2 (sonnet G7.3): the byte check names the twin written last (``D/x.txt``),
+        the listing the one that is missing (``d/x.txt``); only the exact spelling was removed
+        from the defect list, so "report it" still printed beside the right warning."""
+        names = ["D/x.txt", "d/x.txt", "plain.txt"]
+        with unittest.mock.patch.object(snap, "names_on_disk", return_value={"D/x.txt", "plain.txt"}),                 unittest.mock.patch.object(snap, "snapshot_file_names", return_value=names),                 contextlib.redirect_stdout(io.StringIO()) as said:
+            left = snap.report_names_not_restored_as_named(self.restored, "HEAD", set(), ["D/x.txt"])
+        self.assertIn("share a name with another file", said.getvalue())
+        self.assertEqual(left, [], "the twin that did land is a limit of the volume, not a defect")
+
+    def test_a_volume_that_lists_names_decomposed_still_keeps_the_name_it_was_given(self):
+        """Review 853a7a2 (sonnet G7.2): HFS+ and ZFS formD list ``é`` as ``e`` + U+0301; the byte
+        comparison called the volume one without a UTF-8 charset and every non-ASCII name was set aside."""
+        real = os.listdir
+
+        def decomposed(path):
+            return [unicodedata.normalize("NFD", name.decode("utf-8")).encode("utf-8") for name in real(path)]
+
+        with unittest.mock.patch.object(snap.os, "listdir", decomposed):
+            self.assertTrue(snap._volume_keeps_name(self.tmp, "grs-probe-1é"))
+
+    def test_the_probe_deletes_only_names_it_made(self):
+        """Review 8eb416b (glm E1): a name that appeared between the two listings is not ours."""
+        real = os.listdir
+        stranger = self.tmp / "someones-file.txt"
+
+        def with_a_stranger(path):
+            names = real(path)
+            if not stranger.exists():
+                stranger.write_bytes(b"keep me")
+            return names
+
+        with unittest.mock.patch.object(snap.os, "listdir", with_a_stranger):
+            snap._volume_keeps_name(self.tmp, "grs-probe-2")
+        self.assertEqual(stranger.read_bytes(), b"keep me")
+        self.assertFalse((self.tmp / "grs-probe-2").exists())
+
+    def test_the_listing_of_the_destination_is_read_in_bytes_off_windows(self):
+        """Review 853a7a2 (sonnet G7.1): a ``str`` walk under an ASCII filesystem encoding lists
+        a name with escaped bytes in place of the letter while the snapshot's names are decoded as UTF-8, so every
+        non-ASCII file read as "not written under the name given"."""
+        self.restored.mkdir(parents=True)
+
+        def walking(root, onerror=None):
+            if os.name != "nt":
+                self.assertIsInstance(root, bytes)
+            name = "café.txt"
+            yield root, [], [name.encode("utf-8") if isinstance(root, bytes) else name]
+
+        with unittest.mock.patch.object(snap.os, "walk", walking):
+            self.assertEqual(snap.names_on_disk(self.restored), {"café.txt"})
+
+    def test_a_branch_the_remote_head_does_not_name_is_still_restored_around_unholdable_names(self):
+        """Review 853a7a2 (sonnet G7.4): ``ls-tree <branch>`` failed for a branch that was only
+        ``origin/<branch>``, the probe answered "nothing is unholdable" and a plain checkout stopped
+        at git's first ``invalid path`` (Windows) and wrote nothing, which is what the probe is for."""
+        self._vault_with_twin_names("ok.txt", "trail ")
+        _git(self.remote, "symbolic-ref", "HEAD", "refs/heads/not-the-snapshot-branch")
+        patch = (contextlib.nullcontext() if os.name == "nt"
+                 else unittest.mock.patch.object(snap, "_volume_keeps_name", self._fat32_like()))
+        with patch:
+            rc, out, err = self.restore_to(self.restored)
+        self.assertEqual(rc, 0, out + err)
+        self.assertEqual((self.restored / "ok.txt").read_bytes(), b"content of ok.txt" + bytes([10]))
+        self.assertIn("trail ", out)
+        self.assertIn("cannot hold", out)
 
     def test_the_classifier_tells_a_twin_from_a_renamed_name(self):
         collided, renamed = snap.classify_missing_names(
@@ -4763,12 +4831,18 @@ class TypedGitTimeoutTests(unittest.TestCase):
             self.assertEqual(snap.git_timeout(), 1800.0)
 
     def test_a_bad_value_falls_back_with_a_warning_and_never_fails_the_run(self):
-        for bad in ("soon", "0", "-5"):
+        for bad in ("soon", "0", "-5", "inf", "-inf", "nan", "1e400"):  # review 8eb416b: inf/nan crashed
             with self.subTest(value=bad), unittest.mock.patch.dict(os.environ, {"SEAFILE_SNAPSHOT_GIT_TIMEOUT": bad}):
                 err = io.StringIO()
                 with contextlib.redirect_stderr(err):
                     self.assertEqual(snap.git_timeout(), snap.GIT_TIMEOUT)
                 self.assertIn("is not a positive number of seconds", err.getvalue())
+
+    def test_an_absurdly_large_number_is_clamped_to_what_subprocess_accepts(self):
+        with unittest.mock.patch.dict(os.environ, {"SEAFILE_SNAPSHOT_GIT_TIMEOUT": "1e30"}):
+            self.assertEqual(snap.git_timeout(), snap._MAX_TYPED_SECONDS)
+        with unittest.mock.patch.dict(os.environ, {"SEAFILE_SNAPSHOT_STALL_LIMIT": "1e30"}):
+            self.assertEqual(snap._stall_limit_from_env(), snap._MAX_TYPED_SECONDS)
 
     def test_the_child_is_given_the_typed_limit_and_the_error_names_the_override(self):
         seen = {}
@@ -5004,7 +5078,7 @@ class StatusLineTests(unittest.TestCase):
     def test_stall_limit_can_be_raised_from_the_environment(self):
         with unittest.mock.patch.dict(os.environ, {"SEAFILE_SNAPSHOT_STALL_LIMIT": "7200"}):
             self.assertEqual(snap._stall_limit_from_env(), 7200.0)
-        for junk in ("abc", "0", "-5"):
+        for junk in ("abc", "0", "-5", "inf", "nan", "1e400"):  # nan silently switched the guard off
             with unittest.mock.patch.dict(os.environ, {"SEAFILE_SNAPSHOT_STALL_LIMIT": junk}):
                 err = io.StringIO()
                 with contextlib.redirect_stderr(err):

@@ -33,22 +33,40 @@ STATUS_INTERVAL = 60
 STALL_LIMIT = 1800
 
 
-def _stall_limit_from_env() -> float:
-    raw = os.environ.get("SEAFILE_SNAPSHOT_STALL_LIMIT", "").strip()
+#: The largest number of seconds a typed bound may name (about 115 days): ``subprocess`` and
+#: ``threading`` refuse a larger one with an ``OverflowError``, and nobody means it.
+_MAX_TYPED_SECONDS = 10_000_000.0
+
+
+def _typed_seconds(name: str, raw: str, default: float) -> float:
+    """The positive, finite number of seconds in *raw*, the value of environment variable *name*, or *default*.
+
+    ``inf`` and ``nan`` passed a bare ``value <= 0`` test: ``inf`` crashed ``subprocess`` with an
+    ``OverflowError`` and ``nan`` made the stall comparison never true, so a guard stopped
+    guarding without a word (review 8eb416b, four reports).  Any value that is not a finite
+    number above zero is warned about and replaced by *default*; one above
+    ``_MAX_TYPED_SECONDS`` is clamped to it.
+    """
+    raw = raw.strip()
     if not raw:
-        return STALL_LIMIT
+        return float(default)
     try:
         value = float(raw)
     except ValueError:
         value = 0.0
-    if value <= 0:
+    if not (value > 0) or value == float("inf") or value != value:
         print(
-            f"Warning: SEAFILE_SNAPSHOT_STALL_LIMIT={raw!r} is not a positive number "
-            f"of seconds; using {STALL_LIMIT}.",
+            f"Warning: {name}={raw!r} is not a positive number of seconds; using {default}.",
             file=sys.stderr,
         )
-        return STALL_LIMIT
-    return value
+        return float(default)
+    return min(value, _MAX_TYPED_SECONDS)
+
+
+def _stall_limit_from_env() -> float:
+    return _typed_seconds(
+        "SEAFILE_SNAPSHOT_STALL_LIMIT", os.environ.get("SEAFILE_SNAPSHOT_STALL_LIMIT", ""), STALL_LIMIT
+    )
 
 
 def git_timeout() -> float:
@@ -60,21 +78,9 @@ def git_timeout() -> float:
     progress to measure, so the limit is a wall clock; ``SEAFILE_SNAPSHOT_GIT_TIMEOUT`` raises
     it, in seconds, and the error that kills a child names it.
     """
-    raw = os.environ.get("SEAFILE_SNAPSHOT_GIT_TIMEOUT", "").strip()
-    if not raw:
-        return GIT_TIMEOUT
-    try:
-        value = float(raw)
-    except ValueError:
-        value = 0.0
-    if value <= 0:
-        print(
-            f"Warning: SEAFILE_SNAPSHOT_GIT_TIMEOUT={raw!r} is not a positive number of "
-            f"seconds; using {GIT_TIMEOUT}.",
-            file=sys.stderr,
-        )
-        return float(GIT_TIMEOUT)
-    return value
+    return _typed_seconds(
+        "SEAFILE_SNAPSHOT_GIT_TIMEOUT", os.environ.get("SEAFILE_SNAPSHOT_GIT_TIMEOUT", ""), GIT_TIMEOUT
+    )
 
 
 _TIMEOUT_HINT = (

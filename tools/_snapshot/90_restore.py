@@ -18,7 +18,14 @@ def _unrepresentable_paths(repo: Path, rev: str) -> list[str]:
         stderr=subprocess.PIPE,
     )
     if listing.returncode != 0:
-        return []  # the checkout below reports whatever is wrong with the revision
+        # Not ``[]``: "nothing is unholdable" on a listing that failed let a plain checkout run,
+        # and on Windows that stops at git's first ``invalid path`` and writes nothing, the very
+        # failure this probe exists to prevent (review 853a7a2, sonnet G7.4).  The branch is made
+        # local by ``_checkout`` first, so a listing that still fails is a revision git cannot read.
+        raise SnapshotError(
+            f"could not list '{rev}' in {repo} (rc={listing.returncode})\n"
+            f"{listing.stderr.decode('utf-8', errors='replace').strip()}"
+        )
     names = (p.decode("utf-8", errors="surrogateescape") for p in listing.stdout.split(b"\0") if p)
     return [name for name in names if problem(name) is not None]
 
@@ -123,6 +130,43 @@ def links_written_as_text(repo: Path, rev: str, mismatched: list[str]) -> list[s
     return found
 
 
+def _free_bytes_where(into: Path) -> "int | None":
+    """Free bytes on the volume *into* will be created on, or ``None`` when no ancestor answers.
+
+    *into* usually does not exist yet, and ``shutil.disk_usage`` of a missing path raises, so the
+    floor was skipped for every normal restore and every drill (review 8eb416b, deepseek G4.1).
+    The nearest ancestor that exists is on the same volume the clone will land on.
+    """
+    probe = into
+    while True:
+        try:
+            return shutil.disk_usage(probe).free
+        except OSError:
+            if probe.parent == probe:
+                return None
+            probe = probe.parent
+
+
+def _ensure_local_branch(repo: Path, branch: str) -> None:
+    """Make *branch* a local branch of a ``--no-checkout`` clone, from ``origin/<branch>``.
+
+    A clone has a local branch only for the remote's HEAD; ``git checkout`` makes the others on
+    the way, but the name listing that decides what to write runs before it, and ``ls-tree
+    <branch>`` fails for a branch that is only ``origin/<branch>``.  A branch that is already
+    there, or that no remote branch backs, is left alone: the caller reports what is wrong.
+    """
+    have = _run(
+        ["git", "-C", str(repo), "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}"],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    )
+    if have.returncode == 0:
+        return
+    _run(
+        ["git", "-C", str(repo), "branch", branch, f"origin/{branch}"],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    )
+
+
 def _checkout(repo: Path, rev: str, *, detach: bool = False) -> list[str]:
     """Check *rev* out; return the paths that could not be written (names this OS cannot hold)."""
     if rev.startswith("-"):
@@ -134,6 +178,8 @@ def _checkout(repo: Path, rev: str, *, detach: bool = False) -> list[str]:
             f"cannot check out {rev!r}: the name reads as a git option. "
             "Restore a differently named branch, or pass a commit id"
         )
+    if not detach:
+        _ensure_local_branch(repo, rev)
     skipped = _unrepresentable_paths(repo, rev)
     if skipped:
         _checkout_around(repo, rev, skipped, detach=detach)
@@ -410,10 +456,7 @@ def _restore(
     # volumes and kept the partial tree).  A full checkout roughly doubles
     # the cloned bytes, hence the generous floor.
     if not allow_low_disk:
-        try:
-            free = shutil.disk_usage(into).free
-        except OSError:
-            free = None
+        free = _free_bytes_where(into)
         if free is not None and free < _CLONE_FLOOR_BYTES:
             raise SnapshotError(
                 f"the volume holding {into} has {human_bytes(free)} of free space; a restore "

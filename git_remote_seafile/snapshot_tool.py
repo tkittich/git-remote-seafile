@@ -279,22 +279,40 @@ STATUS_INTERVAL = 60
 STALL_LIMIT = 1800
 
 
-def _stall_limit_from_env() -> float:
-    raw = os.environ.get("SEAFILE_SNAPSHOT_STALL_LIMIT", "").strip()
+#: The largest number of seconds a typed bound may name (about 115 days): ``subprocess`` and
+#: ``threading`` refuse a larger one with an ``OverflowError``, and nobody means it.
+_MAX_TYPED_SECONDS = 10_000_000.0
+
+
+def _typed_seconds(name: str, raw: str, default: float) -> float:
+    """The positive, finite number of seconds in *raw*, the value of environment variable *name*, or *default*.
+
+    ``inf`` and ``nan`` passed a bare ``value <= 0`` test: ``inf`` crashed ``subprocess`` with an
+    ``OverflowError`` and ``nan`` made the stall comparison never true, so a guard stopped
+    guarding without a word (review 8eb416b, four reports).  Any value that is not a finite
+    number above zero is warned about and replaced by *default*; one above
+    ``_MAX_TYPED_SECONDS`` is clamped to it.
+    """
+    raw = raw.strip()
     if not raw:
-        return STALL_LIMIT
+        return float(default)
     try:
         value = float(raw)
     except ValueError:
         value = 0.0
-    if value <= 0:
+    if not (value > 0) or value == float("inf") or value != value:
         print(
-            f"Warning: SEAFILE_SNAPSHOT_STALL_LIMIT={raw!r} is not a positive number "
-            f"of seconds; using {STALL_LIMIT}.",
+            f"Warning: {name}={raw!r} is not a positive number of seconds; using {default}.",
             file=sys.stderr,
         )
-        return STALL_LIMIT
-    return value
+        return float(default)
+    return min(value, _MAX_TYPED_SECONDS)
+
+
+def _stall_limit_from_env() -> float:
+    return _typed_seconds(
+        "SEAFILE_SNAPSHOT_STALL_LIMIT", os.environ.get("SEAFILE_SNAPSHOT_STALL_LIMIT", ""), STALL_LIMIT
+    )
 
 
 def git_timeout() -> float:
@@ -306,21 +324,9 @@ def git_timeout() -> float:
     progress to measure, so the limit is a wall clock; ``SEAFILE_SNAPSHOT_GIT_TIMEOUT`` raises
     it, in seconds, and the error that kills a child names it.
     """
-    raw = os.environ.get("SEAFILE_SNAPSHOT_GIT_TIMEOUT", "").strip()
-    if not raw:
-        return GIT_TIMEOUT
-    try:
-        value = float(raw)
-    except ValueError:
-        value = 0.0
-    if value <= 0:
-        print(
-            f"Warning: SEAFILE_SNAPSHOT_GIT_TIMEOUT={raw!r} is not a positive number of "
-            f"seconds; using {GIT_TIMEOUT}.",
-            file=sys.stderr,
-        )
-        return float(GIT_TIMEOUT)
-    return value
+    return _typed_seconds(
+        "SEAFILE_SNAPSHOT_GIT_TIMEOUT", os.environ.get("SEAFILE_SNAPSHOT_GIT_TIMEOUT", ""), GIT_TIMEOUT
+    )
 
 
 _TIMEOUT_HINT = (
@@ -4754,7 +4760,11 @@ def _component_is_git(part: str) -> bool:
     # Everything before the first colon is what the filesystem reads.
     part = part.split(":", 1)[0]
     folded = part.translate(_HFS_IGNORABLE).rstrip(". ").casefold()
-    return folded == ".git" or folded.startswith("git~")
+    # ``GIT~1`` is NTFS's short name for ``.git``; a name that merely starts ``git~`` (``git~notes.zip``)
+    # is nobody's alias.  Refusing it refused the whole manifest at restore while capture had taken
+    # the file without a word: a snapshot that succeeded and could not be restored (review 853a7a2,
+    # sonnet E1).
+    return folded == ".git" or re.fullmatch(r"git~[0-9]+", folded) is not None
 
 
 def path_security_problem(rel: str) -> str | None:
@@ -5240,7 +5250,8 @@ def build_manifest(
             # (FAT and exFAT on a remount, a replug or a trimmed cache, measured; any copy
             # to another disk) makes every cached hash look new (ROADMAP Z43).
             renumbered += (had_hash and old.get("size") == size_now
-                           and old.get("mtime_ns") == mtime_now and old.get("ino") != ino_now)
+                           and old.get("mtime_ns") == mtime_now
+                           and old.get("ino") is not None and old.get("ino") != ino_now)
             todo.append(rel)
 
     def hash_one(rel: str) -> None:
@@ -8704,7 +8715,14 @@ def _unrepresentable_paths(repo: Path, rev: str) -> list[str]:
         stderr=subprocess.PIPE,
     )
     if listing.returncode != 0:
-        return []  # the checkout below reports whatever is wrong with the revision
+        # Not ``[]``: "nothing is unholdable" on a listing that failed let a plain checkout run,
+        # and on Windows that stops at git's first ``invalid path`` and writes nothing, the very
+        # failure this probe exists to prevent (review 853a7a2, sonnet G7.4).  The branch is made
+        # local by ``_checkout`` first, so a listing that still fails is a revision git cannot read.
+        raise SnapshotError(
+            f"could not list '{rev}' in {repo} (rc={listing.returncode})\n"
+            f"{listing.stderr.decode('utf-8', errors='replace').strip()}"
+        )
     names = (p.decode("utf-8", errors="surrogateescape") for p in listing.stdout.split(b"\0") if p)
     return [name for name in names if problem(name) is not None]
 
@@ -8809,6 +8827,43 @@ def links_written_as_text(repo: Path, rev: str, mismatched: list[str]) -> list[s
     return found
 
 
+def _free_bytes_where(into: Path) -> "int | None":
+    """Free bytes on the volume *into* will be created on, or ``None`` when no ancestor answers.
+
+    *into* usually does not exist yet, and ``shutil.disk_usage`` of a missing path raises, so the
+    floor was skipped for every normal restore and every drill (review 8eb416b, deepseek G4.1).
+    The nearest ancestor that exists is on the same volume the clone will land on.
+    """
+    probe = into
+    while True:
+        try:
+            return shutil.disk_usage(probe).free
+        except OSError:
+            if probe.parent == probe:
+                return None
+            probe = probe.parent
+
+
+def _ensure_local_branch(repo: Path, branch: str) -> None:
+    """Make *branch* a local branch of a ``--no-checkout`` clone, from ``origin/<branch>``.
+
+    A clone has a local branch only for the remote's HEAD; ``git checkout`` makes the others on
+    the way, but the name listing that decides what to write runs before it, and ``ls-tree
+    <branch>`` fails for a branch that is only ``origin/<branch>``.  A branch that is already
+    there, or that no remote branch backs, is left alone: the caller reports what is wrong.
+    """
+    have = _run(
+        ["git", "-C", str(repo), "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}"],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    )
+    if have.returncode == 0:
+        return
+    _run(
+        ["git", "-C", str(repo), "branch", branch, f"origin/{branch}"],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    )
+
+
 def _checkout(repo: Path, rev: str, *, detach: bool = False) -> list[str]:
     """Check *rev* out; return the paths that could not be written (names this OS cannot hold)."""
     if rev.startswith("-"):
@@ -8820,6 +8875,8 @@ def _checkout(repo: Path, rev: str, *, detach: bool = False) -> list[str]:
             f"cannot check out {rev!r}: the name reads as a git option. "
             "Restore a differently named branch, or pass a commit id"
         )
+    if not detach:
+        _ensure_local_branch(repo, rev)
     skipped = _unrepresentable_paths(repo, rev)
     if skipped:
         _checkout_around(repo, rev, skipped, detach=detach)
@@ -9096,10 +9153,7 @@ def _restore(
     # volumes and kept the partial tree).  A full checkout roughly doubles
     # the cloned bytes, hence the generous floor.
     if not allow_low_disk:
-        try:
-            free = shutil.disk_usage(into).free
-        except OSError:
-            free = None
+        free = _free_bytes_where(into)
         if free is not None and free < _CLONE_FLOOR_BYTES:
             raise SnapshotError(
                 f"the volume holding {into} has {human_bytes(free)} of free space; a restore "
@@ -9373,12 +9427,32 @@ def _volume_keeps_name(folder: Path, name: str) -> bool:
         created = set(os.listdir(base)) - before
     except OSError:
         created = set()
-    for leftover in created:
+    # Only a name this probe made: a person's file that landed in the folder between the two
+    # listings is not ours to delete (review 8eb416b, glm E1; the project's own rule 7).
+    ours = {entry for entry in created if entry.startswith(_NAME_PROBE_PREFIX)}
+    for leftover in ours:
         try:
             os.unlink(os.path.join(base, leftover))
         except OSError:
             pass
-    return wanted in created
+    # NFC on both sides: HFS+ and ZFS ``formD`` list ``é`` decomposed, and the volume that holds
+    # the name must not be judged as one that does not (review 853a7a2, sonnet G7.2).
+    return any(_nfc(entry) == _nfc(wanted) for entry in ours)
+
+
+#: Every probe name starts with this, so only such names are ever deleted.
+_NAME_PROBE_PREFIX = b"grs-probe-"
+
+
+def _nfc(name: "bytes | str") -> str:
+    """A listed name as comparable text: UTF-8 decoded without failing, then NFC."""
+    text = name.decode("utf-8", errors="surrogateescape") if isinstance(name, bytes) else name
+    return unicodedata.normalize("NFC", text)
+
+
+def _fold(name: str) -> str:
+    """The key under which two names are one on a volume that ignores case (and normalises)."""
+    return _nfc(name).lower()
 
 
 def destination_name_problem(into: Path) -> "Callable[[str], str | None] | None":
@@ -9453,13 +9527,23 @@ def names_on_disk(repo: Path) -> "set[str] | None":
 
     if not repo.is_dir():
         return None
+    # In bytes off Windows, like the probe: a ``str`` walk of a folder holding ``café`` under an
+    # ASCII filesystem encoding lists ``caf\udcc3\udca9`` while the snapshot's names are decoded
+    # as UTF-8, so every non-ASCII file read as "not written under the name given"
+    # (review 853a7a2, sonnet G7.1; the Z39 fix moved the probe and left this listing).
+    root: Any = str(repo) if os.name == "nt" else os.fsencode(repo)  # bytes or str: one walk, two types
+    git_dir: Any = ".git" if isinstance(root, str) else b".git"
     try:
-        for folder, dirs, files in os.walk(repo, onerror=fail):
-            if Path(folder) == repo and ".git" in dirs:
-                dirs.remove(".git")
-            base = Path(folder).relative_to(repo).as_posix()
-            for name in files + [d for d in dirs if os.path.islink(os.path.join(folder, d))]:
-                found.add(name if base == "." else f"{base}/{name}")
+        for folder, dirs, files in os.walk(root, onerror=fail):
+            if folder == root and git_dir in dirs:
+                dirs.remove(git_dir)
+            base = os.path.relpath(folder, root)
+            links = [d for d in dirs if os.path.islink(os.path.join(folder, d))]
+            for entry in [*files, *links]:
+                text = entry.decode("utf-8", errors="surrogateescape") if isinstance(entry, bytes) else entry
+                prefix = (base.decode("utf-8", errors="surrogateescape") if isinstance(base, bytes) else base)
+                prefix = prefix.replace(os.sep, "/")
+                found.add(text if prefix == "." else f"{prefix}/{text}")
     except (OSError, ValueError):
         return None  # a listing that fails says nothing: no false alarm
     return found
@@ -9476,20 +9560,17 @@ def classify_missing_names(
     or space dropped).  Compared in NFC, so a volume that lists names decomposed (HFS+)
     does not raise a false alarm; names in *skip* (set aside as unholdable) are not asked about.
     """
-    def key(name: str) -> str:
-        return unicodedata.normalize("NFC", name)
-
-    present = {key(name) for name in on_disk}
+    present = {_nfc(name) for name in on_disk}
     skipped = skip or set()
     folded: dict[str, int] = {}
     for name in expected:
-        folded[key(name).lower()] = folded.get(key(name).lower(), 0) + 1
+        folded[_fold(name)] = folded.get(_fold(name), 0) + 1
     collided: list[str] = []
     renamed: list[str] = []
     for name in expected:
-        if name in skipped or key(name) in present:
+        if name in skipped or _nfc(name) in present:
             continue
-        (collided if folded[key(name).lower()] > 1 else renamed).append(name)
+        (collided if folded[_fold(name)] > 1 else renamed).append(name)
     return collided, renamed
 
 
@@ -9518,8 +9599,12 @@ def report_names_not_restored_as_named(
             print(f"\nWarning: {len(names)} file(s) in this snapshot {text}:\n{shown}{more}\n"
                   "Restore into a folder that keeps names exactly (Linux ext4, or a case-sensitive "
                   "folder) to get them all; everything else was restored and is verified below.")
-    lost = set(collided)
-    return [path for path in mismatched if path not in lost]
+    # The byte check names the twin that was written *last* (``D/x.txt``), this listing the one
+    # that is missing (``d/x.txt``): the exact spelling never matched, so the "defect, please
+    # report it" text still printed beside the right warning (review 853a7a2, sonnet G7.3).
+    # A pair is judged by its folded name, the key the classifier grouped it under.
+    lost = {_fold(name) for name in collided}
+    return [path for path in mismatched if _fold(path) not in lost]
 
 #: Directory names a first interactive run offers to leave out: the ones
 #: ``--default-excludes`` would add that are directories (``*.pyc`` is a file glob).

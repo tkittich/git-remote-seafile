@@ -30,12 +30,32 @@ def _volume_keeps_name(folder: Path, name: str) -> bool:
         created = set(os.listdir(base)) - before
     except OSError:
         created = set()
-    for leftover in created:
+    # Only a name this probe made: a person's file that landed in the folder between the two
+    # listings is not ours to delete (review 8eb416b, glm E1; the project's own rule 7).
+    ours = {entry for entry in created if entry.startswith(_NAME_PROBE_PREFIX)}
+    for leftover in ours:
         try:
             os.unlink(os.path.join(base, leftover))
         except OSError:
             pass
-    return wanted in created
+    # NFC on both sides: HFS+ and ZFS ``formD`` list ``é`` decomposed, and the volume that holds
+    # the name must not be judged as one that does not (review 853a7a2, sonnet G7.2).
+    return any(_nfc(entry) == _nfc(wanted) for entry in ours)
+
+
+#: Every probe name starts with this, so only such names are ever deleted.
+_NAME_PROBE_PREFIX = b"grs-probe-"
+
+
+def _nfc(name: "bytes | str") -> str:
+    """A listed name as comparable text: UTF-8 decoded without failing, then NFC."""
+    text = name.decode("utf-8", errors="surrogateescape") if isinstance(name, bytes) else name
+    return unicodedata.normalize("NFC", text)
+
+
+def _fold(name: str) -> str:
+    """The key under which two names are one on a volume that ignores case (and normalises)."""
+    return _nfc(name).lower()
 
 
 def destination_name_problem(into: Path) -> "Callable[[str], str | None] | None":
@@ -110,13 +130,23 @@ def names_on_disk(repo: Path) -> "set[str] | None":
 
     if not repo.is_dir():
         return None
+    # In bytes off Windows, like the probe: a ``str`` walk of a folder holding ``café`` under an
+    # ASCII filesystem encoding lists ``caf\udcc3\udca9`` while the snapshot's names are decoded
+    # as UTF-8, so every non-ASCII file read as "not written under the name given"
+    # (review 853a7a2, sonnet G7.1; the Z39 fix moved the probe and left this listing).
+    root: Any = str(repo) if os.name == "nt" else os.fsencode(repo)  # bytes or str: one walk, two types
+    git_dir: Any = ".git" if isinstance(root, str) else b".git"
     try:
-        for folder, dirs, files in os.walk(repo, onerror=fail):
-            if Path(folder) == repo and ".git" in dirs:
-                dirs.remove(".git")
-            base = Path(folder).relative_to(repo).as_posix()
-            for name in files + [d for d in dirs if os.path.islink(os.path.join(folder, d))]:
-                found.add(name if base == "." else f"{base}/{name}")
+        for folder, dirs, files in os.walk(root, onerror=fail):
+            if folder == root and git_dir in dirs:
+                dirs.remove(git_dir)
+            base = os.path.relpath(folder, root)
+            links = [d for d in dirs if os.path.islink(os.path.join(folder, d))]
+            for entry in [*files, *links]:
+                text = entry.decode("utf-8", errors="surrogateescape") if isinstance(entry, bytes) else entry
+                prefix = (base.decode("utf-8", errors="surrogateescape") if isinstance(base, bytes) else base)
+                prefix = prefix.replace(os.sep, "/")
+                found.add(text if prefix == "." else f"{prefix}/{text}")
     except (OSError, ValueError):
         return None  # a listing that fails says nothing: no false alarm
     return found
@@ -133,20 +163,17 @@ def classify_missing_names(
     or space dropped).  Compared in NFC, so a volume that lists names decomposed (HFS+)
     does not raise a false alarm; names in *skip* (set aside as unholdable) are not asked about.
     """
-    def key(name: str) -> str:
-        return unicodedata.normalize("NFC", name)
-
-    present = {key(name) for name in on_disk}
+    present = {_nfc(name) for name in on_disk}
     skipped = skip or set()
     folded: dict[str, int] = {}
     for name in expected:
-        folded[key(name).lower()] = folded.get(key(name).lower(), 0) + 1
+        folded[_fold(name)] = folded.get(_fold(name), 0) + 1
     collided: list[str] = []
     renamed: list[str] = []
     for name in expected:
-        if name in skipped or key(name) in present:
+        if name in skipped or _nfc(name) in present:
             continue
-        (collided if folded[key(name).lower()] > 1 else renamed).append(name)
+        (collided if folded[_fold(name)] > 1 else renamed).append(name)
     return collided, renamed
 
 
@@ -175,5 +202,9 @@ def report_names_not_restored_as_named(
             print(f"\nWarning: {len(names)} file(s) in this snapshot {text}:\n{shown}{more}\n"
                   "Restore into a folder that keeps names exactly (Linux ext4, or a case-sensitive "
                   "folder) to get them all; everything else was restored and is verified below.")
-    lost = set(collided)
-    return [path for path in mismatched if path not in lost]
+    # The byte check names the twin that was written *last* (``D/x.txt``), this listing the one
+    # that is missing (``d/x.txt``): the exact spelling never matched, so the "defect, please
+    # report it" text still printed beside the right warning (review 853a7a2, sonnet G7.3).
+    # A pair is judged by its folded name, the key the classifier grouped it under.
+    lost = {_fold(name) for name in collided}
+    return [path for path in mismatched if _fold(path) not in lost]

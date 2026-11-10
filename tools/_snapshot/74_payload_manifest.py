@@ -111,7 +111,11 @@ def _component_is_git(part: str) -> bool:
     # Everything before the first colon is what the filesystem reads.
     part = part.split(":", 1)[0]
     folded = part.translate(_HFS_IGNORABLE).rstrip(". ").casefold()
-    return folded == ".git" or folded.startswith("git~")
+    # ``GIT~1`` is NTFS's short name for ``.git``; a name that merely starts ``git~`` (``git~notes.zip``)
+    # is nobody's alias.  Refusing it refused the whole manifest at restore while capture had taken
+    # the file without a word: a snapshot that succeeded and could not be restored (review 853a7a2,
+    # sonnet E1).
+    return folded == ".git" or re.fullmatch(r"git~[0-9]+", folded) is not None
 
 
 def path_security_problem(rel: str) -> str | None:
@@ -597,7 +601,8 @@ def build_manifest(
             # (FAT and exFAT on a remount, a replug or a trimmed cache, measured; any copy
             # to another disk) makes every cached hash look new (ROADMAP Z43).
             renumbered += (had_hash and old.get("size") == size_now
-                           and old.get("mtime_ns") == mtime_now and old.get("ino") != ino_now)
+                           and old.get("mtime_ns") == mtime_now
+                           and old.get("ino") is not None and old.get("ino") != ino_now)
             todo.append(rel)
 
     def hash_one(rel: str) -> None:

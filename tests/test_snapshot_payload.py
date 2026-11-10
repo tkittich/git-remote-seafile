@@ -836,8 +836,17 @@ class PayloadManifestAndSelectionTests(_PayloadFixture):
             ".git::$INDEX_ALLOCATION/config", ".git:$I30:$INDEX_ALLOCATION/x",
             ".git::$DATA", "x/git~1:y",
         )
-        for path in bad_paths:
+        for path in bad_paths + ("GIT~12/x", "a/Git~2"):
             with self.subTest(path=path), self.assertRaises(snap.SnapshotError):
+                snap.validate_manifest({"format": 2, "files": [_good_entry(path=path)]}, dest)
+
+    def test_a_name_that_only_starts_git_tilde_is_a_file_not_an_alias_of_dot_git(self):
+        """Review 853a7a2 (sonnet E1): ``git~notes.zip`` made ``validate_manifest`` refuse the whole
+        payload at restore, though capture had taken it; only ``GIT~<digits>`` is NTFS's short name."""
+        dest = self.case / "dest"
+        dest.mkdir()
+        for path in ("git~notes.zip", "archive/git~old/x.bin", "git~", "gitx~1"):
+            with self.subTest(path=path):
                 snap.validate_manifest({"format": 2, "files": [_good_entry(path=path)]}, dest)
 
     def test_manifest_fields_are_checked(self):
@@ -1433,7 +1442,15 @@ class PayloadDefaultAndSafeguardTests(_PayloadFixture):
         def no_clone(*a, **kw):
             raise AssertionError("the clone started after the space refusal")
 
-        with unittest.mock.patch("shutil.disk_usage", lambda p: free), \
+        def like_the_real_one(path):
+            # ``shutil.disk_usage`` raises for a path that does not exist, which is what the
+            # destination of a restore is: an answer for every path hid a floor that never ran
+            # on a fresh destination (review 8eb416b, deepseek G4.1).
+            if not os.path.exists(path):
+                raise FileNotFoundError(path)
+            return free
+
+        with unittest.mock.patch("shutil.disk_usage", like_the_real_one), \
                 unittest.mock.patch.object(snap, "_run", side_effect=no_clone):
             rc, out, err, into = self.restore("tight-clone")
         self.assertNotEqual(rc, 0)
@@ -3006,6 +3023,12 @@ class PayloadRememberVerifyViewAndClockTests(_PayloadFixture):
         # A changed size or stamp is a real change: the generic note, not this one.
         self.assertNotIn("inode number changed", self._output_of_a_run_with({"mtime_ns": self.OLD + 1_000_000_000}, now))
         self.assertNotIn("inode number changed", self._output_of_a_run_with({}, now))
+
+    def test_an_entry_from_before_the_cache_kept_inodes_is_not_called_renumbered(self):
+        """Review 8eb416b (deepseek, gemini, glm): ``None != ino`` counted an old cache entry
+        as a renumbering and named a wrong cause."""
+        now = (1024, self.OLD, "100644", 7, 3, 111)
+        self.assertNotIn("inode number changed", self._output_of_a_run_with({"ino": None}, now))
 
     def test_the_change_time_in_the_key_moves_on_a_real_in_place_edit(self):
         """Not a synthetic tuple: a file on this filesystem, rewritten in place
