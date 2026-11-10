@@ -47,7 +47,7 @@ jobs:
       SEAFILE_IMAGE: ${{ matrix.edition == 'pro' && 'seafileltd/seafile-pro-mc:13.0-latest@sha256:1b11a6b7aa4e81944d844d7bd99fe82f38ba3624a11bb25285155adafb5220f9' || 'seafileltd/seafile-mc:13.0-latest@sha256:9506f49d5e5065082c134e6348498eed5a5866ddbd94bd5a3e479a6c285bc61a' }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
       # First dispatch (2026-10-28) pulled and booted the images, then died at
