@@ -790,9 +790,27 @@ class RemoteLock:
         self._last_ownership_state = state
         return state
 
+    def _own_ticket_is_listed(self) -> bool:
+        try:
+            return is_listed_file(self.client, self.repo_id, f"{self.lock_dir}/{self._nonce}.json")
+        except Exception:
+            return False
+
     def _refresh_lease(self) -> str:
         try:
             current = self.client.get_file_text(self.repo_id, f"{self.lock_dir}/{self._nonce}.json")
+            if not current and self._own_ticket_is_listed():
+                # Listed but unreadable is UNKNOWN, never "gone": the folder still shows the ticket,
+                # so a 404 or an empty body from the file host proves nothing about the lease, and
+                # calling it LOST failed a push over the very hiccup Z2 fixed everywhere else
+                # (review 8eb416b, deepseek G2.1).  ``_lapsed_if_unknown`` then judges it by this
+                # machine's clock.  A 404 that nothing contradicts (the listing fails too, or does
+                # not show the ticket) stays LOST: a reaped ticket, Z5.
+                sys.stderr.write(
+                    "Warning: the lock ticket is listed but could not be read; ownership unproven.\n"
+                )
+                sys.stderr.flush()
+                return LEASE_UNKNOWN
         except Exception as ex:
             sys.stderr.write(f"Warning: could not re-read lock ticket ({ex}); ownership unproven.\n")
             sys.stderr.flush()

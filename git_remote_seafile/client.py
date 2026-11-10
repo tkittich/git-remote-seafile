@@ -921,6 +921,10 @@ class SeafileClient:
         named = detail.get("owner_email") if isinstance(detail, dict) else None
         if isinstance(named, str) and named:
             owner = named
+            # The detail can name this very account (the first check saw only ``share``): refusing
+            # the owner is the failure Z22's first version had (review 8eb416b, gemini G2.1).
+            if isinstance(email, str) and email and email == owner:
+                return None
         if isinstance(owner, str) and is_group_owner(owner):
             return (f"this library is owned by a group ({owner}), so no account is its owner, "
                     "and on Seafile Professional a folder permission can hide refs from any "

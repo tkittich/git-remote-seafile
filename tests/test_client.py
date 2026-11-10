@@ -2094,6 +2094,8 @@ class TestSeafileClientOperations(unittest.TestCase):
         self.assertIn("no account can run it as the owner", owner_advice(risk, "--allow-non-owner"))
         risk = client_for(pro, "a@x", "share", detail_owner="b@x").hidden_history_risk("r")
         self.assertIn("(a@x) is not the library's owner (b@x)", risk, "the real owner, not 'share'")
+        # The detail naming this very account is the owner, whatever ``/api2/`` said (review 8eb416b).
+        self.assertIsNone(client_for(pro, "a@x", "share", detail_owner="a@x").hidden_history_risk("r"))
         risk = client_for(pro, "a@x", "share").hidden_history_risk("r")   # the detail is unavailable
         self.assertIn("(a@x) is not the library's owner (share)", risk)
         self.assertNotIn("owned by a group", risk)
@@ -2582,7 +2584,7 @@ class TestAStateFileTheFolderListsIsNeverAbsent(unittest.TestCase):
             ("git_remote_seafile/helper.py", "_warn_if_head_dangles"): "a warning only",
             ("git_remote_seafile/helper.py", "_publish_ref"): "CAS and read-back: None fails",
             ("git_remote_seafile/lock.py", "_scan_tickets"): "re-lists a listed ticket itself",
-            ("git_remote_seafile/lock.py", "_refresh_lease"): "own ticket gone is LOST",
+            ("git_remote_seafile/lock.py", "_refresh_lease"): "a ticket the folder lists is UNKNOWN, one it does not is LOST",
             ("git_remote_seafile/packs.py", "fetch_pack_artifact"): "None is an error there",
             ("git_remote_seafile/refs.py", "iter_refs"): "paired with its listing",
             ("git_remote_seafile/refs.py", "_fetch_ref"): "paired with its listing",

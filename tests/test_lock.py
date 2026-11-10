@@ -2016,6 +2016,23 @@ class TestAFailedQueueScanStillReadsTheOwnTicket(unittest.TestCase):
             self.assertFalse(lock.verify_ownership())
         self.assertEqual(lock.ownership_state(), LEASE_UNKNOWN)
 
+    def test_a_ticket_the_folder_lists_but_the_file_host_will_not_serve_is_unknown_not_lost(self):
+        """Review 8eb416b (deepseek G2.1): ``_refresh_lease`` read the own ticket with a raw
+        ``get_file_text``; a 404 for a file the folder still lists (the Z2 state) came back as
+        "Lock ticket is gone" and a held lease was reported lost, while ``_scan_tickets`` in the
+        same run said "ownership unproven"."""
+        store = _SharedLockStore()
+        client = store.client("token123")
+        lock = RemoteLock(client, "repo1", "/path", timeout=5, lease=600, settle=0)
+        lock.acquire()
+        client.get_file_text.side_effect = lambda repo_id, path: None   # listed, but the host says 404
+        err = io.StringIO()
+        with patch("sys.stderr", err):
+            self.assertFalse(lock.verify_ownership())
+        self.assertEqual(lock.ownership_state(), LEASE_UNKNOWN)
+        self.assertNotIn("Lock ticket is gone", err.getvalue())
+        self.assertIn("ownership unproven", err.getvalue())
+
     def test_unknown_after_the_lease_ran_out_by_this_machines_clock_is_lost(self):
         # Review 06cc623 (gemini A5): the network cannot prove the lease either way,
         # but the time since it was last proven can.
