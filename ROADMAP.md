@@ -1,6 +1,6 @@
 # Engineering Roadmap & Backlog
 
-**Baseline:** v0.9.24 (2026-11-09: FAT32 and exFAT measured on Linux loop devices and Windows drives and handled -- Z43-Z47; Z28, Z30, Z31, Z34, Z35, Z38, Z40, Z41 done; Z27 and Z43 have design notes). v0.9.23 (2026-11-08) was Seafile Professional handled and tested in CI. Earlier lines are in section 2.
+**Baseline:** v0.9.25 (2026-11-10: a Pro non-owner's prune data-loss fix, group libraries named, a vanished repository refused whatever the refspec, ticket copies cleaned, S1 measured complete at 5,100; Z27, Z29, Z47, Z48, Z49, Z50 and the Z39 locale legs). v0.9.24 (2026-11-09: FAT32 and exFAT measured on Linux loop devices and Windows drives and handled -- Z43-Z47; Z28, Z30, Z31, Z34, Z35, Z38, Z40, Z41 done; Z27 and Z43 have design notes). v0.9.23 (2026-11-08) was Seafile Professional handled and tested in CI. Earlier lines are in section 2.
 **Scope:** What shipped in each release line, the active backlog, and the v1.0.0 horizon.  
 **Test Suite:** all green on `tools/run_tests_parallel.py` (the runner prints the current count; it is deliberately not repeated here). **Python:** 3.10+ (3.9 EOL).
 
@@ -526,6 +526,9 @@ One line per capability — see [CHANGELOG.md](CHANGELOG.md) for the full detail
 
 **v0.9.24 (2026-11-09) — FAT32 and exFAT, measured and handled.**
 - Linux loop devices and real Windows drives measured (2 s round-up of mtime on both Windows drivers, change time 0, inode renumbering on Linux, no links, names refused, a full disk, a killed run); a restore onto such a volume lists and skips the names it refuses (Z44), says when names collide in case or were changed (Z45), and a payload re-read after a remount names the inode (Z43); the pack cap a 413 teaches is per remote (Z31); the lock's settlement window follows a slow link (Z28); an LFS upload is `.part` then rename (Z30); a Pro non-owner's report notes its count (Z34); the stub fails exactly the n-th listing (Z38) and leaves `(SFConflict ...)` copies (Z33/X7), which found Z47; prose numbers are tied to constants (Z35); `release_check` warns on a failed re-run (Z41); a monthly unpinned real-server run (Z37).
+
+**v0.9.25 (2026-11-10) — a data-loss fix from the first Pro measurements.**
+- A Pro non-owner no longer prunes a folder it cannot see into (Z29, Z49); a group library is named from the v2.1 detail's `owner_email` (Z22); a vanished repository is refused whatever the refspec, from a remembered advertisement (Z27); a lock holder deletes its own ticket copies (Z47); `SEAFILE_SNAPSHOT_GIT_TIMEOUT` (W4); the hashing search's test on a virtual clock (Z48) and a timing audit (Z50); locale legs in CI (Z39); S1 measured complete at 5,100 entries on CE and Pro; payload from T: and U: measured on the stub; T3, Z33, Z46 decided.
 
 ---
 

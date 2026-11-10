@@ -7,23 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.25] - 2026-11-10
+
+A data-loss fix and the review backlog. The first real Seafile Professional run of the measurements added in 0.9.24 showed that a non-owner's recursive delete of a folder that looked empty took a child the account could not see (Z29); it no longer prunes, and says what that costs. The same run found how a group library is named (Z22), and the rest is what a fetch may delete (Z27), what a lock holder cleans up (Z47), a typed limit for very large trees (W4), the one open data-loss-class listing question answered (S1: complete at 5,100 entries on CE and Pro), and a week's worth of test hardening after three timing flakes.
+
 ### Fixed
 - **A Pro group (department) library is named as one, and an ordinary shared library names its real owner** (ROADMAP Z22; measured on Pro 13.0.29). The owner guard read `/api2/repos/<id>/`, which answers `share` to every account that is not the owner, so a group library got "not the library's owner (share)" with advice to run as the owner, which nobody can. The guard now reads the v2.1 detail's `owner_email` (`<id>@seafile_group` for a group library) and says so; the cost is one request, only for a non-owner on Pro.
 - **A fetch from a repository that vanished on the server is refused whatever the refspec** (ROADMAP Z27; gemini-4-argon G2.2). The guard inferred what `git fetch --prune` would delete from `remote.<name>.fetch`, so a `git clone --bare` fetched with a refspec on the command line, and `--prune-tags`, were invisible to it and pruned every branch or tag. The helper now remembers what each remote advertised (`<git-dir>/seafile-advertised/<remote>`, per URL) and refuses an empty advertisement for one that was not empty, naming the file to delete if that was on purpose. A first fetch from a new empty remote is unaffected.
+- **A Pro account that is not the library's owner no longer deletes a folder it cannot see into** (ROADMAP Z29; measured on Pro 13.0.29 in the real-server run). Deleting the last branch under a folder pruned the emptied parent with a recursive delete; an `invisible` child makes that parent read as empty to a non-owner, and the delete took the hidden child's contents with it. The prune is now skipped for such an account (and when the owner question cannot be answered), the empty folder stays, and a `Note:` says so (only when a folder would really have gone), including that a fetch of the repository then stops at that folder until the owner removes it or a branch is pushed there again. The owner and Community Edition prune as before.
 
 ### Added
 - **`SEAFILE_SNAPSHOT_GIT_TIMEOUT`** (ROADMAP W4): seconds, raises the wall-clock bound (600 s) on a git call that carries no progress to measure (`ls-files`, `update-index`, `write-tree`), for a tree of over a million files or a slow disk. The error that kills such a child now names it.
 
 ### Changed
 - **A lock holder deletes the conflict copies of its own ticket when it releases** (ROADMAP Z47). Simultaneous writers of one ticket leave `<nonce> (SFConflict ...).json` beside it; the copy of a released holder kept other machines waiting for up to one lease (60 s). The holder removes the copies it has seen and, when it saw any, those made since (one extra listing; a push that saw none pays nothing). Another client never deletes one: a copy can be the newer value of a live holder whose original was reaped.
+- **CI action pins moved**: `actions/checkout` 7.0.1, `actions/setup-python` 7.1.0, `actions/upload-artifact` 7.0.2 and `actions/download-artifact` 8.0.2 (four Dependabot pull requests, merged after their runs). The two artifact actions are used only by the tag-triggered Release workflow, so their first real run is the next tag.
 
 ### Tests
 - **A listing of 5,100 entries is complete on CE and on Pro 13.0.29** (ROADMAP S1, the one open data-loss-class item): `LargeListingTests` writes 5,100 files and asserts one `list_dir` returns every name; it passed in the container run (about 4 minutes of uploads), so the suspected 5,000-entry cap is not reproduced.
 - **The test suite's timing assertions were audited** (Z50), `test_gc` no longer patches `Path.glob` for the whole process, the stub can number a server-side copy onto a taken name (Z33), and `ci.yml` has locale legs (`tr_TR.UTF-8`, and an ASCII-only process) (Z39).
 - **The hashing search's serialising-disk test runs on a virtual clock** (ROADMAP Z48): it failed on macOS runners three times (two legs, two workflows) because 10 ms sleeps overshoot on a busy runner and the noise read as a gain. `run_hashing` takes a `clock`; the test's disk advances virtual time per MiB, so every level reads exactly 100 MiB/s. 120 runs under 24-way contention passed.
 
-### Fixed
-- **A Pro account that is not the library's owner no longer deletes a folder it cannot see into** (ROADMAP Z29; measured on Pro 13.0.29 in the real-server run). Deleting the last branch under a folder pruned the emptied parent with a recursive delete; an `invisible` child makes that parent read as empty to a non-owner, and the delete took the hidden child's contents with it. The prune is now skipped for such an account (and when the owner question cannot be answered), the empty folder stays, and a `Note:` says so (only when a folder would really have gone), including that a fetch of the repository then stops at that folder until the owner removes it or a branch is pushed there again. The owner and Community Edition prune as before.
+### Documentation
+- **Payload from the Windows FAT32 and exFAT drives measured** against the in-process stub (the real server was unreachable that day): the hour margin re-reads fresh files, an in-place edit with the mtime put back is caught inside it, the restore is byte-exact (`SNAPSHOT.md` section 5). A payload file over 4 GiB on exFAT, through a real server, is still unmeasured.
+- **Decisions recorded**: a push verifies packs by size only (T3, `DESIGN.md`), the leftover git `index.lock` is left to its hint (Z46), and relaxing the refs guard for a nested empty folder was rejected (Z49).
 
 ## [0.9.24] - 2026-11-09
 
@@ -2111,6 +2118,7 @@ Data-loss and silent-failure fixes, and the Python floor raised to 3.9.
   with zero-config desktop-client token discovery, distributed locking, remote
   packfile compaction, and a Git LFS custom transfer agent.
 
+[0.9.25]: https://github.com/tkittich/git-remote-seafile/compare/v0.9.24...v0.9.25
 [0.9.24]: https://github.com/tkittich/git-remote-seafile/compare/v0.9.23...v0.9.24
 [0.9.23]: https://github.com/tkittich/git-remote-seafile/compare/v0.9.22...v0.9.23
 [0.9.22]: https://github.com/tkittich/git-remote-seafile/compare/v0.9.21...v0.9.22
