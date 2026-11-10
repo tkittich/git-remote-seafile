@@ -1,19 +1,20 @@
 You are an independent reviewer of `git-remote-seafile`, at the commit you were given
-(`git log -1`). **This is a post-release round**: version 0.9.24 was released on
-2026-11-09 (tag `v0.9.24`, commit `b14c4f7`), and your findings go into 0.9.25. If the
-commit you were given is later than the tag, `git log --oneline v0.9.24..HEAD` is what
-has changed since (the first fixes of 0.9.25, listed in `CHANGELOG.md` `[Unreleased]`);
-review it with the rest. Another model wrote the code, the tests and the specifications,
-and has reviewed them itself over a dozen rounds: assume all three share blind spots. The
-last outside review was a second pre-release round at commit `06cc623` (2026-11-07, four
-reviewers); its triage is settled and is listed in Part F as dispositions. **Everything
-between `06cc623` and now has had no independent reader**: the twenty-six fixes that round
-produced (ROADMAP §1.10, Z1-Z26), the 0.9.23 release, and everything in 0.9.24 and after
-it. 0.9.24 is the FAT32 and exFAT release: both filesystems were measured on Linux loop
-devices and on real Windows drives (`SNAPSHOT.md` section 5 holds the tables, which are
-claims you can check), and a restore, a payload cache and a lock were changed by what they
-showed (Z28-Z48). See Part G, which is where most of your time should go, but not all of
-it (see ORDER OF WORK). Parts A-E cover everything older.
+(`git log -1`). **This is a pre-release round**: version 0.9.25 is prepared at that commit
+(`__version__`, `CHANGELOG.md` `[0.9.25]`, `.github/release-notes/v0.9.25.md`, `UPGRADING.md`)
+and **not yet tagged**; your findings are folded into 0.9.25 before it ships, or recorded for the
+next one. The previous release is 0.9.24 (tag `v0.9.24`, commit `b14c4f7`, 2026-11-09), and
+`git log --oneline v0.9.24..HEAD` is what the round before it never saw. Another model wrote the
+code, the tests and the specifications, and has reviewed them itself over a dozen rounds: assume
+all three share blind spots. The last outside review was a second pre-release round at commit
+`06cc623` (2026-11-07, four reviewers); its triage is settled and is listed in Part F as
+dispositions. **Everything between `06cc623` and now has had no independent reader**: the
+twenty-six fixes that round produced (ROADMAP §1.10, Z1-Z26), the 0.9.23 release, the whole of
+0.9.24 (FAT32 and exFAT measured on Linux loop devices and on real Windows drives: a restore, a
+payload cache and a lock were changed by what they showed, Z28-Z48) and the whole of 0.9.25 (a
+data-loss fix from the first real Seafile Professional measurements, Z22, Z27, Z29, Z47-Z50, W4, and
+a week of test hardening). `SNAPSHOT.md` section 5 holds the measured FAT tables, which are claims
+you can check. See Part G, which is where most of your time should go, but not all of it (see ORDER
+OF WORK). Parts A-E cover everything older.
 
 WHAT IT IS
 A Git remote helper (`seafile://<library>/<path>`) that stores a repository in a Seafile
@@ -21,7 +22,7 @@ library through its REST API, with an advisory lock built from file creation and
 server's `Date` header, and a whole-tree snapshot tool (`git seafile-snapshot`) shipped
 in the same wheel. Read `README.md` for the overview, `DESIGN.md` §1–§4 for how the
 helper works, `SNAPSHOT.md` and `PAYLOAD.md` for the snapshot tool and its large-file
-store, and `CHANGELOG.md` `[Unreleased]`, `[0.9.24]` and `[0.9.23]` for what changed since the last review.
+store, and `CHANGELOG.md` `[0.9.25]`, `[0.9.24]` and `[0.9.23]` for what changed since the last review.
 
 THE DOCUMENTS ARE THE SPECIFICATION
 `DESIGN.md` (invariants §3 including §3.5 Adaptation, protocol §4, failure model §5,
@@ -242,7 +243,7 @@ catch a violation.
 PART G — everything since `06cc623` (Phase 2, first and longest)
 The map: `git log --oneline 06cc623..HEAD`, `git diff --stat 06cc623 HEAD` (the whole
 tree: code, tests, `.github`, `MANIFEST.in`, `pyproject.toml` and the documents),
-`ROADMAP.md` §1.10 (rows Z1-Z48, and B12 in §1.9) and `CHANGELOG.md` `[Unreleased]`,
+`ROADMAP.md` §1.10 (rows Z1-Z50, and B12 in §1.9) and `CHANGELOG.md` `[0.9.25]`,
 `[0.9.24]` and `[0.9.23]`. Each
 change was made in a day, with a test that was watched failing without it, mostly from
 a reviewer's report. For every one: does its test fail without it (delete it and run),
@@ -333,11 +334,17 @@ remote advertised (`<git-dir>/seafile-advertised/<remote>`, per URL, `git_util.
 write_advertised_refs`/`read_advertised_refs`, Z27) and refuses an empty advertisement for a
 remote that was not empty: find a shape that is refused wrongly (a remote emptied on
 purpose, a repository re-created at the same URL, two clones sharing a git dir, a worktree)
-and a shape that still prunes. The prune of emptied ref folders is skipped for an account
+and a shape that still prunes. The record is read and written only where git set `GIT_DIR`
+(`git_util.advertised_record_path`): a first version resolved the git directory from the working
+directory and wrote a fake record into the project's own `.git` from unit tests. Is there another
+way a record is written or read for the wrong repository (a helper run by hand, a script, `GIT_DIR`
+pointing at a different repository than the one fetching)? The prune of emptied ref folders is skipped for an account
 that may not see every ref (`helper._prune_empty_ref_parents`, `_risk_of_unseen_refs`, Z29,
 measured on Pro: a non-owner's recursive `DELETE` took a hidden child's contents): is there
 another recursive delete of a folder the account did not create, and what does the empty
-folder left behind do to the refs listing? A report-only `--payload-gc` by a Pro non-owner
+folder left behind do to the refs listing (Z49: a fetch of the repository stops at it, naming it,
+until the owner removes it or a branch is pushed there; is that failure reachable some other way,
+and is the Note's promise of it true)? A report-only `--payload-gc` by a Pro non-owner
 says its count may be too high (`72_payload_guards._require_whole_history`, Z34).
 
 G10. The tests and the tiers added in 0.9.24-0.9.25. The stub fails exactly the n-th listing
@@ -349,18 +356,36 @@ Z35): which numbers in the specs are still not tied to one? `release_check` warn
 green run is followed by a failed re-run (Z41). `.github/workflows/realserver-latest.yml`
 (Z37) runs the unpinned images monthly and gates nothing: could it gate something by
 accident? The `MEASURED` lines in `tests/test_realserver.py` (Z22, Z29, Z36) never fail: do
-they measure what their docstrings say?
+they measure what their docstrings say? `LargeListingTests` (S1) writes 5,100 files and asserts one
+`list_dir` returns every name; it passed on CE and Pro, which settles "complete at 5,100" and no
+further: what would a listing capped at 10,000, or a folder of directories, show? Z50 audited every
+`sleep` and elapsed-time assertion in `tests/` (the audit row in ROADMAP lists the verdicts): find one
+it classified as safe that can still flake, or one it missed. `test_gc` patches `Path.glob` only for
+the `pack-*` patterns (`_glob_of_staged_packs`): does that still mask an unrelated glob inside the
+code under test? `ci.yml` has locale legs (`tr_TR.UTF-8`, and `LC_ALL=C` with `PYTHONUTF8=0` and
+`PYTHONCOERCECLOCALE=0`, Z39): is the second one really an ASCII-only process, and what would a
+third leg catch that these do not?
 
-G6. Documents for the period: `CHANGELOG.md` `[0.9.23]`, `[0.9.24]` and `[Unreleased]` against
+G11. The typed git timeout and what else changed in the snapshot tool in 0.9.25.
+`SEAFILE_SNAPSHOT_GIT_TIMEOUT` raises the wall-clock bound on a git child that has no progress to
+measure (`20_gitrun.git_timeout`, W4): every place that used `GIT_TIMEOUT` as a number (`git grep
+GIT_TIMEOUT tools/_snapshot`), the status path that ignores it by design, a value that is huge, `inf`
+or `nan`, and the children the tool starts that inherit `SEAFILE_GIT_TIMEOUT` instead. The payload
+cache's note for a re-read caused only by a changed inode (`74_payload_manifest.build_manifest`,
+Z43): can the count be wrong when the old entry has no `ino`? The restore's listing of the
+destination (`91_restore_names`, Z45) runs on every restore: what does it cost on a 200,000-file
+tree, and does `os.walk(onerror=...)` fail a restore it should not?
+
+G6. Documents for the period: `CHANGELOG.md` `[0.9.23]`, `[0.9.24]` and `[0.9.25]` against
 `git log 06cc623..HEAD`
 (an entry with no commit, a commit with no entry); `UPGRADING.md` (would an operator learn
 every behaviour that may now surface: the new refusals, the new warnings, the case rule's
 first run on a case-sensitive source?); the release notes against the changelog; the
 DESIGN, PAYLOAD, SNAPSHOT and USER_GUIDE additions against the code (quote both);
 AGENTS.md "Review rounds"; and `python tools/release_check.py --offline` (expected: every
-check `ok` except the tag, which already exists for 0.9.24, the commit not being on
-`origin/main` if you are past the tag, and the two CI legs, which are warnings under
-`--offline` — report anything else it says). The guides and specs that 0.9.24 changed to
+check `ok` except the commit not being on `origin/main` (a warning) and the two CI legs, which
+are warnings under `--offline`, and the dirty-tree line if your copy has local files — report
+anything else it says). The tag `v0.9.25` must not exist yet. The guides and specs that 0.9.24 changed to
 match what was measured (`PAYLOAD.md` and the `USER_GUIDE.md` limits row on FAT,
 `SNAPSHOT_GUIDE.md` on restore destinations, `DESIGN.md` on the LFS rename, the ticket
 copies and the remembered advertisement, `CONTRIBUTING.md`, `AGENTS.md`) against the code.
@@ -447,8 +472,8 @@ glm-5.3, opus-5.5) is settled as follows, by ROADMAP §1.10 row. For each row ma
 **read only** is a document or a test: read it and say whether it says what the code
 does; do not mutate it. For each row marked open, say CONFIRMED, FIXED SINCE, STALE (the
 description no longer matches the code — say what it does now) or MISRANKED (and why).
-Then spend the rest of the part on the open rows (Z39, Z46, Z33's second half, B10, S1, W3,
-W4, W6's remainder, S21) and on the questions no machine in reach could answer.
+Then spend the rest of the part on the open rows (Z39's remainder, B10, W3, W6's remainder: a payload
+file over 4 GiB on exFAT through a real server and the Windows remount, S21, Z43 option C) and on the questions no machine in reach could answer.
 
 | Row | Finding, short | Disposition |
 | :--- | :--- | :--- |
@@ -492,7 +517,15 @@ W4, W6's remainder, S21) and on the questions no machine in reach could answer.
 | Z22 | a group-owned library's owner value | **corrected**: `share` is every non-owner's value, so it identifies nothing; the discriminator is unmeasured |
 | Z46 | a whole-group kill leaves git's `index.lock` | open, decision: leave it (the hint is right) |
 | Z47 | a conflict copy of a released holder's ticket blocks one lease | done with code (0.9.25): the holder deletes its own; reaping orphans was rejected as unsafe |
-| Z48 | the serialising-disk test failed on macOS runners | done with code (0.9.25): a virtual clock |
+| Z48 | the serialising-disk test failed on macOS runners | done with code (0.9.25): a virtual clock; the wall-clock smoke test that was kept failed once more and now asserts only structure |
+| Z49 | skipping the prune leaves an empty ref folder that stops a fetch | decision, with code: the guard stays (issue 6), the Note says the consequence and is printed only when a folder would go |
+| Z50 | three timing flakes in a week | read only (an audit in the ROADMAP row) plus one fixed assertion |
+| W4 | a 600 s wall clock on tree-sized git calls | done with code: `SEAFILE_SNAPSHOT_GIT_TIMEOUT`; the default is unchanged and a slow disk was never measured |
+| T3 | a push verifies packs by size only | decided, recorded in DESIGN (the reasons are there to attack) |
+| Z33 | stub duplicate-on-collision for copy | done: `copy_duplicate` fault; the real server's answer to a copy onto a taken name is unmeasured |
+| Z46 | a whole-group kill leaves git's `index.lock` | decided: leave it |
+| S1 | an unpaged listing may be short | measured complete at 5,100 on CE and Pro; read the claim, and the assertion, adversarially |
+| Z39 | locale and environment legs | partly done: tr_TR and ASCII-only legs added; antivirus, Task Scheduler as SYSTEM and a subpath behind nginx remain |
 
 Settled ground in this part: an "unknown" lease after a write that was read back is a
 warning while the lease is within its time by this machine's clock, and lost past it; a
@@ -504,7 +537,11 @@ cause the tool cannot tell from the harmful one; skipping the prune for a Pro no
 destroy hidden refs: the empty folder left behind reads as a failed listing, which is loud
 and harmless; reaping another client's ticket copies is not accepted (a live holder's newer
 refresh can be the copy); a `git fetch --prune-tags` against an empty remote deletes local
-tags by git's own rule, which the helper does not stop.
+tags by git's own rule, which the helper does not stop; a push verifies packs by size only (T3, with
+reasons in DESIGN); the empty folder a Pro non-owner's delete leaves is loud on purpose (Z49);
+the leftover `index.lock` after a power cut is not removed automatically (Z46); a listing is
+complete at 5,100 entries on the two editions measured (S1), so "the listing may be short" needs an
+experiment above that or a folder of directories, not an argument.
 
 PART H — what this prompt does not ask (Phase 2, last; suggestions, not findings)
 You have now read more of this project than most people will. Say what you would do
@@ -532,8 +569,8 @@ OUTPUT — one markdown document, sections in this order.
    prefixed with your `<model>` name (below): `glm-5.3-G2.1`.
 4. Part F: a table of row | your verdict | evidence.
 5. Part H: H1 (areas), H2 (suggestions) and H3 (this prompt). End H2 with a one-line
-   answer: which findings, if any, should block 0.9.25, and which would you ship in a
-   0.9.24.1 hot-fix instead?
+   answer: which findings, if any, should block the 0.9.25 tag, and which would you ship in a
+   0.9.25.1 hot-fix instead?
 6. What you checked and found sound: one line each, and for every part with no finding
    a line saying that and what you attacked there (a part with an empty table is not
    one you skipped). This is not filler — a named list of paths you attacked and could
