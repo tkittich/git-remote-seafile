@@ -3267,8 +3267,18 @@ class PruneEmptyRefParentsTests(unittest.TestCase):
         h = self.helper(risk)
         said = self.prune(h)
         h.client.delete_entry.assert_not_called()
-        self.assertIn("Note: left the empty folder above refs/heads/team/topic in place", said)
+        self.assertIn("Note: left the empty folder refs/heads/team in place", said)
+        self.assertIn("a fetch of this repository stops at that folder", said)
         self.assertIn("is not the library's owner", said)
+
+    def test_a_push_that_leaves_refs_in_the_parent_asks_nothing_and_says_nothing(self):
+        """The owner question costs requests and the Note is about a folder that would have gone."""
+        h = self.helper("this account is not the library's owner")
+        h.client.list_dir.return_value = [{"name": "other", "type": "file"}]    # a sibling ref remains
+        said = self.prune(h)
+        self.assertEqual(said, "")
+        h.client.hidden_history_risk.assert_not_called()
+        h.client.delete_entry.assert_not_called()
 
     def test_a_question_the_server_cannot_answer_is_a_risk_not_a_pass(self):
         h = self.helper(None)

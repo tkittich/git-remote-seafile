@@ -331,18 +331,12 @@ class RemoteHelper:
         parent it reads as empty may hold refs it cannot see, and the delete is recursive.
         Measured on Pro 13.0.29 (ROADMAP Z29): the non-owner's ``DELETE`` of such a parent
         answered success and the hidden child's contents were gone.  The empty folder stays;
-        the refs listing's "exists and answers empty" guard then reports it until a branch
-        is pushed again, which is the loud, harmless failure.
+        the refs listing's "exists and answers empty" guard then stops every fetch of the
+        repository at that folder, naming it, until the owner removes it or a branch is pushed
+        there again (ROADMAP Z49).  That guard stays as it is: relaxing it for a nested folder
+        would bring back the issue-6 failure it exists for, a ref made as a folder reading as
+        "no such branch".  The question is asked only once a folder would really be deleted.
         """
-        risk = self._risk_of_unseen_refs()
-        if risk:
-            sys.stderr.write(
-                f"Note: left the empty folder above {ref_path} in place: {risk}. Removing a "
-                "folder deletes everything inside it, including what this account cannot see; "
-                "the owner can remove it, or push a branch there again.\n"
-            )
-            sys.stderr.flush()
-            return
         parent = os.path.dirname(ref_path).replace("\\", "/")
         stop_points = {"refs", ""}
         while parent and parent not in stop_points:
@@ -365,6 +359,18 @@ class RemoteHelper:
                     # allows, and leave the directory if it is no longer empty.
                     and self.client.list_dir(self.repo_id, full_parent) == []
                 ):
+                    # Only here, once a folder would really go: a push that leaves refs in its
+                    # parent has nothing to say, and the owner question costs requests.
+                    risk = self._risk_of_unseen_refs()
+                    if risk:
+                        sys.stderr.write(
+                            f"Note: left the empty folder {parent} in place: {risk}. Removing a "
+                            "folder deletes everything inside it, including what this account "
+                            "cannot see. Until the owner removes it (or a branch is pushed there "
+                            "again) a fetch of this repository stops at that folder and says so.\n"
+                        )
+                        sys.stderr.flush()
+                        return
                     self.client.delete_entry(self.repo_id, full_parent)
                     # The directory cache must forget this path or it will
                     # never be recreated (a future D/F ref conflict).
