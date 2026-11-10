@@ -55,6 +55,7 @@ include tools/gates.py
 include tools/measure_pathspec_cost.py
 include tools/realserver_ci.py
 include tools/release_check.py
+include tools/mutate_check.py
 recursive-include tools/_snapshot *.py
 
 # CHANGELOG.md and ROADMAP.md link the desktop-client patch; an sdist that

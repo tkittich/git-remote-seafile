@@ -190,6 +190,13 @@ real data**, even to test. Read-only commands (`--payload-verify`, report-only
   places that fold names) and say in the commit message which were checked. The 0.9.22
   `--no-push` fix covered two of six settings, and the four it missed were the next
   round's finding (Y2).
+- **A ROADMAP row for a fix names its sibling search before the row is closed.** Z39 moved the
+  restore probe to bytes and left the listing beside it in `str` (found a round later, AA2), and Z45
+  fixed the twin warning for one spelling of the pair. Write the `git grep` (or the test) that finds
+  the other sites in the row itself.
+- **Delete a guard, watch its test with `python tools/mutate_check.py <file> --old ... --new ...
+  <tests>`**: it rebuilds the snapshot tool for a part, restores the file byte for byte, and says
+  KILLED or SURVIVED. A survivor is reported, never hidden.
 - **A fix that closes a shape gets a guard that does not need to know the sites.** Naming
   siblings by hand missed some three rounds running (X10 → Y2 → Z8; Y4 → Z2, Z3). Prefer a
   test that fails for the *next* site too: the vault config compared byte for byte after

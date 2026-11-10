@@ -109,7 +109,8 @@ RULES FOR THE WHOLE REVIEW
   the test you need. Use `-j 12` or `-j 24` with `tools/run_tests_parallel.py`, nothing
   else. On a slow or antivirus-scanned disk use the smaller sizes of
   `tools/measure_pathspec_cost.py` (1000 to 5000).
-  Several tests are timing based (`tests/test_snapshot_climb.py`, the staging ramp
+  A Debian WSL distribution loses `/tmp` and its mounts between invocations: build the tree a
+script needs in the same call that uses it. Several tests are timing based (`tests/test_snapshot_climb.py`, the staging ramp
   tests): if one fails for you, run it three times and say so; a test that fails on
   your machine and not on CI is itself a finding. Tests make `grs-*`
   directories in the temporary directory and remove them; do **not** sweep `grs-*` by
@@ -204,9 +205,16 @@ ORDER OF WORK — follow it.
 PHASE 1, specification only: Parts A and D, written down in full before you open code. A
 Phase 1 finding cites a spec section and quotes its words; a `file:line` is added in Phase 2
 if the code confirms it.
-Do not open `git_remote_seafile/`, `tools/` or `tests/`, and do not read a prior
-`REVIEW.*.md`. If you open code first, say so in the report: the design sections are
+Write the Phase 1 findings to a file of your own (`review-<model>-phase1.md`) before you open
+code: a long session can be compacted, and notes that exist only in the conversation are gone
+(one reviewer could not show theirs). Do not open `git_remote_seafile/`, `tools/` or `tests/`,
+and do not read a prior `REVIEW.*.md`. If you open code first, say so in the report: the design sections are
 then the first thing to distrust, because the code will have anchored your attack.
+Every reviewer reads the same commit: the maintainer names it and does not move it for the
+round (the 0.9.25 round was read at two commits one fix apart, and three reports described a
+module the fourth saw changed). If time runs short, finish G1, G2, G7, G9 and G4 before the
+other sub-areas and say which you did not reach; a part you did not read is not a part with no
+finding.
 PHASE 2, code: Part G first (it is the least reviewed), then B, C, E, F, then H. You
 may revisit A and D; mark what you changed and why. **Give Parts B, C and E together at
 least a third of your Phase 2 time**: last round three of four reviewers spent nearly all
@@ -246,7 +254,8 @@ tree: code, tests, `.github`, `MANIFEST.in`, `pyproject.toml` and the documents)
 `ROADMAP.md` §1.10 (rows Z1-Z50, and B12 in §1.9) and `CHANGELOG.md` `[0.9.25]`,
 `[0.9.24]` and `[0.9.23]`. Each
 change was made in a day, with a test that was watched failing without it, mostly from
-a reviewer's report. For every one: does its test fail without it (delete it and run),
+a reviewer's report. For every one: does its test fail without it (delete it and run: `python tools/mutate_check.py <file> --old
+... --new ... <tests>` does it, rebuilds the snapshot tool for a part and restores the file),
 does it cover the siblings of the reported path (question 10), and did it move the
 failure somewhere quieter? Number findings G1…, G2… by the sub-area below, e.g. G2.1.
 
@@ -384,7 +393,9 @@ first run on a case-sensitive source?); the release notes against the changelog;
 DESIGN, PAYLOAD, SNAPSHOT and USER_GUIDE additions against the code (quote both);
 AGENTS.md "Review rounds"; and `python tools/release_check.py --offline` (expected: every
 check `ok` except the commit not being on `origin/main` (a warning) and the two CI legs, which
-are warnings under `--offline`, and the dirty-tree line if your copy has local files — report
+are warnings under `--offline` only when `gh` cannot answer: with `gh` signed in and the commit
+not on GitHub, `--offline` still prints `[FAIL] no run at <sha>` for both legs, which is that
+fact and not a defect — and the dirty-tree line if your copy has local files; report
 anything else it says). The tag `v0.9.25` must not exist yet. The guides and specs that 0.9.24 changed to
 match what was measured (`PAYLOAD.md` and the `USER_GUIDE.md` limits row on FAT,
 `SNAPSHOT_GUIDE.md` on restore destinations, `DESIGN.md` on the LFS rename, the ticket
@@ -504,7 +515,6 @@ file over 4 GiB on exFAT through a real server and the Windows remount, S21, Z43
 | Z30 | two machines uploading one LFS object left conflict copies | done with code (0.9.24) |
 | Z31 | a 413 overwrote the repository-wide pack cap | done with code (0.9.24): per remote |
 | Z32 | NTFS folds non-ASCII case, git does not | read only (SNAPSHOT.md) |
-| Z33 | stub: duplicate-on-collision for copy and rename | half done: `(SFConflict ...)` copies yes, the stage view's copy no |
 | Z34 | a Pro non-owner's report-only `--payload-gc` under-counts | done with code (a Note) |
 | Z35 | prose numbers not tied to constants | done with code (tests; REF_WRITE timeout is stated nowhere) |
 | Z36 | real-server measurements | partly: `MEASURED` lines ran; group owner, 5,000-entry listing and an admin's view are open |
@@ -515,7 +525,6 @@ file over 4 GiB on exFAT through a real server and the Windows remount, S21, Z43
 | Z43 | the payload cache re-reads everything after a FAT remount | option A done (a Note); option C open |
 | Z44, Z45 | a restore onto FAT stopped at git's first error; a case twin read as a defect; `dot.` passed the byte check | done with code (0.9.24) |
 | Z22 | a group-owned library's owner value | **corrected**: `share` is every non-owner's value, so it identifies nothing; the discriminator is unmeasured |
-| Z46 | a whole-group kill leaves git's `index.lock` | open, decision: leave it (the hint is right) |
 | Z47 | a conflict copy of a released holder's ticket blocks one lease | done with code (0.9.25): the holder deletes its own; reaping orphans was rejected as unsafe |
 | Z48 | the serialising-disk test failed on macOS runners | done with code (0.9.25): a virtual clock; the wall-clock smoke test that was kept failed once more and now asserts only structure |
 | Z49 | skipping the prune leaves an empty ref folder that stops a fetch | decision, with code: the guard stays (issue 6), the Note says the consequence and is printed only when a folder would go |
@@ -524,6 +533,9 @@ file over 4 GiB on exFAT through a real server and the Windows remount, S21, Z43
 | T3 | a push verifies packs by size only | decided, recorded in DESIGN (the reasons are there to attack) |
 | Z33 | stub duplicate-on-collision for copy | done: `copy_duplicate` fault; the real server's answer to a copy onto a taken name is unmeasured |
 | Z46 | a whole-group kill leaves git's `index.lock` | decided: leave it |
+| AA1-AA8 | the 8eb416b / 853a7a2 round (ROADMAP §1.11): `inf`/`nan` typed seconds, the restore onto Windows and FAT in four shapes, the dead disk floor, a listed-but-unserved lock ticket, `git~` names, the DESIGN §3.2-3.4 drift | done with code (0.9.25); each named test fails when its fix is removed (`mutate_check`), except the bytes-listing mutation, which only a POSIX run can show |
+| AA9-AA19 | `--dry-run`'s case rule, an empty ref folder after a failed nested push (measure first), the suspend-blind lease clock, the settle budget, the mirror-clone warning, the restore's "verified" wording, a surviving R6 mutation, `gates --changed`'s test imports, the long-path skip matcher, the 5,000-folder listing, the payload-verify note | open (read the row, then say CONFIRMED, FIXED SINCE, STALE or MISRANKED) |
+| AA21 | gemini's A1-A3, D3, D4, G3.1, B1, B2, C1, C2, G8.1, E1; "an empty ref leaf is empty"; exit 2 for an incomplete restore | declined with reasons in ROADMAP §1.11 and the triage; re-report only by showing the reason is wrong |
 | S1 | an unpaged listing may be short | measured complete at 5,100 on CE and Pro; read the claim, and the assertion, adversarially |
 | Z39 | locale and environment legs | partly done: tr_TR and ASCII-only legs added; antivirus, Task Scheduler as SYSTEM and a subpath behind nginx remain |
 

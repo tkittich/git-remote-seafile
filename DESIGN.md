@@ -83,12 +83,12 @@ These hold on every code path, and each is the reason some check below exists. T
 
 - **The remote layout is bare-like and nothing else is assumed to exist.** `HEAD`, `refs/heads/*`, `refs/tags/*`, `objects/pack/`, and the lock directory. A repository is readable by any client that follows the layout, without a local database.
 - **Every remote-supplied name is validated before use.** Packfile names must match a strict regex; ref names must satisfy the rules of `git check-ref-format` as measured, not as assumed.
-- **Refs are the only source of truth.** The helper keeps no cache of remote state between invocations. This costs efficiency (§7) and buys the property that two machines cannot disagree about the remote because of stale local state.
+- **Refs are the only source of truth.** The helper keeps no cache of remote state between invocations. This costs efficiency (§7) and buys the property that two machines cannot disagree about the remote because of stale local state. One record is kept, and it is a safety net, never a source: `<git-dir>/seafile-advertised/<remote>` holds what the remote last advertised, only where git set `GIT_DIR`, so that a `--prune` fetch against an advertisement that is suddenly empty is refused instead of deleting every tracking ref (ROADMAP Z27). Nothing is ever read from it to decide what the remote holds; a remote emptied on purpose is synchronised by deleting the file the message names.
 
 ### 3.3 Concurrency
 
 - **The lock is advisory, and is never what makes a write safe.** Seafile exposes no atomic server-side primitive — `replace=1` is last-writer-wins and `replace=0` renames rather than failing — so no scheme built from files and clocks can provide true mutual exclusion. The lock reduces contention; correctness rests on §3.4.
-- **Time decides who waits, never who holds.** A ticket's grant marker ranks it; a clock estimate may only break ties among peers (§4.4).
+- **Time decides who waits, never who holds.** A ticket's grant marker ranks it; a clock estimate may only break ties among ungranted peers, and never overrides a granted holder (§4.4).
 - **Every destructive step re-proves ownership immediately before it acts** — before a ref is written, and before each individual packfile is deleted. (Its own ticket on every step; the queue from a scan at most a second old, §4.4.)
 - **A lost race is loud.** Where a check and a write cannot be made atomic, the write is followed by a read-back, and a mismatch is reported as a failure rather than assumed to be success.
 - **No external command runs unbounded.** Every `git` invocation is bounded by a wall-clock ceiling, and a timeout is a failure rather than a silent truncation. The bound protects the lease as much as the run: a wedged `git repack` or `index-pack` inside `gc` would otherwise hold the remote lock open past its expiry, at which point another client lawfully takes over (§4.4). The ceiling is raisable, but only from a scope the repository cannot reach — `SEAFILE_GIT_TIMEOUT`, or `seafile.gittimeout` in the system or global git config (§4.8) — because a repository must not be able to raise the ceiling that protects its own concurrency guarantee. The default is deliberately short of what a multi-GB repository needs; the machine owner, not the repository, is who raises it.
@@ -96,7 +96,7 @@ These hold on every code path, and each is the reason some check below exists. T
 ### 3.4 Data safety
 
 - **Nothing is deleted until its replacement is proven present.** The consolidated packfiles must be listed back at their expected sizes before any superseded pack is removed (§4.5).
-- **A refusal beats a guess.** Configuration that is contradictory, a remote that cannot be read, a probe that cannot answer — each is an error, not a default. The recurring failure this prevents is the silent one.
+- **A refusal beats a guess.** Configuration that is contradictory, a remote that cannot be read, a probe that cannot answer — each is an error, not a default. The recurring failure this prevents is the silent one. The exception is a numeric tuning key (§4.8): an implausible value falls back to the documented default with a warning, because a typo in a timeout must not stop a push that would have worked.
 - **Ambiguity is reported, never resolved silently.** The snapshot tool's excludes are opt-in for exactly this reason: `node_modules` is reproducible, `.env` is not, and the tool cannot tell them apart.
 - **The source tree of a capture is read-only.** The snapshot tool's vault is a *second* repository whose work-tree is the source; the source's index and refs are never written (§4.10).
 
