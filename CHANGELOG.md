@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **A Pro group (department) library is named as one, and an ordinary shared library names its real owner** (ROADMAP Z22; measured on Pro 13.0.29). The owner guard read `/api2/repos/<id>/`, which answers `share` to every account that is not the owner, so a group library got "not the library's owner (share)" with advice to run as the owner, which nobody can. The guard now reads the v2.1 detail's `owner_email` (`<id>@seafile_group` for a group library) and says so; the cost is one request, only for a non-owner on Pro.
 - **A fetch from a repository that vanished on the server is refused whatever the refspec** (ROADMAP Z27; gemini-4-argon G2.2). The guard inferred what `git fetch --prune` would delete from `remote.<name>.fetch`, so a `git clone --bare` fetched with a refspec on the command line, and `--prune-tags`, were invisible to it and pruned every branch or tag. The helper now remembers what each remote advertised (`<git-dir>/seafile-advertised/<remote>`, per URL) and refuses an empty advertisement for one that was not empty, naming the file to delete if that was on purpose. A first fetch from a new empty remote is unaffected.
 
 ### Changed

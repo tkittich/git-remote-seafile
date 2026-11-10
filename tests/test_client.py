@@ -2050,7 +2050,7 @@ class TestSeafileClientOperations(unittest.TestCase):
     def test_the_hidden_history_risk_is_named_only_on_pro_for_a_non_owner(self):
         """ROADMAP B2.  CE has no folder permissions; on Pro the owner is never restricted,
         and an account or owner the server does not report is a risk (cannot tell)."""
-        def client_for(features, email, owner, library_status=200):
+        def client_for(features, email, owner, library_status=200, detail_owner=None):
             client = SeafileClient(server_url="https://seafile.example.com", token="t", timeout=10)
             client.session = MagicMock()
 
@@ -2060,6 +2060,10 @@ class TestSeafileClientOperations(unittest.TestCase):
                     resp.json.return_value = {"features": features}
                 elif url.endswith("/api2/account/info/"):
                     resp.json.return_value = {"email": email} if email else {}
+                elif url.endswith("/api/v2.1/repos/r/"):
+                    # The detail that names the owner (Pro 13.0.29); absent unless a test gives one.
+                    resp.status_code = 200 if detail_owner else 404
+                    resp.json.return_value = {"owner_email": detail_owner} if detail_owner else {}
                 else:
                     resp.status_code = library_status
                     resp.json.return_value = {"owner": owner} if owner else {}
@@ -2083,6 +2087,18 @@ class TestSeafileClientOperations(unittest.TestCase):
                 advice = owner_advice(risk, "--allow-non-owner")
                 self.assertIn("no account can run it as the owner", advice)
                 self.assertIn("--allow-non-owner", advice)
+        # Measured on Pro 13.0.29 (ROADMAP Z22): /api2/repos/<id>/ says "share" to every non-owner,
+        # group-owned or not; the v2.1 detail's owner_email is what tells them apart.
+        risk = client_for(pro, "a@x", "share", detail_owner="1@seafile_group").hidden_history_risk("r")
+        self.assertIn("owned by a group (1@seafile_group)", risk)
+        self.assertIn("no account can run it as the owner", owner_advice(risk, "--allow-non-owner"))
+        risk = client_for(pro, "a@x", "share", detail_owner="b@x").hidden_history_risk("r")
+        self.assertIn("(a@x) is not the library's owner (b@x)", risk, "the real owner, not 'share'")
+        risk = client_for(pro, "a@x", "share").hidden_history_risk("r")   # the detail is unavailable
+        self.assertIn("(a@x) is not the library's owner (share)", risk)
+        self.assertNotIn("owned by a group", risk)
+        # The owner is still never asked about: api2 answers "self" and nothing more is read.
+        self.assertIsNone(client_for(pro, "a@x", "self", detail_owner="1@seafile_group").hidden_history_risk("r"))
         self.assertIn("as the library's owner",
                       owner_advice("this account (a@x) is not the library's owner (b@x)", "--f"))
         risk = client_for(pro, "a@x", "b@x").hidden_history_risk("r")

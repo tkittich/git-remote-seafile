@@ -1263,6 +1263,14 @@ class SharedUserTests(_RealServerFixture):
         self.addCleanup(self._admin, "DELETE",
                         f"/api/v2.1/groups/{did}/group-owned-libraries/{repo_id}/")
         self._measure_group_owner(repo_id)
+        # Measured on Pro 13.0.29 (ROADMAP Z22): /api2/repos/<id>/ says "share" to every non-owner,
+        # and the v2.1 detail names a group library's owner as <id>@seafile_group, the same to a
+        # member and to the admin who made it.  The guard must say "group" to both.
+        from git_remote_seafile.client import SeafileClient
+
+        for who, client in (("member", SeafileClient(server_url=self.client.server_url, token=_SECOND_TOKEN)),
+                            ("admin", self.client)):
+            self.assertIn("owned by a group", client.hidden_history_risk(repo_id) or "", who)
         self._measure_owner_fields("group-owned", repo_id)
         self._measure_owner_fields("shared user-owned", self.rid)
         self._round_trip(self.env2, f"seafile://{name}/repo", "dept_member")

@@ -913,6 +913,14 @@ class SeafileClient:
         # 13.0.29: the first version compared emails and refused the owner).
         if owner == "self" or (isinstance(email, str) and email and email == owner):
             return None
+        # ``/api2/repos/<id>/`` answers ``"share"`` to *every* account that is not the owner, so
+        # it cannot say who does own the library or that a group does (measured on Pro 13.0.29,
+        # ROADMAP Z22).  The v2.1 detail names the owner: a real email, or ``<id>@seafile_group``
+        # for a group (department) library, the same to a member and to the admin who made it.
+        detail = self._json_or_none(f"/api/v2.1/repos/{repo_id}/")
+        named = detail.get("owner_email") if isinstance(detail, dict) else None
+        if isinstance(named, str) and named:
+            owner = named
         if isinstance(owner, str) and is_group_owner(owner):
             return (f"this library is owned by a group ({owner}), so no account is its owner, "
                     "and on Seafile Professional a folder permission can hide refs from any "
