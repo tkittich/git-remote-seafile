@@ -1277,5 +1277,48 @@ class SharedUserTests(_RealServerFixture):
         self._round_trip(self.env, f"seafile://{name}/deep/repo", "dept_owner")
 
 
+@unittest.skipUnless(_LIBRARY, "set SEAFILE_TEST_LIBRARY to a scratch library to run these")
+class LargeListingTests(_RealServerFixture):
+    """ROADMAP S1 / Z36: is a directory listing complete above 5,000 entries?
+
+    ``list_dir`` sends no paging parameter and takes the returned array as the whole folder
+    (paging parameters are ignored, measured to 1,200 entries).  A server that caps a listing
+    would make every consumer that decides from one (a refs walk, ``gc``'s pack list) see a
+    folder short and say nothing.  Records what the server answers; the assertion below is
+    the invariant, and a red here is a data-loss-class finding, not a flake.
+    """
+
+    COUNT = 5100
+    WRITERS = 6
+
+    def test_a_listing_holds_every_entry_of_a_large_folder(self):
+        from concurrent.futures import ThreadPoolExecutor
+
+        folder = f"/{self.base}/s1-large"
+        self.client.mkdir_p(self.rid, folder)
+        names = [f"e{n:05d}" for n in range(self.COUNT)]
+
+        def put(name: str) -> None:
+            self.client.upload_file(self.rid, folder, name, b"x", replace=True)
+
+        started = time.time()
+        with ThreadPoolExecutor(max_workers=self.WRITERS) as pool:
+            list(pool.map(put, names))
+        wrote = time.time() - started
+        listed = self.client.list_dir(self.rid, folder)
+        got = sorted(str(e.get("name")) for e in listed if isinstance(e, dict))
+        missing = sorted(set(names) - set(got))
+        print(f"\nMEASURED (S1, {self._edition_label()}): wrote {self.COUNT} files in {wrote:.0f} s; "
+              f"one list_dir answered {len(got)} entries; missing {len(missing)}"
+              f"{' (first: ' + missing[0] + ', last: ' + missing[-1] + ')' if missing else ''}", flush=True)
+        self.assertEqual(len(got), len(set(got)), "the listing repeats a name")
+        self.assertEqual(missing, [], f"the listing is short: {len(got)} of {self.COUNT} entries")
+
+    @classmethod
+    def _edition_label(cls) -> str:
+        info = _server_info(cls.client)
+        return f"{'Pro' if _server_is_pro(cls.client) else 'CE'} {info.get('version', '?')}"
+
+
 if __name__ == "__main__":
     unittest.main()
