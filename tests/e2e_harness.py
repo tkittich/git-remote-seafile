@@ -282,7 +282,19 @@ class _Handler(BaseHTTPRequestHandler):
             for name in req["src_dirents"]:
                 src = src_parent + "/" + name
                 for key in [k for k in files if k == src or k.startswith(src + "/")]:
-                    files[dst_parent + "/" + name + key[len(src):]] = files[key]
+                    target = dst_parent + "/" + name + key[len(src):]
+                    if self.stub.faults.get("copy_duplicate") and target in files:
+                        # Seafile numbers a copy onto a taken name the way it numbers a rename
+                        # ("<name> (1)", before the last extension); the stub's default is to
+                        # overwrite, which is more lenient (ROADMAP Z33).  Opt in with the fault.
+                        taken = target
+                        base, dot, ext = taken.rpartition(".")
+                        n = 1
+                        target = f"{base or taken} ({n}){('.' + ext) if dot else ''}"
+                        while target in files:
+                            n += 1
+                            target = f"{base or taken} ({n}){('.' + ext) if dot else ''}"
+                    files[target] = files[key]
             return self._send(200, b'{"success":true}')
 
         if path.startswith("/upload/"):

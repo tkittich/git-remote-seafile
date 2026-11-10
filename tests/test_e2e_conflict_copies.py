@@ -67,5 +67,35 @@ class TestConflictCopiesThroughGit(E2ETestCase):
         self.assertTrue((dst / "b.txt").is_file())
 
 
+class TestTheStubCopyCanNumberATakenName(E2ETestCase):
+    """ROADMAP Z33: ``copy_duplicate`` makes a server-side copy onto a taken name leave ``<name> (1)``."""
+
+    def _client(self):
+        from git_remote_seafile.client import SeafileClient
+
+        return SeafileClient(server_url=self.stub.base_url, token="t")
+
+    def _seed(self):
+        files = self.stub.files.setdefault(REPO_ID, {})
+        files["/src/obj"] = b"one"
+        files["/dst/obj"] = b"already here"
+        return files
+
+    def test_the_default_overwrites_as_before(self):
+        files = self._seed()
+        self.assertTrue(self._client().copy_entries(REPO_ID, "/src", ["obj"], "/dst"))
+        self.assertEqual(files["/dst/obj"], b"one")
+        self.assertNotIn("/dst/obj (1)", files)
+
+    def test_with_the_fault_a_taken_name_is_numbered(self):
+        files = self._seed()
+        self.stub.faults["copy_duplicate"] = 1
+        client = self._client()
+        self.assertTrue(client.copy_entries(REPO_ID, "/src", ["obj"], "/dst"))
+        self.assertEqual((files["/dst/obj"], files["/dst/obj (1)"]), (b"already here", b"one"))
+        self.assertTrue(client.copy_entries(REPO_ID, "/src", ["obj"], "/dst"))
+        self.assertEqual(files["/dst/obj (2)"], b"one")
+
+
 if __name__ == "__main__":
     unittest.main()

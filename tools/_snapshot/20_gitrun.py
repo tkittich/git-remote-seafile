@@ -51,6 +51,38 @@ def _stall_limit_from_env() -> float:
     return value
 
 
+def git_timeout() -> float:
+    """The wall-clock bound on a plain git child: ``GIT_TIMEOUT``, or what a person typed.
+
+    A first run over a very large tree can spend longer than ten minutes in a single
+    ``ls-files``, ``update-index`` or ``write-tree`` (about 0.5 ms a file measured on NVMe, so
+    roughly 1.3 million files, and more on a slow disk; ROADMAP W4).  Those calls carry no
+    progress to measure, so the limit is a wall clock; ``SEAFILE_SNAPSHOT_GIT_TIMEOUT`` raises
+    it, in seconds, and the error that kills a child names it.
+    """
+    raw = os.environ.get("SEAFILE_SNAPSHOT_GIT_TIMEOUT", "").strip()
+    if not raw:
+        return GIT_TIMEOUT
+    try:
+        value = float(raw)
+    except ValueError:
+        value = 0.0
+    if value <= 0:
+        print(
+            f"Warning: SEAFILE_SNAPSHOT_GIT_TIMEOUT={raw!r} is not a positive number of "
+            f"seconds; using {GIT_TIMEOUT}.",
+            file=sys.stderr,
+        )
+        return float(GIT_TIMEOUT)
+    return value
+
+
+_TIMEOUT_HINT = (
+    " (a tree of over a million files, or a slow disk, may need longer: "
+    "SEAFILE_SNAPSHOT_GIT_TIMEOUT=<seconds>)"
+)
+
+
 class _UnsetStall:
     """Sentinel meaning "use the stall limit" (distinct from ``None``, which is "never kill")."""
 
@@ -230,12 +262,14 @@ def _run(
             expect_bytes=expect_bytes, **kwargs,
         )
     if status is None:
-        kwargs.setdefault("timeout", GIT_TIMEOUT)
+        limit_s = git_timeout()
+        kwargs.setdefault("timeout", limit_s)
         try:
             return subprocess.run(cmd, **kwargs)
         except subprocess.TimeoutExpired:
             raise SnapshotError(
-                f"git {' '.join(cmd[1:])} did not finish within {GIT_TIMEOUT:g}s and was killed"
+                f"git {' '.join(cmd[1:])} did not finish within {limit_s:g}s and was killed"
+                + _TIMEOUT_HINT
             ) from None
 
     # isinstance, not ``is``: mypy narrows the union on the former, and the
@@ -298,7 +332,7 @@ def _run_live(
     thread -- ``communicate`` would race it for the same pipe.
     """
     limit = _stall_limit_from_env() if isinstance(stall_limit, _UnsetStall) else stall_limit
-    wall = None if limit is not None or status is not None else GIT_TIMEOUT
+    wall = None if limit is not None or status is not None else git_timeout()
 
     stdin_data = kwargs.pop("input", None)
     if stdin_data is not None and kwargs.get("stdin") != subprocess.PIPE:
@@ -358,7 +392,7 @@ def _run_live(
             reason = (
                 f"made no measurable progress for {limit:g}s and was killed (stalled?)"
                 if limit is not None and (deadline is None or now - last_progress >= limit)
-                else f"did not finish within {GIT_TIMEOUT:g}s and was killed"
+                else f"did not finish within {git_timeout():g}s and was killed" + _TIMEOUT_HINT
             )
             raise SnapshotError(f"git {' '.join(cmd[1:])} {reason}") from None
     finally:

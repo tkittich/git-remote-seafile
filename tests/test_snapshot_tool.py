@@ -4732,6 +4732,39 @@ class SubprocessTimeoutTests(unittest.TestCase):
         self.assertIn("push", str(ctx.exception))
 
 
+class TypedGitTimeoutTests(unittest.TestCase):
+    """ROADMAP W4: a plain git child is bounded by the clock; a typed number moves the bound."""
+
+    def test_the_default_is_the_constant_and_a_typed_number_wins(self):
+        with unittest.mock.patch.dict(os.environ):
+            os.environ.pop("SEAFILE_SNAPSHOT_GIT_TIMEOUT", None)
+            self.assertEqual(snap.git_timeout(), snap.GIT_TIMEOUT)
+            os.environ["SEAFILE_SNAPSHOT_GIT_TIMEOUT"] = "1800"
+            self.assertEqual(snap.git_timeout(), 1800.0)
+
+    def test_a_bad_value_falls_back_with_a_warning_and_never_fails_the_run(self):
+        for bad in ("soon", "0", "-5"):
+            with self.subTest(value=bad), unittest.mock.patch.dict(os.environ, {"SEAFILE_SNAPSHOT_GIT_TIMEOUT": bad}):
+                err = io.StringIO()
+                with contextlib.redirect_stderr(err):
+                    self.assertEqual(snap.git_timeout(), snap.GIT_TIMEOUT)
+                self.assertIn("is not a positive number of seconds", err.getvalue())
+
+    def test_the_child_is_given_the_typed_limit_and_the_error_names_the_override(self):
+        seen = {}
+
+        def fake_run(cmd, **kwargs):
+            seen["timeout"] = kwargs.get("timeout")
+            raise subprocess.TimeoutExpired(cmd=cmd, timeout=kwargs.get("timeout"))
+
+        with unittest.mock.patch.dict(os.environ, {"SEAFILE_SNAPSHOT_GIT_TIMEOUT": "4321"}),                 unittest.mock.patch.object(snap.subprocess, "run", side_effect=fake_run):
+            with self.assertRaises(snap.SnapshotError) as ctx:
+                snap._run(["git", "ls-files"])
+        self.assertEqual(seen["timeout"], 4321.0)
+        self.assertIn("did not finish within 4321s", str(ctx.exception))
+        self.assertIn("SEAFILE_SNAPSHOT_GIT_TIMEOUT=<seconds>", str(ctx.exception))
+
+
 class StatusLineTests(unittest.TestCase):
     """Long steps must not read as a hang: while a child marked with ``status=``
     is still running, one line per STATUS_INTERVAL goes to stderr.  The watchdog
