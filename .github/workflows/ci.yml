@@ -122,6 +122,69 @@ jobs:
       if: always()
       run: python .github/ci_report_failures.py unittest-output.txt
 
+  # ROADMAP Z39 (gemini H1): the matrix above runs every leg in a UTF-8 locale, where text
+  # is easy.  Two environments that are not: Turkish (an `I` lowers to a dotless `i`, so a
+  # case-insensitive compare written with .lower() misjudges names) and an ASCII-only
+  # process (stdout and file names that cannot encode what they are asked to print).  One
+  # Python, the whole suite, on Ubuntu; PYTHONCOERCECLOCALE=0 keeps Python from quietly
+  # turning the C locale into C.UTF-8 (PEP 538), which would test nothing.
+  locale-legs:
+    runs-on: ubuntu-latest
+    name: locale (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: tr_TR
+            locale: tr_TR.UTF-8
+            utf8: "1"
+          - name: C, no UTF-8 mode
+            locale: C
+            utf8: "0"
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        fetch-depth: 0
+
+    - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+      with:
+        python-version: "3.12"
+        cache: 'pip'
+        cache-dependency-path: pyproject.toml
+
+    - name: Generate the locale
+      if: matrix.locale != 'C'
+      run: |
+        sudo apt-get install -y locales
+        sudo locale-gen ${{ matrix.locale }}
+        locale -a | grep -i tr_TR
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -e .
+
+    - name: Say what Python sees
+      env:
+        LANG: ${{ matrix.locale }}
+        LC_ALL: ${{ matrix.locale }}
+        PYTHONUTF8: ${{ matrix.utf8 }}
+        PYTHONCOERCECLOCALE: "0"
+      run: python -c "import locale,sys; print(locale.getpreferredencoding(), sys.stdout.encoding, sys.getfilesystemencoding(), 'I'.lower() == 'i')"
+
+    - name: Run unit tests
+      env:
+        LANG: ${{ matrix.locale }}
+        LC_ALL: ${{ matrix.locale }}
+        PYTHONUTF8: ${{ matrix.utf8 }}
+        PYTHONCOERCECLOCALE: "0"
+      run: |
+        python tools/run_tests_parallel.py -j 0 > unittest-output.txt 2>&1
+
+    - name: Report test results
+      if: always()
+      run: python .github/ci_report_failures.py unittest-output.txt
+
   # One job rather than fifteen: the linter does not care which platform or
   # which interpreter, and it runs *alongside* the matrix rather than after it,
   # so it adds no wall clock to the pipeline.

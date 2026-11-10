@@ -302,11 +302,12 @@ a real Seafile instance.
 ## Continuous Integration
 
 `.github/workflows/ci.yml` runs on every push to `main` and on every pull
-request, in five jobs:
+request, in six jobs:
 
 | Job | What it does |
 | :--- | :--- |
 | `test` | The whole suite on a 3 × 5 matrix — Ubuntu, Windows and macOS × Python 3.10–3.14 — with `fail-fast: false`, so one platform's failure never hides another's. |
+| `locale-legs` | The whole suite on Ubuntu with Python 3.12 under a Turkish locale (`tr_TR.UTF-8`, where `'I'.lower()` is not `'i'`) and under an ASCII-only process (`LC_ALL=C`, `PYTHONUTF8=0`, `PYTHONCOERCECLOCALE=0`, so Python does not turn C into UTF-8). The step "Say what Python sees" prints the encodings, so a leg that tests nothing says so. |
 | `lint` | `ruff check --output-format github`, then the documentation guards *and* the drift scenarios that prove they still work. |
 | `typecheck` | `mypy`, scoped and configured by `[tool.mypy]` in `pyproject.toml`. |
 | `min-deps` | Installs `requests` at exactly the version `pyproject.toml` declares as its floor, with `--no-deps`, and runs the whole suite against it. |

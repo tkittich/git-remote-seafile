@@ -233,7 +233,7 @@ def suite_for_changes(paths: list[str], root: Path = _ROOT) -> list[str] | None:
             modules.add(name[:-3])
         elif path.startswith(".github/"):
             modules.update({"test_release_workflow", "test_ci_report_failures",
-                            "test_realserver_ci", "test_realserver_latest_workflow",
+                            "test_realserver_ci", "test_realserver_latest_workflow", "test_ci_locale_legs",
                             "test_docs_consistency"})
         elif path == "MANIFEST.in":
             modules.add("test_docs_consistency")
