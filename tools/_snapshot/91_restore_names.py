@@ -208,3 +208,40 @@ def report_names_not_restored_as_named(
     # A pair is judged by its folded name, the key the classifier grouped it under.
     lost = {_fold(name) for name in collided}
     return [path for path in mismatched if _fold(path) not in lost]
+
+
+def _free_bytes_where(into: Path) -> "int | None":
+    """Free bytes on the volume *into* will be created on, or ``None`` when no ancestor answers.
+
+    *into* usually does not exist yet, and ``shutil.disk_usage`` of a missing path raises, so the
+    floor was skipped for every normal restore and every drill (review 8eb416b, deepseek G4.1).
+    The nearest ancestor that exists is on the same volume the clone will land on.
+    """
+    probe = into
+    while True:
+        try:
+            return shutil.disk_usage(probe).free
+        except OSError:
+            if probe.parent == probe:
+                return None
+            probe = probe.parent
+
+
+def _ensure_local_branch(repo: Path, branch: str) -> None:
+    """Make *branch* a local branch of a ``--no-checkout`` clone, from ``origin/<branch>``.
+
+    A clone has a local branch only for the remote's HEAD; ``git checkout`` makes the others on
+    the way, but the name listing that decides what to write runs before it, and ``ls-tree
+    <branch>`` fails for a branch that is only ``origin/<branch>``.  A branch that is already
+    there, or that no remote branch backs, is left alone: the caller reports what is wrong.
+    """
+    have = _run(
+        ["git", "-C", str(repo), "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}"],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    )
+    if have.returncode == 0:
+        return
+    _run(
+        ["git", "-C", str(repo), "branch", branch, f"origin/{branch}"],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    )
