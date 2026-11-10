@@ -10,7 +10,27 @@ import os
 import pathlib
 import shutil
 import sys
+import unittest
 from unittest.mock import MagicMock
+
+
+def _fs_holds_non_ascii() -> bool:
+    """Whether this process can name a file with a non-ASCII letter (it cannot under an ASCII
+    filesystem encoding: ``LC_ALL=C`` with ``PYTHONUTF8=0``, the CI locale leg, ROADMAP Z39)."""
+    try:
+        os.fsencode("\u00e9")
+    except UnicodeEncodeError:
+        return False
+    return True
+
+
+FS_HOLDS_NON_ASCII = _fs_holds_non_ascii()
+
+#: For a test whose fixture creates a file named with non-ASCII letters.  The product does not
+#: need it (git and the filesystem take bytes); the *test* needs Python to be able to name one.
+requires_non_ascii_names = unittest.skipUnless(
+    FS_HOLDS_NON_ASCII, "this process cannot name a file with a non-ASCII letter (ASCII filesystem encoding)"
+)
 
 
 def find_bash() -> str | None:

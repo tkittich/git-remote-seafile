@@ -11,23 +11,31 @@ def links_as_text_advice(windows: "bool | None" = None) -> str:
 
 
 def _volume_keeps_name(folder: Path, name: str) -> bool:
-    """Create *name* in *folder* and say whether the folder lists it under exactly that name."""
+    """Create *name* in *folder* and say whether the folder lists it under exactly that name.
+
+    In bytes, end to end: the question is what the *volume* keeps, not what this process can
+    encode.  With an ASCII filesystem encoding (``LC_ALL=C``, ``PYTHONUTF8=0``) a ``str`` path
+    holding ``é`` raised ``UnicodeEncodeError`` here, which is not an ``OSError``, and the whole
+    restore crashed (found by the locale legs, ROADMAP Z39); and a listing decoded with
+    surrogate escapes would never equal the name asked for.
+    """
+    base = os.fsencode(folder)
+    wanted = name.encode("utf-8", errors="surrogateescape")
     try:
-        before = set(os.listdir(folder))
-        with open(folder / name, "xb"):
-            pass
+        before = set(os.listdir(base))
+        os.close(os.open(os.path.join(base, wanted), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600))
     except OSError:
         return False  # refused (EINVAL on FAT and exFAT for a colon)
     try:
-        created = set(os.listdir(folder)) - before
+        created = set(os.listdir(base)) - before
     except OSError:
         created = set()
     for leftover in created:
         try:
-            os.unlink(folder / leftover)
+            os.unlink(os.path.join(base, leftover))
         except OSError:
             pass
-    return name in created
+    return wanted in created
 
 
 def destination_name_problem(into: Path) -> "Callable[[str], str | None] | None":

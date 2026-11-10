@@ -42,9 +42,9 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "tools")
 import seafile_snapshot as snap  # noqa: E402
 
 try:
-    from _helpers import remove_tree  # noqa: E402
+    from _helpers import FS_HOLDS_NON_ASCII, remove_tree, requires_non_ascii_names  # noqa: E402
 except ImportError:  # run as ``python -m unittest tests.<module>``
-    from tests._helpers import remove_tree  # noqa: E402
+    from tests._helpers import FS_HOLDS_NON_ASCII, remove_tree, requires_non_ascii_names  # noqa: E402
 
 BRANCH = "snapshot"
 
@@ -498,6 +498,7 @@ class SnapshotGuardTests(_SnapshotFixture):
         self.assertEqual(rc, 1, out + err)
         self.assertIn("--rebuild-index does not apply to --restore", out + err)
 
+    @requires_non_ascii_names
     def test_an_exclude_typed_composed_matches_a_decomposed_name(self):
         """The comparison is NFC on both sides.
 
@@ -2042,6 +2043,22 @@ class RestoreNameLimitTests(_SnapshotFixture):
         ):
             self.assertIsNone(probed(self.tmp))
 
+    def test_the_probe_names_its_file_in_bytes(self):
+        """A ``str`` path with a non-ASCII letter raised ``UnicodeEncodeError`` (not ``OSError``)
+        under an ASCII filesystem encoding and crashed every restore (found by the locale legs,
+        ROADMAP Z39).  Asked of the volume in bytes, it cannot depend on what Python can encode."""
+        seen = []
+        real_open = os.open
+
+        def recording(path, *args, **kwargs):
+            seen.append(path)
+            return real_open(path, *args, **kwargs)
+
+        with unittest.mock.patch.object(snap.os, "open", recording):
+            snap._volume_keeps_name(self.tmp, "probe-é")
+        self.assertEqual(len(seen), 1)
+        self.assertIsInstance(seen[0], bytes, "the probe must not hand Python a str path to encode")
+
     def test_a_real_volume_is_probed_and_leaves_nothing_behind(self):
         before = set(os.listdir(self.tmp))
         problem = snap.probed_name_problem(self.tmp)
@@ -3342,6 +3359,7 @@ class IncrementalStagingTests(_SnapshotFixture):
                 self.assertTrue({"d/x.txt", "d/new.txt"} <= recorded, recorded)
 
     @unittest.skipIf(sys.platform == "darwin", "APFS may fold the sharp s itself")
+    @requires_non_ascii_names
     def test_a_name_git_does_not_fold_is_not_respelled_onto_another(self):
         """Review 4f1cdd4 (opus-5.5 G3.1): ``casefold`` maps the sharp s to ``ss``, git and
         NTFS do not.  With ``strasse/`` indexed, a new ``stra\\u00dfe/b.txt`` was respelled
@@ -3811,6 +3829,8 @@ class _RouteComparison(_SnapshotFixture):
             slug = re.sub(r"[^a-z0-9]+", "_", name.lower()).strip("_")
 
             def test(self, name=name):
+                if "unicode" in name and not FS_HOLDS_NON_ASCII:
+                    self.skipTest("this process cannot name a file with a non-ASCII letter")
                 self._check({name: self._scenarios()[name]})
 
             test.__name__ = test.__qualname__ = f"test_{number:02d}_{slug}"

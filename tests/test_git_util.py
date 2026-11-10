@@ -12,6 +12,11 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+try:  # top-level import under `unittest discover tests` and the parallel runner
+    from _helpers import requires_non_ascii_names
+except ImportError:  # run as ``python -m unittest tests.test_git_util``
+    from tests._helpers import requires_non_ascii_names
+
 from git_remote_seafile.git_util import (
     tips_are_locally_complete,
     GIT_TIMEOUT,
@@ -62,9 +67,11 @@ class TestGitUtilWithRealGit(unittest.TestCase):
         self.td.cleanup()
 
     def test_run_git(self):
-        out, err, code = run_git(["status"])
+        # ``git status`` prints "On branch" only in an English locale; the Turkish leg of CI
+        # (ROADMAP Z39) printed "Üzerinde bulunulan dal".  The porcelain form does not translate.
+        out, err, code = run_git(["status", "--porcelain=v1", "--branch"])
         self.assertEqual(code, 0)
-        self.assertIn(b"On branch", out)
+        self.assertTrue(out.startswith(b"## "), out)
 
     def test_get_git_dir(self):
         git_dir = get_git_dir()
@@ -114,6 +121,7 @@ class TestGitUtilWithRealGit(unittest.TestCase):
         multi_objs = get_objects_to_push([c1, c2])
         self.assertEqual(set(all_objs), set(multi_objs))
 
+    @requires_non_ascii_names
     def test_get_objects_to_push_unicode_line_separator_in_path(self):
         # str.splitlines() breaks on U+2028 / U+0085 / \x0b, all legal in a file
         # name; the tail of the path then reached pack-objects as "garbage".
@@ -130,6 +138,7 @@ class TestGitUtilWithRealGit(unittest.TestCase):
             self.assertRegex(line, r"^[0-9a-f]{40}( |$)")
         create_packfile(objs)
 
+    @requires_non_ascii_names
     def test_create_packfile_overlong_path_hint(self):
         # pack-objects --stdin splits a line longer than 40 + PATH_MAX on
         # git for Windows ("expected object ID, got garbage"); 100 Thai

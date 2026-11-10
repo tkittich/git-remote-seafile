@@ -38,9 +38,9 @@ from e2e_harness import REPO_ID, SeafileStub, make_helper_env  # noqa: E402
 from git_remote_seafile.client import SeafileClient  # noqa: E402
 
 try:
-    from _helpers import remove_tree  # noqa: E402
+    from _helpers import remove_tree, requires_non_ascii_names  # noqa: E402
 except ImportError:  # run as ``python -m unittest tests.<module>``
-    from tests._helpers import remove_tree  # noqa: E402
+    from tests._helpers import remove_tree, requires_non_ascii_names  # noqa: E402
 
 DAY = 86400
 OLD_NS = 1_600_000_000_123_456_789  # September 2020, not a whole second
@@ -221,6 +221,7 @@ class PayloadBasicsTests(_PayloadFixture):
 
 
     # -- the basics (R1, R4, R5, R8, R10) ---------------------------------------
+    @requires_non_ascii_names
     def test_a_small_file_beside_a_payload_file_of_the_other_unicode_form_is_kept(self):
         """Review 06cc623 (gemini E1): payload files were kept out of git by their NFC
         form.  Where the disk keeps both forms apart (NTFS, ext4), a small NFD
@@ -935,6 +936,7 @@ class PayloadManifestAndSelectionTests(_PayloadFixture):
         self.assertIn("cannot be restored on Windows", out)
         self.assertIn("2024-01-01T10:00.bin", out)
 
+    @requires_non_ascii_names
     def test_names_need_no_special_handling(self):
         nfd = unicodedata.normalize("NFD", "café") + ".bin"
         content = {nfd: os.urandom(3000)}
