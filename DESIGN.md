@@ -274,7 +274,7 @@ The marker must be written in a **second pass**, after the queue has agreed the 
 
 **The fence** (`verify_ownership()`). Ownership re-verification is two-part, and both parts are needed:
 
-1. **Lease.** Renewal reads the holder's ticket back before rewriting it. A ticket that is gone or carries a foreign nonce means the lease lapsed and was reaped — most plausibly by a new holder — and renewal fails closed rather than resurrecting it. A ticket that is there but does not parse is `LEASE_UNKNOWN`, not lost: it proves neither.
+1. **Lease.** Renewal reads the holder's ticket back before rewriting it. A ticket that is gone (not listed, or answered 404 with nothing contradicting it) or carries a foreign nonce means the lease lapsed and was reaped — most plausibly by a new holder — and renewal fails closed rather than resurrecting it. A ticket that is there but does not parse is `LEASE_UNKNOWN`, not lost: it proves neither.
 2. **Queue.** Reading our own ticket back proves the lease and says nothing about whether another client has since been *granted* the lock: in the preemption above, our ticket reads back perfectly while the queue has already given the lock away. The fence therefore also scans the queue and fails when an active ticket sorts ahead of ours.
 
 Three distinct states are reported, because they send an operator to different places:
@@ -283,7 +283,7 @@ Three distinct states are reported, because they send an operator to different p
 | ----------------- | --------------------------------------------------- | -------------------------------------------------------------------------- |
 | `LEASE_LOST`      | Our ticket is gone or carries a foreign nonce       | `another client took over the lock`                                        |
 | `LEASE_PREEMPTED` | Our ticket is alive, but another ticket was granted | `another client was granted the lock while this ticket was still held`     |
-| `LEASE_UNKNOWN`   | The ticket could not be read or rewritten           | `the lock ticket could not be read or rewritten, so ownership is unproven` |
+| `LEASE_UNKNOWN`   | The ticket could not be read or rewritten, or its folder lists it but the file host will not serve it | `the lock ticket could not be read or rewritten, so ownership is unproven` |
 
 The queue scan is read-only — a verification step that reaped tickets would be doing acquisition's job — and rate-limited to one listing per second, so fencing once per deleted ref does not list the queue once per ref. The lease is still re-proven on every call, so a ticket that has been *reaped* is caught immediately rather than once per window. A ticket that exists and is non-empty but does not parse is a read failure, not an absent holder -- a truncated body would otherwise read a live holder out of the queue -- so the verification scans fail closed on it (`LEASE_UNKNOWN` / "could not inspect"), and so they do on an empty body and on a ticket that cannot be downloaded while a fresh listing still shows it (`is listed but could not be read`); acquisition stays lenient, because a planted unreadable file must not block the lock for ever, and the holder discovers the damage itself at its next renewal. Listing errors are retried and fail closed.
 

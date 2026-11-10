@@ -243,7 +243,7 @@ problem, handled differently:
 
 - **Security** refuses the whole manifest (R7): a path that is empty, absolute,
   or contains `.`, `..` or an empty component (on Windows, split on `\` too); that
-  reaches `.git` in any spelling (case, trailing dots and spaces, `git~1`) -- a
+  reaches `.git` in any spelling (case, trailing dots and spaces, an NTFS stream suffix, `GIT~<digits>`, the short name; a name that merely starts `git~` is an ordinary file) -- a
   `core.fsmonitor` or a hook there runs code on the next `git status` -- or the
   reserved `.seafile-payload` directory (including through a link the tree holds:
   `tool -> .git` with `tool/hooks/pre-commit`; and names HFS+ ignores, such as

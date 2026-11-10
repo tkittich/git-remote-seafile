@@ -39,6 +39,11 @@ python tools/gates.py -k e2e   # area-scoped: -k reaches the suite step only
 python tools/gates.py --changed  # the suite only for what the working changes reach
 ```
 
+To prove a guard is tested, delete it and watch a named test fail:
+`python tools/mutate_check.py <file> --old "<text>" --new "<text>" <unittest targets>`
+changes the file, rebuilds the snapshot tool when it is a part, runs the tests, puts the file back
+byte for byte and prints KILLED or SURVIVED (exit 0 or 1; 2 means it could not run). Report a survivor.
+
 `--changed` runs every step but narrows the suite to the test modules the changed
 files can reach (the map is `suite_for_changes` in `tools/gates.py`); shared code,
 the stub, the test helpers and anything the map does not know run the whole suite,
