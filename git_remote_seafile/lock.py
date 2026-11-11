@@ -330,6 +330,11 @@ class RemoteLock:
         #: When this machine last *proved* the lease (an acquire or a renewal that
         #: wrote the ticket), on its own monotonic clock; see verify_ownership().
         self._last_proven: float = 0.0
+        #: The wall clock at that moment: ``time.monotonic`` stops during a suspend on
+        #: Linux and macOS, so a laptop that slept past the lease would still look fresh
+        #: (AA11).  Either clock saying "lapsed" is enough; a wall clock set back only
+        #: makes the age smaller, so it cannot hide a lapse the monotonic clock sees.
+        self._last_proven_wall: float | None = None
         #: Why the last renew()/verify_ownership() held or failed; see
         #: ownership_state() and describe_ownership_failure().
         self._last_ownership_state: str = LEASE_UNKNOWN
@@ -720,7 +725,7 @@ class RemoteLock:
                     self._preemptor_checked_at = None
                     self.acquired = True
                     self._last_renewed = time.monotonic()
-                    self._last_proven = self._last_renewed
+                    self._mark_proven()
                     return
                 else:
                     # Another ticket won
@@ -883,7 +888,7 @@ class RemoteLock:
                 replace=True,
             )
             self._last_renewed = time.monotonic()
-            self._last_proven = self._last_renewed
+            self._mark_proven()
             return LEASE_HELD
         except Exception as ex:
             sys.stderr.write(f"Warning: Failed to renew lock lease: {ex}\n")
@@ -1011,6 +1016,10 @@ class RemoteLock:
         self._last_ownership_state = self._lapsed_if_unknown(self._last_ownership_state)
         return held
 
+    def _mark_proven(self) -> None:
+        self._last_proven = self._last_renewed
+        self._last_proven_wall = time.time()
+
     def _lapsed_if_unknown(self, state: str) -> str:
         """UNKNOWN becomes LOST once this machine's own clock says the lease ran out.
 
@@ -1020,7 +1029,10 @@ class RemoteLock:
         fence exists for (review 06cc623, gemini A5).  Within the lease, a
         transport failure stays UNKNOWN, as DESIGN §4.1 settles.
         """
-        if state == LEASE_UNKNOWN and time.monotonic() - self._last_proven >= self.lease:
+        age = time.monotonic() - self._last_proven
+        if self._last_proven_wall is not None:
+            age = max(age, time.time() - self._last_proven_wall)
+        if state == LEASE_UNKNOWN and age >= self.lease:
             sys.stderr.write(
                 "Warning: the lease ran out by this machine's clock while ownership could not "
                 "be read; another client may have taken the lock.\n"

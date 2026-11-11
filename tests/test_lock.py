@@ -2047,3 +2047,20 @@ class TestAFailedQueueScanStillReadsTheOwnTicket(unittest.TestCase):
             lock.verify_ownership()
         self.assertEqual(lock.ownership_state(), LEASE_UNKNOWN)
 
+    def test_a_suspend_the_monotonic_clock_slept_through_still_lapses_the_lease(self):
+        # AA11: time.monotonic stops while the machine sleeps (Linux, macOS), the wall
+        # clock does not.  Monotonic says fresh, the wall clock says 61 s: lost.
+        lock = self._lock("not json")
+        lock._last_proven = time.monotonic()
+        lock._last_proven_wall = time.time() - 61
+        with patch("sys.stderr", io.StringIO()) as err:
+            self.assertFalse(lock.verify_ownership())
+        self.assertEqual(lock.ownership_state(), LEASE_LOST)
+        self.assertIn("ran out by this machine's clock", err.getvalue())
+        # A wall clock set back must not shorten the age the monotonic clock reports.
+        lock._last_proven = time.monotonic()
+        lock._last_proven_wall = time.time() + 3600
+        with patch("sys.stderr", io.StringIO()):
+            lock.verify_ownership()
+        self.assertEqual(lock.ownership_state(), LEASE_UNKNOWN)
+
