@@ -3559,6 +3559,25 @@ class IncrementalStagingTests(_SnapshotFixture):
         self.assertEqual(got, ["d/new.txt"])
         self.assertTrue(any(str(p).endswith("new.txt") for p in seen), seen)
 
+    def test_the_payload_skip_matcher_uses_the_long_path_form(self):
+        # AA17: the NFC-variant comparison stats both spellings; past 260 characters a
+        # plain stat answers False on a Windows without LongPathsEnabled.
+        nfd, nfc = "café.bin", "café.bin"
+        for name in (nfd, nfc):
+            (self.code / name).write_bytes(b"x")
+        seen = []
+        real = snap.extended_path
+
+        def recording(path):
+            seen.append(path)
+            return real(path)
+        with unittest.mock.patch.object(snap, "extended_path", recording):
+            skipped = snap.payload_skip_matcher(self.code, [nfd])
+            self.assertTrue(skipped(nfd))          # exact: no stat needed
+            skipped(nfc)
+        self.assertTrue(any(str(p).endswith(nfc) for p in seen), seen)
+        self.assertTrue(any(str(p).endswith(nfd) for p in seen), seen)
+
     def test_the_index_spelling_follows_git_and_the_disk(self):
         """The unit under the test above: ASCII letters fold, nothing else does, and a
         respelling the disk does not resolve is not made."""

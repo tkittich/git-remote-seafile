@@ -3946,8 +3946,11 @@ def payload_skip_matcher(work_tree: Path, skip_paths: Any) -> Any:
         if not others:
             return False
         try:
-            here = os.lstat(work_tree / path)
-            return any(os.path.samestat(here, os.lstat(work_tree / other)) for other in others)
+            # The long-path form: a plain lstat past 260 characters fails on a Windows
+            # without LongPathsEnabled and the file stayed in git too (AA17, Z13's sibling).
+            here = os.lstat(extended_path(work_tree / path))
+            return any(os.path.samestat(here, os.lstat(extended_path(work_tree / other)))
+                       for other in others)
         except OSError:
             return False   # kept: at worst a file in git and the manifest, never in neither
 
