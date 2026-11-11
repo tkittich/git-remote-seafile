@@ -137,6 +137,9 @@ permission (Pro), a library shared to a group, a group-owned library (Pro), and
 two accounts making the first push to one new path at once; the group cases
 also need `SEAFILE_TEST_ALLOW_LIBRARY_CREATE=1`. The suite refuses to start
 unless a helper process logs in to the same server as the test itself.
+The listing measurements (ROADMAP S1, AA18) add `SEAFILE_TEST_LARGE=1` for the 10,500-file
+run; the 5,100-subfolder and empty-ref-folder (AA10) tests run without it and print
+`MEASURED` lines.
 
 The container workflow (`.github/workflows/realserver.yml`, weekly and by hand;
 `tools/release_check.py` requires it green on both legs at the commit being tagged)

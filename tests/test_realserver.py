@@ -304,6 +304,35 @@ class RealServerTests(unittest.TestCase):
         self._git(["pull", "-q", "--ff-only", "origin", "main"], dst)
         self.assertEqual(self._git(["rev-list", "--count", "HEAD"], dst).stdout.strip(), "5")
 
+    def test_an_empty_ref_folder_is_measured_against_a_listing_of_the_refs(self):
+        # ROADMAP AA10: a nested push makes refs/heads/<dir>/ before it writes the ref, and a
+        # failed write leaves the folder empty.  Does an empty folder stop a ref listing on
+        # this server?  The helper treats a folder its parent lists that answers empty twice as
+        # a read failure (a short listing looks the same), so it says no, loudly; this records
+        # what the server answers and keeps the way out honest: delete the folder, it lists.
+        name = "aa10"
+        url = self._url(name)
+        src = self._repo(f"src_{name}")
+        self._commit(src, "a.txt", "one\n", "c1")
+        self._git(["remote", "add", "origin", url], src)
+        self._git(["push", "-q", "origin", "main"], src)
+        folder = f"/{self.base}/{name}/refs/heads/feature-empty"
+        self.assertEqual(self._api("POST", "dir", folder, data={"operation": "mkdir"}).status_code, 200)
+        try:
+            self.assertEqual(self.client.list_dir(self.rid, folder), [], "a new folder lists empty")
+            listed = self._git(["ls-remote", url], self.tmp, check=False)
+            print(f"\nMEASURED (AA10, {'Pro' if self._is_pro() else 'CE'}): ls-remote with an empty "
+                  f"refs/heads/feature-empty exits {listed.returncode}; "
+                  f"{(listed.stderr.strip().splitlines() or ['no stderr'])[-1][:160]}", flush=True)
+            if listed.returncode != 0:
+                self.assertIn("feature-empty", listed.stderr)
+            else:
+                self.assertIn("refs/heads/main", listed.stdout)
+        finally:
+            self._api("DELETE", "file", folder)
+        after = self._git(["ls-remote", url], self.tmp)
+        self.assertIn("refs/heads/main", after.stdout)
+
     def test_a_missing_folder_lists_as_404_and_its_files_read_as_absent(self):
         """What the issue 6 fix rests on, on the server itself.
 
@@ -1064,6 +1093,47 @@ class SharedUserTests(_RealServerFixture):
                 self.assertNotIn("grs", [e["name"] for e in listed],
                                  f"{perm}: a refused push must leave nothing in the folder")
 
+    def test_a_shared_user_reading_a_repository_under_a_rule_never_gets_an_empty_one(self):
+        """The read side of the rules.  The owner pushes into every rule folder; the second
+        account then clones it.  What each rule lets it read is recorded (``MEASURED``); the
+        invariant is the issue-6 shape on the read path: a refusal must never come back as
+        success with an empty repository (a "missing" answer read as "nothing there"), and a
+        clone that does succeed holds the owner's commit.  Where the rule allows reading but
+        not writing (``r``), a push by the second account is refused and moves no ref."""
+        if not self._rules_supported:
+            self.skipTest("no folder permissions on this server (user-folder-perm is Pro only)")
+        seen = []
+        for perm in self.RULES + ("none",):
+            with self.subTest(rule=perm):
+                tag = perm.replace("-", "_")
+                url = f"seafile://{_LIBRARY}/{self.base}/rules/{perm}/grs-read/repo"
+                src = self._new_repo(f"src_read_{tag}", f"read {perm}\n")
+                pushed = self._as(self.env, ["push", url, "main"], src)
+                self.assertEqual(pushed.returncode, 0, f"{perm}: the owner's push\n{pushed.stderr}")
+                tip = self._git(["rev-parse", "HEAD"], src).stdout.strip()
+                dst = self.tmp / f"read_clone_{tag}"
+                clone = self._as(self.env2, ["clone", "-q", url, str(dst)], self.tmp)
+                out = clone.stdout + clone.stderr
+                seen.append(f"{perm}={'ok' if clone.returncode == 0 else 'refused'}")
+                self.assertNotIn("empty repository", out,
+                                 f"{perm}: a refused read came back as an empty repository\n{out}")
+                if clone.returncode == 0:
+                    self.assertEqual(self._git(["rev-parse", "HEAD"], dst).stdout.strip(), tip, perm)
+                else:
+                    self.assertTrue("HTTP 403" in out or "HTTP 404" in out or "denied" in out.lower(),
+                                    f"{perm}: the refusal must name the server's answer\n{out}")
+                if perm == "r" and clone.returncode == 0:
+                    (dst / "b.txt").write_text("two\n")
+                    self._git(["add", "b.txt"], dst)
+                    self._git(["-c", "user.email=t@t", "-c", "user.name=T", "commit", "-q", "-m", "two"], dst)
+                    refused = self._as(self.env2, ["push", "origin", "main"], dst)
+                    self.assertNotEqual(refused.returncode, 0, refused.stdout + refused.stderr)
+                    self.assertIn("HTTP 403", refused.stdout + refused.stderr)
+                    heads = self._git(["ls-remote", url], self.tmp).stdout
+                    self.assertIn(tip, heads, "a refused push moved the ref")
+        print(f"\nMEASURED (read rules, {self._edition()}): a second account's clone: {', '.join(seen)}",
+              flush=True)
+
     def test_two_accounts_pushing_first_to_one_new_path_leave_one_history_and_no_copies(self):
         for rnd in range(3):
             with self.subTest(round=rnd):
@@ -1313,6 +1383,45 @@ class LargeListingTests(_RealServerFixture):
               f"{' (first: ' + missing[0] + ', last: ' + missing[-1] + ')' if missing else ''}", flush=True)
         self.assertEqual(len(got), len(set(got)), "the listing repeats a name")
         self.assertEqual(missing, [], f"the listing is short: {len(got)} of {self.COUNT} entries")
+
+    def test_a_listing_holds_every_subfolder_of_a_large_folder(self):
+        # ROADMAP AA18: the shape of refs/heads/ with thousands of nested branches.
+        from concurrent.futures import ThreadPoolExecutor
+
+        folder = f"/{self.base}/aa18-dirs"
+        self.client.mkdir_p(self.rid, folder)
+        names = [f"d{n:05d}" for n in range(self.COUNT)]
+
+        def make(name: str) -> None:
+            self.client.mkdir_p(self.rid, f"{folder}/{name}")
+
+        started = time.time()
+        with ThreadPoolExecutor(max_workers=self.WRITERS) as pool:
+            list(pool.map(make, names))
+        wrote = time.time() - started
+        listed = self.client.list_dir(self.rid, folder)
+        got = sorted(str(e.get("name")) for e in listed if isinstance(e, dict) and e.get("type") == "dir")
+        missing = sorted(set(names) - set(got))
+        print(f"\nMEASURED (AA18, {self._edition_label()}): made {self.COUNT} subfolders in {wrote:.0f} s; "
+              f"one list_dir answered {len(got)} folders; missing {len(missing)}", flush=True)
+        self.assertEqual(len(got), len(set(got)), "the listing repeats a name")
+        self.assertEqual(missing, [], f"the listing is short: {len(got)} of {self.COUNT} folders")
+
+    @unittest.skipUnless(os.environ.get("SEAFILE_TEST_LARGE") == "1",
+                         "set SEAFILE_TEST_LARGE=1: 10,500 uploads take about as long as the 5,100 test, twice")
+    def test_a_listing_holds_every_entry_above_ten_thousand_files(self):
+        # ROADMAP AA18: 5,100 was complete; ten thousand is the next round number a cap could sit at.
+        from concurrent.futures import ThreadPoolExecutor
+
+        folder = f"/{self.base}/aa18-files"
+        self.client.mkdir_p(self.rid, folder)
+        names = [f"e{n:05d}" for n in range(10500)]
+        with ThreadPoolExecutor(max_workers=self.WRITERS) as pool:
+            list(pool.map(lambda n: self.client.upload_file(self.rid, folder, n, b"x", replace=True), names))
+        got = {str(e.get("name")) for e in self.client.list_dir(self.rid, folder) if isinstance(e, dict)}
+        print(f"\nMEASURED (AA18, {self._edition_label()}): one list_dir answered {len(got)} of 10500 files",
+              flush=True)
+        self.assertEqual(sorted(set(names) - got), [], f"the listing is short: {len(got)} of 10500")
 
     @classmethod
     def _edition_label(cls) -> str:
