@@ -563,7 +563,9 @@ def _restore(
             "everything else was restored and is verified below."
         )
         mismatched = [path for path in mismatched if path not in set(as_text)]
+    before_names = len(mismatched)
     mismatched = report_names_not_restored_as_named(into, verified_rev, set(unholdable), mismatched)
+    names_differ = len(mismatched) < before_names
     if mismatched:
         shown = "\n".join(f"  {path}" for path in mismatched[:20])
         extra = (
@@ -598,8 +600,12 @@ def _restore(
 
     files = sum(1 for p in into.rglob("*") if p.is_file() and ".git" not in p.parts)
     print(f"restored {files} files from {target} into {into}")
+    # After a renamed, collided or excluded name the proof covers the files that were
+    # written, not the whole snapshot (AA14); the exit status is unchanged.
+    partial = bool(unholdable or as_text or names_differ)
     print(
-        f"verified byte-exact against {verified_rev[:12]}"
+        ("verified byte-exact for the files written, against " if partial
+         else "verified byte-exact against ") + f"{verified_rev[:12]}"
         + (f" ({len(unholdable)} unrepresentable name(s) excluded)" if unholdable else "")
         + (f" ({len(as_text)} link(s) written as text)" if as_text else "")
     )

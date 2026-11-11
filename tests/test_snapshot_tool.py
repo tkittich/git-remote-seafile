@@ -1820,7 +1820,8 @@ class RestoreVerificationTests(_SnapshotFixture):
         self.snapshot("--remote", str(self.remote))
         rc, out, err = self.restore_to(self.restored)
         self.assertEqual(rc, 0, err)
-        self.assertIn("verified byte-exact", out)
+        self.assertIn("verified byte-exact against", out)
+        self.assertNotIn("for the files written", out)
 
     def _vault_with_odd_names(self) -> None:
         """A snapshot chain on ``self.remote`` holding names Windows cannot hold.
@@ -1879,6 +1880,8 @@ class RestoreVerificationTests(_SnapshotFixture):
         self.assertIn("Warning: 2 file(s) in this snapshot have names Windows cannot hold", out)
         self.assertIn("a:b.txt", out)
         self.assertIn("2 unrepresentable name(s) excluded", out)
+        # AA14: the proof covers the files written, and the line says so.
+        self.assertIn("verified byte-exact for the files written", out)
         self.assertEqual(
             _git(self.restored, "config", "--get", "core.protectNTFS").stdout.strip(), ""
         )
