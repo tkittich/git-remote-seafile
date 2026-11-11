@@ -1,5 +1,16 @@
 You are an independent reviewer of `git-remote-seafile`, at the commit you were given
-(`git log -1`). **This is a pre-release round**: version 0.9.25 is prepared at that commit
+(`git log -1`). **Addendum for the 0.9.26 round:** version 0.9.25 is released (tag `v0.9.25`,
+commit `3ca9db3`); the commits you review are `git log --oneline v0.9.25..HEAD` (the 0.9.26 batch,
+Part G0 below), and the whole project is in scope as before. The statements below about 0.9.25
+being unreleased describe the round it was written for; read them as history. Two things this
+round cannot check and you should not claim to: Seafile Professional behaviour (no Pro server
+is available; `GRS_STUB_PRO=1` is the stub's model of it, measured only on one 13.0.29 image)
+and any real-server answer (the container legs of `realserver.yml` are the maintainer's). Say
+"unverified" and read the code instead. The Pro-only paths (folder permissions, group-owned
+libraries, the 403/500 answers for a missing folder, `hidden_history_risk`) have had the least
+independent reading: give them a pass of their own.
+
+This was written for an earlier round, whose opening follows. **This is a pre-release round**: version 0.9.25 is prepared at that commit
 (`__version__`, `CHANGELOG.md` `[0.9.25]`, `.github/release-notes/v0.9.25.md`, `UPGRADING.md`)
 and **not yet tagged**; your findings are folded into 0.9.25 before it ships, or recorded for the
 next one. The previous release is 0.9.24 (tag `v0.9.24`, commit `b14c4f7`, 2026-11-09), and
@@ -247,6 +258,21 @@ Unicode normalisation, long paths, symlinks, junctions, reparse points — and q
 interrupted and killed runs; very large inputs; nested repositories and embedded
 repositories; secrets; and every requirement whose "how it is checked" column would not
 catch a violation.
+
+PART G0 — the 0.9.26 batch, `v0.9.25..HEAD` (Phase 2, read first, it is short)
+ROADMAP §1.11 rows AA9-AA19, AA22, AA23. For each: is the fix right, does its test fail without it
+(`tools/mutate_check.py`), and the siblings. Specifically: AA10 (`helper._publish_ref`,
+`_absent_ref_folders`, `_drop_empty_folders`: can it delete a folder that holds something, race a
+writer, or run when the write actually landed?); AA11 (the wall clock beside the monotonic one in
+`lock._lapsed_if_unknown`: can a clock step make a healthy lease read as lost?); AA13
+(`git_util.tracked_remote_names` for a mirror); AA16 (`tools/gates.py` `_with_test_importers`);
+AA22 (`test_no_part_stats_or_opens_a_source_path_in_its_plain_form`: find a source-path
+`stat`/`open` shape its pattern misses); the stub's new `explicit_dirs` model in
+`tests/e2e_harness.py` (does it model Seafile's folders honestly?); and the new real-server tests
+in `tests/test_realserver.py` (can any of them fail for a reason that is not a finding, or pass
+on a wrong answer?). AA23 is an open measurement: read the client's retry and throttle handling
+(`client._mount_retries`-style adapter, POST never retried) and say what a 429 does to a refs
+walk, a push and `gc`.
 
 PART G — everything since `06cc623` (Phase 2, first and longest)
 The map: `git log --oneline 06cc623..HEAD`, `git diff --stat 06cc623 HEAD` (the whole
