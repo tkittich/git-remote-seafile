@@ -3577,8 +3577,11 @@ class IncrementalStagingTests(_SnapshotFixture):
         # AA17: the NFC-variant comparison stats both spellings; past 260 characters a
         # plain stat answers False on a Windows without LongPathsEnabled.
         nfd, nfc = "cafe" + chr(0x301) + ".bin", "caf" + chr(0xE9) + ".bin"
-        for name in (nfd, nfc):
-            (self.code / name).write_bytes(b"x")
+        try:
+            for name in (nfd, nfc):
+                (self.code / name).write_bytes(b"x")
+        except (UnicodeEncodeError, OSError):
+            self.skipTest("this file system encoding cannot hold the names (the C-locale leg)")
         seen = []
         real = snap.extended_path
 
