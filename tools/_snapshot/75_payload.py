@@ -120,7 +120,7 @@ def _sha256_file(
     between blocks so a run that has already failed does not finish a 100 GiB file."""
     digest = hashlib.sha256()
     try:
-        with open(path, "rb") as fh:
+        with open(extended_path(path), "rb") as fh:
             while True:
                 if cancel is not None and cancel.is_set():
                     raise SnapshotError(f"hashing of {path} was stopped")
@@ -192,7 +192,7 @@ def _sample_ratio(path: Path, size: int) -> float | None:
     """
     raw = comp = 0
     try:
-        with open(path, "rb") as fh:
+        with open(extended_path(path), "rb") as fh:
             for offset in sorted({0, max(0, size // 2 - _AUTO_SAMPLE_CHUNK // 2),
                                   max(0, size - _AUTO_SAMPLE_CHUNK)}):
                 fh.seek(offset)
@@ -246,7 +246,7 @@ def find_payload_files(
         if rel == PAYLOAD_RESERVED_DIR or rel.startswith(PAYLOAD_RESERVED_DIR + "/"):
             continue
         try:
-            st = os.lstat(source / rel)
+            st = os.lstat(extended_path(source / rel))
         except OSError:
             continue
         if not stat.S_ISREG(st.st_mode):
@@ -475,7 +475,7 @@ def _upload_all(
             if worker is None:
                 worker = local.client = _open_client(server_url)
             try:
-                fh = open(source / rel, "rb")
+                fh = open(extended_path(source / rel), "rb")
             except OSError as exc:
                 changed.append(f"{rel}: cannot be read any more ({exc}); run again")
                 changed_paths.append(rel)

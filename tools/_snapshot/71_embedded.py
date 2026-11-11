@@ -139,7 +139,7 @@ def _junction_filter(work_tree: Path) -> Any:
     def is_junction(directory: str) -> bool:
         if directory not in cache:
             try:
-                st = os.lstat(work_tree / directory)
+                st = os.lstat(extended_path(work_tree / directory))
                 cache[directory] = bool(
                     getattr(st, "st_file_attributes", 0) & 0x400 and not stat.S_ISLNK(st.st_mode)
                 )

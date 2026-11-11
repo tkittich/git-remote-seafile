@@ -154,7 +154,7 @@ def _walk_sizes(
             if skip and rel in skip:
                 continue
             try:
-                st = os.lstat(full)
+                st = os.lstat(extended_path(Path(full)))
             except OSError:
                 continue
             if stat.S_ISREG(st.st_mode):
@@ -181,7 +181,7 @@ def sample_payload(
     raw = comp = 0
     for size, rel in big[:_PROFILE_SAMPLE_FILES]:
         try:
-            with open(source / rel, "rb") as fh:
+            with open(extended_path(source / rel), "rb") as fh:
                 for offset in sorted({0, max(0, size // 2 - _PROFILE_SAMPLE_CHUNK // 2),
                                        max(0, size - _PROFILE_SAMPLE_CHUNK)}):
                     fh.seek(offset)

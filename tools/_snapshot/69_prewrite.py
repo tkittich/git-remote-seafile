@@ -283,7 +283,7 @@ def staging_commands(
     drop_first: list[str] = []
     for path in paths:
         try:
-            mode = os.lstat(work_tree / path).st_mode
+            mode = os.lstat(extended_path(work_tree / path)).st_mode
         except (FileNotFoundError, NotADirectoryError):
             drop_first.append(path)
             continue
@@ -359,7 +359,7 @@ def _prewrite_candidates(
         if "\n" in path or "\r" in path or path.startswith('"'):
             continue
         try:
-            info = os.lstat(work_tree / path)
+            info = os.lstat(extended_path(work_tree / path))
         except OSError:
             continue  # vanished since the listing; add will say so if it matters
         if stat.S_ISREG(info.st_mode):

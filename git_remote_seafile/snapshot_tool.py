@@ -1297,7 +1297,7 @@ def _walk_sizes(
             if skip and rel in skip:
                 continue
             try:
-                st = os.lstat(full)
+                st = os.lstat(extended_path(Path(full)))
             except OSError:
                 continue
             if stat.S_ISREG(st.st_mode):
@@ -1324,7 +1324,7 @@ def sample_payload(
     raw = comp = 0
     for size, rel in big[:_PROFILE_SAMPLE_FILES]:
         try:
-            with open(source / rel, "rb") as fh:
+            with open(extended_path(source / rel), "rb") as fh:
                 for offset in sorted({0, max(0, size // 2 - _PROFILE_SAMPLE_CHUNK // 2),
                                        max(0, size - _PROFILE_SAMPLE_CHUNK)}):
                     fh.seek(offset)
@@ -2786,7 +2786,7 @@ def staging_commands(
     drop_first: list[str] = []
     for path in paths:
         try:
-            mode = os.lstat(work_tree / path).st_mode
+            mode = os.lstat(extended_path(work_tree / path)).st_mode
         except (FileNotFoundError, NotADirectoryError):
             drop_first.append(path)
             continue
@@ -2862,7 +2862,7 @@ def _prewrite_candidates(
         if "\n" in path or "\r" in path or path.startswith('"'):
             continue
         try:
-            info = os.lstat(work_tree / path)
+            info = os.lstat(extended_path(work_tree / path))
         except OSError:
             continue  # vanished since the listing; add will say so if it matters
         if stat.S_ISREG(info.st_mode):
@@ -3808,7 +3808,7 @@ def _junction_filter(work_tree: Path) -> Any:
     def is_junction(directory: str) -> bool:
         if directory not in cache:
             try:
-                st = os.lstat(work_tree / directory)
+                st = os.lstat(extended_path(work_tree / directory))
                 cache[directory] = bool(
                     getattr(st, "st_file_attributes", 0) & 0x400 and not stat.S_ISLNK(st.st_mode)
                 )
@@ -5477,7 +5477,7 @@ def _sha256_file(
     between blocks so a run that has already failed does not finish a 100 GiB file."""
     digest = hashlib.sha256()
     try:
-        with open(path, "rb") as fh:
+        with open(extended_path(path), "rb") as fh:
             while True:
                 if cancel is not None and cancel.is_set():
                     raise SnapshotError(f"hashing of {path} was stopped")
@@ -5549,7 +5549,7 @@ def _sample_ratio(path: Path, size: int) -> float | None:
     """
     raw = comp = 0
     try:
-        with open(path, "rb") as fh:
+        with open(extended_path(path), "rb") as fh:
             for offset in sorted({0, max(0, size // 2 - _AUTO_SAMPLE_CHUNK // 2),
                                   max(0, size - _AUTO_SAMPLE_CHUNK)}):
                 fh.seek(offset)
@@ -5603,7 +5603,7 @@ def find_payload_files(
         if rel == PAYLOAD_RESERVED_DIR or rel.startswith(PAYLOAD_RESERVED_DIR + "/"):
             continue
         try:
-            st = os.lstat(source / rel)
+            st = os.lstat(extended_path(source / rel))
         except OSError:
             continue
         if not stat.S_ISREG(st.st_mode):
@@ -5832,7 +5832,7 @@ def _upload_all(
             if worker is None:
                 worker = local.client = _open_client(server_url)
             try:
-                fh = open(source / rel, "rb")
+                fh = open(extended_path(source / rel), "rb")
             except OSError as exc:
                 changed.append(f"{rel}: cannot be read any more ({exc}); run again")
                 changed_paths.append(rel)
@@ -7476,7 +7476,7 @@ def run_payload_step(
         _clock_offset_once_noted(git_dir, source) if candidates and not dry_run else (0, False)
     )
     try:
-        root_dev: int | None = os.stat(source).st_dev
+        root_dev: int | None = os.stat(extended_path(source)).st_dev
     except OSError:
         root_dev = None
     entries, cache_machine = load_machine_hash_cache(git_dir)
@@ -8108,7 +8108,7 @@ def measure_deflate_mibs(source: Path, band: list[tuple[int, float, str]]) -> fl
     spent = 0.0
     for _size, _ratio, rel in band[::step][:_DEFLATE_PROBE_FILES]:
         try:
-            with open(source / rel, "rb") as fh:
+            with open(extended_path(source / rel), "rb") as fh:
                 chunk = fh.read(_AUTO_SAMPLE_CHUNK)
         except OSError:
             continue

@@ -3559,6 +3559,20 @@ class IncrementalStagingTests(_SnapshotFixture):
         self.assertEqual(got, ["d/new.txt"])
         self.assertTrue(any(str(p).endswith("new.txt") for p in seen), seen)
 
+    def test_no_part_stats_or_opens_a_source_path_in_its_plain_form(self):
+        """AA22: a plain ``os.lstat(source / rel)`` or ``open(work_tree / path)`` fails past 260
+        characters on a Windows without LongPathsEnabled.  Not a list of sites (Z13, AA17 and AA22
+        were each the previous round's sibling): any ``lstat``/``stat``/``open`` whose first
+        argument starts with ``source`` or ``work_tree`` must go through ``extended_path``."""
+        pattern = re.compile(r"\b(?:os\.lstat|os\.stat|open)\(\s*(?:source|work_tree)\b")
+        parts = pathlib.Path(snap.__file__).resolve().parents[1] / "tools" / "_snapshot"
+        found = []
+        for part in sorted(parts.glob("*.py")):
+            for number, line in enumerate(part.read_text(encoding="utf-8").splitlines(), 1):
+                if pattern.search(line):
+                    found.append(f"{part.name}:{number}: {line.strip()}")
+        self.assertEqual(found, [], "wrap these in extended_path()")
+
     def test_the_payload_skip_matcher_uses_the_long_path_form(self):
         # AA17: the NFC-variant comparison stats both spellings; past 260 characters a
         # plain stat answers False on a Windows without LongPathsEnabled.

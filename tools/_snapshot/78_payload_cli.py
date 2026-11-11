@@ -579,7 +579,7 @@ def run_payload_step(
         _clock_offset_once_noted(git_dir, source) if candidates and not dry_run else (0, False)
     )
     try:
-        root_dev: int | None = os.stat(source).st_dev
+        root_dev: int | None = os.stat(extended_path(source)).st_dev
     except OSError:
         root_dev = None
     entries, cache_machine = load_machine_hash_cache(git_dir)

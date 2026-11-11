@@ -55,7 +55,7 @@ def measure_deflate_mibs(source: Path, band: list[tuple[int, float, str]]) -> fl
     spent = 0.0
     for _size, _ratio, rel in band[::step][:_DEFLATE_PROBE_FILES]:
         try:
-            with open(source / rel, "rb") as fh:
+            with open(extended_path(source / rel), "rb") as fh:
                 chunk = fh.read(_AUTO_SAMPLE_CHUNK)
         except OSError:
             continue
