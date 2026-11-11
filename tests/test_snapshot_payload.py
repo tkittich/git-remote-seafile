@@ -468,7 +468,7 @@ class PayloadBasicsTests(_PayloadFixture):
                 os.utime(target, ns=(original.st_atime_ns, original.st_mtime_ns))
                 moved = []
 
-                def check(source, rel, size, mtime_ns):
+                def check(source, rel, size, mtime_ns, moved=moved, how=how):
                     if rel == "big1.bin" and not moved:
                         moved.append(True)
                         if how == "size":
