@@ -3513,6 +3513,23 @@ class IncrementalStagingTests(_SnapshotFixture):
                 recorded = set(_git(vault, "ls-tree", "-r", "--name-only", BRANCH).stdout.split())
                 self.assertEqual(recorded, {"d/x.txt", "D/x.txt", "d/y.txt"}, route)
 
+    def test_a_preview_says_the_real_run_sets_another_case_rule(self):
+        """AA9: a preview writes no config, so over a source whose rule differs from the
+        vault's it says its count may differ; it changes nothing and a matching rule is
+        silent.  Deleting the call leaves stderr without the Note."""
+        snap.ensure_vault(self.vault, BRANCH)
+        for folds, vault_rule, noted in ((False, "true", True), (False, "false", False),
+                                         (None, "true", False)):
+            with self.subTest(folds=folds, vault_rule=vault_rule):
+                _git(self.vault, "config", "core.ignorecase", vault_rule)
+                with unittest.mock.patch.object(snap, "source_folds_case", return_value=folds):
+                    rc, _, err = self.snapshot("--dry-run", *self.EXCLUDE)
+                self.assertEqual(rc, 0, err)
+                self.assertEqual("Note: A real run sets core.ignorecase" in err, noted, err)
+                self.assertEqual("file count may differ" in err, noted, err)
+                self.assertEqual(_git(self.vault, "config", "core.ignorecase").stdout.strip(),
+                                 vault_rule)
+
     def test_a_folding_source_is_found_to_fold(self):
         source = self.tmp / "plain"
         source.mkdir()

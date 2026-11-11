@@ -399,11 +399,11 @@ def run_command(args: argparse.Namespace) -> int:
                 choose_profile(vault, git_dir, source, exclude, vault_config,
                                write=not args.no_push, skip=payload_skip or None)
         else:
-            # The identity *check* still runs on a preview -- failing
-            # early with the actionable message beats a commit-tree
-            # traceback -- but read-only: a dry run writes nothing at all
+            # The identity *check* still runs on a preview (failing early
+            # beats a commit-tree traceback), read-only: a dry run writes nothing
             ensure_identity(vault, source, vault_config=vault_config,
                             write_identity=False)
+            note_case_rule_unapplied(vault, source, vault_config)
             if not args.no_object_compression:
                 choose_profile(vault, git_dir, source, exclude, vault_config, write=False,
                                skip=payload_skip or None)

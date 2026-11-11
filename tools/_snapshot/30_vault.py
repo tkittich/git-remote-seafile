@@ -316,6 +316,28 @@ def source_folds_case(source: Path, limit: int = 64) -> bool | None:
     return None
 
 
+def note_case_rule_unapplied(vault: Path, source: Path,
+                             vault_config: dict[str, list[str]] | None = None) -> None:
+    """A preview writes no config, so it cannot apply the source's case rule (AA9).
+
+    Over a case-sensitive source and a fresh case-insensitive vault the real run sets
+    ``core.ignorecase`` to false and records both ``d/x.txt`` and ``D/x.txt``; the
+    preview stages by the vault's own answer and would count one.  Say so.
+    """
+    if not _SOURCE_CASE_PROBE:
+        return
+    folds = source_folds_case(source)
+    if folds is None:
+        return
+    if vault_config is None:
+        vault_config = _read_local_config_map(vault)
+    wanted = "true" if folds else "false"
+    if (vault_config.get("core.ignorecase") or [""])[0] != wanted:
+        print("Note: A real run sets core.ignorecase to " + wanted + " for this source; "
+              "the preview does not, so its file count may differ from the real run's.",
+              file=sys.stderr, flush=True)
+
+
 def ensure_case_rule(vault: Path, git_dir: Path, source: Path,
                      vault_config: dict[str, list[str]] | None = None) -> None:
     """Set the vault's ``core.ignorecase`` to how the *source* folds names."""
