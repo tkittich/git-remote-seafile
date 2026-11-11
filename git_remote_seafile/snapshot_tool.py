@@ -5668,7 +5668,7 @@ def _remote_objects(client: Any, rid: str, base: str, shas: set[str]) -> dict[st
 
 def _unchanged(source: Path, rel: str, size: int, mtime_ns: int) -> bool:
     try:
-        st = os.lstat(source / rel)
+        st = os.lstat(extended_path(source / rel))
     except OSError:
         return False
     return st.st_size == size and st.st_mtime_ns == mtime_ns

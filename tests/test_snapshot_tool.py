@@ -3562,7 +3562,7 @@ class IncrementalStagingTests(_SnapshotFixture):
     def test_the_payload_skip_matcher_uses_the_long_path_form(self):
         # AA17: the NFC-variant comparison stats both spellings; past 260 characters a
         # plain stat answers False on a Windows without LongPathsEnabled.
-        nfd, nfc = "café.bin", "café.bin"
+        nfd, nfc = "cafe" + chr(0x301) + ".bin", "caf" + chr(0xE9) + ".bin"
         for name in (nfd, nfc):
             (self.code / name).write_bytes(b"x")
         seen = []
