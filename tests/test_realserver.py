@@ -317,7 +317,8 @@ class RealServerTests(unittest.TestCase):
         self._git(["remote", "add", "origin", url], src)
         self._git(["push", "-q", "origin", "main"], src)
         folder = f"/{self.base}/{name}/refs/heads/feature-empty"
-        self.assertEqual(self._api("POST", "dir", folder, data={"operation": "mkdir"}).status_code, 200)
+        # mkdir answers 201 on CE and Pro 13.0.29 (the first container run of this test).
+        self.assertIn(self._api("POST", "dir", folder, data={"operation": "mkdir"}).status_code, (200, 201))
         try:
             self.assertEqual(self.client.list_dir(self.rid, folder), [], "a new folder lists empty")
             listed = self._git(["ls-remote", url], self.tmp, check=False)
@@ -1392,18 +1393,34 @@ class LargeListingTests(_RealServerFixture):
         self.client.mkdir_p(self.rid, folder)
         names = [f"d{n:05d}" for n in range(self.COUNT)]
 
+        throttled = []
+
         def make(name: str) -> None:
-            self.client.mkdir_p(self.rid, f"{folder}/{name}")
+            # The first container run of this test was stopped at about 650 folders by HTTP 429
+            # ("Request was throttled", CE and Pro 13.0.29): mkdir_p is four requests a folder
+            # and a POST is never retried.  Wait out the throttle and count it (ROADMAP AA23).
+            for _ in range(30):
+                try:
+                    self.client.mkdir_p(self.rid, f"{folder}/{name}")
+                    return
+                except Exception as ex:  # SeafileAPIError
+                    if "HTTP 429" not in str(ex):
+                        raise
+                    throttled.append(name)
+                    time.sleep(2)
+            self.fail(f"still throttled after a minute at {name}")
 
         started = time.time()
-        with ThreadPoolExecutor(max_workers=self.WRITERS) as pool:
+        with ThreadPoolExecutor(max_workers=3) as pool:
             list(pool.map(make, names))
         wrote = time.time() - started
         listed = self.client.list_dir(self.rid, folder)
         got = sorted(str(e.get("name")) for e in listed if isinstance(e, dict) and e.get("type") == "dir")
         missing = sorted(set(names) - set(got))
-        print(f"\nMEASURED (AA18, {self._edition_label()}): made {self.COUNT} subfolders in {wrote:.0f} s; "
+        print(f"\nMEASURED (AA18, {self._edition_label()}): made {self.COUNT} subfolders in {wrote:.0f} s "
+              f"({len(throttled)} requests throttled and waited out); "
               f"one list_dir answered {len(got)} folders; missing {len(missing)}", flush=True)
+        time.sleep(10)  # the throttle window must not spill into the next test
         self.assertEqual(len(got), len(set(got)), "the listing repeats a name")
         self.assertEqual(missing, [], f"the listing is short: {len(got)} of {self.COUNT} folders")
 
