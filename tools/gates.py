@@ -187,6 +187,29 @@ def _importers(reached: set[str], root: Path) -> tuple[set[str], bool]:
     return tests, snapshot
 
 
+_TEST_IMPORT = re.compile(r"^\s*(?:from|import)\s+(test_\w+)", re.MULTILINE)
+
+
+def _with_test_importers(modules: set[str], root: Path) -> set[str]:
+    """*modules* plus every test module that imports one of them, through any chain.
+
+    A test module reaches the package through another test module (``test_e2e_listing_faults``
+    subclasses ``test_e2e.E2ETestCase`` and names no package module itself), and the name
+    search above cannot see it (AA16).
+    """
+    imports = {p.stem: set(_TEST_IMPORT.findall(p.read_text(encoding="utf-8")))
+               for p in (root / "tests").glob("test_*.py")}
+    found = set(modules)
+    grew = True
+    while grew:
+        grew = False
+        for stem, deps in imports.items():
+            if stem not in found and deps & found:
+                found.add(stem)
+                grew = True
+    return found
+
+
 def suite_for_changes(paths: list[str], root: Path = _ROOT) -> list[str] | None:
     """The test modules the changed *paths* can reach; ``None`` means the whole suite.
 
@@ -222,7 +245,7 @@ def suite_for_changes(paths: list[str], root: Path = _ROOT) -> list[str] | None:
             tests, snapshot = _importers(reached, root)
             # The end-to-end runs drive the helper as a process, so they import
             # nothing by name and still reach every helper-side module.
-            modules.update(tests | {"test_e2e", "test_e2e_pack_split"})
+            modules.update(_with_test_importers(tests | {"test_e2e", "test_e2e_pack_split"}, root))
             if snapshot:
                 modules.update(_SNAPSHOT_TESTS)
         elif path.startswith("tools/_snapshot/") or path == "tools/seafile_snapshot.py":

@@ -137,6 +137,13 @@ class TestTheChangedMap(unittest.TestCase):
         self.assertEqual(gates.suite_for_changes(["tests/test_url.py"]),
                          sorted({"test_url", *[m for m in gates._ALWAYS]}))
 
+    def test_a_test_module_that_reaches_the_package_through_another_one_runs(self):
+        # AA16: lock.py selected neither test_e2e_conflict_copies nor
+        # test_e2e_listing_faults, which import test_e2e and name no package module.
+        got = gates.suite_for_changes(["git_remote_seafile/lock.py"])
+        self.assertIn("test_e2e_conflict_copies", got)
+        self.assertIn("test_e2e_listing_faults", got)
+
     def test_every_module_the_map_names_exists(self):
         names = set(gates._ALWAYS) | set(gates._SNAPSHOT_TESTS)
         names |= {m for mods in gates._TOOL_TESTS.values() for m in mods}
