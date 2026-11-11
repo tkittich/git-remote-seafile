@@ -677,7 +677,9 @@ def tracked_remote_names(remote: str) -> set[str]:
             rest = line.strip()[len(prefix):]
             if not rest or rest == "HEAD":
                 continue
-            name = source + rest
+            # A mirror stores a ref as itself, so *rest* has lost the ``refs/``
+            # the name needs (AA13); an ordinary clone's ``rest`` is a branch name.
+            name = "refs/" + rest if prefix == "refs/" else source + rest
             if name.startswith(("refs/heads/", "refs/tags/")):
                 names.add(name)
     return names

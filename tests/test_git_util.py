@@ -1137,6 +1137,31 @@ class TestPushPackSkipsDeltaSearchForBigBlobs(unittest.TestCase):
 class TestRemoteTrackingRefs(unittest.TestCase):
     """What cmd_list asks before calling an empty remote a vanished one (ROADMAP B1)."""
 
+    def test_tracked_names_for_an_ordinary_clone_and_a_mirror(self):
+        """AA13: a mirror stores ``refs/heads/x`` as itself; the names were cut to
+        ``heads/x``, filtered out, and the hidden-branch warning never fired."""
+        from git_remote_seafile.git_util import tracked_remote_names
+
+        with tempfile.TemporaryDirectory(prefix="grs-tracked-") as tmp:
+            env = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
+
+            def git(*args):
+                return subprocess.run(["git", "-C", tmp, *args], check=True, env=env,
+                                      capture_output=True, text=True).stdout.strip()
+            git("init", "-q")
+            git("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "c")
+            sha = git("rev-parse", "HEAD")
+            git("update-ref", "refs/remotes/origin/feature/x", sha)
+            git("update-ref", "refs/remotes/origin/HEAD", sha)
+            git("update-ref", "refs/heads/mine", sha)
+            git("update-ref", "refs/tags/v1", sha)
+            git("config", "remote.mirror.fetch", "+refs/*:refs/*")
+            with patch("git_remote_seafile.git_util.get_git_dir", return_value=Path(tmp) / ".git"):
+                self.assertEqual(tracked_remote_names("origin"), {"refs/heads/feature/x"})
+                self.assertEqual(tracked_remote_names("mirror"), {"refs/heads/mine", "refs/tags/v1",
+                                  "refs/heads/" + git("branch", "--show-current")})
+                self.assertEqual(tracked_remote_names("seafile://lib/repo"), set())
+
     def test_the_remote_s_tracking_refs_and_nothing_for_a_url_or_another_remote(self):
         from git_remote_seafile.git_util import remote_tracking_refs
 
