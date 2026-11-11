@@ -455,6 +455,37 @@ class PayloadBasicsTests(_PayloadFixture):
         self.assertIn("changed since it was hashed", out + err)
         self.assertEqual(self.object_count(), 0)
 
+    def test_the_stat_check_itself_notices_a_size_or_a_time_that_moved(self):
+        """AA15: the test above patches ``_unchanged`` to False, so the mutation
+        ``_unchanged -> True`` survived it.  Here the real check runs against a file whose
+        size, then only its mtime, moves after hashing."""
+        target = self.src / "big1.bin"
+        original = target.stat()
+        real = snap._unchanged
+        for how in ("size", "mtime"):
+            with self.subTest(how=how):
+                target.write_bytes(self.big1)
+                os.utime(target, ns=(original.st_atime_ns, original.st_mtime_ns))
+                moved = []
+
+                def check(source, rel, size, mtime_ns):
+                    if rel == "big1.bin" and not moved:
+                        moved.append(True)
+                        if how == "size":
+                            with open(target, "ab") as fh:
+                                fh.write(b"x")
+                            os.utime(target, ns=(original.st_atime_ns, original.st_mtime_ns))
+                        else:
+                            os.utime(target, ns=(original.st_atime_ns,
+                                                 original.st_mtime_ns + 4_000_000_000))
+                    return real(source, rel, size, mtime_ns)
+
+                with unittest.mock.patch.object(snap, "_unchanged", check):
+                    rc, out, err = self.snapshot()
+                self.assertNotEqual(rc, 0, out + err)
+                self.assertIn("changed since it was hashed", out + err)
+                self.assertNotIn(self.object_key(self.big1), self.server_files())
+
     def test_a_pre_push_check_that_cannot_list_its_commits_refuses_the_push(self):
         """``rev-list`` failing (a remote tip the vault does not hold, a damaged
         object) used to read as "no commits to check", and the push went ahead
