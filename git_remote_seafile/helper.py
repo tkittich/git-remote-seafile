@@ -1270,6 +1270,41 @@ class RemoteHelper:
                 + "); no ref was updated"
             )
 
+    def _absent_ref_folders(self, folder: str) -> list[str]:
+        """The folders from *folder* upwards that do not exist yet, outermost first.
+
+        The upload makes them before it writes the ref (AA10); when it then fails they are
+        empty, and an empty folder under ``refs/heads`` makes every later fetch refuse the
+        listing (a folder made by hand answers the same way, and is not guessed at).  Empty
+        when they all exist, and when the server cannot say: nothing is then ever removed.
+        """
+        absent: list[str] = []
+        current = folder
+        try:
+            while current.rstrip("/") != self.repo_path.rstrip("/") and not self.client.dir_exists(
+                self.repo_id, current
+            ):
+                absent.insert(0, current)
+                current = current.rstrip("/").rpartition("/")[0]
+        except Exception:
+            return []
+        return absent
+
+    def _drop_empty_folders(self, folders: list[str]) -> None:
+        """Best effort: delete the folders a failed ref write made, deepest first, while empty.
+
+        Run under the push lock, so no other push is writing into them; a folder that lists
+        anything, or any failure, ends it (a leftover folder is the old behaviour, no worse).
+        """
+        for path in reversed(folders):
+            try:
+                if self.client.list_dir(self.repo_id, path) != []:
+                    return
+                if not self.client.delete_entry(self.repo_id, path):
+                    return
+            except Exception:
+                return
+
     def _publish_ref(self, dst: str, local_sha: str, expected_remote_sha: str | None, force: bool,
                      lock: Any = None) -> bool:
         """Move one remote ref and report it; True when ``ok`` was written.
@@ -1290,6 +1325,7 @@ class RemoteHelper:
         # moments old; a write that is resent after a timeout may land after a
         # competitor's, and one the server takes minutes to answer is not worth
         # waiting for.  Either way the outcome is unknown, and said to be.
+        made = self._absent_ref_folders(dst_parent)
         try:
             self.client.upload_file(
                 self.repo_id,
@@ -1301,6 +1337,7 @@ class RemoteHelper:
                 read_timeout=REF_WRITE_READ_TIMEOUT_SECONDS,
             )
         except SeafileAPIError as ex:
+            self._drop_empty_folders(made)
             raise SeafileAPIError(
                 f"{ex}; the ref may or may not have been written and the write was not "
                 "resent -- fetch, check the remote, and push again"

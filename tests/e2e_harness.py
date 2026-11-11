@@ -248,6 +248,8 @@ class _Handler(BaseHTTPRequestHandler):
                     stem, dot, ext = leaf.rpartition(".")
                     copy = f"{stem} (1).{ext}" if dot and stem else f"{leaf} (1)"
                     self.stub.files.setdefault(rid, {})[f"{parent}/{copy}/dup"] = b""
+                elif self.stub.explicit_dirs:
+                    self.stub.dirs.setdefault(rid, set()).add(p)
             return self._send(200, b"{}")
 
         if path.startswith("/api2/repos/") and path.endswith("/file/"):
@@ -319,6 +321,8 @@ class _Handler(BaseHTTPRequestHandler):
                 parent = unicodedata.normalize("NFC", parent)
                 filename = unicodedata.normalize("NFC", filename).replace('"', "%22")
             target = _norm(parent + "/" + filename)
+            if self.stub.faults.get("upload_fail_path") and self.stub.faults["upload_fail_path"] in target:
+                return self._send(500, b"injected failure")
             rng = re.match(r"bytes (\d+)-(\d+)/(\d+)", self.headers.get("Content-Range", ""))
             if rng and not self.stub.faults.get("ignore_range"):
                 # Resumable upload: chunks accumulate under the name and the
@@ -360,9 +364,11 @@ class _Handler(BaseHTTPRequestHandler):
             # Real Seafile 404s a *file* deletion via /dir/; keep that
             # distinction so a swap of delete_entry's endpoint order would
             # not silently pass.
-            if any(k.startswith(p + "/") for k in files):
+            made = self.stub.dirs.get(rid, set())
+            if any(k.startswith(p + "/") for k in files) or p in made:
                 for k in [k for k in files if k.startswith(p + "/")]:
                     del files[k]
+                made.difference_update({d for d in made if d == p or d.startswith(p + "/")})
                 return self._send(200, b'{"success":true}')
             return self._send(404, b"{}")
         if p in files:
@@ -385,6 +391,11 @@ class SeafileStub:
         self.conflict_copy_for = ""
         self.conflict_copies: list[str] = []
         self.raw_hits: list[str] = []
+        #: Model the folders a mkdir makes (the default stub has none: a folder exists while
+        #: something is under it).  With it an empty folder stays, lists as empty and can be
+        #: deleted -- what Seafile does, and what a failed nested push leaves (ROADMAP AA10).
+        self.explicit_dirs = False
+        self.dirs: dict[str, set[str]] = {}
         self.get_hooks: list[tuple[Any, Any]] = []
         self.partial: dict[tuple[str, str], bytearray] = {}
         self.port = 0
@@ -422,11 +433,14 @@ class SeafileStub:
         self.raw_hits.clear()
         self.get_hooks.clear()
         self.partial.clear()
+        self.explicit_dirs = False
+        self.dirs.clear()
 
     # -- store helpers ----------------------------------------------------
     def has_under(self, repo_id: str, path: str) -> bool:
         prefix = _norm(path).rstrip("/") + "/"
-        return any(k.startswith(prefix) for k in self.files.get(repo_id, {}))
+        return (any(k.startswith(prefix) for k in self.files.get(repo_id, {}))
+                or any(d == prefix[:-1] or d.startswith(prefix) for d in self.dirs.get(repo_id, ())))
 
     def list_dir(self, repo_id: str, path: str) -> list[dict]:
         prefix = _norm(path).rstrip("/") + "/"
@@ -444,6 +458,12 @@ class SeafileStub:
             else:
                 file_bytes = self.files.get(repo_id, {}).get(key, b"")
                 out.append({"type": "file", "name": rest, "mtime": now_ts, "size": len(file_bytes)})
+        for d in sorted(self.dirs.get(repo_id, ())):
+            if d.startswith(prefix):
+                name = d[len(prefix):].split("/")[0]
+                if name and name not in seen:
+                    seen.add(name)
+                    out.append({"type": "dir", "name": name, "mtime": now_ts})
         return out
 
     def packs(self, repo_path: str, repo_id: str = REPO_ID) -> list[str]:
