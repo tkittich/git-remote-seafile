@@ -4334,7 +4334,8 @@ def _require_whole_history(client: Any, rid: str, delete: bool, *, check: bool =
     a non-owner's listing (measured, 13.0.29), so a branch or tag under it would
     read as gone and its objects as unused.  A report goes on (it deletes nothing) but
     says its count may be too high (Z34); ``--payload-allow-non-owner`` says no folder
-    permission applies to this account, and *check* False skips the question.
+    permission applies to this account, and *check* False skips the question.  Asked before the
+    history is downloaded, so a non-owner is not made to pay for it to be told no (fable-E1).
     """
     risk = client.hidden_history_risk(rid) if check else None
     if isinstance(risk, str) and risk and not delete:
@@ -6569,6 +6570,7 @@ def payload_gc(
             "unreferenced. Resolve them (keep one ref, delete the copies; git-remote-seafile doctor on the "
             "vault's URL lists every one) and run again"
         )
+    _require_whole_history(client, rid, delete, check=not (allow_non_owner or from_vault))
     if not from_vault:
         _require_room_for_history(client, rid, repo_path, allow_low_disk)
     seen = {} if from_vault else read_seen_tips(client, rid, base)
@@ -6614,7 +6616,6 @@ def payload_gc(
     if not isinstance(pending_raw, dict):
         raise SnapshotError(f"{base}/{_PENDING_NAME} is not an object; remove it and run again")
     _require_server_clock(client, delete)
-    _require_whole_history(client, rid, delete, check=not (allow_non_owner or from_vault))
     now = _grace_now(client)
     # A stamp that cannot be a time this tool wrote (zero, negative, in the future,
     # a boolean, NaN) is not trusted: "now - stamp" would call the grace period over

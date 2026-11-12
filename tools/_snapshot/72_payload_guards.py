@@ -372,7 +372,8 @@ def _require_whole_history(client: Any, rid: str, delete: bool, *, check: bool =
     a non-owner's listing (measured, 13.0.29), so a branch or tag under it would
     read as gone and its objects as unused.  A report goes on (it deletes nothing) but
     says its count may be too high (Z34); ``--payload-allow-non-owner`` says no folder
-    permission applies to this account, and *check* False skips the question.
+    permission applies to this account, and *check* False skips the question.  Asked before the
+    history is downloaded, so a non-owner is not made to pay for it to be told no (fable-E1).
     """
     risk = client.hidden_history_risk(rid) if check else None
     if isinstance(risk, str) and risk and not delete:

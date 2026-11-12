@@ -1760,8 +1760,13 @@ class PayloadRetentionTests(_PayloadFixture):
         self.assertEqual(self.snapshot()[0], 0)
         orphan = self.orphan()
         self.stub.faults.update(pro_server=1, owner="someone-else@example.com")
+        pack_reads: list[str] = []
+        hook = (lambda p: ".pack" in p, lambda: pack_reads.append("read"))
+        self.stub.get_hooks.append(hook)
+        self.addCleanup(self.stub.get_hooks.remove, hook)
         rc, out, err = self.gc("--payload-delete", "--payload-grace-days", "1")
         self.assertNotEqual(rc, 0, out + err)
+        self.assertEqual(pack_reads, [], "the refusal came after the history was downloaded (E1)")
         self.assertIn("is not the library's owner", out + err)
         self.assertIn("--payload-allow-non-owner", out + err)
         self.assertNotIn(f"{self.base}/gc-pending.json", self.server_files())
