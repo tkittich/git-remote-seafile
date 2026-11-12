@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.26] - 2026-11-13
+
+The review backlog of 0.9.25 and the fixes of two more review rounds (a Fable round on the batch, twice). A push whose verifying listing failed could delete a pack the remote relied on (AA25); a failed ref write left an empty folder that stopped every later fetch (AA10); and the retry layer re-sent a delete, a rename or an upload after it may have reached the server (AA32), which removed another client's ref in the reviewer's reproduction. The rest is a dropped connection that every handler now sees as an API error, a ref walk that backs off when the server throttles, and smaller wording and Windows fixes.
+
 ### Fixed
 - **A push whose verifying listing fails no longer deletes a pack the remote already relied on** (ROADMAP AA25; review 68e81e5, fable-B1). A stale clone could re-upload a pack under a name the remote held; if the listing that verifies the upload then failed once, the helper removed that pack and every clone of the branch failed. Pack names are listed before the first upload, only a name that was not there or that the listing proved wrong is removed, and nothing is removed when the listing cannot be read.
 - **A failed ref write removes the empty folders it made, including after a dropped connection** (ROADMAP AA10, AA26). A nested branch push made `refs/heads/<dir>/` before writing the ref; if the write failed, the empty folder stopped every later `git fetch` and `ls-remote` (measured on CE and Pro 13.0.29). Folders that were already there are never touched.
@@ -2147,6 +2151,7 @@ Data-loss and silent-failure fixes, and the Python floor raised to 3.9.
   with zero-config desktop-client token discovery, distributed locking, remote
   packfile compaction, and a Git LFS custom transfer agent.
 
+[0.9.26]: https://github.com/tkittich/git-remote-seafile/compare/v0.9.25...v0.9.26
 [0.9.25]: https://github.com/tkittich/git-remote-seafile/compare/v0.9.24...v0.9.25
 [0.9.24]: https://github.com/tkittich/git-remote-seafile/compare/v0.9.23...v0.9.24
 [0.9.23]: https://github.com/tkittich/git-remote-seafile/compare/v0.9.22...v0.9.23
