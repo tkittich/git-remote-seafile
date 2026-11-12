@@ -15,6 +15,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **A lease is also aged by the wall clock** (ROADMAP AA11): the monotonic clock stops during a suspend on Linux and macOS.
 - **A restore that left a name out says so on its last line** (ROADMAP AA14, AA29): "verified byte-exact for the files written", including a case pair with identical bytes, and it no longer cuts a branch name.
 - **Source paths past 260 characters on a Windows without long-path support** (ROADMAP AA17, AA22): the payload and staging stats and opens go through the extended-length form, and a directory a stat cannot reach inside an embedded repository is reported as unreadable instead of dropped with exit 0. The walks themselves stay plain (ROADMAP AA24).
+- **A dropped connection or timeout on an API call is a `SeafileAPIError`** (ROADMAP AA27; fable H2.5). The handlers written `except SeafileAPIError` (the ref listing's retry, the lease renewal, the cleanups) used to miss the raw `requests` exception; the session now wraps it once (`SeafileConnectionError`, also a `RequestException`, so older handlers keep working). Its text names the method and path, never the query.
+- **A ref walk backs off when the server answers 429** (ROADMAP AA23). The server's per-user request rate is shared by every endpoint; a batch of ref reads that was answered 429 halves the next batch's workers and a clean batch adds one back, up to the ceiling.
+- **A fetch from a linked worktree shares the clone's advertised-refs record** (ROADMAP AA31, fable-G9.1): it is kept under the common git directory, so the worktree no longer prunes what the main checkout would have kept.
+- **A non-owner's `--payload-gc --payload-delete` on Pro is refused before the history is downloaded** (ROADMAP AA31, fable-E1).
 
 ### Changed
 - `--dry-run` prints a Note when the real run would set another `core.ignorecase` (ROADMAP AA9). `gates.py --changed` follows test modules that import other test modules (AA16).

@@ -1420,7 +1420,16 @@ class LargeListingTests(_RealServerFixture):
         print(f"\nMEASURED (AA18, {self._edition_label()}): made {self.COUNT} subfolders in {wrote:.0f} s "
               f"({len(throttled)} requests throttled and waited out); "
               f"one list_dir answered {len(got)} folders; missing {len(missing)}", flush=True)
-        time.sleep(10)  # the throttle window must not spill into the next test
+        extras = sorted(set(got) - set(names))
+        print(f"MEASURED (AA18, {self._edition_label()}): {len(extras)} folder(s) beyond the {self.COUNT} "
+              f"asked for (a retried mkdir that had been applied leaves 'name (1)'): {extras[:3]}", flush=True)
+        for _ in range(30):   # the throttle window must not spill into the next test: ask until answered
+            try:
+                self.client.list_dir(self.rid, folder)
+                break
+            except Exception:  # SeafileAPIError while the window lasts
+                time.sleep(2)
+        self.assertEqual(extras, [], "a retried mkdir left a duplicate (AA23: mkdir is create-or-duplicate)")
         self.assertEqual(len(got), len(set(got)), "the listing repeats a name")
         self.assertEqual(missing, [], f"the listing is short: {len(got)} of {self.COUNT} folders")
 

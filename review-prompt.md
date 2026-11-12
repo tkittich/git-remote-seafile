@@ -411,8 +411,8 @@ Z43): can the count be wrong when the old entry has no `ino`? The restore's list
 destination (`91_restore_names`, Z45) runs on every restore: what does it cost on a 200,000-file
 tree, and does `os.walk(onerror=...)` fail a restore it should not?
 
-G6. Documents for the period: `CHANGELOG.md` `[0.9.23]`, `[0.9.24]` and `[0.9.25]` against
-`git log 06cc623..HEAD`
+G6. Documents for the period: `CHANGELOG.md` `[0.9.25]` and `[Unreleased]` (0.9.26) against
+`git log v0.9.25..HEAD`
 (an entry with no commit, a commit with no entry); `UPGRADING.md` (would an operator learn
 every behaviour that may now surface: the new refusals, the new warnings, the case rule's
 first run on a case-sensitive source?); the release notes against the changelog; the
