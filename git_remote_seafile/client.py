@@ -417,8 +417,9 @@ class _ScopedSession(requests.Session):
 #: The longest one retry sleeps for a server's ``Retry-After`` (fable-C1).  urllib3 honours the
 #: header for 429, 500 and 503 with no bound of its own the client sets (one ``list_dir`` against
 #: ``Retry-After: 4`` took 12 s, a ``delete_entry`` 24 s), and the thread that sleeps is the one
-#: that renews the push lease.  A throttle answers "one second" in practice (measured, AA23).
-RETRY_AFTER_CAP_SECONDS = 5.0
+#: that renews the push lease.  Measured on the CE container (AA23): a throttle answered 10 s the
+#: first time and 1 s after; a cap below 10 s would retry three times inside the first window.
+RETRY_AFTER_CAP_SECONDS = 10.0
 _RETRY_AFTER_NOTED = False
 
 
