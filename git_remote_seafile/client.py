@@ -429,8 +429,11 @@ class _ScopedSession(requests.Session):
             raise
         except requests.RequestException as ex:
             from urllib.parse import urlsplit
+            # The cause stays (a certificate, DNS or refused-connection reason is what lets
+            # someone act on it, fable2-B1); only the url's path and query are scrubbed.
             raise SeafileConnectionError(
-                f"{type(ex).__name__} during {str(method).upper()} {urlsplit(str(url)).path}"
+                f"{type(ex).__name__} during {str(method).upper()} {urlsplit(str(url)).path}: "
+                f"{_scrub_transfer_error(ex, str(url))}"
             ) from None
 
     def rebuild_auth(self, prepared_request: Any, response: Any) -> None:
@@ -829,9 +832,9 @@ class SeafileClient:
 
         A dropped connection or a 502 part-way through a packfile download used
         to fail the fetch outright, on a link that was usually fine a second
-        later.  Only idempotent methods are retried: urllib3's default
-        ``allowed_methods`` excludes POST, so an upload is never re-sent -- a
-        retried upload can duplicate work we then cannot undo.
+        later.  Only methods that change nothing are re-sent once the request may
+        have reached the server (GET, HEAD, OPTIONS): an upload, a delete or a
+        rename sent twice does work we cannot undo.
 
         ``raise_on_status=False`` matters: without it, exhausting the retries on
         a 500 raises a urllib3 error instead of returning the response, which
@@ -844,6 +847,14 @@ class SeafileClient:
             backoff_factor=0.3,
             status_forcelist=(429, 500, 502, 503, 504),
             raise_on_status=False,
+            # Only a request that changes nothing is sent again after it may have reached the
+            # server.  urllib3's default also re-sends DELETE and PUT (fable2-B2: one cleanup
+            # delete went out four times and removed a ref another client had written meanwhile),
+            # and an SSL error after the request went out counts as "other", retried for every
+            # method (fable2-C2: a ref write with ``attempts=1`` arrived four times).  A refused
+            # connection (nothing sent) is still retried for every method, by ``connect``.
+            allowed_methods=frozenset({"GET", "HEAD", "OPTIONS"}),
+            other=0,
         )
         adapter = HTTPAdapter(max_retries=retry, pool_connections=64, pool_maxsize=64)
         session.mount("http://", adapter)
