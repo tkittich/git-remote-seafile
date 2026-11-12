@@ -340,6 +340,9 @@ class _Handler(BaseHTTPRequestHandler):
                 body = '[{"id":"uploaded","name":"%s","size":%d}]' % (filename, total)
                 return self._send(200, body.encode())
             self.stub.files.setdefault(rid, {})[target] = filedata
+            if self.stub.faults.get("upload_lost_answer") and self.stub.faults["upload_lost_answer"] in target:
+                # The write landed and the answer did not (a proxy timeout): outcome unknown.
+                return self._send(500, b"injected failure after the write")
             marker = self.stub.conflict_copy_for
             if marker and marker in target:
                 # What simultaneous writers leave on a real server (measured, CE 13.0.28): the

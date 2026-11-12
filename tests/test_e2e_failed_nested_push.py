@@ -74,6 +74,21 @@ class TestAFailedNestedPushLeavesNoFolderBehind(E2ETestCase):
         )
         self.assertEqual(self._ls_remote("dropped", src).returncode, 0)
 
+    def test_a_write_that_landed_but_was_not_answered_keeps_its_folder_and_ref(self):
+        """fable-G0.3: the emptiness check is the only thing between the cleanup and a ref that
+        did land.  The stub stores the ref and answers 500; the folder lists the ref, so it stays."""
+        self.stub.explicit_dirs = True
+        src = self._pushed_main("landed")
+        run_git(["checkout", "-q", "-b", "feature/auth/login"], src, self.env)
+        commit_file(src, "b.txt", "two\n", "c2", self.env)
+        self.stub.faults["upload_lost_answer"] = "refs/heads/feature/auth/login"
+        proc = run_git(["push", "origin", "feature/auth/login"], src, self.env, check=False)
+        self.stub.faults.pop("upload_lost_answer")
+        self.assertNotEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("/landed/refs/heads/feature/auth/login", self.stub.files.get(REPO_ID, {}),
+                      "the cleanup deleted a ref that had landed")
+        self.assertIn("refs/heads/feature/auth/login", self._ls_remote("landed", src).stdout)
+
     def test_a_folder_that_was_already_there_is_left_alone(self):
         self.stub.explicit_dirs = True
         src = self._pushed_main("kept")
