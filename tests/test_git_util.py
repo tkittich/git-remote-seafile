@@ -1232,6 +1232,17 @@ class AdvertisedRecordTests(unittest.TestCase):
         self.assertEqual(path.parent, self.git_dir / "seafile-advertised")
         self.assertEqual(path.name, "team%2Fmirror")
 
+    def test_a_linked_worktree_shares_the_record_of_the_main_git_directory(self):
+        # fable-G9.1: git gives the helper the worktree's private directory as GIT_DIR.
+        from git_remote_seafile.git_util import advertised_record_path
+
+        private = self.git_dir / "worktrees" / "linked"
+        private.mkdir(parents=True)
+        (private / "commondir").write_text("../..\n", encoding="utf-8", newline="\n")
+        with patch.dict(os.environ, {"GIT_DIR": str(private)}):
+            path = advertised_record_path("origin")
+        self.assertEqual(path.parent, self.git_dir.resolve() / "seafile-advertised")
+
     def test_an_unchanged_record_is_not_rewritten_and_a_broken_one_reads_as_none(self):
         from git_remote_seafile.git_util import advertised_record_path, read_advertised_refs, write_advertised_refs
 

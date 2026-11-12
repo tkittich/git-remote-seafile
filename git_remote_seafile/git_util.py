@@ -601,7 +601,17 @@ def advertised_record_path(remote: str) -> Path | None:
     git_dir = os.environ.get("GIT_DIR")
     if not git_dir:
         return None
-    return Path(git_dir).resolve() / ADVERTISED_DIR / quote(remote, safe="")
+    git_path = Path(git_dir).resolve()
+    # A linked worktree's GIT_DIR is its private directory (``<repo>/.git/worktrees/<name>``);
+    # remotes and their remote-tracking refs are shared, so the record lives where the refs do
+    # (fable-G9.1).  ``commondir`` holds the shared directory, relative to the private one.
+    try:
+        common = (git_path / "commondir").read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeError):
+        common = ""
+    if common:
+        git_path = (git_path / common).resolve()
+    return git_path / ADVERTISED_DIR / quote(remote, safe="")
 
 
 def _url_key(url: str) -> str:
