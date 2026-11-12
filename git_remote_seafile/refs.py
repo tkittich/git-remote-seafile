@@ -23,7 +23,7 @@ import re
 import sys
 from typing import Callable, Iterator
 
-from .client import SeafileAPIError, SeafileClient
+from .client import SeafileAPIError, SeafileClient, throttle_answers
 
 #: Ref namespaces the helper tracks.  Kept as a tuple so iteration order is
 #: stable (heads before tags), which makes the advertised listing deterministic.
@@ -177,6 +177,13 @@ def _listing(
     sys.stderr.write(f"Warning: {message}\n")
     sys.stderr.flush()
     return []
+
+
+def next_worker_count(workers: int, ceiling: int, throttled: bool) -> int:
+    """The next batch's worker count: halve after a throttled batch, add one after a clean one."""
+    if throttled:
+        return max(1, workers // 2)
+    return min(ceiling, workers + 1)
 
 
 def iter_refs(
@@ -369,16 +376,28 @@ def iter_refs(
         # The reads go out in batches so that *renew* (an upload) runs between
         # them, with no read in flight, rather than beside them on the shared
         # session.  Results still come back in sorted order.
-        batch = workers * 8
-        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
-            for start in range(0, len(ref_entries), batch):
-                if renew is not None:
-                    renew()
-                for ref_name, sha in executor.map(_fetch_ref, ref_entries[start:start + batch]):
-                    if sha:
-                        yield ref_name, sha
-                    else:
-                        _unreadable(ref_name)
+        #
+        # Adapt, do not tune (AA23): the server throttles a user's total request rate (about
+        # 100 requests/s on CE 13.0.29 is fine, 140/s is refused for 10 s), so a batch that was
+        # answered 429 halves the next batch's workers and a clean one adds one back, up to the
+        # ceiling the caller gave.  A throttled request is retried by the session; this only
+        # keeps the walk from asking for more than the server will give.
+        ceiling = workers
+        start = 0
+        while start < len(ref_entries):
+            if renew is not None:
+                renew()
+            batch = workers * 8
+            before = throttle_answers()
+            with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
+                results = list(executor.map(_fetch_ref, ref_entries[start:start + batch]))
+            start += batch
+            workers = next_worker_count(workers, ceiling, throttle_answers() > before)
+            for ref_name, sha in results:
+                if sha:
+                    yield ref_name, sha
+                else:
+                    _unreadable(ref_name)
 
 
 __all__ = [

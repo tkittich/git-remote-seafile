@@ -175,6 +175,14 @@ class SeafileAPIError(Exception):
     pass
 
 
+class SeafileConnectionError(SeafileAPIError, requests.RequestException):
+    """The connection dropped, timed out or was refused before the server answered.
+
+    Both a ``SeafileAPIError`` (so every ``except SeafileAPIError`` sees it) and a
+    ``requests.RequestException`` (so the handlers written for that keep working).
+    """
+
+
 class ListedButUnreadableError(SeafileAPIError):
     """A file its folder lists could not be read (a 404 or an empty body from the file host)."""
 
@@ -406,6 +414,25 @@ class _ScopedSession(requests.Session):
         super().__init__()
         self.scope = scope   # read at redirect time: the server URL may be loaded later
 
+    def request(self, method: str, url: str, *args: Any, **kwargs: Any) -> requests.Response:  # type: ignore[override]
+        """Every API call: a dropped connection or timeout surfaces as ``SeafileConnectionError``.
+
+        A handler written ``except SeafileAPIError`` used to miss the raw ``requests``
+        exception (fable H2.5: ``cmd_list``'s retry, the lease renewal, the cleanups).
+        The error is both a ``SeafileAPIError`` and a ``RequestException``, so a handler
+        written for either keeps working; its text names the method and path, never the
+        query (a link's token) or the headers.
+        """
+        try:
+            return super().request(method, url, *args, **kwargs)
+        except SeafileConnectionError:
+            raise
+        except requests.RequestException as ex:
+            from urllib.parse import urlsplit
+            raise SeafileConnectionError(
+                f"{type(ex).__name__} during {str(method).upper()} {urlsplit(str(url)).path}"
+            ) from None
+
     def rebuild_auth(self, prepared_request: Any, response: Any) -> None:
         super().rebuild_auth(prepared_request, response)
         url = str(prepared_request.url or "")
@@ -423,8 +450,26 @@ RETRY_AFTER_CAP_SECONDS = 10.0
 _RETRY_AFTER_NOTED = False
 
 
+_THROTTLE_ANSWERS = 0
+
+
+def throttle_answers() -> int:
+    """How many HTTP 429 answers this process has seen (AA23).
+
+    A caller that runs requests in parallel reads it before and after a batch: a rise means the
+    server's per-user request rate was crossed and the next batch should use fewer workers.
+    """
+    return _THROTTLE_ANSWERS
+
+
 class _CappedRetry(Retry):
     """``Retry`` that never sleeps longer than ``RETRY_AFTER_CAP_SECONDS`` for ``Retry-After``."""
+
+    def is_retry(self, method: str, status_code: int, has_retry_after: bool = False) -> bool:
+        global _THROTTLE_ANSWERS
+        if status_code == 429:
+            _THROTTLE_ANSWERS += 1   # a GIL-atomic enough counter: only its rise is read
+        return super().is_retry(method, status_code, has_retry_after)
 
     def get_retry_after(self, response: Any) -> float | None:
         global _RETRY_AFTER_NOTED

@@ -124,6 +124,16 @@ class _Handler(BaseHTTPRequestHandler):
                 fn()
         f = self.stub.faults
 
+        if f.get("throttle", 0) > 0 and "/dir/" not in path:
+            # The per-user request rate of a real server (ROADMAP AA23): this many GETs that are not
+            # directory listings are answered 429 with a Retry-After of 0 (a real one is 1-10 s), then it stops.
+            f["throttle"] -= 1
+            self.send_response(429)
+            self.send_header("Retry-After", "0")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+
         if path == "/api2/repos/":
             if f.get("repos"):
                 return self._send(f["repos"], b"injected failure")
