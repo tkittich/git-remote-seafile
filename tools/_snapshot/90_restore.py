@@ -563,9 +563,10 @@ def _restore(
             "everything else was restored and is verified below."
         )
         mismatched = [path for path in mismatched if path not in set(as_text)]
-    before_names = len(mismatched)
-    mismatched = report_names_not_restored_as_named(into, verified_rev, set(unholdable), mismatched)
-    names_differ = len(mismatched) < before_names
+    names_said: list[str] = []
+    mismatched = report_names_not_restored_as_named(
+        into, verified_rev, set(unholdable), mismatched, names_said)
+    names_differ = bool(names_said)
     if mismatched:
         shown = "\n".join(f"  {path}" for path in mismatched[:20])
         extra = (
@@ -605,7 +606,8 @@ def _restore(
     partial = bool(unholdable or as_text or names_differ)
     print(
         ("verified byte-exact for the files written, against " if partial
-         else "verified byte-exact against ") + f"{verified_rev[:12]}"
+         else "verified byte-exact against ") + (
+            verified_rev[:12] if re.fullmatch(r"[0-9a-f]{40,64}", verified_rev) else verified_rev)
         + (f" ({len(unholdable)} unrepresentable name(s) excluded)" if unholdable else "")
         + (f" ({len(as_text)} link(s) written as text)" if as_text else "")
     )

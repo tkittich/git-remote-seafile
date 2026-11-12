@@ -178,12 +178,15 @@ def classify_missing_names(
 
 
 def report_names_not_restored_as_named(
-    repo: Path, rev: str, skip: "set[str]", mismatched: list[str]
+    repo: Path, rev: str, skip: "set[str]", mismatched: list[str],
+    said: "list[str] | None" = None,
 ) -> list[str]:
     """Say which names did not come back as named, and return *mismatched* without the collided ones.
 
     A collision is a limit of the destination, not a defect of the checkout: the byte
-    check named the loser of a pair and told the person to report it (ROADMAP Z45).
+    check named the loser of a pair and told the person to report it (ROADMAP Z45).  Every name
+    reported is appended to *said*, so the caller can tell that a name was left out even when
+    the byte check never listed it (a case pair with the same bytes, fable-G0.4).
     """
     on_disk = names_on_disk(repo)
     if on_disk is None:
@@ -197,6 +200,8 @@ def report_names_not_restored_as_named(
                   "space is dropped by some volumes); the bytes are intact, under the changed name"),
     ):
         if names:
+            if said is not None:
+                said.extend(names)
             shown = "\n".join(f"  {name}" for name in names[:10])
             more = f"\n  ... and {len(names) - 10} more" if len(names) > 10 else ""
             print(f"\nWarning: {len(names)} file(s) in this snapshot {text}:\n{shown}{more}\n"

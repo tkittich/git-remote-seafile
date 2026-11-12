@@ -1981,8 +1981,9 @@ class RestoreNameLimitTests(_SnapshotFixture):
         probe.mkdir()
         return (self.tmp / "caseprobe").exists()
 
-    def _vault_with_twin_names(self, *names: str) -> None:
-        """A snapshot chain on ``self.remote`` whose root holds *names*, one blob each."""
+    def _vault_with_twin_names(self, *names: str, same_bytes: bool = False) -> None:
+        """A snapshot chain on ``self.remote`` whose root holds *names*, one blob each
+        (the same bytes for every name with *same_bytes*)."""
         def put(kind: str, data: bytes) -> bytes:
             out = subprocess.run(
                 ["git", "-C", str(self.remote), "hash-object", "-w", "--literally", "-t", kind, "--stdin"],
@@ -1991,7 +1992,7 @@ class RestoreNameLimitTests(_SnapshotFixture):
             return bytes.fromhex(out)
 
         body = b"".join(
-            f"100644 {name}".encode() + b"\0" + put("blob", f"content of {name}\n".encode())
+            f"100644 {name}".encode() + b"\0" + put("blob", b"shared\n" if same_bytes else f"content of {name}\n".encode())
             for name in sorted(names, key=lambda n: n.encode())
         )
         env = {**os.environ, "GIT_COMMITTER_NAME": "T", "GIT_COMMITTER_EMAIL": "t@example.com",
@@ -2200,6 +2201,18 @@ class RestoreNameLimitTests(_SnapshotFixture):
         self.assertEqual((self.restored / "plain.txt").read_bytes(), b"content of plain.txt\n")
         kept = [n for n in ("README", "readme") if n in (p.name for p in self.restored.iterdir())]
         self.assertEqual(len(kept), 1, kept)
+
+    def test_a_pair_with_the_same_bytes_still_qualifies_the_verified_line(self):
+        """fable-G0.4: a case pair with identical bytes never enters the byte check's list, so
+        the line ``verified byte-exact against`` stayed unqualified beside a missing file."""
+        self._vault_with_twin_names("README", "readme", "plain.txt", same_bytes=True)
+        if not self._folds_case():
+            self.skipTest("this destination keeps both names: nothing is left out")
+        rc, out, err = self.restore_to(self.restored)
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn("share a name with another file", out)
+        self.assertIn("verified byte-exact for the files written", out)
+        self.assertNotIn("verified byte-exact against", out)
 
     def test_a_name_the_volume_changed_is_reported_where_the_byte_check_cannot_see_it(self):
         """The check opens ``dot.``, which a FAT driver resolves to ``dot``: only a listing shows it."""
