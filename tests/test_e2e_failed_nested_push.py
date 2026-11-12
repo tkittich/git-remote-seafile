@@ -50,6 +50,30 @@ class TestAFailedNestedPushLeavesNoFolderBehind(E2ETestCase):
         run_git(["push", "origin", "feature/auth/login"], src, self.env)
         self.assertIn("refs/heads/feature/auth/login", self._ls_remote("nested", src).stdout)
 
+    def test_a_dropped_connection_leaves_no_folder_behind_either(self):
+        """fable-G0.1: the cleanup ran only for SeafileAPIError; the upload link's connection
+        dying is a requests exception, and the empty folder stayed."""
+        self.stub.explicit_dirs = True
+        src = self._pushed_main("dropped")
+        run_git(["checkout", "-q", "-b", "feature/auth/login"], src, self.env)
+        commit_file(src, "b.txt", "two\n", "c2", self.env)
+
+        def drop_the_connection():
+            raise RuntimeError("the stub drops the connection")
+
+        self.stub.get_hooks.append(
+            (lambda path: "upload-link" in path and "refs/heads/feature" in path.replace("%2F", "/"),
+             drop_the_connection)
+        )
+        proc = run_git(["push", "origin", "feature/auth/login"], src, self.env, check=False)
+        self.stub.get_hooks.clear()
+        self.assertNotEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(
+            sorted(d for d in self.stub.dirs.get(REPO_ID, ()) if "feature" in d), [],
+            "an empty folder from the dropped connection is still on the server",
+        )
+        self.assertEqual(self._ls_remote("dropped", src).returncode, 0)
+
     def test_a_folder_that_was_already_there_is_left_alone(self):
         self.stub.explicit_dirs = True
         src = self._pushed_main("kept")

@@ -162,6 +162,18 @@ def _destination_error(dst: str) -> str | None:
 MAX_PACK_SPLITS = 6
 
 
+class _PackListingFailed(Exception):
+    """The listing that verifies an upload could not be read: that proves nothing."""
+
+
+class _PackVerifyFailed(RuntimeError):
+    """The listing was read and *bad* names are missing or at the wrong size."""
+
+    def __init__(self, message: str, bad: set[str]) -> None:
+        super().__init__(message)
+        self.bad = bad
+
+
 class _UploadRefused(Exception):
     """The server refused a pack's size; carries what to split by and the original error."""
 
@@ -1164,6 +1176,11 @@ class RemoteHelper:
                     if extra_sha != pack_sha:
                         uploads.append((extra_sha, extra, extra.with_suffix(".idx")))
             pack_dir = self._full_path("objects/pack")
+            # A pack's name is the hash of its object set, so this push can upload a name the
+            # remote already holds (a stale clone re-sending what a newer push built on).  What
+            # was listed before the first upload is never this push's to remove (fable-B1).
+            # ``None`` when the listing failed: then nothing is known to be ours.
+            held_before = self._pack_names_on_remote(pack_dir)
             landed: dict[str, int] = {}
             self._push_link_mibs = None
             sent_bytes, sent_seconds = 0, 0.0
@@ -1196,6 +1213,8 @@ class RemoteHelper:
                         raise
                     # Nothing of this attempt may stay: the retry's packs have other names.
                     for name in [*landed, f"pack-{up_sha}.idx", f"pack-{up_sha}.pack"]:
+                        if held_before is None or name in held_before:
+                            continue
                         try:
                             self.client.delete_entry(self.repo_id, f"{pack_dir}/{name}")
                         except Exception:
@@ -1212,14 +1231,33 @@ class RemoteHelper:
             self._push_link_mibs = link_rate_mibs(sent_bytes, sent_seconds)
             try:
                 self._verify_packs_landed(pack_dir, landed)
-            except Exception:
+            except Exception as verify_failure:
                 # A pack that landed truncated under a 2xx is a landmine at its
                 # final name: every later fetch dies in index-pack on it and gc
                 # dies in the same place, so the repository is unusable until
                 # someone deletes the file by hand (RUNBOOK 4).  What this push
                 # posted, this push removes -- the old packs are untouched.
+                #
+                # Only what the listing *proved* wrong, and only a name that was not
+                # on the remote before the push.  A listing that could not be read
+                # proves nothing (a 502, a 429 out of retries): removing on it took a
+                # pack the remote already relied on (fable-B1).
+                if not isinstance(verify_failure, _PackVerifyFailed):
+                    sys.stderr.write(
+                        "Warning: the upload could not be verified (the pack listing could not "
+                        "be read); nothing was removed from the remote and no ref was updated. "
+                        "Run the push again.\n"
+                    )
+                    sys.stderr.flush()
+                    raise
                 removed = 0
-                for name in sorted(landed):
+                # What the listing showed wrong is a landmine whoever put it there; the rest
+                # goes only when the pre-upload listing says it was not there before.
+                ours = sorted(
+                    verify_failure.bad
+                    | {n for n in landed if held_before is not None and n not in held_before}
+                )
+                for name in ours:
                     try:
                         if self.client.delete_entry(self.repo_id, f"{pack_dir}/{name}"):
                             removed += 1
@@ -1235,6 +1273,16 @@ class RemoteHelper:
         finally:
             remove_tree(staging_dir)
 
+    def _pack_names_on_remote(self, pack_dir: str) -> set[str] | None:
+        """The file names in ``objects/pack`` now, or ``None`` when the listing fails."""
+        try:
+            return {
+                str(e.get("name")) for e in self.client.list_dir(self.repo_id, pack_dir)
+                if isinstance(e, dict) and e.get("name")
+            }
+        except Exception:
+            return None
+
     def _verify_packs_landed(self, pack_dir: str, expected: dict[str, int]) -> None:
         """Raise unless every uploaded file is listed on the remote at its local size.
 
@@ -1246,13 +1294,17 @@ class RemoteHelper:
         decision).  The check runs before a ref is published, because a ref naming
         a pack that is not there is a repository nobody can clone.
         """
-        listing = self.client.list_dir(self.repo_id, pack_dir)
+        try:
+            listing = self.client.list_dir(self.repo_id, pack_dir)
+        except Exception as ex:
+            raise _PackListingFailed(f"the pack listing could not be read ({ex})") from ex
         remote = {
             e.get("name"): e.get("size")
             for e in listing
             if isinstance(e, dict) and e.get("name")
         }
         problems: list[str] = []
+        bad: set[str] = set()
         for name, size in sorted(expected.items()):
             got = remote.get(name)
             try:
@@ -1261,13 +1313,16 @@ class RemoteHelper:
                 got_int = None
             if got_int is None:
                 problems.append(f"{name} is not listed on the remote with a readable size")
+                bad.add(name)
             elif got_int != size:
                 problems.append(f"{name} is {got_int} bytes on the remote but {size} locally")
+                bad.add(name)
         if problems:
-            raise RuntimeError(
+            raise _PackVerifyFailed(
                 "the uploaded packfile could not be verified on the remote ("
                 + "; ".join(problems)
-                + "); no ref was updated"
+                + "); no ref was updated",
+                bad,
             )
 
     def _absent_ref_folders(self, folder: str) -> list[str]:
@@ -1342,6 +1397,11 @@ class RemoteHelper:
                 f"{ex}; the ref may or may not have been written and the write was not "
                 "resent -- fetch, check the remote, and push again"
             ) from ex
+        except Exception:
+            # A dropped connection or a timeout on the mkdir or the upload link is not a
+            # SeafileAPIError, and left the same empty folder behind (fable-G0.1).
+            self._drop_empty_folders(made)
+            raise
 
         # Read the ref back.  Seafile exposes no atomic compare-and-swap, so the
         # CAS check above and this write are separate round trips, and a peer
