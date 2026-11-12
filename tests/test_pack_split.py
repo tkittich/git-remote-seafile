@@ -70,10 +70,12 @@ class TestSplitOnRefusal(unittest.TestCase):
             return True
 
         self.h.client.upload_file.side_effect = upload
+        # Empty until something is uploaded: the helper now lists the pack folder before its
+        # first upload and never removes a name that was there then (fable-B1).
         self.h.client.list_dir.side_effect = lambda rid, path: [
             {"name": f"pack-{'a' * 40}.pack", "size": min(PACK, self.caps[-1] or PACK)},
             {"name": f"pack-{'a' * 40}.idx", "size": 3},
-        ]
+        ] if self.h.client.upload_file.called else []
         return create
 
     def push(self, limit, cap=None):
