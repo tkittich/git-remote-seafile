@@ -3572,19 +3572,84 @@ class IncrementalStagingTests(_SnapshotFixture):
         self.assertEqual(got, ["d/new.txt"])
         self.assertTrue(any(str(p).endswith("new.txt") for p in seen), seen)
 
+    #: Every plain stat, walk or scan the snapshot parts still make, with why it is not wrapped.
+    #: A new call of the kinds below that is neither wrapped in ``extended_path`` nor listed here
+    #: fails ``test_no_part_stats_or_opens_a_source_path_in_its_plain_form`` (AA22, fable-G0.5).
+    _PLAIN_PATH_CALLS = {
+        ("20_gitrun.py", "for dirpath, _dirnames, filenames in os.walk(path):"): "the vault's own folder",
+        ("20_gitrun.py", "total += os.stat(os.path.join(dirpath, name)).st_size"): "the vault's own folder",
+        ("30_vault.py", "with os.scandir(folder) as it:"): "the case probe near the source root (depth 64 entries)",
+        ("30_vault.py", "return os.path.samestat(os.lstat(entry.path), os.lstat(folder / flipped))"):
+            "the case probe, same bound",
+        ("40_profile.py", "for dirpath, dirnames, filenames in os.walk(root):"): "AA24: a walk yields plain dirpaths",
+        ("70_stage.py", "for dirpath, dirnames, filenames in os.walk(root):"): "AA24: a walk yields plain dirpaths",
+        ("71_embedded.py", "for dirpath, dirnames, filenames in os.walk(root, onerror=_deny):"):
+            "AA24: a walk yields plain dirpaths; a failure is reported through onerror",
+        ("74_payload_manifest.py", "return os.stat(name).st_mtime_ns"): "a probe file the tool just made in the vault",
+        ("91_restore_names.py", "for folder, dirs, files in os.walk(root, onerror=fail):"):
+            "the restore destination, which the user chose",
+        ("91_restore_names.py", "links = [d for d in dirs if os.path.islink(os.path.join(folder, d))]"):
+            "the restore destination",
+        ("94_first_run.py", "for dirpath, dirnames, _files in os.walk(root):"): "AA24: the first-run survey walk",
+        ("94_first_run.py", "with os.scandir(stack.pop()) as entries:"): "AA24: the first-run survey walk",
+        ("94_first_run.py", "for dirpath, dirnames, filenames in os.walk(root):"): "AA24: the first-run survey walk",
+    }
+
     def test_no_part_stats_or_opens_a_source_path_in_its_plain_form(self):
         """AA22: a plain ``os.lstat(source / rel)`` or ``open(work_tree / path)`` fails past 260
         characters on a Windows without LongPathsEnabled.  Not a list of sites (Z13, AA17 and AA22
-        were each the previous round's sibling): any ``lstat``/``stat``/``open`` whose first
-        argument starts with ``source`` or ``work_tree`` must go through ``extended_path``."""
-        pattern = re.compile(r"\b(?:os\.lstat|os\.stat|open)\(\s*(?:source|work_tree)\b")
+        were each the previous round's sibling): (1) any ``lstat``/``stat``/``open`` whose first
+        argument starts with ``source`` or ``work_tree`` must go through ``extended_path``, and (2)
+        any other ``lstat``/``stat``/``lexists``/``getsize``/``islink``/``walk``/``scandir`` call
+        must either do so or be listed in ``_PLAIN_PATH_CALLS`` with the reason (fable-G0.5: the
+        first pattern alone missed ``os.lstat(full)`` and ``os.walk(root)``)."""
+        named = re.compile(r"\b(?:os\.lstat|os\.stat|open)\(\s*(?:source|work_tree)\b")
+        other = re.compile(
+            r"\bos\.(?:lstat|stat|path\.lexists|path\.getsize|path\.islink|walk|scandir)\(")
         parts = pathlib.Path(snap.__file__).resolve().parents[1] / "tools" / "_snapshot"
-        found = []
+        found, used = [], set()
         for part in sorted(parts.glob("*.py")):
             for number, line in enumerate(part.read_text(encoding="utf-8").splitlines(), 1):
-                if pattern.search(line):
-                    found.append(f"{part.name}:{number}: {line.strip()}")
-        self.assertEqual(found, [], "wrap these in extended_path()")
+                code = line.split("#", 1)[0].strip()
+                if named.search(code):
+                    found.append(f"{part.name}:{number}: {code}")
+                elif other.search(code) and "extended_path" not in code and not code.startswith(
+                        ('"', "'", "``")):
+                    key = next((k for k in self._PLAIN_PATH_CALLS if k[0] == part.name and k[1] in code), None)
+                    if key is None:
+                        found.append(f"{part.name}:{number}: {code}")
+                    else:
+                        used.add(key)
+        self.assertEqual(found, [], "wrap these in extended_path(), or list them with a reason")
+        self.assertEqual(sorted(set(self._PLAIN_PATH_CALLS) - used), [],
+                         "these listed calls no longer exist: delete them from the list")
+
+    @unittest.skipUnless(os.name == "nt", "extended_path is the identity elsewhere")
+    def test_a_directory_past_max_path_inside_an_embedded_repository_is_not_dropped(self):
+        """fable-G0.2 (simulated: this machine may have long paths on): a plain ``lstat`` of a
+        directory past 260 characters fails without LongPathsEnabled, and the walk read that
+        as "vanished" and dropped the folder with exit 0.  ``os.lstat`` is patched to fail
+        for a plain path of that length; the extended form must be the one asked."""
+        repo = self.tmp / "src-long" / "nested"
+        deep = repo / "a" / ("d" * 40)
+        deep.mkdir(parents=True)
+        (repo / ".git").mkdir()
+        (repo / "top.txt").write_bytes(b"1")
+        (deep / "lost.bin").write_bytes(b"3")
+        limit = len(str(deep))
+        real = os.lstat
+
+        def lstat(path, *args, **kwargs):
+            text = os.fspath(path)
+            if isinstance(text, str) and not text.startswith("\\\\?\\") and len(text) >= limit:
+                raise FileNotFoundError(3, "simulated MAX_PATH", text)
+            return real(path, *args, **kwargs)
+
+        unreadable: list[str] = []
+        with unittest.mock.patch.object(os, "lstat", lstat):
+            files = snap._files_of_repository(repo, "nested", unreadable)
+        self.assertIn("nested/a/" + "d" * 40 + "/lost.bin", files)
+        self.assertEqual(unreadable, [])
 
     def test_the_payload_skip_matcher_uses_the_long_path_form(self):
         # AA17: the NFC-variant comparison stats both spellings; past 260 characters a

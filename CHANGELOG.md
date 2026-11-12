@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **A push whose verifying listing fails no longer deletes a pack the remote already relied on** (ROADMAP AA25; review 68e81e5, fable-B1). A stale clone could re-upload a pack under a name the remote held; if the listing that verifies the upload then failed once, the helper removed that pack and every clone of the branch failed. Pack names are listed before the first upload, only a name that was not there or that the listing proved wrong is removed, and nothing is removed when the listing cannot be read.
+- **A failed ref write removes the empty folders it made, including after a dropped connection** (ROADMAP AA10, AA26). A nested branch push made `refs/heads/<dir>/` before writing the ref; if the write failed, the empty folder stopped every later `git fetch` and `ls-remote` (measured on CE and Pro 13.0.29). Folders that were already there are never touched.
+- **A server's `Retry-After` is slept for at most 5 seconds** (ROADMAP AA28; fable-C1). urllib3 slept the whole header three times per request, on the thread that renews the push lease.
+- **`tracked_remote_names` works for a `--mirror` clone** (ROADMAP AA13): the hidden-branch warning never fired there.
+- **A lease is also aged by the wall clock** (ROADMAP AA11): the monotonic clock stops during a suspend on Linux and macOS.
+- **A restore that left a name out says so on its last line** (ROADMAP AA14, AA29): "verified byte-exact for the files written", including a case pair with identical bytes, and it no longer cuts a branch name.
+- **Source paths past 260 characters on a Windows without long-path support** (ROADMAP AA17, AA22): the payload and staging stats and opens go through the extended-length form, and a directory a stat cannot reach inside an embedded repository is reported as unreadable instead of dropped with exit 0. The walks themselves stay plain (ROADMAP AA24).
+
+### Changed
+- `--dry-run` prints a Note when the real run would set another `core.ignorecase` (ROADMAP AA9). `gates.py --changed` follows test modules that import other test modules (AA16).
+
 ## [0.9.25] - 2026-11-10
 
 A data-loss fix and the review backlog, with the fixes of the round that read it. The first real Seafile Professional run of the measurements added in 0.9.24 showed that a non-owner's recursive delete of a folder that looked empty took a child the account could not see (Z29); it no longer prunes, and says what that costs. The same run found how a group library is named (Z22), and the rest is what a fetch may delete (Z27), what a lock holder cleans up (Z47), a typed limit for very large trees (W4), the one open data-loss-class listing question answered (S1: complete at 5,100 entries on CE and Pro), and a week's worth of test hardening after three timing flakes.

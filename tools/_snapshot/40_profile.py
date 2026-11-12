@@ -136,7 +136,7 @@ def _walk_sizes(
         if d == ".git":
             return False
         try:
-            return not (getattr(os.lstat(os.path.join(dirpath, d)), "st_file_attributes", 0) & 0x400)
+            return not (getattr(os.lstat(extended_path(Path(dirpath, d))), "st_file_attributes", 0) & 0x400)
         except OSError:
             # Vanished between the listing and the stat: nothing to walk.
             return False

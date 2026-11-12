@@ -422,7 +422,7 @@ check `ok` except the commit not being on `origin/main` (a warning) and the two 
 are warnings under `--offline` only when `gh` cannot answer: with `gh` signed in and the commit
 not on GitHub, `--offline` still prints `[FAIL] no run at <sha>` for both legs, which is that
 fact and not a defect — and the dirty-tree line if your copy has local files; report
-anything else it says). The tag `v0.9.25` must not exist yet. The guides and specs that 0.9.24 changed to
+anything else it says). (0.9.25 was released after that round: the tag `v0.9.25` exists; for the 0.9.26 round, `[Unreleased]` in CHANGELOG.md is the entry to read, and the version bump is not yet made.) The guides and specs that 0.9.24 changed to
 match what was measured (`PAYLOAD.md` and the `USER_GUIDE.md` limits row on FAT,
 `SNAPSHOT_GUIDE.md` on restore destinations, `DESIGN.md` on the LFS rename, the ticket
 copies and the remembered advertisement, `CONTRIBUTING.md`, `AGENTS.md`) against the code.

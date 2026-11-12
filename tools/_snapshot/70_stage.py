@@ -596,7 +596,7 @@ def find_virtualenvs(source: Path, excludes: list[str]) -> list[str]:
             if name == ".git" or any(exclude_matches(child, pat) for pat in excludes):
                 continue
             try:
-                if getattr(os.lstat(os.path.join(dirpath, name)), "st_file_attributes", 0) & 0x400:
+                if getattr(os.lstat(extended_path(Path(dirpath, name))), "st_file_attributes", 0) & 0x400:
                     continue
             except OSError:
                 continue  # vanished between the listing and the stat; not a venv either way

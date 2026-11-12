@@ -45,12 +45,17 @@ def _files_of_repository(
             if name == ".git":
                 continue
             try:
-                is_link = os.path.islink(full)
+                is_link = os.path.islink(extended_path(Path(full)))
                 is_reparse = bool(
-                    getattr(os.lstat(full), "st_file_attributes", 0) & 0x400
+                    getattr(os.lstat(extended_path(Path(full))), "st_file_attributes", 0) & 0x400
                 )
             except OSError:
-                continue  # vanished between listing and stat
+                # Not "vanished": a path the stat cannot reach (past 260 characters without
+                # long-path support) read so dropped the folder and everything under it with
+                # exit 0 (fable-G0.2).  A real vanish is also reported; running again settles it.
+                if unreadable is not None:
+                    unreadable.append(f"{prefix}/{os.path.relpath(full, root)}".replace(os.sep, "/"))
+                continue
             if is_link:
                 found.append(f"{prefix}/{os.path.relpath(full, root)}".replace(os.sep, "/"))
             elif not is_reparse:
@@ -170,7 +175,7 @@ def embedded_roots(paths: list[str], work_tree: Path) -> list[str]:
         for part in path.split("/")[:-1]:
             prefix = f"{prefix}/{part}" if prefix else part
             if prefix not in exists:
-                exists[prefix] = os.path.lexists(work_tree / prefix / ".git")
+                exists[prefix] = os.path.lexists(extended_path(work_tree / prefix / ".git"))
             if exists[prefix]:
                 roots.add(prefix)
     return sorted(roots)
