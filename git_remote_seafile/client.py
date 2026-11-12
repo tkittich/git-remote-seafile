@@ -414,6 +414,34 @@ class _ScopedSession(requests.Session):
             prepared_request.headers.pop("Authorization", None)
 
 
+#: The longest one retry sleeps for a server's ``Retry-After`` (fable-C1).  urllib3 honours the
+#: header for 429, 500 and 503 with no bound of its own the client sets (one ``list_dir`` against
+#: ``Retry-After: 4`` took 12 s, a ``delete_entry`` 24 s), and the thread that sleeps is the one
+#: that renews the push lease.  A throttle answers "one second" in practice (measured, AA23).
+RETRY_AFTER_CAP_SECONDS = 5.0
+_RETRY_AFTER_NOTED = False
+
+
+class _CappedRetry(Retry):
+    """``Retry`` that never sleeps longer than ``RETRY_AFTER_CAP_SECONDS`` for ``Retry-After``."""
+
+    def get_retry_after(self, response: Any) -> float | None:
+        global _RETRY_AFTER_NOTED
+        wait = super().get_retry_after(response)
+        if wait is None:
+            return None
+        if wait > RETRY_AFTER_CAP_SECONDS:
+            wait = RETRY_AFTER_CAP_SECONDS
+        if wait > 0 and not _RETRY_AFTER_NOTED:
+            _RETRY_AFTER_NOTED = True
+            sys.stderr.write(
+                "Note: the server asked this client to slow down (Retry-After); each request "
+                f"waits at most {RETRY_AFTER_CAP_SECONDS:g} s and is tried again.\n"
+            )
+            sys.stderr.flush()
+        return wait
+
+
 class SeafileClient:
     """Lightweight HTTP client for Seafile Web API v2.1."""
 
@@ -763,7 +791,7 @@ class SeafileClient:
         a 500 raises a urllib3 error instead of returning the response, which
         would change what the callers' status-code handling sees.
         """
-        retry = Retry(
+        retry = _CappedRetry(
             total=3,
             connect=3,
             read=3,
