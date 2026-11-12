@@ -144,6 +144,12 @@ class TestTheChangedMap(unittest.TestCase):
         self.assertIn("test_e2e_conflict_copies", got)
         self.assertIn("test_e2e_listing_faults", got)
 
+    def test_a_changed_test_module_selects_the_modules_that_import_it(self):
+        # fable-G0.6: a base class in test_e2e.py is run by four other modules.
+        got = gates.suite_for_changes(["tests/test_e2e.py"])
+        self.assertIn("test_e2e_listing_faults", got)
+        self.assertIn("test_e2e_conflict_copies", got)
+
     def test_every_module_the_map_names_exists(self):
         names = set(gates._ALWAYS) | set(gates._SNAPSHOT_TESTS)
         names |= {m for mods in gates._TOOL_TESTS.values() for m in mods}

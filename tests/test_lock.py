@@ -2003,6 +2003,16 @@ class TestAFailedQueueScanStillReadsTheOwnTicket(unittest.TestCase):
         lock._last_proven = time.monotonic()
         return lock
 
+    def test_a_renewal_refreshes_the_wall_clock_stamp_of_the_proof(self):
+        """fable-G0.7: if the stamp kept the acquire's time, any push longer than a lease would
+        read its first UNKNOWN as LOST.  Age the stamp, renew, and it is current again."""
+        store = _SharedLockStore()
+        lock = RemoteLock(store.client("token123"), "repo1", "/path", timeout=5, lease=600, settle=0)
+        lock.acquire()
+        lock._last_proven_wall = time.time() - 10_000
+        self.assertTrue(lock.renew())
+        self.assertLess(time.time() - lock._last_proven_wall, 60)
+
     def test_a_reaped_ticket_reads_as_lost_when_the_queue_cannot_be_read(self):
         lock = self._lock(None)
         with patch("sys.stderr", io.StringIO()):

@@ -253,7 +253,9 @@ def suite_for_changes(paths: list[str], root: Path = _ROOT) -> list[str] | None:
         elif path in _TOOL_TESTS:
             modules.update(_TOOL_TESTS[path])
         elif path.startswith("tests/test_") and path.endswith(".py"):
-            modules.add(name[:-3])
+            # Its importers too: a base class edited here is run by the modules that subclass
+            # it (fable-G0.6: test_e2e.py is the base of four others).
+            modules.update(_with_test_importers({name[:-3]}, root))
         elif path.startswith(".github/"):
             modules.update({"test_release_workflow", "test_ci_report_failures",
                             "test_realserver_ci", "test_realserver_latest_workflow", "test_ci_locale_legs",
