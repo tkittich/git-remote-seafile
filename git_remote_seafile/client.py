@@ -450,6 +450,11 @@ class _ScopedSession(requests.Session):
 #: ``Retry-After: 4`` took 12 s, a ``delete_entry`` 24 s), and the thread that sleeps is the one
 #: that renews the push lease.  Measured on the CE container (AA23): a throttle answered 10 s the
 #: first time and 1 s after; a cap below 10 s would retry three times inside the first window.
+#: Sent on every transfer-link download.  ``Content-Length`` is the encoded length and ``requests``
+#: counts decoded bytes, so a file host or proxy that gzipped a body made every complete download
+#: read as "Truncated" (review 9fe723f, fable-C1); the bytes of a pack or object are the bytes.
+_IDENTITY_ENCODING = {"Accept-Encoding": "identity"}
+
 RETRY_AFTER_CAP_SECONDS = 10.0
 _RETRY_AFTER_NOTED = False
 
@@ -1427,7 +1432,8 @@ class SeafileClient:
 
         dl_url = resp.text.strip().strip('"')
         dl_url = self._adjust_url(dl_url)
-        file_resp = self._xfer("get", dl_url, timeout=self.timeout, stream=max_bytes is not None)
+        file_resp = self._xfer("get", dl_url, timeout=self.timeout, stream=max_bytes is not None,
+                                 headers=_IDENTITY_ENCODING)
         try:
             if file_resp.status_code == 404:
                 return None
@@ -1437,7 +1443,8 @@ class SeafileClient:
                     f"Failed to download {clean_path}: HTTP {file_resp.status_code} "
                     f"(GET {self._error_origin(dl_url)})" + (f" {said}" if said else "")
                 )
-            if max_bytes is not None:
+            if max_bytes is not None:     # the streamed read counts bytes; a whole body is just decoded
+                self._refuse_encoded_body(file_resp, clean_path, dl_url)
                 try:
                     declared = int(file_resp.headers.get("Content-Length", ""))
                 except (TypeError, ValueError):
@@ -1467,6 +1474,23 @@ class SeafileClient:
                     file_resp.close()
                 except Exception:
                     pass
+
+    def _refuse_encoded_body(self, resp: requests.Response, clean_path: str, url: str) -> None:
+        """A transfer body that arrives compressed is refused, by name, not read as "truncated".
+
+        ``Accept-Encoding: identity`` is sent, so this is a file host or proxy ignoring it.
+        ``Content-Length`` would then be the encoded size while the cap and the byte count see
+        decoded bytes: every complete download read as truncated, and a small body could expand
+        past the cap before it was counted (review 9fe723f, fable-C1).
+        """
+        encoding = str(resp.headers.get("Content-Encoding", "")).strip().lower()
+        if encoding and encoding != "identity":
+            raise SeafileAPIError(
+                f"Failed to download {clean_path}: the file host answered with Content-Encoding: "
+                f"{self._said(encoding)} although identity was asked for (GET "
+                f"{self._error_origin(url)}); a proxy in front of it is compressing the body. "
+                "Exempt the file host's /seafhttp path from compression."
+            )
 
     def _stream_chunks(self, resp: requests.Response, url: str, chunk_size: int) -> Iterator[bytes]:
         """``resp.iter_content`` with a body that dies mid-stream raised as ``SeafileConnectionError``.
@@ -1854,7 +1878,7 @@ class SeafileClient:
             raise self._download_link_error(clean_path, resp)
 
         dl_url = self._adjust_url(resp.text.strip().strip('"'))
-        file_resp = self._xfer("get", dl_url, timeout=self.timeout, stream=True)
+        file_resp = self._xfer("get", dl_url, timeout=self.timeout, stream=True, headers=_IDENTITY_ENCODING)
         try:
             if file_resp.status_code == 404:
                 return False
@@ -1865,6 +1889,7 @@ class SeafileClient:
                     f"(GET {self._error_origin(dl_url)})" + (f" {said}" if said else "")
                 )
 
+            self._refuse_encoded_body(file_resp, clean_path, dl_url)
             dest_path = Path(dest)
             dest_path.parent.mkdir(parents=True, exist_ok=True)
             total_size = 0

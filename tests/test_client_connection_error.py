@@ -156,5 +156,60 @@ class TestABodyCutMidStreamIsAnApiError(unittest.TestCase):
         self.assertNotIn("link-token", str(cm.exception))
 
 
+class TestACompressedTransferBodyIsRefusedByName(unittest.TestCase):
+    """fable-C1 (AA42): Content-Length is the encoded size; the byte count is decoded."""
+
+    def setUp(self):
+        import gzip
+        self.asked: list[str] = []
+        self.body = gzip.compress(b"A" * 5000)
+        listener = socket.socket()
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(16)
+        self.addCleanup(listener.close)
+        self.port = listener.getsockname()[1]
+        threading.Thread(target=self._serve, args=(listener,), daemon=True).start()
+        self.client = SeafileClient(server_url=f"http://127.0.0.1:{self.port}", token="t")
+        self.addCleanup(self.client.close)
+
+    def _serve(self, listener):
+        while True:
+            try:
+                conn, _ = listener.accept()
+            except OSError:
+                return
+            with conn:
+                conn.settimeout(2)
+                try:
+                    head = conn.recv(4096)
+                except OSError:
+                    continue
+                first = head.split(b"\r\n", 1)[0]
+                if b"/api2/repos/" in first:
+                    link = f'"http://127.0.0.1:{self.port}/seafhttp/dl?t=link-token"'.encode()
+                    conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: %d\r\n\r\n" % len(link) + link)
+                else:
+                    for line in head.split(b"\r\n"):
+                        if line.lower().startswith(b"accept-encoding"):
+                            self.asked.append(line.decode().split(":", 1)[1].strip())
+                    conn.sendall(
+                        b"HTTP/1.1 200 OK\r\nContent-Encoding: gzip\r\nContent-Length: %d\r\n\r\n"
+                        % len(self.body) + self.body)
+
+    def test_a_download_asks_for_identity_and_a_gzipped_answer_is_refused_by_name(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp, self.assertRaises(SeafileAPIError) as cm:
+            self.client.download_file_to("rid", "/r/objects/pack/pack-x.pack", f"{tmp}/x")
+        self.assertEqual(self.asked, ["identity"])
+        self.assertIn("Content-Encoding: gzip", str(cm.exception))
+        self.assertNotIn("Truncated", str(cm.exception))
+        self.assertNotIn("link-token", str(cm.exception))
+
+    def test_a_capped_read_refuses_it_too(self):
+        with self.assertRaises(SeafileAPIError) as cm:
+            self.client.get_file_bytes("rid", "/r/refs/heads/main", max_bytes=1000)
+        self.assertIn("Content-Encoding: gzip", str(cm.exception))
+
+
 if __name__ == "__main__":
     unittest.main()
