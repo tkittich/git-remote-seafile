@@ -189,11 +189,9 @@ def fetch_pack_artifact(
     'truncated' (size mismatch) -- and the caller decides whether that is
     fatal (a pack) or regenerable (an index).
 
-    Residual: when the listing omitted the size entirely (``expected_size is
-    None``), the in-memory fallback cannot be size-checked up front, and a
-    huge artifact would be buffered before it could be refused.  Every
-    current caller passes the size from the listing; keep that contract for
-    any future caller.
+    When the listing omitted the size (``expected_size is None``) the in-memory
+    fallback is cut off at MAX_IN_MEMORY_PACK_BYTES; with a size it is cut off at
+    that size, as the stream is.
     """
     downloaded = False
     if hasattr(client, "download_file_to"):
@@ -225,7 +223,12 @@ def fetch_pack_artifact(
                 f"{dest.name} streaming download failed and its size ({expected_size} bytes) "
                 f"exceeds in-memory buffer limit ({MAX_IN_MEMORY_PACK_BYTES} bytes)."
             )
-        data = client.get_file_bytes(repo_id, remote_path)
+        # Bounded by the listing's size, or by the buffer limit when it gave none: a 100-byte
+        # listing in front of a 48 MiB body was buffered whole (fable2-C3, AA35).
+        data = client.get_file_bytes(
+            repo_id, remote_path,
+            max_bytes=expected_size if expected_size is not None else MAX_IN_MEMORY_PACK_BYTES,
+        )
         # ``b""`` is an answer, not an absence: the file is there and empty, which is
         # reported as such below rather than as "missing" (triage T18).
         if data is not None:

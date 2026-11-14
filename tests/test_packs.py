@@ -103,6 +103,22 @@ class TestPacksModule(unittest.TestCase):
                 )
             self.assertEqual(reason, expected, repr(body))
 
+    def test_the_in_memory_fallback_is_bounded_by_the_listing_or_the_buffer_limit(self):
+        """fable2-C3 (AA35): a 100-byte listing in front of a 48 MiB body was buffered whole."""
+        import tempfile
+        from pathlib import Path
+
+        from git_remote_seafile.packs import MAX_IN_MEMORY_PACK_BYTES, fetch_pack_artifact
+
+        for size, cap in ((100, 100), (None, MAX_IN_MEMORY_PACK_BYTES)):
+            client = MagicMock(spec=["get_file_bytes"])
+            client.get_file_bytes.return_value = b"x" * 100
+            with tempfile.TemporaryDirectory() as td:
+                fetch_pack_artifact(
+                    client, "r1", "/p/pack-1.pack", Path(td) / "pack-1.pack", expected_size=size
+                )
+            self.assertEqual(client.get_file_bytes.call_args.kwargs.get("max_bytes"), cap, size)
+
     def test_fetch_and_install_pack_with_none_git_dir(self):
         from git_remote_seafile.packs import fetch_and_install_pack
         client = MagicMock()
