@@ -1191,20 +1191,37 @@ class RemoteHelper:
                 # Index first, pack second: every reader of the remote keys on
                 # `.pack` names, so an interrupted publish leaves an inert
                 # orphan `.idx` instead of a pack whose pair never landed.
+                # A name the remote held before this push is not sent again: ``replace=True``
+                # over it, with the upload landing truncated, destroyed a pack an earlier push
+                # relied on, and the cleanup then removed it (fable-B1, AA37).  Same name, same
+                # object set, so the ref this push writes is still served.
+                idx_name, pack_name = f"pack-{up_sha}.idx", f"pack-{up_sha}.pack"
+                have_idx = held_before is not None and idx_name in held_before
+                have_pack = held_before is not None and pack_name in held_before
+                if have_idx or have_pack:
+                    sys.stderr.write(
+                        f"Note: {' and '.join(n for n, h in ((idx_name, have_idx), (pack_name, have_pack)) if h)} "
+                        "already on the remote; not uploaded again.\n"
+                    )
+                    sys.stderr.flush()
+                if have_idx and have_pack:
+                    continue
                 started = time.monotonic()
                 try:
-                    self.client.upload_file(
-                        self.repo_id, pack_dir, f"pack-{up_sha}.idx", up_idx, replace=True
-                    )
+                    if not have_idx:
+                        self.client.upload_file(
+                            self.repo_id, pack_dir, idx_name, up_idx, replace=True
+                        )
                     started = time.monotonic()
-                    self.client.upload_file(
-                        self.repo_id,
-                        pack_dir,
-                        f"pack-{up_sha}.pack",
-                        up_pack,
-                        replace=True,
-                        progress_callback=on_upload_progress,
-                    )
+                    if not have_pack:
+                        self.client.upload_file(
+                            self.repo_id,
+                            pack_dir,
+                            pack_name,
+                            up_pack,
+                            replace=True,
+                            progress_callback=on_upload_progress,
+                        )
                 except TransferAborted:
                     raise
                 except Exception as ex:
@@ -1212,20 +1229,26 @@ class RemoteHelper:
                     if status is None:
                         raise
                     # Nothing of this attempt may stay: the retry's packs have other names.
-                    for name in [*landed, f"pack-{up_sha}.idx", f"pack-{up_sha}.pack"]:
+                    # Only while this push still holds the lease: a name another push adopted
+                    # since the listing is not ours (fable-A1).
+                    for name in [*landed, idx_name, pack_name]:
                         if held_before is None or name in held_before:
+                            continue
+                        if not self._lease_allows_cleanup(lock, name):
                             continue
                         try:
                             self.client.delete_entry(self.repo_id, f"{pack_dir}/{name}")
                         except Exception:
                             pass
                     raise _UploadRefused(up_size, status, ex) from ex
-                sent_bytes += up_size
-                sent_seconds += time.monotonic() - started
-                landed[f"pack-{up_sha}.pack"] = up_size
-                landed[f"pack-{up_sha}.idx"] = (
-                    len(up_idx) if isinstance(up_idx, (bytes, bytearray)) else Path(up_idx).stat().st_size
-                )
+                if not have_pack:
+                    sent_bytes += up_size
+                    sent_seconds += time.monotonic() - started
+                    landed[pack_name] = up_size
+                if not have_idx:
+                    landed[idx_name] = (
+                        len(up_idx) if isinstance(up_idx, (bytes, bytearray)) else Path(up_idx).stat().st_size
+                    )
             from .gc import link_rate_mibs
 
             self._push_link_mibs = link_rate_mibs(sent_bytes, sent_seconds)
@@ -1258,6 +1281,8 @@ class RemoteHelper:
                     | {n for n in landed if held_before is not None and n not in held_before}
                 )
                 for name in ours:
+                    if not self._lease_allows_cleanup(lock, name):
+                        continue
                     try:
                         if self.client.delete_entry(self.repo_id, f"{pack_dir}/{name}"):
                             removed += 1
@@ -1272,6 +1297,23 @@ class RemoteHelper:
                 raise
         finally:
             remove_tree(staging_dir)
+
+    def _lease_allows_cleanup(self, lock: Any, name: str) -> bool:
+        """True while this push still holds the lease; otherwise say what was left and why.
+
+        The two cleanups of a push's own upload delete a name a hash chose, which another push
+        may have adopted since the pre-upload listing (fable-A1); a lease that is lost or unknown
+        could mean it did, so the file stays and is named.
+        """
+        if lock is None or lock.verify_ownership():
+            return True
+        sys.stderr.write(
+            f"Warning: left {name} on the remote: this push no longer holds the lock, so it "
+            "cannot tell whether another push relies on that name now. If a later clone "
+            "fails on it, run `git-remote-seafile repair <url>`.\n"
+        )
+        sys.stderr.flush()
+        return False
 
     def _pack_names_on_remote(self, pack_dir: str) -> set[str] | None:
         """The file names in ``objects/pack`` now, or ``None`` when the listing fails."""

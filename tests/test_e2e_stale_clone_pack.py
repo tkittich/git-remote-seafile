@@ -22,7 +22,7 @@ from test_e2e import E2ETestCase  # noqa: E402
 
 
 class TestAFailedVerifyListingRemovesNothingTheRemoteHeld(E2ETestCase):
-    def _stale_clone_and_the_first_pack(self, name: str):
+    def _stale_clone_and_the_first_pack(self, name: str, new_commit: bool = True):
         dev1 = init_repo(self.work / f"dev1-{name}", self.env)
         (dev1 / "big.bin").write_bytes(os.urandom(120000))
         commit_file(dev1, "a.txt", "one\n", "c1", self.env)
@@ -33,7 +33,9 @@ class TestAFailedVerifyListingRemovesNothingTheRemoteHeld(E2ETestCase):
         run_git(["clone", "-q", self.url(name), str(dev2)], self.work, self.env)
         commit_file(dev2, "b.txt", "two\n", "c2", self.env)
         run_git(["push", "origin", "main"], dev2, self.env)
-        run_git(["tag", "v1"], dev1, self.env)  # on dev1's old tip: the same pack again
+        if new_commit:
+            commit_file(dev1, "c.txt", "three\n", "c3", self.env)   # a pack of its own name
+        run_git(["tag", "v1"], dev1, self.env)  # on dev1's tip, which the remote does not know
         return dev1, first
 
     def test_a_listing_that_cannot_be_read_deletes_nothing(self):
@@ -60,6 +62,24 @@ class TestAFailedVerifyListingRemovesNothingTheRemoteHeld(E2ETestCase):
         self.assertIn("could not be verified", proc.stderr)
         self.assertEqual(sorted(first - set(self.stub.packs(f"/{name}"))), [],
                          "a pack the remote held before the push was removed")
+        clone = run_git(["clone", "-q", self.url(name), str(self.work / f"fresh-{name}")], self.work,
+                        self.env, check=False)
+        self.assertEqual(clone.returncode, 0, clone.stderr)
+
+    def test_a_pack_the_remote_holds_is_not_sent_again(self):
+        """AA37 (fable-B1): the same name again was uploaded over the held pack before anything
+        was verified; a truncated upload then destroyed it.  Now nothing is sent."""
+        name = "held"
+        dev1, first = self._stale_clone_and_the_first_pack(name, new_commit=False)
+        sent: list[str] = []
+        self.stub.get_hooks.append(
+            (lambda path: "upload-link" in path and "objects/pack" in unquote(path),
+             lambda: sent.append("upload-link")))
+        proc = run_git(["push", "origin", "v1"], dev1, self.env, check=False)
+        self.stub.get_hooks.clear()
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(sent, [], "a pack the remote held was uploaded again")
+        self.assertIn("already on the remote; not uploaded again", proc.stderr)
         clone = run_git(["clone", "-q", self.url(name), str(self.work / f"fresh-{name}")], self.work,
                         self.env, check=False)
         self.assertEqual(clone.returncode, 0, clone.stderr)

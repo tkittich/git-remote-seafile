@@ -62,21 +62,32 @@ class TestSplitOnRefusal(unittest.TestCase):
         def create(objects, staged_dir=None, max_pack_bytes=None, renew=None):
             self.caps.append(max_pack_bytes)
             size = min(PACK, max_pack_bytes or PACK)
-            return ("a" * 40, b"P" * size, b"idx")
+            return (self.sha(), b"P" * size, b"idx")
+
+        self.remote = {}      # what the server holds: name -> size
 
         def upload(_rid, _dir, name, content, **_kw):
             if name.endswith(".pack") and len(content) > limit:
                 raise SeafileAPIError(REFUSED)
+            self.remote[name] = len(content)
+            return True
+
+        def delete(_rid, path):
+            self.remote.pop(path.rsplit("/", 1)[-1], None)
             return True
 
         self.h.client.upload_file.side_effect = upload
-        # Empty until something is uploaded: the helper now lists the pack folder before its
-        # first upload and never removes a name that was there then (fable-B1).
+        self.h.client.delete_entry.side_effect = delete
+        # The helper lists the pack folder before its first upload and never removes a name that
+        # was there then (fable-B1); a refused attempt's names are deleted, so the retry's other
+        # names are never "held".
         self.h.client.list_dir.side_effect = lambda rid, path: [
-            {"name": f"pack-{'a' * 40}.pack", "size": min(PACK, self.caps[-1] or PACK)},
-            {"name": f"pack-{'a' * 40}.idx", "size": 3},
-        ] if self.h.client.upload_file.called else []
+            {"name": n, "size": sz} for n, sz in self.remote.items()]
         return create
+
+    def sha(self):
+        """Each attempt builds other objects, so it has another name: 'a', then 'b' (the real thing)."""
+        return chr(ord("a") + max(len(self.caps), 1) - 1) * 40
 
     def push(self, limit, cap=None):
         err = io.StringIO()
@@ -116,7 +127,7 @@ class TestSplitOnRefusal(unittest.TestCase):
 
         def create(objects, staged_dir=None, max_pack_bytes=None, renew=None):
             self.caps.append(max_pack_bytes)
-            return ("a" * 40, b"P" * min(PACK, max_pack_bytes or PACK), b"idx")
+            return (chr(ord("a") + len(self.caps) - 1) * 40, b"P" * min(PACK, max_pack_bytes or PACK), b"idx")
 
         def upload(_rid, _dir, name, content, **_kw):
             if name.endswith(".pack"):
@@ -127,7 +138,8 @@ class TestSplitOnRefusal(unittest.TestCase):
 
         self.h.client.upload_file.side_effect = upload
         self.h.client.list_dir.side_effect = lambda rid, path: [
-            {"name": f"pack-{'a' * 40}.pack", "size": 20 * MIB}, {"name": f"pack-{'a' * 40}.idx", "size": 3}]
+            {"name": f"pack-{chr(ord('a') + len(self.caps) - 1) * 40}.pack", "size": 20 * MIB},
+            {"name": f"pack-{chr(ord('a') + len(self.caps) - 1) * 40}.idx", "size": 3}] if calls["n"] else []
         with patch("git_remote_seafile.helper.get_objects_to_push", return_value=["x"]), \
                 patch("git_remote_seafile.helper.create_packfile", side_effect=create), \
                 patch("git_remote_seafile.helper.run_git") as run, patch("sys.stderr", err):
@@ -160,7 +172,12 @@ class TestSplitOnRefusal(unittest.TestCase):
         listings = [[{"name": held, "size": 3}],                          # before the first upload
                     [{"name": held, "size": 3},
                      {"name": f"pack-{'a' * 40}.pack", "size": 5}]]       # the verification: wrong size
-        self.h.client.list_dir.side_effect = lambda rid, path: listings.pop(0) if len(listings) > 1 else listings[0]
+        def listing(rid, path):
+            if "objects/pack" not in path:
+                return []
+            return listings.pop(0) if len(listings) > 1 else listings[0]
+
+        self.h.client.list_dir.side_effect = listing
         self.h.client.upload_file.side_effect = None
         with patch("git_remote_seafile.helper.get_objects_to_push", return_value=["x"]),                 patch("git_remote_seafile.helper.create_packfile",
                       return_value=("a" * 40, b"P" * PACK, b"idx")),                 patch("sys.stderr", io.StringIO()):
@@ -168,6 +185,62 @@ class TestSplitOnRefusal(unittest.TestCase):
                 self.h._upload_push_pack(self.lock, self.pending, None)
         deleted = [c.args[1] for c in self.h.client.delete_entry.call_args_list]
         self.assertEqual(deleted, [f"/git-repo/objects/pack/pack-{'a' * 40}.pack"])
+
+    def test_a_pack_the_remote_already_holds_is_not_uploaded_again(self):
+        """fable-B1 (AA37): ``replace=True`` over a held name, landing truncated, destroyed it."""
+        names = [f"pack-{'a' * 40}.idx", f"pack-{'a' * 40}.pack"]
+        create = self.build(limit=10 * PACK)
+        self.h.client.list_dir.side_effect = lambda rid, path: [
+            {"name": names[0], "size": 3}, {"name": names[1], "size": PACK}]
+        err = io.StringIO()
+        with patch("git_remote_seafile.helper.get_objects_to_push", return_value=["x"]),                 patch("git_remote_seafile.helper.create_packfile", side_effect=create),                 patch("sys.stderr", err):
+            self.h._upload_push_pack(self.lock, self.pending, None)
+        self.h.client.upload_file.assert_not_called()
+        self.assertIn("already on the remote; not uploaded again", err.getvalue())
+
+    def test_only_the_missing_half_of_a_held_pair_is_uploaded(self):
+        create = self.build(limit=10 * PACK)
+        idx = f"pack-{'a' * 40}.idx"
+        self.h.client.list_dir.side_effect = lambda rid, path: (
+            [{"name": idx, "size": 3}]
+            + ([{"name": f"pack-{'a' * 40}.pack", "size": PACK}] if self.h.client.upload_file.called else []))
+        with patch("git_remote_seafile.helper.get_objects_to_push", return_value=["x"]),                 patch("git_remote_seafile.helper.create_packfile", side_effect=create),                 patch("sys.stderr", io.StringIO()):
+            self.h._upload_push_pack(self.lock, self.pending, None)
+        uploaded = [c.args[2] for c in self.h.client.upload_file.call_args_list]
+        self.assertEqual(uploaded, [f"pack-{'a' * 40}.pack"])
+
+    def test_a_held_pack_with_a_missing_index_is_not_overwritten_either(self):
+        create = self.build(limit=10 * PACK)
+        held = f"pack-{'a' * 40}.pack"
+        self.h.client.list_dir.side_effect = lambda rid, path: [{"name": held, "size": PACK}] + (
+            [{"name": f"pack-{'a' * 40}.idx", "size": 3}] if self.h.client.upload_file.called else [])
+        with patch("git_remote_seafile.helper.get_objects_to_push", return_value=["x"]),                 patch("git_remote_seafile.helper.create_packfile", side_effect=create),                 patch("sys.stderr", io.StringIO()):
+            self.h._upload_push_pack(self.lock, self.pending, None)
+        uploaded = [c.args[2] for c in self.h.client.upload_file.call_args_list]
+        self.assertEqual(uploaded, [f"pack-{'a' * 40}.idx"])
+
+    def test_a_lease_that_is_not_ours_removes_nothing_after_a_refusal(self):
+        """fable-A1: a name another push adopted since the listing is not this push's to delete."""
+        create = self.build(limit=0)
+        self.lock.verify_ownership.return_value = False
+        err = io.StringIO()
+        with patch("git_remote_seafile.helper.get_objects_to_push", return_value=["x"]),                 patch("git_remote_seafile.helper.create_packfile", side_effect=create),                 patch("sys.stderr", err):
+            with self.assertRaises(SeafileAPIError):
+                self.h._upload_push_pack(self.lock, self.pending, None)
+        self.h.client.delete_entry.assert_not_called()
+        self.assertIn("no longer holds the lock", err.getvalue())
+
+    def test_a_lease_that_is_not_ours_removes_nothing_after_a_failed_verification(self):
+        listings = [[], [{"name": f"pack-{'a' * 40}.pack", "size": 5}]]
+        self.h.client.list_dir.side_effect = lambda rid, path: (
+            [] if "objects/pack" not in path else listings.pop(0) if len(listings) > 1 else listings[0])
+        self.h.client.upload_file.side_effect = None
+        self.lock.verify_ownership.return_value = False
+        with patch("git_remote_seafile.helper.get_objects_to_push", return_value=["x"]),                 patch("git_remote_seafile.helper.create_packfile",
+                      return_value=("a" * 40, b"P" * PACK, b"idx")),                 patch("sys.stderr", io.StringIO()):
+            with self.assertRaises(_PackVerifyFailed):
+                self.h._upload_push_pack(self.lock, self.pending, None)
+        self.h.client.delete_entry.assert_not_called()
 
     def test_a_server_that_takes_nothing_gives_up_with_the_servers_own_error(self):
         with patch("git_remote_seafile.helper.get_objects_to_push", return_value=["x"]), \
