@@ -1099,10 +1099,22 @@ def source_folds_case(source: Path, limit: int = 64) -> bool | None:
                 continue
             if flipped in names:
                 return False
+            # Only "the flipped name is not there" says case-sensitive.  Any other failure -- the
+            # probed entry itself vanishing from a live source, a permission error, a name too
+            # long for a Windows without long paths -- says nothing about case, so the next entry
+            # is tried; the old catch-all set ``core.ignorecase=false`` on a folding source and
+            # flipped it back on the next quiet run (review 9fe723f, fable-G1.2).
             try:
-                return os.path.samestat(os.lstat(entry.path), os.lstat(folder / flipped))
+                mine = os.lstat(extended_path(Path(entry.path)))
             except OSError:
+                continue
+            try:
+                theirs = os.lstat(extended_path(folder / flipped))
+            except FileNotFoundError:
                 return False
+            except OSError:
+                continue
+            return os.path.samestat(mine, theirs)
     return None
 
 

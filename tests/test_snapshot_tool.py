@@ -3556,6 +3556,64 @@ class IncrementalStagingTests(_SnapshotFixture):
         (source / "123").mkdir()
         self.assertIsNone(snap.source_folds_case(source), "no letter to flip: cannot tell")
 
+    def test_an_entry_that_vanishes_during_the_probe_does_not_read_as_case_sensitive(self):
+        """fable-G1.2 (AA41): a temp file removed between the listing and the lstat made a folding
+        source read as case-sensitive; ``core.ignorecase`` then flipped to false and back."""
+        source = self.tmp / "live"
+        source.mkdir()
+        (source / "a-temp.tmp").write_bytes(b"x")
+        (source / "keep.txt").write_bytes(b"y")
+        quiet = snap.source_folds_case(source)
+        real = os.scandir
+
+        class Listing:
+            def __init__(self, path):
+                self.it = real(path)
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                self.it.close()
+
+            def __iter__(self):
+                entries = sorted(self.it, key=lambda e: e.name)
+                os.unlink(entries[0].path)       # its writer removes it right after the listing
+                return iter(entries)
+
+        with unittest.mock.patch.object(snap.os, "scandir", Listing):
+            vanished = snap.source_folds_case(source)
+        self.assertEqual(vanished, quiet)
+
+    def test_a_flipped_name_that_cannot_be_read_says_nothing_about_case(self):
+        source = self.tmp / "unreadable-flip"
+        source.mkdir()
+        (source / "Name.txt").write_bytes(b"x")
+        real = os.lstat
+
+        def lstat(path, *args, **kwargs):
+            if os.fspath(path).endswith("nAME.TXT"):
+                raise PermissionError(13, "denied", os.fspath(path))
+            return real(path, *args, **kwargs)
+
+        with unittest.mock.patch.object(os, "lstat", lstat):
+            self.assertIsNone(snap.source_folds_case(source))
+
+    def test_a_flipped_name_that_is_not_there_is_case_sensitive(self):
+        """The one failure that does say so; simulated, since this disk may fold."""
+        source = self.tmp / "absent-flip"
+        source.mkdir()
+        (source / "Name.txt").write_bytes(b"x")
+        real = os.lstat
+
+        def lstat(path, *args, **kwargs):
+            if os.fspath(path).endswith("nAME.TXT"):
+                raise FileNotFoundError(2, "no such file", os.fspath(path))
+            return real(path, *args, **kwargs)
+
+        with unittest.mock.patch.object(os, "lstat", lstat):
+            self.assertIs(snap.source_folds_case(source), False)
+
     def test_the_respelling_check_uses_the_long_path_form(self):
         # Review 06cc623 (glm G1.1): a plain stat past 260 characters answers False on
         # a Windows without LongPathsEnabled, which dropped the respelling there.
@@ -3579,8 +3637,8 @@ class IncrementalStagingTests(_SnapshotFixture):
         ("20_gitrun.py", "for dirpath, _dirnames, filenames in os.walk(path):"): "the vault's own folder",
         ("20_gitrun.py", "total += os.stat(os.path.join(dirpath, name)).st_size"): "the vault's own folder",
         ("30_vault.py", "with os.scandir(folder) as it:"): "the case probe near the source root (depth 64 entries)",
-        ("30_vault.py", "return os.path.samestat(os.lstat(entry.path), os.lstat(folder / flipped))"):
-            "the case probe, same bound",
+        ("70_stage.py", "reserved = (work_tree / PAYLOAD_RESERVED_DIR).exists()"):
+            "a fixed name directly under the tree root",
         ("40_profile.py", "for dirpath, dirnames, filenames in os.walk(root):"): "AA24: a walk yields plain dirpaths",
         ("70_stage.py", "for dirpath, dirnames, filenames in os.walk(root):"): "AA24: a walk yields plain dirpaths",
         ("71_embedded.py", "for dirpath, dirnames, filenames in os.walk(root, onerror=_deny):"):
