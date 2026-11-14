@@ -96,7 +96,8 @@ def _status_inventory(
     # folder symlinks the capture records (review 06cc623, gemini E3).
     for repo in nested:
         root = source / repo
-        files = _files_of_repository(root, repo, unreadable_dirs) if root.is_dir() else []
+        files = (_files_of_repository(root, repo, unreadable_dirs)
+                 if extended_path(root).is_dir() else [])
         paths.extend(p for p in files if not any(exclude_matches(p, pat) for pat in excludes))
     return sorted(set(paths)), nested, unreadable_dirs
 

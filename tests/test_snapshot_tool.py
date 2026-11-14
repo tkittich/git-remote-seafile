@@ -3605,7 +3605,11 @@ class IncrementalStagingTests(_SnapshotFixture):
         first pattern alone missed ``os.lstat(full)`` and ``os.walk(root)``)."""
         named = re.compile(r"\b(?:os\.lstat|os\.stat|open)\(\s*(?:source|work_tree)\b")
         other = re.compile(
-            r"\bos\.(?:lstat|stat|path\.lexists|path\.getsize|path\.islink|walk|scandir)\(")
+            r"\bos\.(?:lstat|stat|path\.lexists|path\.getsize|path\.islink|walk|scandir)\("
+            # Path methods on a name that is a joined source path (review 9fe723f, fable-G0.1:
+            # ``root.is_dir()`` of an embedded repository's root was the plain form twice).
+            r"|\b(?:root|repo_root)\.(?:is_dir|is_file|exists|is_symlink|iterdir|read_bytes)\("
+            r"|\((?:source|work_tree) / (?![\"'])[^)]*\)\.(?:is_dir|is_file|exists|is_symlink)\(")
         parts = pathlib.Path(snap.__file__).resolve().parents[1] / "tools" / "_snapshot"
         found, used = [], set()
         for part in sorted(parts.glob("*.py")):

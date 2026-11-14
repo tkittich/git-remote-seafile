@@ -3770,7 +3770,9 @@ def inline_embedded_repositories(
     report: list[tuple[str, int]] = []
     for link in links:
         root = work_tree / link
-        files = _files_of_repository(root, link, unreadable) if root.is_dir() else []
+        # extended_path: a plain is_dir past 260 characters answers False on a Windows without
+        # LongPathsEnabled and the repository vanished from the snapshot, exit 0 (fable-G0.1).
+        files = _files_of_repository(root, link, unreadable) if extended_path(root).is_dir() else []
         files = [
             path for path in files
             if not any(exclude_matches(path, pat) for pat in excludes)
@@ -8480,7 +8482,8 @@ def _status_inventory(
     # folder symlinks the capture records (review 06cc623, gemini E3).
     for repo in nested:
         root = source / repo
-        files = _files_of_repository(root, repo, unreadable_dirs) if root.is_dir() else []
+        files = (_files_of_repository(root, repo, unreadable_dirs)
+                 if extended_path(root).is_dir() else [])
         paths.extend(p for p in files if not any(exclude_matches(p, pat) for pat in excludes))
     return sorted(set(paths)), nested, unreadable_dirs
 
