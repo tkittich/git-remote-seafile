@@ -2,7 +2,7 @@ You are an independent reviewer of `git-remote-seafile`, at the commit you were 
 (`git log -1`). **Addendum for the 0.9.26 post-release round:** version 0.9.26 is released (tag
 `v0.9.26`, commit `b23c481`, 2026-11-14); the previous release is 0.9.25 (tag `v0.9.25`, commit
 `3ca9db3`). The commits you review are `git log --oneline v0.9.25..HEAD` (Part G0 below, now the
-whole of 0.9.26: two Fable rounds have already read parts of it, and their findings are the rows
+whole of 0.9.26 plus the few commits after it: two Fable rounds have already read parts of it, and their findings are the rows
 AA24-AA36 in Part F), and the whole project is in scope as before. Two earlier rounds read only
 Part G0, the Pro paths from the code and the 429 handling: **G1-G11 and most of Part C have had
 no reader since `06cc623`, so most of your time goes there** (ORDER OF WORK says how). The
@@ -576,7 +576,7 @@ file over 4 GiB on exFAT through a real server and the Windows remount, S21, Z43
 | AA23, AA32, AA33 | 429 and retry handling: the ref walk's worker back-off, `Retry-After` capped at 10 s, a write or a POST never re-sent once it may have reached the server, `other=0` (no re-send after an SSL failure), a connection error that names its cause (`SeafileConnectionError`) | done with code and a test each (0.9.26). AA23's other pools (payload, gc, restore) are open: say which can still hammer the server, with the input |
 | AA24 | Windows long-path stats with long paths off | open: no machine to measure on; read the code |
 | AA27, AA31 | a dropped connection is a `SeafileAPIError`; the advertised-refs record of a linked worktree; the Pro owner refusal for `--payload-delete` before the history download | done with code and a test each; try a sibling |
-| AA34-AA36 | fable2 C1, C3 and NITs | open, recorded for 0.9.27: CONFIRMED / FIXED SINCE / STALE / MISRANKED |
+| AA34-AA36, AA31's rest | fable2 C1 (a body cut mid-stream), C3 (the pack fallback's bound), the surviving mutations, G0.3(b)(c) (the failed-write folder cleanup), `99_cli.py`'s size | done with code in the commits after `v0.9.26` (a test each, mutations KILLED); try a sibling: another streamed read, another unfenced `delete_entry` (the two pack cleanups are known and unfenced) |
 | S1 | an unpaged listing may be short | measured complete at 5,100 on CE and Pro; read the claim, and the assertion, adversarially |
 | Z39 | locale and environment legs | partly done: tr_TR and ASCII-only legs added; antivirus, Task Scheduler as SYSTEM and a subpath behind nginx remain |
 
