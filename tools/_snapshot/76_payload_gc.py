@@ -680,7 +680,7 @@ def payload_gc(
     if fresh != pending:
         _api(lambda: client.mkdir_p(rid, base), f"creating {base}")
         _api(lambda: client.upload_file(
-            rid, base, _PENDING_NAME, json.dumps(fresh, sort_keys=True).encode("ascii")
+            rid, base, _PENDING_NAME, encode_pending(fresh)
         ), "writing gc state")
     if stopped_early:
         raise SnapshotError(

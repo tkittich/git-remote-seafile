@@ -60,5 +60,56 @@ class TestRetryAfterIsCapped(unittest.TestCase):
         self.assertEqual(err.getvalue().count("asked this client to slow down"), 1, err.getvalue())
 
 
+class _DeleteThrottle(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+    answers: list[int] = []
+    hits = 0
+
+    def log_message(self, *args):
+        pass
+
+    def do_DELETE(self):
+        type(self).hits += 1
+        status = type(self).answers.pop(0) if type(self).answers else 200
+        body = b"{}"
+        self.send_response(status)
+        if status == 429:
+            self.send_header("Retry-After", "nan")      # whatever the server says is bounded
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+
+class TestADeleteIsSentAgainAfterAThrottle(unittest.TestCase):
+    """fable-E1 (AA44): the session never re-sends a DELETE, so the first 429 of a payload
+    delete ended the run as "the server refused"; a 429 is the limiter refusing before it acted."""
+
+    def _client(self, answers):
+        _DeleteThrottle.answers = list(answers)
+        _DeleteThrottle.hits = 0
+        server = ThreadingHTTPServer(("127.0.0.1", 0), _DeleteThrottle)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        client = SeafileClient(server_url=f"http://127.0.0.1:{server.server_address[1]}", token="t")
+        self.addCleanup(client.close)
+        return client
+
+    def test_a_429_is_waited_out_and_the_delete_goes_through(self):
+        client = self._client([429, 429, 200])
+        slept: list[float] = []
+        with patch.object(client_module.time, "sleep", side_effect=slept.append):
+            self.assertTrue(client.delete_entry("rid", "/r/objects/ab/cd"))
+        self.assertEqual(_DeleteThrottle.hits, 3)
+        self.assertEqual(len(slept), 2)
+        self.assertTrue(all(0.0 <= s <= client_module.RETRY_AFTER_CAP_SECONDS for s in slept), slept)
+
+    def test_a_server_that_keeps_throttling_ends_as_a_refusal_after_four_tries_per_endpoint(self):
+        client = self._client([429] * 20)
+        with patch.object(client_module.time, "sleep"):
+            self.assertFalse(client.delete_entry("rid", "/r/objects/ab/cd"))
+        self.assertEqual(_DeleteThrottle.hits, 8)      # /file/ then /dir/, each 1 + 3 tries
+
+
 if __name__ == "__main__":
     unittest.main()

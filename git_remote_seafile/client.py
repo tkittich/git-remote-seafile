@@ -1967,18 +1967,41 @@ class SeafileClient:
         )
         return resp.status_code == 200
 
+    def _delete_waiting_out_a_throttle(self, url: str) -> requests.Response:
+        """One DELETE, again after a 429 (at most three times, each wait capped).
+
+        The session never re-sends a DELETE: after a timeout it may have landed.  A 429 is the
+        rate limiter refusing the request before it acted, so waiting ``Retry-After`` and
+        sending it again is safe, and it is the difference between ``--payload-delete`` ending
+        as "the server refused to delete" after the history fetch and going on (review 9fe723f,
+        fable-E1; AA23's last pool).
+        """
+        resp = self.session.delete(url, timeout=self.timeout)
+        for _ in range(3):
+            if resp.status_code != 429:
+                break
+            try:
+                wait = float(resp.headers.get("Retry-After", ""))
+            except ValueError:
+                wait = 1.0
+            if wait != wait:      # "nan" parses; time.sleep would refuse it
+                wait = 1.0
+            time.sleep(min(max(wait, 0.0), RETRY_AFTER_CAP_SECONDS))
+            resp = self.session.delete(url, timeout=self.timeout)
+        return resp
+
     def delete_entry(self, repo_id: str, path: str) -> bool:
         """Delete file or directory at path."""
         clean_path = "/" + path.strip("/")
         # Seafile's /file/ endpoint deletes both files and directories,
         # while /dir/ returns 404 when deleting a file. Try /file/ first.
         url = f"{self.server_url}/api2/repos/{repo_id}/file/?p={quote(clean_path, safe='/')}"
-        resp = self.session.delete(url, timeout=self.timeout)
+        resp = self._delete_waiting_out_a_throttle(url)
         if resp.status_code == 200:
             self._forget_dirs_under(repo_id, clean_path)
             return True
         dir_url = f"{self.server_url}/api2/repos/{repo_id}/dir/?p={quote(clean_path, safe='/')}"
-        resp_dir = self.session.delete(dir_url, timeout=self.timeout)
+        resp_dir = self._delete_waiting_out_a_throttle(dir_url)
         if resp_dir.status_code == 200:
             self._forget_dirs_under(repo_id, clean_path)
             return True

@@ -440,3 +440,21 @@ def _rule_differs(previous: dict[str, Any], rule: str, min_size: Any, ratio: Any
     theirs = previous.get("ratio")
     return (isinstance(theirs, (int, float)) and not isinstance(theirs, bool)
             and isinstance(ratio, (int, float)) and abs(float(theirs) - float(ratio)) > 1e-9)
+
+
+def encode_pending(fresh: dict[str, Any]) -> bytes:
+    """The mark list as it is written, refused when the next run could not read it back.
+
+    It is read with ``_PENDING_MAX_BYTES``; writing a list past that left a state the next run
+    refused with advice that led to the same list (review 9fe723f, fable-E2).  Nothing is
+    written then, and the list already there stays.
+    """
+    data = json.dumps(fresh, sort_keys=True).encode("ascii")
+    if len(data) > _PENDING_MAX_BYTES:
+        raise SnapshotError(
+            f"the mark list would hold {len(fresh)} unused objects ({human_bytes(len(data))}), more "
+            f"than the {human_bytes(_PENDING_MAX_BYTES)} a later run reads; it was not written and "
+            "the list already on the server is unchanged. Delete the objects that are due first "
+            "(--payload-gc --payload-delete) so fewer remain on the list"
+        )
+    return data

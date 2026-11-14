@@ -1957,6 +1957,18 @@ class PayloadRetentionTests(_PayloadFixture):
         self.assertIn("gc-pending.json", err)
         self.assertEqual(self.stub.files[REPO_ID][key], marks)
 
+    def test_a_mark_list_past_the_read_limit_is_not_written(self):
+        """fable-E2 (AA44): it was written without the bound it is read with, and the next run's
+        advice ("Remove it and run again") led to the same list."""
+        marks = {_sha(str(i).encode()): 1.0 for i in range(100)}
+        size = len(json.dumps(marks, sort_keys=True).encode("ascii"))
+        with unittest.mock.patch.object(snap, "_PENDING_MAX_BYTES", size):
+            self.assertEqual(len(snap.encode_pending(marks)), size)
+        with unittest.mock.patch.object(snap, "_PENDING_MAX_BYTES", size - 1):
+            with self.assertRaises(snap.SnapshotError) as cm:
+                snap.encode_pending(marks)
+        self.assertIn("it was not written", str(cm.exception))
+
     def test_the_mark_list_limit_is_far_above_the_text_limit_it_replaced(self):
         """About 88 bytes an entry: 16 MiB was ~190,000 unused objects, too few."""
         self.assertGreaterEqual(snap._PENDING_MAX_BYTES, 4 * 16 * 1024 * 1024)
