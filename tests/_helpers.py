@@ -137,6 +137,7 @@ def make_helper(**attrs):
         "dry_run": False,
         "_history_risk": None,
         "_refs_cache": {},
+        "_unreadable_refs": [],
     }
     defaults.update(attrs)
     for name, value in defaults.items():

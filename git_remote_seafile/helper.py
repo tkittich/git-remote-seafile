@@ -289,6 +289,7 @@ class RemoteHelper:
         #: ``(risk,)`` once :meth:`_risk_of_unseen_refs` has asked; ``None`` before.
         self._history_risk: tuple[str | None] | None = None
         self._refs_cache: dict[str, str] = {}  # refname -> sha1
+        self._unreadable_refs: list[str] = []  # listed refs a listing could not read (AA39)
 
     @property
     def repo_id(self) -> str:
@@ -519,7 +520,7 @@ class RemoteHelper:
             strict = os.environ.get("SEAFILE_STRICT_REFS") == "1"
             for ref_name, sha in iter_refs(
                 self.client, self.repo_id, self.repo_path, namespace,
-                strict=strict, strict_listing=True,
+                strict=strict, strict_listing=True, unreadable=self._unreadable_refs,
             ):
                 if not is_valid_ref_name(ref_name):
                     if is_conflict_copy(ref_name):
@@ -554,6 +555,7 @@ class RemoteHelper:
         discovered_refs: list[tuple[str, str]] = []
         for attempt in (1, 2):
             self._refs_cache.clear()
+            self._unreadable_refs.clear()
             discovered_refs = []
             try:
                 self._discover_refs(discovered_refs)
@@ -582,6 +584,24 @@ class RemoteHelper:
         # first, the failure is raised while the listing is still empty and git
         # sees a helper that failed, not one that answered wrongly.
         head_content = self.client.get_file_text(self.repo_id, self._full_path("HEAD"))
+
+        # A ref this clone fetched before, listed now but unreadable, is not "a planted file":
+        # leaving it out makes ``git fetch --prune`` delete it here (a --mirror clone loses the
+        # branch itself) and exit 0, and the record would forget it (review 9fe723f, fable-G9.1).
+        # A name the record never held keeps the warning-and-skip, so one planted file still
+        # cannot make a repository unfetchable.  Raised before a line is written.
+        if self._unreadable_refs and not for_push:
+            known = set(read_advertised_refs(self.remote_name, self.raw_url))
+            lost = [name for name in self._unreadable_refs if name in known]
+            if lost:
+                raise SeafileAPIError(
+                    f"the ref {lost[0]}"
+                    + (f" (and {len(lost) - 1} more)" if len(lost) > 1 else "")
+                    + " is listed but its content could not be read, and this clone fetched it "
+                    "before: advertising the rest would let `git fetch --prune` delete it here. "
+                    "Nothing was fetched. Retry; if it stays, restore the ref's file on the server or, "
+                    "to let the ref go, delete it there."
+                )
 
         # Emit the object-format ref list keyword when refs exist.  An empty
         # remote emits nothing: it has no format yet to advertise, and git's

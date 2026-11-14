@@ -196,8 +196,13 @@ def iter_refs(
     strict: bool = False,
     strict_listing: bool = False,
     renew: Callable[[], None] | None = None,
+    unreadable: list[str] | None = None,
 ) -> Iterator[tuple[str, str]]:
     """Yield ``(ref_name, sha)`` for every ref under ``namespace``.
+
+    *unreadable*, when given, collects the name of every listed ref whose content could not be
+    read (it is still warned about and left out); a caller that knows what was advertised before
+    can refuse instead (AA39).
 
     *renew*, when given, is called before every directory listing and between
     batches of ref reads, never while a read is in flight.  A caller that holds
@@ -352,6 +357,8 @@ def iter_refs(
         )
         if strict:
             raise SeafileAPIError(message)
+        if unreadable is not None:
+            unreadable.append(ref_name)
         sys.stderr.write(f"Warning: {message}; it is not advertised\n")
         sys.stderr.flush()
 
