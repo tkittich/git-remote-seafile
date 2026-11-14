@@ -1483,7 +1483,8 @@ class SeafileClient:
         decoded bytes: every complete download read as truncated, and a small body could expand
         past the cap before it was counted (review 9fe723f, fable-C1).
         """
-        encoding = str(resp.headers.get("Content-Encoding", "")).strip().lower()
+        raw = resp.headers.get("Content-Encoding", "")
+        encoding = raw.strip().lower() if isinstance(raw, str) else ""
         if encoding and encoding != "identity":
             raise SeafileAPIError(
                 f"Failed to download {clean_path}: the file host answered with Content-Encoding: "

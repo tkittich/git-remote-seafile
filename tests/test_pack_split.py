@@ -159,7 +159,7 @@ class TestSplitOnRefusal(unittest.TestCase):
         held = f"pack-{'a' * 40}.idx"
         create = self.build(limit=0)          # installs its own listing: replace it after
         self.h.client.list_dir.side_effect = lambda rid, path: [{"name": held, "size": 3}]
-        with patch("git_remote_seafile.helper.get_objects_to_push", return_value=["x"]),                 patch("git_remote_seafile.helper.create_packfile", side_effect=create),                 patch("sys.stderr", io.StringIO()):
+        with patch("git_remote_seafile.helper.get_objects_to_push", return_value=["x"]),                 patch("git_remote_seafile.helper.create_packfile", side_effect=create),                 patch("git_remote_seafile.helper.run_git"), patch("sys.stderr", io.StringIO()):
             with self.assertRaises(SeafileAPIError):
                 self.h._upload_push_pack(self.lock, self.pending, None)
         deleted = [c.args[1] for c in self.h.client.delete_entry.call_args_list]
@@ -224,7 +224,7 @@ class TestSplitOnRefusal(unittest.TestCase):
         create = self.build(limit=0)
         self.lock.verify_ownership.return_value = False
         err = io.StringIO()
-        with patch("git_remote_seafile.helper.get_objects_to_push", return_value=["x"]),                 patch("git_remote_seafile.helper.create_packfile", side_effect=create),                 patch("sys.stderr", err):
+        with patch("git_remote_seafile.helper.get_objects_to_push", return_value=["x"]),                 patch("git_remote_seafile.helper.create_packfile", side_effect=create),                 patch("git_remote_seafile.helper.run_git"), patch("sys.stderr", err):
             with self.assertRaises(SeafileAPIError):
                 self.h._upload_push_pack(self.lock, self.pending, None)
         self.h.client.delete_entry.assert_not_called()
