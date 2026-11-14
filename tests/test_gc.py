@@ -292,7 +292,7 @@ class TestRemoteGC(unittest.TestCase):
             else [{"type": "file", "name": "main"}] if "refs/heads" in path
             else []
         )
-        def fake_get_file_bytes(repo_id, path):
+        def fake_get_file_bytes(repo_id, path, max_bytes=None):
             if "pack-1.pack" in path:
                 return b""
             return b"PACK-DATA"
