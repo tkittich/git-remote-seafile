@@ -3673,6 +3673,17 @@ class IncrementalStagingTests(_SnapshotFixture):
         self.assertTrue(any(str(p).endswith(nfc) for p in seen), seen)
         self.assertTrue(any(str(p).endswith(nfd) for p in seen), seen)
 
+    def test_the_payload_skip_matcher_matches_a_case_twin_only_when_it_is_the_same_file(self):
+        """fable-G1.1 (AA38): git reports the index spelling (``model.dat``), the payload walk the
+        disk's (``Model.dat``); on a folding disk they are one file and the large one stays out of git."""
+        (self.code / "Model.dat").write_bytes(b"x" * 10)
+        skipped = snap.payload_skip_matcher(self.code, ["Model.dat"])
+        folds = (self.code / "model.dat").exists()
+        self.assertEqual(skipped("model.dat"), folds)
+        if not folds:   # two files on a case-sensitive disk are two: the small one stays in git
+            (self.code / "model.dat").write_bytes(b"small")
+            self.assertFalse(skipped("model.dat"))
+
     def test_the_index_spelling_follows_git_and_the_disk(self):
         """The unit under the test above: ASCII letters fold, nothing else does, and a
         respelling the disk does not resolve is not made."""

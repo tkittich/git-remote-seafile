@@ -261,6 +261,11 @@ def handle_embedded_repositories(
         )
 
 
+def _skip_key(path: str) -> str:
+    """The spelling two names of one file share: NFC, ASCII case folded."""
+    return ignorecase_key(unicodedata.normalize("NFC", path))
+
+
 def payload_skip_matcher(work_tree: Path, skip_paths: Any) -> Any:
     """``skipped(path)``: is *path* one of the payload files kept out of the index?
 
@@ -269,16 +274,22 @@ def payload_skip_matcher(work_tree: Path, skip_paths: Any) -> Any:
     and ext4 ``cafe\u0301.bin`` and ``caf\u00e9.bin`` are two files, and comparing
     their NFC forms alone dropped the small one from git while only the large one
     was in the manifest: lost, exit 0 (review 06cc623, gemini E1).
+
+    The same for case: under ``core.ignorecase`` git reports a tracked file by its *index*
+    spelling and the payload walk by the disk's, so ``model.dat`` renamed to ``Model.dat``
+    and grown past the size went into git and the manifest both (review 9fe723f, fable-G1.1).
+    The key folds ASCII case as git does; ``samestat`` still decides whether they are one file,
+    so two files that differ only by case on a case-sensitive disk stay two.
     """
     exact = set(skip_paths or ())
     by_form: dict[str, list[str]] = {}
     for path in exact:
-        by_form.setdefault(unicodedata.normalize("NFC", path), []).append(path)
+        by_form.setdefault(_skip_key(path), []).append(path)
 
     def skipped(path: str) -> bool:
         if path in exact:
             return True
-        others = by_form.get(unicodedata.normalize("NFC", path))
+        others = by_form.get(_skip_key(path))
         if not others:
             return False
         try:
