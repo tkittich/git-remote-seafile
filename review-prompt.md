@@ -280,7 +280,7 @@ AA22 (`test_no_part_stats_or_opens_a_source_path_in_its_plain_form`: find a sour
 `stat`/`open` shape its pattern misses); the stub's new `explicit_dirs` model in
 `tests/e2e_harness.py` (does it model Seafile's folders honestly?); and the new real-server tests
 in `tests/test_realserver.py` (can any of them fail for a reason that is not a finding, or pass
-on a wrong answer?). AA23 is an open measurement: read the client's retry and throttle handling
+on a wrong answer?). **Added since `v0.9.26`** (`git log --oneline v0.9.26..HEAD`): `client._stream_chunks` (a body cut mid-stream: is any streamed read left bare, and does the generator close the response on an early exit?), `helper._drop_empty_folders` (the lease fence and the `dir_exists` skip: can a lost lease still reach a DELETE, can the skipped folder hide a made one?), `packs.fetch_pack_artifact`'s bounded fallback, and `tools/_snapshot/93_cli_args.py` (the parser moved out of `99_cli.py`: is anything evaluated at import order?). AA23 is an open measurement: read the client's retry and throttle handling
 (`client._mount_retries`-style adapter, POST never retried) and say what a 429 does to a refs
 walk, a push and `gc`.
 
