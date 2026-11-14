@@ -13,7 +13,7 @@ except ImportError:  # package-style: python -m unittest tests.test_pack_split
 
 from git_remote_seafile.client import SeafileAPIError, TransferAborted
 from git_remote_seafile.diagnose import MIB, SPLIT_FLOOR_BYTES, size_refusal, split_cap_bytes
-from git_remote_seafile.helper import _PendingUpdate
+from git_remote_seafile.helper import _PackVerifyFailed, _PendingUpdate
 
 PACK = 40 * MIB
 REFUSED = "Failed to upload pack-x.pack to /git-repo/objects/pack: HTTP 413 (POST https://s) <html>Too Large"
@@ -141,6 +141,33 @@ class TestSplitOnRefusal(unittest.TestCase):
         deleted = [c.args[1] for c in self.h.client.delete_entry.call_args_list]
         self.assertIn(f"/git-repo/objects/pack/pack-{'a' * 40}.pack", deleted)
         self.assertIn(f"/git-repo/objects/pack/pack-{'a' * 40}.idx", deleted)
+
+    def test_a_name_the_remote_held_before_is_not_removed_by_a_refused_attempt(self):
+        """fable2 (AA36): the ``held_before`` filter of the refusal cleanup had no test."""
+        held = f"pack-{'a' * 40}.idx"
+        create = self.build(limit=0)          # installs its own listing: replace it after
+        self.h.client.list_dir.side_effect = lambda rid, path: [{"name": held, "size": 3}]
+        with patch("git_remote_seafile.helper.get_objects_to_push", return_value=["x"]),                 patch("git_remote_seafile.helper.create_packfile", side_effect=create),                 patch("sys.stderr", io.StringIO()):
+            with self.assertRaises(SeafileAPIError):
+                self.h._upload_push_pack(self.lock, self.pending, None)
+        deleted = [c.args[1] for c in self.h.client.delete_entry.call_args_list]
+        self.assertNotIn(f"/git-repo/objects/pack/{held}", deleted)
+        self.assertIn(f"/git-repo/objects/pack/pack-{'a' * 40}.pack", deleted)
+
+    def test_a_failed_verification_removes_only_what_it_proved_wrong_or_this_push_added(self):
+        """fable2 (AA36): the same filter in the verification cleanup."""
+        held = f"pack-{'a' * 40}.idx"
+        listings = [[{"name": held, "size": 3}],                          # before the first upload
+                    [{"name": held, "size": 3},
+                     {"name": f"pack-{'a' * 40}.pack", "size": 5}]]       # the verification: wrong size
+        self.h.client.list_dir.side_effect = lambda rid, path: listings.pop(0) if len(listings) > 1 else listings[0]
+        self.h.client.upload_file.side_effect = None
+        with patch("git_remote_seafile.helper.get_objects_to_push", return_value=["x"]),                 patch("git_remote_seafile.helper.create_packfile",
+                      return_value=("a" * 40, b"P" * PACK, b"idx")),                 patch("sys.stderr", io.StringIO()):
+            with self.assertRaises(_PackVerifyFailed):
+                self.h._upload_push_pack(self.lock, self.pending, None)
+        deleted = [c.args[1] for c in self.h.client.delete_entry.call_args_list]
+        self.assertEqual(deleted, [f"/git-repo/objects/pack/pack-{'a' * 40}.pack"])
 
     def test_a_server_that_takes_nothing_gives_up_with_the_servers_own_error(self):
         with patch("git_remote_seafile.helper.get_objects_to_push", return_value=["x"]), \

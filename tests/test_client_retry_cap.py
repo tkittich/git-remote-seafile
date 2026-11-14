@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import io
 import threading
-import time
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from unittest.mock import patch
@@ -45,15 +44,18 @@ class TestRetryAfterIsCapped(unittest.TestCase):
         self.addCleanup(server.shutdown)
         client = SeafileClient(server_url=f"http://127.0.0.1:{server.server_address[1]}", token="t")
         err = io.StringIO()
-        began = time.monotonic()
+        slept: list[float] = []
+        # Recorded, not slept: with the cap gone this test used to sleep 600 s a retry (AA36).
         with patch.object(client_module, "RETRY_AFTER_CAP_SECONDS", 0.2), \
                 patch.object(client_module, "_RETRY_AFTER_NOTED", False), \
+                patch("urllib3.util.retry.time.sleep", side_effect=slept.append), \
                 patch("sys.stderr", err):
             with self.assertRaises(SeafileAPIError):
                 client.list_dir("rid", "/repo/refs/heads")
             with self.assertRaises(SeafileAPIError):
                 client.list_dir("rid", "/repo/refs/heads")
-        self.assertLess(time.monotonic() - began, 20.0, "the 600 s Retry-After was slept through")
+        self.assertTrue(slept, "no retry was waited for")
+        self.assertLess(max(slept), 5.0, f"the 600 s Retry-After was slept through: {slept}")
         self.assertGreaterEqual(_Throttle.hits, 4, "the request was not retried")
         self.assertEqual(err.getvalue().count("asked this client to slow down"), 1, err.getvalue())
 
