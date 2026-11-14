@@ -2649,6 +2649,22 @@ class PayloadRememberVerifyViewAndClockTests(_PayloadFixture):
         self.assertNotEqual(rc, 0)
         self.assertIn("not found", out + err)
 
+    def test_payload_keep_names_the_paths_whose_last_stored_version_goes(self):
+        """Gemini D1 (review 9fe723f): a file kept out of every newer snapshot (deleted, or skipped
+        as changing) has its only stored version in an older one; ``--payload-keep`` said only
+        "N older snapshots become unrestorable"."""
+        self.assertEqual(self.snapshot()[0], 0)
+        (self.src / "big1.bin").unlink()
+        (self.src / "note.txt").write_bytes(b"second\n")
+        self.assertEqual(self.snapshot()[0], 0)
+        rc, out, err = self.gc("--payload-keep", "1")
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn("1 payload path(s) are in no kept snapshot", out)
+        self.assertIn("big1.bin", out)
+        self.assertNotIn("big2.bin", out)       # still in the newest snapshot
+        rc, out, err = self.gc("--payload-keep", "2")
+        self.assertIn("no payload path is held only by the older snapshots", out)
+
     def test_a_tag_is_a_pin_whatever_payload_keep_says(self):
         """D13: a tagged snapshot's objects live, however many snapshots follow it.
 

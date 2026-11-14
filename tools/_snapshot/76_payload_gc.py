@@ -229,28 +229,7 @@ class _History(NamedTuple):
     tips: dict[str, str]         #: the remote's refs now: ``refs/heads/x`` -> commit
     dropped: list[str]           #: refs seen by the last --payload-delete that lost history
     expired: int                 #: commits --payload-keep leaves out of the count
-
-
-def _scratch_history_repo(td: str) -> Path:
-    """A bare scratch repository in *td* that git will not run maintenance in.
-
-    ``git fetch`` otherwise may start ``gc --auto`` / ``maintenance`` in the
-    background, which races with the directory being removed (seen on Linux and
-    macOS as "Directory not empty").
-    """
-    repo = Path(td) / "history.git"
-    made = _run(
-        ["git", "init", "-q", "--bare", str(repo)],
-        text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-    )
-    if made.returncode != 0:
-        raise SnapshotError(f"could not create a scratch repository: {made.stderr.strip()}")
-    for key, value in (("gc.auto", "0"), ("maintenance.auto", "false")):
-        _run(
-            ["git", f"--git-dir={repo}", "config", key, value],
-            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        )
-    return repo
+    lost_paths: tuple[str, ...] = ()  #: paths only the commits --payload-keep leaves out hold
 
 
 def _hashes_in_history(
@@ -325,6 +304,7 @@ def _hashes_in_history(
             ).returncode != 0:
                 dropped.append(f"{ref} no longer contains {old[:12]}")
         expired = 0
+        lost: tuple[str, ...] = ()
         if keep is None:
             commits = [c for c in git(repo, None, ["rev-list", "--all"], cwd=Path(td)).stdout.split() if c]
         else:
@@ -343,8 +323,9 @@ def _hashes_in_history(
                              stdin=older).stdout.splitlines()
                 expired = sum(1 for line in listed
                               if len(line.split()) == 3 and line.split()[1] == "blob")
+            lost = paths_only_in_older_snapshots(repo, Path(td), kept, everything) if expired else ()
         if not commits:
-            return _History({}, 0, 0, tips, dropped, expired)
+            return _History({}, 0, 0, tips, dropped, expired, lost)
         specs = "".join(f"{c}:{PAYLOAD_MANIFEST}\n" for c in commits)
         checked = git(repo, None, ["cat-file", "--batch-check"], cwd=Path(td), stdin=specs).stdout
         blobs = sorted({
@@ -363,7 +344,7 @@ def _hashes_in_history(
                 ) from None
             for item in check_manifest_shape(data, f"the payload manifest {oid[:12]}"):
                 hashes[item["sha256"]] = item["size"]
-        return _History(hashes, len(commits), len(blobs), tips, dropped, expired)
+        return _History(hashes, len(commits), len(blobs), tips, dropped, expired, lost)
 
 
 def _remote_tips(remote: str) -> dict[str, str]:
@@ -542,6 +523,7 @@ def payload_gc(
         print(f"--payload-keep {keep}: only the newest {keep} snapshot(s) of each branch and "
               f"tag count as using objects; {history.expired} older snapshot(s) become "
               f"unrestorable once their objects are deleted")
+        print(lost_paths_line(history.lost_paths))
     if history.dropped:
         print("Warning: the remote's history changed since the last --payload-delete run:\n  "
               + "\n  ".join(history.dropped)
