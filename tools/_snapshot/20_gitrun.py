@@ -215,6 +215,33 @@ def forget_config_reads() -> None:
     _TIP_READS.clear()
 
 
+_OWNER_GIT_TIMEOUT: bool | None = None
+
+
+def _owner_set_git_timeout() -> bool:
+    """Whether the system or global git config sets ``seafile.gittimeout`` (the trusted scopes).
+
+    Asked once: this is consulted for every git child.  Neither scope can be the repository
+    being snapshotted, so a value here is the machine owner's.
+    """
+    global _OWNER_GIT_TIMEOUT
+    if _OWNER_GIT_TIMEOUT is None:
+        found = False
+        for scope in ("--system", "--global"):
+            try:
+                probe = subprocess.run(
+                    ["git", "config", scope, "--get", "seafile.gittimeout"],
+                    stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=30, check=False,
+                )
+            except (OSError, subprocess.SubprocessError):
+                continue
+            if probe.returncode == 0 and probe.stdout.strip():
+                found = True
+                break
+        _OWNER_GIT_TIMEOUT = found
+    return _OWNER_GIT_TIMEOUT
+
+
 def _run(
     cmd: list[str],
     *,
@@ -485,8 +512,12 @@ def git(
     # helper's own per-command ceiling, which defaults to 300 s and is meant for
     # an interactive `git push`.  This tool's no-progress watchdog is the guard
     # for long steps, so the helper's wall-clock ceiling is lifted to the same
-    # horizon -- unless the user set one, which always wins.
-    env.setdefault("SEAFILE_GIT_TIMEOUT", str(int(STALL_LIMIT)))
+    # horizon -- unless the user set one, which always wins: the variable, or the same key the
+    # helper reads from the system or global git config (the helper reads the variable first,
+    # so injecting here lowered a machine owner's ``seafile.gittimeout 7200`` to 1800 inside
+    # every snapshot run; review 9fe723f, fable-G11.1).
+    if "SEAFILE_GIT_TIMEOUT" not in env and not _owner_set_git_timeout():
+        env["SEAFILE_GIT_TIMEOUT"] = str(int(STALL_LIMIT))
     proc = _run(
         cmd,
         cwd=str(cwd),

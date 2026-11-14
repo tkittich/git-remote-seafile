@@ -5303,11 +5303,17 @@ class StatusLineTests(unittest.TestCase):
             captured["env"] = kwargs.get("env", {})
             return subprocess.CompletedProcess(cmd, 0, "", "")
 
-        with unittest.mock.patch.object(snap, "_run", fake_run):
+        with unittest.mock.patch.object(snap, "_run", fake_run),                 unittest.mock.patch.object(snap, "_owner_set_git_timeout", return_value=False):
             with unittest.mock.patch.dict(os.environ, {}, clear=False):
                 os.environ.pop("SEAFILE_GIT_TIMEOUT", None)
                 snap.git(pathlib.Path("v"), None, ["status"], cwd=pathlib.Path("."))
             self.assertEqual(captured["env"]["SEAFILE_GIT_TIMEOUT"], str(int(snap.STALL_LIMIT)))
+            # fable-G11.1 (AA43): the helper reads the variable before ``seafile.gittimeout``, so
+            # injecting one lowered a machine owner's configured ceiling to the watchdog's.
+            with unittest.mock.patch.object(snap, "_owner_set_git_timeout", return_value=True),                     unittest.mock.patch.dict(os.environ, {}, clear=False):
+                os.environ.pop("SEAFILE_GIT_TIMEOUT", None)
+                snap.git(pathlib.Path("v"), None, ["status"], cwd=pathlib.Path("."))
+            self.assertNotIn("SEAFILE_GIT_TIMEOUT", captured["env"])
             with unittest.mock.patch.dict(os.environ, {"SEAFILE_GIT_TIMEOUT": "42"}):
                 snap.git(pathlib.Path("v"), None, ["status"], cwd=pathlib.Path("."))
             self.assertEqual(captured["env"]["SEAFILE_GIT_TIMEOUT"], "42")
