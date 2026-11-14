@@ -286,20 +286,34 @@ def _upload_new_packs(
     pack_dir: str,
     new_packs: list[Path],
     on_upload_progress,
+    held: Any = frozenset(),
 ) -> set[str]:
-    """Upload each new pack and its index; return the remote names written."""
-    uploaded: set[str] = set()
+    """Upload each new pack and its index; return the remote names written.
+
+    A name in *held* (the folder's listing before the upload) is not sent again: a pack's name is
+    the hash of its object set, so a merge whose set equals an existing pack's would have
+    uploaded over it with ``replace=True``, and a truncated landing would have destroyed a pack
+    the repository relies on (the sibling of fable-B1's push case, AA37).  The verification that
+    follows still compares what is listed to the local file.
+    """
+    uploaded: set[str] = set()      # every name that now holds the new content, sent or held
     for np in new_packs:
+        n_idx = np.with_suffix(".idx")
+        # Kept by the caller's cleanup either way: a held name is also a candidate to delete.
+        uploaded.add(np.name)
+        if n_idx.is_file():
+            uploaded.add(n_idx.name)
+        if np.name in held and (n_idx.name in held or not n_idx.is_file()):
+            continue
         # Index first, pack second: readers of the remote key on `.pack`
         # names, so an interrupted publish leaves an inert orphan `.idx`
         # rather than a pack whose index never landed.
-        n_idx = np.with_suffix(".idx")
-        if n_idx.is_file():
-            uploaded.add(n_idx.name)
+        if n_idx.is_file() and n_idx.name not in held:
             client.upload_file(
                 repo_id, pack_dir, n_idx.name, n_idx, replace=True, progress_callback=on_upload_progress
             )
-        uploaded.add(np.name)
+        if np.name in held:
+            continue
         client.upload_file(
             repo_id, pack_dir, np.name, np, replace=True, progress_callback=on_upload_progress
         )
@@ -808,7 +822,8 @@ def tail_merge(
 
             new_pack_paths = [local_pack_dir / n for n in new_pack_names]
             uploaded = _upload_new_packs(
-                client, repo_id, pack_dir, new_pack_paths, on_upload_progress
+                client, repo_id, pack_dir, new_pack_paths, on_upload_progress,
+                held=frozenset(str(k) for k in pack_sizes),
             )
 
             # Fencing check: verify lock ownership before touching anything else.
@@ -1152,7 +1167,8 @@ def compact_repository(
                 sys.stderr.write("  Uploading consolidated packfile(s) to Seafile...\n")
 
             new_pack_names = _upload_new_packs(
-                client, repo_id, pack_dir, new_packs, on_upload_progress
+                client, repo_id, pack_dir, new_packs, on_upload_progress,
+                held=frozenset(str(k) for k in pack_sizes),
             )
 
             # Fencing check: verify lock ownership before touching anything

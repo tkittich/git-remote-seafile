@@ -871,11 +871,15 @@ class TestGcRecoveryAndFencing(unittest.TestCase):
             else []
         )
         mock_subprocess.return_value = MagicMock(returncode=0)
+        real_upload = gc_module._upload_new_packs
         with patch(
             "git_remote_seafile.gc.iter_refs",
             side_effect=lambda client, repo_id, base, ns, **kw: iter(
                 [("refs/heads/feature/auth", "sha-a"), ("refs/heads/main", "sha-b")]
             ),
+        ), patch.object(   # the no-op repack gives the held names back; sending them is the point here
+            gc_module, "_upload_new_packs",
+            side_effect=lambda *a, held=(), **kw: real_upload(*a, **kw),
         ):
             res = compact_repository(client, "repo1", "/path", min_packs=2, verbose=False)
 
@@ -1246,6 +1250,31 @@ class TestGcVerifiesTheUploadBeforeDeletingAnything(unittest.TestCase):
         self.assertTrue(res["cleanup_stopped"])
         self.assertIn("another client took over the lock", err.getvalue())
         self.assertIn("stopped deleting obsolete packfiles", err.getvalue())
+
+
+class TestAMergedPackNamedLikeAHeldOneIsNotUploadedOver(unittest.TestCase):
+    """AA37's sibling: a pack's name is the hash of its object set, so a merge whose set equals an
+    existing pack's would upload over it with ``replace=True``."""
+
+    def test_a_held_name_is_not_sent_again_and_is_still_kept_by_the_caller(self):
+        import tempfile
+        client = MagicMock()
+        with tempfile.TemporaryDirectory() as td:
+            pack = Path(td) / "pack-a.pack"
+            idx = Path(td) / "pack-a.idx"
+            pack.write_bytes(b"P")
+            idx.write_bytes(b"I")
+            kept = gc_module._upload_new_packs(
+                client, "r", "/p", [pack], None, held=frozenset({"pack-a.pack", "pack-a.idx"}))
+            client.upload_file.assert_not_called()
+            self.assertEqual(kept, {"pack-a.pack", "pack-a.idx"})   # superseded-deletion keeps it
+            gc_module._upload_new_packs(client, "r", "/p", [pack], None, held=frozenset({"pack-a.pack"}))
+            self.assertEqual([c.args[2] for c in client.upload_file.call_args_list], ["pack-a.idx"])
+            client.upload_file.reset_mock()
+            kept = gc_module._upload_new_packs(client, "r", "/p", [pack], None)
+            self.assertEqual([c.args[2] for c in client.upload_file.call_args_list],
+                             ["pack-a.idx", "pack-a.pack"])
+            self.assertEqual(kept, {"pack-a.pack", "pack-a.idx"})
 
 
 class TestGcSubprocessTimeout(unittest.TestCase):
