@@ -264,7 +264,15 @@ def check(root: Path, tag: str | None = None, *, offline: bool = False) -> list[
     rc, out = _git(root, "branch", "-r", "--contains", "HEAD")
     branches = [b for b in out.split() if b != "->"] if rc == 0 else []
     if "origin/main" in branches:
-        ok("pushed", "HEAD is on origin/main")
+        # "origin" is whatever this checkout calls it: in a clone made from a local directory it
+        # is that directory, and "on origin/main" then says nothing about GitHub (review 9fe723f,
+        # fable-G5.1).  The tag is pushed to the repository named by _REPO.
+        _rc_url, origin_url = _git(root, "remote", "get-url", "origin")
+        if _rc_url == 0 and _REPO.rsplit("github.com/", 1)[-1].lower() not in origin_url.strip().lower():
+            warn("pushed", f"HEAD is on origin/main, but origin is {origin_url.strip() or '(unknown)'}, "
+                 f"not {_REPO}: push to the GitHub repository, and wait for CI green, before tagging")
+        else:
+            ok("pushed", "HEAD is on origin/main")
     elif branches:
         fail("pushed", f"HEAD is on {', '.join(branches[:3])} but not origin/main: merge it "
              "into main and push before tagging")

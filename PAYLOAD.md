@@ -379,7 +379,7 @@ Nothing here changes what a snapshot contains; each item is a refusal or a note
 | The payload library is synced by the desktop client | warning before the upload | `test_a_synced_payload_library_is_warned_about` |
 | An upload larger than the account's remaining quota | warning before the upload (a warning, not a refusal: the quota that counts is the library owner's) | `test_an_upload_that_cannot_fit_the_quota_is_warned_about_first` |
 | A retention run whose history fetch would fill the temporary volume | refused before the fetch, naming `TMPDIR`/`TEMP` and `--allow-low-disk` | `test_a_retention_run_that_cannot_hold_the_history_is_refused_before_the_fetch` |
-| A restore with too little free disk | refused before the first download (`--allow-low-disk` overrides) | `test_a_restore_that_cannot_fit_is_refused_before_downloading` |
+| A restore with too little free disk | the payload download is refused before its first byte when its objects do not fit; the git history is cloned first under a fixed floor of free space only (`SNAPSHOT_GUIDE.md`), so a vault with several GiB of git packs can fill a smaller volume during the clone (`--allow-low-disk` overrides both; review 9fe723f, gemini D2) | `test_a_restore_that_cannot_fit_is_refused_before_downloading` |
 | Stored objects that rot unnoticed | `--payload-verify` leaves `payload/verified.json`; the gc report and the store line say when it last ran | `test_verify_leaves_a_marker_the_store_line_and_gc_report_show` |
 | A long hashing pass nobody explains (a copy tool reset every timestamp) | the run says how many files were hashed again and why | `test_files_hashed_again_are_explained` |
 
@@ -500,7 +500,7 @@ one-line mutations, none survive).
 | Finding (reviewer ids) | Consequence | Fixed by |
 | :--- | :--- | :--- |
 | A file rewritten in place with the same size and mtime puts other bytes under a hash name; later copies of the genuine bytes share the bad object (F3, F1) | LOSS | D5: hash while sending, temporary name, rename |
-| GC deletes an old object a run has just reused (F1, F2, F3) | LOSS | D9 two-phase; D5 pre-push re-verification |
+| GC deletes an old object a run has just reused (F1, F2, F3) | LOSS | D9 two-phase; D5 pre-push re-verification; **bounded, not closed**: both re-reads precede the act they guard, so a push that lands between a re-read and a delete can lose an object it names. The deletion loop re-reads the tips every `_RECHECK_EVERY` objects and stops, which bounds the damage to what was deleted since (`76_payload_gc.py`), and a later snapshot re-uploads a file that still exists (review 9fe723f, fable-D1) |
 | A snapshot whose push failed, then GC elsewhere, then two snapshots pushed together (F2) | LOSS | D5 re-verifies every manifest in `remote_tip..tip` |
 | Renumbered same-size, same-mtime files restore with their predecessors' contents, "verified" (F4) | WRONG | D6 per-machine cache keyed by inode |
 | A remote-written manifest hash is trusted as a cache and spliced into a server path (F2) | WRONG / injection | D6 cache never read from a manifest |

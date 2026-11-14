@@ -200,6 +200,11 @@ class ReleaseCheckTests(unittest.TestCase):
         _git(self.root, "push", "-q", "origin", "HEAD:refs/heads/main")
         _git(self.root, "fetch", "-q", "origin")
         self.assertNotIn("pushed", self.failed(rc.check(self.root)))
+        # fable-G5.1 (review 9fe723f): an origin that is a local directory is not the GitHub
+        # repository the tag goes to, so "on origin/main" is only a warning there.
+        pushed = [(s, d) for s, n, d in rc.check(self.root) if n == "pushed"]
+        self.assertEqual([s for s, _ in pushed], ["warn"], pushed)
+        self.assertIn("not https://github.com/", pushed[0][1])
 
     def test_a_triage_with_open_items_is_named(self):
         # Review 06cc623, triage section 7: a triage's prompt feedback must not be

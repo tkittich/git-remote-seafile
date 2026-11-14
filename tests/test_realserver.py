@@ -320,6 +320,8 @@ class RealServerTests(unittest.TestCase):
         # mkdir answers 201 on CE and Pro 13.0.29 (the first container run of this test).
         self.assertIn(self._api("POST", "dir", folder, data={"operation": "mkdir"}).status_code, (200, 201))
         try:
+            # list_dir answers [] for a 404 too: prove the folder is there before "lists empty".
+            self.assertTrue(self.client.dir_exists(self.rid, folder), "the mkdir made no folder")
             self.assertEqual(self.client.list_dir(self.rid, folder), [], "a new folder lists empty")
             listed = self._git(["ls-remote", url], self.tmp, check=False)
             print(f"\nMEASURED (AA10, {'Pro' if self._is_pro() else 'CE'}): ls-remote with an empty "

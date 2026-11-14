@@ -2170,6 +2170,19 @@ class RestoreNameLimitTests(_SnapshotFixture):
         self.assertEqual(collided, ["README", "d/X"])
         self.assertEqual(renamed, ["a/dot."])
 
+    def test_only_a_name_error_means_the_volume_refuses_the_name(self):
+        """fable-G7.1 (review 9fe723f): no space, a quota or an I/O error said nothing about the
+        name, yet set every colon, trailing-dot and non-ASCII file aside as unholdable."""
+        import errno as errno_module
+        folder = self.tmp / "probe-errors"
+        folder.mkdir()
+        for code, keeps in ((errno_module.EINVAL, False), (errno_module.ENOENT, False),
+                            (errno_module.ENOSPC, True), (errno_module.EIO, True)):
+            def refuse(*args, _code=code, **kwargs):
+                raise OSError(_code, os.strerror(_code))
+            with unittest.mock.patch.object(os, "open", refuse):
+                self.assertEqual(snap._volume_keeps_name(folder, "grs-probe-x"), keeps, code)
+
     def test_folders_that_differ_only_by_case_are_merged_not_renamed(self):
         """Gemini C1/E2 (review 9fe723f): ``d/a.txt`` beside ``D/b.txt`` land in one folder; both
         are written, so neither is "a name the volume changed"."""

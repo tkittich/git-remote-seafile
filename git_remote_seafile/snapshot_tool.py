@@ -198,6 +198,7 @@ guesses wherever a guess would be silent:
 from __future__ import annotations
 
 import argparse
+import errno
 import fnmatch
 import hashlib
 import json
@@ -9520,12 +9521,20 @@ def _volume_keeps_name(folder: Path, name: str) -> bool:
     try:
         before = set(os.listdir(base))
         os.close(os.open(os.path.join(base, wanted), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600))
-    except OSError:
-        return False  # refused (EINVAL on FAT and exFAT for a colon)
+    except OSError as exc:
+        # Only these say "this volume cannot hold this name" (EINVAL on FAT and exFAT for a colon).
+        # No space, a quota or a transient I/O error say nothing about the name, and used to set
+        # every colon, trailing-dot and non-ASCII file aside as unholdable (review 9fe723f,
+        # fable-G7.1); the checkout then reports whatever is really wrong.
+        return exc.errno not in _REFUSAL_ERRNOS
     try:
         created = set(os.listdir(base)) - before
     except OSError:
         created = set()
+        try:      # the listing failed, so the probe file is removed by the name it was made under
+            os.unlink(os.path.join(base, wanted))
+        except OSError:
+            pass
     # Only a name this probe made: a person's file that landed in the folder between the two
     # listings is not ours to delete (review 8eb416b, glm E1; the project's own rule 7).
     ours = {entry for entry in created if entry.startswith(_NAME_PROBE_PREFIX)}
@@ -9538,6 +9547,8 @@ def _volume_keeps_name(folder: Path, name: str) -> bool:
     # the name must not be judged as one that does not (review 853a7a2, sonnet G7.2).
     return any(_nfc(entry) == _nfc(wanted) for entry in ours)
 
+
+_REFUSAL_ERRNOS = frozenset({errno.EINVAL, errno.ENOENT, errno.EILSEQ, errno.ENAMETOOLONG})
 
 #: Every probe name starts with this, so only such names are ever deleted.
 _NAME_PROBE_PREFIX = b"grs-probe-"

@@ -1,6 +1,6 @@
 # Architecture & Design Specification: git-remote-seafile
 
-**Status**: implementation reference for v0.8.5 — describes what the code does *today*.  
+**Status**: implementation reference for the current release (the version in `git_remote_seafile/__init__.py`) — describes what the code does *today*.  
 Per-release history lives in [CHANGELOG.md](CHANGELOG.md), not here.
 
 **Repository**: [tkittich/git-remote-seafile](https://github.com/tkittich/git-remote-seafile)  

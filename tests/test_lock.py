@@ -194,9 +194,15 @@ class TestConcurrencyAndLocking(unittest.TestCase):
         lock = RemoteLock(store.client("t1"), "repo1", "/path", timeout=5, lease=60, settle=0)
         lock.acquire()
         self.assertTrue([k for k in store.files if "(SFConflict" in k and lock._nonce in k], "no copy was made")
+        # Planted again, live, just before the release: the old one was reaped by acquire (it was
+        # expired), which is not what is under test here.
+        store.put_ticket(foreign, json.loads(_ticket("zzzz", owner="bob", holding=False)))
         lock.release()
         mine = [k for k in store.files if lock._nonce in k]
         self.assertEqual(mine, [], "a copy of the released ticket is left on the server")
+        # The other half of the rule, planted above and never asserted (review 9fe723f, fable-G8.1):
+        # another client's copy is not ours to delete.
+        self.assertIn(foreign, store.files, "release deleted another client's conflict copy")
 
     def test_a_push_that_saw_no_copy_asks_for_no_extra_listing_at_release(self):
         store = _SharedLockStore()

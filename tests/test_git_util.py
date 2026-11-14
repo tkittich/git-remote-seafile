@@ -1232,6 +1232,19 @@ class AdvertisedRecordTests(unittest.TestCase):
         self.assertEqual(path.parent, self.git_dir / "seafile-advertised")
         self.assertEqual(path.name, "team%2Fmirror")
 
+    def test_no_two_remote_names_share_a_record_file_on_a_volume_that_ignores_case(self):
+        """fable-G9.2 (review 9fe723f): ``Origin`` and ``origin`` were one file on NTFS/APFS, a
+        remote named ``nul`` had none on Windows, and ``a.`` was ``a``."""
+        from git_remote_seafile.git_util import advertised_record_path
+
+        names = ["origin", "Origin", "ORIGIN", "nul", "NUL", "con.txt", "a", "a.", "team/mirror"]
+        files = [advertised_record_path(n).name for n in names]
+        self.assertEqual(len({f.lower() for f in files}), len(names), files)
+        for f in files:
+            self.assertFalse(f.endswith("."), f)
+        self.assertEqual(advertised_record_path("origin").name, "origin")     # existing records match
+        self.assertNotIn(advertised_record_path("nul").name.lower(), {"nul", "con", "aux", "prn"})
+
     def test_a_linked_worktree_shares_the_record_of_the_main_git_directory(self):
         # fable-G9.1: git gives the helper the worktree's private directory as GIT_DIR.
         from git_remote_seafile.git_util import advertised_record_path

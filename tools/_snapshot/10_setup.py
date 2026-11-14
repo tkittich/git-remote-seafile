@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import errno
 import fnmatch
 import hashlib
 import json

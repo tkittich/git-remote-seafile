@@ -8,11 +8,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **A push no longer uploads over a pack the remote already holds, and its cleanups need the lease** (ROADMAP AA37; review 9fe723f, fable-B1 and A1, gemini A1/B1). A stale clone re-sent a pack named like one the remote relied on, with `replace=True`, before verifying it; a truncated landing destroyed the good pack, the cleanup removed it, and a fresh clone failed with "remote did not send all necessary objects". A held name (per file) is now not sent again, the two cleanups of a push's own upload run only while `verify_ownership()` holds and name what they leave, and `gc`'s merged pack gets the same skip.
+- **A ref listed but unreadable that this clone fetched before stops the fetch** (AA39; fable-G9.1). It was left out with a warning, so `git fetch --prune` deleted the branch locally (a `--mirror` clone lost it) and exited 0. A ref the clone never saw keeps the warning.
+- **A restore onto a volume that ignores case no longer dies on a file beside a folder of one folded name** (AA47; gemini C1/E2): the byte check names an absent path instead of failing its whole hash batch, and folders that differ only by case are merged, not reported as "a trailing dot or space".
+- **The snapshot's payload skip matcher folds case like git does** (AA38; fable-G1.1): a git-held file renamed by case only that grew past the payload size was stored in git and in the manifest.
+- **The embedded-repository root is tested in its long-path form** (AA40; fable-G0.1, gemini G0.1), and the AA22 guard knows `Path` methods on a joined source path.
+- **The case probe answers case-sensitive only when the flipped name is missing** (AA41; fable-G1.2): a file vanishing during the probe flipped `core.ignorecase` and back.
+- **Transfer downloads ask for `identity` and a compressed body is refused by name** (AA42; fable-C1) instead of reading as "Truncated".
+- **The snapshot tool's injected git timeout no longer overrides a configured `seafile.gittimeout`** (AA43; fable-G11.1).
+- **A throttled `DELETE` waits and is sent again; the payload mark list is not written past the bound it is read with** (AA44; fable-E1, E2).
+- **`--payload-skip-changing` says what retention can do** (AA46; gemini D1/E1): its warning claimed the previous snapshot still held the file, which is false from the second run; the help, SNAPSHOT_GUIDE and PAYLOAD.md now say the last stored version is in the newest earlier snapshot that has it until `--payload-keep` ages it out. The loss itself is open.
 - **A connection cut in the middle of a streamed body is a `SeafileAPIError`** (ROADMAP AA34; review 402087a, fable2-C1). The request call was wrapped in 0.9.26, but a streamed body is read after it returns, so a reset or a chunked body cut short raised a bare `ChunkedEncodingError` that `cmd_list`'s retry and the pack download never saw. The text names the method and the link's origin, never its token.
 - **The in-memory pack fallback is bounded** (AA35; fable2-C3). When streaming failed, a 100-byte listing in front of a 48 MiB body was buffered whole; the read now stops at the listed size, or at the buffer limit when the listing gave none.
 - **A failed ref write's folder cleanup skips a folder the server does not have, and needs the lease** (AA31; fable-G0.3b, c). A listing answers `[]` for a folder that was never made, which got a DELETE and ended the loop with the outer folders still there; and the delete was the one destructive step of a push not fenced by `verify_ownership()`.
 
 ### Changed
+- `release_check` warns when `origin` is not the GitHub repository (AA45, fable-G5.1); `gates --changed` runs `test_client` and `test_git_util` for a snapshot part (AA48); the record under `seafile-advertised/` is named so that remotes differing by case, a device name or a trailing dot cannot share it (AA45, fable-G9.2), and the first fetch after the upgrade rewrites it for a remote with such a name.
 - `tools/_snapshot/99_cli.py` was at the 700-line limit; the argument parser moved to its own part (`93_cli_args.py`). No behaviour change.
 - Tests: the `held_before` filters of a push's two cleanups, the generic `except Exception` of a ref write, and the Retry-After cap test (which slept 600 s a retry when the cap was removed) now fail or finish fast when their guard goes (AA36).
 

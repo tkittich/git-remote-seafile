@@ -611,7 +611,32 @@ def advertised_record_path(remote: str) -> Path | None:
         common = ""
     if common:
         git_path = (git_path / common).resolve()
-    return git_path / ADVERTISED_DIR / quote(remote, safe="")
+    return git_path / ADVERTISED_DIR / _record_name(remote)
+
+
+_RESERVED_DEVICE = re.compile(r"(?:con|prn|aux|nul|com[0-9]|lpt[0-9])(?:\.|$)", re.IGNORECASE)
+
+
+def _record_name(remote: str) -> str:
+    """The record's file name: *remote* percent-encoded so no two remotes share one on any volume.
+
+    ``Origin`` and ``origin`` are one file on NTFS and APFS, so each fetch overwrote the other's
+    record and the URL key then mismatched; a remote named ``nul`` or ``con`` has no file on
+    Windows, and ``a.`` is ``a`` there (review 9fe723f, fable-G9.2).  Upper-case letters, a
+    reserved device name's first letter and a trailing dot are encoded; an ordinary lower-case
+    name keeps the name it always had, so existing records still match.
+    """
+    # Percent escapes are kept whole (``%2F`` is not an upper-case F).
+    name = re.sub(
+        r"%[0-9A-F]{2}|[A-Z]",
+        lambda m: m.group() if len(m.group()) == 3 else f"%{ord(m.group()):02X}",
+        quote(remote, safe=""),
+    )
+    if _RESERVED_DEVICE.match(name):
+        name = f"%{ord(name[0]):02x}{name[1:]}"
+    if name.endswith("."):
+        name = name[:-1] + "%2E"
+    return name
 
 
 def _url_key(url: str) -> str:

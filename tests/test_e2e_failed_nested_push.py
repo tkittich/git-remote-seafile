@@ -137,6 +137,20 @@ class TestTheCleanupIsCarefulWhatItDeletes(unittest.TestCase):
                 h._publish_ref("refs/heads/feature/x", "a" * 40, None, False, lock)
         drop.assert_called_once_with(["/r/refs/heads/feature"], lock)
 
+    def test_a_refused_upload_also_hands_the_lease_to_the_cleanup(self):
+        """fable-G0.2 (review 9fe723f): the lock argument at the ``SeafileAPIError`` site, the path a
+        failed ref upload takes, was asserted nowhere."""
+        from git_remote_seafile.client import SeafileAPIError
+
+        h, client, lock = self._helper(set())
+        client.get_file_text.return_value = None
+        client.upload_file.side_effect = SeafileAPIError("HTTP 500")
+        with patch.object(h, "_absent_ref_folders", return_value=["/r/refs/heads/feature"]), \
+                patch.object(h, "_drop_empty_folders") as drop:
+            with self.assertRaises(SeafileAPIError):
+                h._publish_ref("refs/heads/feature/x", "a" * 40, None, False, lock)
+        drop.assert_called_once_with(["/r/refs/heads/feature"], lock)
+
     def test_a_lease_that_is_not_ours_deletes_nothing(self):
         h, client, lock = self._helper({"/r/refs/heads/feature"}, lock_owned=False)
         h._drop_empty_folders(["/r/refs/heads/feature"], lock)

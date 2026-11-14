@@ -2582,7 +2582,7 @@ class TestAStateFileTheFolderListsIsNeverAbsent(unittest.TestCase):
             ("git_remote_seafile/helper.py", "_delete_remote_ref"): "absence deletes nothing",
             ("git_remote_seafile/helper.py", "_still_there"): "a ref it just deleted",
             ("git_remote_seafile/helper.py", "_warn_if_head_dangles"): "a warning only",
-            ("git_remote_seafile/helper.py", "_publish_ref"): "CAS and read-back: None fails",
+            ("git_remote_seafile/helper.py", "_publish_ref"): "CAS read: a None is 'ref absent'; read-back: None is a warning",
             ("git_remote_seafile/lock.py", "_scan_tickets"): "re-lists a listed ticket itself",
             ("git_remote_seafile/lock.py", "_refresh_lease"): "a ticket the folder lists is UNKNOWN, one it does not is LOST",
             ("git_remote_seafile/packs.py", "fetch_pack_artifact"): "None is an error there",
