@@ -11,6 +11,7 @@ from pathlib import Path
 import re
 import sys
 import time
+from collections.abc import Iterator
 from typing import Any, Callable
 import uuid
 from urllib.parse import quote, urlparse, urlunparse
@@ -1452,7 +1453,7 @@ class SeafileClient:
             # none, and a lying one is the server's to tell: bound what is
             # actually read, one byte past the cap being proof enough.
             body = bytearray()
-            for chunk in file_resp.iter_content(chunk_size=65536):
+            for chunk in self._stream_chunks(file_resp, dl_url, 65536):
                 body.extend(chunk)
                 if len(body) > max_bytes:
                     raise SeafileAPIError(
@@ -1466,6 +1467,24 @@ class SeafileClient:
                     file_resp.close()
                 except Exception:
                     pass
+
+    def _stream_chunks(self, resp: requests.Response, url: str, chunk_size: int) -> Iterator[bytes]:
+        """``resp.iter_content`` with a body that dies mid-stream raised as ``SeafileConnectionError``.
+
+        ``Session.request`` wraps the call, but a streamed body is read afterwards, so a
+        connection reset or a chunked body cut short raised a bare ``ChunkedEncodingError`` that
+        ``except SeafileAPIError`` (``cmd_list``'s retry, the pack download) never saw
+        (fable2-C1).  The text names the method and the link's origin, never its token.
+        """
+        try:
+            yield from resp.iter_content(chunk_size=chunk_size)
+        except SeafileConnectionError:
+            raise
+        except requests.RequestException as ex:
+            raise SeafileConnectionError(
+                f"{type(ex).__name__} during GET {self._error_origin(url)} (the body): "
+                f"{_scrub_transfer_error(ex, url)}"
+            ) from None
 
     def _xfer(self, method: str, url: str, **kwargs: Any) -> requests.Response:
         """One request to a transfer link, with its failures stripped of the link.
@@ -1861,7 +1880,7 @@ class SeafileClient:
                 )
             transferred = 0
             with open(dest_path, "wb") as fh:
-                for chunk in file_resp.iter_content(chunk_size=1024 * 1024):
+                for chunk in self._stream_chunks(file_resp, dl_url, 1024 * 1024):
                     if chunk:
                         if max_bytes is not None and transferred + len(chunk) > max_bytes:
                             raise SeafileAPIError(

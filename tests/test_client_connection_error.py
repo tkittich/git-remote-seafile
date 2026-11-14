@@ -108,5 +108,53 @@ class TestTheCauseIsKept(unittest.TestCase):
         self.assertNotIn("link-token", str(cm.exception))
 
 
+class TestABodyCutMidStreamIsAnApiError(unittest.TestCase):
+    """fable2-C1: the body of a streamed read is read after ``Session.request`` returned, so a
+    connection cut then raised a bare ``ChunkedEncodingError`` past every ``except SeafileAPIError``."""
+
+    def setUp(self):
+        patcher = patch("urllib3.util.retry.time.sleep")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        listener = socket.socket()
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(16)
+        self.addCleanup(listener.close)
+        self.port = listener.getsockname()[1]
+        threading.Thread(target=self._serve, args=(listener,), daemon=True).start()
+        self.client = SeafileClient(server_url=f"http://127.0.0.1:{self.port}", token="t")
+        self.addCleanup(self.client.close)
+
+    def _serve(self, listener):
+        while True:
+            try:
+                conn, _ = listener.accept()
+            except OSError:
+                return
+            with conn:
+                conn.settimeout(2)
+                try:
+                    head = conn.recv(4096)
+                except OSError:
+                    continue
+                if b"/api2/repos/" in head.split(b"\r\n", 1)[0]:
+                    body = f'"http://127.0.0.1:{self.port}/seafhttp/dl?t=link-token"'.encode()
+                    conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: %d\r\n\r\n" % len(body) + body)
+                else:   # promises 100 bytes, sends 10, hangs up
+                    conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\n0123456789")
+
+    def test_get_file_bytes_with_a_cap_raises_a_seafile_api_error(self):
+        with self.assertRaises(SeafileAPIError) as cm:
+            self.client.get_file_bytes("rid", "/repo/refs/heads/main", max_bytes=1000)
+        self.assertIsInstance(cm.exception, SeafileConnectionError)
+        self.assertNotIn("link-token", str(cm.exception))
+
+    def test_a_streamed_download_raises_a_seafile_api_error(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp, self.assertRaises(SeafileAPIError) as cm:
+            self.client.download_file_to("rid", "/repo/x", f"{tmp}/x")
+        self.assertNotIn("link-token", str(cm.exception))
+
+
 if __name__ == "__main__":
     unittest.main()
