@@ -457,7 +457,7 @@ class TestRemoteHelper(unittest.TestCase):
         h.client.list_dir.side_effect = lambda rid, path: [
             {"name": f"pack-{'1' * 40}.pack", "size": 9 * 1024 * 1024},
             {"name": f"pack-{'1' * 40}.idx", "size": 5},
-        ]
+        ] if h.client.upload_file.called else []     # not held before the push
         lock = MagicMock()
         lock.maybe_renew.return_value = False
 
@@ -527,10 +527,10 @@ class TestRemoteHelper(unittest.TestCase):
         # The listing must show the staged pair, or the push fails verification
         # for a reason this test is not about.
         sha = "a" * 40
-        h.client.list_dir.return_value = [
+        h.client.list_dir.side_effect = lambda rid, path: [
             {"name": f"pack-{sha}.pack", "size": 4},
             {"name": f"pack-{sha}.idx", "size": 3},
-        ]
+        ] if h.client.upload_file.called else []
 
         pending = [_PendingUpdate("refs/heads/main", "1" * 40, None, False)]
         with patch("git_remote_seafile.helper.get_objects_to_push", return_value=["x"]),                 patch("git_remote_seafile.helper.create_packfile",
@@ -1130,8 +1130,10 @@ class TestRemoteHelper(unittest.TestCase):
         return h, out.getvalue(), err.getvalue(), ref_writes
 
     def test_a_truncated_pack_upload_publishes_no_ref(self):
+        # Empty until the upload: a name listed before it is the remote's, and is not sent again.
         _h, out, err, ref_writes = self._push_one(
             lambda client: [{"name": "pack-abc.pack", "size": 3}, {"name": "pack-abc.idx", "size": 3}]
+            if client.upload_file.called else []
         )
         self.assertEqual(ref_writes, [], "a ref was written for a pack that landed short")
         self.assertIn("error refs/heads/main", out)
