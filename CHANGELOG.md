@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **A connection cut in the middle of a streamed body is a `SeafileAPIError`** (ROADMAP AA34; review 402087a, fable2-C1). The request call was wrapped in 0.9.26, but a streamed body is read after it returns, so a reset or a chunked body cut short raised a bare `ChunkedEncodingError` that `cmd_list`'s retry and the pack download never saw. The text names the method and the link's origin, never its token.
+- **The in-memory pack fallback is bounded** (AA35; fable2-C3). When streaming failed, a 100-byte listing in front of a 48 MiB body was buffered whole; the read now stops at the listed size, or at the buffer limit when the listing gave none.
+- **A failed ref write's folder cleanup skips a folder the server does not have, and needs the lease** (AA31; fable-G0.3b, c). A listing answers `[]` for a folder that was never made, which got a DELETE and ended the loop with the outer folders still there; and the delete was the one destructive step of a push not fenced by `verify_ownership()`.
+
+### Changed
+- `tools/_snapshot/99_cli.py` was at the 700-line limit; the argument parser moved to its own part (`93_cli_args.py`). No behaviour change.
+- Tests: the `held_before` filters of a push's two cleanups, the generic `except Exception` of a ref write, and the Retry-After cap test (which slept 600 s a retry when the cap was removed) now fail or finish fast when their guard goes (AA36).
+
 ## [0.9.26] - 2026-11-13
 
 The review backlog of 0.9.25 and the fixes of two more review rounds (a Fable round on the batch, twice). A push whose verifying listing failed could delete a pack the remote relied on (AA25); a failed ref write left an empty folder that stopped every later fetch (AA10); and the retry layer re-sent a delete, a rename or an upload after it may have reached the server (AA32), which removed another client's ref in the reviewer's reproduction. The rest is a dropped connection that every handler now sees as an API error, a ref walk that backs off when the server throttles, and smaller wording and Windows fixes.
