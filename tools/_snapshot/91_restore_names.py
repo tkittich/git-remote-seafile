@@ -168,12 +168,38 @@ def classify_missing_names(
     folded: dict[str, int] = {}
     for name in expected:
         folded[_fold(name)] = folded.get(_fold(name), 0) + 1
+    # A folder that ignores case merges ``d/`` and ``D/``: ``d/a.txt`` beside ``D/b.txt`` are both
+    # written, into one folder that keeps the first spelling, so the listing shows neither under
+    # the other's folder spelling.  That is not a lost name (it read as "a trailing dot or space",
+    # review 9fe723f, gemini C1/E2), so a name whose only difference is the case of its folders is
+    # counted as present.  A *file* ``d`` beside a folder ``D`` cannot both be written: one wins,
+    # and everything of the other is collided.
+    def split(name: str) -> "tuple[str, str]":
+        folder, _, base = _nfc(name).rpartition("/")
+        return folder.lower(), base
+
+    loose = {split(name) for name in on_disk}
+    folders: set[str] = set()
+    for name in expected:
+        parts = _nfc(name).lower().split("/")
+        folders.update("/".join(parts[:i]) for i in range(1, len(parts)))
+    both = {key for key in folded if key in folders}     # a file and a folder of one folded name
+
+    def clashes(name: str) -> bool:
+        parts = _nfc(name).lower().split("/")
+        return _fold(name) in both or any("/".join(parts[:i]) in both for i in range(1, len(parts)))
+
     collided: list[str] = []
     renamed: list[str] = []
     for name in expected:
         if name in skipped or _nfc(name) in present:
             continue
-        (collided if folded[_fold(name)] > 1 else renamed).append(name)
+        if folded[_fold(name)] > 1 or clashes(name):
+            collided.append(name)
+        elif split(name) in loose:
+            continue
+        else:
+            renamed.append(name)
     return collided, renamed
 
 

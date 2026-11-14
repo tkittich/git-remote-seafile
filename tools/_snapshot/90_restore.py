@@ -287,16 +287,36 @@ def verify_restore(repo: Path, rev: str, skip: "set[str] | None" = None) -> list
             mismatched_symlinks.append(link)
     if not paths:
         return mismatched_symlinks
-    proc = _run(
-        ["git", "-C", str(repo), "hash-object", "--no-filters", "--stdin-paths"],
-        input=b"\n".join(paths) + b"\n",
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        status="verifying restored files (re-hashing every path)",
-        # heartbeat-only: this step reads every file and writes nothing, so a
-        # stall limit would have no signal to watch.
-        stall_limit=None,
-    )
+
+    def hash_batch(batch: "list[bytes]") -> "subprocess.CompletedProcess[bytes]":
+        return _run(
+            ["git", "-C", str(repo), "hash-object", "--no-filters", "--stdin-paths"],
+            input=b"\n".join(batch) + b"\n",
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            status="verifying restored files (re-hashing every path)",
+            # heartbeat-only: this step reads every file and writes nothing, so a
+            # stall limit would have no signal to watch.
+            stall_limit=None,
+        )
+
+    proc = hash_batch(paths)
+    absent: list[str] = []
+    if proc.returncode != 0:
+        # A path that is not there (a folder that ignores case kept the file ``d`` and lost
+        # the folder ``D/``) fails the whole batch.  Name those as differences, so a collision
+        # is reported as one and the rest is still verified; with every path present the
+        # failure is real and raised below (review 9fe723f, gemini C1/E2).
+        here = [(path, sha) for path, sha in zip(paths, expected, strict=True)
+                if os.path.lexists(extended_path(repo / path.decode("utf-8", errors="surrogateescape")))]
+        if len(here) < len(paths):
+            there = {path for path, _ in here}
+            absent = [path.decode("utf-8", errors="surrogateescape") for path in paths if path not in there]
+            paths = [path for path, _ in here]
+            expected = [sha for _, sha in here]
+            if not paths:
+                return absent + mismatched_symlinks
+            proc = hash_batch(paths)
     if proc.returncode != 0:
         raise SnapshotError(
             f"could not hash the restored files in {repo} (rc={proc.returncode})\n"
@@ -318,7 +338,7 @@ def verify_restore(repo: Path, rev: str, skip: "set[str] | None" = None) -> list
         path.decode("utf-8", errors="surrogateescape")
         for path, expected_sha, actual_sha in zip(paths, expected, hashes, strict=True)
         if actual_sha != expected_sha
-    ] + mismatched_symlinks
+    ] + absent + mismatched_symlinks
 
 
 def _resolve_assumed_branch(clone: Path, assumed: str) -> str:

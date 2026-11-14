@@ -2170,6 +2170,34 @@ class RestoreNameLimitTests(_SnapshotFixture):
         self.assertEqual(collided, ["README", "d/X"])
         self.assertEqual(renamed, ["a/dot."])
 
+    def test_folders_that_differ_only_by_case_are_merged_not_renamed(self):
+        """Gemini C1/E2 (review 9fe723f): ``d/a.txt`` beside ``D/b.txt`` land in one folder; both
+        are written, so neither is "a name the volume changed"."""
+        self.assertEqual(
+            snap.classify_missing_names(["d/a.txt", "D/b.txt"], {"d/a.txt", "d/b.txt"}), ([], []))
+
+    def test_the_byte_check_names_a_path_that_is_not_there_instead_of_failing_the_batch(self):
+        """Gemini C1 (review 9fe723f): a folder that ignores case kept the file ``d`` and lost
+        ``D/a.txt``; ``hash-object`` then failed the whole batch and the restore died with
+        "could not hash the restored files" before the payload ran."""
+        repo = self.tmp / "absent-path"
+        repo.mkdir()
+        _git(repo, "init", "-q")
+        for name, body in (("keep.txt", b"keep"), ("gone.txt", b"gone")):
+            (repo / name).write_bytes(body)
+        _git(repo, "add", ".")
+        _git(repo, "-c", "user.name=T", "-c", "user.email=t@example.com", "commit", "-q", "-m", "c")
+        (repo / "gone.txt").unlink()
+        self.assertEqual(snap.verify_restore(repo, "HEAD"), ["gone.txt"])
+        (repo / "keep.txt").write_bytes(b"changed")
+        self.assertEqual(sorted(snap.verify_restore(repo, "HEAD")), ["gone.txt", "keep.txt"])
+
+    def test_a_file_and_a_folder_of_one_folded_name_are_a_collision(self):
+        collided, renamed = snap.classify_missing_names(["d", "D/a.txt", "ok"], {"d", "ok"})
+        self.assertEqual((collided, renamed), (["D/a.txt"], []))
+        collided, renamed = snap.classify_missing_names(["d", "D/link"], {"D/link"})
+        self.assertEqual((collided, renamed), (["d"], []))
+
     def test_a_decomposed_listing_is_not_a_missing_name(self):
         """HFS+ lists names decomposed: that is the same name, not an alarm."""
         composed = "café.txt"
