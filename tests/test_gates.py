@@ -158,6 +158,21 @@ class TestTheChangedMap(unittest.TestCase):
         for stem in gates._SHARED_STEMS:
             self.assertTrue((gates._ROOT / "git_remote_seafile" / f"{stem}.py").exists(), stem)
 
+    def test_a_test_that_reads_the_snapshot_parts_by_path_runs_when_they_change(self):
+        """Gemini G0.2 (review 9fe723f): ``test_client`` globs ``tools/_snapshot`` and
+        ``test_git_util`` loads ``snapshot_tool.py`` by path; the import scan cannot see either."""
+        import re
+
+        reads = re.compile(r"\"_snapshot\"|snapshot_tool\.py|tools/_snapshot")
+        covered = set(gates._SNAPSHOT_TESTS) | set(gates._ALWAYS)
+        missed = [
+            test.stem for test in sorted((gates._ROOT / "tests").glob("test_*.py"))
+            if test.stem != "test_gates" and reads.search(test.read_text(encoding="utf-8"))
+            and test.stem not in covered
+        ]
+        self.assertEqual(missed, [], "add these to _SNAPSHOT_TESTS")
+        self.assertIn("test_client", gates.suite_for_changes(["tools/_snapshot/75_payload.py"]) or [])
+
     def test_every_test_module_that_imports_a_changed_module_runs(self):
         # Review 06cc623: a hand-kept map sent a change to safety.py to no snapshot
         # test and a change to library_setup.py to no unit test at all.  Checked

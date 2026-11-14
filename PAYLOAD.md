@@ -162,7 +162,7 @@ at push time; an interrupted run leaves objects no snapshot names (and possibly 
 unreferenced objects), reused by the next run; the first failed
 server upload stops the queue and is reported once the running uploads finish, whereas a file
 that changed or vanished after it was hashed does not -- the rest still go up and the run then
-fails naming every such file, so one live file does not cost the others. A tree that is always being written (a database, a mailbox) would still fail every run, so `--payload-skip-changing` makes the run drop such a file from the snapshot instead (named in a `Warning:`, and absent from that manifest, whose derived id is recomputed); the previous snapshot keeps its last version, and the next quiet run captures it again. It is opt-in: the default stays an error. The server
+fails naming every such file, so one live file does not cost the others. A tree that is always being written (a database, a mailbox) would still fail every run, so `--payload-skip-changing` makes the run drop such a file from the snapshot instead (named in a `Warning:`, and absent from that manifest, whose derived id is recomputed); its last stored version stays in the newest earlier snapshot that has it, and the next quiet run captures it again. A file skipped run after run is in none of the newer manifests, so retention (`--payload-keep`) can age out the snapshot that holds its only stored version (reproduced by review 9fe723f, gemini D1; AA46): the warning says so, and the remedy is to stop the writer or `--exclude` the file, not a longer skip. It is opt-in: the default stays an error. The server
 cannot report a content hash, so a listing proves only presence at a size;
 **restore always verifies SHA-256** (R8).
 

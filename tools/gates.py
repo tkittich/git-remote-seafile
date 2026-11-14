@@ -109,7 +109,10 @@ _PKG_FROM = re.compile(r"from git_remote_seafile import (?:\(([^)]*)\)|([\w ,]+)
 _RELATIVE = re.compile(r"^[ \t]*from \.(\w*) import (?:\(([^)]*)\)|([\w ,]+))", re.MULTILINE)
 _SNAPSHOT_TESTS = ["test_snapshot_tool", "test_snapshot_payload", "test_snapshot_runreport",
                    "test_snapshot_climb", "test_snapshot_history_guard", "test_snapshot_build",
-                   "test_launcher", "test_docs_consistency"]
+                   "test_launcher", "test_docs_consistency",
+                   # Read the parts or the generated file by path, which no import scan sees
+                   # (review 9fe723f, gemini G0.2): the raw-read guard and the env-scrub pin.
+                   "test_client", "test_git_util"]
 _TOOL_TESTS = {
     "tools/gates.py": ["test_gates"],
     "tools/run_tests_parallel.py": ["test_runner_discovery", "test_gates", "test_suite_shape"],

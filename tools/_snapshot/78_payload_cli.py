@@ -92,8 +92,9 @@ def add_payload_jobs_argument(parser: Any) -> None:
         action="store_true",
         help="payload mode: a payload file that changes while it is being read or uploaded (a "
         "database, a mailbox, a VM disk) is left out of this snapshot, named in a warning, "
-        "instead of failing the run and snapshotting nothing; the previous snapshot keeps its "
-        "last version (default: such a file is an error)",
+        "instead of failing the run and snapshotting nothing; its last stored version stays in the "
+        "newest earlier snapshot that has it, until --payload-keep ages that snapshot out "
+        "(default: such a file is an error)",
     )
     parser.add_argument(
         "--payload-jobs",
@@ -468,9 +469,10 @@ def publish_payload(
         shown = ", ".join(left_out[:5]) + (" ..." if len(left_out) > 5 else "")
         print(
             f"\nWarning: {len(left_out)} payload file(s) changed while they were being read and "
-            f"are NOT in this snapshot (--payload-skip-changing): {shown}.  The previous "
-            "snapshot still holds their last version; stop whatever writes them, or --exclude "
-            "them, to snapshot them again.",
+            f"are NOT in this snapshot (--payload-skip-changing): {shown}.  Their last stored "
+            "version is in the newest earlier snapshot that has them, and --payload-keep can age "
+            "that snapshot out while they keep being skipped; stop whatever writes them, or "
+            "--exclude them, to snapshot them again.",
             flush=True,
         )
     after = _remote_objects(client, rid, base, set(by_sha))
