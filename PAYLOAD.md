@@ -39,7 +39,7 @@ encryption and retention policy.
 
 | # | Requirement | How it is checked |
 | :-- | :--- | :--- |
-| R1 | A restored tree is byte-identical to the source at snapshot time, payload files included. | `test_restore_downloads_and_verifies_the_payload`; real-server soak |
+| R1 | A restored tree is byte-identical to the source at snapshot time, payload files included. | `test_restore_downloads_and_verifies_the_payload`; the real-server soak is the maintainer's to run (not rerunnable by a reviewer) |
 | R2 | A snapshot never references an object that was not verified present before the vault was pushed. | ordering in D5; `test_every_object_named_is_rechecked_just_before_the_push` (asserts the object is present *at the moment the ref is pushed*), `test_a_failed_parallel_upload_names_the_file_and_resumes` |
 | R3 | A run never replaces an object with different bytes, and never deletes one. (It does replace a *wrong-size* object, which is damage, with the correct bytes.) | `test_a_file_removed_from_the_source_keeps_its_object`, `test_a_name_another_writer_just_stored_is_not_deleted_by_a_collision`, `test_a_rename_onto_a_taken_name_makes_a_copy_and_it_is_judged` (the server's rename is create-or-duplicate: measured on CE 13.0.28; the wrong-size branch and the leave-a-right-sized-object-alone branch are both pinned there), `test_a_damaged_object_no_longer_blocks_snapshots_through_the_stub` |
 | R4 | An unchanged tree uploads nothing and commits nothing. (A payload file whose only change is its modification time is a change to the manifest: it is hashed again and commits, with no upload.) | `test_an_unchanged_tree_uploads_nothing_and_commits_nothing`, `test_a_payload_file_whose_only_change_is_its_mtime_is_hashed_again_and_commits` |
@@ -47,7 +47,7 @@ encryption and retention policy.
 | R6 | A file that changed between hashing and upload is never stored under another content's name. | `test_a_file_that_changes_between_hash_and_upload_is_refused` (the refusal) and `test_the_stat_check_itself_notices_a_size_or_a_time_that_moved` (the check, unpatched), `test_bytes_that_differ_from_the_hash_are_never_named_after_it` (the digest of the bytes sent) |
 | R7 | A restore never writes outside its destination, whatever the manifest says. | `test_manifest_paths_that_could_escape_or_run_code_are_refused` (the names), `test_a_symlink_in_the_tree_cannot_carry_a_payload_write_outside` (a link on the way) |
 | R8 | Corruption of a stored object is detected at restore, never accepted. | `test_corrupt_payload_fails_the_restore_and_leaves_nothing_behind` |
-| R9 | A run that cannot read a file *or a directory* stops and names it; nothing is skipped silently. (git only warns for a directory, so the tool reads that warning.) | `test_an_unreadable_file_names_itself`, `test_a_directory_that_cannot_be_read_stops_the_run_and_is_named` (POSIX permissions) |
+| R9 | A run that cannot read a file *or a directory* stops and names it; nothing is skipped silently. (git only warns for a directory, so the tool reads that warning.) | `test_an_unreadable_file_names_itself`, `test_a_directory_that_cannot_be_read_stops_the_run_and_is_named` (POSIX permissions only: the check is skipped where permissions do not bind, as on Windows and as root) |
 | R10 | A payload vault never silently starts staging its large files into git. | `test_a_vault_that_used_payload_still_refuses_when_it_cannot_stay_in_it`, `test_a_fresh_vault_on_another_machine_follows_the_default`, `test_a_flagless_run_is_refused_before_the_code_repository_is_pushed` (the second site, before the code push) |
 | R11 | Payload mode is on by default, and a tree with no qualifying file is snapshotted exactly as without it (no manifest, no server directory; since 0.9.2 the tree also holds the times record `.seafile-payload/mtimes.json`, which is not part of payload mode); where it cannot work (no remote, a remote that is not `seafile://`, `--no-push`) the default stays off instead of failing. | `test_a_tree_with_nothing_big_is_snapshotted_as_without_payload_mode`, `test_the_default_stays_off_where_payload_mode_cannot_work` |
 
@@ -337,7 +337,7 @@ remembered; measured once for a new vault),
 climbs while the aggregate rate grows, up to 16, backs off on a 429/502/503/504; either way a
 pushed-back object is queued again, at most twice, and a typed N is never lowered; measured
 on the test server: 1 upload 27 MiB/s, 2 about 40, 4 about 45, 8 about 62, 12 about 65), `--payload-gc`, `--payload-delete`, `--payload-grace-days N`.
-Combinations that would be silently ignored are refused. An explicit
+Combinations that would be silently ignored are refused. **A vault with nothing typed and nothing remembered uses `auto`, unless the remote's manifest records another rule: then it is refused and told to name the flag (D13)** (review 9fe723f, fable-D3: the two read as a contradiction). An explicit
 `--payload-min-size` is incompatible with `--no-push`. **A `--no-push` run on a vault whose
 last snapshot used payload mode is refused** (R10 wins over "a default is not a request": a
 local-only run cannot upload, and quietly staging the large files into git is the worse

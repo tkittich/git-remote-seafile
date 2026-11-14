@@ -2595,7 +2595,7 @@ class TestAStateFileTheFolderListsIsNeverAbsent(unittest.TestCase):
         files = [p for p in (root / "git_remote_seafile").glob("*.py")
                  if p.name not in ("client.py", "snapshot_tool.py")]
         files += list((root / "tools" / "_snapshot").glob("*.py"))
-        found = set()
+        found: dict[tuple[str, str], int] = {}
         for path in files:
             tree = ast.parse(path.read_text(encoding="utf-8"))
             for fn in ast.walk(tree):
@@ -2604,10 +2604,17 @@ class TestAStateFileTheFolderListsIsNeverAbsent(unittest.TestCase):
                 for node in ast.walk(fn):
                     if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
                             and node.func.attr in ("get_file_text", "get_file_bytes")):
-                        found.add((path.relative_to(root).as_posix(), fn.name))
-        self.assertEqual(sorted(found - set(reviewed)), [],
+                        key = (path.relative_to(root).as_posix(), fn.name)
+                        found[key] = found.get(key, 0) + 1
+        self.assertEqual(sorted(set(found) - set(reviewed)), [],
                          "a raw read nobody has classified: use read_listed_text, or add it "
                          "here with the reason absence is safe")
+        # A second raw read inside a function that is already listed is a new question, not the
+        # reviewed one (review 9fe723f, fable-G2.1): the reasons above were written for these counts.
+        reviewed_calls = {("git_remote_seafile/helper.py", "_publish_ref"): 2}   # the CAS read, the read-back
+        more = {key: n for key, n in found.items() if n != reviewed_calls.get(key, 1)}
+        self.assertEqual(more, {}, "a listed function gained (or lost) a raw read: classify it "
+                                   "and update reviewed_calls")
 
 
 class TestRedirectsKeepTheTokenAndTheBodyWhereTheyBelong(unittest.TestCase):
