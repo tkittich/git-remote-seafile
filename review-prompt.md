@@ -1,14 +1,24 @@
 You are an independent reviewer of `git-remote-seafile`, at the commit you were given
-(`git log -1`). **Addendum for the 0.9.26 round:** version 0.9.25 is released (tag `v0.9.25`,
-commit `3ca9db3`); the commits you review are `git log --oneline v0.9.25..HEAD` (the 0.9.26 batch,
-Part G0 below), and the whole project is in scope as before. The statements below about 0.9.25
-being unreleased describe the round it was written for; read them as history. Two things this
-round cannot check and you should not claim to: Seafile Professional behaviour (no Pro server
-is available; `GRS_STUB_PRO=1` is the stub's model of it, measured only on one 13.0.29 image)
-and any real-server answer (the container legs of `realserver.yml` are the maintainer's). Say
+(`git log -1`). **Addendum for the 0.9.26 post-release round:** version 0.9.26 is released (tag
+`v0.9.26`, commit `b23c481`, 2026-11-14); the previous release is 0.9.25 (tag `v0.9.25`, commit
+`3ca9db3`). The commits you review are `git log --oneline v0.9.25..HEAD` (Part G0 below, now the
+whole of 0.9.26: two Fable rounds have already read parts of it, and their findings are the rows
+AA24-AA36 in Part F), and the whole project is in scope as before. Two earlier rounds read only
+Part G0, the Pro paths from the code and the 429 handling: **G1-G11 and most of Part C have had
+no reader since `06cc623`, so most of your time goes there** (ORDER OF WORK says how). The
+statements below about 0.9.25 being unreleased describe the round they were written for; read
+them as history, and read "the 0.9.25 tag" in OUTPUT as "the next tag". Two things this round
+cannot check and you should not claim to: Seafile Professional behaviour (no Pro server is
+available; `GRS_STUB_PRO=1` is the stub's model of it, measured only on one 13.0.29 image) and
+any real-server answer (the container legs of `realserver.yml` are the maintainer's). Say
 "unverified" and read the code instead. The Pro-only paths (folder permissions, group-owned
 libraries, the 403/500 answers for a missing folder, `hidden_history_risk`) have had the least
 independent reading: give them a pass of their own.
+Notes from the last round's feedback: `tools/release_check.py --offline` fails its `tag` and
+`pushed` checks in a clone (the tag exists; `origin` is the given tree, not GitHub): expected,
+not a finding. Phase 1 (Parts A and D, written before you read the code) comes first; read
+Part G0 only after Phase 1 is written. A message split across two source lines may be quoted
+from one line.
 
 This was written for an earlier round, whose opening follows. **This is a pre-release round**: version 0.9.25 is prepared at that commit
 (`__version__`, `CHANGELOG.md` `[0.9.25]`, `.github/release-notes/v0.9.25.md`, `UPGRADING.md`)
@@ -563,6 +573,10 @@ file over 4 GiB on exFAT through a real server and the Windows remount, S21, Z43
 | AA9-AA19 | `--dry-run`'s case rule, an empty ref folder after a failed nested push (measure first), the suspend-blind lease clock, the settle budget, the mirror-clone warning, the restore's "verified" wording, a surviving R6 mutation, `gates --changed`'s test imports, the long-path skip matcher, the 5,000-folder listing, the payload-verify note | done with code and a test each in 0.9.26, except AA10 (fixed on a stub that models folders; the CE and Pro answer is measured by `test_an_empty_ref_folder_is_measured_against_a_listing_of_the_refs`) and AA18 (tests added, listing sizes measured in the container run). Re-report only a fix that is wrong or incomplete, with the input that shows it |
 | AA22 | plain `lstat`/`open` on source paths past 260 characters on Windows | done with a guard test that scans every snapshot part for a source path not passed through `extended_path`; try a site shape the pattern misses |
 | AA21 | gemini's A1-A3, D3, D4, G3.1, B1, B2, C1, C2, G8.1, E1; "an empty ref leaf is empty"; exit 2 for an incomplete restore | declined with reasons in ROADMAP §1.11 and the triage; re-report only by showing the reason is wrong |
+| AA23, AA32, AA33 | 429 and retry handling: the ref walk's worker back-off, `Retry-After` capped at 10 s, a write or a POST never re-sent once it may have reached the server, `other=0` (no re-send after an SSL failure), a connection error that names its cause (`SeafileConnectionError`) | done with code and a test each (0.9.26). AA23's other pools (payload, gc, restore) are open: say which can still hammer the server, with the input |
+| AA24 | Windows long-path stats with long paths off | open: no machine to measure on; read the code |
+| AA27, AA31 | a dropped connection is a `SeafileAPIError`; the advertised-refs record of a linked worktree; the Pro owner refusal for `--payload-delete` before the history download | done with code and a test each; try a sibling |
+| AA34-AA36 | fable2 C1, C3 and NITs | open, recorded for 0.9.27: CONFIRMED / FIXED SINCE / STALE / MISRANKED |
 | S1 | an unpaged listing may be short | measured complete at 5,100 on CE and Pro; read the claim, and the assertion, adversarially |
 | Z39 | locale and environment legs | partly done: tr_TR and ASCII-only legs added; antivirus, Task Scheduler as SYSTEM and a subpath behind nginx remain |
 
