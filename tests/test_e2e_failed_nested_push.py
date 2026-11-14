@@ -11,10 +11,12 @@ from __future__ import annotations
 import pathlib
 import sys
 import unittest
+from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
 from e2e_harness import REPO_ID, commit_file, init_repo, run_git  # noqa: E402
+from _helpers import make_helper  # noqa: E402
 from test_e2e import E2ETestCase  # noqa: E402
 
 
@@ -104,6 +106,41 @@ class TestAFailedNestedPushLeavesNoFolderBehind(E2ETestCase):
         listing = self._ls_remote("kept", src)
         self.assertEqual(listing.returncode, 0, listing.stderr)
         self.assertIn("refs/heads/feature/one", listing.stdout)
+
+
+class TestTheCleanupIsCarefulWhatItDeletes(unittest.TestCase):
+    """fable-G0.3 (b), (c): a folder that was never made, and the fence."""
+
+    def _helper(self, existing: set[str], lock_owned: bool = True):
+        client = MagicMock()
+        client.dir_exists.side_effect = lambda _rid, path: path in existing
+        client.list_dir.return_value = []     # also what the server says for a folder it lacks
+        client.delete_entry.return_value = True
+        lock = MagicMock()
+        lock.verify_ownership.return_value = lock_owned
+        return make_helper(client=client), client, lock
+
+    def test_a_folder_the_server_does_not_have_is_skipped_and_the_outer_one_still_goes(self):
+        h, client, lock = self._helper({"/r/refs/heads/feature"})   # the inner mkdir never happened
+        h._drop_empty_folders(["/r/refs/heads/feature", "/r/refs/heads/feature/auth"], lock)
+        deleted = [c.args[1] for c in client.delete_entry.call_args_list]
+        self.assertEqual(deleted, ["/r/refs/heads/feature"])
+
+    def test_an_error_that_is_not_a_seafile_error_still_triggers_the_cleanup(self):
+        """fable2-G0.3 (AA36): a dropped connection is a SeafileAPIError since AA27, which left the
+        ``except Exception`` clause of ``_publish_ref`` covered by nothing; it still catches the rest."""
+        h, client, lock = self._helper(set())
+        client.get_file_text.return_value = None
+        client.upload_file.side_effect = RuntimeError("not a requests or Seafile error")
+        with patch.object(h, "_absent_ref_folders", return_value=["/r/refs/heads/feature"]),                 patch.object(h, "_drop_empty_folders") as drop:
+            with self.assertRaises(RuntimeError):
+                h._publish_ref("refs/heads/feature/x", "a" * 40, None, False, lock)
+        drop.assert_called_once_with(["/r/refs/heads/feature"], lock)
+
+    def test_a_lease_that_is_not_ours_deletes_nothing(self):
+        h, client, lock = self._helper({"/r/refs/heads/feature"}, lock_owned=False)
+        h._drop_empty_folders(["/r/refs/heads/feature"], lock)
+        client.delete_entry.assert_not_called()
 
 
 if __name__ == "__main__":

@@ -1345,14 +1345,23 @@ class RemoteHelper:
             return []
         return absent
 
-    def _drop_empty_folders(self, folders: list[str]) -> None:
+    def _drop_empty_folders(self, folders: list[str], lock: Any = None) -> None:
         """Best effort: delete the folders a failed ref write made, deepest first, while empty.
 
         Run under the push lock, so no other push is writing into them; a folder that lists
         anything, or any failure, ends it (a leftover folder is the old behaviour, no worse).
+        A folder the server does not have is skipped, not deleted: a listing answers ``[]`` for
+        a folder that was never made (the mkdir failed), and the outer folders that were made
+        still have to go (fable-G0.3b).  The delete is the one destructive step of a push, so
+        it needs the lease this push still holds, like every other one (DESIGN 3.3; G0.3c): a
+        lease that is lost or unknown leaves the folder, which is the old behaviour.
         """
+        if lock is not None and not lock.verify_ownership():
+            return
         for path in reversed(folders):
             try:
+                if not self.client.dir_exists(self.repo_id, path):
+                    continue
                 if self.client.list_dir(self.repo_id, path) != []:
                     return
                 if not self.client.delete_entry(self.repo_id, path):
@@ -1392,7 +1401,7 @@ class RemoteHelper:
                 read_timeout=REF_WRITE_READ_TIMEOUT_SECONDS,
             )
         except SeafileAPIError as ex:
-            self._drop_empty_folders(made)
+            self._drop_empty_folders(made, lock)
             raise SeafileAPIError(
                 f"{ex}; the ref may or may not have been written and the write was not "
                 "resent -- fetch, check the remote, and push again"
@@ -1400,7 +1409,7 @@ class RemoteHelper:
         except Exception:
             # A dropped connection or a timeout on the mkdir or the upload link is not a
             # SeafileAPIError, and left the same empty folder behind (fable-G0.1).
-            self._drop_empty_folders(made)
+            self._drop_empty_folders(made, lock)
             raise
 
         # Read the ref back.  Seafile exposes no atomic compare-and-swap, so the
