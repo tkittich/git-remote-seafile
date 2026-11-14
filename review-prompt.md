@@ -14,9 +14,12 @@ any real-server answer (the container legs of `realserver.yml` are the maintaine
 "unverified" and read the code instead. The Pro-only paths (folder permissions, group-owned
 libraries, the 403/500 answers for a missing folder, `hidden_history_risk`) have had the least
 independent reading: give them a pass of their own.
-Notes from the last round's feedback: `tools/release_check.py --offline` fails its `tag` and
-`pushed` checks in a clone (the tag exists; `origin` is the given tree, not GitHub): expected,
-not a finding. Phase 1 (Parts A and D, written before you read the code) comes first; read
+Notes from the last rounds' feedback: `tools/release_check.py --offline` fails its `tag` check in a
+clone (the tag exists) and prints `ok pushed` for a local-directory `origin`: both expected, not
+findings (ROADMAP AA45). **Read these first, in this order, because the last reviewer ran out of
+time before them: G6, G10 and Part C (`url.py`, `safety.py`, `sqlite_read.py`, `lfs.py`); the rest of
+Part F is second.** When a mutation needs a test whose name you do not know, a whole module is
+allowed for that one run (`python -m unittest tests.<module>`, not the suite); say so in section 7. Phase 1 (Parts A and D, written before you read the code) comes first; read
 Part G0 only after Phase 1 is written. A message split across two source lines may be quoted
 from one line.
 
