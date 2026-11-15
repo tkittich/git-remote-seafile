@@ -173,6 +173,15 @@ class TestTheChangedMap(unittest.TestCase):
         self.assertEqual(missed, [], "add these to _SNAPSHOT_TESTS")
         self.assertIn("test_client", gates.suite_for_changes(["tools/_snapshot/75_payload.py"]) or [])
 
+    def test_a_helper_side_change_runs_the_snapshot_tests_that_drive_the_helper(self):
+        """fable-G5.1 (review 134c8af): ``test_snapshot_tool`` and ``test_snapshot_payload`` push,
+        clone and run the strict fetch through the helper process, which names no import."""
+        for path in ("helper", "packs", "gc", "diagnose"):
+            with self.subTest(module=path):
+                modules = gates.suite_for_changes([f"git_remote_seafile/{path}.py"]) or []
+                self.assertIn("test_snapshot_payload", modules)
+                self.assertIn("test_snapshot_tool", modules)
+
     def test_every_test_module_that_imports_a_changed_module_runs(self):
         # Review 06cc623: a hand-kept map sent a change to safety.py to no snapshot
         # test and a change to library_setup.py to no unit test at all.  Checked

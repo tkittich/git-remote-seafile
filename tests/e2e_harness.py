@@ -275,12 +275,18 @@ class _Handler(BaseHTTPRequestHandler):
                     # answers success and creates "<name> (1)" beside the
                     # target, which keeps its old bytes.  The code may not rely
                     # on a refusal (REVIEW.sonnet-5.5 E7 / the triage's probe).
-                    base, dot, ext = new.rpartition(".")
-                    dup = f"{base or new} (1){('.' + ext) if dot else ''}"
+                    # The extension is the leaf's: a path whose folder has a dot
+                    # (``/.seafile-payload/objects/82/<sha>``) was split at the folder
+                    # (gemini-4-hydrogen-G0.1).
+                    parent, slash, leaf = new.rpartition("/")
+                    base, dot, ext = leaf.rpartition(".")
+                    stem = base or leaf
+                    suffix = ("." + ext) if dot and base else ""
+                    dup = f"{parent}{slash}{stem} (1){suffix}"
                     n = 1
                     while dup in files:
                         n += 1
-                        dup = f"{base or new} ({n}){('.' + ext) if dot else ''}"
+                        dup = f"{parent}{slash}{stem} ({n}){suffix}"
                     files[dup] = files.pop(p)
                     return self._send(200, b'"success"')
                 files[new] = files.pop(p)

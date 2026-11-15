@@ -113,6 +113,8 @@ _SNAPSHOT_TESTS = ["test_snapshot_tool", "test_snapshot_payload", "test_snapshot
                    # Read the parts or the generated file by path, which no import scan sees
                    # (review 9fe723f, gemini G0.2): the raw-read guard and the env-scrub pin.
                    "test_client", "test_git_util"]
+#: Modules whose change reaches the helper process, which the snapshot tests drive.
+_HELPER_SIDE = frozenset({"helper", "packs", "gc", "diagnose"})
 _TOOL_TESTS = {
     "tools/gates.py": ["test_gates"],
     "tools/run_tests_parallel.py": ["test_runner_discovery", "test_gates", "test_suite_shape"],
@@ -249,6 +251,10 @@ def suite_for_changes(paths: list[str], root: Path = _ROOT) -> list[str] | None:
             # The end-to-end runs drive the helper as a process, so they import
             # nothing by name and still reach every helper-side module.
             modules.update(_with_test_importers(tests | {"test_e2e", "test_e2e_pack_split"}, root))
+            # The snapshot tests push, clone and run the strict-refs fetch of ``--payload-gc``
+            # through the helper process too (review 134c8af, fable-G5.1).
+            if reached & _HELPER_SIDE:
+                modules.update({"test_snapshot_tool", "test_snapshot_payload"})
             if snapshot:
                 modules.update(_SNAPSHOT_TESTS)
         elif path.startswith("tools/_snapshot/") or path == "tools/seafile_snapshot.py":

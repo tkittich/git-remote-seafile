@@ -104,7 +104,10 @@ def _glob_of_staged_packs(staged=None):
 
     def fake(self, pattern, *args, **kwargs):
         if str(pattern).startswith("pack-"):
-            return holder(pattern)
+            # Only what the pattern would match: the suffix of gc's glob (``.pack``) was untested,
+            # and widening it to ``pack-*`` uploaded idx and rev files as packs (fable-G10.2).
+            import fnmatch
+            return [item for item in holder(pattern) if fnmatch.fnmatchcase(str(item.name), str(pattern))]
         return real(self, pattern, *args, **kwargs)
 
     with patch.object(pathlib.Path, "glob", fake):
@@ -263,6 +266,16 @@ class TestRemoteGC(unittest.TestCase):
             # lock across multi-gigabyte transfers.
             for call in mock_client.download_file_to.call_args_list:
                 self.assertIsNotNone(call.kwargs.get("progress_callback"))
+            # fable-G10.2 (review 134c8af): the staged ``.idx`` is not a pack.  Each name is sent
+            # once, and gc's glob ends in ``.pack`` -- without it every index and reverse index
+            # was uploaded as a pack of its own.
+            uploaded = [c.args[2] for c in mock_client.upload_file.call_args_list
+                        if "objects/pack" in c.args[1]]
+            self.assertEqual(
+                sorted(uploaded),
+                ["pack-abcdef1234567890abcdef1234567890abcdef12.pack"],
+            )
+            self.assertEqual(len(uploaded), len(set(uploaded)), "a name was uploaded twice")
             # Name what was deleted rather than counting it: a bare
             # "call_count == 5" passes just as happily if gc removed the wrong
             # five things.
