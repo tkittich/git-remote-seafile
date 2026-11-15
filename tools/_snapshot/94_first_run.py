@@ -22,7 +22,7 @@ def ambiguous_directories(source: Path) -> list[str]:
     """Directories under *source* named like an ambiguous recommended exclude, as ``a/b`` paths."""
     found: list[str] = []
     root = str(source)
-    for dirpath, dirnames, _files in os.walk(root):
+    for dirpath, dirnames, _files in walk_long(root):
         rel = os.path.relpath(dirpath, root).replace(os.sep, "/")
         keep = []
         for name in dirnames:
@@ -95,7 +95,7 @@ def reproducible_candidates(source: Path) -> list[tuple[str, int | None]]:
     deadline = time.monotonic() + _MEASURE_SECONDS
     found: list[tuple[str, int | None]] = []
     root = str(source)
-    for dirpath, dirnames, filenames in os.walk(root):
+    for dirpath, dirnames, filenames in walk_long(root):
         rel = os.path.relpath(dirpath, root).replace(os.sep, "/")
         if rel != "." and ("pyvenv.cfg" in filenames or os.path.basename(dirpath) in _OFFERED_DIRECTORY_NAMES):
             if (not any(path.startswith(rel + "/") for path in tracked)

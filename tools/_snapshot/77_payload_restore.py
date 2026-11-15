@@ -24,6 +24,29 @@ def extended_path(path: Path) -> Path:
     return Path(prefix + text)
 
 
+def walk_long(root: "Path | str", onerror: "Callable[[OSError], Any] | None" = None) -> Any:
+    """``os.walk(root)``, but a directory past 260 characters is entered on every Windows.
+
+    Without ``LongPathsEnabled`` a plain walk treats such a directory as unreadable and
+    skips it with no error the caller sees, so a backup left out everything under it
+    (AA24).  The walk runs on the extended-length form and the prefix is taken off what
+    it yields, so callers keep plain ``dirpath`` values (and still wrap a path in
+    ``extended_path`` before a stat, as they did).  Elsewhere it is ``os.walk``.
+    """
+    if os.name != "nt":
+        yield from os.walk(root, onerror=onerror)
+        return
+    bs = chr(92)
+    prefix = bs * 2 + "?" + bs
+    long_root = extended_path(Path(os.path.abspath(str(root))))
+    for dirpath, dirnames, filenames in os.walk(long_root, onerror=onerror):
+        if dirpath.startswith(prefix + "UNC" + bs):
+            dirpath = bs + dirpath[len(prefix) + 3:]
+        elif dirpath.startswith(prefix):
+            dirpath = dirpath[len(prefix):]
+        yield dirpath, dirnames, filenames
+
+
 def _download_verified(
     client: Any, rid: str, source_path: str, dest: Path, item: dict[str, Any], scratch: Path
 ) -> str | None:

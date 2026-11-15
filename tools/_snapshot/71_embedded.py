@@ -38,7 +38,7 @@ def _files_of_repository(
         if unreadable is not None:
             unreadable.append(prefix.rstrip("/"))
 
-    for dirpath, dirnames, filenames in os.walk(root, onerror=_deny):
+    for dirpath, dirnames, filenames in walk_long(root, onerror=_deny):
         keep: list[str] = []
         for name in dirnames:
             full = os.path.join(dirpath, name)

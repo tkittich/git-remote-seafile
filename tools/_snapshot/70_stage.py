@@ -586,7 +586,7 @@ def find_virtualenvs(source: Path, excludes: list[str]) -> list[str]:
     """
     found: list[str] = []
     root = str(source)
-    for dirpath, dirnames, filenames in os.walk(root):
+    for dirpath, dirnames, filenames in walk_long(root):
         rel = os.path.relpath(dirpath, root).replace(os.sep, "/")
         if rel != "." and "pyvenv.cfg" in filenames:
             found.append(rel)

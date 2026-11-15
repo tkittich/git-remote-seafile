@@ -1365,7 +1365,7 @@ def _walk_sizes(
             # Vanished between the listing and the stat: nothing to walk.
             return False
 
-    for dirpath, dirnames, filenames in os.walk(root):
+    for dirpath, dirnames, filenames in walk_long(root):
         # A junction or mount point is a directory to os.walk but not a symlink,
         # and git does not follow it: neither may a walk that decides what is
         # uploaded, or one junction to a drive root would hash the drive.
@@ -3656,7 +3656,7 @@ def find_virtualenvs(source: Path, excludes: list[str]) -> list[str]:
     """
     found: list[str] = []
     root = str(source)
-    for dirpath, dirnames, filenames in os.walk(root):
+    for dirpath, dirnames, filenames in walk_long(root):
         rel = os.path.relpath(dirpath, root).replace(os.sep, "/")
         if rel != "." and "pyvenv.cfg" in filenames:
             found.append(rel)
@@ -3790,7 +3790,7 @@ def _files_of_repository(
         if unreadable is not None:
             unreadable.append(prefix.rstrip("/"))
 
-    for dirpath, dirnames, filenames in os.walk(root, onerror=_deny):
+    for dirpath, dirnames, filenames in walk_long(root, onerror=_deny):
         keep: list[str] = []
         for name in dirnames:
             full = os.path.join(dirpath, name)
@@ -6878,6 +6878,29 @@ def extended_path(path: Path) -> Path:
     if text.startswith(bs * 2):
         return Path(prefix + "UNC" + bs + text[2:])
     return Path(prefix + text)
+
+
+def walk_long(root: "Path | str", onerror: "Callable[[OSError], Any] | None" = None) -> Any:
+    """``os.walk(root)``, but a directory past 260 characters is entered on every Windows.
+
+    Without ``LongPathsEnabled`` a plain walk treats such a directory as unreadable and
+    skips it with no error the caller sees, so a backup left out everything under it
+    (AA24).  The walk runs on the extended-length form and the prefix is taken off what
+    it yields, so callers keep plain ``dirpath`` values (and still wrap a path in
+    ``extended_path`` before a stat, as they did).  Elsewhere it is ``os.walk``.
+    """
+    if os.name != "nt":
+        yield from os.walk(root, onerror=onerror)
+        return
+    bs = chr(92)
+    prefix = bs * 2 + "?" + bs
+    long_root = extended_path(Path(os.path.abspath(str(root))))
+    for dirpath, dirnames, filenames in os.walk(long_root, onerror=onerror):
+        if dirpath.startswith(prefix + "UNC" + bs):
+            dirpath = bs + dirpath[len(prefix) + 3:]
+        elif dirpath.startswith(prefix):
+            dirpath = dirpath[len(prefix):]
+        yield dirpath, dirnames, filenames
 
 
 def _download_verified(
@@ -10207,7 +10230,7 @@ def ambiguous_directories(source: Path) -> list[str]:
     """Directories under *source* named like an ambiguous recommended exclude, as ``a/b`` paths."""
     found: list[str] = []
     root = str(source)
-    for dirpath, dirnames, _files in os.walk(root):
+    for dirpath, dirnames, _files in walk_long(root):
         rel = os.path.relpath(dirpath, root).replace(os.sep, "/")
         keep = []
         for name in dirnames:
@@ -10280,7 +10303,7 @@ def reproducible_candidates(source: Path) -> list[tuple[str, int | None]]:
     deadline = time.monotonic() + _MEASURE_SECONDS
     found: list[tuple[str, int | None]] = []
     root = str(source)
-    for dirpath, dirnames, filenames in os.walk(root):
+    for dirpath, dirnames, filenames in walk_long(root):
         rel = os.path.relpath(dirpath, root).replace(os.sep, "/")
         if rel != "." and ("pyvenv.cfg" in filenames or os.path.basename(dirpath) in _OFFERED_DIRECTORY_NAMES):
             if (not any(path.startswith(rel + "/") for path in tracked)

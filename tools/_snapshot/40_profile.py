@@ -141,7 +141,7 @@ def _walk_sizes(
             # Vanished between the listing and the stat: nothing to walk.
             return False
 
-    for dirpath, dirnames, filenames in os.walk(root):
+    for dirpath, dirnames, filenames in walk_long(root):
         # A junction or mount point is a directory to os.walk but not a symlink,
         # and git does not follow it: neither may a walk that decides what is
         # uploaded, or one junction to a drive root would hash the drive.
