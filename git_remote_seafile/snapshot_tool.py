@@ -3082,12 +3082,14 @@ def exclude_matches(path: str, pattern: str) -> bool:
     # at least as much as the bare name it refines (SNAP-03).
     if path == pattern or path.startswith(pattern + "/"):
         return True
-    if fnmatch.fnmatch(path, pattern):
+    # Folded here, not by ``fnmatch``: its ``normcase`` folds on Windows and nowhere else, so
+    # ``*.pyc`` excluded ``FOO.PYC`` on one platform only (review 134c8af, gemini-4-hydrogen-E3).
+    if fnmatch.fnmatchcase(path.lower(), pattern.lower()):
         return True
     # Wildcard patterns keep their fnmatch shape, so match the prefix form of
     # those too; the component check is exact (and case-sensitive both ways)
     # so a bare name still means "a directory by that name, at any depth".
-    if any(ch in pattern for ch in "*?[") and fnmatch.fnmatch(path, pattern + "/*"):
+    if any(ch in pattern for ch in "*?[") and fnmatch.fnmatchcase(path.lower(), pattern.lower() + "/*"):
         return True
     parts = [component.lower() for component in path.split("/")]
     pattern_parts = [component.lower() for component in pattern.split("/")]
@@ -3548,12 +3550,12 @@ def find_secrets(paths: list[str]) -> list[str]:
         name = parts[-1]
         for pattern in SECRET_PATTERNS:
             if "/" in pattern:
-                if fnmatch.fnmatch(path, pattern) or fnmatch.fnmatch(
-                    path, f"*/{pattern}"
+                if fnmatch.fnmatchcase(path.lower(), pattern.lower()) or fnmatch.fnmatchcase(
+                    path.lower(), f"*/{pattern}".lower()
                 ):
                     found.append(path)
                     break
-            elif fnmatch.fnmatch(name, pattern):
+            elif fnmatch.fnmatchcase(name.lower(), pattern.lower()):
                 found.append(path)
                 break
     return found
@@ -5279,7 +5281,7 @@ def build_manifest(
     stale = 0
     # Files whose filesystem reports no change time distinct from the mtime
     # (the FAT family; any volume that answers the query with the mtime).
-    coarse = [0]
+    coarse: set[str] = set()      # counted once per file: ``vouched`` runs twice for each
 
     def vouched(rel: str) -> tuple[dict[str, int | str], bool]:
         """The cache entry for *rel* and whether it may stand in for a fresh hash."""
@@ -5310,7 +5312,7 @@ def build_manifest(
             # scheduled run in steady state re-hashes nothing but an edit
             # inside the hour cannot hide.
             window = max(window, _UNPROBED_WINDOW_NS)
-            coarse[0] += 1
+            coarse.add(rel)
         trusted = (
             old.get("size") == size
             and old.get("mtime_ns") == mtime_ns
@@ -5403,9 +5405,9 @@ def build_manifest(
             {"path": rel, "size": size, "mode": mode, "sha256": fresh[rel]["sha256"],
              "mtime_ns": mtime_ns}
         )
-    if coarse[0] and not quiet:
+    if coarse and not quiet:
         print(
-            f"Note: {coarse[0]} file(s) are on a filesystem with no change time of its own "
+            f"Note: {len(coarse)} file(s) are on a filesystem with no change time of its own "
             "(FAT/exFAT, or a volume that answers with the modification time); a cached hash "
             "for them is trusted only after an hour, and --payload-rehash re-checks everything",
             flush=True,

@@ -519,7 +519,7 @@ def build_manifest(
     stale = 0
     # Files whose filesystem reports no change time distinct from the mtime
     # (the FAT family; any volume that answers the query with the mtime).
-    coarse = [0]
+    coarse: set[str] = set()      # counted once per file: ``vouched`` runs twice for each
 
     def vouched(rel: str) -> tuple[dict[str, int | str], bool]:
         """The cache entry for *rel* and whether it may stand in for a fresh hash."""
@@ -550,7 +550,7 @@ def build_manifest(
             # scheduled run in steady state re-hashes nothing but an edit
             # inside the hour cannot hide.
             window = max(window, _UNPROBED_WINDOW_NS)
-            coarse[0] += 1
+            coarse.add(rel)
         trusted = (
             old.get("size") == size
             and old.get("mtime_ns") == mtime_ns
@@ -643,9 +643,9 @@ def build_manifest(
             {"path": rel, "size": size, "mode": mode, "sha256": fresh[rel]["sha256"],
              "mtime_ns": mtime_ns}
         )
-    if coarse[0] and not quiet:
+    if coarse and not quiet:
         print(
-            f"Note: {coarse[0]} file(s) are on a filesystem with no change time of its own "
+            f"Note: {len(coarse)} file(s) are on a filesystem with no change time of its own "
             "(FAT/exFAT, or a volume that answers with the modification time); a cached hash "
             "for them is trusted only after an hour, and --payload-rehash re-checks everything",
             flush=True,

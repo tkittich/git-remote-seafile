@@ -49,12 +49,14 @@ def exclude_matches(path: str, pattern: str) -> bool:
     # at least as much as the bare name it refines (SNAP-03).
     if path == pattern or path.startswith(pattern + "/"):
         return True
-    if fnmatch.fnmatch(path, pattern):
+    # Folded here, not by ``fnmatch``: its ``normcase`` folds on Windows and nowhere else, so
+    # ``*.pyc`` excluded ``FOO.PYC`` on one platform only (review 134c8af, gemini-4-hydrogen-E3).
+    if fnmatch.fnmatchcase(path.lower(), pattern.lower()):
         return True
     # Wildcard patterns keep their fnmatch shape, so match the prefix form of
     # those too; the component check is exact (and case-sensitive both ways)
     # so a bare name still means "a directory by that name, at any depth".
-    if any(ch in pattern for ch in "*?[") and fnmatch.fnmatch(path, pattern + "/*"):
+    if any(ch in pattern for ch in "*?[") and fnmatch.fnmatchcase(path.lower(), pattern.lower() + "/*"):
         return True
     parts = [component.lower() for component in path.split("/")]
     pattern_parts = [component.lower() for component in pattern.split("/")]
@@ -515,12 +517,12 @@ def find_secrets(paths: list[str]) -> list[str]:
         name = parts[-1]
         for pattern in SECRET_PATTERNS:
             if "/" in pattern:
-                if fnmatch.fnmatch(path, pattern) or fnmatch.fnmatch(
-                    path, f"*/{pattern}"
+                if fnmatch.fnmatchcase(path.lower(), pattern.lower()) or fnmatch.fnmatchcase(
+                    path.lower(), f"*/{pattern}".lower()
                 ):
                     found.append(path)
                     break
-            elif fnmatch.fnmatch(name, pattern):
+            elif fnmatch.fnmatchcase(name.lower(), pattern.lower()):
                 found.append(path)
                 break
     return found

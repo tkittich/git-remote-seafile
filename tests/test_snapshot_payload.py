@@ -815,7 +815,9 @@ class PayloadBasicsTests(_PayloadFixture):
         with unittest.mock.patch.object(snap, "change_time_ns", fat_like):
             rc, out, err = self.snapshot()
         self.assertEqual(rc, 0, out + err)
-        self.assertIn("no change time of its own", out + err)
+        # Once per file: ``vouched`` runs twice for each and the count was doubled
+        # (gemini-4-hydrogen-E2).  The two payload files of this tree are the whole count.
+        self.assertIn("Note: 2 file(s) are on a filesystem with no change time of its own", out + err)
         # Windows' FAT driver answers 0 instead (review 06cc623, gemini E2).
         with unittest.mock.patch.object(snap, "change_time_ns", lambda path, st: 0):
             rc, out, err = self.snapshot()

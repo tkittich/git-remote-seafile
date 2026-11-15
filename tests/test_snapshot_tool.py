@@ -1221,6 +1221,14 @@ class ExcludeDepthTests(_SnapshotFixture):
                 self.assertNotIn(gone, tree)
         self.assertIn("packages/web/keep.js", tree)
 
+    def test_a_wildcard_exclude_ignores_case_on_every_platform(self):
+        """gemini-4-hydrogen-E3: ``fnmatch`` folds case on Windows only, so ``*.pyc`` kept
+        ``FOO.PYC`` on Linux and macOS while the docstring promises one set everywhere."""
+        self.assertTrue(snap.exclude_matches("FOO.PYC", "*.pyc"))
+        self.assertTrue(snap.exclude_matches("A/B/foo.txt", "a/*"))
+        self.assertTrue(snap.exclude_matches("Build/OUT/x.O", "build/*/*.o"))
+        self.assertFalse(snap.exclude_matches("foo.pyd", "*.pyc"))
+
     def test_a_wildcard_exclude_matches_at_any_depth(self):
         (self.code / "src" / "deep").mkdir(parents=True)
         (self.code / "src" / "deep" / "cached.pyc").write_bytes(b"p\n")
