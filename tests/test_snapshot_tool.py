@@ -2765,7 +2765,9 @@ class VaultSourceGuardTests(_SnapshotFixture):
         self.assertEqual(rc, 0, err)
         self.assertIn("--no-push: snapshot kept locally", out)      # fable-G4.1
         self.assertNotIn("pass --remote", out)
-        self.assertEqual(snap._read_config_key(self.vault / ".git", "snapshot.source"), str(self.code))
+        recorded = snap._read_config_key(self.vault / ".git", "snapshot.source")
+        # the tool records the resolved path (macOS /private/var, Windows 8.3 names)
+        self.assertEqual(pathlib.Path(recorded).resolve(), self.code.resolve())
         other = self.tmp / "elsewhere-nopush"
         shutil.copytree(self.code, other)
         rc, _, err = self.run_tool("--source", other, "--vault", self.vault, "--no-push")
@@ -3848,7 +3850,10 @@ class IncrementalStagingTests(_SnapshotFixture):
     def test_the_payload_skip_matcher_folds_the_case_of_a_non_ascii_letter_too(self):
         """fable-G1.1 (review 134c8af): ``Über.dat`` renamed to ``über.dat`` is one file on NTFS and
         APFS, and the ASCII-only key never asked ``samestat``, so it went into git and the manifest."""
-        (self.code / "Über.dat").write_bytes(b"x" * 10)
+        try:
+            (self.code / "Über.dat").write_bytes(b"x" * 10)
+        except UnicodeEncodeError:
+            self.skipTest("the filesystem encoding (C locale) cannot name a non-ASCII file")
         skipped = snap.payload_skip_matcher(self.code, ["Über.dat"])
         self.assertEqual(skipped("über.dat"), (self.code / "über.dat").exists())
 
