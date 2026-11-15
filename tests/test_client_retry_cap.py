@@ -106,6 +106,48 @@ class TestARenameIsSentAgainAfterAThrottle(unittest.TestCase):
         self.assertEqual(post.call_count, 4)
 
 
+class TestAFolderCreateAndACopyAreSentAgainAfterAThrottle(unittest.TestCase):
+    """AA23's other pools: a 429 on the create POST ended ``mkdir_p`` (the AA18 listing run died
+    there), and one on a batch copy read as "refused".  A 429 refuses before acting, so both wait
+    and send again; a create that landed (a timeout) is still never re-sent."""
+
+    def _client(self):
+        client = SeafileClient(server_url="http://127.0.0.1:9", token="t")
+        self.addCleanup(client.close)
+        return client
+
+    @staticmethod
+    def _answers(*statuses):
+        return [type("R", (), {"status_code": s, "headers": {"Retry-After": "1"}, "text": ""})() for s in statuses]
+
+    def test_a_429_on_the_folder_create_is_waited_out_and_the_folder_is_made(self):
+        client = self._client()
+        with patch.object(client, "dir_exists", return_value=False), \
+                patch.object(client, "list_dir", return_value=[]), \
+                patch.object(client.session, "post", side_effect=self._answers(429, 429, 201)) as post, \
+                patch.object(client_module.time, "sleep"):
+            self.assertTrue(client.mkdir_p("rid", "/r"))
+        self.assertEqual(post.call_count, 3)
+
+    def test_a_folder_create_that_keeps_being_throttled_is_not_reported_made(self):
+        client = self._client()
+        with patch.object(client, "dir_exists", return_value=False), \
+                patch.object(client, "list_dir", return_value=[]), \
+                patch.object(client.session, "post", return_value=self._answers(429)[0]) as post, \
+                patch.object(client_module.time, "sleep"):
+            with self.assertRaises(SeafileAPIError):
+                client.mkdir_p("rid", "/r")
+        self.assertEqual(post.call_count, 4)
+        self.assertNotIn(("rid", "/r"), client._known_dirs)
+
+    def test_a_429_on_a_batch_copy_is_waited_out(self):
+        client = self._client()
+        with patch.object(client.session, "post", side_effect=self._answers(429, 200)) as post, \
+                patch.object(client_module.time, "sleep"):
+            self.assertTrue(client.copy_entries("rid", "/a", ["x"], "/b"))
+        self.assertEqual(post.call_count, 2)
+
+
 class TestADeleteIsSentAgainAfterAThrottle(unittest.TestCase):
     """fable-E1 (AA44): the session never re-sends a DELETE, so the first 429 of a payload
     delete ended the run as "the server refused"; a 429 is the limiter refusing before it acted."""

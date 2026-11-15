@@ -1294,7 +1294,11 @@ class SeafileClient:
             except (SeafileAPIError, requests.RequestException):
                 before = None
             url = f"{self.server_url}/api2/repos/{repo_id}/dir/?p={quote(current, safe='/')}"
-            resp = self.session.post(url, data={"operation": "mkdir"}, timeout=self.timeout)
+            # A 429 refuses before acting, so it is waited out and the create sent again; a
+            # timeout may have landed and is not (AA23: the AA18 listing run died here).
+            resp = self._send_waiting_out_a_throttle(lambda u=url: self.session.post(
+                u, data={"operation": "mkdir"}, timeout=self.timeout
+            ))
             if resp.status_code in (200, 201):
                 # Seafile's mkdir is create-or-duplicate: on a name a concurrent
                 # client just took it answers success and creates a copy beside
@@ -2031,16 +2035,15 @@ class SeafileClient:
         destination directory must already exist and keeps the source names.
         """
         url = f"{self.server_url}/api/v2.1/repos/sync-batch-copy-item/"
-        resp = self.session.post(
-            url,
-            json={
-                "src_repo_id": repo_id,
-                "src_parent_dir": "/" + src_parent.strip("/"),
-                "src_dirents": list(names),
-                "dst_repo_id": repo_id,
-                "dst_parent_dir": "/" + dst_parent.strip("/"),
-            },
-            timeout=self.timeout,
+        body = {
+            "src_repo_id": repo_id,
+            "src_parent_dir": "/" + src_parent.strip("/"),
+            "src_dirents": list(names),
+            "dst_repo_id": repo_id,
+            "dst_parent_dir": "/" + dst_parent.strip("/"),
+        }
+        resp = self._send_waiting_out_a_throttle(
+            lambda: self.session.post(url, json=body, timeout=self.timeout)
         )
         return resp.status_code == 200
 
