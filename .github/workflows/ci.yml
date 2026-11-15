@@ -16,8 +16,8 @@ permissions:
   contents: read
 
 # A push that supersedes an in-flight run cancels it.  The matrix is the
-# expensive part of this workflow -- fifteen jobs, each running the whole suite
-# -- and without this a series of pushes to one branch queues fifteen more jobs
+# expensive part of this workflow -- nine jobs, each running the whole suite
+# -- and without this a series of pushes to one branch queues nine more jobs
 # per push behind the ones already running (D6).  The cancelled run's logs stay
 # available; what is lost is a verdict on a commit that has already been
 # replaced.
@@ -123,8 +123,8 @@ jobs:
       run: python .github/ci_report_failures.py unittest-output.txt
 
   # ROADMAP Z39 (gemini H1): the matrix above runs every leg in a UTF-8 locale, where text
-  # is easy.  Two environments that are not: Turkish (an `I` lowers to a dotless `i`, so a
-  # case-insensitive compare written with .lower() misjudges names) and an ASCII-only
+  # is easy.  Two environments that are not: Turkish (git's translated messages and the C
+  # library's collation; Python's own `str.lower()` ignores the locale and is not what this catches) and an ASCII-only
   # process (stdout and file names that cannot encode what they are asked to print).  One
   # Python, the whole suite, on Ubuntu; PYTHONCOERCECLOCALE=0 keeps Python from quietly
   # turning the C locale into C.UTF-8 (PEP 538), which would test nothing.
@@ -185,7 +185,7 @@ jobs:
       if: always()
       run: python .github/ci_report_failures.py unittest-output.txt
 
-  # One job rather than fifteen: the linter does not care which platform or
+  # One job rather than nine: the linter does not care which platform or
   # which interpreter, and it runs *alongside* the matrix rather than after it,
   # so it adds no wall clock to the pipeline.
   #
@@ -230,7 +230,7 @@ jobs:
         python -m unittest tests.test_docs_consistency
         python tools/verify_docs_guards.py
 
-  # One job rather than fifteen, for the same reason as `lint`: a type checker
+  # One job rather than nine, for the same reason as `lint`: a type checker
   # does not care which platform it runs on, and it runs alongside the matrix
   # rather than after it, so it adds no wall clock to the pipeline.
   #

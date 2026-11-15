@@ -30,7 +30,9 @@ class UnpinnedRealServerWorkflowTests(unittest.TestCase):
         self.assertEqual((day, month, weekday), ("1", "*", "*"), "once a month, on the 1st")
 
     def test_it_can_never_gate_anything(self):
-        self.assertRegex(_LATEST, r"(?m)^    continue-on-error: true$")
+        # Not ``continue-on-error``: at job level it makes the run conclude success, so the canary
+        # could never turn red (fable-G10.1, review 134c8af).  Nothing reads this run to gate.
+        self.assertNotRegex(_LATEST, r"(?m)^\s+continue-on-error:\s*true")
         release_check = (_ROOT / "tools" / "release_check.py").read_text(encoding="utf-8")
         self.assertNotIn("realserver-latest", release_check, "a floating-tag run must not gate a tag")
 

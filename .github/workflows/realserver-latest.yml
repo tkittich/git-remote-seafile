@@ -5,9 +5,10 @@ name: real-server latest (unpinned, non-blocking)
 # works.  This runs the same suite once a month against the floating `13.0-latest` tags, so a
 # server release that breaks us shows up as a red run here, weeks before anyone re-pins.
 #
-# It never gates anything: `continue-on-error` keeps the run from failing the job's checks,
-# tools/release_check.py reads ci.yml and realserver.yml only, and a red run here means
-# "look", then re-pin (.github/seafile-ci.yml, realserver.yml) from the digests it records.
+# It never gates anything: tools/release_check.py reads ci.yml and realserver.yml only, and a
+# red run here means "look", then re-pin (.github/seafile-ci.yml, realserver.yml) from the
+# digests it records.  The job does not set `continue-on-error`: that made the *run* conclude
+# success, so the canary could never turn red or notify (review 134c8af, fable-G10.1).
 on:
   workflow_dispatch:
   schedule:
@@ -25,7 +26,6 @@ jobs:
     if: github.repository == 'tkittich/git-remote-seafile'
     runs-on: ubuntu-latest
     timeout-minutes: 60
-    continue-on-error: true
     strategy:
       fail-fast: false
       matrix:

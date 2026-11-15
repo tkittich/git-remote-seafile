@@ -11747,8 +11747,9 @@ def run_command(args: argparse.Namespace) -> int:
             if not remote and not args.no_push:
                 print(no_remote_warning(source), file=sys.stderr, flush=True)
             elif not remote:
-                print("no --remote; snapshot kept locally (pass --remote, or set "
-                      "one in the source repo, to push)")
+                # ``--no-push`` is what kept this snapshot local, whatever remote the vault
+                # remembers (review 134c8af, fable-G4.1).
+                print("--no-push: snapshot kept locally")
             elif commit is None and base == remote_tip:
                 print("the remote already has this snapshot; nothing to push")
                 if base and not args.dry_run:
