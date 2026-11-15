@@ -13,7 +13,7 @@ import os
 from typing import NamedTuple
 
 from .config import RemoteConfig
-from .git_util import _trusted_config_value, get_git_config
+from .git_util import _trusted_config_value, get_git_config, run_git
 
 
 class Setting(NamedTuple):
@@ -101,4 +101,32 @@ def format_report(rows: list[tuple[Setting, str, str]]) -> str:
         "seafile.gittimeout and seafile.skipsafetychecks read only the environment "
         "and your global/system git config, never a repository's own."
     )
+    return "\n".join(lines)
+
+
+def learned_pack_caps() -> list[tuple[str, str]]:
+    """``(remote name, MiB)`` for every ``remote.<name>.seafilegcmaxpackmib`` in this repository's config.
+
+    A refused upload (HTTP 413) teaches a cap for that one remote; the report showed only the
+    repository-wide ``seafile.gcmaxpackmib``, so a push that split because of a learned cap looked
+    unexplained (review 134c8af, fable-G8.1).
+    """
+    out, _, code = run_git(["config", "--get-regexp", r"^remote\..*\.seafilegcmaxpackmib$"])
+    if code != 0 or not out:
+        return []
+    found = []
+    for line in out.decode("utf-8", errors="replace").splitlines():
+        key, _, value = line.partition(" ")
+        name = key[len("remote."):-len(".seafilegcmaxpackmib")]
+        if name and value.strip():
+            found.append((name, value.strip()))
+    return sorted(found)
+
+
+def format_learned_caps(caps: list[tuple[str, str]]) -> str:
+    """The lines ``config`` prints about the caps a remote has learned (empty when there are none)."""
+    if not caps:
+        return ""
+    lines = ["", "Learned per-remote pack caps (a refused upload taught them; they win over seafile.gcmaxpackmib):"]
+    lines += [f"  remote.{name}.seafilegcmaxpackmib  {mib}" for name, mib in caps]
     return "\n".join(lines)

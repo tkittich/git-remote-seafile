@@ -1011,8 +1011,11 @@ def _cmd_lfs_setup(rest: list[str]) -> int:
 def _cmd_config(rest: list[str]) -> int:
     if rest:
         return _usage("config")
-    from .settings_report import effective_settings, format_report
+    from .settings_report import effective_settings, format_learned_caps, format_report, learned_pack_caps
     print(format_report(effective_settings()))
+    learned = format_learned_caps(learned_pack_caps())
+    if learned:
+        print(learned)
     return 0
 
 

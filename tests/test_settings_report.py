@@ -77,6 +77,19 @@ class TestSettingsReport(_IsolatedGit):
         self.assertIn("Hint: change one with", text)
         self.assertIn("seafile.gcmaxpackmib", text)
 
+    def test_a_cap_a_remote_learned_is_listed(self):
+        """fable-G8.1 (review 134c8af): the report showed only the repository-wide key, so a push
+        that split because of a learned per-remote cap looked unexplained."""
+        from git_remote_seafile.settings_report import format_learned_caps, learned_pack_caps
+
+        self.assertEqual(format_learned_caps([]), "")
+        self.assertIn("remote.origin.seafilegcmaxpackmib  512", format_learned_caps([("origin", "512")]))
+        fake = (b"remote.origin.seafilegcmaxpackmib 512" + bytes([10]) + b"remote.team/a.b.seafilegcmaxpackmib 100" + bytes([10]), b"", 0)
+        with patch("git_remote_seafile.settings_report.run_git", return_value=fake):
+            self.assertEqual(learned_pack_caps(), [("origin", "512"), ("team/a.b", "100")])
+        with patch("git_remote_seafile.settings_report.run_git", return_value=(b"", b"", 1)):
+            self.assertEqual(learned_pack_caps(), [])
+
     def test_the_command_prints_the_report_and_refuses_an_operand(self):
         out = io.StringIO()
         with patch("sys.stdout", out):
