@@ -387,6 +387,35 @@ def _run_live(
 
     reader = threading.Thread(target=_pump, name="grs-live-stderr")
     reader.start()
+    # stdout is read while the child runs, not after it exits: a child that wrote more than the
+    # pipe holds (about 64 KiB) before exiting blocked on the write and this loop waited for it
+    # forever; ``input=`` was never written either (review 134c8af, gemini-4-hydrogen-E4).
+    taken: list[Any] = []
+
+    def _take_stdout() -> None:
+        try:
+            taken.append(proc.stdout.read())     # type: ignore[union-attr]
+        except (OSError, ValueError):
+            pass
+
+    side_threads = []
+    if proc.stdout is not None:
+        side_threads.append(threading.Thread(target=_take_stdout, name="grs-live-stdout"))
+    if stdin_data is not None and proc.stdin is not None:
+        def _feed() -> None:
+            try:
+                proc.stdin.write(stdin_data)     # type: ignore[union-attr]
+            except (OSError, ValueError):
+                pass
+            finally:
+                try:
+                    proc.stdin.close()           # type: ignore[union-attr]
+                except (OSError, ValueError):
+                    pass
+
+        side_threads.append(threading.Thread(target=_feed, name="grs-live-stdin"))
+    for thread in side_threads:
+        thread.start()
     try:
         baseline = _dir_size(measure_dir) if measure_dir is not None else 0
         start = last_progress = time.monotonic()
@@ -413,14 +442,11 @@ def _run_live(
                 _kill_tree(proc)
                 killed = True
                 break
-        out = proc.stdout.read() if proc.stdout is not None else None
-        if stdin_data is not None and proc.stdin is not None:
-            try:
-                proc.stdin.close()
-            except OSError:
-                pass
         proc.wait()
         reader.join(timeout=10)
+        for thread in side_threads:
+            thread.join(timeout=10)
+        out = taken[0] if taken else (None if proc.stdout is None else "")
         if killed:
             reason = (
                 f"made no measurable progress for {limit:g}s and was killed (stalled?)"
@@ -431,6 +457,12 @@ def _run_live(
     finally:
         if reader.is_alive():
             reader.join(timeout=5)
+        for pipe in (proc.stdout, proc.stderr, proc.stdin):
+            if pipe is not None:
+                try:
+                    pipe.close()
+                except (OSError, ValueError):
+                    pass
     return subprocess.CompletedProcess(cmd, proc.returncode, out, "".join(collected))
 
 

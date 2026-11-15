@@ -2725,6 +2725,28 @@ class VaultMemoryTests(_SnapshotFixture):
         self.assertEqual(snap._read_config_key(self.vault / ".git", "snapshot.remote"), "")
 
 
+class RunLiveTests(unittest.TestCase):
+    """gemini-4-hydrogen-E4 (review 134c8af): ``_run_live`` read stdout only after the child exited."""
+
+    def _live(self, code, **kw):
+        return snap._run_live(
+            [sys.executable, "-c", code], status=None, measure_dir=None, stall_limit=60.0,
+            expect_bytes=0, text=True, **kw)
+
+    def test_a_child_that_writes_more_than_a_pipe_holds_does_not_hang_the_run(self):
+        started = time.monotonic()
+        done = self._live("import sys; sys.stdout.write('x' * 300000)")
+        self.assertLess(time.monotonic() - started, 30)
+        self.assertEqual(len(done.stdout), 300000)
+
+    def test_input_reaches_the_child_and_stderr_is_still_collected(self):
+        done = self._live(
+            "import sys; d = sys.stdin.read(); sys.stdout.write(d.upper()); sys.stderr.write('e')",
+            input="abc")
+        self.assertEqual(done.stdout, "ABC")
+        self.assertEqual(done.stderr, "e")
+
+
 class VaultSourceGuardTests(_SnapshotFixture):
     """A vault remembers its source; pointing it elsewhere is refused."""
 
