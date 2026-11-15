@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **`gc`, `repair` and `config` given a URL find the remote that git's `insteadOf` rewrote** (ROADMAP G8.2), so the pack cap that remote learned from a 413 is used instead of being learned again.
 - **A 429 on a folder create or a batch copy is waited out and sent again** (ROADMAP AA23), as the rename and the delete already were. The AA18 listing run of 5,000 folders died at `mkdir_p` on the first one; a 429 refuses before acting, so the create is safe to repeat, and a timeout, which may have landed, still is not.
 - **A snapshot of a tree with a directory past 260 characters no longer leaves it out on a Windows without long-path support** (AA24). The five source walks (the size profile, the embedded-repository walk, the virtualenv search, the first-run candidates) now walk the extended-length form and hand the callers plain paths (`walk_long`). Tested on a machine with long paths on only; the plain walk's failure was never shown.
 

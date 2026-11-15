@@ -45,10 +45,21 @@ def remote_name_for_url(url: str) -> str | None:
     if code != 0:
         return None
     wanted = url.rstrip("/")
+    names: list[str] = []
     for line in out.decode("utf-8", errors="replace").splitlines():
         key, _, value = line.partition(" ")
-        if value.strip().rstrip("/") == wanted and key.startswith("remote.") and key.endswith(".url"):
-            return key[len("remote."):-len(".url")]
+        if key.startswith("remote.") and key.endswith(".url"):
+            name = key[len("remote."):-len(".url")]
+            if value.strip().rstrip("/") == wanted:
+                return name
+            names.append(name)
+    # Git rewrites a remote's URL by ``url.<base>.insteadOf`` before it reaches the helper, so a
+    # command given the spelling the helper sees must find the remote that was configured with the
+    # other one (ROADMAP G8.2: its learned pack cap was missed and a 413 repeated).
+    for name in names:
+        rewritten, _err, code = run_git(["ls-remote", "--get-url", name])
+        if code == 0 and rewritten.decode("utf-8", errors="replace").strip().rstrip("/") == wanted:
+            return name
     return None
 
 

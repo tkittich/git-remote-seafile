@@ -210,6 +210,18 @@ class TestPerRemotePackCap(unittest.TestCase):
         self.write("")
         self.assertIsNone(remote_name_for_url("seafile://lib/one"))
 
+    def test_a_url_rewritten_by_insteadof_finds_the_remote_configured_with_the_other_spelling(self):
+        from git_remote_seafile.config import remote_name_for_url
+
+        self.write(
+            "[remote \"origin\"]\n\turl = work:one\n"
+            "[url \"seafile://lib/\"]\n\tinsteadOf = work:\n"
+        )
+        # the helper is handed the rewritten spelling; the config holds the short one
+        self.assertEqual(remote_name_for_url("seafile://lib/one"), "origin")
+        self.assertEqual(remote_name_for_url("work:one"), "origin")
+        self.assertIsNone(remote_name_for_url("seafile://lib/two"))
+
 
 if __name__ == "__main__":
     unittest.main()
