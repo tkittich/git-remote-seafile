@@ -669,6 +669,27 @@ class RemoteHelper:
                     f"{self.remote_name} <url>; if it was deleted on purpose, forget what it "
                     f"advertised by deleting {advertised_record_path(self.remote_name)}."
                 )
+        # The same guard for the namespace that matters most: tags that survive do not make an
+        # advertisement without a single branch a complete one.  ``refs/heads`` renamed or removed
+        # in the web UI left the tags, so neither check above fired, and `git fetch --prune` (a
+        # --mirror clone: the branches themselves) deleted every branch and exited 0
+        # (review 134c8af, fable-A1).  Raised before a line is written.
+        if listed_any and not for_push and not any(n.startswith("refs/heads/") for n, _ in discovered_refs):
+            had_branches = [n for n in read_advertised_refs(self.remote_name, self.raw_url)
+                            if n.startswith("refs/heads/")] or [
+                n for n in remote_tracking_refs(self.remote_name)
+                if n.startswith(("refs/heads/", "refs/remotes/"))]
+            if had_branches:
+                raise SeafileAPIError(
+                    f"{self.library_name}:{self.repo_path} lists no branch, but this clone has "
+                    f"fetched {len(had_branches)} from remote '{self.remote_name}' (for example "
+                    f"{had_branches[0]}): `refs/heads` was moved, renamed or deleted on the "
+                    "server, or the account can no longer see it. Nothing was fetched, and a "
+                    "fetch --prune would have deleted those branches here. If it moved, restore "
+                    "the folder; if every branch was deleted on purpose, forget what the remote "
+                    f"advertised by deleting {advertised_record_path(self.remote_name)} and "
+                    f"delete the tracking branches (git branch -r -d {self.remote_name}/<branch>)."
+                )
         if listed_any and not for_push:
             self._warn_if_tracked_refs_may_be_hidden({name for name, _ in discovered_refs})
             write_advertised_refs(self.remote_name, self.raw_url, [name for name, _ in discovered_refs])

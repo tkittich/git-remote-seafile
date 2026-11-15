@@ -58,6 +58,32 @@ class TestAnUnreadableRefTheCloneKnowsIsNotPruned(E2ETestCase):
             self.assertIn("refs/heads/dev", self._refs(mirror), label)
         self.stub.files[REPO_ID][key] = good
 
+    def test_a_namespace_that_vanishes_beside_surviving_tags_stops_the_fetch(self):
+        """fable-A1 (review 134c8af): ``refs/heads`` renamed in the web UI left the tags, the
+        advertisement was not empty, and ``fetch --prune`` deleted every branch and exited 0."""
+        a, mirror = self._mirror("renamed")
+        run_git(["tag", "v1"], a, self.env)
+        run_git(["push", "origin", "v1"], a, self.env)
+        run_git(["fetch", "origin"], mirror, self.env)      # the record now holds the tag too
+        files = self.stub.files[REPO_ID]
+        for key in [k for k in files if "/renamed/refs/heads/" in k]:
+            files[key.replace("/refs/heads/", "/refs/heads-old/")] = files.pop(key)
+        proc = run_git(["fetch", "--prune", "origin"], mirror, self.env, check=False)
+        self.assertNotEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("lists no branch", proc.stderr)
+        self.assertIn("refs/heads/dev", self._refs(mirror))
+
+    def test_a_repository_with_tags_and_no_branch_it_never_had_is_fine(self):
+        a = init_repo(self.work / "a-tagsonly", self.env)
+        commit_file(a, "a.txt", "one\n", "c1", self.env)
+        run_git(["remote", "add", "origin", self.url("tagsonly")], a, self.env)
+        run_git(["tag", "v1"], a, self.env)
+        run_git(["push", "origin", "v1"], a, self.env)
+        mirror = self.work / "mirror-tagsonly.git"
+        run_git(["clone", "-q", "--mirror", self.url("tagsonly"), str(mirror)], self.work, self.env)
+        proc = run_git(["fetch", "--prune", "origin"], mirror, self.env, check=False)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+
     def test_a_ref_the_clone_never_saw_is_still_only_a_warning(self):
         a, mirror = self._mirror("planted")
         run_git(["checkout", "-q", "-b", "planted"], a, self.env)
