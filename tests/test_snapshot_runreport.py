@@ -8,6 +8,8 @@ interrupted run lose its hashing" -- were guesses until something ran them.
 
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import os
 import pathlib
@@ -221,6 +223,36 @@ class JsonTests(_ReportFixture):
         self.assertIn("Warning: child writes a warning line", text)
         self.assertIn("Warning: child writes a warning line", proc.stderr or "")
 
+    def test_a_bad_command_line_under_json_is_still_one_document_and_exit_2(self):
+        """gemini-4-hydrogen-E5 (review 134c8af): argparse exited before the document was written."""
+        with self.assertRaises(SystemExit) as caught:
+            self.run_tool("--json", "--no-such-flag")
+        self.assertEqual(caught.exception.code, 2)
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err), self.assertRaises(SystemExit):
+            snap.main(["--json", "--no-such-flag"])
+        doc = self.document(out.getvalue())
+        self.assertEqual((doc["status"], doc["exit_code"]), ("failed", snap.EXIT_USAGE))
+        self.assertIsNotNone(doc["error"])
+
+    def test_flags_that_cannot_be_combined_are_a_usage_error_not_a_failed_run(self):
+        rc, out, err = self.snapshot("--json", "--no-push", "--remote", self.remote)
+        self.assertEqual(rc, snap.EXIT_USAGE, out + err)
+        doc = self.document(out)
+        self.assertEqual((doc["status"], doc["exit_code"]), ("failed", snap.EXIT_USAGE))
+        self.assertIn("--no-push", doc["error"])
+
+    def test_a_check_behind_the_push_that_fails_names_an_error_and_prints_its_note_once(self):
+        from unittest.mock import patch
+        with patch.object(snap, "verify_payload_after_push", side_effect=snap.SnapshotError("object gone")):
+            rc, out, err = self.snapshot("--json")
+        doc = self.document(out)
+        self.assertEqual(rc, 1, out + err)
+        self.assertEqual((doc["status"], doc["exit_code"]), ("failed", 1))
+        self.assertIsNotNone(doc["error"])
+        self.assertEqual(err.count("could not be re-verified afterwards"), 1)
+        self.assertNotIn("could not be re-verified", doc["warnings"][0])
+
     def test_json_and_exit_warnings_together(self):
         self.with_secret()
         rc, out, err = self.snapshot("--json", "--exit-warnings")
@@ -331,7 +363,7 @@ class RestoreDrillTests(_ReportFixture):
         rc, out, err = self.run_tool(
             "--restore-drill", "--remote", self.remote, "--into", self.case / "x", "--dry-run"
         )
-        self.assertEqual(rc, 1)
+        self.assertEqual(rc, snap.EXIT_USAGE)
         self.assertIn("--into does not apply to --restore-drill", err)
         self.assertIn("--dry-run does not apply to --restore-drill", err)
 
@@ -340,7 +372,7 @@ class RestoreDrillTests(_ReportFixture):
         self.assertEqual(rc, 1)
         self.assertIn("--restore-drill requires --remote", err)
         rc, out, err = self.run_tool("--restore-drill", "0", "--remote", self.remote)
-        self.assertEqual(rc, 1)
+        self.assertEqual(rc, snap.EXIT_USAGE)
         self.assertIn("takes a positive number", err)
 
 

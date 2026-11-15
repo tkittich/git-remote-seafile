@@ -2088,6 +2088,23 @@ class PayloadRetentionTests(_PayloadFixture):
         self.assertEqual(self.stub.files[REPO_ID][seen_key], before,
                          "the vault-only report rewrote the fence baseline")
 
+    def test_a_report_that_may_not_see_the_whole_history_seeds_no_baseline(self):
+        """gemini-4-hydrogen-E6 (review 134c8af): a Pro non-owner's report goes on, and a baseline
+        written from tips that miss the hidden branches made a later rewrite there invisible."""
+        import unittest.mock
+
+        self.assertEqual(self.snapshot()[0], 0)
+        seen_key = f"{self.base}/gc-seen.json"
+        with unittest.mock.patch(
+            "git_remote_seafile.client.SeafileClient.hidden_history_risk",
+            return_value="a folder permission hides part of this library from this account",
+        ):
+            rc, out, err = self.gc()
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn("may count live objects as unused", out)
+        self.assertNotIn("fence baseline", out)
+        self.assertNotIn(seen_key, self.server_files())
+
     def test_an_unreadable_fence_baseline_stops_the_delete(self):
         """`gc-seen.json` that is there but unparseable is an error (S3).
 

@@ -512,7 +512,7 @@ def payload_gc(
             "unreferenced. Resolve them (keep one ref, delete the copies; git-remote-seafile doctor on the "
             "vault's URL lists every one) and run again"
         )
-    _require_whole_history(client, rid, delete, check=not (allow_non_owner or from_vault))
+    partial_view = _require_whole_history(client, rid, delete, check=not (allow_non_owner or from_vault))
     if not from_vault:
         _require_room_for_history(client, rid, repo_path, allow_low_disk)
     seen = {} if from_vault else read_seen_tips(client, rid, base)
@@ -599,7 +599,7 @@ def payload_gc(
         # when none exists — rewriting an existing baseline to current tips
         # would mask a rewrite that happened since the last delete run — and
         # never on the vault-only weekly report, whose tips may be stale.
-        if not seen and not from_vault and history.tips:
+        if not seen and not from_vault and history.tips and not partial_view:
             write_seen_tips(client, rid, base, history.tips)
             print("fence baseline: recorded the ref tips this report saw (the "
                   "first --payload-delete run compares against them)")

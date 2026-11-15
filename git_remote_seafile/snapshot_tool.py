@@ -4423,7 +4423,7 @@ def require_complete_history(repo: Path, *, walk: bool) -> None:
 _MAX_CLOCK_SKEW_SECONDS = 3600.0
 
 
-def _require_whole_history(client: Any, rid: str, delete: bool, *, check: bool = True) -> None:
+def _require_whole_history(client: Any, rid: str, delete: bool, *, check: bool = True) -> bool:
     """Refuse a deletion by an account that may not see the whole history (ROADMAP B2).
 
     On Seafile Professional an ``invisible`` folder permission hides the folder from
@@ -4432,12 +4432,15 @@ def _require_whole_history(client: Any, rid: str, delete: bool, *, check: bool =
     says its count may be too high (Z34); ``--payload-allow-non-owner`` says no folder
     permission applies to this account, and *check* False skips the question.  Asked before the
     history is downloaded, so a non-owner is not made to pay for it to be told no (fable-E1).
+
+    True when a report went on although the account may not see the whole history: what it read
+    is not a baseline to write down (gemini-4-hydrogen-E6).
     """
     risk = client.hidden_history_risk(rid) if check else None
     if isinstance(risk, str) and risk and not delete:
         print(f"Note: {risk}. This report may count live objects as unused; delete nothing "
               "from it, and run --payload-gc as the library's owner for a count to rely on.")
-        return
+        return True
     if isinstance(risk, str) and risk:
         from git_remote_seafile.client import owner_advice
 
@@ -4446,6 +4449,7 @@ def _require_whole_history(client: Any, rid: str, delete: bool, *, check: bool =
             "objects would be deleted. Nothing was deleted. For --payload-delete, "
             + owner_advice(risk, "--payload-allow-non-owner")
         )
+    return False
 
 
 def _require_server_clock(client: Any, delete: bool) -> None:
@@ -6678,7 +6682,7 @@ def payload_gc(
             "unreferenced. Resolve them (keep one ref, delete the copies; git-remote-seafile doctor on the "
             "vault's URL lists every one) and run again"
         )
-    _require_whole_history(client, rid, delete, check=not (allow_non_owner or from_vault))
+    partial_view = _require_whole_history(client, rid, delete, check=not (allow_non_owner or from_vault))
     if not from_vault:
         _require_room_for_history(client, rid, repo_path, allow_low_disk)
     seen = {} if from_vault else read_seen_tips(client, rid, base)
@@ -6765,7 +6769,7 @@ def payload_gc(
         # when none exists — rewriting an existing baseline to current tips
         # would mask a rewrite that happened since the last delete run — and
         # never on the vault-only weekly report, whose tips may be stale.
-        if not seen and not from_vault and history.tips:
+        if not seen and not from_vault and history.tips and not partial_view:
             write_seen_tips(client, rid, base, history.tips)
             print("fence baseline: recorded the ref tips this report saw (the "
                   "first --payload-delete run compares against them)")
@@ -11373,7 +11377,21 @@ def main(argv: list[str] | None = None) -> int:
             except (OSError, ValueError):
                 pass
     forget_config_reads()  # a caller may have changed config since the last run
-    return run_reported(parse_args(help_word_to_flag(sys.argv[1:] if argv is None else argv)), run_command)
+    raw = help_word_to_flag(sys.argv[1:] if argv is None else argv)
+    try:
+        args = parse_args(raw)
+    except SystemExit as exc:
+        # argparse answers a bad command line with exit 2 and a message on stderr; under --json
+        # stdout is then exactly one document too, and it is the document a scheduler parses
+        # (gemini-4-hydrogen-E5: it was empty).
+        if exc.code == 2 and "--json" in raw:
+            print(json.dumps({
+                "schema": 1, "tool": "git-seafile-snapshot", "version": tool_version(), "mode": "snapshot",
+                "status": "failed", "exit_code": EXIT_USAGE, "seconds": 0.0, "warnings": [],
+                "error": "the command line was wrong (see stderr)", "result": {},
+            }, sort_keys=True), flush=True)
+        raise
+    return run_reported(args, run_command)
 
 
 def run_command(args: argparse.Namespace) -> int:
@@ -11383,7 +11401,14 @@ def run_command(args: argparse.Namespace) -> int:
     late_failure = False
 
     try:
-        validate_args(args)
+        try:
+            validate_args(args)
+        except SnapshotError as exc:
+            # A combination of flags that cannot be run is a wrong command line: exit 2, as
+            # SNAPSHOT.md says (it was 1, and a scheduler reading 1 as "the run failed" paged
+            # on a typo; gemini-4-hydrogen-E5).
+            print(f"Error: {exc}", file=sys.stderr)
+            return EXIT_USAGE
         payload_rc = payload_command(args)
         if payload_rc is not None:
             return payload_rc
@@ -11756,7 +11781,9 @@ def run_command(args: argparse.Namespace) -> int:
                         # a decision this run had already made.  The snapshot
                         # is on the server either way: say it as a warning,
                         # remember everything, and still exit non-zero.
-                        print(f"Warning: {exc}", file=sys.stderr, flush=True)
+                        # A blank line ends the warning for the ``--json`` reader: the note
+                        # below was read as the rest of it.
+                        print(f"Warning: {exc}\n", file=sys.stderr, flush=True)
                         END_OF_RUN_NOTES.append(
                             "the snapshot was pushed, but a payload object it names could not "
                             "be re-verified afterwards; run --payload-verify and take a new "
@@ -11795,8 +11822,12 @@ def run_command(args: argparse.Namespace) -> int:
         if manifest is not None and remote and not args.dry_run:
             maybe_report_payload_gc(git_dir, vault, remote, args.payload_report_days)
         for note in END_OF_RUN_NOTES:
-            print(note, flush=True)
+            if not args.json:           # under --json stdout is already the error stream
+                print(note, flush=True)
             print(note, file=sys.stderr, flush=True)
+        if late_failure:
+            # The document's ``error`` was null on a run that exited 1 (gemini-4-hydrogen-E5).
+            print("Error: the snapshot was pushed, but a check behind the push failed", file=sys.stderr, flush=True)
         return 1 if late_failure else 0
 
     except SnapshotError as exc:

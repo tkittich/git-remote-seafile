@@ -10,7 +10,21 @@ def main(argv: list[str] | None = None) -> int:
             except (OSError, ValueError):
                 pass
     forget_config_reads()  # a caller may have changed config since the last run
-    return run_reported(parse_args(help_word_to_flag(sys.argv[1:] if argv is None else argv)), run_command)
+    raw = help_word_to_flag(sys.argv[1:] if argv is None else argv)
+    try:
+        args = parse_args(raw)
+    except SystemExit as exc:
+        # argparse answers a bad command line with exit 2 and a message on stderr; under --json
+        # stdout is then exactly one document too, and it is the document a scheduler parses
+        # (gemini-4-hydrogen-E5: it was empty).
+        if exc.code == 2 and "--json" in raw:
+            print(json.dumps({
+                "schema": 1, "tool": "git-seafile-snapshot", "version": tool_version(), "mode": "snapshot",
+                "status": "failed", "exit_code": EXIT_USAGE, "seconds": 0.0, "warnings": [],
+                "error": "the command line was wrong (see stderr)", "result": {},
+            }, sort_keys=True), flush=True)
+        raise
+    return run_reported(args, run_command)
 
 
 def run_command(args: argparse.Namespace) -> int:
@@ -20,7 +34,14 @@ def run_command(args: argparse.Namespace) -> int:
     late_failure = False
 
     try:
-        validate_args(args)
+        try:
+            validate_args(args)
+        except SnapshotError as exc:
+            # A combination of flags that cannot be run is a wrong command line: exit 2, as
+            # SNAPSHOT.md says (it was 1, and a scheduler reading 1 as "the run failed" paged
+            # on a typo; gemini-4-hydrogen-E5).
+            print(f"Error: {exc}", file=sys.stderr)
+            return EXIT_USAGE
         payload_rc = payload_command(args)
         if payload_rc is not None:
             return payload_rc
@@ -393,7 +414,9 @@ def run_command(args: argparse.Namespace) -> int:
                         # a decision this run had already made.  The snapshot
                         # is on the server either way: say it as a warning,
                         # remember everything, and still exit non-zero.
-                        print(f"Warning: {exc}", file=sys.stderr, flush=True)
+                        # A blank line ends the warning for the ``--json`` reader: the note
+                        # below was read as the rest of it.
+                        print(f"Warning: {exc}\n", file=sys.stderr, flush=True)
                         END_OF_RUN_NOTES.append(
                             "the snapshot was pushed, but a payload object it names could not "
                             "be re-verified afterwards; run --payload-verify and take a new "
@@ -432,8 +455,12 @@ def run_command(args: argparse.Namespace) -> int:
         if manifest is not None and remote and not args.dry_run:
             maybe_report_payload_gc(git_dir, vault, remote, args.payload_report_days)
         for note in END_OF_RUN_NOTES:
-            print(note, flush=True)
+            if not args.json:           # under --json stdout is already the error stream
+                print(note, flush=True)
             print(note, file=sys.stderr, flush=True)
+        if late_failure:
+            # The document's ``error`` was null on a run that exited 1 (gemini-4-hydrogen-E5).
+            print("Error: the snapshot was pushed, but a check behind the push failed", file=sys.stderr, flush=True)
         return 1 if late_failure else 0
 
     except SnapshotError as exc:
