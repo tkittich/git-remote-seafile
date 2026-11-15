@@ -196,28 +196,47 @@ component you read; the rounds so far produced the same shapes again and again.
     found — then check whether the fix's guard would catch a new site, or only the ones
     that existed when it was written.
 
-ORDER OF WORK — follow it.
-PHASE 1, specification only: Parts A and D, written down in full before you open code. A
-Phase 1 finding cites a spec section and quotes its words; a `file:line` is added in Phase 2
-if the code confirms it.
-Write the Phase 1 findings to a file of your own (`review-<model>-phase1.md`) before you open
-code: a long session can be compacted, and notes that exist only in the conversation are gone
-(one reviewer could not show theirs). Do not open `git_remote_seafile/`, `tools/` or `tests/`,
-and do not read a prior `REVIEW.*.md`. If you open code first, say so in the report: the design sections are
-then the first thing to distrust, because the code will have anchored your attack.
-Every reviewer reads the same commit: the maintainer names it and does not move it for the
-round. If time runs short, finish G1, G2, G6, G8 and G4 before the other areas and say which you
-did not reach; a part you did not read is not a part with no finding.
-PHASE 2, code: first the unread files named in the opening (they have no part of their own:
-file a finding under B, C or E by area), then Part G0, then G, F, H. You may revisit A and D;
-mark what you changed and why. **Give Parts B, C and E and the unread files together at least
-half of your Phase 2 time**: in earlier rounds most reviewers spent nearly all of it on the
-newest commits and reported nothing in B, C or E, while the one who read them found three of
-the worst defects there (Z6, Z7, Z11).
-**Mutation budget.** A mutation costs a rebuild and a test run. Mutate every row of Part G0 and
-the rows of Part F added since `v0.9.26` (AA37 and later); mutate an older Part F row only when
-its test looks wrong on reading (it asserts a call, not the refusal), and say which you skipped.
-Five well-chosen mutations that survive are worth more than fifty that are killed.
+ORDER OF WORK — numbered steps, a progress file, and a report that grows as you go.
+A review is longer than one working session can hold, and two rounds ended partway with the work
+unsaved. So: **work one step at a time, write each step's findings into the report file the moment
+the step is done, and keep a progress file.** Never keep findings only in your head.
+
+The report file is `REVIEW.<commit>.<model>.md` (the OUTPUT section says where it goes; a round
+sheet that names another location wins). Create it at step 1 with the OUTPUT section's headings and
+fill it step by step; the progress file is `review-<model>-progress.md` in your own directory. After
+every step the progress file says: steps DONE, the step IN PROGRESS, the NEXT step, files read, tests
+and mutations run (with the result), and ideas not yet checked. **If a progress file for your model
+name already exists, you are resuming: read it and the report, do not redo a DONE step, continue at
+NEXT.** If you are running low on budget (context, tokens or time), finish the file write of the
+step you are in, update the progress file, and put in the first paragraph of the report which steps
+are done and which are not: a step you did not reach is not a step with no finding.
+
+0. Setup: clone, pin the commit, isolation (RULES below). Done when a command run in your isolated
+   environment cannot reach a real server or the machine's Seafile client.
+1. Phase 1, specification only: Part A. No code yet: do not open `git_remote_seafile/`, `tools/` or
+   `tests/`, and do not read a prior `REVIEW.*.md`. A Phase 1 finding cites a spec section and quotes
+   its words; a `file:line` is added in Phase 2 if the code confirms it. Write the findings to
+   `review-<model>-phase1.md` and the report. At most the five worst findings and the three
+   least-trusted assumptions of the part: Phase 1 is a tenth of the effort, not a third.
+2. Phase 1: Part D, same rules. After it you may open the code. If you opened code first, say so in
+   the report: the design sections are then the first thing to distrust, because the code will have
+   anchored your attack.
+3. Part C (hostile server and input), including the unread files it touches.
+4. Part B (the helper), including `repair.py`, `diagnose.py`, `login.py` and `lfs_setup.py`, which
+   no reader had covered before this round.
+5. Part E (the snapshot tool), including `tools/_snapshot/70_stage.py` read line by line.
+6. Part G0 (`v0.9.26..HEAD`): read each row, and run its mutation (the budget is below).
+7. Part G, the standing attack areas, in the order G1, G2, G6, G8, G4, then the rest.
+8. Part F: the rows from AA37 on and the open rows; a row that names several tests is mutated
+   against the first one named, and a mutation that cannot fail on your machine (for example
+   `walk_long` with long paths on) is reported as "untestable here", not as a survivor.
+9. Part H, then the report's verdict, tally and sections 5 to 7, written last.
+Every reviewer reads the same commit: the maintainer names it and does not move it for the round.
+Steps 3 to 5 together get at least half of your effort.
+**Mutation budget.** A mutation costs a rebuild and a test run. Mutate every row of Part G0 and the
+rows of Part F added since `v0.9.26` (AA37 and later); mutate an older Part F row only when its test
+looks wrong on reading (it asserts a call, not the refusal), and say which you skipped. Five
+well-chosen mutations that survive are worth more than fifty that are killed.
 
 PART A — design of the helper (Phase 1)
 Find ways the design loses commits, corrupts a repository, lets two writers silently
@@ -497,7 +516,7 @@ each reproduction and mutation is a script you keep (in your `review-<model>-` d
 named in section 7), and the report gives the finding, the line of evidence that matters
 (the output that shows it), and the script's name — not the script's whole output.
 
-Save the report in the root of the tree you were given (the one exception to "leave it
+Save the report in the root of the tree you were given (or where the round sheet says; it is the one exception to "leave it
 untouched": `REVIEW*.md` is git-ignored there) as `REVIEW.<commit>.<model>.md`, where `<commit>`
 is `git rev-parse --short HEAD` of the checkout you reviewed and `<model>` is a short
 lower-case name for you (for example `REVIEW.1a2b3c4.gemini-3.8-flash.md`). Do not
