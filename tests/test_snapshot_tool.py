@@ -1066,6 +1066,39 @@ class PushRaceTests(_SnapshotFixture):
         rival = _git(self.remote, "rev-parse", f"{BRANCH}^").stdout.strip()
         self.assertEqual(_git(self.remote, "rev-parse", f"{rival}^").stdout.strip(), r)
 
+    def test_offline_snapshots_survive_a_push_that_fails_once(self):
+        """fable-E1 (review dfd2269): with snapshots taken under ``--no-push`` the remote is
+        *behind* the vault, not moved.  One failed push made the retry read "the tip differs
+        from my base" as "the remote moved" and re-parent the new tree on the older remote
+        tip: the offline snapshots left both the vault chain and the remote, and the run
+        printed "push complete" and exited 0."""
+        self.snapshot("--remote", str(self.remote))
+        remote_tip = _git(self.remote, "rev-parse", BRANCH).stdout.strip()
+        (self.code / "offline.txt").write_bytes(b"taken offline\n")
+        self.snapshot("--no-push")
+        offline_tip = _git(self.vault, "rev-parse", BRANCH).stdout.strip()
+        self.assertNotEqual(offline_tip, remote_tip)
+
+        (self.code / "again.txt").write_bytes(b"third\n")
+        real_git = snap.git
+        state = {"failed": False}
+
+        def push_that_fails_once(git_dir, work_tree, args, **kwargs):
+            if args and args[0] == "push" and not state["failed"]:
+                state["failed"] = True
+                return subprocess.CompletedProcess(args, 1, "", "error: transient failure\n")
+            return real_git(git_dir, work_tree, args, **kwargs)
+
+        with unittest.mock.patch.object(snap, "git", push_that_fails_once):
+            rc, out, err = self.snapshot("--remote", str(self.remote))
+
+        self.assertEqual(rc, 1, out + err)
+        self.assertNotIn("re-parenting", out)
+        self.assertIn("rolled back", err)
+        # the offline snapshot is still the vault's tip, and the remote was not touched
+        self.assertEqual(_git(self.vault, "rev-parse", BRANCH).stdout.strip(), offline_tip)
+        self.assertEqual(_git(self.remote, "rev-parse", BRANCH).stdout.strip(), remote_tip)
+
     def test_a_fetch_failure_during_the_retry_still_rolls_back(self):
         # The rollback is the invariant that makes a re-run the correct remedy,
         # so it must survive a failure in the retry itself: the push is

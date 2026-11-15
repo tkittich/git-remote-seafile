@@ -198,7 +198,12 @@ def push_snapshot(
                         f"rolling the local branch back\n"
                     )
                     break
-                if tip and tip != base:
+                # "Moved" means the remote tip is built on what this run started from.  A tip
+                # that differs from *base* because it is the older end of this vault's chain (the
+                # vault is ahead: snapshots taken under --no-push) is not a race, and re-parenting
+                # on it dropped those snapshots from the vault and the remote, with exit 0
+                # (review dfd2269, fable-E1).  Any other relation is left to the rollback.
+                if tip and tip != base and (base is None or is_ancestor(git_dir, work_tree, base, tip)):
                     print(
                         f"remote moved to {tip[:12]}; re-parenting the snapshot "
                         f"and retrying"
