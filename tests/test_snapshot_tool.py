@@ -2728,6 +2728,18 @@ class VaultSourceGuardTests(_SnapshotFixture):
         self.assertEqual(rc, 1)
         self.assertIn("belongs to a different source", err)
 
+    def test_a_vault_that_only_ever_ran_with_no_push_refuses_a_different_source_too(self):
+        """fable-E4 (review 134c8af): ``--no-push`` recorded nothing, so the second tree went onto
+        the same chain as a snapshot that deleted every file of the first."""
+        rc, _, err = self.run_tool("--source", self.code, "--vault", self.vault, "--no-push")
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(snap._read_config_key(self.vault / ".git", "snapshot.source"), str(self.code))
+        other = self.tmp / "elsewhere-nopush"
+        shutil.copytree(self.code, other)
+        rc, _, err = self.run_tool("--source", other, "--vault", self.vault, "--no-push")
+        self.assertEqual(rc, 1)
+        self.assertIn("belongs to a different source", err)
+
 
 class BareRunTests(_SnapshotFixture):
     """The opt-in junk list, and a cron-safe bare run."""

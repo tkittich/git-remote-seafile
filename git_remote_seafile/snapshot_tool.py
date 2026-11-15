@@ -10957,6 +10957,26 @@ def remembered_settings(vault: Path, source: Path) -> _Remembered:
     return remembered
 
 
+def remember_source_only(vault: Path, source: Path, vault_config: "dict[str, list[str]] | None") -> None:
+    """Record which tree this vault holds, when it does not say yet (a ``--no-push`` run).
+
+    A local-only run changes no remembered *choice*, but the source is the vault's identity, not
+    a preference: left unrecorded, a vault that has only ever run with ``--no-push`` accepted a
+    second tree on the same chain as a snapshot that deleted every file of the first (review
+    134c8af, fable-E4).
+    """
+    if (vault_config or {}).get("snapshot.source"):
+        return
+    proc = _run(
+        ["git", "-C", str(vault), "config", "--local", "snapshot.source", str(source)],
+        text=True, encoding="utf-8", errors="replace", stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    )
+    if proc.returncode != 0:
+        raise SnapshotError(
+            f"could not record the vault's source (rc={proc.returncode}): {proc.stderr.strip()}"
+        )
+
+
 def _vault_remembers(vault: Path, source: Path) -> bool:
     """Whether ``vault`` already exists and records exactly ``source`` as its tree."""
     if not (vault / ".git").is_dir():
@@ -11734,6 +11754,8 @@ def run_command(args: argparse.Namespace) -> int:
                 derived=getattr(args, "derived_excludes", None),
                 default_excludes=bool(getattr(args, "default_excludes_on", False)),
             )
+        elif not args.dry_run:
+            remember_source_only(vault, source, vault_config)
         # Last, after everything the run must keep: the report is optional, and
         # an interrupt during it must not lose the settings this run earned.
         if manifest is not None and remote and not args.dry_run:

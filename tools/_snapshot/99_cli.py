@@ -425,6 +425,8 @@ def run_command(args: argparse.Namespace) -> int:
                 derived=getattr(args, "derived_excludes", None),
                 default_excludes=bool(getattr(args, "default_excludes_on", False)),
             )
+        elif not args.dry_run:
+            remember_source_only(vault, source, vault_config)
         # Last, after everything the run must keep: the report is optional, and
         # an interrupt during it must not lose the settings this run earned.
         if manifest is not None and remote and not args.dry_run:
