@@ -1394,11 +1394,11 @@ class PayloadDefaultAndSafeguardTests(_PayloadFixture):
     def test_delete_needs_a_vault_or_an_explicit_no_vault(self):
         self.assertEqual(self.snapshot()[0], 0)
         rc, out, err = self.run_tool("--payload-gc", "--remote", self.remote, "--payload-delete")
-        self.assertEqual(rc, 1, out + err)
+        self.assertEqual(rc, snap.EXIT_USAGE, out + err)
         self.assertIn("--payload-delete needs --vault", err)
         rc, out, err = self.run_tool("--payload-gc", "--remote", self.remote,
                                      "--payload-no-vault")
-        self.assertEqual(rc, 1, out + err)
+        self.assertEqual(rc, snap.EXIT_USAGE, out + err)
         self.assertIn("only applies to --payload-gc --payload-delete", err)
 
     def test_a_rewritten_history_stops_a_delete_until_it_is_accepted(self):
@@ -1611,7 +1611,7 @@ class PayloadDefaultAndSafeguardTests(_PayloadFixture):
             with self.subTest(argv=argv):
                 rc, out, err = self.run_tool(self.src, *argv) if "--restore" not in argv \
                     else self.run_tool(*argv)
-                self.assertEqual(rc, 1, out + err)
+                self.assertEqual(rc, snap.EXIT_USAGE, out + err)
                 self.assertIn(needle, err)
 
     def test_many_files_upload_in_parallel_and_all_land(self):
@@ -2779,10 +2779,10 @@ class PayloadRememberVerifyViewAndClockTests(_PayloadFixture):
 
     def test_payload_keep_only_applies_to_gc_and_must_be_positive(self):
         rc, out, err = self.run_tool(self.src, "--vault", self.vault, "--payload-keep", "2")
-        self.assertEqual(rc, 1, out + err)
+        self.assertEqual(rc, snap.EXIT_USAGE, out + err)
         self.assertIn("--payload-keep only applies", err)
         rc, out, err = self.gc("--payload-keep", "0")
-        self.assertEqual(rc, 1, out + err)
+        self.assertEqual(rc, snap.EXIT_USAGE, out + err)
         self.assertIn("at least 1", err)
 
     def test_payload_verify_downloads_and_checks_the_objects(self):
@@ -2806,7 +2806,7 @@ class PayloadRememberVerifyViewAndClockTests(_PayloadFixture):
         self.assertEqual(rc, 0, out + err)
         self.assertIn("verifying 1 of 2", out)
         rc, out, err = self.run_tool("--remote", self.remote, "--payload-verify", "lots")
-        self.assertEqual(rc, 1, out + err)
+        self.assertEqual(rc, snap.EXIT_USAGE, out + err)
         self.assertIn("count or 'all'", err)
 
     def test_a_view_has_real_names_and_moves_no_data(self):
@@ -2911,10 +2911,10 @@ class PayloadRememberVerifyViewAndClockTests(_PayloadFixture):
 
     def test_view_flags_only_apply_to_a_view(self):
         rc, out, err = self.run_tool(self.src, "--vault", self.vault, "--payload-view-name", "x")
-        self.assertEqual(rc, 1, out + err)
+        self.assertEqual(rc, snap.EXIT_USAGE, out + err)
         self.assertIn("--payload-view-name only applies", err)
         rc, out, err = self.run_tool("--payload-view", "--payload-view-name", "a/b", "--remote", self.remote)
-        self.assertEqual(rc, 1, out + err)
+        self.assertEqual(rc, snap.EXIT_USAGE, out + err)
         self.assertIn("plain directory name", err)
 
     def test_gc_refuses_to_act_when_it_finds_no_manifest(self):
@@ -3098,7 +3098,7 @@ class PayloadRememberVerifyViewAndClockTests(_PayloadFixture):
             (("--dry-run",), "does not apply to --dry-run"),
         ):
             rc, out, err = self.run_tool(*base, *extra)
-            self.assertEqual(rc, 1, out + err)
+            self.assertEqual(rc, snap.EXIT_USAGE, out + err)
             self.assertIn(text, err)
         rc, out, err = self.run_tool(
             self.src, "--vault", self.vault, "--remote", str(self.case / "plain.git"),
@@ -3107,7 +3107,7 @@ class PayloadRememberVerifyViewAndClockTests(_PayloadFixture):
         self.assertEqual(rc, 1, out + err)
         self.assertIn("seafile:// remote", err)
         rc, out, err = self.run_tool("--payload-gc", "--remote", self.remote, "--no-embedded-repos")
-        self.assertEqual(rc, 1, out + err)
+        self.assertEqual(rc, snap.EXIT_USAGE, out + err)
         self.assertIn("--no-embedded-repos only applies to a snapshot run", err)
 
     def test_a_preview_does_not_write_a_probe_file_into_the_source(self):
@@ -3334,12 +3334,12 @@ class PayloadRememberVerifyViewAndClockTests(_PayloadFixture):
         self.assertEqual(rc, 0, out + err)
         self.assertNotIn("payload store report", out)
         rc, out, err = self.bare("--payload-report-days", "-1")
-        self.assertEqual(rc, 1, out + err)
+        self.assertEqual(rc, snap.EXIT_USAGE, out + err)
         self.assertIn("--payload-report-days must be 0 or more", err)
         rc, out, err = self.run_tool(
             self.src, "--vault", self.vault, "--no-push", "--payload-report-days", "3"
         )
-        self.assertEqual(rc, 1, out + err)
+        self.assertEqual(rc, snap.EXIT_USAGE, out + err)
         self.assertIn("--payload-report-days only applies", err)
 
     def test_a_failing_report_never_fails_the_run_that_pushed(self):
@@ -3462,7 +3462,7 @@ class PayloadSkipChangingTests(_PayloadFixture):
         rc, out, err = self.run_tool(
             "--restore", "--remote", self.remote, "--into", self.case / "x", "--payload-skip-changing"
         )
-        self.assertEqual(rc, 1, out + err)
+        self.assertEqual(rc, snap.EXIT_USAGE, out + err)
         self.assertIn("--payload-skip-changing only applies to a snapshot run", err)
 
 
