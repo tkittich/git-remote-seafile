@@ -2608,6 +2608,35 @@ class TestAStateFileTheFolderListsIsNeverAbsent(unittest.TestCase):
             is_listed_file(fake, "r", "/repo/HEAD")
         self.assertEqual(calls, ["/repo", "/repo"])
 
+    def test_every_json_decode_in_the_client_is_wrapped(self):
+        """fable-C4 (review 134c8af): a 200 that is not JSON (an SSO page) raised ``requests``' own
+        ``JSONDecodeError``, which no ``SeafileAPIError`` handler caught.  Every ``.json()`` call
+        sits inside a ``try`` that handles ``ValueError``, or is ``_json_body``'s own."""
+        import ast
+        import pathlib
+
+        source = (pathlib.Path(__file__).resolve().parent.parent / "git_remote_seafile" / "client.py"
+                  ).read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        parents = {child: node for node in ast.walk(tree) for child in ast.iter_child_nodes(node)}
+        bare = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "json":
+                cursor, handled = node, False
+                while cursor in parents:
+                    cursor = parents[cursor]
+                    if isinstance(cursor, ast.Try) and any(
+                        isinstance(h.type, ast.Name) and h.type.id in ("ValueError", "Exception")
+                        or isinstance(h.type, ast.Tuple) and any(
+                            isinstance(e, ast.Name) and e.id == "ValueError" for e in h.type.elts)
+                        for h in cursor.handlers
+                    ):
+                        handled = True
+                        break
+                if not handled:
+                    bare.append(node.lineno)
+        self.assertEqual(bare, [], "a .json() call that raises a bare JSONDecodeError (use _json_body)")
+
     def test_every_raw_read_outside_the_client_is_one_that_was_reviewed(self):
         """A new ``get_file_text``/``get_file_bytes`` call whose ``None`` decides
         something is the shape this round found four times.  Each raw read left is

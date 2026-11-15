@@ -212,8 +212,9 @@ person just made, not a quiet one, which is what the paragraph above forbids. A 
 run never asks, and the default stays "capture everything".
 
 **What no flag can capture.** Named pipes, sockets and device nodes have no
-content a snapshot could store, and git skips them. They are the one kind of
-omission that is **not** reported: the run's file count simply lacks them
+content a snapshot could store, and git skips them. They are one of two kinds
+of omission that are **not** reported (the other is an empty directory, which git does not
+store): the run's file count simply lacks them
 (measured on Debian: a FIFO and an AF_UNIX socket under the source were absent
 from the tree with no note). Everything else that is left out is named — excluded
 paths by count, a nested `.git` as an embedded repository, junctions and
@@ -261,7 +262,7 @@ silent it refuses instead:
 - **A vault belongs to one source** — records it, and refuses a different one.
 - **`--code-remote <name>` must name a real remote** of the source, so a typo
   fails before the snapshot instead of after it.
-- **`--no-push` with `--remote`** is contradictory and refused.
+- **`--no-push` with `--remote`** is contradictory and refused (exit 2). A `--no-push` run changes no remembered choice, but it does record which tree the vault holds, so a second tree is refused there too.
 - **No remote at all** (none given, none remembered, none derivable from the source's
   `seafile://` remote) ends the run with a `Warning:` naming `--remote seafile://<library>/<name>-vault`,
   so `--exit-warnings` returns 3: a backup that stays on the machine it protects must not look
@@ -284,7 +285,7 @@ silent it refuses instead:
 | :--- | :--- |
 | `0` | Done (a warning may have been printed), or there was nothing to do. |
 | `1` | The run failed; `Error:` on stderr names why. |
-| `2` | The command line was wrong. |
+| `2` | The command line was wrong: an unknown flag, or flags that cannot be combined (`--no-push` with `--remote`). Under `--json` stdout is still one document. |
 | `3` | The run completed but printed a `Warning:`. **Only with `--exit-warnings`**: without it the same run exits `0`, as it always did. |
 
 A scheduled job that must alert on anything unusual runs with `--json

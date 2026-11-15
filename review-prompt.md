@@ -579,7 +579,9 @@ file over 4 GiB on exFAT through a real server and the Windows remount, S21, Z43
 | AA23, AA32, AA33 | 429 and retry handling: the ref walk's worker back-off, `Retry-After` capped at 10 s, a write or a POST never re-sent once it may have reached the server, `other=0` (no re-send after an SSL failure), a connection error that names its cause (`SeafileConnectionError`) | done with code and a test each (0.9.26). AA23's other pools (payload, gc, restore) are open: say which can still hammer the server, with the input |
 | AA24 | Windows long-path stats with long paths off | open: no machine to measure on; read the code |
 | AA27, AA31 | a dropped connection is a `SeafileAPIError`; the advertised-refs record of a linked worktree; the Pro owner refusal for `--payload-delete` before the history download | done with code and a test each; try a sibling |
-| AA34-AA36, AA31's rest | fable2 C1 (a body cut mid-stream), C3 (the pack fallback's bound), the surviving mutations, G0.3(b)(c) (the failed-write folder cleanup), `99_cli.py`'s size | done with code in the commits after `v0.9.26` (a test each, mutations KILLED); try a sibling: another streamed read, another unfenced `delete_entry` (the two pack cleanups are known and unfenced) |
+| AA34-AA36, AA31's rest | fable2 C1 (a body cut mid-stream), C3 (the pack fallback's bound), the surviving mutations, G0.3(b)(c) (the failed-write folder cleanup), `99_cli.py`'s size | done with code in the commits after `v0.9.26` (a test each, mutations KILLED); try a sibling: another streamed read, another `delete_entry` without a lease check (both pack cleanups of a push are fenced since AA37) |
+| AA37-AA49 | held packs (a held name is skipped), the lease fence of both own-upload cleanups, an unreadable known ref, the Content-Encoding refusal, the throttled `DELETE`, the payload and gc retention reports | done with code and a test each in the commits after `9fe723f`; review 134c8af found a regression in the first (AA50) |
+| AA50-AA58 | review 134c8af: a held pack verified by size (AA50), the LFS and payload settle races and a short LFS object (AA51), the token scope as a path, `http` never replacing `https`, IPv6 brackets, `:secret@` masking (AA52), a listed ref with a bad body and a vanished `refs/heads` (AA53), a non-ASCII case twin and a name over 255 bytes (AA54), the `--no-push` source, `_run_live`'s pipe, exit 2 and `--json` on a bad command line (AA55), small ones (AA56, AA57) | done with code and a test each in the commits after `134c8af`; try a sibling of each: another place a size or a name is trusted without being read back, another URL parse that drops brackets or the scheme, another `fnmatch` or `casefold` that differs by platform, another stdout pipe read after the child exits |
 | S1 | an unpaged listing may be short | measured complete at 5,100 on CE and Pro; read the claim, and the assertion, adversarially |
 | Z39 | locale and environment legs | partly done: tr_TR and ASCII-only legs added; antivirus, Task Scheduler as SYSTEM and a subpath behind nginx remain |
 
@@ -625,8 +627,8 @@ OUTPUT — one markdown document, sections in this order.
    prefixed with your `<model>` name (below): `glm-5.3-G2.1`.
 4. Part F: a table of row | your verdict | evidence.
 5. Part H: H1 (areas), H2 (suggestions) and H3 (this prompt). End H2 with a one-line
-   answer: which findings, if any, should block the 0.9.25 tag, and which would you ship in a
-   0.9.25.1 hot-fix instead?
+   answer: which findings, if any, should block the next tag, and which would you ship in a
+   point release instead?
 6. What you checked and found sound: one line each, and for every part with no finding
    a line saying that and what you attacked there (a part with an empty table is not
    one you skipped). This is not filler — a named list of paths you attacked and could
