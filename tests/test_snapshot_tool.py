@@ -2048,6 +2048,20 @@ class RestoreNameLimitTests(_SnapshotFixture):
         ):
             self.assertIsNone(probed(self.tmp))
 
+    def test_a_volume_that_counts_bytes_sets_aside_a_name_over_255_of_them(self):
+        """fable-G7.1 (review 134c8af): 86 Thai letters are legal on NTFS and 258 bytes on ext4."""
+        def ext4(folder, name):
+            return len(name.encode("utf-8")) <= 255
+
+        thai = "ก" * 86
+        with unittest.mock.patch.object(snap, "_volume_keeps_name", ext4):
+            problem = snap.probed_name_problem(self.tmp)
+        self.assertIsNotNone(problem)
+        self.assertIsNotNone(problem(f"dir/{thai}.txt"))
+        self.assertIsNone(problem("dir/" + "ก" * 80))
+        with unittest.mock.patch.object(snap, "_volume_keeps_name", lambda folder, name: True):
+            self.assertIsNone(snap.probed_name_problem(self.tmp))     # NTFS and APFS: no rule
+
     def test_the_probe_names_its_file_in_bytes(self):
         """A ``str`` path with a non-ASCII letter raised ``UnicodeEncodeError`` (not ``OSError``)
         under an ASCII filesystem encoding and crashed every restore (found by the locale legs,
@@ -3786,6 +3800,13 @@ class IncrementalStagingTests(_SnapshotFixture):
         if not folds:   # two files on a case-sensitive disk are two: the small one stays in git
             (self.code / "model.dat").write_bytes(b"small")
             self.assertFalse(skipped("model.dat"))
+
+    def test_the_payload_skip_matcher_folds_the_case_of_a_non_ascii_letter_too(self):
+        """fable-G1.1 (review 134c8af): ``Über.dat`` renamed to ``über.dat`` is one file on NTFS and
+        APFS, and the ASCII-only key never asked ``samestat``, so it went into git and the manifest."""
+        (self.code / "Über.dat").write_bytes(b"x" * 10)
+        skipped = snap.payload_skip_matcher(self.code, ["Über.dat"])
+        self.assertEqual(skipped("über.dat"), (self.code / "über.dat").exists())
 
     def test_the_index_spelling_follows_git_and_the_disk(self):
         """The unit under the test above: ASCII letters fold, nothing else does, and a

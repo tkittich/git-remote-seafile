@@ -91,7 +91,12 @@ def probed_name_problem(into: Path) -> "Callable[[str], str | None] | None":
     # A FAT volume mounted with the default ``iocharset=ascii`` (Debian) refuses every
     # non-ASCII name, which stopped a restore at ``café`` (measured, ROADMAP Z44).
     keeps_non_ascii = _volume_keeps_name(into, f"{stem}é")
-    if not refuses_chars and keeps_space and keeps_dot and keeps_non_ascii:
+    # ext4, xfs, btrfs and tmpfs count 255 *bytes* of a name; NTFS and APFS count characters.  A
+    # snapshot made on the second kind can hold 86 Thai letters (258 bytes of UTF-8), and checkout
+    # stopped on it with a partial tree (review 134c8af, fable-G7.1).  Found by asking the volume:
+    # 200 two-byte characters is 400 bytes and 215 characters.
+    counts_bytes = keeps_non_ascii and not _volume_keeps_name(into, f"{stem}{'é' * 200}")
+    if not refuses_chars and keeps_space and keeps_dot and keeps_non_ascii and not counts_bytes:
         return None
 
     def problem(rel: str) -> "str | None":
@@ -102,6 +107,8 @@ def probed_name_problem(into: Path) -> "Callable[[str], str | None] | None":
                 return "ends with a space (this volume refuses or drops it)"
             if not keeps_dot and part.endswith("."):
                 return "ends with a dot (this volume drops it)"
+            if counts_bytes and len(part.encode("utf-8")) > 255:
+                return "is longer than 255 bytes of UTF-8 (this volume counts bytes, not characters)"
             if not keeps_non_ascii and any(ord(char) > 127 for char in part):
                 return "has a character outside ASCII (this volume is mounted without a UTF-8 charset)"
         return None

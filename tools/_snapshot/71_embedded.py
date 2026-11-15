@@ -264,8 +264,13 @@ def handle_embedded_repositories(
 
 
 def _skip_key(path: str) -> str:
-    """The spelling two names of one file share: NFC, ASCII case folded."""
-    return ignorecase_key(unicodedata.normalize("NFC", path))
+    """The spelling two names of one file share: NFC, case folded (every letter, not only ASCII).
+
+    NTFS and APFS fold more than ASCII, so ``Über.dat`` renamed to ``über.dat`` is one file there
+    (review 134c8af, fable-G1.1).  A key that is too wide only asks ``samestat`` more often: it
+    alone decides whether two names are one file.
+    """
+    return unicodedata.normalize("NFC", path).casefold()
 
 
 def payload_skip_matcher(work_tree: Path, skip_paths: Any) -> Any:
