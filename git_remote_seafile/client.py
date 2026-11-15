@@ -1296,9 +1296,10 @@ class SeafileClient:
             url = f"{self.server_url}/api2/repos/{repo_id}/dir/?p={quote(current, safe='/')}"
             # A 429 refuses before acting, so it is waited out and the create sent again; a
             # timeout may have landed and is not (AA23: the AA18 listing run died here).
-            resp = self._send_waiting_out_a_throttle(lambda u=url: self.session.post(
-                u, data={"operation": "mkdir"}, timeout=self.timeout
-            ))
+            def _create(u: str = url) -> requests.Response:
+                return self.session.post(u, data={"operation": "mkdir"}, timeout=self.timeout)
+
+            resp = self._send_waiting_out_a_throttle(_create)
             if resp.status_code in (200, 201):
                 # Seafile's mkdir is create-or-duplicate: on a name a concurrent
                 # client just took it answers success and creates a copy beside
