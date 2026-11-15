@@ -80,6 +80,32 @@ class _DeleteThrottle(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
 
+class TestARenameIsSentAgainAfterAThrottle(unittest.TestCase):
+    """fable-E2 (review 134c8af): the rename that publishes an object answered a bare False for a
+    429, which the payload and LFS callers read as "that name is taken"."""
+
+    def test_a_429_is_waited_out_and_the_rename_goes_through(self):
+        client = SeafileClient(server_url="http://127.0.0.1:9", token="t")
+        self.addCleanup(client.close)
+        answers = []
+        for status in (429, 429, 200):
+            resp = type("R", (), {"status_code": status, "headers": {"Retry-After": "2"}})()
+            answers.append(resp)
+        slept: list[float] = []
+        with patch.object(client.session, "post", side_effect=answers) as post,                 patch.object(client_module.time, "sleep", side_effect=slept.append):
+            self.assertTrue(client.rename_entry("rid", "/r/objects/ab/cd.part", "cd"))
+        self.assertEqual(post.call_count, 3)
+        self.assertEqual(slept, [2.0, 2.0])
+
+    def test_a_server_that_keeps_throttling_is_a_refusal_after_four_tries(self):
+        client = SeafileClient(server_url="http://127.0.0.1:9", token="t")
+        self.addCleanup(client.close)
+        resp = type("R", (), {"status_code": 429, "headers": {}})()
+        with patch.object(client.session, "post", return_value=resp) as post,                 patch.object(client_module.time, "sleep"):
+            self.assertFalse(client.rename_entry("rid", "/r/x", "y"))
+        self.assertEqual(post.call_count, 4)
+
+
 class TestADeleteIsSentAgainAfterAThrottle(unittest.TestCase):
     """fable-E1 (AA44): the session never re-sends a DELETE, so the first 429 of a payload
     delete ended the run as "the server refused"; a 429 is the limiter refusing before it acted."""

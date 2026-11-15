@@ -5141,7 +5141,18 @@ class TypedGitTimeoutTests(unittest.TestCase):
             os.environ["SEAFILE_SNAPSHOT_GIT_TIMEOUT"] = "1800"
             self.assertEqual(snap.git_timeout(), 1800.0)
 
+    def test_a_bad_value_is_warned_about_once_per_process_not_once_per_git_child(self):
+        """fable-G11.2 (review 134c8af): one run printed the warning 23 times."""
+        snap._WARNED_SECONDS.clear()
+        with unittest.mock.patch.dict(os.environ, {"SEAFILE_SNAPSHOT_GIT_TIMEOUT": "soon"}):
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                for _ in range(5):
+                    self.assertEqual(snap.git_timeout(), snap.GIT_TIMEOUT)
+        self.assertEqual(err.getvalue().count("is not a positive number of seconds"), 1)
+
     def test_a_bad_value_falls_back_with_a_warning_and_never_fails_the_run(self):
+        snap._WARNED_SECONDS.clear()
         for bad in ("soon", "0", "-5", "inf", "-inf", "nan", "1e400"):  # review 8eb416b: inf/nan crashed
             with self.subTest(value=bad), unittest.mock.patch.dict(os.environ, {"SEAFILE_SNAPSHOT_GIT_TIMEOUT": bad}):
                 err = io.StringIO()
@@ -5387,6 +5398,7 @@ class StatusLineTests(unittest.TestCase):
         self.assertTrue(seen.get("live_stderr"))
 
     def test_stall_limit_can_be_raised_from_the_environment(self):
+        snap._WARNED_SECONDS.clear()
         with unittest.mock.patch.dict(os.environ, {"SEAFILE_SNAPSHOT_STALL_LIMIT": "7200"}):
             self.assertEqual(snap._stall_limit_from_env(), 7200.0)
         for junk in ("abc", "0", "-5", "inf", "nan", "1e400"):  # nan silently switched the guard off
@@ -5412,6 +5424,11 @@ class StatusLineTests(unittest.TestCase):
                 os.environ.pop("SEAFILE_GIT_TIMEOUT", None)
                 snap.git(pathlib.Path("v"), None, ["status"], cwd=pathlib.Path("."))
             self.assertEqual(captured["env"]["SEAFILE_GIT_TIMEOUT"], str(int(snap.STALL_LIMIT)))
+            # fable-G11.1 (review 134c8af): the typed limit is what the helper is given, not the constant.
+            with unittest.mock.patch.dict(os.environ, {"SEAFILE_SNAPSHOT_STALL_LIMIT": "7200"}):
+                os.environ.pop("SEAFILE_GIT_TIMEOUT", None)
+                snap.git(pathlib.Path("v"), None, ["status"], cwd=pathlib.Path("."))
+            self.assertEqual(captured["env"]["SEAFILE_GIT_TIMEOUT"], "7200")
             # fable-G11.1 (AA43): the helper reads the variable before ``seafile.gittimeout``, so
             # injecting one lowered a machine owner's configured ceiling to the watchdog's.
             with unittest.mock.patch.object(snap, "_owner_set_git_timeout", return_value=True),                     unittest.mock.patch.dict(os.environ, {}, clear=False):

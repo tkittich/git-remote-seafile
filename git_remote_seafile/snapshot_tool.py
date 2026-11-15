@@ -285,6 +285,9 @@ STALL_LIMIT = 1800
 _MAX_TYPED_SECONDS = 10_000_000.0
 
 
+_WARNED_SECONDS: set[tuple[str, str]] = set()      # a name is complained about once per process
+
+
 def _typed_seconds(name: str, raw: str, default: float) -> float:
     """The positive, finite number of seconds in *raw*, the value of environment variable *name*, or *default*.
 
@@ -302,10 +305,12 @@ def _typed_seconds(name: str, raw: str, default: float) -> float:
     except ValueError:
         value = 0.0
     if not (value > 0) or value == float("inf") or value != value:
-        print(
-            f"Warning: {name}={raw!r} is not a positive number of seconds; using {default}.",
-            file=sys.stderr,
-        )
+        if (name, raw) not in _WARNED_SECONDS:
+            _WARNED_SECONDS.add((name, raw))
+            print(
+                f"Warning: {name}={raw!r} is not a positive number of seconds; using {default}.",
+                file=sys.stderr,
+            )
         return float(default)
     return min(value, _MAX_TYPED_SECONDS)
 
@@ -796,7 +801,7 @@ def git(
     # so injecting here lowered a machine owner's ``seafile.gittimeout 7200`` to 1800 inside
     # every snapshot run; review 9fe723f, fable-G11.1).
     if "SEAFILE_GIT_TIMEOUT" not in env and not _owner_set_git_timeout():
-        env["SEAFILE_GIT_TIMEOUT"] = str(int(STALL_LIMIT))
+        env["SEAFILE_GIT_TIMEOUT"] = str(int(_stall_limit_from_env()))
     proc = _run(
         cmd,
         cwd=str(cwd),

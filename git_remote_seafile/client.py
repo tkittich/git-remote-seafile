@@ -2015,9 +2015,12 @@ class SeafileClient:
         which includes a name already taken."""
         clean_path = "/" + path.strip("/")
         url = f"{self.server_url}/api2/repos/{repo_id}/file/?p={quote(clean_path, safe='/')}"
-        resp = self.session.post(
+        # A 429 is waited out, as a DELETE's is: the rename that publishes a payload or LFS object
+        # answered a bare False for it, and the caller read that as "a name already taken"
+        # (review 134c8af, fable-E2).
+        resp = self._send_waiting_out_a_throttle(lambda: self.session.post(
             url, data={"operation": "rename", "newname": new_name}, timeout=self.timeout
-        )
+        ))
         return resp.status_code in (200, 201)
 
     def copy_entries(self, repo_id: str, src_parent: str, names: list[str], dst_parent: str) -> bool:
@@ -2050,7 +2053,15 @@ class SeafileClient:
         as "the server refused to delete" after the history fetch and going on (review 9fe723f,
         fable-E1; AA23's last pool).
         """
-        resp = self.session.delete(url, timeout=self.timeout)
+        return self._send_waiting_out_a_throttle(lambda: self.session.delete(url, timeout=self.timeout))
+
+    def _send_waiting_out_a_throttle(self, send: Callable[[], requests.Response]) -> requests.Response:
+        """*send*, again after a 429 (at most three times, each wait capped).
+
+        For a request the session does not re-send on its own (a DELETE or a POST: after a
+        timeout it may have landed).  A 429 refuses before acting, so the wait is safe.
+        """
+        resp = send()
         for _ in range(3):
             if resp.status_code != 429:
                 break
@@ -2061,7 +2072,7 @@ class SeafileClient:
             if wait != wait:      # "nan" parses; time.sleep would refuse it
                 wait = 1.0
             time.sleep(min(max(wait, 0.0), RETRY_AFTER_CAP_SECONDS))
-            resp = self.session.delete(url, timeout=self.timeout)
+            resp = send()
         return resp
 
     def delete_entry(self, repo_id: str, path: str) -> bool:
