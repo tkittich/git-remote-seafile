@@ -456,6 +456,7 @@ def publish_payload(
         payload_preflight(client, rid, todo_bytes)
     if dry_run:
         return len(todo), todo_bytes
+    release_reused_marks(client, rid, base, {sha for sha in by_sha if sha not in todo})
     left_out = _upload_all(client, rid, server_url, base, source, todo, jobs, skip_changing) if todo else []
     if left_out:
         dropped = set(left_out)

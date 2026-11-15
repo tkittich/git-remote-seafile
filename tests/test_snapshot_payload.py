@@ -2100,6 +2100,24 @@ class PayloadRetentionTests(_PayloadFixture):
         self.assertEqual(self.stub.files[REPO_ID][seen_key], before,
                          "the vault-only report rewrote the fence baseline")
 
+    def test_a_snapshot_that_reuses_a_marked_object_drops_its_mark(self):
+        """fable-D1 (review 134c8af): the grace period is counted from the mark, so an object
+        marked long ago that a snapshot started to depend on was deleted soon after, before that
+        snapshot was pushed.  A snapshot that finds the object stored and names it clears the mark."""
+        self.assertEqual(self.snapshot()[0], 0)
+        objects = sorted(k for k in self.server_files() if "/objects/" in k and len(k.rsplit("/", 1)[1]) == 64)
+        self.assertTrue(objects)
+        used = objects[0].rsplit("/", 1)[1]
+        stranger = "e" * 64
+        pending_key = f"{self.base}/gc-pending.json"
+        self.stub.files[REPO_ID][pending_key] = json.dumps(
+            {used: time.time() - 6 * 86400, stranger: time.time() - 6 * 86400}).encode()
+        (self.src / "small.txt").write_bytes(b"a change, so a snapshot is made\n")
+        self.assertEqual(self.snapshot()[0], 0)
+        marks = json.loads(self.stub.files[REPO_ID][pending_key])
+        self.assertNotIn(used, marks, "the mark of an object the snapshot names was kept")
+        self.assertIn(stranger, marks, "a mark of an unrelated object was dropped")
+
     def test_a_report_that_may_not_see_the_whole_history_seeds_no_baseline(self):
         """gemini-4-hydrogen-E6 (review 134c8af): a Pro non-owner's report goes on, and a baseline
         written from tips that miss the hidden branches made a later rewrite there invisible."""

@@ -7477,6 +7477,7 @@ def publish_payload(
         payload_preflight(client, rid, todo_bytes)
     if dry_run:
         return len(todo), todo_bytes
+    release_reused_marks(client, rid, base, {sha for sha in by_sha if sha not in todo})
     left_out = _upload_all(client, rid, server_url, base, source, todo, jobs, skip_changing) if todo else []
     if left_out:
         dropped = set(left_out)
@@ -9898,6 +9899,33 @@ def lost_paths_line(paths: "tuple[str, ...]") -> str:
     return (f"{len(paths)} payload path(s) are in no kept snapshot, so their last stored version "
             f"goes with the older ones: {shown}.  A file deleted long ago is among them, and so "
             "is one that --payload-skip-changing has left out of every snapshot since")
+
+
+def release_reused_marks(client: Any, rid: str, base: str, reused: "set[str]") -> int:
+    """Drop the retention mark of every object a snapshot found already stored and now names.
+
+    ``--payload-gc --payload-delete`` counts its grace period from the *mark*, so an object
+    marked on day 0 that another machine's snapshot starts depending on on day 6.9 was deleted
+    a tenth of a day later, before that snapshot was pushed (review 134c8af, fable-D1).  A
+    snapshot that names an object has used it: the mark goes, and a later run marks it afresh if
+    it is unused again.  A mark dropped too early only delays a deletion.  Best effort: a
+    failure here changes nothing the run depends on, so it is never an error.  Returns how many
+    marks were dropped.
+    """
+    if not reused:
+        return 0
+    try:
+        text = _read_pending(client, rid, base)
+        marks = json.loads(text) if text else {}
+        if not isinstance(marks, dict):
+            return 0
+        kept = {sha: stamp for sha, stamp in marks.items() if sha not in reused}
+        if len(kept) == len(marks):
+            return 0
+        client.upload_file(rid, base, _PENDING_NAME, encode_pending(kept))
+        return len(marks) - len(kept)
+    except Exception:
+        return 0
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
