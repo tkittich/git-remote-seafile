@@ -39,7 +39,7 @@ def check_manifest_shape(manifest: Any, where: str = "the payload manifest") -> 
     if not isinstance(files, list):
         raise SnapshotError(f"{where} has no file list")
     ident = manifest.get("snapshot")
-    if isinstance(ident, str) and not _SNAPSHOT_ID_RE.fullmatch(ident):
+    if ident is not None and not (isinstance(ident, str) and _SNAPSHOT_ID_RE.fullmatch(ident)):
         # The field is a name this tool derives, never user text; a value that
         # is not the derived shape is a manifest someone wrote by hand, and it
         # reaches a server-side directory name in --payload-view.  Refused as

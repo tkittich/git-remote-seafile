@@ -4837,7 +4837,7 @@ def check_manifest_shape(manifest: Any, where: str = "the payload manifest") -> 
     if not isinstance(files, list):
         raise SnapshotError(f"{where} has no file list")
     ident = manifest.get("snapshot")
-    if isinstance(ident, str) and not _SNAPSHOT_ID_RE.fullmatch(ident):
+    if ident is not None and not (isinstance(ident, str) and _SNAPSHOT_ID_RE.fullmatch(ident)):
         # The field is a name this tool derives, never user text; a value that
         # is not the derived shape is a manifest someone wrote by hand, and it
         # reaches a server-side directory name in --payload-view.  Refused as
@@ -7834,7 +7834,9 @@ def payload_view(
     repo_path = base[: -len("/payload")]
     client = _api(lambda: _open_client(server_url), "opening the Seafile client")
     rid = _api(lambda: client.get_repo_id(library), f"finding library {library!r}")
-    view_name = name or manifest["snapshot"]
+    view_name = name or manifest.get("snapshot")
+    if not view_name:
+        raise SnapshotError("the manifest names no snapshot id; give the view a name")
     root = f"{repo_path}-view/{view_name}"
 
     held = _remote_objects(client, rid, base, {item["sha256"] for item in files})

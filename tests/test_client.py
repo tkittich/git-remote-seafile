@@ -544,6 +544,19 @@ class TestClientAPI(unittest.TestCase):
         self.assertIs(client._transfer_session(scope + "/seafhttp/f/1"), client.session)
         self.assertIs(client._transfer_session("https://h.example.com/other/steal?t=a"), client._file_session)
 
+    def test_a_200_that_is_not_json_is_an_api_error_that_names_the_listing(self):
+        """fable-C4 (review 134c8af): an SSO page answered 200 and ``requests`` raised its own
+        ``JSONDecodeError``, which no ``SeafileAPIError`` handler caught."""
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.text = "<html>Sign in ]0;OWNED</html>"
+        resp.json.side_effect = ValueError("Expecting value")
+        with patch.object(self.client.session, "get", return_value=resp):
+            with self.assertRaises(SeafileAPIError) as caught:
+                self.client.list_dir("rid", "/repo/refs/heads")
+        self.assertIn("not JSON", str(caught.exception))
+        self.assertNotIn("", str(caught.exception))
+
     def test_an_http_entry_never_replaces_an_https_server_url(self):
         """gemini-4-hydrogen-C1: the netloc comparison ignores the scheme; the token went in the clear."""
         with patch.dict("os.environ", {"SEAFILE_SERVER": "http://seafile.example.com",

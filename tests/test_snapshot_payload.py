@@ -869,9 +869,21 @@ class PayloadManifestAndSelectionTests(_PayloadFixture):
             ".git::$INDEX_ALLOCATION/config", ".git:$I30:$INDEX_ALLOCATION/x",
             ".git::$DATA", "x/git~1:y",
         )
+        # gemini/fable E3 (review 134c8af): a ``..`` that stays inside the destination, and one
+        # the reserved-directory test (first component only) cannot see.
+        bad_paths += ("x/../.seafile-payload/manifest.json", "a/../b")
         for path in bad_paths + ("GIT~12/x", "a/Git~2"):
             with self.subTest(path=path), self.assertRaises(snap.SnapshotError):
                 snap.validate_manifest({"format": 2, "files": [_good_entry(path=path)]}, dest)
+
+    def test_a_manifest_snapshot_id_that_is_not_a_string_is_refused(self):
+        """fable-E1 (review 134c8af): a number or a list passed and failed later as a KeyError or a
+        folder name built from a list's text."""
+        dest = self.case / "dest"
+        dest.mkdir()
+        for ident in (7, ["a"], {"x": 1}, ""):
+            with self.subTest(ident=ident), self.assertRaises(snap.SnapshotError):
+                snap.validate_manifest({"format": 2, "snapshot": ident, "files": [_good_entry()]}, dest)
 
     def test_a_name_that_only_starts_git_tilde_is_a_file_not_an_alias_of_dot_git(self):
         """Review 853a7a2 (sonnet E1): ``git~notes.zip`` made ``validate_manifest`` refuse the whole

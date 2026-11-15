@@ -1010,6 +1010,21 @@ class SeafileClient:
 
         return raw_url
 
+    def _json_body(self, resp: Any, what: str) -> Any:
+        """``resp.json()``, with a body that is not JSON (an SSO login page answered 200) named.
+
+        ``requests`` raises its own ``JSONDecodeError``, which is no ``SeafileAPIError``: the
+        listing's retry and the cleanups missed it and the person read "Expecting value: line 1
+        column 1" (review 134c8af, fable-C4).
+        """
+        try:
+            return resp.json()
+        except ValueError:
+            raise SeafileAPIError(
+                f"The server answered 200 for {what} but the body is not JSON (a login page or a "
+                f"proxy's error page?): {self._said(getattr(resp, 'text', ''))}"
+            ) from None
+
     def _json_or_none(self, path: str) -> Any:
         """``GET <server><path>`` as JSON, or ``None`` for any failure (a question
         with a safe default, never a reason to stop on its own)."""
@@ -1111,7 +1126,7 @@ class SeafileClient:
                 )
             raise SeafileAPIError(f"Failed to list repos: HTTP {resp.status_code} {self._said(resp.text)}")
 
-        repos = resp.json()
+        repos = self._json_body(resp, "the library list")
         if not isinstance(repos, list):
             raise SeafileAPIError(f"Unexpected response from {url}: {resp.text}")
         # An element that is not an object cannot be a library; a hostile or
@@ -1207,7 +1222,7 @@ class SeafileClient:
                 f"Failed to list dir {clean_path}: HTTP {resp.status_code} {self._said(resp.text)}"
                 + _denied_hint(resp, "see")
             )
-        data = resp.json()
+        data = self._json_body(resp, f"the listing of {clean_path}")
         # Normalise here, once, so no caller has to guard: a non-array response
         # is a protocol error worth naming rather than an AttributeError three
         # frames later, and a non-object element cannot be a directory entry.
