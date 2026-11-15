@@ -69,11 +69,16 @@ def normalize_netloc(url_or_netloc: str) -> str:
     if "://" not in url_or_netloc:
         url_or_netloc = f"http://{url_or_netloc}"
     parsed = urlparse(url_or_netloc)
-    host = (parsed.hostname or "").lower()
+    host = _bracketed((parsed.hostname or "").lower())
     port = _port_or_none(parsed, original)
     if port and not ((parsed.scheme == "https" and port == 443) or (parsed.scheme == "http" and port == 80)):
         return f"{host}:{port}"
     return host
+
+
+def _bracketed(host: str) -> str:
+    """*host* as it is written in a URL: an IPv6 literal keeps its brackets (``urlparse`` drops them)."""
+    return f"[{host}]" if ":" in host and not host.startswith("[") else host
 
 
 def mask_url(url: str) -> str:
@@ -99,9 +104,9 @@ def mask_url(url: str) -> str:
     if "@" not in body:
         return url
     parsed = urlparse(body if "://" in body else f"//{body}")
-    if not parsed.username:
-        return url
-    host = (parsed.hostname or "").lower()
+    if not parsed.username and not parsed.password:
+        return url      # ``:secret@host`` has an empty user name and a password to redact
+    host = _bracketed((parsed.hostname or "").lower())
     netloc = host
     try:
         port = parsed.port
@@ -315,10 +320,11 @@ def parse_seafile_url(url: str) -> SeafileURL:
         if not host or host in (".", ".."):
             raise ValueError(f"Invalid Seafile URL format: invalid host '{host}': {url}")
         port = _port_or_none(parsed, url)
+        shown = _bracketed(host)
         if port and not ((scheme == "https" and port == 443) or (scheme == "http" and port == 80)):
-            server_url = f"{scheme}://{host}:{port}"
+            server_url = f"{scheme}://{shown}:{port}"
         else:
-            server_url = f"{scheme}://{host}"
+            server_url = f"{scheme}://{shown}"
         path_parts = _path_components(parsed.path, url)
     else:
         parts = _path_components(stripped, url)

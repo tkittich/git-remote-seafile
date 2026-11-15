@@ -95,6 +95,36 @@ def _is_seafile_copy_of(name: str, candidate: str) -> bool:
 from .sqlite_read import open_live_sqlite_ro
 
 
+def _inside_scope(url: str, scope: str) -> bool:
+    """True when *url* is *scope* or under it, read the way a server reads a path.
+
+    A string prefix is not enough: ``requests`` normalises a relative ``Location`` but not an
+    absolute one, so ``https://host/seafile/../other/x`` starts with the scope and is routed to
+    another application by a front end that resolves dot segments (fable-C1).  The path is
+    percent-decoded first and refused when it holds a dot segment, an encoded slash or a
+    ``;`` parameter, however they are spelled.
+    """
+    from urllib.parse import unquote, urlsplit
+
+    try:
+        parts = urlsplit(url)
+        base = urlsplit(scope)
+    except ValueError:
+        return False
+    if parts.scheme != base.scheme or _transfer_authority(url) != _transfer_authority(scope):
+        return False
+    raw = parts.path
+    decoded = raw
+    for _ in range(3):                       # a doubly encoded dot segment
+        decoded = unquote(decoded)
+    if ";" in decoded or "\\" in decoded or any(seg in ("..", ".") for seg in decoded.split("/")):
+        return False
+    if "%2f" in raw.lower() or "%5c" in raw.lower():
+        return False
+    prefix = base.path.rstrip("/")
+    return decoded == prefix or decoded.startswith(prefix + "/")
+
+
 def _transfer_authority(url: str) -> tuple[str, int | None] | None:
     """``(host, port)`` of *url* as the HTTP stack will connect to it, or ``None``.
 
@@ -150,7 +180,9 @@ def _scrub_transfer_error(ex: BaseException, url: str) -> str:
     out of the messages this module writes; this keeps it out of the ones
     ``requests`` writes.
     """
-    text = str(ex)
+    # The link named after "url:" first: replacing the path first left "url: <transfer" for the
+    # pattern to match and a stray "link>" behind it (gemini-4-hydrogen-G0.2).
+    text = _LINK_IN_ERROR.sub("url: <transfer link>", str(ex))
     parsed = urlparse(url)
     for secret in (
         f"{parsed.path}?{parsed.query}" if parsed.query else "",
@@ -159,7 +191,7 @@ def _scrub_transfer_error(ex: BaseException, url: str) -> str:
     ):
         if secret and len(secret) > 1:
             text = text.replace(secret, "<transfer link>")
-    return _LINK_IN_ERROR.sub("url: <transfer link>", text)
+    return text
 
 
 #: What a text file the tool reads from a library (ref, HEAD, lock ticket, a
@@ -441,7 +473,7 @@ class _ScopedSession(requests.Session):
         super().rebuild_auth(prepared_request, response)
         url = str(prepared_request.url or "")
         scope = self.scope().rstrip("/")
-        if not scope or (url != scope and not url.startswith(scope + "/")):
+        if not scope or not _inside_scope(url, scope):
             prepared_request.headers.pop("Authorization", None)
 
 
@@ -677,11 +709,27 @@ class SeafileClient:
         env_server = os.environ.get("SEAFILE_SERVER")
         env_token = os.environ.get("SEAFILE_TOKEN")
         if env_server and (env_token or not require_token):
-            if not self.server_url or normalize_netloc(env_server) == normalize_netloc(self.server_url):
+            if self._may_replace_server_url(env_server):
                 self.server_url = env_server.rstrip("/")
                 self._adopt_token(env_token, "SEAFILE_TOKEN")
                 return True
         return False
+
+    def _may_replace_server_url(self, source_server: str) -> bool:
+        """True when a server named by a credential source may stand in for ``self.server_url``.
+
+        The same host and port, and never a step from ``https`` down to ``http``: the netloc
+        comparison ignores the scheme, so an ``http://`` entry in ``SEAFILE_SERVER``, the config
+        file or accounts.db replaced an explicit ``https://`` URL and the token went out in the
+        clear (gemini-4-hydrogen-C1).
+        """
+        if not self.server_url:
+            return True
+        if normalize_netloc(source_server) != normalize_netloc(self.server_url):
+            return False
+        return not (
+            self.server_url.lower().startswith("https://") and source_server.lower().startswith("http://")
+        )
 
     def _credentials_from_config_file(
         self, config_path: Path, require_token: bool
@@ -714,7 +762,7 @@ class SeafileClient:
             if cfg_user and not self.username:
                 self.username = cfg_user
             if cfg_server and (cfg_token or not require_token):
-                if not self.server_url or normalize_netloc(cfg_server) == normalize_netloc(self.server_url):
+                if self._may_replace_server_url(cfg_server):
                     self.server_url = cfg_server.rstrip("/")
                     self._adopt_token(cfg_token, f"the token in {config_path}")
                     return True, cfg_server, cfg_token
@@ -773,9 +821,7 @@ class SeafileClient:
                 # path included when the server sits under one; the URL on the
                 # command line can only name host and port.  Same authority, so
                 # the token's scope is unchanged -- only the path is learned.
-                if not self.server_url or normalize_netloc(row[0]) == normalize_netloc(
-                    self.server_url
-                ):
+                if self._may_replace_server_url(row[0]):
                     self.server_url = row[0].rstrip("/")
                 self._adopt_token(row[1], "the token in the Seafile client's accounts.db")
                 if row[2] and not self.username:
@@ -873,7 +919,11 @@ class SeafileClient:
         they differ only in whether the Seafile account token rides along.
         """
         if _transfer_authority(url) == _transfer_authority(self.server_url):
-            return self.session
+            # The account token goes only to a link that is inside the server's own scope: an
+            # API answer that came out of another application on the same host names a link
+            # there, and the first request to it would carry the token (fable-C2).
+            if _inside_scope(url, (self.server_url or "").rstrip("/")):
+                return self.session
         return self._file_session
 
     @property
@@ -1526,7 +1576,15 @@ class SeafileClient:
         try:
             resp = getattr(self._transfer_session(url), method)(url, **kwargs)
         except requests.RequestException as ex:
-            raise SeafileAPIError(
+            # A dropped connection is a SeafileConnectionError here as everywhere (AA27); the
+            # transfer paths raised the base class and missed every handler of it
+            # (gemini-4-hydrogen-G0.2).
+            kind = (
+                SeafileConnectionError
+                if isinstance(ex, (SeafileConnectionError, requests.ConnectionError, requests.Timeout))
+                else SeafileAPIError
+            )
+            raise kind(
                 f"{type(ex).__name__} during {method.upper()} {self._error_origin(url)}: "
                 f"{_scrub_transfer_error(ex, url)}"
             ) from None

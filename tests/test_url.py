@@ -300,6 +300,17 @@ class TestMaskUrl(unittest.TestCase):
     def test_username_only_is_redacted(self):
         self.assertEqual(mask_url("seafile://user@host/lib"), "seafile://host/lib")
 
+    def test_a_password_with_an_empty_user_name_is_redacted(self):
+        """gemini-4-hydrogen-C3: ``:secret@host`` has no user name and the password was echoed."""
+        self.assertNotIn("mysecret", mask_url("seafile://:mysecret@seafile.example.com/lib/path"))
+
+    def test_an_ipv6_literal_keeps_its_brackets(self):
+        """gemini-4-hydrogen-C2: ``urlparse`` drops them and ``::1:8443`` is not an address."""
+        self.assertEqual(
+            parse_seafile_url("seafile://https://[::1]:8443/lib/path").server_url, "https://[::1]:8443")
+        self.assertEqual(normalize_netloc("https://[::1]:8443/x"), "[::1]:8443")
+        self.assertEqual(mask_url("seafile://u:p@[::1]:9/l"), "seafile://[::1]:9/l")
+
     def test_at_sign_without_userinfo_is_left_alone(self):
         # A stray @ with nothing before it parses to username=None; guessing
         # would corrupt a legal URL, so it is returned unchanged.

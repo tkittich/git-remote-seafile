@@ -525,6 +525,36 @@ class TestClientAPI(unittest.TestCase):
         # And the token decision agrees that the upgraded link is home ground.
         self.assertIs(self.client._transfer_session(adjusted), self.client.session)
 
+    def test_the_account_token_stays_inside_the_servers_own_path(self):
+        """fable-C1/C2 (review 134c8af): the scope test was a string prefix.  A dot segment, an
+        encoded one and a sibling path all kept the token; and a transfer link on the same host
+        but outside the scope was fetched through the token session."""
+        from git_remote_seafile.client import _inside_scope
+
+        scope = "https://h.example.com/seafile"
+        for inside in ("https://h.example.com/seafile", "https://h.example.com/seafile/api2/x",
+                       "https://H.example.com:443/seafile/seafhttp/f/t?x=1"):
+            self.assertTrue(_inside_scope(inside, scope), inside)
+        for outside in ("https://h.example.com/seafile/../other/x", "https://h.example.com/seafile/%2e%2e/o",
+                        "https://h.example.com/seafile/.%2e/o", "https://h.example.com/seafile/..%2fo",
+                        "https://h.example.com/seafile/x/..;/..", "https://h.example.com/seafile-evil",
+                        "http://h.example.com/seafile/x", "https://other.example.com/seafile/x"):
+            self.assertFalse(_inside_scope(outside, scope), outside)
+        client = SeafileClient(server_url=scope, token="t")
+        self.assertIs(client._transfer_session(scope + "/seafhttp/f/1"), client.session)
+        self.assertIs(client._transfer_session("https://h.example.com/other/steal?t=a"), client._file_session)
+
+    def test_an_http_entry_never_replaces_an_https_server_url(self):
+        """gemini-4-hydrogen-C1: the netloc comparison ignores the scheme; the token went in the clear."""
+        with patch.dict("os.environ", {"SEAFILE_SERVER": "http://seafile.example.com",
+                                       "SEAFILE_TOKEN": "tok"}):
+            try:
+                c = SeafileClient(server_url="https://seafile.example.com")
+            except SeafileAuthError:
+                return      # nothing adopted: the entry named another scheme, so it was not used
+        self.assertEqual(c.server_url, "https://seafile.example.com")
+        self.assertNotEqual(c.token, "tok")
+
     def test_upload_posts_to_the_upgraded_url(self):
         """The scheme fix has to reach the POST, not just `_adjust_url`.
 

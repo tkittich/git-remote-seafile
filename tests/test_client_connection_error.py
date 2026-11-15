@@ -154,6 +154,22 @@ class TestABodyCutMidStreamIsAnApiError(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp, self.assertRaises(SeafileAPIError) as cm:
             self.client.download_file_to("rid", "/repo/x", f"{tmp}/x")
         self.assertNotIn("link-token", str(cm.exception))
+        self.assertIsInstance(cm.exception, SeafileConnectionError)
+
+    def test_a_dropped_transfer_header_is_a_connection_error_with_no_stray_text(self):
+        """gemini-4-hydrogen-G0.2: ``_xfer`` raised the base class, and its scrub left ``link>``."""
+        from unittest.mock import patch
+        import requests
+        from git_remote_seafile.client import _scrub_transfer_error
+
+        ex = requests.ConnectionError("Max retries exceeded with url: /seafhttp/dl?t=link-token (Caused by X)")
+        self.assertEqual(
+            _scrub_transfer_error(ex, "http://h/seafhttp/dl?t=link-token"),
+            "Max retries exceeded with url: <transfer link> (Caused by X)")
+        with patch.object(self.client._file_session, "get", side_effect=ex),                 patch.object(self.client.session, "get", side_effect=ex):
+            with self.assertRaises(SeafileConnectionError) as cm:
+                self.client._xfer("get", "http://127.0.0.1:1/seafhttp/dl?t=link-token")
+        self.assertNotIn("link-token", str(cm.exception))
 
 
 class TestACompressedTransferBodyIsRefusedByName(unittest.TestCase):
