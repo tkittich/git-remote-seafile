@@ -14,7 +14,7 @@ import unittest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
-from e2e_harness import commit_file, init_repo, run_git  # noqa: E402
+from e2e_harness import REPO_ID, commit_file, init_repo, run_git  # noqa: E402
 from test_e2e import E2ETestCase  # noqa: E402
 
 
@@ -43,6 +43,20 @@ class TestAnUnreadableRefTheCloneKnowsIsNotPruned(E2ETestCase):
             self.assertNotEqual(proc.returncode, 0, f"{fault}: {proc.stderr}")
             self.assertIn("could not be read, and this clone fetched it before", proc.stderr)
             self.assertIn("refs/heads/dev", self._refs(mirror), fault)
+
+    def test_a_known_ref_whose_body_is_not_an_object_id_is_not_pruned_either(self):
+        """fable-G9.1 (review 134c8af): AA39 covered an empty or missing body only; a proxy's
+        200 page, half an id or a file over 4 KiB was left out and ``--prune`` took the branch."""
+        _, mirror = self._mirror("badbody")
+        key = "/badbody/refs/heads/dev"
+        good = self.stub.files[REPO_ID][key]
+        for label, body in (("html", b"<html>502 Bad Gateway</html>"), ("half an id", good[:10]),
+                            ("5 KiB", b"x" * 5000)):
+            self.stub.files[REPO_ID][key] = body
+            proc = run_git(["fetch", "--prune", "origin"], mirror, self.env, check=False)
+            self.assertNotEqual(proc.returncode, 0, f"{label}: {proc.stderr}")
+            self.assertIn("refs/heads/dev", self._refs(mirror), label)
+        self.stub.files[REPO_ID][key] = good
 
     def test_a_ref_the_clone_never_saw_is_still_only_a_warning(self):
         a, mirror = self._mirror("planted")

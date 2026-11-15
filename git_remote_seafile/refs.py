@@ -298,6 +298,8 @@ def iter_refs(
                     )
                     if strict:
                         raise SeafileAPIError(message)
+                    if unreadable is not None:
+                        unreadable.append(ref_name)     # listed, so a prune must not take it (AA39)
                     sys.stderr.write(f"Warning: {message}\n")
                     sys.stderr.flush()
                     continue

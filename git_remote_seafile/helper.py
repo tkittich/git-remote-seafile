@@ -538,7 +538,11 @@ class RemoteHelper:
                             f"the ref {ref_name} does not hold an object id, so it cannot "
                             "be advertised; restore its content or remove the file"
                         )
-                    sys.stderr.write(f"Warning: ignoring invalid SHA '{sha}' for ref '{ref_name}'\n")
+                    # Listed but not an object id (a proxy's 200 page, a truncated write): the
+                    # same case as an unreadable ref, so a fetch that knew it stops instead of
+                    # pruning it (fable-G9.1).  The body is shown quoted, never raw (fable-C4).
+                    self._unreadable_refs.append(ref_name)
+                    sys.stderr.write(f"Warning: ignoring invalid SHA {sha[:80]!r} for ref '{ref_name}'\n")
                     sys.stderr.flush()
                     continue
                 self._refs_cache[ref_name] = sha
