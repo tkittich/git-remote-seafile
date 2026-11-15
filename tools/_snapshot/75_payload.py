@@ -369,9 +369,22 @@ def _commit_object(
         # A wrong-size object under the hash name is damage; replace it.  The
         # create-or-duplicate rename consumed the temporary into the first
         # duplicate, so that copy is the bytes to move onto the freed name.
-        if not client.delete_entry(rid, stale):
+        # The listing above is stale by now if another writer settled the same damage: read
+        # the name again right before it goes, and move only a copy that has our size
+        # (gemini-4-hydrogen-E1; the server has no compare-and-delete, so this narrows the race).
+        entries = client.list_dir(rid, directory)
+        existing = next((e for e in entries if isinstance(e, dict) and e.get("name") == sha), None)
+        if existing is not None and existing.get("size") == size:
+            _sweep(_duplicates(entries))
+            return True
+        whole = next((d for d in _duplicates(entries)
+                      if next((e.get("size") for e in entries
+                               if isinstance(e, dict) and e.get("name") == d), None) == size), None)
+        if whole is None:
             return False
-        if not client.rename_entry(rid, f"{directory}/{dups[0]}", sha):
+        if existing is not None and not client.delete_entry(rid, stale):
+            return False
+        if not client.rename_entry(rid, f"{directory}/{whole}", sha):
             return False
         _sweep(_duplicates(client.list_dir(rid, directory)))
         return True

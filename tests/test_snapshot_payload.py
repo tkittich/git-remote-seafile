@@ -2543,6 +2543,55 @@ class PayloadRetentionTests(_PayloadFixture):
         self.assertNotIn(f"{sha} (1)", right.files)
         self.assertNotIn(sha, right.deleted, "the right-sized object was not deleted")
 
+    def test_a_stale_listing_does_not_delete_the_object_another_writer_just_settled(self):
+        """gemini-4-hydrogen-E1: two writers settle one damaged object from the same listing; the
+        second one's delete would take the first one's good result and leave nothing."""
+        sha = "h" * 64
+
+        class Fake:
+            def __init__(self):
+                self.deleted = []
+                self.reads = 0
+
+            def rename_entry(self, rid, path, new):
+                return True      # create-or-duplicate
+
+            def list_dir(self, rid, directory):
+                self.reads += 1
+                if self.reads == 1:      # what this writer saw: damage and its own copy
+                    return [{"name": sha, "size": 3}, {"name": f"{sha} (1)", "size": 15}]
+                # by now the other writer has put the whole object under the name
+                return [{"name": sha, "size": 15}, {"name": f"{sha} (1)", "size": 15}]
+
+            def delete_entry(self, rid, path):
+                self.deleted.append(path.rsplit("/", 1)[-1])
+                return True
+
+        fake = Fake()
+        self.assertTrue(snap._commit_object(fake, "r", "/d", f"{sha}.part-1", sha, 15))
+        self.assertNotIn(sha, fake.deleted)
+
+    def test_a_copy_of_the_wrong_size_is_never_moved_onto_the_name(self):
+        sha = "h" * 64
+
+        class Fake:
+            def __init__(self):
+                self.renamed = []
+
+            def rename_entry(self, rid, path, new):
+                self.renamed.append((path, new))
+                return True
+
+            def list_dir(self, rid, directory):
+                return [{"name": sha, "size": 3}, {"name": f"{sha} (1)", "size": 4}]
+
+            def delete_entry(self, rid, path):
+                return True
+
+        fake = Fake()
+        self.assertFalse(snap._commit_object(fake, "r", "/d", f"{sha}.part-1", sha, 15))
+        self.assertEqual(len(fake.renamed), 1)     # only the first rename, never the move
+
     def test_a_damaged_object_no_longer_blocks_snapshots_through_the_stub(self):
         """End to end against the duplicate-modelling stub: the R3 carve-out.
 

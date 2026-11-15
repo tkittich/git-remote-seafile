@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import re
 import sys
@@ -16,6 +17,14 @@ from .client import SeafileClient
 
 #: An upload lands under ``<oid>.part-<token>`` and is renamed onto ``<oid>``.
 PART_SUFFIX = ".part-"
+
+
+def _sha256_of(path: str) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for block in iter(lambda: fh.read(1 << 20), b""):
+            digest.update(block)
+    return digest.hexdigest()
 
 
 class _ProgressThrottle:
@@ -146,6 +155,15 @@ class LFSTransferAgent:
         if right is None:
             return held
         if held is not None:
+            # Read it again right before it goes: another uploader that settled the same damage
+            # a moment ago has put the right object here, and the listing above is stale (the
+            # race is narrowed, not closed: the server has no compare-and-delete).
+            again = next((e for e in self.client.list_dir(self.repo_id, parent_dir)
+                          if isinstance(e, dict) and e.get("name") == filename), None)
+            if again is not None and again.get("size") == size:
+                for name in copies:
+                    self.client.delete_entry(self.repo_id, f"{parent_dir}/{name}")
+                return again
             self.client.delete_entry(self.repo_id, f"{parent_dir}/{filename}")
         self.client.rename_entry(self.repo_id, f"{parent_dir}/{right}", filename)
         for name in copies:
@@ -176,6 +194,18 @@ class LFSTransferAgent:
 
         parent_dir, filename = self._object_subpath(oid)
         local_size = os.path.getsize(local_path)
+        claimed = msg.get("size")
+        if isinstance(claimed, int) and not isinstance(claimed, bool) and claimed != local_size:
+            # git-lfs hands over the file it found, which can be a short copy; storing it under
+            # the oid would replace a good remote object with it (fable-C3).
+            self._send_json({
+                "event": "complete",
+                "oid": oid,
+                "error": {"code": 400, "message": (
+                    f"The local object is {local_size} bytes but git-lfs expects {claimed}; "
+                    "not uploaded")},
+            })
+            return
 
         # Check if remote object already exists with the identical byte size to skip duplicate upload.
         # Name + size is the whole check, deliberately: the remote path is
@@ -185,12 +215,16 @@ class LFSTransferAgent:
         # skip exists to avoid.  A corrupted same-size leftover is accepted
         # collateral; delete it server-side to force a re-upload.
         already_exists = False
+        held_at_another_size = False
         try:
             entries = self.client.list_dir(self.repo_id, parent_dir)
             if isinstance(entries, list):
                 for entry in entries:
-                    if isinstance(entry, dict) and entry.get("name") == filename and entry.get("size") == local_size:
-                        already_exists = True
+                    if isinstance(entry, dict) and entry.get("name") == filename:
+                        if entry.get("size") == local_size:
+                            already_exists = True
+                        else:
+                            held_at_another_size = True
                         break
         except Exception:
             already_exists = False
@@ -198,6 +232,18 @@ class LFSTransferAgent:
         if already_exists:
             self._send_progress(oid, local_size, local_size)
             self._send_json({"event": "complete", "oid": oid})
+            return
+
+        if held_at_another_size and _sha256_of(local_path) != oid:
+            # The remote object is replaced by this one below; only bytes that hash to the oid
+            # may replace it (fable-C3: the replaced copy can be the only whole one).
+            self._send_json({
+                "event": "complete",
+                "oid": oid,
+                "error": {"code": 400, "message": (
+                    "The remote object is at another size, but the local file does not hash to "
+                    f"{oid}; nothing was replaced")},
+            })
             return
 
         try:

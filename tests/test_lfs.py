@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import tempfile
@@ -26,8 +27,8 @@ class TestLFSUploadAgainstTheStub(unittest.TestCase):
     on a taken name, as the server does, so these runs see what a race leaves.
     """
 
-    OID = "ab" + "cd" + "e" * 60
     DATA = b"LFS-OBJECT-BYTES" * 100
+    OID = hashlib.sha256(DATA).hexdigest()
 
     @classmethod
     def setUpClass(cls):
@@ -93,6 +94,43 @@ class TestLFSUploadAgainstTheStub(unittest.TestCase):
         resp = self.upload()
         self.assertNotIn("error", resp)
         self.assertEqual(self.stored(), {self.path: self.DATA})
+
+    def test_a_short_local_object_never_replaces_a_good_remote_one(self):
+        """fable-C3 (review 134c8af): git-lfs can hand over a short copy; the remote object at
+        the oid was deleted and the short one renamed onto it, and the answer was ``complete``."""
+        self.stub.files.setdefault(REPO_ID, {})[self.path] = self.DATA
+        Path(self.local).write_bytes(self.DATA[:400])
+        out = io.StringIO()
+        with patch("sys.stdout", out):
+            self.agent.handle_upload(
+                {"event": "upload", "oid": self.OID, "path": self.local, "size": len(self.DATA)})
+        resp = [json.loads(x) for x in out.getvalue().splitlines() if x][-1]
+        self.assertIn("error", resp)
+        self.assertEqual(self.stored(), {self.path: self.DATA})
+
+    def test_a_local_object_that_does_not_hash_to_the_oid_replaces_nothing(self):
+        self.stub.files.setdefault(REPO_ID, {})[self.path] = self.DATA
+        Path(self.local).write_bytes(self.DATA[:400])    # no size in the request: the hash decides
+        resp = self.upload()
+        self.assertIn("error", resp)
+        self.assertEqual(self.stored(), {self.path: self.DATA})
+
+    def test_a_stale_listing_does_not_delete_the_object_another_uploader_just_settled(self):
+        """gemini-4-hydrogen-B1: both settle a damaged object; the second must not delete the
+        first one's good result."""
+        folder = self.folder
+        listings = [
+            [{"name": self.name, "size": 9}, {"name": self.name + " (1)", "size": len(self.DATA)}],
+            [{"name": self.name, "size": len(self.DATA)}, {"name": self.name + " (1)", "size": 9}],
+        ]
+        client = MagicMock()
+        client.list_dir.side_effect = listings
+        agent = LFSTransferAgent(client, REPO_ID, "/git-test")
+        self.addCleanup(agent._temp_dir.cleanup)
+        got = agent._settle_object_name(folder, self.name, len(self.DATA))
+        self.assertEqual(got, {"name": self.name, "size": len(self.DATA)})
+        deleted = [c.args[1] for c in client.delete_entry.call_args_list]
+        self.assertNotIn(f"{folder}/{self.name}", deleted)
 
     def test_a_rename_the_server_does_not_perform_is_an_error_and_leaves_no_part_file(self):
         with patch.object(self.client, "rename_entry", return_value=False):
