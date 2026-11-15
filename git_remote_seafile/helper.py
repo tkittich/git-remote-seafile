@@ -1202,6 +1202,7 @@ class RemoteHelper:
             # ``None`` when the listing failed: then nothing is known to be ours.
             held_before = self._pack_names_on_remote(pack_dir)
             landed: dict[str, int] = {}
+            held_ok: dict[str, int] = {}   # held at our size: checked again, never ours to delete
             self._push_link_mibs = None
             sent_bytes, sent_seconds = 0, 0.0
             for up_sha, up_pack, up_idx in uploads:
@@ -1216,14 +1217,23 @@ class RemoteHelper:
                 # relied on, and the cleanup then removed it (fable-B1, AA37).  Same name, same
                 # object set, so the ref this push writes is still served.
                 idx_name, pack_name = f"pack-{up_sha}.idx", f"pack-{up_sha}.pack"
-                have_idx = held_before is not None and idx_name in held_before
-                have_pack = held_before is not None and pack_name in held_before
+                # Only a name held at this push's own size is skipped, and then it is checked
+                # again below.  A name held at another size is damage the helper itself can leave
+                # (a verify that could not list, a lost lease, a swallowed delete): the upload
+                # goes over it and heals it, as before AA37 (fable-G0.1).
+                idx_size = len(up_idx) if isinstance(up_idx, (bytes, bytearray)) else Path(up_idx).stat().st_size
+                have_idx = held_before is not None and held_before.get(idx_name, -1) == idx_size
+                have_pack = held_before is not None and held_before.get(pack_name, -1) == up_size
                 if have_idx or have_pack:
                     sys.stderr.write(
                         f"Note: {' and '.join(n for n, h in ((idx_name, have_idx), (pack_name, have_pack)) if h)} "
                         "already on the remote; not uploaded again.\n"
                     )
                     sys.stderr.flush()
+                if have_idx:
+                    held_ok[idx_name] = idx_size
+                if have_pack:
+                    held_ok[pack_name] = up_size
                 if have_idx and have_pack:
                     continue
                 started = time.monotonic()
@@ -1273,7 +1283,7 @@ class RemoteHelper:
 
             self._push_link_mibs = link_rate_mibs(sent_bytes, sent_seconds)
             try:
-                self._verify_packs_landed(pack_dir, landed)
+                self._verify_packs_landed(pack_dir, {**held_ok, **landed})
             except Exception as verify_failure:
                 # A pack that landed truncated under a 2xx is a landmine at its
                 # final name: every later fetch dies in index-pack on it and gc
@@ -1335,13 +1345,19 @@ class RemoteHelper:
         sys.stderr.flush()
         return False
 
-    def _pack_names_on_remote(self, pack_dir: str) -> set[str] | None:
-        """The file names in ``objects/pack`` now, or ``None`` when the listing fails."""
+    def _pack_names_on_remote(self, pack_dir: str) -> dict[str, int | None] | None:
+        """The file names in ``objects/pack`` now with their sizes, or ``None`` when the listing fails.
+
+        A size the server did not give (or gave as something else than a number) is ``None``.
+        """
         try:
-            return {
-                str(e.get("name")) for e in self.client.list_dir(self.repo_id, pack_dir)
-                if isinstance(e, dict) and e.get("name")
-            }
+            found: dict[str, int | None] = {}
+            for e in self.client.list_dir(self.repo_id, pack_dir):
+                if not (isinstance(e, dict) and e.get("name")):
+                    continue
+                size = e.get("size")
+                found[str(e["name"])] = size if isinstance(size, int) and not isinstance(size, bool) else None
+            return found
         except Exception:
             return None
 

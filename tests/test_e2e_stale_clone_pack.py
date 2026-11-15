@@ -17,7 +17,7 @@ from urllib.parse import unquote
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
-from e2e_harness import commit_file, init_repo, run_git  # noqa: E402
+from e2e_harness import REPO_ID, commit_file, init_repo, run_git  # noqa: E402
 from test_e2e import E2ETestCase  # noqa: E402
 
 
@@ -80,6 +80,22 @@ class TestAFailedVerifyListingRemovesNothingTheRemoteHeld(E2ETestCase):
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertEqual(sent, [], "a pack the remote held was uploaded again")
         self.assertIn("already on the remote; not uploaded again", proc.stderr)
+        clone = run_git(["clone", "-q", self.url(name), str(self.work / f"fresh-{name}")], self.work,
+                        self.env, check=False)
+        self.assertEqual(clone.returncode, 0, clone.stderr)
+
+    def test_a_held_pack_at_another_size_is_uploaded_over_not_trusted(self):
+        """fable-G0.1 (review 134c8af): a name skipped as held was never verified.  One a failed
+        attempt left truncated made the retry write the ref and say ok; a clone then died in
+        index-pack.  A held name is skipped only at the size the push would send."""
+        name = "damaged"
+        dev1, first = self._stale_clone_and_the_first_pack(name, new_commit=False)
+        files = self.stub.files[REPO_ID]
+        pack = next(k for k in files if k.endswith(".pack") and f"/{name}/" in k)
+        files[pack] = files[pack][: len(files[pack]) // 2]
+        proc = run_git(["push", "origin", "v1"], dev1, self.env, check=False)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("Uploading packfile", proc.stderr)
         clone = run_git(["clone", "-q", self.url(name), str(self.work / f"fresh-{name}")], self.work,
                         self.env, check=False)
         self.assertEqual(clone.returncode, 0, clone.stderr)
