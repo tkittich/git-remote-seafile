@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.27] - 2026-11-15
+
+A push whose verifying listing could not be trusted wrote a ref over a pack the remote held truncated (AA50, a regression of this cycle's own fix); the account token could leave the server's path through a dot-segment redirect (AA52); a short LFS object could replace a good remote one (AA51); and a fetch could prune every branch when only a ref's body was bad or `refs/heads` vanished beside tags (AA53). The rest is the review backlog of 0.9.26: two Fable rounds and a Gemini round on the post-0.9.26 code (AA34-AA59), mostly around the snapshot tool's restore, payload and retention paths. One behaviour changes on purpose: the snapshot tool exits 2, not 1, for a command line that cannot run.
+
 ### Fixed
 - **A push no longer trusts a pack name the remote already holds at another size** (ROADMAP AA50; review 134c8af, fable-G0.1). The name was skipped and never verified, so a pack a failed attempt left truncated made the retry write the ref and say ok; a clone then died in `index-pack`. It is skipped only at the size this push would send and is verified with the rest; at another size the upload goes over it.
 - **A short local LFS object no longer replaces a good remote one, and two writers settling one damaged object no longer leave nothing** (AA51; fable-C3, gemini-4-hydrogen B1/E1). The LFS and payload settle paths read the name again right before deleting it.
@@ -2179,6 +2183,7 @@ Data-loss and silent-failure fixes, and the Python floor raised to 3.9.
   with zero-config desktop-client token discovery, distributed locking, remote
   packfile compaction, and a Git LFS custom transfer agent.
 
+[0.9.27]: https://github.com/tkittich/git-remote-seafile/compare/v0.9.26...v0.9.27
 [0.9.26]: https://github.com/tkittich/git-remote-seafile/compare/v0.9.25...v0.9.26
 [0.9.25]: https://github.com/tkittich/git-remote-seafile/compare/v0.9.24...v0.9.25
 [0.9.24]: https://github.com/tkittich/git-remote-seafile/compare/v0.9.23...v0.9.24
