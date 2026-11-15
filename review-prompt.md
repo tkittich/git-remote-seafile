@@ -1,44 +1,26 @@
 You are an independent reviewer of `git-remote-seafile`, at the commit you were given
-(`git log -1`). **Addendum for the 0.9.26 post-release round:** version 0.9.26 is released (tag
-`v0.9.26`, commit `b23c481`, 2026-11-14); the previous release is 0.9.25 (tag `v0.9.25`, commit
-`3ca9db3`). The commits you review are `git log --oneline v0.9.25..HEAD` (Part G0 below, now the
-whole of 0.9.26 plus the few commits after it: two Fable rounds have already read parts of it, and their findings are the rows
-AA24-AA36 in Part F), and the whole project is in scope as before. Two earlier rounds read only
-Part G0, the Pro paths from the code and the 429 handling: **G1-G11 and most of Part C have had
-no reader since `06cc623`, so most of your time goes there** (ORDER OF WORK says how). The
-statements below about 0.9.25 being unreleased describe the round they were written for; read
-them as history, and read "the 0.9.25 tag" in OUTPUT as "the next tag". Two things this round
-cannot check and you should not claim to: Seafile Professional behaviour (no Pro server is
-available; `GRS_STUB_PRO=1` is the stub's model of it, measured only on one 13.0.29 image) and
-any real-server answer (the container legs of `realserver.yml` are the maintainer's). Say
-"unverified" and read the code instead. The Pro-only paths (folder permissions, group-owned
-libraries, the 403/500 answers for a missing folder, `hidden_history_risk`) have had the least
-independent reading: give them a pass of their own.
-Notes from the last rounds' feedback: `tools/release_check.py --offline` fails its `tag` check in a
-clone (the tag exists) and prints `ok pushed` for a local-directory `origin`: both expected, not
-findings (ROADMAP AA45). **Read these first, in this order, because the last reviewer ran out of
-time before them: G6, G10 and Part C (`url.py`, `safety.py`, `sqlite_read.py`, `lfs.py`); the rest of
-Part F is second.** When a mutation needs a test whose name you do not know, a whole module is
-allowed for that one run (`python -m unittest tests.<module>`, not the suite); say so in section 7. Phase 1 (Parts A and D, written before you read the code) comes first; read
-Part G0 only after Phase 1 is written. A message split across two source lines may be quoted
-from one line.
+(`git log -1`; name it in your report). Version 0.9.27 is released (tag `v0.9.27`, commit `fc3ffd0`,
+2026-11-16); the release before it is 0.9.26 (tag `v0.9.26`, commit `b23c481`). The commits after the
+tag are new to every reader; `git log --oneline v0.9.26..HEAD` is the batch Part G0 covers, and the
+whole project is in scope. Another model wrote the code, the tests and the specifications, and has
+reviewed them itself over a dozen rounds: assume all three share blind spots. Earlier outside rounds
+(the last: Fable and Gemini on `134c8af`) read Part G0, the Pro paths from the code, the 429 handling
+and most of the helper, client and payload code; their findings are the rows of Part F. **What no
+reader has yet read, and where most of your time goes (ORDER OF WORK says how):**
+`git_remote_seafile/repair.py`, `diagnose.py`, `login.py`, `lfs_setup.py`; `tools/_snapshot/70_stage.py`
+line by line; `SNAPSHOT.md` sections 1-3 and 9-16; the settle paths in `lfs.py` and
+`tools/_snapshot/75_payload.py` (two copies of one rule: do they still agree?); and everything that
+only happens on Seafile Professional. Two things this round cannot check and you should not claim
+to: Professional behaviour (no Pro server is available; `GRS_STUB_PRO=1` is the stub's model of it,
+measured on one 13.0.29 image) and any real-server answer (the container legs of `realserver.yml`
+are the maintainer's). Say "unverified" and read the code instead. Read "the next tag" wherever an
+older sentence says a version is unreleased. Known and not findings: `tools/release_check.py
+--offline` fails its `tag` check in a clone (the tag exists) and prints `ok pushed` for a
+local-directory `origin` (ROADMAP AA45). Phase 1 (Parts A and D, written before you read the code)
+comes first; read Part G0 only after Phase 1 is written. A message split across two source lines may
+be quoted from one line. When a mutation needs a test whose name you do not know, a whole module is
+allowed for that one run (`python -m unittest tests.<module>`, not the suite); say so in section 7.
 
-This was written for an earlier round, whose opening follows. **This is a pre-release round**: version 0.9.25 is prepared at that commit
-(`__version__`, `CHANGELOG.md` `[0.9.25]`, `.github/release-notes/v0.9.25.md`, `UPGRADING.md`)
-and **not yet tagged**; your findings are folded into 0.9.25 before it ships, or recorded for the
-next one. The previous release is 0.9.24 (tag `v0.9.24`, commit `b14c4f7`, 2026-11-09), and
-`git log --oneline v0.9.24..HEAD` is what the round before it never saw. Another model wrote the
-code, the tests and the specifications, and has reviewed them itself over a dozen rounds: assume
-all three share blind spots. The last outside review was a second pre-release round at commit
-`06cc623` (2026-11-07, four reviewers); its triage is settled and is listed in Part F as
-dispositions. **Everything between `06cc623` and now has had no independent reader**: the
-twenty-six fixes that round produced (ROADMAP §1.10, Z1-Z26), the 0.9.23 release, the whole of
-0.9.24 (FAT32 and exFAT measured on Linux loop devices and on real Windows drives: a restore, a
-payload cache and a lock were changed by what they showed, Z28-Z48) and the whole of 0.9.25 (a
-data-loss fix from the first real Seafile Professional measurements, Z22, Z27, Z29, Z47-Z50, W4, and
-a week of test hardening). `SNAPSHOT.md` section 5 holds the measured FAT tables, which are claims
-you can check. See Part G, which is where most of your time should go, but not all of it (see ORDER
-OF WORK). Parts A-E cover everything older.
 
 WHAT IT IS
 A Git remote helper (`seafile://<library>/<path>`) that stores a repository in a Seafile
@@ -46,7 +28,7 @@ library through its REST API, with an advisory lock built from file creation and
 server's `Date` header, and a whole-tree snapshot tool (`git seafile-snapshot`) shipped
 in the same wheel. Read `README.md` for the overview, `DESIGN.md` §1–§4 for how the
 helper works, `SNAPSHOT.md` and `PAYLOAD.md` for the snapshot tool and its large-file
-store, and `CHANGELOG.md` `[0.9.25]`, `[0.9.24]` and `[0.9.23]` for what changed since the last review.
+store, and `CHANGELOG.md` `[0.9.27]`, `[0.9.26]` and `[0.9.25]` for what changed recently.
 
 THE DOCUMENTS ARE THE SPECIFICATION
 `DESIGN.md` (invariants §3 including §3.5 Adaptation, protocol §4, failure model §5,
@@ -239,11 +221,16 @@ round (the 0.9.25 round was read at two commits one fix apart, and three reports
 module the fourth saw changed). If time runs short, finish G1, G2, G7, G9 and G4 before the
 other sub-areas and say which you did not reach; a part you did not read is not a part with no
 finding.
-PHASE 2, code: Part G first (it is the least reviewed), then B, C, E, F, then H. You
-may revisit A and D; mark what you changed and why. **Give Parts B, C and E together at
-least a third of your Phase 2 time**: last round three of four reviewers spent nearly all
-of it on G and reported no finding in B, C or E, while the fourth found three of the
-round's worst defects there (Z6, Z7, Z11).
+PHASE 2, code: first the unread files named in the opening (they have no part of their own:
+file a finding under B, C or E by area), then Part G0, then G, F, H. You may revisit A and D;
+mark what you changed and why. **Give Parts B, C and E and the unread files together at least
+half of your Phase 2 time**: in earlier rounds most reviewers spent nearly all of it on the
+newest commits and reported nothing in B, C or E, while the one who read them found three of
+the worst defects there (Z6, Z7, Z11).
+**Mutation budget.** A mutation costs a rebuild and a test run. Mutate every row of Part G0 and
+the rows of Part F added since `v0.9.26` (AA37 and later); mutate an older Part F row only when
+its test looks wrong on reading (it asserts a call, not the refusal), and say which you skipped.
+Five well-chosen mutations that survive are worth more than fifty that are killed.
 
 PART A — design of the helper (Phase 1)
 Find ways the design loses commits, corrupts a repository, lets two writers silently
@@ -272,20 +259,30 @@ interrupted and killed runs; very large inputs; nested repositories and embedded
 repositories; secrets; and every requirement whose "how it is checked" column would not
 catch a violation.
 
-PART G0 — the 0.9.26 batch, `v0.9.25..HEAD` (Phase 2, read first, it is short)
-ROADMAP §1.11 rows AA9-AA19, AA22, AA23. For each: is the fix right, does its test fail without it
-(`tools/mutate_check.py`), and the siblings. Specifically: AA10 (`helper._publish_ref`,
-`_absent_ref_folders`, `_drop_empty_folders`: can it delete a folder that holds something, race a
-writer, or run when the write actually landed?); AA11 (the wall clock beside the monotonic one in
-`lock._lapsed_if_unknown`: can a clock step make a healthy lease read as lost?); AA13
-(`git_util.tracked_remote_names` for a mirror); AA16 (`tools/gates.py` `_with_test_importers`);
-AA22 (`test_no_part_stats_or_opens_a_source_path_in_its_plain_form`: find a source-path
-`stat`/`open` shape its pattern misses); the stub's new `explicit_dirs` model in
-`tests/e2e_harness.py` (does it model Seafile's folders honestly?); and the new real-server tests
-in `tests/test_realserver.py` (can any of them fail for a reason that is not a finding, or pass
-on a wrong answer?). **Added since `v0.9.26`** (`git log --oneline v0.9.26..HEAD`): `client._stream_chunks` (a body cut mid-stream: is any streamed read left bare, and does the generator close the response on an early exit?), `helper._drop_empty_folders` (the lease fence and the `dir_exists` skip: can a lost lease still reach a DELETE, can the skipped folder hide a made one?), `packs.fetch_pack_artifact`'s bounded fallback, and `tools/_snapshot/93_cli_args.py` (the parser moved out of `99_cli.py`: is anything evaluated at import order?). AA23 is an open measurement: read the client's retry and throttle handling
-(`client._mount_retries`-style adapter, POST never retried) and say what a 429 does to a refs
-walk, a push and `gc`.
+PART G0 — the batch since 0.9.26, `v0.9.26..HEAD` (Phase 2, read first, it is short)
+ROADMAP §1.11 rows AA24-AA59 (AA9-AA23 are settled: Part F). For each: is the fix right, does its
+test fail without it (`tools/mutate_check.py`), and the siblings. Attack in particular:
+- the settle rule, which exists twice (`lfs._settle_object_name`, `75_payload._commit_object`; AA51):
+  do the two copies still agree on every branch, and which interleaving of two uploaders and a
+  `gc` still loses the only whole object (the server has no compare-and-delete: the race is
+  narrowed, not closed, so name the window and what bounds it);
+- `helper._publish_ref`, `_absent_ref_folders`, `_drop_empty_folders` (can a lost lease still reach
+  a DELETE; can the `dir_exists` skip hide a folder that was made) and the held-pack rule of a push
+  and of `gc` (AA37, AA50: a name already on the remote is never uploaded over, and is verified);
+- `client._stream_chunks` (is any streamed read left bare; does the generator close the response
+  on an early exit), the 429 handling (`_send_waiting_out_a_throttle`: rename, delete, the folder
+  create and the batch copy wait; an upload POST to the file host and the library create do not:
+  say which could still fail on one 429 and whether that matters), `Content-Encoding` (AA42) and the
+  token's scope as a path (`url.py`, AA52);
+- `walk_long` (`77_payload_restore.py`, AA24): the five source walks now run on the extended-length
+  form and hand back plain paths; find a caller that compares a yielded path with a plain one
+  and gets a different answer, or a walk it was not applied to (`git grep -n 'os.walk\|scandir'
+  tools/_snapshot`). It could only be tested on a machine with long paths on;
+- the advertised-refs record and a listed-but-unreadable ref (AA39, AA53), `packs.fetch_pack_artifact`'s
+  bounded fallback, `93_cli_args.py` (the parser moved out of `99_cli.py`: anything evaluated at
+  import order?), usage errors exiting 2 (AA55, with `--json`), the retention mark a reused payload
+  object clears (AA59).
+
 
 PART G — everything since `06cc623` (Phase 2, first and longest)
 The map: `git log --oneline 06cc623..HEAD`, `git diff --stat 06cc623 HEAD` (the whole
@@ -522,68 +519,71 @@ glm-5.3, opus-5.5) is settled as follows, by ROADMAP §1.10 row. For each row ma
 **read only** is a document or a test: read it and say whether it says what the code
 does; do not mutate it. For each row marked open, say CONFIRMED, FIXED SINCE, STALE (the
 description no longer matches the code — say what it does now) or MISRANKED (and why).
-Then spend the rest of the part on the open rows (Z39's remainder, B10, W3, W6's remainder: a payload
-file over 4 GiB on exFAT through a real server and the Windows remount, S21, Z43 option C) and on the questions no machine in reach could answer.
+The **Test** column names the test the ROADMAP row or the test's own text ties to the row; it is
+best effort, so a named test that does not exercise its row is itself a finding. Then spend the rest
+of the part on the open rows (Z39's remainder, B10's remainder: Seafile 11 and 12 container legs and an
+HDD or slow-link run (W3), W6's remainder: a payload file over 4 GiB on exFAT through a real server and
+the Windows remount, S21, Z43 option C) and on the questions no machine in reach could answer.
 
-| Row | Finding, short | Disposition |
-| :--- | :--- | :--- |
-| Z1 | the vault's case rule applied to a case-sensitive source; one of `d/x.txt`, `D/x.txt` lost | done with code |
-| Z2, Z3 | `gc-seen.json`, `gc-pending.json`, `HEAD`, `unlock --force`'s ticket read as absent when listed but unreadable; a failed listing read a ref as absent | done with code: one reader |
-| Z4 | an unreadable edition probe read as Community Edition | done with code |
-| Z5 | a failed queue scan hid a lost lease; an unknown lease past its time | done with code |
-| Z6 | a SHA-1 push into a SHA-256 remote with no refs | done with code |
-| Z7 | an NFD file beside an NFC payload file dropped | done with code |
-| Z8 | `--no-push` wrote the profile and the secrets digest | done with code |
-| Z9 | `--changed` missed test modules; `-k` with `--changed` | done with code |
-| Z10 | `release_check` "Ready" without GitHub; any remote branch counted as pushed | done with code |
-| Z11 | the token kept on a same-host redirect; an upload re-sent to a redirect | done with code |
-| Z12–Z15 | FAT change time 0; long-path respelling; zero probe `mtime`; unreadable server clock | done with code |
-| Z16, Z23 | a repository named like a layout folder; a copy after a failed listing; a hash-named view file | done with code |
-| Z17 | the sdist lacked `tests/untested_messages.txt` | done with code (the manifest test) |
-| Z18 | `--status` reported a submodule's `.git` | done with code |
-| Z19 | R4 and R7's named tests survived their clause's removal | read only (a new test and a column) |
-| Z20 | seven stale doc lines; a commit with no CHANGELOG entry | read only |
-| Z21 | `repair` checked tips, not histories | done with code |
-| Z22 | a group-owned Pro library sent to its "owner" | done with code; the owner value unmeasured (Z36) |
-| Z24–Z26 | warn: a push recreating a tracked path; a hidden branch on Pro; another payload rule | done with code (warnings, by the maintainer's decision) |
-| Z42 | the review process rules | read only |
-| B12 | 42 git processes per snapshot run | done with code (31) |
-| Z27 | the vanished-path guard missed a bare clone's command-line refspec and `--prune-tags` | done with code (0.9.25): the helper remembers what was advertised |
-| Z28 | the lock's settlement window was a fixed second | done with code (0.9.24), capped at ten |
-| Z29 | `_prune_empty_ref_parents` deleted a parent a Pro non-owner sees as empty | measured on Pro (a hidden child's contents were taken); done with code (0.9.25): not for a non-owner |
-| Z30 | two machines uploading one LFS object left conflict copies | done with code (0.9.24) |
-| Z31 | a 413 overwrote the repository-wide pack cap | done with code (0.9.24): per remote |
-| Z32 | NTFS folds non-ASCII case, git does not | read only (SNAPSHOT.md) |
-| Z34 | a Pro non-owner's report-only `--payload-gc` under-counts | done with code (a Note) |
-| Z35 | prose numbers not tied to constants | done with code (tests; REF_WRITE timeout is stated nowhere) |
-| Z36 | real-server measurements | partly: `MEASURED` lines ran; group owner, 5,000-entry listing and an admin's view are open |
-| Z37 | unpinned images never tested | done (workflow ran once, green) |
-| Z38 | no fault that fails exactly the n-th listing | done with code; it does not reproduce Z3 (recorded) |
-| Z40 | `spell_like_index`'s test-only default; two `format_bytes` | done (the second declined: one module) |
-| Z41 | a green run then a failed re-run passed `release_check` | done with code |
-| Z43 | the payload cache re-reads everything after a FAT remount | option A done (a Note); option C open |
-| Z44, Z45 | a restore onto FAT stopped at git's first error; a case twin read as a defect; `dot.` passed the byte check | done with code (0.9.24) |
-| Z22 | a group-owned library's owner value | **corrected**: `share` is every non-owner's value, so it identifies nothing; the discriminator is unmeasured |
-| Z47 | a conflict copy of a released holder's ticket blocks one lease | done with code (0.9.25): the holder deletes its own; reaping orphans was rejected as unsafe |
-| Z48 | the serialising-disk test failed on macOS runners | done with code (0.9.25): a virtual clock; the wall-clock smoke test that was kept failed once more and now asserts only structure |
-| Z49 | skipping the prune leaves an empty ref folder that stops a fetch | decision, with code: the guard stays (issue 6), the Note says the consequence and is printed only when a folder would go |
-| Z50 | three timing flakes in a week | read only (an audit in the ROADMAP row) plus one fixed assertion |
-| W4 | a 600 s wall clock on tree-sized git calls | done with code: `SEAFILE_SNAPSHOT_GIT_TIMEOUT`; the default is unchanged and a slow disk was never measured |
-| T3 | a push verifies packs by size only | decided, recorded in DESIGN (the reasons are there to attack) |
-| Z33 | stub duplicate-on-collision for copy | done: `copy_duplicate` fault; the real server's answer to a copy onto a taken name is unmeasured |
-| Z46 | a whole-group kill leaves git's `index.lock` | decided: leave it |
-| AA1-AA8 | the 8eb416b / 853a7a2 round (ROADMAP §1.11): `inf`/`nan` typed seconds, the restore onto Windows and FAT in four shapes, the dead disk floor, a listed-but-unserved lock ticket, `git~` names, the DESIGN §3.2-3.4 drift | done with code (0.9.25); each named test fails when its fix is removed (`mutate_check`), except the bytes-listing mutation, which only a POSIX run can show |
-| AA9-AA19 | `--dry-run`'s case rule, an empty ref folder after a failed nested push (measure first), the suspend-blind lease clock, the settle budget, the mirror-clone warning, the restore's "verified" wording, a surviving R6 mutation, `gates --changed`'s test imports, the long-path skip matcher, the 5,000-folder listing, the payload-verify note | done with code and a test each in 0.9.26, except AA10 (fixed on a stub that models folders; the CE and Pro answer is measured by `test_an_empty_ref_folder_is_measured_against_a_listing_of_the_refs`) and AA18 (tests added, listing sizes measured in the container run). Re-report only a fix that is wrong or incomplete, with the input that shows it |
-| AA22 | plain `lstat`/`open` on source paths past 260 characters on Windows | done with a guard test that scans every snapshot part for a source path not passed through `extended_path`; try a site shape the pattern misses |
-| AA21 | gemini's A1-A3, D3, D4, G3.1, B1, B2, C1, C2, G8.1, E1; "an empty ref leaf is empty"; exit 2 for an incomplete restore | declined with reasons in ROADMAP §1.11 and the triage; re-report only by showing the reason is wrong |
-| AA23, AA32, AA33 | 429 and retry handling: the ref walk's worker back-off, `Retry-After` capped at 10 s, a write or a POST never re-sent once it may have reached the server, `other=0` (no re-send after an SSL failure), a connection error that names its cause (`SeafileConnectionError`) | done with code and a test each (0.9.26). AA23's other pools (payload, gc, restore) are open: say which can still hammer the server, with the input |
-| AA24 | Windows long-path stats with long paths off | open: no machine to measure on; read the code |
-| AA27, AA31 | a dropped connection is a `SeafileAPIError`; the advertised-refs record of a linked worktree; the Pro owner refusal for `--payload-delete` before the history download | done with code and a test each; try a sibling |
-| AA34-AA36, AA31's rest | fable2 C1 (a body cut mid-stream), C3 (the pack fallback's bound), the surviving mutations, G0.3(b)(c) (the failed-write folder cleanup), `99_cli.py`'s size | done with code in the commits after `v0.9.26` (a test each, mutations KILLED); try a sibling: another streamed read, another `delete_entry` without a lease check (both pack cleanups of a push are fenced since AA37) |
-| AA37-AA49 | held packs (a held name is skipped), the lease fence of both own-upload cleanups, an unreadable known ref, the Content-Encoding refusal, the throttled `DELETE`, the payload and gc retention reports | done with code and a test each in the commits after `9fe723f`; review 134c8af found a regression in the first (AA50) |
-| AA50-AA58 | review 134c8af: a held pack verified by size (AA50), the LFS and payload settle races and a short LFS object (AA51), the token scope as a path, `http` never replacing `https`, IPv6 brackets, `:secret@` masking (AA52), a listed ref with a bad body and a vanished `refs/heads` (AA53), a non-ASCII case twin and a name over 255 bytes (AA54), the `--no-push` source, `_run_live`'s pipe, exit 2 and `--json` on a bad command line (AA55), small ones (AA56, AA57) | done with code and a test each in the commits after `134c8af`; try a sibling of each: another place a size or a name is trusted without being read back, another URL parse that drops brackets or the scheme, another `fnmatch` or `casefold` that differs by platform, another stdout pipe read after the child exits |
-| S1 | an unpaged listing may be short | measured complete at 5,100 on CE and Pro; read the claim, and the assertion, adversarially |
-| Z39 | locale and environment legs | partly done: tr_TR and ASCII-only legs added; antivirus, Task Scheduler as SYSTEM and a subpath behind nginx remain |
+| Row | Finding, short | Disposition | Test that fails without the fix |
+| :--- | :--- | :--- | :--- |
+| Z1 | the vault's case rule applied to a case-sensitive source; one of `d/x.txt`, `D/x.txt` lost | done with code | `test_snapshot_tool.py`: `test_a_folding_source_is_found_to_fold`; `test_snapshot_tool.py`: `test_a_preview_says_the_real_run_sets_another_case_rule` |
+| Z2, Z3 | `gc-seen.json`, `gc-pending.json`, `HEAD`, `unlock --force`'s ticket read as absent when listed but unreadable; a failed listing read a ref as absent | done with code: one reader | `test_e2e_listing_faults.py`: `TestOneFailedListingNeverLetsADivergentPushWin`; `test_lock.py`: `test_a_ticket_the_folder_lists_but_the_file_host_will_not_serve_is_unknown_not_lost`; `test_e2e_listing_faults.py` |
+| Z4 | an unreadable edition probe read as Community Edition | done with code | `test_client.py`: `test_the_hidden_history_risk_is_named_only_on_pro_for_a_non_owner` |
+| Z5 | a failed queue scan hid a lost lease; an unknown lease past its time | done with code | `test_lock.py`: `test_renew_state_distinguishes_lost_from_unknown`; `test_lock.py`: `test_a_suspend_the_monotonic_clock_slept_through_still_lapses_the_lease` |
+| Z6 | a SHA-1 push into a SHA-256 remote with no refs | done with code | `test_e2e.py`: `test_a_remote_with_no_refs_left_keeps_its_object_format` |
+| Z7 | an NFD file beside an NFC payload file dropped | done with code | `test_snapshot_payload.py`: `test_a_small_file_beside_a_payload_file_of_the_other_unicode_form_is_kept` |
+| Z8 | `--no-push` wrote the profile and the secrets digest | done with code | `test_snapshot_tool.py`: `test_a_no_push_run_changes_no_remembered_setting` |
+| Z9 | `--changed` missed test modules; `-k` with `--changed` | done with code | `test_gates.py`: `test_every_test_module_that_imports_a_changed_module_runs` |
+| Z10 | `release_check` "Ready" without GitHub; any remote branch counted as pushed | done with code | `test_release_check.py`: `test_a_failed_leg_a_missing_run_or_a_running_one_fails` |
+| Z11 | the token kept on a same-host redirect; an upload re-sent to a redirect | done with code | `test_client.py`: `test_the_token_does_not_follow_a_redirect_out_of_the_servers_path`; `test_client.py`: `test_an_upload_answered_with_a_redirect_is_not_re_sent` |
+| Z12–Z15 | FAT change time 0; long-path respelling; zero probe `mtime`; unreadable server clock | done with code | `test_snapshot_tool.py`: `test_no_part_stats_or_opens_a_source_path_in_its_plain_form`; `test_realserver.py`: `test_measure_the_mtime_a_listing_reports_for_an_upload` |
+| Z16, Z23 | a repository named like a layout folder; a copy after a failed listing; a hash-named view file | done with code | `test_client.py`: `test_a_repository_named_like_a_layout_folder_is_a_persons_folder`; `test_client.py`: `test_every_layout_folder_has_its_copy_removed` |
+| Z17 | the sdist lacked `tests/untested_messages.txt` | done with code (the manifest test) | `test_docs_consistency.py`: `test_every_tracked_file_the_suite_needs_is_in_the_manifest` |
+| Z18 | `--status` reported a submodule's `.git` | done with code | `test_snapshot_tool.py`: `test_no_embedded_repos_keeps_the_gitlink_and_the_warning` (nearest; none names the row) |
+| Z19 | R4 and R7's named tests survived their clause's removal | read only (a new test and a column) | - (read only, declined or measured: no test) |
+| Z20 | seven stale doc lines; a commit with no CHANGELOG entry | read only | - (read only, declined or measured: no test) |
+| Z21 | `repair` checked tips, not histories | done with code | `test_repair.py`: `test_a_lost_base_pack_under_a_surviving_tip_is_repaired` |
+| Z22 | a group-owned Pro library sent to its "owner" | done with code; the owner value unmeasured (Z36) | `test_client.py`: `test_the_hidden_history_risk_is_named_only_on_pro_for_a_non_owner`; `test_realserver.py`: `test_a_library_shared_to_a_group_works_for_a_member`; `test_realserver.py`: `test_a_group_owned_library_works_for_a_member_and_the_owner` |
+| Z24–Z26 | warn: a push recreating a tracked path; a hidden branch on Pro; another payload rule | done with code (warnings, by the maintainer's decision) | `test_snapshot_payload.py`: `test_a_run_on_another_payload_rule_than_the_last_snapshot_warns` (Z26 only; Z24 and Z25: `git grep -n 'recreat' tests`) |
+| Z42 | the review process rules | read only | - (read only, declined or measured: no test) |
+| B12 | 42 git processes per snapshot run | done with code (31) | - (read only, declined or measured: no test) |
+| Z27 | the vanished-path guard missed a bare clone's command-line refspec and `--prune-tags` | done with code (0.9.25): the helper remembers what was advertised | `test_e2e.py`: `TestAVanishedRepositoryIsRecognisedWhateverTheRefspec`; `test_git_util.py`: `AdvertisedRecordTests` |
+| Z28 | the lock's settlement window was a fixed second | done with code (0.9.24), capped at ten | `test_lock.py`: `test_the_window_follows_a_slow_ticket_upload` |
+| Z29 | `_prune_empty_ref_parents` deleted a parent a Pro non-owner sees as empty | measured on Pro (a hidden child's contents were taken); done with code (0.9.25): not for a non-owner | `test_helper.py`: `PruneEmptyRefParentsTests`; `test_realserver.py`: `test_measure_a_delete_of_a_parent_that_holds_an_invisible_child` |
+| Z30 | two machines uploading one LFS object left conflict copies | done with code (0.9.24) | `test_lfs.py`: `TestLFSUploadAgainstTheStub` |
+| Z31 | a 413 overwrote the repository-wide pack cap | done with code (0.9.24): per remote | `test_config.py`: `TestPerRemotePackCap`; `test_e2e_pack_split.py`: `test_another_remote_of_the_repository_is_not_given_the_cap_of_the_one_that_refused`; `test_pack_split.py`: `test_a_413_keeps_the_cap_that_worked_in_the_repository` |
+| Z32 | NTFS folds non-ASCII case, git does not | read only (SNAPSHOT.md) | - (read only, declined or measured: no test) |
+| Z34 | a Pro non-owner's report-only `--payload-gc` under-counts | done with code (a Note) | `test_snapshot_payload.py`: `test_a_report_by_a_non_owner_on_pro_says_its_count_may_be_too_high` |
+| Z35 | prose numbers not tied to constants | done with code (tests; REF_WRITE timeout is stated nowhere) | `test_docs_consistency.py`: `TestProseNumbersMatchTheirConstants` |
+| Z36 | real-server measurements | partly: `MEASURED` lines ran; group owner, 5,000-entry listing and an admin's view are open | `test_realserver.py`: `test_a_library_shared_to_a_group_works_for_a_member`; `test_realserver.py`: `test_measure_the_mtime_a_listing_reports_for_an_upload`; `test_realserver.py`: `LargeListingTests` |
+| Z37 | unpinned images never tested | done (workflow ran once, green) | `test_realserver_latest_workflow.py` |
+| Z38 | no fault that fails exactly the n-th listing | done with code; it does not reproduce Z3 (recorded) | `test_e2e_listing_faults.py` |
+| Z40 | `spell_like_index`'s test-only default; two `format_bytes` | done (the second declined: one module) | - (read only, declined or measured: no test) |
+| Z41 | a green run then a failed re-run passed `release_check` | done with code | `test_release_check.py`: `test_a_green_run_followed_by_a_failed_rerun_warns` |
+| Z43 | the payload cache re-reads everything after a FAT remount | option A done (a Note); option C open | `test_snapshot_payload.py`: `test_a_file_hashed_again_only_for_its_inode_is_named_as_that` |
+| Z44, Z45 | a restore onto FAT stopped at git's first error; a case twin read as a defect; `dot.` passed the byte check | done with code (0.9.24) | `test_snapshot_tool.py`: `test_a_restore_onto_a_volume_that_refuses_names_goes_around_them`; `test_snapshot_tool.py`: `test_the_advice_for_links_written_as_text_fits_the_platform`; `test_snapshot_tool.py`: `RestoreNameLimitTests` |
+| Z22 | a group-owned library's owner value | **corrected**: `share` is every non-owner's value, so it identifies nothing; the discriminator is unmeasured | `test_client.py`: `test_the_hidden_history_risk_is_named_only_on_pro_for_a_non_owner`; `test_realserver.py`: `test_a_library_shared_to_a_group_works_for_a_member`; `test_realserver.py`: `test_a_group_owned_library_works_for_a_member_and_the_owner` |
+| Z47 | a conflict copy of a released holder's ticket blocks one lease | done with code (0.9.25): the holder deletes its own; reaping orphans was rejected as unsafe | `test_e2e_conflict_copies.py`: `test_a_push_removes_the_conflict_copies_of_its_own_lock_ticket`; `test_lock.py`: `test_a_holder_deletes_the_conflict_copies_of_its_own_ticket_when_it_releases`; `test_lock.py`: `test_a_conflict_copy_of_a_released_holders_ticket_holds_the_lock_for_one_lease` |
+| Z48 | the serialising-disk test failed on macOS runners | done with code (0.9.25): a virtual clock; the wall-clock smoke test that was kept failed once more and now asserts only structure | `test_snapshot_climb.py`: `test_a_disk_that_serialises_every_reader_is_left_at_one`; `test_snapshot_climb.py`: `test_the_search_runs_on_the_real_clock_and_hashes_every_file_once` |
+| Z49 | skipping the prune leaves an empty ref folder that stops a fetch | decision, with code: the guard stays (issue 6), the Note says the consequence and is printed only when a folder would go | `test_realserver.py`: `test_an_empty_ref_folder_is_measured_against_a_listing_of_the_refs` (container only) |
+| Z50 | three timing flakes in a week | read only (an audit in the ROADMAP row) plus one fixed assertion | - (read only, declined or measured: no test) |
+| W4 | a 600 s wall clock on tree-sized git calls | done with code: `SEAFILE_SNAPSHOT_GIT_TIMEOUT`; the default is unchanged and a slow disk was never measured | `test_snapshot_tool.py`: `TypedGitTimeoutTests` |
+| T3 | a push verifies packs by size only | decided, recorded in DESIGN (the reasons are there to attack) | `test_refs.py`: `TestStrictWalkStopsWhereItCannotSee` |
+| Z33 | stub duplicate-on-collision for copy | done: `copy_duplicate` fault; the real server's answer to a copy onto a taken name is unmeasured | `test_e2e_conflict_copies.py`; `test_e2e_conflict_copies.py`: `TestTheStubCopyCanNumberATakenName` |
+| Z46 | a whole-group kill leaves git's `index.lock` | decided: leave it | `test_snapshot_tool.py`: `test_a_leftover_index_lock_is_explained_not_just_quoted` |
+| AA1-AA8 | the 8eb416b / 853a7a2 round (ROADMAP §1.11): `inf`/`nan` typed seconds, the restore onto Windows and FAT in four shapes, the dead disk floor, a listed-but-unserved lock ticket, `git~` names, the DESIGN §3.2-3.4 drift | done with code (0.9.25); each named test fails when its fix is removed (`mutate_check`), except the bytes-listing mutation, which only a POSIX run can show | `test_snapshot_payload.py`: `test_a_name_that_only_starts_git_tilde_is_a_file_not_an_alias_of_dot_git` (AA6; the others: the ROADMAP row names none, `git grep -n AA3 tests`) |
+| AA9-AA19 | `--dry-run`'s case rule, an empty ref folder after a failed nested push (measure first), the suspend-blind lease clock, the settle budget, the mirror-clone warning, the restore's "verified" wording, a surviving R6 mutation, `gates --changed`'s test imports, the long-path skip matcher, the 5,000-folder listing, the payload-verify note | done with code and a test each in 0.9.26, except AA10 (fixed on a stub that models folders; the CE and Pro answer is measured by `test_an_empty_ref_folder_is_measured_against_a_listing_of_the_refs`) and AA18 (tests added, listing sizes measured in the container run). Re-report only a fix that is wrong or incomplete, with the input that shows it | `test_snapshot_tool.py`: `test_a_preview_says_the_real_run_sets_another_case_rule`; `test_e2e_failed_nested_push.py`; `test_realserver.py`: `test_an_empty_ref_folder_is_measured_against_a_listing_of_the_refs` (+10 more: `git grep -n AA9 tests`) |
+| AA22 | plain `lstat`/`open` on source paths past 260 characters on Windows | done with a guard test that scans every snapshot part for a source path not passed through `extended_path`; try a site shape the pattern misses | `test_snapshot_tool.py`: `test_the_respelling_check_uses_the_long_path_form`; `test_snapshot_tool.py`: `test_no_part_stats_or_opens_a_source_path_in_its_plain_form` |
+| AA21 | gemini's A1-A3, D3, D4, G3.1, B1, B2, C1, C2, G8.1, E1; "an empty ref leaf is empty"; exit 2 for an incomplete restore | declined with reasons in ROADMAP §1.11 and the triage; re-report only by showing the reason is wrong | - (read only, declined or measured: no test) |
+| AA23, AA32, AA33 | 429 and retry handling: the ref walk's worker back-off, `Retry-After` capped at 10 s, a write or a POST never re-sent once it may have reached the server, `other=0` (no re-send after an SSL failure), a connection error that names its cause (`SeafileConnectionError`) | done with code and a test each (0.9.26). the rename, the delete, the folder create and the batch copy now wait out a 429 (the stub-level tests are `test_client_retry_cap.py`); an upload POST to the file host and a payload or snapshot worker's own throttle reading are not covered: say which can still fail on one 429, with the input | `test_client_retry_cap.py`: `TestAFolderCreateAndACopyAreSentAgainAfterAThrottle`; `test_realserver.py`: `test_a_listing_holds_every_subfolder_of_a_large_folder`; `test_refs_throttle.py` |
+| AA24 | Windows long-path walks with long paths off | done with code and a test on a machine with long paths ON: `walk_long` walks the extended-length form and hands back plain paths (the plain walk's failure was never shown here; the test shows the helper's contract). Try a walk it was not applied to, and a caller that compares its paths with plain ones | `test_snapshot_walk_long.py`: `TestWalkLong` |
+| AA27, AA31 | a dropped connection is a `SeafileAPIError`; the advertised-refs record of a linked worktree; the Pro owner refusal for `--payload-delete` before the history download | done with code and a test each; try a sibling | `test_client_connection_error.py`; `test_e2e_failed_nested_push.py`: `test_an_error_that_is_not_a_seafile_error_still_triggers_the_cleanup` |
+| AA34-AA36, AA31's rest | fable2 C1 (a body cut mid-stream), C3 (the pack fallback's bound), the surviving mutations, G0.3(b)(c) (the failed-write folder cleanup), `99_cli.py`'s size | done with code in the commits after `v0.9.26` (a test each, mutations KILLED); try a sibling: another streamed read, another `delete_entry` without a lease check (both pack cleanups of a push are fenced since AA37) | `test_client_retry_cap.py`: `test_a_long_retry_after_is_not_slept_through_and_is_said_once`; `test_e2e_failed_nested_push.py`: `test_an_error_that_is_not_a_seafile_error_still_triggers_the_cleanup`; `test_pack_split.py`: `test_a_name_the_remote_held_before_is_not_removed_by_a_refused_attempt` (+1 more: `git grep -n AA34 tests`) |
+| AA37-AA49 | held packs (a held name is skipped), the lease fence of both own-upload cleanups, an unreadable known ref, the Content-Encoding refusal, the throttled `DELETE`, the payload and gc retention reports | done with code and a test each in the commits after `9fe723f`; review 134c8af found a regression in the first (AA50) | `test_e2e_stale_clone_pack.py`: `test_a_pack_the_remote_holds_is_not_sent_again`; `test_gc.py`: `TestAMergedPackNamedLikeAHeldOneIsNotUploadedOver`; `test_pack_split.py`: `test_a_pack_the_remote_already_holds_is_not_uploaded_again` (+8 more: `git grep -n AA37 tests`) |
+| AA50-AA59 | review 134c8af: a held pack verified by size (AA50), the LFS and payload settle races and a short LFS object (AA51), the token scope as a path, `http` never replacing `https`, IPv6 brackets, `:secret@` masking (AA52), a listed ref with a bad body and a vanished `refs/heads` (AA53), a non-ASCII case twin and a name over 255 bytes (AA54), the `--no-push` source, `_run_live`'s pipe, exit 2 and `--json` on a bad command line (AA55), small ones (AA56, AA57), a reused payload object clearing its retention mark (AA59) | done with code and a test each in the commits after `134c8af`; try a sibling of each: another place a size or a name is trusted without being read back, another URL parse that drops brackets or the scheme, another `fnmatch` or `casefold` that differs by platform, another stdout pipe read after the child exits | `test_e2e_stale_clone_pack.py`: `test_a_held_pack_at_another_size_is_uploaded_over_not_trusted`; `test_lfs.py`: `test_a_short_local_object_never_replaces_a_good_remote_one`; `test_url.py`: `test_an_ipv6_literal_keeps_its_brackets` |
+| S1 | an unpaged listing may be short | measured complete at 5,100 on CE and Pro; read the claim, and the assertion, adversarially | - (read only, declined or measured: no test) |
+| Z39 | locale and environment legs | partly done: the tr_TR, ASCII-only and C-locale legs run in CI (`ci_locale_legs`) and a macOS leg exists; antivirus, Task Scheduler as SYSTEM and a subpath behind nginx remain, and cannot be read from code | `test_ci_locale_legs.py`; `test_git_util.py`: `test_run_git`; `test_snapshot_tool.py`: `test_the_probe_names_its_file_in_bytes` |
 
 Settled ground in this part: an "unknown" lease after a write that was read back is a
 warning while the lease is within its time by this machine's clock, and lost past it; a
