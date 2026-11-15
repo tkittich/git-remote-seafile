@@ -11,21 +11,22 @@ from __future__ import annotations
 
 import os
 import pathlib
-import shutil
 import sys
 import tempfile
 import unittest
 
 _ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_ROOT / "tools"))
+sys.path.insert(0, str(_ROOT / "tests"))
 
 import seafile_snapshot as snap  # noqa: E402
+from _helpers import remove_tree  # noqa: E402
 
 
 class TestWalkLong(unittest.TestCase):
     def test_a_file_past_260_characters_is_found_and_the_paths_are_plain(self):
         base = pathlib.Path(tempfile.mkdtemp(prefix="grs-long-"))
-        self.addCleanup(lambda: shutil.rmtree(snap.extended_path(base), ignore_errors=True))
+        self.addCleanup(lambda: remove_tree(snap.extended_path(base)))
         deep = base
         while len(str(deep)) < 300:
             deep = deep / ("d" * 40)
@@ -45,7 +46,7 @@ class TestWalkLong(unittest.TestCase):
 
     def test_a_walk_can_prune_its_directories_in_place(self):
         base = pathlib.Path(tempfile.mkdtemp(prefix="grs-prune-"))
-        self.addCleanup(shutil.rmtree, base, True)
+        self.addCleanup(remove_tree, base)
         (base / "keep").mkdir()
         (base / "skip").mkdir()
         (base / "skip" / "x").write_text("x")
@@ -59,7 +60,7 @@ class TestWalkLong(unittest.TestCase):
     @unittest.skipIf(sys.platform == "win32", "elsewhere the helper is os.walk itself")
     def test_elsewhere_it_is_os_walk(self):
         base = pathlib.Path(tempfile.mkdtemp(prefix="grs-posix-"))
-        self.addCleanup(shutil.rmtree, base, True)
+        self.addCleanup(remove_tree, base)
         (base / "a").mkdir()
         self.assertEqual(list(snap.walk_long(base)), list(os.walk(base)))
 

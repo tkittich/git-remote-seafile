@@ -552,7 +552,7 @@ class SnapshotGuardTests(_SnapshotFixture):
 
             def walk_that_hits_a_denied_dir(top, **kw):
                 onerror = kw.get("onerror")
-                if onerror is not None and str(top) == str(root):
+                if onerror is not None and str(top).removeprefix("\\\\?\\") == str(root):
                     onerror(PermissionError(13, "Permission denied", str(root / "denied")))
                 return real_walk(top, **kw)
 
@@ -3740,18 +3740,16 @@ class IncrementalStagingTests(_SnapshotFixture):
         ("30_vault.py", "with os.scandir(folder) as it:"): "the case probe near the source root (depth 64 entries)",
         ("70_stage.py", "reserved = (work_tree / PAYLOAD_RESERVED_DIR).exists()"):
             "a fixed name directly under the tree root",
-        ("40_profile.py", "for dirpath, dirnames, filenames in os.walk(root):"): "AA24: a walk yields plain dirpaths",
-        ("70_stage.py", "for dirpath, dirnames, filenames in os.walk(root):"): "AA24: a walk yields plain dirpaths",
-        ("71_embedded.py", "for dirpath, dirnames, filenames in os.walk(root, onerror=_deny):"):
-            "AA24: a walk yields plain dirpaths; a failure is reported through onerror",
+        ("77_payload_restore.py", "yield from os.walk(root, onerror=onerror)"):
+            "AA24: walk_long off Windows, where the path form does not matter",
+        ("77_payload_restore.py", "for dirpath, dirnames, filenames in os.walk(long_root, onerror=onerror):"):
+            "AA24: walk_long itself walks the extended-length form",
         ("74_payload_manifest.py", "return os.stat(name).st_mtime_ns"): "a probe file the tool just made in the vault",
         ("91_restore_names.py", "for folder, dirs, files in os.walk(root, onerror=fail):"):
             "the restore destination, which the user chose",
         ("91_restore_names.py", "links = [d for d in dirs if os.path.islink(os.path.join(folder, d))]"):
             "the restore destination",
-        ("94_first_run.py", "for dirpath, dirnames, _files in os.walk(root):"): "AA24: the first-run survey walk",
-        ("94_first_run.py", "with os.scandir(stack.pop()) as entries:"): "AA24: the first-run survey walk",
-        ("94_first_run.py", "for dirpath, dirnames, filenames in os.walk(root):"): "AA24: the first-run survey walk",
+        ("94_first_run.py", "with os.scandir(stack.pop()) as entries:"): "AA24: an advisory size, not a capture",
     }
 
     def test_no_part_stats_or_opens_a_source_path_in_its_plain_form(self):
