@@ -551,6 +551,15 @@ class TestClientAPI(unittest.TestCase):
                         "https://h.example.com/seafile/x/..;/..", "https://h.example.com/seafile-evil",
                         "http://h.example.com/seafile/x", "https://other.example.com/seafile/x"):
             self.assertFalse(_inside_scope(outside, scope), outside)
+        # fable-G0.5 (review dfd2269): every URL above is refused by two clauses at once, so
+        # deleting any one of them left the test green.  Each of these is refused by one only.
+        for only_one_clause in (
+                "https://h.example.com/seafile/a;b/c",         # a ; parameter
+                "https://h.example.com/seafile/a\\b",          # a backslash
+                "https://h.example.com/seafile/x/./y",         # a dot segment
+                "https://h.example.com/seafile/a%2Fb"):        # an encoded slash
+            with self.subTest(url=only_one_clause):
+                self.assertFalse(_inside_scope(only_one_clause, scope))
         client = SeafileClient(server_url=scope, token="t")
         self.assertIs(client._transfer_session(scope + "/seafhttp/f/1"), client.session)
         self.assertIs(client._transfer_session("https://h.example.com/other/steal?t=a"), client._file_session)
