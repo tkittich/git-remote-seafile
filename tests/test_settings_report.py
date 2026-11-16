@@ -66,6 +66,17 @@ class TestSettingsReport(_IsolatedGit):
             value, source = self.rows()["seafile.gittimeout"]
         self.assertEqual((value, source), ("1800", "environment (SEAFILE_GIT_TIMEOUT)"))
 
+    def test_an_environment_value_the_helper_ignores_is_not_shown_as_in_force(self):
+        """fable-B10: ``SEAFILE_GIT_TIMEOUT=abc`` was printed as the value in force."""
+        with patch.dict(os.environ, {"SEAFILE_GIT_TIMEOUT": "abc", "SEAFILE_FORCE_FILE_HOST": "maybe"}):
+            rows = self.rows()
+        value, source = rows["seafile.gittimeout"]
+        self.assertEqual(value, "300")
+        self.assertIn("SEAFILE_GIT_TIMEOUT is set but not a whole number, so it is ignored", source)
+        value, source = rows["seafile.forcefilehost"]
+        self.assertEqual(value, "false")
+        self.assertIn("not true or false", source)
+
     def test_an_implausible_value_shows_what_the_helper_falls_back_to(self):
         self.global_cfg.write_text("[seafile]\n\tlocklease = -5\n", encoding="utf-8")
         with patch("sys.stderr", io.StringIO()):

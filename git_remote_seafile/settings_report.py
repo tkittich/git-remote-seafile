@@ -64,6 +64,25 @@ def _effective(setting: Setting, cfg: RemoteConfig) -> str:
     return str(value).lower() if isinstance(value, bool) else str(value)
 
 
+_BOOLEAN_WORDS = frozenset({"1", "true", "yes", "on", "0", "false", "no", "off"})
+
+
+def _env_ignored_because(setting: Setting, raw: str) -> str | None:
+    """Why the helper ignores *raw*, or ``None`` when it acts on it.
+
+    The report printed an environment value as the one in force whatever it said:
+    ``SEAFILE_GIT_TIMEOUT=abc`` was shown while the helper used 300 (review dfd2269, fable-B10).
+    """
+    if setting.key == "seafile.gittimeout":
+        try:
+            return None if int(raw) > 0 else "not a positive whole number"
+        except ValueError:
+            return "not a whole number"
+    if setting.key in ("seafile.forcefilehost", "seafile.skipsafetychecks"):
+        return None if raw.lower() in _BOOLEAN_WORDS else "not true or false"
+    return None
+
+
 def effective_settings() -> list[tuple[Setting, str, str]]:
     """``(setting, value, source)`` for every setting; source is where the value came from."""
     cfg = RemoteConfig.load()
@@ -74,6 +93,9 @@ def effective_settings() -> list[tuple[Setting, str, str]]:
             _trusted_config_value(setting.key) if setting.trusted
             else get_git_config(setting.key)
         )
+        ignored = _env_ignored_because(setting, env_raw) if env_raw else None
+        if ignored is not None:
+            env_raw = ""
         if env_raw:
             value, source = env_raw, f"environment ({setting.env})"
         elif git_raw:
@@ -81,6 +103,8 @@ def effective_settings() -> list[tuple[Setting, str, str]]:
             source = "global/system git config" if setting.trusted else "git config"
         else:
             value, source = setting.default, "default"
+        if ignored is not None:
+            source += f"; {setting.env} is set but {ignored}, so it is ignored"
         rows.append((setting, value, source))
     return rows
 
