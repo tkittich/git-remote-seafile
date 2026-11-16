@@ -1137,7 +1137,7 @@ class SeafileClient:
         resp = self.session.get(url, timeout=self.timeout)
         if resp.status_code != 200:
             if resp.status_code in (401, 403):
-                detail = resp.text.strip() or "Unauthorized"
+                detail = self._said(resp.text) or "Unauthorized"
                 raise SeafilePermanentError(
                     f"Failed to list repos: HTTP {resp.status_code} ({detail}).\n"
                     "Hint: check or refresh your token with 'git-remote-seafile check-auth' "
@@ -1147,7 +1147,7 @@ class SeafileClient:
 
         repos = self._json_body(resp, "the library list")
         if not isinstance(repos, list):
-            raise SeafileAPIError(f"Unexpected response from {url}: {resp.text}")
+            raise SeafileAPIError(f"Unexpected response from {url}: {self._said(resp.text)}")
         # An element that is not an object cannot be a library; a hostile or
         # broken answer used to escape as AttributeError from `.get` below,
         # shown to the user as "'str' object has no attribute 'get'"

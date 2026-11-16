@@ -735,6 +735,18 @@ class TestClientAPI(unittest.TestCase):
         with self.assertRaises(SeafileAPIError):
             self.client.get_repo_id("nonexistent")
 
+    def test_a_login_page_in_place_of_the_library_list_is_one_short_line(self):
+        """fable-C3: three messages printed the whole body of a proxy's page."""
+        page = "<html>" + "\n".join(f"<p>line {n}</p>" for n in range(300)) + "</html>"
+        resp = MagicMock(status_code=200, text=page)
+        resp.json.return_value = {"login": "required"}
+        self.client.session.get = MagicMock(return_value=resp)
+        with self.assertRaises(SeafileAPIError) as ctx:
+            self.client.get_repo_id("myrepo")
+        message = str(ctx.exception)
+        self.assertNotIn("\n", message)
+        self.assertLess(len(message), 600)
+
     def test_get_repo_id_miss_suggests_close_names(self):
         mock_resp = MagicMock(status_code=200)
         mock_resp.json.return_value = [

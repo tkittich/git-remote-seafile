@@ -556,7 +556,7 @@ def _cmd_check_auth(rest: list[str]) -> int:
             )
         print(f"Authenticated successfully with {client.server_url} as {email}")
         return 0
-    return _error(f"Authentication failed: HTTP {resp.status_code} {resp.text}")
+    return _error(f"Authentication failed: HTTP {resp.status_code} {client._said(resp.text)}")
 
 
 def _cmd_doctor(rest: list[str]) -> int:

@@ -31,9 +31,11 @@ Every message opens with a level word, and the level is the instruction:
 | `Hint:` | advice that changes nothing | safe to drop |
 
 Report commands print a greppable verdict and exit `1` when it is negative:
-`doctor`'s `[FAIL]`, `check-safety`'s `[BLOCKED ...]`, `lock-status`'s `LOCKED`
-(a lease whose ticket has expired reports `STALE` instead). These strings are
-part of the tested contract; matching on them is stable.
+`doctor`'s `[FAIL]` and `check-safety`'s `[BLOCKED ...]`. `lock-status` is the exception:
+it prints `LOCKED` (or `UNLOCKED`; a lease whose ticket has expired reports `STALE`
+under `LOCKED`) and exits `0`, because a held lock is a fact and not a failure; it exits
+`1` only when the queue could not be read. Match on the word, not the exit code. These
+strings are part of the tested contract; matching on them is stable.
 
 ## The snapshot run document: `--json`
 
