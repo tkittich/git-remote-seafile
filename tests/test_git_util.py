@@ -907,7 +907,7 @@ class TestGitTimeoutCeiling(unittest.TestCase):
         ):
             value = get_git_timeout()
         self.assertEqual(value, 10_000_000)
-        self.assertIn("is more than", stderr.getvalue())
+        self.assertIn("a git timeout of 99999999999s is more than", stderr.getvalue())
 
     def test_a_repository_cannot_raise_its_own_ceiling(self):
         # The real reader against a real repository-local setting: if the

@@ -96,6 +96,32 @@ class TestDoctor(unittest.TestCase):
         self.assertIn("[FAIL] write probe", out)
 
 
+class TestAnOptionTheCommandDoesNotHaveIsRefused(unittest.TestCase):
+    """fable-B6 (review dfd2269): ``repair <url> --dryrun`` ran the real repair and
+    ``gc <url> --tial`` the full pruning compaction, each exiting 0."""
+
+    def _main(self, *argv):
+        err = io.StringIO()
+        with patch.object(sys, "argv", ["git-remote-seafile", *argv]), patch("sys.stderr", err),                 patch("git_remote_seafile.cli._cmd_repair") as repair,                 patch.dict("git_remote_seafile.cli._HANDLERS", {"repair": lambda rest: repair(rest) or 0}, clear=False):
+            code = main()
+        return code, err.getvalue(), repair
+
+    def test_a_misspelt_option_stops_before_anything_runs(self):
+        code, err, repair = self._main("repair", "seafile://lib/x", "--dryrun")
+        self.assertEqual(code, 2)
+        self.assertIn("no such option '--dryrun' for", err)
+        repair.assert_not_called()
+
+    def test_the_options_the_command_lists_still_pass(self):
+        from git_remote_seafile.cli import _unknown_option
+
+        self.assertIsNone(_unknown_option("repair", ["seafile://lib/x", "--dry-run", "--allow-low-disk"]))
+        self.assertIsNone(_unknown_option("gc", ["--min-packs", "-3", "seafile://lib/x", "--tail"]))
+        self.assertIsNone(_unknown_option("gc", ["seafile://lib/x", "--min-packs=3"]))
+        self.assertEqual(_unknown_option("gc", ["seafile://lib/x", "--tial"]), "--tial")
+        self.assertEqual(_unknown_option("unlock", ["seafile://lib/x", "--froce"]), "--froce")
+
+
 class TestTerminationUnwinds(unittest.TestCase):
     def test_sigterm_runs_finally_blocks_so_a_lock_ticket_is_released(self):
         """A bare SIGTERM skipped ``RemoteLock.__exit__`` and left the ticket on

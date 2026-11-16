@@ -208,6 +208,33 @@ def _positional_args(args: list[str], *, value_options: tuple[str, ...] = ()) ->
     return positional
 
 
+def _unknown_option(command: str, rest: list[str]) -> str | None:
+    """The first option *rest* gives that *command* does not have, or ``None``.
+
+    The subcommands dropped any ``-option`` they did not know: ``repair <url> --dryrun`` ran the
+    real repair and ``gc <url> --tial`` the full pruning compaction (review dfd2269, fable-B6).
+    The options are the ones the command's help lists (``_COMMANDS``); the word after a
+    value-taking option (``--min-packs N``) is its value, whatever it starts with.
+    """
+    known: dict[str, bool] = {}
+    for flag, _text in _COMMAND_TABLE[command][2]:
+        parts = flag.split()
+        known[parts[0]] = len(parts) > 1
+    skip = False
+    for arg in rest:
+        if skip:
+            skip = False
+            continue
+        if not arg.startswith("-") or arg == "-" or arg in ("-h", "--help"):
+            continue
+        name, has_value, _inline = arg.partition("=")
+        if name not in known:
+            return arg
+        if known[name] and not has_value:
+            skip = True
+    return None
+
+
 def _parse_min_packs(args: list[str], default: int = 2) -> int:
     """Read `--min-packs N` / `--min-packs=N`, warning and falling back on junk."""
     raw: str | None = None
@@ -1154,6 +1181,14 @@ def main() -> int:
         if command != "snapshot" and any(arg in ("-h", "--help") for arg in args[1:]):
             print_command_help(command)
             return 0
+        if command != "snapshot" and command in _COMMAND_TABLE:
+            unknown = _unknown_option(command, args[1:])
+            if unknown is not None:
+                sys.stderr.write(
+                    f"Error: no such option '{unknown}' for the {command} command; "
+                    f"see: git-remote-seafile {command} --help\n"
+                )
+                return 2
         return _HANDLERS[command](args[1:])
 
     return _run_helper(args)
