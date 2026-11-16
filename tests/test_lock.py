@@ -1564,6 +1564,19 @@ class TestHoldingMarkerOutranksTheServerTimeEstimate(unittest.TestCase):
             "the lease must be re-proven on every call, not once per window",
         )
 
+    def test_a_fresh_fence_reads_the_queue_even_inside_the_reuse_window(self):
+        """gemini-4-hydrogen-2-B1: the fence after a ref write decides "ok", so it must not
+        answer from a scan taken under a second earlier."""
+        store = _LateCommitStore()
+        client = store.client("token123")
+        lock = RemoteLock(client, "repo1", "/path", timeout=5, lease=60, settle=0)
+        lock.acquire()
+        with patch("sys.stderr", io.StringIO()):
+            self.assertTrue(lock.verify_ownership())
+            store.listings = 0
+            self.assertTrue(lock.verify_ownership(fresh=True))
+        self.assertEqual(store.listings, 1, "a fresh fence lists the queue again")
+
     def test_the_sort_key_puts_a_granted_holder_ahead_of_an_earlier_estimate(self):
         """The marker is the *primary* key, not one more element of the tuple.
 

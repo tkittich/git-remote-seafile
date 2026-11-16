@@ -964,8 +964,12 @@ class RemoteLock:
         self._preemptor_checked_at = now_mono
         return result
 
-    def verify_ownership(self) -> bool:
+    def verify_ownership(self, *, fresh: bool = False) -> bool:
         """Verify that this process still actively holds the lock on the remote.
+
+        ``fresh=True`` ignores the cached queue scan: the fence after a ref write or delete is the
+        one that decides "ok", so it reads the queue itself (one listing per ref, which the push
+        already pays for the write; review dfd2269, gemini-4-hydrogen-2-B1).
 
         Two questions, and the second is the one a ticket read cannot answer.
         Reading our own ticket back proves the *lease* is ours -- it is gone or
@@ -985,6 +989,8 @@ class RemoteLock:
             self._last_ownership_state = LEASE_LOST
             return False
 
+        if fresh:
+            self._preemptor_checked_at = None
         try:
             preemptor = self._queue_preemptor()
         except Exception as ex:

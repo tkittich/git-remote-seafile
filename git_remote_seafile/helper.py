@@ -997,7 +997,7 @@ class RemoteHelper:
                 # file measured so; a broken or hostile server could do it for
                 # a present one).  The write path reads back; so does this.
                 _proto_error(dst, "the server accepted the delete but the ref is still there")
-            elif not lock.verify_ownership() and lock.ownership_state() != LEASE_UNKNOWN:
+            elif not lock.verify_ownership(fresh=True) and lock.ownership_state() != LEASE_UNKNOWN:
                 _proto_error(dst, _LEASE_LOST_AFTER_WRITE.format(
                     verb="deleted", why=describe_ownership_failure(lock.ownership_state())
                 ))
@@ -1564,7 +1564,7 @@ class RemoteHelper:
         # the same rule as an unverifiable read-back, a warning (review 4f1cdd4,
         # deepseek-v4.1-flash B1).  A suspended holder's reaped ticket reads as
         # LEASE_LOST, so that case still fails.
-        if lock is not None and not lock.verify_ownership():
+        if lock is not None and not lock.verify_ownership(fresh=True):
             state = lock.ownership_state()
             if state == LEASE_UNKNOWN:
                 sys.stderr.write(
