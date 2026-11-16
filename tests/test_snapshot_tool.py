@@ -828,11 +828,11 @@ class ByteExactnessTests(_SnapshotFixture):
 
     def test_restore_requires_a_remote_and_a_destination(self):
         rc, _, err = self.run_tool("--restore", "--into", self.restored)
-        self.assertEqual(rc, 1)
+        self.assertEqual(rc, snap.EXIT_USAGE)      # a wrong command line, not a failed run (fable-E3)
         self.assertIn("--restore requires --remote", err)
 
         rc, _, err = self.run_tool("--restore", "--remote", self.remote)
-        self.assertEqual(rc, 1)
+        self.assertEqual(rc, snap.EXIT_USAGE)
         self.assertIn("--restore requires --into", err)
 
     def test_restore_refuses_a_non_empty_destination(self):

@@ -14,6 +14,14 @@ def drill_conflicts(args: argparse.Namespace) -> list[str]:
             ("--payload-verify", args.payload_verify is not None),
             ("--payload-gc", args.payload_gc), ("--payload-view", args.payload_view is not None),
             ("--rebuild-index", args.rebuild_index),
+            # Snapshot-run settings a drill never reads (gemini-4-hydrogen-2-E3).
+            ("--reset-to-remote", args.reset_to_remote),
+            ("--allow-shared-remote", args.allow_shared_remote),
+            ("--no-repack", args.no_repack),
+            ("--no-object-compression", args.no_object_compression),
+            ("--payload-min-size", args.payload_min_size is not None),
+            ("--payload-rehash", args.payload_rehash),
+            ("--record-mtimes", args.record_mtimes), ("--no-record-mtimes", args.no_record_mtimes),
         )
         if value
     ]
@@ -38,6 +46,14 @@ def validate_args(args: argparse.Namespace) -> None:
     )
 
     problems += drill_conflicts(args)
+    # Missing operands are a wrong command line too: exit 2, not the 1 of a failed run (fable-E3).
+    if args.restore and not args.maintain:
+        if not args.remote:
+            problems.append("--restore requires --remote <url>")
+        if not args.into:
+            problems.append("--restore requires --into <directory>")
+    if args.restore_drill is not None and not args.remote:
+        problems.append("--restore-drill requires --remote <url>")
     if args.maintain and args.restore:
         problems.append("--maintain and --restore are different modes")
     if args.maintain:

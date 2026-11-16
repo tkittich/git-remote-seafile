@@ -46,6 +46,22 @@ def status_conflicts(args: argparse.Namespace) -> list[str]:
             "--status describes the next run as it would be made with the vault's "
             "remembered settings, so it does not combine with --no-push or --dry-run"
         )
+    # Flags that change what a run does to the vault or the server: --status runs nothing, so
+    # each would be silently ignored (review dfd2269, gemini-4-hydrogen-2-E3).
+    problems += [
+        f"{flag} does not apply to --status"
+        for flag, value in (
+            ("--reset-to-remote", args.reset_to_remote),
+            ("--allow-shared-remote", args.allow_shared_remote),
+            ("--no-repack", args.no_repack),
+            ("--no-object-compression", args.no_object_compression),
+            ("--payload-rehash", args.payload_rehash),
+            ("--payload-skip-changing", args.payload_skip_changing),
+            ("--payload-jobs", args.payload_jobs is not None),
+            ("--rebuild-index", args.rebuild_index),
+        )
+        if value
+    ]
     return problems
 
 
