@@ -3327,6 +3327,17 @@ class PayloadRememberVerifyViewAndClockTests(_PayloadFixture):
         self.assertFalse(old.exists())
         self.assertTrue(fresh.exists())
 
+    def test_a_change_time_that_repeats_the_mtime_in_either_epoch_is_no_change_time(self):
+        """fable-G4.1: ``change_time_ns`` is counted from 1601 on Windows and the mtime from 1970,
+        so ``ctime == mtime`` could never be true there; made-up values, so it runs everywhere."""
+        mtime = 1_700_000_000_123_456_700
+        epoch = 11_644_473_600 * 1_000_000_000
+        self.assertTrue(snap.change_time_is_not_its_own(mtime, mtime))
+        self.assertTrue(snap.change_time_is_not_its_own(mtime + epoch, mtime))
+        self.assertTrue(snap.change_time_is_not_its_own(0, mtime))
+        self.assertFalse(snap.change_time_is_not_its_own(mtime + 5_000_000_000, mtime))
+        self.assertFalse(snap.change_time_is_not_its_own(mtime + epoch + 5_000_000_000, mtime))
+
     def test_a_file_that_only_starts_like_a_probe_is_a_persons_file(self):
         """fable-E2: the prefix alone matched ``.grs-clock-probe-notes``, which was left out of
         every snapshot and deleted by the next probe once it was old."""

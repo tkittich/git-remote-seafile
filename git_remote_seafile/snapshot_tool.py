@@ -4391,6 +4391,22 @@ def change_time_ns(path: Path, st: os.stat_result) -> int:
         return st.st_ctime_ns
 
 
+#: Windows counts its change time from 1601-01-01; ``st_mtime_ns`` counts from 1970.
+_WINDOWS_EPOCH_NS = 11_644_473_600 * 1_000_000_000
+
+
+def change_time_is_not_its_own(ctime_ns: int, mtime_ns: int) -> bool:
+    """True when a volume's change time says nothing the mtime does not.
+
+    A change time of 0 or below (the FAT family's Windows driver), the modification time reported
+    back, or -- on Windows, where ``change_time_ns`` returns the 1601-based change time -- the same
+    instant in that epoch.  The last form never compared equal before, so the guard could not
+    fire there (review dfd2269, fable-G4.1).  The stored value is left as it is, so no cache entry
+    is invalidated.
+    """
+    return ctime_ns <= 0 or ctime_ns == mtime_ns or ctime_ns - _WINDOWS_EPOCH_NS == mtime_ns
+
+
 def require_complete_history(repo: Path, *, walk: bool) -> None:
     """Refuse to decide what is unreferenced from a history that has holes.
 
@@ -5363,7 +5379,7 @@ def build_manifest(
             window *= 2
         # Windows' FAT driver reports a change time of 0 rather than the mtime
         # (review 06cc623, gemini E2): no change time either way.
-        if ctime_ns is not None and (ctime_ns <= 0 or ctime_ns == mtime_ns):
+        if ctime_ns is not None and change_time_is_not_its_own(ctime_ns, mtime_ns):
             # The filesystem has no change time of its own: the FAT family
             # keeps one timestamp in the directory entry, and a volume or API
             # that reports the modification time back as the change time does

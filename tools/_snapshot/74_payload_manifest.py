@@ -547,7 +547,7 @@ def build_manifest(
             window *= 2
         # Windows' FAT driver reports a change time of 0 rather than the mtime
         # (review 06cc623, gemini E2): no change time either way.
-        if ctime_ns is not None and (ctime_ns <= 0 or ctime_ns == mtime_ns):
+        if ctime_ns is not None and change_time_is_not_its_own(ctime_ns, mtime_ns):
             # The filesystem has no change time of its own: the FAT family
             # keeps one timestamp in the directory entry, and a volume or API
             # that reports the modification time back as the change time does
