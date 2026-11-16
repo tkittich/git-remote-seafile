@@ -1888,7 +1888,13 @@ class SeafileClient:
                     "Content-Disposition": f'attachment; filename="{safe_name}"',
                 }
                 try:
-                    resp = session.post(url, data=mp, headers=headers, timeout=self._upload_timeout())
+                    # No redirect is followed: a chunk is not re-sent where a 3xx points (as in _xfer), and
+                    # the 3xx falls to the status check below as the failure it is (review dfd2269,
+                    # gemini-4-hydrogen-2-C3).
+                    resp = session.post(
+                        url, data=mp, headers=headers, timeout=self._upload_timeout(),
+                        allow_redirects=False,
+                    )
                 except requests.RequestException as ex:
                     last_error = f"{type(ex).__name__}: {_scrub_transfer_error(ex, upload_url)}"
                     continue
