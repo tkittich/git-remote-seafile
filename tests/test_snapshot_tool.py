@@ -5661,6 +5661,17 @@ class ModificationTimeTests(_SnapshotFixture):
         self.assertEqual(victim.stat().st_mtime_ns, before)
         self.assertEqual((into / "ok.txt").stat().st_mtime_ns, 1_500_000_000_000_000_000)
 
+    def test_a_record_of_another_format_is_not_applied(self):
+        """gemini-4-hydrogen-2-E2: ``mtimes.json`` carried a format and nothing read it."""
+        into = self.tmp / "into-format"
+        (into / ".seafile-payload").mkdir(parents=True)
+        (into / "ok.txt").write_bytes(b"ok\n")
+        before = (into / "ok.txt").stat().st_mtime_ns
+        record = {"format": 2, "files": {"ok.txt": 1_500_000_000_000_000_000}}
+        (into / ".seafile-payload" / "mtimes.json").write_text(json.dumps(record), encoding="utf-8")
+        self.assertEqual(snap.apply_recorded_mtimes(into), (0, 1))
+        self.assertEqual((into / "ok.txt").stat().st_mtime_ns, before)
+
     def test_a_snapshot_without_a_record_restores_exactly_as_before(self):
         self.assertEqual(self.snapshot("--remote", str(self.remote), "--no-record-mtimes")[0], 0)
         rc, out, err = self.restore_to(self.restored)

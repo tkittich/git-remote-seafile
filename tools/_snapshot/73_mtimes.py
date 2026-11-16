@@ -238,7 +238,12 @@ def apply_recorded_mtimes(into: Path) -> tuple[int, int]:
         files = data["files"]
         if not isinstance(files, dict):
             return 0, 0
-    except (OSError, ValueError, KeyError, TypeError, RecursionError):
+        # A record of another format is not read as this one: its stamps may mean something else
+        # (the manifest is held to the same rule; review dfd2269, gemini-4-hydrogen-2-E2).  The
+        # times are best effort, so they are counted as skipped, not applied.
+        if data.get("format") != _MTIMES_FORMAT:
+            return 0, len(files)
+    except (OSError, ValueError, KeyError, TypeError, RecursionError, AttributeError):
         return 0, 0
     root = into.resolve()
     applied = skipped = 0
