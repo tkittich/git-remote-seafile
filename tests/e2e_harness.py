@@ -239,8 +239,24 @@ class _Handler(BaseHTTPRequestHandler):
 
         return self._send(404, b"{}")
 
+    def _write_fault(self) -> bool:
+        """``fail_write_n``: answer the n-th write (POST or DELETE) with a 500, once.
+
+        Counts every mutation a run makes, in the order it makes them, so a test can fail each one in
+        turn (``tests/test_fault_injection.py``).
+        """
+        with self.stub.dir_lock:
+            self.stub.write_calls += 1
+            wanted = self.stub.faults.get("fail_write_n")
+            hit = bool(wanted) and self.stub.write_calls == wanted
+        if hit:
+            self._send(500, b"injected write failure")
+        return hit
+
     def do_POST(self):
         body = self._read_body()
+        if self._write_fault():
+            return
         path = urlparse(self.path).path
         if path.startswith("/api2/repos/") and path.endswith("/dir/"):
             form = parse_qs(body.decode("utf-8", "replace"))
@@ -376,6 +392,8 @@ class _Handler(BaseHTTPRequestHandler):
 
     def do_DELETE(self):
         self._drain()
+        if self._write_fault():
+            return
         rid, p = self._rid(), _norm(self._query_p())
         is_dir_endpoint = urlparse(self.path).path.endswith("/dir/")
         files = self.stub.files.get(rid, {})
@@ -404,6 +422,8 @@ class SeafileStub:
         self.faults: dict[str, int] = {}
         #: Directory listings answered since the last reset (``dir_fail_nth`` counts them).
         self.dir_calls = 0
+        #: Writes (POST, DELETE) seen since the last reset (``fail_write_n`` counts them).
+        self.write_calls = 0
         self.dir_lock = threading.Lock()
         #: A substring of an uploaded path that makes the upload leave a ``(SFConflict ...)``
         #: copy beside it, and the copies left (ROADMAP Z33, X7).
