@@ -208,6 +208,37 @@ class TestRepair(unittest.TestCase):
             # a dry run still reports what is broken, from any clone
             self.assertEqual(_repair(client, shallow, dry_run=True)["status"], "broken")
 
+    def test_a_listed_but_unreadable_pack_is_named_with_a_way_forward(self):
+        """fable-B2: a pack cut short under its name stopped repair with git's raw text, which
+        named neither the pack nor what to do."""
+        with tempfile.TemporaryDirectory() as td:
+            clone, sha = _history(Path(td))
+            out = Path(td) / "full"
+            out.mkdir()
+            subprocess.run(["git", "-C", str(clone), "pack-objects", "-q", str(out / "pack")],
+                           input=f"{sha}\n", check=True, capture_output=True, text=True)
+            pack = next(out.glob("pack-*.pack"))
+            client = _StubClient({"main": sha}, {pack.name: pack.read_bytes()[:20]})
+            res = _repair(client, clone)
+        self.assertEqual(res["status"], "error", res)
+        self.assertIn(pack.name, res["message"])
+        self.assertIn("RUNBOOK section 4", res["message"])
+        self.assertEqual(client.uploaded, [])
+
+    def test_a_ref_this_clone_has_nothing_for_is_said_not_handed_to_pack_objects(self):
+        """fable-B2, second message: an empty object list made pack-objects fail with "expected
+        object ID, got garbage"."""
+        with tempfile.TemporaryDirectory() as td:
+            clone, sha = _history(Path(td))
+            client = _StubClient({"main": sha})
+            self.assertEqual(_repair(client, clone)["status"], "ok")      # the remote now holds it
+            with patch("git_remote_seafile.repair._incomplete_histories",
+                       return_value=[("refs/heads/main", sha)]):
+                res = _repair(client, clone)
+        self.assertEqual(res["status"], "error", res)
+        self.assertEqual(res["unrepaired"][0][0], "refs/heads/main")
+        self.assertIn("holds nothing the remote lacks", res["unrepaired"][0][1])
+
     def test_a_healthy_remote_is_clean_without_uploading(self):
         with tempfile.TemporaryDirectory() as td:
             clone, sha = _history(Path(td))

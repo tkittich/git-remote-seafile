@@ -308,12 +308,23 @@ def repair_remote(
                 if verbose:
                     sys.stderr.write(f"  Reading {pack_name}...\n")
                     sys.stderr.flush()
-                err = _fetch_and_verify_pack_pair(
-                    client, repo_id, pack_dir, pack_name, expected,
-                    idx_sizes.get(pack_name.removesuffix(".pack") + ".idx"),
-                    scratch_pack_dir, bare_repo, scratch_env, on_download_progress,
-                    op="repair",
-                )
+                try:
+                    err = _fetch_and_verify_pack_pair(
+                        client, repo_id, pack_dir, pack_name, expected,
+                        idx_sizes.get(pack_name.removesuffix(".pack") + ".idx"),
+                        scratch_pack_dir, bare_repo, scratch_env, on_download_progress,
+                        op="repair",
+                    )
+                except Exception as ex:
+                    # A pack that is listed but unreadable (cut short under its name) is the very
+                    # case repair exists for, and git's own text named neither the pack nor a way
+                    # forward (review dfd2269, fable-B2).
+                    first = str(ex).strip().splitlines()[-1:] or ["unreadable"]
+                    err = (
+                        f"{pack_name} is on the remote but cannot be read ({first[0][:200]}). "
+                        "Delete that pack and its .idx from the repository's objects/pack folder "
+                        "(RUNBOOK section 4), then run repair again from a full clone"
+                    )
                 if err is not None:
                     return {"status": "error", "message": err}
 
@@ -395,6 +406,14 @@ def repair_remote(
                     for line in res.stdout.splitlines()
                     if line.strip()
                 } - covered
+                if not wanted:
+                    # Nothing to send: pack-objects was handed one empty line and failed with
+                    # "expected object ID, got garbage" (fable-B2).
+                    unrepaired.append(
+                        (ref_name, "this clone holds nothing the remote lacks for it; fetch the "
+                         "branch here first, or repair from a clone that has it")
+                    )
+                    continue
 
                 before = {p.name for p in out_dir.glob("pack-*.pack")}
                 res = run_git_checked(
