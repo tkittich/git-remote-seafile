@@ -165,7 +165,12 @@ class LFSTransferAgent:
                     self.client.delete_entry(self.repo_id, f"{parent_dir}/{name}")
                 return again
             self.client.delete_entry(self.repo_id, f"{parent_dir}/{filename}")
-        self.client.rename_entry(self.repo_id, f"{parent_dir}/{right}", filename)
+        if not self.client.rename_entry(self.repo_id, f"{parent_dir}/{right}", filename):
+            # The damaged object is already gone.  Nothing may be deleted now: the right copy
+            # under its numbered name is the only whole one, and the caller reports the object
+            # as not stored, so git-lfs sends it again (review dfd2269, fable-G0.1 and
+            # gemini-4-hydrogen-2-C1; the payload copy, `_commit_object`, already returns False).
+            return None
         for name in copies:
             if name != right:
                 self.client.delete_entry(self.repo_id, f"{parent_dir}/{name}")

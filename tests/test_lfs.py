@@ -132,6 +132,37 @@ class TestLFSUploadAgainstTheStub(unittest.TestCase):
         deleted = [c.args[1] for c in client.delete_entry.call_args_list]
         self.assertNotIn(f"{folder}/{self.name}", deleted)
 
+    def test_a_failed_rename_after_the_damaged_object_went_deletes_nothing_more(self):
+        """fable-G0.1 / gemini-4-hydrogen-2-C1: the damaged object is deleted and the rename of
+        the right copy onto its name is refused; the right copy and every other copy stay."""
+        folder = self.folder
+        client = MagicMock()
+        client.list_dir.side_effect = [
+            [{"name": self.name, "size": 9}, {"name": self.name + " (1)", "size": len(self.DATA)},
+             {"name": self.name + " (2)", "size": len(self.DATA)}],
+            [{"name": self.name, "size": 9}, {"name": self.name + " (1)", "size": len(self.DATA)},
+             {"name": self.name + " (2)", "size": len(self.DATA)}],
+        ]
+        client.rename_entry.return_value = False
+        agent = LFSTransferAgent(client, REPO_ID, "/git-test")
+        self.addCleanup(agent._temp_dir.cleanup)
+        self.assertIsNone(agent._settle_object_name(folder, self.name, len(self.DATA)))
+        deleted = [c.args[1] for c in client.delete_entry.call_args_list]
+        self.assertEqual(deleted, [f"{folder}/{self.name}"])      # only the damaged one
+
+    def test_a_local_file_of_another_size_than_git_lfs_announced_is_refused_before_anything_is_sent(self):
+        """fable-G0.2 / gemini-4-hydrogen-2-G0.1: the size check had no test of its own; with the
+        remote empty only that check stops the short file (the hash check needs a remote object)."""
+        Path(self.local).write_bytes(self.DATA[:400])
+        out = io.StringIO()
+        with patch("sys.stdout", out):
+            self.agent.handle_upload(
+                {"event": "upload", "oid": self.OID, "path": self.local, "size": len(self.DATA)})
+        resp = [json.loads(x) for x in out.getvalue().splitlines() if x][-1]
+        self.assertIn("expects", resp["error"]["message"])
+        self.assertEqual(self.uploaded, [])
+        self.assertEqual(self.stored(), {})
+
     def test_a_rename_the_server_does_not_perform_is_an_error_and_leaves_no_part_file(self):
         with patch.object(self.client, "rename_entry", return_value=False):
             resp = self.upload()
