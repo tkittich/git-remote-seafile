@@ -409,6 +409,13 @@ Scope: `tools/_snapshot/NN_*.py`, `tools/seafile_snapshot.py`, `tests/test_snaps
 is 33 parts and one session does not read them all by line: **read the parts the round sheet assigns
 you by line, and the others by function name** (`python tools/build_snapshot.py --check` lists them);
 with no assignment, take them newest first and say in the report which you reached.
+**Slices** (a round with several reviewers gives each one; a single reviewer takes them in this
+order, newest first inside a slice): S1 staging core: `20_gitrun`, `30_vault`, `40_profile`, `50_lock`,
+`60_branches`, `67_hashing`, `68_climb`, `69_prewrite`, `70_stage`, `71_embedded`. S2 payload store:
+`72_payload_guards`, `73_mtimes`, `74_payload_manifest`, `75_payload`, `76_payload_gc`, `92_payload_history`.
+S3 payload edges: `77_payload_restore`, `78_payload_cli`, `79_payload_view`, `80_remote`, `81_placement`,
+`82_status`. S4 restore and command line: `90_restore`, `91_restore_names`, `93_cli_args`, `94_first_run`,
+`95_guards`, `96_cli_checks`, `97_settings`, `98_runreport`, `99_cli`.
 What Part G names is G, not here. Then, newest first (`git log -- tools/_snapshot`):
 1. Data loss or a wrong restore: any ordering in which a crash, a second machine, a
    retry or a stale cache leaves a manifest naming bytes that are not what the file

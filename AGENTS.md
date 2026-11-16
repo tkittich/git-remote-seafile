@@ -217,6 +217,11 @@ real data**, even to test. Read-only commands (`--payload-verify`, report-only
   staging routes shared the respelling that dropped a sharp-s file (Y1), so the route
   comparison could not see it.
 
+- **Stop rule.** A round is run per release, with the snapshot tool's parts split between reviewers
+  (review-prompt.md, Part E, "Slices"). Stop commissioning rounds when two consecutive rounds find no
+  LOSS and no CORRUPT; keep running the stub-level fault and round-trip tests instead
+  (`tests/test_fault_injection.py`, `tests/test_roundtrip_property.py`).
+
 ## Git and releases
 
 - The maintainer pushes and tags. Do not `git push`, tag, or create a release unless

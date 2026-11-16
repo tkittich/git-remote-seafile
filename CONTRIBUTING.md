@@ -452,6 +452,23 @@ gh attestation verify dist/<artifact> --repo tkittich/git-remote-seafile
 
 ---
 
+## Maintenance mode
+
+The project is in maintenance mode (decided 2026-11-17, after 64 releases and a review round per
+release that kept finding defects in recently added options). What that means:
+
+- **No new features, no new options.** A new flag, setting or mode needs a written reason in an issue
+  first (a bug that cannot be fixed without it, or a security need), and the maintainer's yes. The
+  backlog rows that were closed as "won't do" stay closed: `--on-failure`, `--limit-rate`, retention
+  presets, the doctor bundle, `--restore --only`.
+- **Every fix has a test that fails without it.** `tools/check_red_before.py <ref>` runs a commit's new
+  tests against its parent's code and says which ones were not red.
+- **A fix closes a shape, not a site.** Prefer the guard that fails for the next site too (a table every
+  flag must appear in, a test that lists every call of a kind) over a fix of the one reported site.
+- **Deprecate before removing.** An option goes away only after one release that warns when it is used
+  and says so in UPGRADING.md.
+- **Reviews stop when they stop finding losses.** See AGENTS.md, "Review rounds".
+
 ## Guidelines for Pull Requests
 
 1. **Keep dependencies minimal**:

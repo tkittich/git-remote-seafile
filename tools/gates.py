@@ -122,6 +122,7 @@ _TOOL_TESTS = {
     "tools/realserver_ci.py": ["test_realserver_ci"],
     "tools/seafile_doctor.py": ["test_seafile_doctor", "test_doctor_library"],
     "tools/verify_docs_guards.py": [],
+    "tools/check_red_before.py": ["test_check_red_before"],
 }
 _DOC_SUFFIXES = (".md", ".txt")
 
