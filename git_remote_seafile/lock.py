@@ -1152,6 +1152,9 @@ class RemoteLock:
                 "install_id": winner.get("install_id"),
                 "pid": winner.get("pid"),
                 "nonce": winner.get("nonce"),
+                # The file the ticket was read from: a conflict copy carries the original's nonce
+                # but has another name, and deleting by nonce missed it (review dfd2269, fable-B9).
+                "ticket_name": str(winner.get("_path") or "").rsplit("/", 1)[-1] or None,
                 "expires_in": max(0, int(exp - now)),
                 "expires_at": exp,
                 "stale": stale,
@@ -1247,7 +1250,7 @@ class RemoteLock:
                     "The lock queue reports a holder but names no ticket, so there is "
                     "nothing to delete. Use --force to clear the queue."
                 )
-            self._delete_tickets([f"{winner_nonce}.json"])
+            self._delete_tickets([status.get("ticket_name") or f"{winner_nonce}.json"])
             self.acquired = False
             return True
 

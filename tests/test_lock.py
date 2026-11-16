@@ -951,6 +951,22 @@ class TestConcurrencyAndLocking(unittest.TestCase):
                           "/path/.git-lock.d/live-waiter.json"],
                          "non-force unlock must not touch other clients' tickets")
 
+    def test_plain_unlock_deletes_a_winning_ticket_that_is_a_conflict_copy(self):
+        """fable-B9: the delete went by the nonce inside the ticket, so a conflict copy (which
+        carries the original's nonce under another name) stayed, and "unlocked" was printed."""
+        import hashlib
+        import socket
+        store = _SharedLockStore()
+        owner_id = hashlib.sha256(b"token123").hexdigest()[:8]
+        copy_name = "winner-nonce (SFConflict u 2026-01-01-00-00-00).json"
+        winner = _ticket("winner-nonce", owner=owner_id, machine=socket.gethostname(),
+                         timestamp=time.time() - 10, order_ts=time.time() - 10,
+                         lease=60, pid=os.getpid())
+        store.put_ticket(f"/path/.git-lock.d/{copy_name}", json.loads(winner))
+        lock = RemoteLock(store.client("token123"), "repo1", "/path", timeout=5, lease=60, settle=0)
+        self.assertTrue(lock.unlock(force=False))
+        self.assertEqual([k for k in store.files if ".git-lock.d" in k], [])
+
     def test_force_unlock_sweeps_the_whole_queue(self):
         """--force is the break-the-glass path: every ticket goes."""
         store = _SharedLockStore()
