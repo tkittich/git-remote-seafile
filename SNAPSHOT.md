@@ -998,7 +998,7 @@ A hidden directory is not a loophole; `-f` does not care about dot-prefixes.
 | History / diff semantics | a list of snapshots | a list of snapshots | **a real Git DAG**: `git log`, `git diff`, `git show`, `git bisect` |
 | Restore granularity | whole dataset | whole file | whole file, and **the whole tree in one command** |
 | Encryption at rest | filesystem-level | built in | none — encrypt the disk/volume, or use restic / Borg (Seafile encrypted libraries are not supported by this tool) |
-| Retention / expiry | usually built in | built in | **none** |
+| Retention / expiry | usually built in | built in | explicit and opt-in: `--payload-keep` and `--payload-gc` (payload objects); the git history is kept |
 | Integrity check | filesystem-level | content checksums | Git's own object hashing |
 | Needs the tree to be a Git repo | no | no | no |
 
@@ -1151,7 +1151,7 @@ Borg, and changes nothing for the helper or the vault.
    flag is accepted and ignored (section 12, USER_GUIDE §8.2).
 
 *Done since this list was written: nested-repository capture (0.9.1) and payload
-mode (0.9.0, [section 15.1](#151-payload-mode-large-files-by-hash-behind---payload-min-size)).
+mode (0.9.0, [section 15.1](#151-payload-mode-large-files-by-hash---payload-min-size-on-by-default)).
 The helper already tail-merges small packs after a push (`seafile.autogc`, on by
 default, deferred with a notice above the download budget), so the snapshot tool
 needs no `gc` step of its own.*
@@ -1219,7 +1219,8 @@ A run hashes (reusing the previous hash where size and mtime are unchanged and
 not racily close to the last commit), lists only the fan-out directories the
 hashes fall in, uploads the objects that are missing -- largest first, three at
 a time -- verifies them with a listing, and only then commits and pushes the
-vault. **Nothing is ever overwritten or deleted by a run.**
+vault. **A run never deletes an object, and never replaces one that has the right size;**
+a name found at the wrong size is damage and is replaced (PAYLOAD D5, R3).
 
 **Why by hash, and not a mirror of the tree.** The first implementation mirrored
 the tree into `current/` and made each snapshot a server-side copy of it. That
@@ -1243,7 +1244,7 @@ hash-named store does not:
 
 The price is that the server's own file view is unreadable -- `ab/ab3f...` --
 and that only the tool (or a script that reads the manifest) can rebuild a
-tree. The answer to "I want to look" is a **view**, planned: one directory of
+tree. The answer to "I want to look" is a **view** (`--payload-view`): one directory of
 real names built on demand by server-side copy and rename of objects (about two
 calls per file, no data transferred -- the copy was measured at 20-30 ms for
 1,500 entries), deleted when no longer wanted. A view is a convenience, never
@@ -1273,9 +1274,9 @@ change detection, and is handled the same way git handles it:
   content's name; the run stops and says which file;
 - a file another process holds open exclusively (a Windows database or GIS
   project) stops the run naming it, never a quiet omission;
-- there is no switch yet to force a full rehash; a cache the racy rule cannot
+- `--payload-rehash` forces a full rehash for one run; a cache the racy rule cannot
   vouch for (a file whose mtime was restored by a copy tool) is the case that
-  would want one.
+  wants it.
 
 **Seafile's own file history.** Library history is not the snapshot mechanism
 and must not be relied on as one: it is per library commit, retention-limited,
@@ -1355,10 +1356,9 @@ would surface.
 32-53 MiB/s (about 40-60 minutes), no local duplicate, no pack cap. A run with
 nothing changed is a directory walk and one listing per fan-out directory.
 
-**Next.** Views; a retention helper (list the objects no manifest in the
-vault's history references, and delete them on request); a remembered flag;
-optionally a payload library separate from the vault's, for quota or client-sync
-reasons.
+**Not built.** A payload library separate from the vault's, for quota or
+client-sync reasons. (Views, the retention helper and the remembered flag
+shipped: `--payload-view`, `--payload-gc`, `--payload-keep`.)
 
 ## 16. Maintenance
 
