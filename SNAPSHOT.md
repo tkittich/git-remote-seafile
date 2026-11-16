@@ -819,8 +819,9 @@ Files that change *between* the reads of different files give a snapshot that is
 internally consistent but not a point-in-time image of the whole tree.
 
 **Secrets are permanent.** The vault will happily record `.env`, keys and
-credentials, and Git history is forever. Every run lists the credential-shaped
-paths it captured, so the choice of remote is made with that in view. Push it
+credentials, and Git history is forever. The first run, and any run where the set
+of credential-shaped paths changes, lists the ones it captured (a later run with the
+same set stays quiet, exit 0), so the choice of remote is made with that in view. Push it
 only to a library only you can read.
 
 **File modes and symlinks** — Git for Windows does not reliably record the
