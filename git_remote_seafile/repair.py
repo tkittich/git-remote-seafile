@@ -345,6 +345,23 @@ def repair_remote(
 
             local_env = clean_git_env()
             work_tree = local_repo if local_repo is not None else Path.cwd()
+            # A shallow clone holds the tip but not its ancestors, and ``rev-list --objects``
+            # stops at the graft: the pack it builds is incomplete, the upload verifies, and the
+            # ref is reported repaired while every clone still fails (review dfd2269, fable-B1 and
+            # gemini-4-hydrogen-2-B2).
+            shallow = run_git_checked(
+                ["-C", str(work_tree), "rev-parse", "--is-shallow-repository"],
+                local_env, capture_output=True, text=True,
+            )
+            if shallow.returncode == 0 and shallow.stdout.strip() == "true":
+                return {
+                    "status": "error",
+                    "message": (
+                        "Repair not started: this clone is shallow, so it does not hold the history "
+                        "the broken refs need (" + ", ".join(sorted(n for n, _ in broken))
+                        + "). Run 'git fetch --unshallow' here, or repair from a full clone."
+                    ),
+                }
             out_dir = tmp / "out"
             out_dir.mkdir()
             pulse = _phase_pulse(sys.stderr, "building the repair pack")

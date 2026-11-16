@@ -184,6 +184,30 @@ class TestRepair(unittest.TestCase):
             self.assertEqual(_repair(client, clone)["status"], "ok")
             self.assertEqual(_repair(client, clone)["status"], "clean")
 
+    def test_a_shallow_clone_is_refused_and_uploads_nothing(self):
+        """fable-B1 / gemini-4-hydrogen-2-B2: from a depth-1 clone the pack held the tip
+        without its parents, verified, and the run said "repaired" with the ref still broken."""
+        with tempfile.TemporaryDirectory() as td:
+            full, _base = _history(Path(td), "full")
+            (full / "b.txt").write_text("second\n", encoding="utf-8")
+            _git(full, "add", "b.txt")
+            _git(full, "-c", "user.email=repair@example.com", "-c", "user.name=Repair",
+                 "commit", "-q", "-m", "two")
+            tip = subprocess.run(["git", "-C", str(full), "rev-parse", "HEAD"],
+                                 check=True, capture_output=True, text=True).stdout.strip()
+            shallow = Path(td) / "shallow"
+            subprocess.run(["git", "clone", "-q", "--depth", "1", full.as_uri(), str(shallow)],
+                           check=True, capture_output=True)
+            client = _StubClient({"main": tip})
+
+            res = _repair(client, shallow)
+            self.assertEqual(res["status"], "error", res)
+            self.assertIn("shallow", res["message"])
+            self.assertIn("git fetch --unshallow", res["message"])
+            self.assertEqual(client.uploaded, [])
+            # a dry run still reports what is broken, from any clone
+            self.assertEqual(_repair(client, shallow, dry_run=True)["status"], "broken")
+
     def test_a_healthy_remote_is_clean_without_uploading(self):
         with tempfile.TemporaryDirectory() as td:
             clone, sha = _history(Path(td))
