@@ -122,6 +122,16 @@ class TestAnOptionTheCommandDoesNotHaveIsRefused(unittest.TestCase):
         self.assertEqual(_unknown_option("unlock", ["seafile://lib/x", "--froce"]), "--froce")
 
 
+class TestCtrlCIsNotATraceback(unittest.TestCase):
+    """fable-B8 (review dfd2269): an interrupt left ``cli.main`` as a traceback."""
+
+    def test_an_interrupt_ends_with_a_line_and_exit_130(self):
+        err = io.StringIO()
+        with patch("git_remote_seafile.cli._main", side_effect=KeyboardInterrupt), patch("sys.stderr", err):
+            self.assertEqual(main(), 130)
+        self.assertIn("Interrupted", err.getvalue())
+
+
 class TestTerminationUnwinds(unittest.TestCase):
     def test_sigterm_runs_finally_blocks_so_a_lock_ticket_is_released(self):
         """A bare SIGTERM skipped ``RemoteLock.__exit__`` and left the ticket on

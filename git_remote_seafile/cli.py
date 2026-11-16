@@ -1141,6 +1141,20 @@ def _unwind_on_termination() -> None:
 
 
 def main() -> int:
+    """Run the command; Ctrl-C ends it with a line and exit 130, not a traceback.
+
+    SIGTERM already unwinds (``_unwind_on_termination``); an interrupt left ``cli.main`` as a
+    traceback (review dfd2269, fable-B8).  The ``finally`` blocks, a lock release among them, run
+    before this catches it.
+    """
+    try:
+        return _main()
+    except KeyboardInterrupt:
+        sys.stderr.write("\nInterrupted.\n")
+        return 130
+
+
+def _main() -> int:
     _unwind_on_termination()
     if hasattr(sys.stdout, "reconfigure"):
         try:
