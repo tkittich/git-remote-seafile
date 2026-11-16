@@ -283,6 +283,17 @@ class TestClientCredentials(unittest.TestCase):
             SeafileClient(server_url="http://plain.example.org")
         self.assertIn("plain HTTP", err.getvalue())
 
+    def test_an_upper_case_scheme_is_warned_about_like_a_lower_case_one(self):
+        """gemini-4-hydrogen-2-C4: ``HTTP://`` is the same scheme; only ``http://`` warned."""
+        with tempfile.TemporaryDirectory() as td, \
+             patch.dict("os.environ", {"SEAFILE_SERVER": "HTTP://plain.example.org",
+                                       "SEAFILE_TOKEN": "t"}, clear=True), \
+             patch("git_remote_seafile.client.get_candidate_db_paths", return_value=[]), \
+             patch("pathlib.Path.home", return_value=Path(td)), \
+             patch("sys.stderr", new_callable=io.StringIO) as err:
+            SeafileClient(server_url="HTTP://plain.example.org")
+        self.assertIn("plain HTTP", err.getvalue())
+
     def test_a_token_over_loopback_http_is_not_warned_about(self):
         """A local Seafile is not on a network path, so warning would just train
         the user to ignore the message."""

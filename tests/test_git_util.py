@@ -892,6 +892,23 @@ class TestGitTimeoutCeiling(unittest.TestCase):
             self.assertEqual(get_git_timeout(), GIT_TIMEOUT)
         self.assertIn("is not positive", stderr.getvalue())
 
+    def test_a_huge_value_is_clamped_with_a_warning_instead_of_overflowing(self):
+        """gemini-4-hydrogen-2-B4: SEAFILE_GIT_TIMEOUT=99999999999 reached Popen.communicate and
+        raised OverflowError."""
+        stderr = io.StringIO()
+        with (
+            patch("git_remote_seafile.git_util._GIT_TIMEOUT", None),
+            self._empty_env(),
+            patch(
+                "git_remote_seafile.git_util.get_trusted_git_config_int",
+                return_value=99999999999,
+            ),
+            patch("sys.stderr", stderr),
+        ):
+            value = get_git_timeout()
+        self.assertEqual(value, 10_000_000)
+        self.assertIn("is more than", stderr.getvalue())
+
     def test_a_repository_cannot_raise_its_own_ceiling(self):
         # The real reader against a real repository-local setting: if the
         # ceiling ever grew a `--local` fallback, this is what would catch it.

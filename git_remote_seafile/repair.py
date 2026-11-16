@@ -90,7 +90,8 @@ def _verify_repair_upload(
     problems: list[str] = []
     for name, want in sorted(expected.items()):
         try:
-            got = int(remote_sizes.get(name) or -1)
+            raw_size = remote_sizes.get(name)
+            got = -1 if raw_size is None else int(raw_size)
         except (TypeError, ValueError):
             got = -1
         if got != want:

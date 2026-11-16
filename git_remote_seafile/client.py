@@ -661,7 +661,7 @@ class SeafileClient:
         would train them to ignore the message.
         """
         self.token = token
-        if not token or not self.server_url.startswith("http://"):
+        if not token or not self.server_url.lower().startswith("http://"):
             return
         host = (urlparse(self.server_url).hostname or "").lower()
         if is_loopback_host(host):

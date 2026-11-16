@@ -8802,8 +8802,8 @@ def status_command(
         entry = payload_by_path.get(path)
         if entry is not None:
             if (
-                st.st_size != int(entry.get("size") or -1)
-                or st.st_mtime_ns != int(entry.get("mtime_ns") or -1)
+                st.st_size != int(-1 if entry.get("size") is None else entry["size"])
+                or st.st_mtime_ns != int(-1 if entry.get("mtime_ns") is None else entry["mtime_ns"])
             ):
                 changed.append(path)
         elif path in recorded:

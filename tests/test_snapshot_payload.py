@@ -2681,6 +2681,15 @@ class PayloadRememberVerifyViewAndClockTests(_PayloadFixture):
         self.assertGreater(status["uncompared"], 0)
         self.assertEqual(status["new"], 0)
 
+    def test_status_does_not_call_a_file_with_an_epoch_mtime_changed(self):
+        """gemini-4-hydrogen-2-E1: ``entry.get("mtime_ns") or -1`` read a recorded 0 as -1, so
+        a payload file stamped 1970-01-01 showed as changed right after a clean snapshot."""
+        os.utime(self.src / "big1.bin", ns=(0, 0))
+        self.assertEqual(self.snapshot()[0], 0)
+        rc, out, err = self.run_tool(self.src, "--vault", self.vault, "--status", "--json")
+        self.assertEqual(rc, 0, out + err)
+        self.assertEqual(json.loads(out)["result"]["status"]["changed"], 0, out)
+
     # -- the remembered setting and the force-rehash switch ---------------------
     def test_payload_rehash_ignores_the_cache_for_one_run(self):
         (self.src / "big1.bin").unlink()

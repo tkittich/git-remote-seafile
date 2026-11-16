@@ -38,6 +38,7 @@ class GitError(Exception):
 #: routinely exceed five minutes.  The machine owner gets to say so; the
 #: repository does not.
 GIT_TIMEOUT = 300
+_MAX_GIT_TIMEOUT = 10_000_000
 
 #: Blobs at or above this size are streamed into a pack as they are, instead of
 #: being put through git's delta search.  The default (``core.bigFileThreshold``
@@ -116,6 +117,14 @@ def get_git_timeout() -> int:
         value = _env_git_timeout()
         if value is None:
             value = get_trusted_git_config_int("seafile.gittimeout", GIT_TIMEOUT)
+        if value > _MAX_GIT_TIMEOUT:
+            # subprocess raises OverflowError past the platform's time_t (review dfd2269,
+            # gemini-4-hydrogen-2-B4); the snapshot tool bounds its typed value the same way.
+            sys.stderr.write(
+                f"Warning: a git timeout of {value}s is more than {_MAX_GIT_TIMEOUT}s; "
+                f"using {_MAX_GIT_TIMEOUT}.\n"
+            )
+            value = _MAX_GIT_TIMEOUT
         if value > 0:
             _GIT_TIMEOUT = value
         else:
