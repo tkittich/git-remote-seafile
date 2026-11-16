@@ -6983,11 +6983,28 @@ def restore_payload(
         shutil.rmtree(scratch, ignore_errors=True)
 
 
+def _claim(owners: dict[tuple[int, int], str], dest: Path, rel: str) -> str | None:
+    """Record that *rel* owns the file at *dest*; the path that already owned it, if another did."""
+    try:
+        info = os.stat(dest)
+    except OSError:
+        return None
+    if not info.st_ino:
+        return None      # a volume with no file index: nothing to tell two names apart by
+    key = (info.st_dev, info.st_ino)
+    first = owners.setdefault(key, rel)
+    return None if first == rel else first
+
+
 def _restore_payload_files(
     client: Any, rid: str, base: str, files: list[dict[str, Any]], into: Path, scratch: Path
 ) -> None:
     problems: list[str] = []
     done = 0
+    #: (device, file index) -> the manifest path that owns that file on disk: two entries that
+    #: a folding volume maps to one file must not both count as restored (review dfd2269,
+    #: gemini-4-hydrogen-2-G1.1: identical bytes made the second one "verified" in silence).
+    owners: dict[tuple[int, int], str] = {}
     total_bytes = sum(item["size"] for item in files)
     fetched = 0
     started = last_pulse = time.monotonic()
@@ -7006,6 +7023,11 @@ def _restore_payload_files(
             continue
         if dest.exists() or dest.is_symlink():
             if dest.is_file() and not dest.is_symlink() and _sha256_file(dest) == sha:
+                other = _claim(owners, dest, rel)
+                if other is not None:
+                    problems.append(f"{rel}: skipped, this filesystem treats the name as the same "
+                                    f"file as {other}, which was restored first")
+                    continue
                 done += 1
                 continue
             problems.append(f"{rel}: skipped, something else is already there (a name that "
@@ -7022,6 +7044,7 @@ def _restore_payload_files(
             os.utime(dest, ns=(item["mtime_ns"], item["mtime_ns"]))
         except (OSError, OverflowError, ValueError):
             pass  # content verified; timestamps and mode are best effort
+        _claim(owners, dest, rel)
         done += 1
         fetched += item["size"]
         now = time.monotonic()

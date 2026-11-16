@@ -2689,6 +2689,27 @@ class PayloadRememberVerifyViewAndClockTests(_PayloadFixture):
         self.assertGreater(status["uncompared"], 0)
         self.assertEqual(status["new"], 0)
 
+    def test_two_manifest_names_that_are_one_file_on_disk_are_not_both_restored(self):
+        """gemini-4-hydrogen-2-G1.1: on a folding volume ``Alpha.bin`` and ``alpha.bin`` with the
+        same bytes are one file; the second was counted as verified.  A hard link stands in for
+        the folding volume here, so the test runs on any platform."""
+        into = self.case / "twins"
+        into.mkdir()
+        data = b"same bytes"
+        (into / "Alpha.bin").write_bytes(data)
+        if not (into / "alpha.bin").exists():        # a case-sensitive volume: a link stands in
+            try:
+                os.link(into / "Alpha.bin", into / "alpha.bin")
+            except OSError:
+                self.skipTest("this volume neither folds case nor hard-links")
+        sha = hashlib.sha256(data).hexdigest()
+        files = [{"path": name, "sha256": sha, "size": len(data), "mtime_ns": 0, "mode": "100644"}
+                 for name in ("Alpha.bin", "alpha.bin")]
+        with self.assertRaises(snap.SnapshotError) as ctx:
+            snap._restore_payload_files(None, "rid", "/base", files, into, into / ".scratch")
+        self.assertIn("1 of 2 payload file(s) were not restored", str(ctx.exception))
+        self.assertIn("same file as Alpha.bin", str(ctx.exception))
+
     def test_status_does_not_call_a_file_with_an_epoch_mtime_changed(self):
         """gemini-4-hydrogen-2-E1: ``entry.get("mtime_ns") or -1`` read a recorded 0 as -1, so
         a payload file stamped 1970-01-01 showed as changed right after a clean snapshot."""
