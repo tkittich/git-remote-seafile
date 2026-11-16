@@ -3920,6 +3920,22 @@ class IncrementalStagingTests(_SnapshotFixture):
         skipped = snap.payload_skip_matcher(self.code, ["Über.dat"])
         self.assertEqual(skipped("über.dat"), (self.code / "über.dat").exists())
 
+    def test_a_hard_linked_non_ascii_case_twin_is_skipped_on_any_filesystem(self):
+        """gemini-4-hydrogen-2-G10.1: the test above compares two booleans that are both False on a
+        case-sensitive disk, so it passed without the fix.  A hard link makes ``über.dat`` the same
+        file as ``Über.dat`` wherever links exist."""
+        try:
+            (self.code / "Über.dat").write_bytes(b"x" * 10)
+        except UnicodeEncodeError:
+            self.skipTest("the filesystem encoding (C locale) cannot name a non-ASCII file")
+        if not (self.code / "über.dat").exists():     # a case-sensitive disk: link the twin
+            try:
+                os.link(self.code / "Über.dat", self.code / "über.dat")
+            except OSError:
+                self.skipTest("this volume neither folds case nor hard-links")
+        skipped = snap.payload_skip_matcher(self.code, ["Über.dat"])
+        self.assertTrue(skipped("über.dat"))
+
     def test_the_index_spelling_follows_git_and_the_disk(self):
         """The unit under the test above: ASCII letters fold, nothing else does, and a
         respelling the disk does not resolve is not made."""
