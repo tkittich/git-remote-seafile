@@ -2322,6 +2322,14 @@ class PayloadRetentionTests(_PayloadFixture):
         self.assertNotEqual(rc, 0)
         self.assertIn("conflict copies", out + err)
 
+    def test_gc_refuses_when_a_ref_folder_carries_the_conflict_marker(self):
+        """gemini-4-hydrogen-2-B3: the marker was looked for on files only."""
+        self.assertEqual(self.snapshot()[0], 0)
+        self.stub.files[REPO_ID]["/pvault/refs/heads/team (SFConflict a@b 2026-10-13)/snapshot"] = b"0" * 40
+        rc, out, err = self.gc("--payload-delete", "--payload-grace-days", "1")
+        self.assertNotEqual(rc, 0)
+        self.assertIn("conflict copies", out + err)
+
     def test_gc_refuses_a_history_it_cannot_read(self):
         self.assertEqual(self.snapshot()[0], 0)
         # A manifest of a format this tool does not know, committed to the local

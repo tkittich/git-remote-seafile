@@ -6563,10 +6563,10 @@ def _refs_the_helper_cannot_see(client: Any, rid: str, repo_path: str) -> list[s
         for entry in client.list_dir(rid, directory):
             name = entry.get("name", "")
             full = f"{directory}/{name}"
+            if "(SFConflict" in name:
+                found.append(full)
             if entry.get("type") == "dir":
                 stack.append(full)
-            elif "(SFConflict" in name:
-                found.append(full)
     return found
 
 

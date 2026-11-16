@@ -119,6 +119,13 @@ class DoctorServerChecksTests(unittest.TestCase):
         ])
         self.assertFalse(capped)
 
+    def test_a_folder_carrying_the_conflict_marker_is_found_too(self):
+        """gemini-4-hydrogen-2-B3: only files were tested for the marker, so a folder named
+        like a conflict copy (and what git cannot read under it) was never reported."""
+        self.put("/repo/refs/heads/team (SFConflict me 2026-10-12-10-00-00)/main")
+        found, _capped = diagnose.find_conflict_copies(self.client, REPO_ID, "/repo")
+        self.assertEqual(found, ["/repo/refs/heads/team (SFConflict me 2026-10-12-10-00-00)"])
+
     def test_a_walk_that_hits_the_directory_cap_says_so(self):
         for n in range(5):
             self.put(f"/repo/d{n}/f")

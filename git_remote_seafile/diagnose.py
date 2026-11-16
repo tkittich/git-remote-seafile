@@ -63,10 +63,12 @@ def find_conflict_copies(
         for entry in client.list_dir(repo_id, directory):
             name = entry.get("name", "")
             full = f"{directory.rstrip('/')}/{name}"
+            # A folder carrying the marker is reported too (and still walked): the file test
+            # alone skipped it (review dfd2269, gemini-4-hydrogen-2-B3).
+            if is_conflict_copy(name):
+                found.append(full)
             if entry.get("type") == "dir":
                 stack.append(full)
-            elif is_conflict_copy(name):
-                found.append(full)
     return sorted(found), False
 
 
