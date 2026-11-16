@@ -115,6 +115,17 @@ class TestLogin(_Fixture):
         post.assert_not_called()
         self.assertEqual(normalise_server("http://localhost:8000"), "http://localhost:8000")
 
+    def test_a_password_in_the_address_is_refused_and_never_printed_or_saved(self):
+        """fable-B3 (review dfd2269): ``login https://user:secret@host`` printed the password
+        and wrote it to the config file beside "the password is not" saved."""
+        post = MagicMock()
+        rc, out, err = self.login(["https://me:hunter2@seafile.example.com", "--user", "u"], [], post)
+        self.assertEqual(rc, 1)
+        self.assertIn("user name or password in it", err)
+        self.assertNotIn("hunter2", out + err)
+        post.assert_not_called()
+        self.assertFalse(self.config.exists())
+
     def test_a_public_name_that_starts_with_127_is_not_loopback(self):
         # A prefix test accepted these, and a password then travelled over plain HTTP.
         for server in ("http://127.example.com", "http://127.0.0.1.nip.io", "http://localhost.example.com"):

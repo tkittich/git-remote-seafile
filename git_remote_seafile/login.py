@@ -16,7 +16,7 @@ import sys
 import tempfile
 from pathlib import Path
 from typing import Any, Callable
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlsplit
 
 import requests
 
@@ -51,6 +51,14 @@ def normalise_server(raw: str) -> str:
         server = "https://" + server
     if not server.lower().startswith(("https://", "http://")):
         raise LoginError(f"'{raw}' is not an http(s) server address")
+    if "@" in urlsplit(server).netloc:
+        # A password typed into the address was printed back and saved in the config file
+        # beside the line saying the password is not (review dfd2269, fable-B3).  The message
+        # does not repeat the address.
+        raise LoginError(
+            "the server address has a user name or password in it; give the address alone "
+            "and use --user NAME (the password is asked for, and never saved)"
+        )
     if server.lower().startswith("http://") and not _is_loopback(server):
         # The password would cross the network readable by anything on the path.
         raise LoginError(
