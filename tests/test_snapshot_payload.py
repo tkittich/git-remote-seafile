@@ -3327,6 +3327,22 @@ class PayloadRememberVerifyViewAndClockTests(_PayloadFixture):
         self.assertFalse(old.exists())
         self.assertTrue(fresh.exists())
 
+    def test_a_file_that_only_starts_like_a_probe_is_a_persons_file(self):
+        """fable-E2: the prefix alone matched ``.grs-clock-probe-notes``, which was left out of
+        every snapshot and deleted by the next probe once it was old."""
+        mine = self.src / ".grs-clock-probe-notes.txt"
+        mine.write_bytes(b"my notes")
+        long_ago = time.time() - 7 * 24 * 3600
+        os.utime(mine, (long_ago, long_ago))
+        self.assertFalse(snap.is_clock_probe_debris(mine.name))
+        self.assertTrue(snap.is_clock_probe_debris(".grs-clock-probe-4242-1"))
+        self.assertIsNotNone(snap._probe_fs_clock(self.src))
+        self.assertTrue(mine.exists())
+        rc, out, err = self.bare()
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn(".grs-clock-probe-notes.txt",
+                      _git(self.vault, "ls-tree", "-r", "--name-only", "snapshot"))
+
     def test_an_unmeasurable_clock_is_said_once_per_vault(self):
         git_dir = self.vault / ".git"
         self.vault.mkdir(parents=True, exist_ok=True)

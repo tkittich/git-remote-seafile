@@ -391,15 +391,23 @@ _PROBE_PREFIX = ".grs-clock-probe-"
 _PROBE_DEBRIS_AGE_S = 6 * 3600
 
 
+#: The exact shape of a probe's name: ``<prefix><pid>-<time_ns>``.  A prefix alone also matched a
+#: person's own ``.grs-clock-probe-notes`` at the source root, which was then left out of every
+#: snapshot and, on a share, deleted by the next probe once six hours old (review dfd2269, fable-E2).
+_CLOCK_PROBE_NAME = re.compile(re.escape(_PROBE_PREFIX) + r"\d+-\d+")
+
+
 def is_clock_probe_debris(rel: str) -> bool:
     """True for a probe file at the source root, which never belongs in a snapshot."""
-    return "/" not in rel and rel.startswith(_PROBE_PREFIX)
+    return "/" not in rel and _CLOCK_PROBE_NAME.fullmatch(rel) is not None
 
 
 def _probe_fs_clock(directory: Path) -> int | None:
     """The filesystem's own "now", from a file created and removed at once; ``None`` if it cannot be."""
     try:
         for stale in directory.glob(_PROBE_PREFIX + "*"):
+            if _CLOCK_PROBE_NAME.fullmatch(stale.name) is None:
+                continue
             try:
                 if abs(time.time() - stale.stat().st_mtime) > _PROBE_DEBRIS_AGE_S:
                     stale.unlink()

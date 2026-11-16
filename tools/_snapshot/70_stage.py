@@ -217,7 +217,7 @@ def build_snapshot(
     """
     reserved = (work_tree / PAYLOAD_RESERVED_DIR).exists()
     # A clock probe a killed run left at the root must not be captured.
-    probe_debris = any(True for _ in work_tree.glob(_PROBE_PREFIX + "*"))
+    probe_debris = any(is_clock_probe_debris(p.name) for p in work_tree.glob(_PROBE_PREFIX + "*"))
     # Windows: git follows a junction and the walks that decide payload and
     # embedded-repository capture do not, so the three would disagree about
     # what the tree is.  Paths behind a junction are left out and reported; that
