@@ -122,7 +122,7 @@ def restore_payload(
 def _claim(owners: dict[tuple[int, int], str], dest: Path, rel: str) -> str | None:
     """Record that *rel* owns the file at *dest*; the path that already owned it, if another did."""
     try:
-        info = os.stat(dest)
+        info = os.stat(extended_path(dest))
     except OSError:
         return None
     if not info.st_ino:

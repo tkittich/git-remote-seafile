@@ -118,7 +118,7 @@ def links_written_as_text(repo: Path, rev: str, mismatched: list[str]) -> list[s
     found: list[str] = []
     for name in mismatched:
         sha = links.get(name)
-        on_disk = repo / name
+        on_disk = extended_path(repo / name)
         if sha is None or on_disk.is_symlink() or not on_disk.is_file():
             continue
         blob = _run(
@@ -619,7 +619,11 @@ def _restore(
 
     restore_payload(remote, into, allow_low_disk=allow_low_disk, sample=payload_sample)
 
-    files = sum(1 for p in into.rglob("*") if p.is_file() and ".git" not in p.parts)
+    files = 0
+    for _folder, dirs, names in walk_long(into):
+        if ".git" in dirs:
+            dirs.remove(".git")      # as ``".git" not in p.parts`` did, at every level
+        files += len(names)
     print(f"restored {files} files from {target} into {into}")
     # After a renamed, collided or excluded name the proof covers the files that were
     # written, not the whole snapshot (AA14); the exit status is unchanged.

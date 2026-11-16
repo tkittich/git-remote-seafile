@@ -6986,7 +6986,7 @@ def restore_payload(
 def _claim(owners: dict[tuple[int, int], str], dest: Path, rel: str) -> str | None:
     """Record that *rel* owns the file at *dest*; the path that already owned it, if another did."""
     try:
-        info = os.stat(dest)
+        info = os.stat(extended_path(dest))
     except OSError:
         return None
     if not info.st_ino:
@@ -9029,7 +9029,7 @@ def links_written_as_text(repo: Path, rev: str, mismatched: list[str]) -> list[s
     found: list[str] = []
     for name in mismatched:
         sha = links.get(name)
-        on_disk = repo / name
+        on_disk = extended_path(repo / name)
         if sha is None or on_disk.is_symlink() or not on_disk.is_file():
             continue
         blob = _run(
@@ -9530,7 +9530,11 @@ def _restore(
 
     restore_payload(remote, into, allow_low_disk=allow_low_disk, sample=payload_sample)
 
-    files = sum(1 for p in into.rglob("*") if p.is_file() and ".git" not in p.parts)
+    files = 0
+    for _folder, dirs, names in walk_long(into):
+        if ".git" in dirs:
+            dirs.remove(".git")      # as ``".git" not in p.parts`` did, at every level
+        files += len(names)
     print(f"restored {files} files from {target} into {into}")
     # After a renamed, collided or excluded name the proof covers the files that were
     # written, not the whole snapshot (AA14); the exit status is unchanged.
@@ -9747,7 +9751,7 @@ def names_on_disk(repo: Path) -> "set[str] | None":
     def fail(error: OSError) -> None:
         raise error  # os.walk skips a folder it cannot read; here that would read as "every name is missing"
 
-    if not repo.is_dir():
+    if not extended_path(repo).is_dir():      # past 260 characters a plain is_dir answers False
         return None
     # In bytes off Windows, like the probe: a ``str`` walk of a folder holding ``café`` under an
     # ASCII filesystem encoding lists ``caf\udcc3\udca9`` while the snapshot's names are decoded
@@ -9756,11 +9760,13 @@ def names_on_disk(repo: Path) -> "set[str] | None":
     root: Any = str(repo) if os.name == "nt" else os.fsencode(repo)  # bytes or str: one walk, two types
     git_dir: Any = ".git" if isinstance(root, str) else b".git"
     try:
-        for folder, dirs, files in os.walk(root, onerror=fail):
+        # walk_long: with long paths off a plain walk fails at the first folder past 260 characters and
+        # the whole check read as "cannot tell" (review dfd2269, gemini-4-hydrogen-2-G1.2, fable-G0.3)
+        for folder, dirs, files in walk_long(root, onerror=fail):
             if folder == root and git_dir in dirs:
                 dirs.remove(git_dir)
             base = os.path.relpath(folder, root)
-            links = [d for d in dirs if os.path.islink(os.path.join(folder, d))]
+            links = [d for d in dirs if _islink(os.path.join(folder, d))]
             for entry in [*files, *links]:
                 text = entry.decode("utf-8", errors="surrogateescape") if isinstance(entry, bytes) else entry
                 prefix = (base.decode("utf-8", errors="surrogateescape") if isinstance(base, bytes) else base)
@@ -9769,6 +9775,11 @@ def names_on_disk(repo: Path) -> "set[str] | None":
     except (OSError, ValueError):
         return None  # a listing that fails says nothing: no false alarm
     return found
+
+
+def _islink(path: Any) -> bool:
+    """``os.path.islink`` that reaches past 260 characters on Windows (a ``str`` path only)."""
+    return os.path.islink(extended_path(Path(path)) if isinstance(path, str) else path)
 
 
 def classify_missing_names(

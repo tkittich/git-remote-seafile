@@ -2196,6 +2196,7 @@ class RestoreNameLimitTests(_SnapshotFixture):
             if os.name != "nt":
                 self.assertIsInstance(root, bytes)
             name = "café.txt"
+            root = os.fspath(root)      # walk_long hands a Path on Windows
             yield root, [], [name.encode("utf-8") if isinstance(root, bytes) else name]
 
         with unittest.mock.patch.object(snap.os, "walk", walking):
@@ -2280,6 +2281,28 @@ class RestoreNameLimitTests(_SnapshotFixture):
         (self.restored / "top.txt").write_bytes(b"x")
         self.assertEqual(snap.names_on_disk(self.restored), {"sub/f.txt", "top.txt"})
         self.assertIsNone(snap.names_on_disk(self.restored / "absent"))
+
+    @unittest.skipUnless(os.name == "nt", "extended_path is the identity elsewhere")
+    def test_the_listing_reaches_a_folder_past_max_path(self):
+        """gemini-4-hydrogen-2-G1.2 / fable-G0.3 (simulated: this machine may have long paths
+        on): with them off the plain walk failed at the first long folder, the listing read as
+        "cannot tell" and the name check was skipped without a word."""
+        deep = self.restored / "a" / ("d" * 40)
+        os.makedirs(snap.extended_path(deep))
+        with open(snap.extended_path(deep / "lost.bin"), "wb") as handle:
+            handle.write(b"x")
+        limit = len(str(deep))
+        real = os.scandir
+
+        def scandir(path="."):
+            text = os.fspath(path)
+            if isinstance(text, str) and not text.startswith("\\\\?\\") and len(text) >= limit:
+                raise FileNotFoundError(3, "simulated MAX_PATH", text)
+            return real(path)
+
+        with unittest.mock.patch.object(os, "scandir", scandir):
+            names = snap.names_on_disk(self.restored)
+        self.assertEqual(names, {"a/" + "d" * 40 + "/lost.bin"})
 
     def test_a_pair_that_collides_is_warned_about_and_is_not_a_defect(self):
         self._vault_with_twin_names("README", "readme", "plain.txt")
@@ -3791,10 +3814,6 @@ class IncrementalStagingTests(_SnapshotFixture):
         ("77_payload_restore.py", "for dirpath, dirnames, filenames in os.walk(long_root, onerror=onerror):"):
             "AA24: walk_long itself walks the extended-length form",
         ("74_payload_manifest.py", "return os.stat(name).st_mtime_ns"): "a probe file the tool just made in the vault",
-        ("91_restore_names.py", "for folder, dirs, files in os.walk(root, onerror=fail):"):
-            "the restore destination, which the user chose",
-        ("91_restore_names.py", "links = [d for d in dirs if os.path.islink(os.path.join(folder, d))]"):
-            "the restore destination",
         ("94_first_run.py", "with os.scandir(stack.pop()) as entries:"): "AA24: an advisory size, not a capture",
     }
 
