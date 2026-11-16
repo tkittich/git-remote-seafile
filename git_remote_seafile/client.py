@@ -441,6 +441,11 @@ UPLOAD_CHUNK_ATTEMPTS = 3
 REF_WRITE_READ_TIMEOUT_SECONDS = 20
 
 
+def _leave_the_request_alone(request: Any) -> Any:
+    """An ``auth`` that changes nothing: its being set keeps requests from reading ``.netrc``."""
+    return request
+
+
 class _ScopedSession(requests.Session):
     """A session whose ``Authorization`` header never leaves the Seafile server's URL.
 
@@ -568,6 +573,12 @@ class SeafileClient:
         # their own short-lived token, and a clustered deployment may serve them
         # from a different host, where the account token has no business going.
         self._file_session = requests.Session()
+        # A ``.netrc`` entry for the host would make requests replace the Token header with Basic
+        # auth, and send the netrc password on the file session that is meant to carry no
+        # credential; the answer was "HTTP 401 ... refresh your token" for a good token (review
+        # dfd2269, fable-C1).  An explicit auth object is what stops requests from consulting it.
+        self.session.auth = _leave_the_request_alone
+        self._file_session.auth = _leave_the_request_alone
         self._mount_retries(self.session)
         self._mount_retries(self._file_session)
         self.session.hooks["response"].append(self._record_server_date_header)
