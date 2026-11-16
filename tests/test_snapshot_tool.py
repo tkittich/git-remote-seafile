@@ -3690,6 +3690,19 @@ class IncrementalStagingTests(_SnapshotFixture):
         (source / "123").mkdir()
         self.assertIsNone(snap.source_folds_case(source), "no letter to flip: cannot tell")
 
+    def test_a_dated_archive_with_no_letter_near_the_root_is_still_probed(self):
+        """fable-G1.1 (review dfd2269): sixty digit-only folders spent the 64-entry limit before
+        the first ``IMG_0001.jpg``, the probe said "cannot tell", and a case-sensitive source
+        lost one file of every case pair under a vault that folds."""
+        source = self.tmp / "archive"
+        for year in range(2020, 2025):
+            for month in range(1, 13):
+                folder = source / str(year) / f"{month:02d}"
+                folder.mkdir(parents=True)
+                (folder / "IMG_0001.jpg").write_bytes(b"x")
+        folds = (source / "2020" / "01" / "img_0001.JPG").exists()
+        self.assertIs(snap.source_folds_case(source), folds)
+
     def test_an_entry_that_vanishes_during_the_probe_does_not_read_as_case_sensitive(self):
         """fable-G1.2 (AA41): a temp file removed between the listing and the lstat made a folding
         source read as case-sensitive; ``core.ignorecase`` then flipped to false and back."""

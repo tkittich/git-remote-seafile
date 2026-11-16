@@ -1136,7 +1136,7 @@ def _ascii_swapcase(name: str) -> str:
     return "".join(c.swapcase() if c.isascii() else c for c in name)
 
 
-def source_folds_case(source: Path, limit: int = 64) -> bool | None:
+def source_folds_case(source: Path, limit: int = 64, max_folders: int = 2000) -> bool | None:
     """Whether the filesystem holding *source* treats ``a`` and ``A`` as one name.
 
     git sets ``core.ignorecase`` by probing the folder it initialises -- the vault --
@@ -1148,10 +1148,18 @@ def source_folds_case(source: Path, limit: int = 64) -> bool | None:
     flipped.  Two listed spellings, or a flipped name that does not resolve to the
     same file, mean case-sensitive.  ``None`` when no entry near the root has a
     letter to flip (then the vault's own answer stands).
+
+    *limit* bounds the entries tried that have a letter to flip; names without one (a dated
+    archive's ``2020/01``) are only queued, bounded by *max_folders* listings.  Counting them
+    spent the whole limit before the first ``IMG_0001.jpg`` at depth three, the probe said
+    nothing, the vault kept ``core.ignorecase=true`` and one file of every case pair was left
+    out with exit 0 (review dfd2269, fable-G1.1).
     """
     folders = [source]
     seen = 0
-    while folders and seen < limit:
+    listed = 0
+    while folders and seen < limit and listed < max_folders:
+        listed += 1
         folder = folders.pop(0)
         try:
             with os.scandir(folder) as it:
@@ -1160,12 +1168,12 @@ def source_folds_case(source: Path, limit: int = 64) -> bool | None:
             continue
         names = {entry.name for entry in entries}
         for entry in entries:
-            seen += 1
             flipped = _ascii_swapcase(entry.name)
             if flipped == entry.name:
                 if entry.is_dir(follow_symlinks=False) and entry.name != ".git":
                     folders.append(Path(entry.path))
                 continue
+            seen += 1
             if flipped in names:
                 return False
             # Only "the flipped name is not there" says case-sensitive.  Any other failure -- the
