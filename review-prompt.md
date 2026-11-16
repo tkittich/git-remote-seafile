@@ -19,7 +19,8 @@ older sentence says a version is unreleased. Known and not findings: `tools/rele
 local-directory `origin` (ROADMAP AA45). Phase 1 (Parts A and D, written before you read the code)
 comes first; read Part G0 only after Phase 1 is written. A message split across two source lines may
 be quoted from one line. When a mutation needs a test whose name you do not know, a whole module is
-allowed for that one run (`python -m unittest tests.<module>`, not the suite); say so in section 7.
+allowed for that one run (`python -m unittest tests.<module>`, not the suite); say so in section 7. If
+your harness refuses even that, run the test class instead and say so.
 
 
 WHAT IT IS
@@ -404,7 +405,10 @@ missing?); or persist a setting that weakens a later run (the per-remote pack ca
 Skip anything that needs the attacker to control the user's machine already.
 
 PART E — code of the snapshot tool and payload mode (Phase 2)
-Scope: `tools/_snapshot/NN_*.py`, `tools/seafile_snapshot.py`, `tests/test_snapshot_*.py`.
+Scope: `tools/_snapshot/NN_*.py`, `tools/seafile_snapshot.py`, `tests/test_snapshot_*.py`. The tool
+is 33 parts and one session does not read them all by line: **read the parts the round sheet assigns
+you by line, and the others by function name** (`python tools/build_snapshot.py --check` lists them);
+with no assignment, take them newest first and say in the report which you reached.
 What Part G names is G, not here. Then, newest first (`git log -- tools/_snapshot`):
 1. Data loss or a wrong restore: any ordering in which a crash, a second machine, a
    retry or a stale cache leaves a manifest naming bytes that are not what the file
@@ -436,7 +440,9 @@ a test; the ROADMAP row names the test. Mutate one of them only when its test lo
 (it asserts a call, not the refusal), and say which. For each row below marked done **with code**, say
 whether its named test fails when the fix is removed; for **read only** rows, say whether the document
 says what the code does; for each row marked open, say CONFIRMED, FIXED SINCE, STALE (say what the code
-does now) or MISRANKED. The **Test** column is best effort: a named test that does not exercise its
+does now) or MISRANKED. **To mutate a row:** delete the guard its ROADMAP row names (the row's
+`git grep` finds it) and run the first test in the Test column; if you cannot find the guard in two
+minutes, say so and move on (finding the test costs more than running it). The **Test** column is best effort: a named test that does not exercise its
 row is itself a finding. Then spend the rest of the part on the open rows (Z39's remainder, Z43 option
 C, a payload file over 4 GiB on exFAT through a real server and the Windows remount, Seafile 11 and 12,
 an HDD or slow-link run) and on the questions no machine in reach could answer.
