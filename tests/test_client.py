@@ -2057,6 +2057,17 @@ class TestSeafileClientOperations(unittest.TestCase):
         LFSTransferAgent(client, "repo1", "/x/db/ca/")
         self.assertEqual(client.layout_root, "/x/db/ca")
 
+    def test_a_branch_namespace_of_two_hex_names_is_not_a_fan_out_folder(self):
+        """gemini-4-hydrogen-2-C2: ``refs/heads/ab/cd`` looked like ``lfs/ab/cd``, so an empty
+        ``cd (1)`` beside a person's branch namespace was deleted instead of named."""
+        from git_remote_seafile.client import _is_layout_dir
+
+        self.assertFalse(_is_layout_dir("/myrepo/refs/heads/ab", "cd", root="/myrepo"))
+        self.assertFalse(_is_layout_dir("/myrepo/refs/heads", "ab", root="/myrepo"))
+        self.assertTrue(_is_layout_dir("/myrepo/lfs/ab", "cd", root="/myrepo"))
+        self.assertTrue(_is_layout_dir("/myrepo/lfs", "ab", root="/myrepo"))
+        self.assertTrue(_is_layout_dir("/myrepo/payload/objects", "0f", root="/myrepo"))
+
     def test_the_hex_fan_out_folders_are_layout_folders_and_lookalikes_are_not(self):
         from git_remote_seafile.client import _is_layout_dir
 

@@ -54,6 +54,11 @@ _LAYOUT_DIR_NAMES = frozenset({
 
 _HEX2 = re.compile(r"[0-9a-f]{2}")
 
+#: Where a fan-out folder may sit, relative to the repository's own path: ``lfs/xx`` and
+#: ``lfs/xx/yy`` (the LFS store), ``payload/objects/xx`` and ``objects/xx``.  A branch
+#: namespace such as ``refs/heads/ab/cd`` is not one of them (review dfd2269, gemini C2).
+_FAN_OUT = re.compile(r"(?:lfs/[0-9a-f]{2}(?:/[0-9a-f]{2})?|(?:payload/)?objects/[0-9a-f]{2})")
+
 
 def _is_layout_dir(parent: str, name: str, root: str | None = None) -> bool:
     """True for a folder the helper or the snapshot tool lays out itself.
@@ -71,6 +76,9 @@ def _is_layout_dir(parent: str, name: str, root: str | None = None) -> bool:
             return False
     if name in _LAYOUT_DIR_NAMES:
         return True
+    if root is not None:
+        rel = f"{parent.rstrip('/')}/{name}"[len("/" + root.strip("/")) + 1:]
+        return _FAN_OUT.fullmatch(rel) is not None
     above = parent.rstrip("/").rpartition("/")[2]
     return _HEX2.fullmatch(name) is not None and (
         above in ("lfs", "objects") or _HEX2.fullmatch(above) is not None
