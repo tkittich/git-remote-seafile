@@ -320,20 +320,17 @@ def change_time_ns(path: Path, st: os.stat_result) -> int:
         return st.st_ctime_ns
 
 
-#: Windows counts its change time from 1601-01-01; ``st_mtime_ns`` counts from 1970.
-_WINDOWS_EPOCH_NS = 11_644_473_600 * 1_000_000_000
-
-
 def change_time_is_not_its_own(ctime_ns: int, mtime_ns: int) -> bool:
-    """True when a volume's change time says nothing the mtime does not.
+    """True when a volume's change time says nothing the mtime does not: 0 or below (the FAT family's
+    Windows driver) or the modification time reported back.
 
-    A change time of 0 or below (the FAT family's Windows driver), the modification time reported
-    back, or -- on Windows, where ``change_time_ns`` returns the 1601-based change time -- the same
-    instant in that epoch.  The last form never compared equal before, so the guard could not
-    fire there (review dfd2269, fable-G4.1).  The stored value is left as it is, so no cache entry
-    is invalidated.
+    ``change_time_ns`` returns the 1601-based Windows change time, so on Windows ``ctime == mtime``
+    cannot hold, and that is right: NTFS answers a file whose last change was an ordinary write with a
+    change time equal to its modification time, so comparing in a common epoch made the guard fire on
+    normal files (a Note on every run, an hour-wide racy window; review c305b0a, fable-S2-2).  My
+    earlier "fix" of fable-G4.1 did that and is reverted.
     """
-    return ctime_ns <= 0 or ctime_ns == mtime_ns or ctime_ns - _WINDOWS_EPOCH_NS == mtime_ns
+    return ctime_ns <= 0 or ctime_ns == mtime_ns
 
 
 def require_complete_history(repo: Path, *, walk: bool) -> None:
