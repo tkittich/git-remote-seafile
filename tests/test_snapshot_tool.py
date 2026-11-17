@@ -29,6 +29,7 @@ import os
 import pathlib
 import re
 import shutil
+import stat
 import socket
 import subprocess
 import sys
@@ -1437,6 +1438,19 @@ class CodeRemoteRefusalTests(_SnapshotFixture):
         self.assertIn("the same place", err)
         self.assertIn("--allow-shared-remote", err)
 
+    def test_housekeeping_and_status_push_nothing_so_a_remembered_remote_never_stops_them(self):
+        # fable-S4-6: the vault remembered a remote the source has since added as its own, or a code remote that
+        # went away.  --maintain and --status cannot be given --allow-shared-remote, so refusing them was a dead end.
+        self.snapshot("--remote", self.remote)
+        _git(self.code, "remote", "add", "origin", str(self.remote))
+        for mode in ("--maintain", "--status"):
+            with self.subTest(mode=mode):
+                rc, out, err = self.run_tool("--source", self.code, "--vault", self.vault, mode)
+                self.assertEqual(rc, 0, out + err)
+        rc, _, err = self.snapshot()                          # a snapshot run that pushes still refuses
+        self.assertEqual(rc, 1)
+        self.assertIn("the same place", err)
+
     def test_a_pushurl_is_checked_too(self):
         _git(self.code, "remote", "add", "origin", str(self.tmp / "other.git"))
         _git(self.code, "remote", "set-url", "--push", "origin", str(self.remote))
@@ -1694,6 +1708,14 @@ class FirstRunExcludePromptTests(_SnapshotFixture):
             with self.subTest(flags=flags, kw=kw):
                 args, out = self.offer(*flags, answer="y", **kw)
                 self.assertEqual(out, "")
+
+    def test_it_does_not_ask_on_a_run_that_remembers_nothing(self):
+        # fable-S4-7: a --dry-run or --no-push run writes no settings, yet the vault it creates ends the asking.
+        for flag in ("--dry-run", "--no-push"):
+            with self.subTest(flag=flag):
+                args, out = self.offer(flag, answer="y")
+                self.assertEqual(out, "")
+                self.assertIsNone(args.default_excludes)
 
     def test_it_asks_only_before_the_vault_exists(self):
         self.snapshot("--no-push")
@@ -3986,6 +4008,24 @@ class IncrementalStagingTests(_SnapshotFixture):
             files = snap._files_of_repository(repo, "nested", unreadable)
         self.assertIn("nested/a/" + "d" * 40 + "/lost.bin", files)
         self.assertEqual(unreadable, [])
+
+    def test_a_fifo_or_socket_in_an_embedded_repository_is_skipped_like_the_main_tree(self):
+        # fable-S1-7: git skips such an entry; the walk listed it and update-index failed the whole run.
+        repo = self.tmp / "emb"
+        (repo / ".git").mkdir(parents=True)
+        (repo / "real.txt").write_text("x")
+        (repo / "pipe").write_text("stands in for a FIFO on a platform that cannot make one")
+        real = os.lstat
+
+        def lstat(path, *args, **kwargs):
+            result = real(path, *args, **kwargs)
+            if os.fspath(path).endswith("pipe"):
+                return os.stat_result((stat.S_IFIFO | 0o600,) + tuple(result)[1:])
+            return result
+
+        with unittest.mock.patch.object(os, "lstat", lstat):
+            files = snap._files_of_repository(repo, "emb", [])
+        self.assertEqual(files, ["emb/real.txt"])
 
     def test_the_payload_skip_matcher_uses_the_long_path_form(self):
         # AA17: the NFC-variant comparison stats both spellings; past 260 characters a

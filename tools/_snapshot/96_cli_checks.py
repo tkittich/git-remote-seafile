@@ -334,11 +334,13 @@ def resolve_snapshot_settings(
     # Everything that can be checked before a single byte is written: a typo in
     # a remote name or a vault inside a synced folder is far cheaper to catch
     # now than after the first push has published a whole tree.
-    if remote:
+    # --maintain and --status push nothing, so a remembered remote that went away (or one the vault shares
+    # with the source, which --allow-shared-remote cannot be passed to them to allow) must not stop them.
+    if remote and not (args.maintain or args.status):
         check_remote_is_not_a_code_remote(
             source, remote, allowed=args.allow_shared_remote
         )
-    if code_remote:
+    if code_remote and not (args.maintain or args.status):
         check_code_remote_is_git_remote(source, code_remote)
     check_paths_are_unsynced(
         ("source", source), ("vault", vault), allow_synced=args.allow_synced

@@ -96,6 +96,7 @@ def run_command(args: argparse.Namespace) -> int:
         if args.dry_run and remote:
             print(f"dry run -- would push the vault to {remote}")
 
+        size_typed = args.payload_min_size is not None and not args.no_payload
         args.payload_min_size, payload_default = resolve_payload_value(
             args.payload_min_size, vault, remote=remote, no_push=args.no_push,
             no_payload=args.no_payload,
@@ -112,7 +113,7 @@ def run_command(args: argparse.Namespace) -> int:
         payload_min, payload_candidates, payload_rule = plan_payload(
             args.payload_min_size, remote, source, exclude,
             ratio=payload_ratio, ratio_typed=args.payload_auto_ratio is not None,
-            survey=payload_survey,
+            survey=payload_survey, size_typed=size_typed,
         )
         tuning_kind = tuning_mode(
             args.payload_auto_ratio, vault, dry_run=args.dry_run,
@@ -133,7 +134,7 @@ def run_command(args: argparse.Namespace) -> int:
                 payload_min, payload_candidates, payload_rule = plan_payload(
                     args.payload_min_size, remote, source, exclude,
                     ratio=payload_ratio, ratio_typed=args.payload_auto_ratio is not None,
-                    survey=payload_survey, sampled=band,
+                    survey=payload_survey, sampled=band, size_typed=size_typed,
                 )
         payload_skip = frozenset(payload_candidates)
         git_dir = ensure_vault(vault, branch)

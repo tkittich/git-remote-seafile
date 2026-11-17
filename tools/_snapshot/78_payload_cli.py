@@ -130,8 +130,8 @@ def payload_conflicts(args: argparse.Namespace) -> list[str]:
             problems.append("--payload-report-days only applies when payload mode is on")
         if args.dry_run:
             problems.append("--payload-report-days does not apply to --dry-run (nothing is pushed)")
-        if args.payload_report_days < 0:
-            problems.append("--payload-report-days must be 0 or more")
+        if not (0 <= args.payload_report_days < float("inf")):
+            problems.append("--payload-report-days must be 0 or more (a finite number of days)")
         if args.restore or args.maintain or args.payload_gc or args.no_push:
             problems.append("--payload-report-days only applies to a snapshot run that pushes")
     if args.no_payload and args.payload_min_size is not None:
@@ -304,6 +304,7 @@ def plan_payload(
     value: str | None, remote: str | None, source: Path, excludes: list[str],
     ratio: float = _AUTO_INCOMPRESSIBLE, ratio_typed: bool = False,
     survey: dict[str, Any] | None = None, sampled: dict[str, float] | None = None,
+    size_typed: bool = True,
 ) -> tuple[int | None, dict[str, Candidate], str]:
     """``(min_size, candidates, rule)``; ``(None, {}, "size")`` when payload mode is off."""
     auto = value is not None and value.strip().lower() == "auto"
@@ -314,7 +315,9 @@ def plan_payload(
             "--payload-auto-ratio tunes the auto rule, but this vault uses "
             f"--payload-min-size {value}. Pass --payload-min-size auto to switch deliberately"
         )
-    if value is not None and not auto and value.strip().isdigit() and Path(value).is_dir():
+    # Only a size typed on this command line can have swallowed the SOURCE; ``--no-payload`` (``0``) and a
+    # remembered value are not a request, and a folder called ``0`` must not break them (gemini-S3-2).
+    if size_typed and value is not None and not auto and value.strip().isdigit() and Path(value).is_dir():
         raise SnapshotError(
             f"--payload-min-size took {value!r} as its size, but that is also a directory: "
             "put SOURCE before the flag, or write --payload-min-size=auto"

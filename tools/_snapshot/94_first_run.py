@@ -135,7 +135,7 @@ def offer_default_excludes(
     if (args.default_excludes is not None or args.exclude is not None
             or remembered.get("exclude") or remembered.get("default_excludes")):
         return
-    if (vault / ".git").exists() or args.maintain or args.status or args.json or args.exit_warnings:
+    if (vault / ".git").exists() or args.maintain or args.status or args.dry_run or args.no_push or args.json or args.exit_warnings:
         return
     if interactive is None:
         interactive = sys.stdin.isatty() and sys.stdout.isatty()

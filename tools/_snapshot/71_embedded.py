@@ -65,8 +65,19 @@ def _files_of_repository(
             if name == ".git":  # a submodule's or linked worktree's pointer file
                 continue
             full = os.path.join(dirpath, name)
+            if _is_special_file(full):  # git skips a FIFO or socket; update-index refuses one (fable-S1-7)
+                continue
             found.append(f"{prefix}/{os.path.relpath(full, root)}".replace(os.sep, "/"))
     return found
+
+
+def _is_special_file(path: str) -> bool:
+    """A FIFO, socket or device node: not something git records, so not something to hand ``update-index``."""
+    try:
+        mode = os.lstat(extended_path(Path(path))).st_mode
+    except OSError:
+        return False  # unreadable here is reported where it is read; do not hide it as "special"
+    return stat.S_ISFIFO(mode) or stat.S_ISSOCK(mode) or stat.S_ISCHR(mode) or stat.S_ISBLK(mode)
 
 
 def inline_embedded_repositories(

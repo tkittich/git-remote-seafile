@@ -1581,6 +1581,20 @@ class PayloadDefaultAndSafeguardTests(_PayloadFixture):
         self.assertNotEqual(rc, 0)
         self.assertIn("also a directory", out + err)
 
+    def test_no_payload_is_not_questioned_by_a_folder_called_0(self):
+        # gemini-S3-2: --no-payload is the size "0", and a remembered value is not typed either; neither
+        # can have swallowed the SOURCE, so a folder of that name must not break the run.
+        (self.src / "0").mkdir()
+        (self.src / "0" / "f.txt").write_text("x")
+        cwd = os.getcwd()
+        os.chdir(self.src)
+        try:
+            rc, out, err = self.run_tool("--vault", self.vault, "--remote", self.remote, "--no-payload")
+        finally:
+            os.chdir(cwd)
+        self.assertEqual(rc, 0, out + err)
+        self.assertNotIn("also a directory", out + err)
+
     def test_flag_combinations_that_would_be_ignored_are_refused(self):
         cases = (
             (("--vault", self.vault, "--payload-min-size", "1000", "--no-push"), "--no-push"),
@@ -3426,6 +3440,10 @@ class PayloadRememberVerifyViewAndClockTests(_PayloadFixture):
         rc, out, err = self.bare("--payload-report-days", "-1")
         self.assertEqual(rc, snap.EXIT_USAGE, out + err)
         self.assertIn("--payload-report-days must be 0 or more", err)
+        for bad in ("nan", "inf"):                      # nan compared false to everything: due on every run
+            rc, out, err = self.bare("--payload-report-days", bad)
+            self.assertEqual(rc, snap.EXIT_USAGE, bad + out + err)
+            self.assertIn("--payload-report-days must be 0 or more", err)
         rc, out, err = self.run_tool(
             self.src, "--vault", self.vault, "--no-push", "--payload-report-days", "3"
         )

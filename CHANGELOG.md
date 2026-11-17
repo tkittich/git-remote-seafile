@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **`--maintain` and `--status` are no longer stopped by a remembered remote** (review c305b0a fable-S4-6): a vault whose remembered remote the source has since added as its own, or whose remembered `--code-remote` is gone, refused both modes with a flag they cannot be given. They push nothing, so the shared-remote and code-remote checks now apply to snapshot runs only.
+- **The first-run "leave out `node_modules`?" question is not asked on `--dry-run` or `--no-push`** (fable-S4-7): those runs remember nothing, but the vault they create ended the asking, so a Y was forgotten and the next run captured everything.
+- **`--no-payload` and a remembered payload size no longer fail when a folder named `0` (or the remembered number) is in the working directory** (gemini-S3-2): the "that size is also a directory" check now applies only to a size typed on the command line.
+- **A FIFO, socket or device file inside an embedded repository is skipped, as in the main tree** (fable-S1-7); it used to fail the whole first capture of that repository.
+- **`--payload-report-days nan` and `inf` are refused** (fable-S3-7): `nan` made the report due on every run.
+
 ### Deprecated
 - **Options a mode accepts and never reads now warn** (AA74): `--restore-drill` with `--payload-jobs`, `--no-payload`, `--payload-auto-ratio`, `--payload-skip-changing` or `--payload-report-days`; `--status` with `--message`, `--allow-low-disk` or `--payload-report-days`; `--maintain` with `--remote`, `--branch`, `--allow-low-disk` or `--payload-jobs`. They are refused from 0.11 (SNAPSHOT.md, "Options by mode").
 

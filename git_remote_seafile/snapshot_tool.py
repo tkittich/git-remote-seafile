@@ -3852,8 +3852,19 @@ def _files_of_repository(
             if name == ".git":  # a submodule's or linked worktree's pointer file
                 continue
             full = os.path.join(dirpath, name)
+            if _is_special_file(full):  # git skips a FIFO or socket; update-index refuses one (fable-S1-7)
+                continue
             found.append(f"{prefix}/{os.path.relpath(full, root)}".replace(os.sep, "/"))
     return found
+
+
+def _is_special_file(path: str) -> bool:
+    """A FIFO, socket or device node: not something git records, so not something to hand ``update-index``."""
+    try:
+        mode = os.lstat(extended_path(Path(path))).st_mode
+    except OSError:
+        return False  # unreadable here is reported where it is read; do not hide it as "special"
+    return stat.S_ISFIFO(mode) or stat.S_ISSOCK(mode) or stat.S_ISCHR(mode) or stat.S_ISBLK(mode)
 
 
 def inline_embedded_repositories(
@@ -7278,8 +7289,8 @@ def payload_conflicts(args: argparse.Namespace) -> list[str]:
             problems.append("--payload-report-days only applies when payload mode is on")
         if args.dry_run:
             problems.append("--payload-report-days does not apply to --dry-run (nothing is pushed)")
-        if args.payload_report_days < 0:
-            problems.append("--payload-report-days must be 0 or more")
+        if not (0 <= args.payload_report_days < float("inf")):
+            problems.append("--payload-report-days must be 0 or more (a finite number of days)")
         if args.restore or args.maintain or args.payload_gc or args.no_push:
             problems.append("--payload-report-days only applies to a snapshot run that pushes")
     if args.no_payload and args.payload_min_size is not None:
@@ -7452,6 +7463,7 @@ def plan_payload(
     value: str | None, remote: str | None, source: Path, excludes: list[str],
     ratio: float = _AUTO_INCOMPRESSIBLE, ratio_typed: bool = False,
     survey: dict[str, Any] | None = None, sampled: dict[str, float] | None = None,
+    size_typed: bool = True,
 ) -> tuple[int | None, dict[str, Candidate], str]:
     """``(min_size, candidates, rule)``; ``(None, {}, "size")`` when payload mode is off."""
     auto = value is not None and value.strip().lower() == "auto"
@@ -7462,7 +7474,9 @@ def plan_payload(
             "--payload-auto-ratio tunes the auto rule, but this vault uses "
             f"--payload-min-size {value}. Pass --payload-min-size auto to switch deliberately"
         )
-    if value is not None and not auto and value.strip().isdigit() and Path(value).is_dir():
+    # Only a size typed on this command line can have swallowed the SOURCE; ``--no-payload`` (``0``) and a
+    # remembered value are not a request, and a folder called ``0`` must not break them (gemini-S3-2).
+    if size_typed and value is not None and not auto and value.strip().isdigit() and Path(value).is_dir():
         raise SnapshotError(
             f"--payload-min-size took {value!r} as its size, but that is also a directory: "
             "put SOURCE before the flag, or write --payload-min-size=auto"
@@ -10545,7 +10559,7 @@ def offer_default_excludes(
     if (args.default_excludes is not None or args.exclude is not None
             or remembered.get("exclude") or remembered.get("default_excludes")):
         return
-    if (vault / ".git").exists() or args.maintain or args.status or args.json or args.exit_warnings:
+    if (vault / ".git").exists() or args.maintain or args.status or args.dry_run or args.no_push or args.json or args.exit_warnings:
         return
     if interactive is None:
         interactive = sys.stdin.isatty() and sys.stdout.isatty()
@@ -11087,11 +11101,13 @@ def resolve_snapshot_settings(
     # Everything that can be checked before a single byte is written: a typo in
     # a remote name or a vault inside a synced folder is far cheaper to catch
     # now than after the first push has published a whole tree.
-    if remote:
+    # --maintain and --status push nothing, so a remembered remote that went away (or one the vault shares
+    # with the source, which --allow-shared-remote cannot be passed to them to allow) must not stop them.
+    if remote and not (args.maintain or args.status):
         check_remote_is_not_a_code_remote(
             source, remote, allowed=args.allow_shared_remote
         )
-    if code_remote:
+    if code_remote and not (args.maintain or args.status):
         check_code_remote_is_git_remote(source, code_remote)
     check_paths_are_unsynced(
         ("source", source), ("vault", vault), allow_synced=args.allow_synced
@@ -11796,6 +11812,7 @@ def run_command(args: argparse.Namespace) -> int:
         if args.dry_run and remote:
             print(f"dry run -- would push the vault to {remote}")
 
+        size_typed = args.payload_min_size is not None and not args.no_payload
         args.payload_min_size, payload_default = resolve_payload_value(
             args.payload_min_size, vault, remote=remote, no_push=args.no_push,
             no_payload=args.no_payload,
@@ -11812,7 +11829,7 @@ def run_command(args: argparse.Namespace) -> int:
         payload_min, payload_candidates, payload_rule = plan_payload(
             args.payload_min_size, remote, source, exclude,
             ratio=payload_ratio, ratio_typed=args.payload_auto_ratio is not None,
-            survey=payload_survey,
+            survey=payload_survey, size_typed=size_typed,
         )
         tuning_kind = tuning_mode(
             args.payload_auto_ratio, vault, dry_run=args.dry_run,
@@ -11833,7 +11850,7 @@ def run_command(args: argparse.Namespace) -> int:
                 payload_min, payload_candidates, payload_rule = plan_payload(
                     args.payload_min_size, remote, source, exclude,
                     ratio=payload_ratio, ratio_typed=args.payload_auto_ratio is not None,
-                    survey=payload_survey, sampled=band,
+                    survey=payload_survey, sampled=band, size_typed=size_typed,
                 )
         payload_skip = frozenset(payload_candidates)
         git_dir = ensure_vault(vault, branch)
