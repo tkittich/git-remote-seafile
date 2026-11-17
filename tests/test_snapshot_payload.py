@@ -1705,6 +1705,17 @@ class PayloadHistoryReadTests(_PayloadFixture):
                 "--payload-verify", "all", "--remote", self.remote, "--allow-low-disk")
         self.assertEqual(rc, 0, out + err)
 
+    def test_verify_does_not_read_every_older_manifest_for_a_list_it_never_prints(self):
+        # fable-S2-7: --payload-verify asks for the newest snapshot, so it took the retention branch and
+        # computed the paths that only older snapshots hold; one unreadable old manifest stopped it.
+        self.assertEqual(self.snapshot()[0], 0)
+        (self.src / "big1.bin").write_bytes(bytes(b ^ 0x02 for b in self.big1))
+        self.assertEqual(self.snapshot()[0], 0)
+        with unittest.mock.patch.object(snap, "paths_only_in_older_snapshots",
+                                        side_effect=AssertionError("read the older manifests")):
+            rc, out, err = self.run_tool("--payload-verify", "all", "--remote", self.remote)
+        self.assertEqual(rc, 0, out + err)
+
     # -- the state the delete decision rests on (REVIEW.af9e9e1 T2.1, T2.2, T8.1) -------
     def _marked_orphan(self):
         self.assertEqual(self.snapshot()[0], 0)

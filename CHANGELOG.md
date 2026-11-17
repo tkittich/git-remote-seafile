@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **`--payload-verify` no longer reads every older manifest** (fable-S2-7): it computed the list of paths only older snapshots hold, which only `--payload-gc` prints, so its cost grew with the history and one unreadable old manifest stopped it.
 - **A restore no longer sets a recorded time through a committed link into `.git`** (fable-S2-5): an entry `tool/config` beside a link `tool -> .git` moved the time of `.git/config`; the reserved payload directory is guarded the same way.
 - **A restore on Linux or macOS keeps the recorded time of a file whose name has a `:` or a trailing dot** (gemini-S2-6): the Windows name check ran on every platform.
 - **A payload baseline that did not land is warned about** (gemini-S2-4): a 2xx upload followed by a 404 read-back said nothing, so the next `--payload-gc --payload-delete` had no baseline.

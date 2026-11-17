@@ -234,7 +234,7 @@ class _History(NamedTuple):
 
 def _hashes_in_history(
     remote: str | None, vault: Path | None, keep: int | None = None,
-    seen: dict[str, str] | None = None,
+    seen: dict[str, str] | None = None, want_lost: bool = True,
 ) -> _History:
     """Every payload object referenced from every ref of *remote* and, when given, of
     the local *vault* (which must be one).  *seen* is the ref tips the last
@@ -327,7 +327,9 @@ def _hashes_in_history(
                              stdin=older).stdout.splitlines()
                 expired = sum(1 for line in listed
                               if len(line.split()) == 3 and line.split()[1] == "blob")
-            lost = paths_only_in_older_snapshots(repo, Path(td), kept, everything) if expired else ()
+            # Only --payload-gc prints it: --payload-verify read every older manifest for a value it
+            # never used, and one unreadable old manifest stopped it (review c305b0a, fable-S2-7).
+            lost = paths_only_in_older_snapshots(repo, Path(td), kept, everything) if expired and want_lost else ()
         if not commits:
             return _History({}, 0, 0, tips, dropped, expired, lost)
         specs = "".join(f"{c}:{PAYLOAD_MANIFEST}\n" for c in commits)
@@ -407,7 +409,7 @@ def payload_verify(
     client = _api(lambda: _open_client(server_url), "opening the Seafile client")
     rid = _api(lambda: client.get_repo_id(library), f"finding library {library!r}")
     _require_room_for_history(client, rid, base[: -len("/payload")], allow_low_disk)
-    history = _hashes_in_history(remote, vault, 1)
+    history = _hashes_in_history(remote, vault, 1, want_lost=False)
     sizes, manifests = history.hashes, history.manifests
     if manifests == 0:
         raise SnapshotError("found no payload manifest in the newest snapshot of the remote")
