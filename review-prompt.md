@@ -1,7 +1,7 @@
 You are an independent reviewer of `git-remote-seafile`, at the commit you were given
-(`git log -1`; name it in your report). Version 0.9.27 is released (tag `v0.9.27`, commit `fc3ffd0`,
-2026-11-16); the release before it is 0.9.26 (tag `v0.9.26`, commit `b23c481`). The commits after the
-tag are new to every reader; `git log --oneline v0.9.26..HEAD` is the batch Part G0 covers, and the
+(`git log -1`; name it in your report). Version 0.10.0 is released (tag `v0.10.0`, commit `748c649`,
+2026-11-17); the release before it is 0.9.27 (tag `v0.9.27`, commit `fc3ffd0`). The commits after the
+tag are new to every reader; `git log --oneline v0.10.0..HEAD` is the batch Part G0 covers, and the
 whole project is in scope. Another model wrote the code, the tests and the specifications, and has
 reviewed them itself over a dozen rounds: assume all three share blind spots. Earlier outside rounds
 (the last: Fable and Gemini on `134c8af`) read Part G0, the Pro paths from the code, the 429 handling
@@ -538,3 +538,10 @@ exists, it is not yours: add a suffix rather than overwrite it. Keep the part he
 and the `A1`, `B3`, `C2`, `D4`, `E5`, `F6`, `G2.1`, `H2` numbering, prefixed with your
 `<model>` name: the reports of one round are merged by ID, and a report whose findings
 are unnumbered, or whose IDs collide with another reviewer's, cannot be merged.
+
+When you cite a file, say which commits after the one you were given touch it (`git log --oneline <given>..HEAD -- <file>`):
+a finding against a line that a later commit rewrote is a different finding.
+
+`tests/test_incremental_property.py` is a differential fuzz: after random changes to a source tree, an incremental snapshot
+must record the tree a fresh vault records. `GRS_FUZZ_SEEDS=30` runs 30 more seeds. A shape it does not generate is
+worth a finding; a shape it finds is worth a seed in the report.
