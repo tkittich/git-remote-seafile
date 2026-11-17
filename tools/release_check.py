@@ -278,6 +278,17 @@ def check(root: Path, tag: str | None = None, *, offline: bool = False) -> list[
              "into main and push before tagging")
     else:
         warn("pushed", "HEAD is on no remote branch: push, and wait for CI green, before tagging")
+    red = root / "tools" / "check_red_before.py"
+    if base is not None and red.is_file() and not offline:
+        # Each fix since the last tag should have a test that was red without it (AGENTS.md).  Slow: it
+        # runs the new tests against the old code, so it is skipped with --offline.
+        proc = subprocess.run([sys.executable, str(red), "--since", base], cwd=root, capture_output=True,
+                              text=True, encoding="utf-8", errors="replace")
+        if proc.returncode == 0:
+            ok("red before", f"every new test since {base} fails without its code")
+        else:
+            warn("red before", "tools/check_red_before.py lists tests that pass without their fix:"
+                 + "".join(chr(10) + "    " + ln for ln in proc.stdout.strip().splitlines()[-8:]))
     results.extend(open_triage_items(root))
     rc, sha = _git(root, "rev-parse", "HEAD")
     if rc == 0 and sha.strip():
