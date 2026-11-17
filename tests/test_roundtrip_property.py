@@ -14,6 +14,8 @@ import pathlib
 import random
 import sys
 import unicodedata
+import unittest
+import unittest.mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
@@ -23,6 +25,13 @@ SEEDS = (11, 23, 42, 77)
 #: ``GRS_PROPERTY_SEEDS=40`` runs 40 more seeds (about four seconds each): the way to look for a new
 #: shape before a release, without making every run longer.
 EXTRA_SEEDS = tuple(range(1000, 1000 + int(os.environ.get("GRS_PROPERTY_SEEDS", "0") or 0)))
+
+def identity_file(folder: pathlib.Path) -> pathlib.Path:
+    """A global git config with an identity: a CI runner has none, and the vault needs one to commit."""
+    path = folder / "identity.gitconfig"
+    path.write_text("[user]\n\tname = t\n\temail = t@example.com\n", encoding="utf-8")
+    return path
+
 
 _PLAIN = ["a", "b", "note", "README", "data", "x1"]
 _UNICODE = ["café", "ß", "日本語", "naïve", "über", "Ωmega"]
@@ -100,6 +109,14 @@ class TestARandomTreeComesBackUnchanged(_SnapshotFixture):
                 found[path.relative_to(root).as_posix()] = path.read_bytes()
         return found
 
+    def setUp(self):
+        super().setUp()
+        if sys.getfilesystemencoding().lower().replace("-", "") != "utf8":
+            self.skipTest("this locale cannot name the non-ASCII files the generator makes")
+        patcher = unittest.mock.patch.dict(os.environ, {"GIT_CONFIG_GLOBAL": str(identity_file(self.tmp))})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_every_seed(self):
         for seed in SEEDS + EXTRA_SEEDS:
             with self.subTest(seed=seed):
@@ -121,6 +138,4 @@ class TestARandomTreeComesBackUnchanged(_SnapshotFixture):
 
 
 if __name__ == "__main__":
-    import unittest
-
     unittest.main()

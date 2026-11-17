@@ -21,6 +21,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import unittest.mock
 
 _ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_ROOT / "tools"))
@@ -53,6 +54,11 @@ class IncrementalMatchesFresh(unittest.TestCase):
         self.addCleanup(remove_tree, self.tmp)
         self.src = self.tmp / "src"
         self.src.mkdir()
+        identity = self.tmp / "identity.gitconfig"      # a CI runner has none; without it every run fails alike
+        identity.write_text("[user]\n\tname = t\n\temail = t@example.com\n", encoding="utf-8")
+        patcher = unittest.mock.patch.dict(os.environ, {"GIT_CONFIG_GLOBAL": str(identity)})
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def _walk(self):
         dirs, files = [self.src], []
@@ -140,6 +146,8 @@ class IncrementalMatchesFresh(unittest.TestCase):
             log.append(f"step {step} flags={flags}")
             where = f"seed {seed}, " + "; ".join(log[-3:])
             self.assertEqual(incremental is None, fresh is None, f"{where}: {said_inc or said_fresh}")
+            if step == 0:
+                self.assertIsNotNone(incremental, f"{where}: the first snapshot failed, so nothing was compared: {said_inc}")
             if incremental is not None:
                 differ = {k: (incremental.get(k), fresh.get(k))
                           for k in set(incremental) | set(fresh) if incremental.get(k) != fresh.get(k)}

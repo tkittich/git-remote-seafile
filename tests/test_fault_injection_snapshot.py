@@ -25,11 +25,17 @@ MAX_WRITES = 20
 
 
 class TestASnapshotPushThatFailsOnceLosesNothing(E2ETestCase):
+    def setUp(self):
+        super().setUp()
+        identity = self.work / "snapfault-identity.gitconfig"
+        identity.write_text("[user]\n\tname = t\n\temail = t@example.com\n", encoding="utf-8")
+        self.identity = str(identity)
+
     def _snapshot(self, src, vault, name):
         return subprocess.run(
             [sys.executable, str(_ROOT / "tools" / "seafile_snapshot.py"), "--source", str(src),
              "--vault", str(vault), "--remote", self.url(name), "--no-payload"],
-            env={**os.environ, **self.env}, capture_output=True, text=True, encoding="utf-8",
+            env={**os.environ, **self.env, "GIT_CONFIG_GLOBAL": self.identity}, capture_output=True, text=True, encoding="utf-8",
             errors="replace", timeout=300,
         )
 
