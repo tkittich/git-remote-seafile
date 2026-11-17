@@ -295,7 +295,7 @@ def status_command(
         if entry is not None:
             if (
                 st.st_size != int(-1 if entry.get("size") is None else entry["size"])
-                or st.st_mtime_ns != int(-1 if entry.get("mtime_ns") is None else entry["mtime_ns"])
+                or payload_mtime(st.st_mtime_ns) != int(-1 if entry.get("mtime_ns") is None else entry["mtime_ns"])
             ):
                 changed.append(path)
         elif path in recorded:

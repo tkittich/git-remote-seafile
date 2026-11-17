@@ -5602,6 +5602,16 @@ _SHA256_RE = re.compile(r"[0-9a-f]{64}")
 _WIN_RESERVED = re.compile(r"^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$", re.IGNORECASE)
 _MAX_MTIME_NS = 2 ** 62
 
+
+def payload_mtime(ns: int) -> int:
+    """A file's mtime as the manifest may hold it: 0 up to ``_MAX_MTIME_NS - 1``.
+
+    A time before 1970 or past 2**62 ns is real on a disk, but the manifest's shape check refuses it:
+    written as it was, the vault commit was made and the pre-push check then failed on it on every
+    run (review c305b0a, gemini-S2-1).  Every comparison of a stat with a manifest entry clamps too.
+    """
+    return min(max(ns, 0), _MAX_MTIME_NS - 1)
+
 #: ``(size, mtime_ns, mode, inode, device, ctime_ns)`` for one candidate payload file.
 Candidate = tuple[int, int, str, int, int, int]
 
@@ -5818,7 +5828,7 @@ def find_payload_files(
             survey["big"][0] += 1
             survey["big"][1] += size
         mode = "100755" if st.st_mode & stat.S_IXUSR else "100644"
-        found[rel] = (st.st_size, st.st_mtime_ns, mode, st.st_ino, st.st_dev,
+        found[rel] = (st.st_size, payload_mtime(st.st_mtime_ns), mode, st.st_ino, st.st_dev,
                       change_time_ns(source / rel, st))
     if placeholders:
         shown = ", ".join(placeholders[:5]) + (" ..." if len(placeholders) > 5 else "")
@@ -5857,7 +5867,7 @@ def _unchanged(source: Path, rel: str, size: int, mtime_ns: int) -> bool:
         st = os.lstat(extended_path(source / rel))
     except OSError:
         return False
-    return st.st_size == size and st.st_mtime_ns == mtime_ns
+    return st.st_size == size and payload_mtime(st.st_mtime_ns) == mtime_ns
 
 
 def _commit_object(
@@ -8899,7 +8909,7 @@ def status_command(
         if entry is not None:
             if (
                 st.st_size != int(-1 if entry.get("size") is None else entry["size"])
-                or st.st_mtime_ns != int(-1 if entry.get("mtime_ns") is None else entry["mtime_ns"])
+                or payload_mtime(st.st_mtime_ns) != int(-1 if entry.get("mtime_ns") is None else entry["mtime_ns"])
             ):
                 changed.append(path)
         elif path in recorded:

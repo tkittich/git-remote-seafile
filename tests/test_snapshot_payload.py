@@ -2710,6 +2710,14 @@ class PayloadRememberVerifyViewAndClockTests(_PayloadFixture):
         self.assertIn("1 of 2 payload file(s) were not restored", str(ctx.exception))
         self.assertIn("same file as Alpha.bin", str(ctx.exception))
 
+    def test_a_payload_file_with_a_pre_1970_mtime_does_not_brick_the_vault(self):
+        """gemini-S2-1 (review c305b0a): such an mtime was committed in the manifest and then refused by
+        ``check_manifest_shape`` at the pre-push check, leaving a vault commit every later run tripped on."""
+        os.utime(self.src / "big1.bin", ns=(-10 ** 18, -10 ** 18))
+        first = self.snapshot()
+        second = self.snapshot()
+        self.assertEqual((first[0], second[0]), (0, 0), first[1] + first[2] + second[1] + second[2])
+
     def test_status_does_not_call_a_file_with_an_epoch_mtime_changed(self):
         """gemini-4-hydrogen-2-E1: ``entry.get("mtime_ns") or -1`` read a recorded 0 as -1, so
         a payload file stamped 1970-01-01 showed as changed right after a clean snapshot."""
