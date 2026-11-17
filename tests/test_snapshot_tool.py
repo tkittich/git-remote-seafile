@@ -3608,6 +3608,10 @@ class IncrementalStagingTests(_SnapshotFixture):
         for a, b in same:
             with self.subTest(a=a, b=b):
                 self.assertTrue(snap.same_place(a, b))
+        _git(self.code, "remote", "add", "origin", "seafile://testlib")
+        with self.assertRaises(snap.SnapshotError):
+            snap.check_remote_is_not_a_code_remote(self.code, "seafile://testlib/git-repo", allowed=False)
+        snap.check_remote_is_not_a_code_remote(self.code, "seafile://testlib/vault", allowed=False)
         for a, b in (("seafile://lib/a", "seafile://lib/b"), ("seafile://lib1/x", "seafile://lib2/x"),
                      ("https://one.example.com/lib/x", "https://two.example.com/lib/x")):
             with self.subTest(a=a, b=b):
