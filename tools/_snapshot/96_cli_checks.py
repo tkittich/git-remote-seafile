@@ -32,6 +32,40 @@ def drill_conflicts(args: argparse.Namespace) -> list[str]:
     return problems
 
 
+def ignored_option_warnings(args: argparse.Namespace) -> list[str]:
+    """Options this mode accepts and never reads: warned about in 0.10.x, refused from 0.11.
+
+    Found by reading what each mode's code path uses (review c305b0a: fable-S3-8, S4-13, gemini-S3-6, S4-3).
+    Refusing at once would break a script that has passed one for years, so ``Warning:`` first (UPGRADING).
+    A snapshot run reads every option, so it has no row here.
+    """
+    given: tuple[tuple[str, Any], ...]
+    if args.restore_drill is not None:
+        given = (
+            ("--payload-jobs", args.payload_jobs is not None), ("--no-payload", args.no_payload),
+            ("--payload-auto-ratio", args.payload_auto_ratio is not None),
+            ("--payload-skip-changing", args.payload_skip_changing),
+            ("--payload-report-days", args.payload_report_days is not None),
+        )
+    elif args.status:
+        given = (
+            ("--message", args.message), ("--allow-low-disk", args.allow_low_disk),
+            ("--payload-report-days", args.payload_report_days is not None),
+        )
+    elif args.maintain:
+        given = (
+            ("--remote", args.remote), ("--branch", args.branch), ("--allow-low-disk", args.allow_low_disk),
+            ("--payload-jobs", args.payload_jobs is not None),
+        )
+    else:
+        return []
+    return [flag for flag, value in given if value]
+
+
+def mode_name(args: argparse.Namespace) -> str:
+    return "--restore-drill" if args.restore_drill is not None else "--status" if args.status else "--maintain"
+
+
 def validate_args(args: argparse.Namespace) -> None:
     """Reject combinations that would otherwise be silently ignored.
 

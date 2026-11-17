@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Deprecated
+- **Options a mode accepts and never reads now warn** (AA74): `--restore-drill` with `--payload-jobs`, `--no-payload`, `--payload-auto-ratio`, `--payload-skip-changing` or `--payload-report-days`; `--status` with `--message`, `--allow-low-disk` or `--payload-report-days`; `--maintain` with `--remote`, `--branch`, `--allow-low-disk` or `--payload-jobs`. They are refused from 0.11 (SNAPSHOT.md, "Options by mode").
+
 ## [0.10.0] - 2026-11-17
 
 The first release of the maintenance line (CONTRIBUTING, "Maintenance mode"): no new features or options from here, only fixes, each with a test that fails without it. It closes the c305b0a review round: a new file in a case-renamed folder was left out of an incremental snapshot (a loss), `--exclude ./x` matched nothing, the shared-remote guard compared URL text, `--default-excludes` dropped committed files of an embedded repository, and a dozen inputs ended in a traceback.

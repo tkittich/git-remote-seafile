@@ -279,6 +279,23 @@ silent it refuses instead:
 - **A failing vault-config write is an error**, not a silent divergence between
   what the run believes it remembered and what the vault holds.
 
+### Options by mode, and options a mode ignores
+
+A snapshot run reads every option. The other modes read a subset; the rest are either refused (`Error: --x does not
+apply to --restore`, exit 2) or, for the few listed below, accepted and ignored for as long as the tool has existed.
+`tests/test_snapshot_flag_coverage.py` lists what each mode accepts today, so a new option cannot slip into a mode
+without a decision.
+
+| Mode | Reads (beyond `--json`, `--exit-warnings`) | Accepted and ignored: warned in 0.10.x, refused from 0.11 |
+| :--- | :--- | :--- |
+| `--restore` | `--remote`, `--into`, `--branch`, `--ref`, `--verify`, `--allow-synced`, `--allow-low-disk`, `--payload-jobs` | none |
+| `--restore-drill` | `--remote`, `--branch`, `--ref`, `--allow-synced`, `--allow-low-disk` | `--payload-jobs`, `--no-payload`, `--payload-auto-ratio`, `--payload-skip-changing`, `--payload-report-days` |
+| `--status` | `--source`, `--vault`, `--branch`, `--remote`, `--code-remote`, `--exclude`, `--default-excludes`, `--payload-min-size`, `--no-payload`, `--payload-auto-ratio`, `--allow-synced` | `--message`, `--allow-low-disk`, `--payload-report-days` |
+| `--maintain` | `--source`, `--vault`, `--allow-synced`, `--no-object-compression`, `--full-repack` | `--remote`, `--branch`, `--allow-low-disk`, `--payload-jobs` |
+
+Each ignored option prints `Warning: --x has no effect with --mode and will be refused from 0.11; drop it.` before the
+run, which is a `Warning:` like any other (`--exit-warnings` exits 3 on it). The run itself is unchanged.
+
 ### Exit codes and `--json`
 
 | Exit | Meaning |

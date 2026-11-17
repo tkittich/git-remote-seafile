@@ -98,6 +98,22 @@ def _value(action: argparse.Action) -> list[str]:
 
 
 class TestEveryModeDecidesEveryOption(unittest.TestCase):
+    def test_an_option_warned_as_ignored_is_one_the_mode_accepts(self):
+        """The deprecation pass (``ignored_option_warnings``) names only options in the table above."""
+        modes = {"drill": ["--restore-drill", "--remote", "r"], "status": ["--status"], "maintain": ["--maintain"]}
+        every = {"--payload-jobs": "1", "--no-payload": None, "--payload-auto-ratio": "0.5",
+                 "--payload-skip-changing": None, "--payload-report-days": "1", "--message": "m",
+                 "--allow-low-disk": None, "--remote": "r", "--branch": "b"}
+        for mode, base in modes.items():
+            argv = list(base)
+            for flag, value in every.items():
+                if flag not in base:
+                    argv += [flag] + ([value] if value else [])
+            with contextlib.redirect_stderr(io.StringIO()):
+                named = snap.ignored_option_warnings(snap.parse_args(argv))
+            self.assertTrue(named, mode)
+            self.assertEqual(sorted(set(named) - ACCEPTED[mode]), [], f"--{mode}: warned about an option it refuses")
+
     def test_the_options_a_mode_accepts_are_the_listed_ones(self):
         seen: dict[str, argparse.ArgumentParser] = {}
 

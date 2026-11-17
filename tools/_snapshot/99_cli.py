@@ -42,6 +42,9 @@ def run_command(args: argparse.Namespace) -> int:
             # on a typo; gemini-4-hydrogen-E5).
             print(f"Error: {exc}", file=sys.stderr)
             return EXIT_USAGE
+        for flag in ignored_option_warnings(args):
+            print(f"Warning: {flag} has no effect with {mode_name(args)} and will be refused from 0.11; drop it.",
+                  flush=True)
         payload_rc = payload_command(args)
         if payload_rc is not None:
             return payload_rc
