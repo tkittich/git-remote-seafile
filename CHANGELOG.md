@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **A payload baseline that did not land is warned about** (gemini-S2-4): a 2xx upload followed by a 404 read-back said nothing, so the next `--payload-gc --payload-delete` had no baseline.
+- **`--status` no longer reads a times record of another format** (gemini-S2-5), as the restore side already refused it.
+- **`--status` counts new files when the last snapshot's times record is empty** (gemini-S3-3): a tree of payload-only files has a record with no files, and every new file was reported as uncomparable.
+- **`--status` says `payload mode: off` for `--no-payload` or a size of 0** (gemini-S3-4); it printed `files of 0 or more`.
 - **`--status` no longer says `pushed: yes` for a remote the vault never pushed to** (fable-S3-3): the pushed record now names the remote; an older record without one keeps its meaning.
 - **A failed write of a remembered payload setting is an error** (fable-S3-4): `--no-payload`, the size rule, the ratio and the measured link rates ignored a failed `git config` (a stale `config.lock`), exited 0, and the next bare run used the old rule.
 - **A downloaded payload file that verified is not fetched again because it could not be placed** (fable-S3-6): a refused rename (a name the volume rejects, a read-only folder) re-downloaded the object three times.

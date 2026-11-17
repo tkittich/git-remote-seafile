@@ -196,7 +196,8 @@ def _write_json_marker(client: Any, rid: str, base: str, name: str, data: dict[s
     # nothing that matters.
     try:
         landed = client.get_file_text(rid, f"{base}/{name}")
-        if landed is not None and landed.strip() != body.decode("ascii"):
+        # None is a 404: a 2xx upload that did not land (gemini-S2-4), not a read that proved nothing.
+        if landed is None or landed.strip() != body.decode("ascii"):
             print(f"Warning: {name} did not read back as what was written; a later "
                   "run may re-decide from an empty or stale marker",
                   file=sys.stderr, flush=True)

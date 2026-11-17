@@ -212,6 +212,8 @@ def status_command(
         payload_mode = "off"
     elif payload_value == "auto":
         payload_mode = f"auto (ratio {resolve_payload_ratio(args.payload_auto_ratio, vault):.2f})"
+    elif parse_size(payload_value) == 0:
+        payload_mode = "off"      # --no-payload, a size of 0, or a remembered 0 (gemini-S3-4); junk raises
     else:
         payload_mode = f"files of {payload_value} or more"
     if payload_from_default and payload_mode != "off":
@@ -269,8 +271,9 @@ def status_command(
         )
     recorded = _recorded_mtimes(git_dir, source, tip)
     recorded_sizes = _recorded_sizes(git_dir, source, tip)
+    has_record = bool(recorded) or has_usable_mtimes(git_dir, source, tip)
 
-    if manifest is None and not recorded:
+    if manifest is None and not has_record:
         print(
             "  the last snapshot carries no change records (a snapshot taken by an "
             "older tool, or with --no-record-mtimes and no payload), so what changed "
@@ -304,7 +307,7 @@ def status_command(
                 and st.st_size != recorded_sizes[path]
             ):
                 changed.append(path)
-        elif recorded:
+        elif has_record:
             new.append(path)
         else:
             # A payload snapshot taken without the mtimes record: no baseline

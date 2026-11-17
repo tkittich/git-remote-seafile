@@ -118,13 +118,32 @@ def _recorded_mtimes(git_dir: Path, work_tree: Path, rev: str | None) -> dict[st
         files = data["files"]
     except (ValueError, KeyError, TypeError, RecursionError):
         return {}
-    if not isinstance(files, dict):
-        return {}
+    if not isinstance(files, dict) or data.get("format") != _MTIMES_FORMAT:
+        return {}  # a record of another format is not read here either (apply_recorded_mtimes refuses it)
     return {
         path: value for path, value in files.items()
         if isinstance(path, str) and isinstance(value, int) and not isinstance(value, bool)
         and 0 <= value < _MAX_MTIME_NS
     }
+
+
+def has_usable_mtimes(git_dir: Path, work_tree: Path, rev: str | None) -> bool:
+    """Whether snapshot ``rev`` carries a times record this tool reads, even one with no files in it.
+
+    ``_recorded_mtimes`` answers ``{}`` both for "no record" and for a record of an empty tree; a tree that
+    holds only payload files has the second, and ``--status`` then called every new file uncomparable
+    (review c305b0a, gemini-S3-3).
+    """
+    if not rev:
+        return False
+    proc = git(git_dir, work_tree, ["show", f"{rev}:{mtimes_path()}"], cwd=work_tree, check=False)
+    if proc.returncode != 0:
+        return False
+    try:
+        data = json.loads(proc.stdout)
+    except (ValueError, RecursionError):
+        return False
+    return isinstance(data, dict) and data.get("format") == _MTIMES_FORMAT and isinstance(data.get("files"), dict)
 
 
 def _recorded_sizes(git_dir: Path, work_tree: Path, rev: str | None) -> dict[str, int]:
@@ -142,10 +161,11 @@ def _recorded_sizes(git_dir: Path, work_tree: Path, rev: str | None) -> dict[str
     if proc.returncode != 0:
         return {}
     try:
-        sizes = json.loads(proc.stdout)["sizes"]
+        data = json.loads(proc.stdout)
+        sizes = data["sizes"]
     except (ValueError, KeyError, TypeError, RecursionError):
         return {}
-    if not isinstance(sizes, dict):
+    if not isinstance(sizes, dict) or data.get("format") != _MTIMES_FORMAT:
         return {}
     return {
         path: value for path, value in sizes.items()

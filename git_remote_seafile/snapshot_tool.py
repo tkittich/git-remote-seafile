@@ -4322,7 +4322,8 @@ def _write_json_marker(client: Any, rid: str, base: str, name: str, data: dict[s
     # nothing that matters.
     try:
         landed = client.get_file_text(rid, f"{base}/{name}")
-        if landed is not None and landed.strip() != body.decode("ascii"):
+        # None is a 404: a 2xx upload that did not land (gemini-S2-4), not a read that proved nothing.
+        if landed is None or landed.strip() != body.decode("ascii"):
             print(f"Warning: {name} did not read back as what was written; a later "
                   "run may re-decide from an empty or stale marker",
                   file=sys.stderr, flush=True)
@@ -4721,13 +4722,32 @@ def _recorded_mtimes(git_dir: Path, work_tree: Path, rev: str | None) -> dict[st
         files = data["files"]
     except (ValueError, KeyError, TypeError, RecursionError):
         return {}
-    if not isinstance(files, dict):
-        return {}
+    if not isinstance(files, dict) or data.get("format") != _MTIMES_FORMAT:
+        return {}  # a record of another format is not read here either (apply_recorded_mtimes refuses it)
     return {
         path: value for path, value in files.items()
         if isinstance(path, str) and isinstance(value, int) and not isinstance(value, bool)
         and 0 <= value < _MAX_MTIME_NS
     }
+
+
+def has_usable_mtimes(git_dir: Path, work_tree: Path, rev: str | None) -> bool:
+    """Whether snapshot ``rev`` carries a times record this tool reads, even one with no files in it.
+
+    ``_recorded_mtimes`` answers ``{}`` both for "no record" and for a record of an empty tree; a tree that
+    holds only payload files has the second, and ``--status`` then called every new file uncomparable
+    (review c305b0a, gemini-S3-3).
+    """
+    if not rev:
+        return False
+    proc = git(git_dir, work_tree, ["show", f"{rev}:{mtimes_path()}"], cwd=work_tree, check=False)
+    if proc.returncode != 0:
+        return False
+    try:
+        data = json.loads(proc.stdout)
+    except (ValueError, RecursionError):
+        return False
+    return isinstance(data, dict) and data.get("format") == _MTIMES_FORMAT and isinstance(data.get("files"), dict)
 
 
 def _recorded_sizes(git_dir: Path, work_tree: Path, rev: str | None) -> dict[str, int]:
@@ -4745,10 +4765,11 @@ def _recorded_sizes(git_dir: Path, work_tree: Path, rev: str | None) -> dict[str
     if proc.returncode != 0:
         return {}
     try:
-        sizes = json.loads(proc.stdout)["sizes"]
+        data = json.loads(proc.stdout)
+        sizes = data["sizes"]
     except (ValueError, KeyError, TypeError, RecursionError):
         return {}
-    if not isinstance(sizes, dict):
+    if not isinstance(sizes, dict) or data.get("format") != _MTIMES_FORMAT:
         return {}
     return {
         path: value for path, value in sizes.items()
@@ -8906,6 +8927,8 @@ def status_command(
         payload_mode = "off"
     elif payload_value == "auto":
         payload_mode = f"auto (ratio {resolve_payload_ratio(args.payload_auto_ratio, vault):.2f})"
+    elif parse_size(payload_value) == 0:
+        payload_mode = "off"      # --no-payload, a size of 0, or a remembered 0 (gemini-S3-4); junk raises
     else:
         payload_mode = f"files of {payload_value} or more"
     if payload_from_default and payload_mode != "off":
@@ -8963,8 +8986,9 @@ def status_command(
         )
     recorded = _recorded_mtimes(git_dir, source, tip)
     recorded_sizes = _recorded_sizes(git_dir, source, tip)
+    has_record = bool(recorded) or has_usable_mtimes(git_dir, source, tip)
 
-    if manifest is None and not recorded:
+    if manifest is None and not has_record:
         print(
             "  the last snapshot carries no change records (a snapshot taken by an "
             "older tool, or with --no-record-mtimes and no payload), so what changed "
@@ -8998,7 +9022,7 @@ def status_command(
                 and st.st_size != recorded_sizes[path]
             ):
                 changed.append(path)
-        elif recorded:
+        elif has_record:
             new.append(path)
         else:
             # A payload snapshot taken without the mtimes record: no baseline

@@ -1896,6 +1896,26 @@ class PayloadRetentionTests(_PayloadFixture):
             snap.write_seen_tips(Fake(), "r", "/base", {"refs/heads/snapshot": "a" * 40})
         self.assertIn("did not read back as what was written", err.getvalue())
 
+    def test_a_baseline_that_reads_back_as_missing_is_warned_about(self):
+        """gemini-S2-4: get_file_text answers None for a 404, which is an upload that did not land."""
+        import contextlib
+        import io
+
+        class Fake:
+            def mkdir_p(self, rid, base):
+                pass
+
+            def upload_file(self, rid, base, name, body):
+                return True
+
+            def get_file_text(self, rid, path):
+                return None
+
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            snap.write_seen_tips(Fake(), "r", "/base", {"refs/heads/snapshot": "a" * 40})
+        self.assertIn("did not read back as what was written", err.getvalue())
+
     def test_the_manifest_records_the_ratio_that_produced_it(self):
         """The auto cut-off travels beside the rule it belongs to (ROADMAP T6)."""
         rc, out, err = self.bare()

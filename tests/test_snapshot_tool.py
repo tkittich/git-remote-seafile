@@ -6141,6 +6141,35 @@ class StatusTests(_SnapshotFixture):
         _git(self.vault, "config", "snapshot.pushed", " ".join(tip))
         self.assertIs(json.loads(self.status("--remote", str(elsewhere), "--json")[1])["result"]["status"]["pushed"], True)
 
+    def test_a_record_of_another_format_is_not_read_by_status(self):
+        # gemini-S2-5: apply_recorded_mtimes refused it; the two readers here did not.
+        doc = json.dumps({"format": 2, "files": {"a.txt": 5}, "sizes": {"a.txt": 1}}).encode()
+        done = subprocess.CompletedProcess([], 0, doc, b"")
+        with unittest.mock.patch.object(snap, "git", return_value=done):
+            self.assertEqual(snap._recorded_mtimes(self.vault / ".git", self.code, "HEAD"), {})
+            self.assertEqual(snap._recorded_sizes(self.vault / ".git", self.code, "HEAD"), {})
+            self.assertFalse(snap.has_usable_mtimes(self.vault / ".git", self.code, "HEAD"))
+        good = subprocess.CompletedProcess([], 0, json.dumps({"format": 1, "files": {}}).encode(), b"")
+        with unittest.mock.patch.object(snap, "git", return_value=good):
+            self.assertTrue(snap.has_usable_mtimes(self.vault / ".git", self.code, "HEAD"))
+
+    def test_a_record_of_no_files_still_counts_as_a_record(self):
+        # gemini-S3-3: a tree of payload-only files has "files": {}, and a new file read as "uncomparable".
+        self.assertEqual(self.snapshot("--no-push", "--record-mtimes")[0], 0)
+        (self.code / "added.txt").write_bytes(b"new\n")
+        with unittest.mock.patch.object(snap, "_recorded_mtimes", return_value={}):
+            rc, out, err = self.status()
+        self.assertEqual(rc, 0, out + err)
+        self.assertNotIn("could not be compared", out)
+        self.assertIn("new: added.txt", out)
+
+    def test_status_says_payload_is_off_when_it_is_off(self):
+        # gemini-S3-4: "--no-payload" printed "files of 0 or more".
+        rc, out, err = self.status("--no-payload")
+        self.assertEqual(rc, 0, out + err)
+        self.assertRegex(out, r"payload mode\s*: off")
+        self.assertNotIn("files of 0", out)
+
     def test_a_vault_that_never_recorded_a_push_says_so_instead_of_guessing(self):
         self.assertEqual(self.snapshot("--remote", str(self.remote))[0], 0)
         _git(self.vault, "config", "--unset", "snapshot.pushed")
