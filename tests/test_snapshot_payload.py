@@ -3539,6 +3539,20 @@ class PayloadSkipChangingTests(_PayloadFixture):
         self.assertEqual((into / "sub" / "big2.bin").read_bytes(), self.big2)
         self.assertFalse((into / "big1.bin").exists())
 
+    def test_a_changing_file_does_not_take_its_identical_twin_s_object_with_it(self):
+        """gemini-S3-1 (review c305b0a): two files of one content share one object, uploaded from the first
+        by path; when that one changed and was left out, the other stayed in the manifest naming an object
+        that was never uploaded."""
+        (self.src / "twin.bin").write_bytes(self.big1)
+        with self._live("big1.bin"):
+            rc, out, err = self.snapshot("--payload-skip-changing")
+        self.assertEqual(rc, 0, out + err)
+        manifest = self._manifest()
+        self.assertIn("twin.bin", {f["path"] for f in manifest["files"]})
+        self.assertNotIn("big1.bin", {f["path"] for f in manifest["files"]})
+        self.assertEqual(self.server_files()[self.object_key(self.big1)], self.big1,
+                         "the object the manifest names was never uploaded")
+
     def test_the_next_quiet_run_picks_the_file_up_again(self):
         with self._live("big1.bin"):
             self.assertEqual(self.snapshot("--payload-skip-changing")[0], 0)

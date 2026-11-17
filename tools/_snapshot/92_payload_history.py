@@ -88,3 +88,31 @@ def release_reused_marks(client: Any, rid: str, base: str, reused: "set[str]") -
         return len(marks) - len(kept)
     except Exception:
         return 0
+
+
+def drop_changed_files(
+    client: Any, rid: str, server_url: str | None, base: str, source: Path,
+    todo: dict[str, dict[str, Any]], jobs: int | None, manifest: dict[str, Any], left_out: list[str],
+) -> tuple[list[str], dict[str, dict[str, Any]]]:
+    """Take the files that changed during the upload out of *manifest*; ``(all left out, by_sha)``.
+
+    The file chosen to upload an object may be the one that changed while another file of the same
+    content stays in the manifest: that object was never uploaded, and the manifest named it (review
+    c305b0a, gemini-S3-1).  It is uploaded again from the other file, until none is left out.
+    """
+    every_left_out = list(left_out)
+    pending = todo
+    while True:
+        dropped = set(every_left_out)
+        manifest["files"] = [item for item in manifest["files"] if item["path"] not in dropped]
+        by_sha: dict[str, dict[str, Any]] = {}
+        for item in sorted(manifest["files"], key=lambda e: e["path"]):
+            by_sha.setdefault(item["sha256"], item)
+        left_shas = {item["sha256"] for item in pending.values() if item["path"] in set(left_out)}
+        pending = {sha: by_sha[sha] for sha in left_shas if sha in by_sha}
+        if not pending:
+            return every_left_out, by_sha
+        left_out = _upload_all(client, rid, server_url, base, source, pending, jobs, True)
+        every_left_out += left_out
+        if not left_out:
+            return every_left_out, by_sha

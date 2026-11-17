@@ -459,12 +459,10 @@ def publish_payload(
     release_reused_marks(client, rid, base, {sha for sha in by_sha if sha not in todo})
     left_out = _upload_all(client, rid, server_url, base, source, todo, jobs, skip_changing) if todo else []
     if left_out:
-        dropped = set(left_out)
-        manifest["files"] = [item for item in manifest["files"] if item["path"] not in dropped]
+        left_out, by_sha = drop_changed_files(
+            client, rid, server_url, base, source, todo, jobs, manifest, left_out
+        )
         manifest["snapshot"] = manifest_snapshot_id(manifest["files"])
-        by_sha = {}
-        for item in sorted(manifest["files"], key=lambda e: e["path"]):
-            by_sha.setdefault(item["sha256"], item)
         todo = {sha: item for sha, item in todo.items() if sha in by_sha}
         todo_bytes = sum(item["size"] for item in todo.values())
         shown = ", ".join(left_out[:5]) + (" ..." if len(left_out) > 5 else "")
