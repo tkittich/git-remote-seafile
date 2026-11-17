@@ -291,6 +291,11 @@ def _run(
     (REVIEW.sonnet-5.5 D9, reproduced).  The reader is joined before the call
     returns; it is not a daemon and never outlives the child.
     """
+    if cmd and cmd[0] == "git" and kwargs.get("env") is None:
+        # The raw ``_run(["git", "-C", ...])`` calls did not scrub an inherited GIT_DIR (a hook of
+        # a linked worktree sets an absolute one), so they operated on the caller's repository:
+        # ``git()`` always did (review c305b0a, fable-S1-1).
+        kwargs["env"] = {k: v for k, v in os.environ.items() if k not in _REPO_ENV_VARS}
     sub = _git_subcommand(cmd)
     if sub is not None and sub not in _READS_NO_REF:
         _TIP_READS.clear()

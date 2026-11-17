@@ -3574,6 +3574,17 @@ class IncrementalStagingTests(_SnapshotFixture):
         self.assertIn("d/new.txt", recorded)
         self.assertIn("d/x.txt", recorded)
 
+    def test_a_raw_git_call_ignores_an_inherited_git_dir(self):
+        """fable-S1-1 (review c305b0a): ``_run([\"git\", \"-C\", ...])`` did not scrub ``GIT_DIR``, which a hook
+        of a linked worktree sets to an absolute path, so the call ran in the caller's repository."""
+        other = self.tmp / "other-repo"
+        other.mkdir()
+        _git(other, "init", "-q", "-b", "elsewhere")
+        with unittest.mock.patch.dict(os.environ, {"GIT_DIR": str(other / ".git")}):
+            proc = snap._run(["git", "-C", str(self.code), "symbolic-ref", "--short", "HEAD"],
+                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        self.assertEqual(proc.stdout.strip(), "main")
+
     @unittest.skipUnless(sys.platform in ("win32", "darwin"), "needs a filesystem that ignores case")
     def test_a_new_file_in_a_renamed_directory_is_not_lost_when_another_path_changes_too(self):
         """fable-S1-9 (review c305b0a): the respelled pathspec ``d/new.txt`` was handed to ``git add``,
