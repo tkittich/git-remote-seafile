@@ -40,6 +40,11 @@ def exclude_matches(path: str, pattern: str) -> bool:
     # case-sensitive data, and fnmatch's normcase would make Windows behave
     # differently from every other platform).
     pattern = pattern.strip().replace("\\", "/").rstrip("/")
+    # ``./private`` and ``/private`` name ``private`` at the root of the source; they matched
+    # nothing, and the file the person meant to leave out was committed (fable-S1-3).
+    while pattern.startswith("./"):
+        pattern = pattern[2:]
+    pattern = pattern.lstrip("/")
     if not pattern:
         return False
     path = unicodedata.normalize("NFC", path)

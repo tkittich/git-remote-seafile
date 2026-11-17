@@ -3130,6 +3130,11 @@ def exclude_matches(path: str, pattern: str) -> bool:
     # case-sensitive data, and fnmatch's normcase would make Windows behave
     # differently from every other platform).
     pattern = pattern.strip().replace("\\", "/").rstrip("/")
+    # ``./private`` and ``/private`` name ``private`` at the root of the source; they matched
+    # nothing, and the file the person meant to leave out was committed (fable-S1-3).
+    while pattern.startswith("./"):
+        pattern = pattern[2:]
+    pattern = pattern.lstrip("/")
     if not pattern:
         return False
     path = unicodedata.normalize("NFC", path)
@@ -10811,6 +10816,16 @@ def validate_args(args: argparse.Namespace) -> None:
         )
 
 
+def exclude_relative_to(pattern: str, source: Path) -> str:
+    """*pattern* as a path under *source* when it is an absolute path of something there, else as typed."""
+    if not os.path.isabs(pattern):
+        return pattern
+    try:
+        return Path(pattern).resolve().relative_to(source.resolve()).as_posix()
+    except (OSError, ValueError):
+        return pattern
+
+
 def resolve_snapshot_settings(
     args: argparse.Namespace,
 ) -> tuple[Path, Path, str | None, str | None, list[str], str]:
@@ -10887,6 +10902,9 @@ def resolve_snapshot_settings(
     exclude = list(args.exclude) if args.exclude is not None else list(
         remembered.get("exclude") or []
     )
+    # An absolute path of a folder in the source means that folder (it matched nothing, and the
+    # "excluded" file was committed with exit 0: review c305b0a, fable-S1-3).
+    exclude = [exclude_relative_to(pattern, source) for pattern in exclude]
     # Typed on this command line, else what the vault remembered (a default is not a
     # request, but a choice the vault already holds is repeated).  What it expands to
     # is worked out again on every run and is not itself remembered, so a directory

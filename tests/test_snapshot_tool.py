@@ -3574,6 +3574,18 @@ class IncrementalStagingTests(_SnapshotFixture):
         self.assertIn("d/new.txt", recorded)
         self.assertIn("d/x.txt", recorded)
 
+    def test_an_exclude_spelled_with_a_dot_slash_or_an_absolute_path_still_matches(self):
+        """fable-S1-3 (review c305b0a): ``--exclude ./private`` and ``/sub`` matched nothing and the
+        file the person meant to leave out was committed, exit 0."""
+        for pattern in ("./private", ".//private", "/private", "private/", ".\\private"):
+            with self.subTest(pattern=pattern):
+                self.assertTrue(snap.exclude_matches("private/key.txt", pattern))
+        self.assertFalse(snap.exclude_matches("other/key.txt", "./private"))
+        absolute = str(self.code / "private")
+        self.assertEqual(snap.exclude_relative_to(absolute, self.code), "private")
+        self.assertEqual(snap.exclude_relative_to("*.pyc", self.code), "*.pyc")
+        self.assertEqual(snap.exclude_relative_to(str(self.tmp / "elsewhere"), self.code), str(self.tmp / "elsewhere"))
+
     def test_a_raw_git_call_ignores_an_inherited_git_dir(self):
         """fable-S1-1 (review c305b0a): ``_run([\"git\", \"-C\", ...])`` did not scrub ``GIT_DIR``, which a hook
         of a linked worktree sets to an absolute path, so the call ran in the caller's repository."""
