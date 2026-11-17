@@ -1713,6 +1713,21 @@ class FirstRunExcludePromptTests(_SnapshotFixture):
         self.assertIn("keeps 'src/build' for this run", out)
         self.assertNotIn("node_modules/pkg/a.js", self.tree())    # the rest of the list applies
 
+    def test_committed_source_of_an_embedded_repository_is_kept(self):
+        """Review c305b0a fable-S4-1: ``git ls-files`` of the outer repository prints nothing
+        for a path inside a nested one, so ``sub/build`` read as reproducible and was dropped."""
+        sub = self.code / "sub"
+        (sub / "build").mkdir(parents=True)
+        (sub / "build" / "make.py").write_bytes(b"print(1)" + bytes([10]))
+        _git(sub, "init", "-q")
+        _git(sub, "add", "build/make.py")
+        _git(sub, "commit", "-qm", "build script")
+        rc, out, err = self.run_tool("--source", self.code, "--vault", self.vault, "--no-push",
+                                     "--default-excludes")
+        self.assertEqual(rc, 0, err)
+        self.assertIn("sub/build/make.py", self.tree())
+        self.assertIn("keeps 'sub/build' for this run", out)
+
     def test_an_ignored_build_directory_is_left_out_and_listed(self):
         (self.code / ".gitignore").write_bytes(b"node_modules/" + bytes([10]) + b"dist/" + bytes([10]) + b"build/" + bytes([10]))
         (self.code / "build").mkdir()

@@ -10431,6 +10431,9 @@ def is_reproducible_directory(source: Path, rel: str) -> bool:
     repository git cannot say, so a project file must sit beside it.  Cannot tell
     means no: the directory is captured and named (REVIEW.be01e37 sonnet D1).
     """
+    parts = rel.split("/")[:-1]
+    if any((source.joinpath(*parts[:i]) / ".git").exists() for i in range(1, len(parts) + 1)):
+        return False    # inside an embedded repository the outer one is silent: cannot tell (c305b0a fable-S4-1)
     if (source / ".git").exists():
         proc = _run(
             ["git", "--literal-pathspecs", "-C", str(source), "ls-files", "-z", "-c", "-o",
