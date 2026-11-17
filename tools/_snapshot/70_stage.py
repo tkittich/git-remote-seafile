@@ -319,11 +319,13 @@ def build_snapshot(
                 add_expects = 0
         folded = git(git_dir, work_tree, ["config", "--bool", "core.ignorecase"],
                      cwd=work_tree, check=False).stdout.strip() == "true"
-        if to_stage and folded:
-            to_stage = spell_like_index(to_stage, index_paths(git_dir, work_tree), work_tree)
         if to_stage:
+            # Respelled only for ``update-index`` (see staging_commands); the index is listed
+            # only when that route is taken on a vault that folds case.
             commands, drop_first = staging_commands(
-                to_stage, work_tree, index_entry_count(git_dir)
+                to_stage, work_tree, index_entry_count(git_dir),
+                spell=(lambda listed: spell_like_index(listed, index_paths(git_dir, work_tree), work_tree))
+                if folded else None,
             )
             if drop_first:
                 drop_from_index(git_dir, work_tree, drop_first)

@@ -3575,6 +3575,23 @@ class IncrementalStagingTests(_SnapshotFixture):
         self.assertIn("d/x.txt", recorded)
 
     @unittest.skipUnless(sys.platform in ("win32", "darwin"), "needs a filesystem that ignores case")
+    def test_a_new_file_in_a_renamed_directory_is_not_lost_when_another_path_changes_too(self):
+        """fable-S1-9 (review c305b0a): the respelled pathspec ``d/new.txt`` was handed to ``git add``,
+        which reads ``D/new.txt`` from the disk and finds no match for the literal pathspec once a
+        second pathspec outside ``d`` makes it walk from the root: nothing added, exit 0."""
+        (self.code / "d").mkdir()
+        (self.code / "d" / "x.txt").write_bytes(b"x\n")
+        self.assertEqual(self.snapshot(*self.EXCLUDE)[0], 0)
+        os.rename(self.code / "d", self.code / "tmp_d")
+        os.rename(self.code / "tmp_d", self.code / "D")
+        (self.code / "D" / "new.txt").write_bytes(b"new\n")
+        (self.code / "other.txt").write_bytes(b"other\n")      # a second changed path, outside the folder
+        rc, _, err = self.snapshot(*self.EXCLUDE)
+        self.assertEqual(rc, 0, err)
+        recorded = {name.casefold() for name in self.tree()}
+        self.assertTrue({"d/x.txt", "d/new.txt", "other.txt"} <= recorded, recorded)
+
+    @unittest.skipUnless(sys.platform in ("win32", "darwin"), "needs a filesystem that ignores case")
     def test_both_routes_record_one_spelling_after_a_rename_by_case(self):
         """ROADMAP X2: on the ``update-index`` route the same rename recorded ``D/new.txt``
         beside ``d/x.txt`` -- two directories in the tree, two on a restore to a filesystem

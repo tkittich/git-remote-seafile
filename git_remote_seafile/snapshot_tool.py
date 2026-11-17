@@ -2833,7 +2833,8 @@ def spell_like_index(paths: list[str], indexed: list[str], work_tree: Path) -> l
 
 
 def staging_commands(
-    paths: list[str], work_tree: Path, index_entries: int = 0
+    paths: list[str], work_tree: Path, index_entries: int = 0,
+    spell: "Callable[[list[str]], list[str]] | None" = None,
 ) -> "tuple[list[tuple[list[str], str]], list[str]]":
     """``([(git arguments, stdin), ...], drop_first)``: how to record *paths* in the index.
 
@@ -2892,8 +2893,14 @@ def staging_commands(
     if directories:
         commands.append((add, "\0".join(directories) + "\0"))
     if files:
+        # *spell* respells a path the way a folding vault's index already spells its folder: right
+        # for ``update-index``, which takes a path as given.  ``git add`` does that respelling
+        # itself, and a pathspec already respelled matched nothing once a second pathspec made it
+        # walk from the root: a new file in a folder renamed by case was left out, exit 0 (review
+        # c305b0a, fable-S1-9; shipped since 0.9.23).
+        listed = spell(files) if spell is not None else files
         commands.append((["update-index", "--add", "--remove", "--replace", "-z", "--stdin"],
-                         "\0".join(files) + "\0"))
+                         "\0".join(listed) + "\0"))
     return commands, drop_first
 
 
@@ -3397,11 +3404,13 @@ def build_snapshot(
                 add_expects = 0
         folded = git(git_dir, work_tree, ["config", "--bool", "core.ignorecase"],
                      cwd=work_tree, check=False).stdout.strip() == "true"
-        if to_stage and folded:
-            to_stage = spell_like_index(to_stage, index_paths(git_dir, work_tree), work_tree)
         if to_stage:
+            # Respelled only for ``update-index`` (see staging_commands); the index is listed
+            # only when that route is taken on a vault that folds case.
             commands, drop_first = staging_commands(
-                to_stage, work_tree, index_entry_count(git_dir)
+                to_stage, work_tree, index_entry_count(git_dir),
+                spell=(lambda listed: spell_like_index(listed, index_paths(git_dir, work_tree), work_tree))
+                if folded else None,
             )
             if drop_first:
                 drop_from_index(git_dir, work_tree, drop_first)
