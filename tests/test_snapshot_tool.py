@@ -3597,6 +3597,22 @@ class IncrementalStagingTests(_SnapshotFixture):
         self.assertEqual(snap.exclude_relative_to("*.pyc", self.code), "*.pyc")
         self.assertEqual(snap.exclude_relative_to(str(self.tmp / "elsewhere"), self.code), str(self.tmp / "elsewhere"))
 
+    def test_the_shared_remote_guard_compares_places_not_spellings(self):
+        """fable-S3-1 (review c305b0a): ``seafile://lib`` and ``seafile://lib/git-repo`` (the default
+        path) are one place; the guard compared strings and the vault was pushed to the code remote."""
+        same = [("seafile://testlib", "seafile://testlib/git-repo"),
+                ("seafile://host.example.com:443/lib/x", "seafile://host.example.com/lib/x"),
+                ("https://host.example.com/lib/x", "seafile://host.example.com/lib/x"),
+                ("seafile://my%20lib/x", "seafile://my lib/x"), ("seafile://lib//x", "seafile://lib/x"),
+                ("seafile://lib/x?q=1", "seafile://lib/x")]
+        for a, b in same:
+            with self.subTest(a=a, b=b):
+                self.assertTrue(snap.same_place(a, b))
+        for a, b in (("seafile://lib/a", "seafile://lib/b"), ("seafile://lib1/x", "seafile://lib2/x"),
+                     ("https://one.example.com/lib/x", "https://two.example.com/lib/x")):
+            with self.subTest(a=a, b=b):
+                self.assertFalse(snap.same_place(a, b))
+
     def test_a_raw_git_call_ignores_an_inherited_git_dir(self):
         """fable-S1-1 (review c305b0a): ``_run([\"git\", \"-C\", ...])`` did not scrub ``GIT_DIR``, which a hook
         of a linked worktree sets to an absolute path, so the call ran in the caller's repository."""

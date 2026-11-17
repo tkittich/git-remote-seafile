@@ -8105,6 +8105,37 @@ def normalise_remote(url: str) -> str:
     return text.rstrip("/").lower()
 
 
+def _place(url: str) -> "tuple[str, str, str] | None":
+    """``(server, library, path)`` of a ``seafile://`` URL as the helper reads it, or ``None``.
+
+    The helper reads many spellings as one place (a bare library with the default path, a ``:443``,
+    a ``%20``, a doubled slash, a ``?query``): comparing strings let ``seafile://lib`` and
+    ``seafile://lib/git-repo`` through, and the vault, ``.env`` included, was pushed to the code
+    remote (review c305b0a, fable-S3-1).  Anything that does not parse is compared as a string.
+    """
+    try:
+        from git_remote_seafile.url import parse_seafile_url
+
+        parsed = parse_seafile_url(url.split("?", 1)[0].split("#", 1)[0])
+    except Exception:
+        return None
+    return (str(parsed.server_url or "").lower().rstrip("/"), parsed.library_name.lower(),
+            parsed.repo_path.rstrip("/").lower())
+
+
+def same_place(a: str, b: str) -> bool:
+    """True when two remote URLs may be one place; errs towards "yes" (a missing server counts as any)."""
+    if normalise_remote(a) == normalise_remote(b):
+        return True
+    place_a, place_b = _place(a), _place(b)
+    if place_a is None or place_b is None:
+        return False
+    (server_a, lib_a, path_a), (server_b, lib_b, path_b) = place_a, place_b
+    if server_a and server_b and server_a != server_b:
+        return False
+    return lib_a == lib_b and path_a == path_b
+
+
 def check_remote_is_not_a_code_remote(
     source: Path, remote: str, *, allowed: bool
 ) -> None:
@@ -8119,9 +8150,8 @@ def check_remote_is_not_a_code_remote(
     """
     if allowed:
         return
-    target = normalise_remote(remote)
     for name, url in source_remote_urls(source):
-        if normalise_remote(url) != target:
+        if not same_place(url, remote):
             continue
         raise SnapshotError(
             f"refusing to push the vault to '{remote}': that is the same place "
