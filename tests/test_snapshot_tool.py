@@ -1110,6 +1110,30 @@ class PushRaceTests(_SnapshotFixture):
         self.assertEqual(_git(self.vault, "rev-parse", BRANCH).stdout.strip(), offline_tip)
         self.assertEqual(_git(self.remote, "rev-parse", BRANCH).stdout.strip(), remote_tip)
 
+    def test_a_push_that_landed_but_reported_failure_is_not_pushed_again_on_top_of_itself(self):
+        """Review c305b0a fable-S3-5: the answer was lost, the remote tip was this run's own commit,
+        and the retry re-parented a second commit with the same tree on it."""
+        self.snapshot("--remote", str(self.remote))
+        (self.code / "late.txt").write_bytes(b"new\n")
+        real_git = snap.git
+        state = {"failed": False}
+
+        def push_that_lands_then_fails(git_dir, work_tree, args, **kwargs):
+            proc = real_git(git_dir, work_tree, args, **kwargs)
+            if args and args[0] == "push" and not state["failed"]:
+                state["failed"] = True
+                return subprocess.CompletedProcess(args, 1, "", "error: connection lost\n")
+            return proc
+
+        with unittest.mock.patch.object(snap, "git", push_that_lands_then_fails):
+            rc, out, err = self.snapshot("--remote", str(self.remote))
+        self.assertEqual(rc, 0, out + err)
+        self.assertNotIn("re-parenting", out)
+        tip = _git(self.remote, "rev-parse", BRANCH).stdout.strip()
+        self.assertEqual(tip, _git(self.vault, "rev-parse", BRANCH).stdout.strip())
+        trees = _git(self.remote, "log", "--format=%T", BRANCH).stdout.split()
+        self.assertEqual(len(trees), len(set(trees)), "a snapshot was recorded twice")
+
     def test_a_fetch_failure_during_the_retry_still_rolls_back(self):
         # The rollback is the invariant that makes a re-run the correct remedy,
         # so it must survive a failure in the retry itself: the push is

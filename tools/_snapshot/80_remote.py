@@ -228,6 +228,12 @@ def push_snapshot(
                         f"rolling the local branch back\n"
                     )
                     break
+                if tip == current:
+                    # The push landed and only its answer was lost: re-parenting would add a second
+                    # commit with the same tree (review c305b0a, fable-S3-5).
+                    print("push complete (the remote already has this snapshot)")
+                    remember_pushed_tip(git_dir, work_tree, branch, current)
+                    return
                 # "Moved" means the remote tip is built on what this run started from.  A tip
                 # that differs from *base* because it is the older end of this vault's chain (the
                 # vault is ahead: snapshots taken under --no-push) is not a race, and re-parenting
