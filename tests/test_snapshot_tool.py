@@ -408,6 +408,17 @@ class SnapshotGuardTests(_SnapshotFixture):
         self.assertIn("--exclude", err)
         self.assertIn("no commit", err)
 
+    def test_an_empty_dot_git_folder_is_not_recorded_as_the_sources_own_commit(self):
+        """fable-S1-2 (review c305b0a): ``sub/.git`` that is not a repository made ``rev-parse`` walk up
+        and answer with the source's HEAD, which was recorded as ``sub``'s commit and its files dropped."""
+        (self.code / "sub" / ".git").mkdir(parents=True)
+        (self.code / "sub" / "data.txt").write_bytes(b"only copy\n")
+        source_head = _git(self.code, "rev-parse", "HEAD").stdout.strip()
+        rc, out, err = self.snapshot("--no-embedded-repos")
+        listing = _git(self.vault, "ls-tree", "-r", BRANCH).stdout if rc == 0 else ""
+        self.assertNotIn(source_head, listing, "the source's own commit was recorded for sub")
+        self.assertTrue(rc != 0 or "sub/data.txt" in listing, out + err)
+
     def test_the_flag_means_the_same_on_the_second_run_as_on_the_first(self):
         self._nested_repo()
         self.assertEqual(self.snapshot()[0], 0)

@@ -4022,6 +4022,10 @@ def handle_embedded_repositories(
     for root in outer:
         if not under[root]:
             continue
+        # The directory is asked, not its ancestors: a ``.git`` that is not a repository (an
+        # empty folder left by an interrupted clone) made ``rev-parse`` walk up and answer with
+        # the *source's* HEAD, which was then recorded as the directory's commit (fable-S1-2).
+        env["GIT_CEILING_DIRECTORIES"] = str((work_tree / root).parent)
         head = _run(
             ["git", "-C", str(work_tree / root), "rev-parse", "--verify", "-q", "HEAD"],
             text=True, encoding="utf-8", errors="replace",
