@@ -570,7 +570,7 @@ class SnapshotGuardTests(_SnapshotFixture):
 
             with unittest.mock.patch.object(snap.os, "walk", side_effect=walk_that_hits_a_denied_dir):
                 snap._files_of_repository(root, "vend", unreadable)
-            self.assertEqual(unreadable, ["vend"])
+            self.assertEqual(unreadable, ["vend/denied"])    # the folder, so --exclude on it can match (gemini-S1-2)
 
     def test_an_unreadable_directory_warning_from_git_stops_the_run_on_every_platform(self):
         """The test above needs POSIX permissions and is skipped on Windows,
@@ -1708,6 +1708,20 @@ class FirstRunExcludePromptTests(_SnapshotFixture):
             with self.subTest(flags=flags, kw=kw):
                 args, out = self.offer(*flags, answer="y", **kw)
                 self.assertEqual(out, "")
+
+    def test_a_stall_limit_under_a_second_does_not_reach_the_helper_as_zero(self):
+        # gemini-S1-3: int(0.5) is 0, which the helper rejects with a Warning (exit 3 under --exit-warnings).
+        seen: dict[str, str] = {}
+
+        def fake_run(cmd, **kw):
+            seen.update(kw["env"])
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+
+        env = {"SEAFILE_SNAPSHOT_STALL_LIMIT": "0.5"}
+        with unittest.mock.patch.dict(os.environ, env), unittest.mock.patch.object(snap, "_run", fake_run),                 unittest.mock.patch.object(snap, "_owner_set_git_timeout", lambda: False):
+            os.environ.pop("SEAFILE_GIT_TIMEOUT", None)
+            snap.git(self.vault / ".git", self.code, ["status"], cwd=self.code, check=False)
+        self.assertEqual(seen.get("SEAFILE_GIT_TIMEOUT"), "1")
 
     def test_it_does_not_ask_on_a_run_that_remembers_nothing(self):
         # fable-S4-7: a --dry-run or --no-push run writes no settings, yet the vault it creates ends the asking.
@@ -4026,6 +4040,55 @@ class IncrementalStagingTests(_SnapshotFixture):
         with unittest.mock.patch.object(os, "lstat", lstat):
             files = snap._files_of_repository(repo, "emb", [])
         self.assertEqual(files, ["emb/real.txt"])
+
+    def test_an_excluded_folder_inside_an_embedded_repository_is_not_walked(self):
+        # gemini-S1-2: --exclude is what the unreadable-folder error tells the person to pass.
+        repo = self.tmp / "emb2"
+        (repo / ".git").mkdir(parents=True)
+        (repo / "keep.txt").write_text("k")
+        (repo / "locked").mkdir()
+        (repo / "locked" / "secret.txt").write_text("s")
+        walked: list[str] = []
+        real = os.walk
+
+        def spy(top, **kw):
+            for entry in real(top, **kw):
+                walked.append(os.path.basename(entry[0]))
+                yield entry
+
+        with unittest.mock.patch.object(snap.os, "walk", side_effect=spy):
+            files = snap._files_of_repository(repo, "emb2", [], ["emb2/locked"])
+        self.assertEqual(files, ["emb2/keep.txt"])
+        self.assertNotIn("locked", walked)
+
+    def test_a_derived_directory_with_glob_characters_excludes_only_itself(self):
+        # fable-S4-2: ``a[1]/build`` as a pattern also matched the tracked ``a1/build/tool.py``.
+        pattern = snap.literal_exclude("a[1]/build")
+        self.assertTrue(snap.exclude_matches("a[1]/build/out.o", pattern))
+        self.assertFalse(snap.exclude_matches("a1/build/tool.py", pattern))
+        self.assertEqual(snap.literal_exclude("plain/dir"), "plain/dir")
+        self.assertTrue(snap.exclude_matches("w*d/x/y", snap.literal_exclude("w*d/x")))
+        self.assertFalse(snap.exclude_matches("wood/x/y", snap.literal_exclude("w*d/x")))
+
+    def test_a_restored_name_ending_in_a_carriage_return_is_hashed_as_an_argument(self):
+        # fable-S4-3: --stdin-paths reads lines CRLF-tolerantly, so a name ending in CR was hashed without it.
+        listing = b"100644 blob " + b"a" * 40 + b"\ta\r\x00100644 blob " + b"b" * 40 + b"\tb.txt\x00"
+        calls: list[list[str]] = []
+
+        def fake(cmd, **kw):
+            calls.append(list(cmd))
+            if "ls-tree" in cmd:
+                return subprocess.CompletedProcess(cmd, 0, listing, b"")
+            if "--stdin-paths" in cmd:
+                return subprocess.CompletedProcess(cmd, 0, b"b" * 40 + b"\n", b"")
+            return subprocess.CompletedProcess(cmd, 0, b"a" * 40 + b"\n", b"")
+
+        with unittest.mock.patch.object(snap, "_run", fake):
+            result = snap.verify_restore(self.tmp, "HEAD")
+        self.assertEqual(result, [])
+        argv = [c for c in calls if "hash-object" in c and "--stdin-paths" not in c]
+        self.assertEqual(len(argv), 1)
+        self.assertEqual(argv[0][-1], "a\r")
 
     def test_the_payload_skip_matcher_uses_the_long_path_form(self):
         # AA17: the NFC-variant comparison stats both spellings; past 260 characters a

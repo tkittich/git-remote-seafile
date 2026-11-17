@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **`--exclude` on a folder inside an embedded repository now works for an unreadable folder** (gemini-S1-2): the excluded folder is not walked, and the refusal names the folder that could not be opened instead of the repository.
+- **A stall limit under one second no longer makes the helper warn** (gemini-S1-3): `SEAFILE_SNAPSHOT_STALL_LIMIT=0.5` reached it as a git timeout of `0`.
+- **A restore of a file name ending in a carriage return is no longer reported as failed** (fable-S4-3): git's line reader dropped the CR, so the name was hashed without it; such names now go through the argument vector.
+- **`--default-excludes` no longer removes a tracked sibling of a bracketed directory** (fable-S4-2): a derived directory such as `a[1]/build` was used as a glob and also matched the tracked `a1/build/`.
 - **`--maintain` and `--status` are no longer stopped by a remembered remote** (review c305b0a fable-S4-6): a vault whose remembered remote the source has since added as its own, or whose remembered `--code-remote` is gone, refused both modes with a flag they cannot be given. They push nothing, so the shared-remote and code-remote checks now apply to snapshot runs only.
 - **The first-run "leave out `node_modules`?" question is not asked on `--dry-run` or `--no-push`** (fable-S4-7): those runs remember nothing, but the vault they create ended the asking, so a Y was forgotten and the next run captured everything.
 - **`--no-payload` and a remembered payload size no longer fail when a folder named `0` (or the remembered number) is in the working directory** (gemini-S3-2): the "that size is also a directory" check now applies only to a size typed on the command line.

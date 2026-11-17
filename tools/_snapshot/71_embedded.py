@@ -15,7 +15,7 @@ def embedded_repositories(git_dir: Path, work_tree: Path) -> list[str]:
 
 
 def _files_of_repository(
-    root: Path, prefix: str, unreadable: "list[str] | None" = None
+    root: Path, prefix: str, unreadable: "list[str] | None" = None, excludes: "list[str] | None" = None
 ) -> list[str]:
     """Index paths for everything under *root* except ``.git`` itself.
 
@@ -36,7 +36,15 @@ def _files_of_repository(
 
     def _deny(err: OSError) -> None:
         if unreadable is not None:
-            unreadable.append(prefix.rstrip("/"))
+            # The directory that could not be opened, so --exclude on it (as the error says) can match it.
+            named = os.fspath(err.filename) if getattr(err, "filename", None) else ""
+            try:
+                rel = os.path.relpath(named, root).replace(os.sep, "/") if named else ""
+            except ValueError:
+                rel = ""
+            unreadable.append(
+                f"{prefix}/{rel}".rstrip("/") if rel and not rel.startswith("..") else prefix.rstrip("/")
+            )
 
     for dirpath, dirnames, filenames in walk_long(root, onerror=_deny):
         keep: list[str] = []
@@ -44,6 +52,11 @@ def _files_of_repository(
             full = os.path.join(dirpath, name)
             if name == ".git":
                 continue
+            if excludes and any(
+                exclude_matches(f"{prefix}/{os.path.relpath(full, root)}".replace(os.sep, "/"), pat)
+                for pat in excludes
+            ):
+                continue  # left out on purpose: do not open it, and do not fail on it (gemini-S1-2)
             try:
                 is_link = os.path.islink(extended_path(Path(full)))
                 is_reparse = bool(
@@ -114,7 +127,7 @@ def inline_embedded_repositories(
         root = work_tree / link
         # extended_path: a plain is_dir past 260 characters answers False on a Windows without
         # LongPathsEnabled and the repository vanished from the snapshot, exit 0 (fable-G0.1).
-        files = _files_of_repository(root, link, unreadable) if extended_path(root).is_dir() else []
+        files = _files_of_repository(root, link, unreadable, excludes) if extended_path(root).is_dir() else []
         files = [
             path for path in files
             if not any(exclude_matches(path, pat) for pat in excludes)

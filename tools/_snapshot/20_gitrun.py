@@ -559,7 +559,7 @@ def git(
     # so injecting here lowered a machine owner's ``seafile.gittimeout 7200`` to 1800 inside
     # every snapshot run; review 9fe723f, fable-G11.1).
     if "SEAFILE_GIT_TIMEOUT" not in env and not _owner_set_git_timeout():
-        env["SEAFILE_GIT_TIMEOUT"] = str(int(_stall_limit_from_env()))
+        env["SEAFILE_GIT_TIMEOUT"] = str(max(1, int(_stall_limit_from_env())))
     proc = _run(
         cmd,
         cwd=str(cwd),

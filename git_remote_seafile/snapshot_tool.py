@@ -806,7 +806,7 @@ def git(
     # so injecting here lowered a machine owner's ``seafile.gittimeout 7200`` to 1800 inside
     # every snapshot run; review 9fe723f, fable-G11.1).
     if "SEAFILE_GIT_TIMEOUT" not in env and not _owner_set_git_timeout():
-        env["SEAFILE_GIT_TIMEOUT"] = str(int(_stall_limit_from_env()))
+        env["SEAFILE_GIT_TIMEOUT"] = str(max(1, int(_stall_limit_from_env())))
     proc = _run(
         cmd,
         cwd=str(cwd),
@@ -3802,7 +3802,7 @@ def embedded_repositories(git_dir: Path, work_tree: Path) -> list[str]:
 
 
 def _files_of_repository(
-    root: Path, prefix: str, unreadable: "list[str] | None" = None
+    root: Path, prefix: str, unreadable: "list[str] | None" = None, excludes: "list[str] | None" = None
 ) -> list[str]:
     """Index paths for everything under *root* except ``.git`` itself.
 
@@ -3823,7 +3823,15 @@ def _files_of_repository(
 
     def _deny(err: OSError) -> None:
         if unreadable is not None:
-            unreadable.append(prefix.rstrip("/"))
+            # The directory that could not be opened, so --exclude on it (as the error says) can match it.
+            named = os.fspath(err.filename) if getattr(err, "filename", None) else ""
+            try:
+                rel = os.path.relpath(named, root).replace(os.sep, "/") if named else ""
+            except ValueError:
+                rel = ""
+            unreadable.append(
+                f"{prefix}/{rel}".rstrip("/") if rel and not rel.startswith("..") else prefix.rstrip("/")
+            )
 
     for dirpath, dirnames, filenames in walk_long(root, onerror=_deny):
         keep: list[str] = []
@@ -3831,6 +3839,11 @@ def _files_of_repository(
             full = os.path.join(dirpath, name)
             if name == ".git":
                 continue
+            if excludes and any(
+                exclude_matches(f"{prefix}/{os.path.relpath(full, root)}".replace(os.sep, "/"), pat)
+                for pat in excludes
+            ):
+                continue  # left out on purpose: do not open it, and do not fail on it (gemini-S1-2)
             try:
                 is_link = os.path.islink(extended_path(Path(full)))
                 is_reparse = bool(
@@ -3901,7 +3914,7 @@ def inline_embedded_repositories(
         root = work_tree / link
         # extended_path: a plain is_dir past 260 characters answers False on a Windows without
         # LongPathsEnabled and the repository vanished from the snapshot, exit 0 (fable-G0.1).
-        files = _files_of_repository(root, link, unreadable) if extended_path(root).is_dir() else []
+        files = _files_of_repository(root, link, unreadable, excludes) if extended_path(root).is_dir() else []
         files = [
             path for path in files
             if not any(exclude_matches(path, pat) for pat in excludes)
@@ -9290,16 +9303,16 @@ def verify_restore(repo: Path, rev: str, skip: "set[str] | None" = None) -> list
         return []
     # --stdin-paths is newline-separated, and git reads a line that starts with
     # a double quote as a C-quoted string -- so a name containing a newline, or
-    # starting with `"`, cannot ride in the batch.  Those few are hashed one at
+    # starting with `"`, or ending in a carriage return (git's line reader drops it), cannot ride in the batch.  Those few are hashed one at
     # a time, as argv, where no quoting rule applies.
     odd = [
         (path, sha) for path, sha in zip(paths, expected, strict=True)
-        if b"\n" in path or path.startswith(b'"')
+        if b"\n" in path or path.startswith(b'"') or path.endswith(b"\r")
     ]
     if odd:
         keep = [
             (path, sha) for path, sha in zip(paths, expected, strict=True)
-            if not (b"\n" in path or path.startswith(b'"'))
+            if not (b"\n" in path or path.startswith(b'"') or path.endswith(b"\r"))
         ]
         paths = [path for path, _ in keep]
         expected = [sha for _, sha in keep]
@@ -10799,6 +10812,15 @@ def drill_conflicts(args: argparse.Namespace) -> list[str]:
     return problems
 
 
+def literal_exclude(path: str) -> str:
+    """A directory found by looking at the source, as an exclude pattern that matches only itself.
+
+    Excludes are fnmatch patterns; ``a[1]/build`` as one would also remove a tracked ``a1/build/tool.py``
+    (review c305b0a, fable-S4-2).  ``[`` ``*`` ``?`` become one-character classes.
+    """
+    return "".join(f"[{ch}]" if ch in "*?[" else ch for ch in path)
+
+
 def ignored_option_warnings(args: argparse.Namespace) -> list[str]:
     """Options this mode accepts and never reads: warned about in 0.10.x, refused from 0.11.
 
@@ -11082,7 +11104,7 @@ def resolve_snapshot_settings(
             if any(exclude_matches(rel, pat) for pat in [*exclude, *derived]):
                 continue
             if is_reproducible_directory(source, rel):
-                derived.append(rel)
+                derived.append(literal_exclude(rel))
             else:
                 print(
                     f"Note: --default-excludes keeps '{rel}' for this run: git does not ignore "
@@ -11092,8 +11114,9 @@ def resolve_snapshot_settings(
                 )
         # Named by what makes it one, not by what it is called (.venv-audit, env).
         for venv in find_virtualenvs(source, [*exclude, *derived]):
-            if venv not in exclude and venv not in derived:
-                derived.append(venv)
+            pattern = literal_exclude(venv)
+            if pattern not in exclude and pattern not in derived:
+                derived.append(pattern)
         exclude.extend(d for d in derived if d not in exclude)
     args.derived_excludes = derived
     args.default_excludes_on = use_default

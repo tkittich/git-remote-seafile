@@ -32,6 +32,15 @@ def drill_conflicts(args: argparse.Namespace) -> list[str]:
     return problems
 
 
+def literal_exclude(path: str) -> str:
+    """A directory found by looking at the source, as an exclude pattern that matches only itself.
+
+    Excludes are fnmatch patterns; ``a[1]/build`` as one would also remove a tracked ``a1/build/tool.py``
+    (review c305b0a, fable-S4-2).  ``[`` ``*`` ``?`` become one-character classes.
+    """
+    return "".join(f"[{ch}]" if ch in "*?[" else ch for ch in path)
+
+
 def ignored_option_warnings(args: argparse.Namespace) -> list[str]:
     """Options this mode accepts and never reads: warned about in 0.10.x, refused from 0.11.
 
@@ -315,7 +324,7 @@ def resolve_snapshot_settings(
             if any(exclude_matches(rel, pat) for pat in [*exclude, *derived]):
                 continue
             if is_reproducible_directory(source, rel):
-                derived.append(rel)
+                derived.append(literal_exclude(rel))
             else:
                 print(
                     f"Note: --default-excludes keeps '{rel}' for this run: git does not ignore "
@@ -325,8 +334,9 @@ def resolve_snapshot_settings(
                 )
         # Named by what makes it one, not by what it is called (.venv-audit, env).
         for venv in find_virtualenvs(source, [*exclude, *derived]):
-            if venv not in exclude and venv not in derived:
-                derived.append(venv)
+            pattern = literal_exclude(venv)
+            if pattern not in exclude and pattern not in derived:
+                derived.append(pattern)
         exclude.extend(d for d in derived if d not in exclude)
     args.derived_excludes = derived
     args.default_excludes_on = use_default

@@ -242,16 +242,16 @@ def verify_restore(repo: Path, rev: str, skip: "set[str] | None" = None) -> list
         return []
     # --stdin-paths is newline-separated, and git reads a line that starts with
     # a double quote as a C-quoted string -- so a name containing a newline, or
-    # starting with `"`, cannot ride in the batch.  Those few are hashed one at
+    # starting with `"`, or ending in a carriage return (git's line reader drops it), cannot ride in the batch.  Those few are hashed one at
     # a time, as argv, where no quoting rule applies.
     odd = [
         (path, sha) for path, sha in zip(paths, expected, strict=True)
-        if b"\n" in path or path.startswith(b'"')
+        if b"\n" in path or path.startswith(b'"') or path.endswith(b"\r")
     ]
     if odd:
         keep = [
             (path, sha) for path, sha in zip(paths, expected, strict=True)
-            if not (b"\n" in path or path.startswith(b'"'))
+            if not (b"\n" in path or path.startswith(b'"') or path.endswith(b"\r"))
         ]
         paths = [path for path, _ in keep]
         expected = [sha for _, sha in keep]
