@@ -283,7 +283,7 @@ def verify_restore(repo: Path, rev: str, skip: "set[str] | None" = None) -> list
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )
-        if blob.returncode != 0 or blob.stdout != actual:
+        if blob.returncode != 0 or not link_text_equal(blob.stdout, actual):
             mismatched_symlinks.append(link)
     if not paths:
         return mismatched_symlinks

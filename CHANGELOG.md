@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **`--status` no longer says `pushed: yes` for a remote the vault never pushed to** (fable-S3-3): the pushed record now names the remote; an older record without one keeps its meaning.
+- **A failed write of a remembered payload setting is an error** (fable-S3-4): `--no-payload`, the size rule, the ratio and the measured link rates ignored a failed `git config` (a stale `config.lock`), exited 0, and the next bare run used the old rule.
+- **A downloaded payload file that verified is not fetched again because it could not be placed** (fable-S3-6): a refused rename (a name the volume rejects, a read-only folder) re-downloaded the object three times.
+- **A restore on Windows with real symbolic links no longer fails on every link whose target has a slash** (fable-S4-4): git writes the target with backslashes and the check compared bytes.
+- **`--js` (an abbreviated `--json`) gets its document on a usage error too** (fable-S4-12).
 - **`--exclude` on a folder inside an embedded repository now works for an unreadable folder** (gemini-S1-2): the excluded folder is not walked, and the refusal names the folder that could not be opened instead of the repository.
 - **A stall limit under one second no longer makes the helper warn** (gemini-S1-3): `SEAFILE_SNAPSHOT_STALL_LIMIT=0.5` reached it as a git timeout of `0`.
 - **A restore of a file name ending in a carriage return is no longer reported as failed** (fable-S4-3): git's line reader dropped the CR, so the name was hashed without it; such names now go through the argument vector.

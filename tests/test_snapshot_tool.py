@@ -6125,6 +6125,22 @@ class StatusTests(_SnapshotFixture):
         self.assertIs(doc["pushed"], True)
         self.assertEqual(doc["unpushed"], 0)
 
+    def test_a_push_to_another_remote_is_not_reported_as_pushed_to_this_one(self):
+        # fable-S3-3: the record named only the branch and the commit, so a re-pointed vault said "yes".
+        self.assertEqual(self.snapshot("--remote", str(self.remote), "--record-mtimes")[0], 0)
+        elsewhere = self.tmp / "elsewhere.git"
+        _git(self.tmp, "init", "-q", "--bare", str(elsewhere))
+        rc, out, err = self.status("--remote", str(elsewhere))
+        self.assertEqual(rc, 0, out + err)
+        self.assertNotIn("pushed        : yes", out)
+        doc = json.loads(self.status("--remote", str(elsewhere), "--json")[1])["result"]["status"]
+        self.assertIsNone(doc["pushed"])
+        # the remote that was pushed to still reads as pushed, and an old two-field record keeps its meaning
+        self.assertIs(json.loads(self.status("--json")[1])["result"]["status"]["pushed"], True)
+        tip = snap._read_config_key(self.vault / ".git", "snapshot.pushed").split()[:2]
+        _git(self.vault, "config", "snapshot.pushed", " ".join(tip))
+        self.assertIs(json.loads(self.status("--remote", str(elsewhere), "--json")[1])["result"]["status"]["pushed"], True)
+
     def test_a_vault_that_never_recorded_a_push_says_so_instead_of_guessing(self):
         self.assertEqual(self.snapshot("--remote", str(self.remote))[0], 0)
         _git(self.vault, "config", "--unset", "snapshot.pushed")
@@ -6238,6 +6254,54 @@ class StatusTests(_SnapshotFixture):
             rc, out, err = self.status(flag)
             self.assertEqual(rc, snap.EXIT_USAGE, out + err)
             self.assertIn("does not combine with --no-push or --dry-run", err)
+
+
+class RememberedSettingWriteTests(_SnapshotFixture):
+    def test_a_payload_setting_that_cannot_be_written_is_an_error_not_silence(self):
+        # fable-S3-4: a stale config.lock left --no-payload "remembered" with exit 0.
+        self.assertEqual(self.snapshot("--no-push")[0], 0)
+        (self.vault / ".git" / "config.lock").write_text("")
+        with self.assertRaises(snap.SnapshotError) as caught:
+            snap.remember_payload_value(self.vault, "0", dry_run=False)
+        self.assertIn("snapshot.payload", str(caught.exception))
+        with self.assertRaises(snap.SnapshotError):
+            snap.remember_payload_ratio(self.vault, 0.5, dry_run=False)
+        with self.assertRaises(snap.SnapshotError):
+            snap.remember_tuning(self.vault, {"ratio": 0.5, "upload": 1.0, "single": 1.0}, dry_run=False)
+
+
+class LinkAndPlacementTests(unittest.TestCase):
+    def test_a_windows_link_target_with_backslashes_equals_the_portable_one(self):
+        # fable-S4-4
+        self.assertTrue(snap.link_text_equal(b"d/t.txt", b"d\\t.txt", windows=True))
+        self.assertTrue(snap.link_text_equal(b"../mk/d/t.txt", b"..\\mk\\d\\t.txt", windows=True))
+        self.assertTrue(snap.link_text_equal(b"C:/x/y", b"\\\\?\\C:\\x\\y", windows=True))
+        self.assertFalse(snap.link_text_equal(b"d/t.txt", b"d\\u.txt", windows=True))
+        self.assertFalse(snap.link_text_equal(b"d/t.txt", b"d\\t.txt", windows=False))   # POSIX: a backslash is a name
+
+    def test_a_download_that_verified_is_not_fetched_again_because_it_could_not_be_placed(self):
+        # fable-S3-6: three tries on any exception re-downloaded a 50 GiB object three times.
+        import tempfile as _tf
+
+        data = b"payload bytes"
+        item = {"sha256": hashlib.sha256(data).hexdigest(), "size": len(data)}
+        downloads: list[int] = []
+
+        class Client:
+            def download_file_to(self, rid, path, part, max_bytes=None):
+                downloads.append(1)
+                pathlib.Path(part).write_bytes(data)
+                return True
+
+        with _tf.TemporaryDirectory() as td:
+            scratch, dest = pathlib.Path(td), pathlib.Path(td) / "out.bin"
+            with unittest.mock.patch.object(snap.os, "replace", side_effect=PermissionError(13, "refused")):
+                why = snap._download_verified(Client(), "rid", "/p", dest, item, scratch)
+            self.assertIn("could not place", why)
+            self.assertEqual(len(downloads), 1)
+            downloads.clear()
+            self.assertIsNone(snap._download_verified(Client(), "rid", "/p", dest, item, scratch))
+            self.assertEqual(dest.read_bytes(), data)
 
 
 if __name__ == "__main__":

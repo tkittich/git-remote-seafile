@@ -144,21 +144,26 @@ def human_bytes(n: float) -> str:
 _PUSHED_KEY = "snapshot.pushed"
 
 
-def remember_pushed_tip(git_dir: Path, work_tree: Path, branch: str, tip: str) -> None:
+def remember_pushed_tip(git_dir: Path, work_tree: Path, branch: str, tip: str, remote: str = "") -> None:
     """Record, in the vault, the snapshot the remote last held after one of *our* pushes.
 
     ``--status`` never contacts the remote, so this is what lets it say whether
     the newest snapshot has left this machine.  Only a successful push (or a
     remote already at our tip) writes it; a failed write is not worth failing a
-    backup for.
+    backup for.  The remote is part of the record: a vault pointed at another server has pushed nothing to it
+    (review c305b0a, fable-S3-3).
     """
-    git(git_dir, work_tree, ["config", _PUSHED_KEY, f"{branch} {tip}"], cwd=work_tree, check=False)
+    value = f"{branch} {tip} {remote}" if remote else f"{branch} {tip}"
+    git(git_dir, work_tree, ["config", _PUSHED_KEY, value], cwd=work_tree, check=False)
 
 
-def recorded_pushed_tip(git_dir: Path, work_tree: Path, branch: str) -> str | None:
+def recorded_pushed_tip(git_dir: Path, work_tree: Path, branch: str, remote: str | None = None) -> str | None:
     """The tip recorded by :func:`remember_pushed_tip` for *branch*, or ``None``."""
     proc = git(git_dir, work_tree, ["config", "--get", _PUSHED_KEY], cwd=work_tree, check=False)
-    name, _sep, tip = proc.stdout.strip().partition(" ")
+    name, _sep, rest = proc.stdout.strip().partition(" ")
+    tip, _sep, recorded_remote = rest.partition(" ")
+    if remote and recorded_remote and recorded_remote != remote:
+        return None  # an old two-field record keeps its meaning; one for another remote is not this remote's
     return tip if name == branch and tip else None
 
 
@@ -210,7 +215,7 @@ def push_snapshot(
             )
             if proc.returncode == 0:
                 print("push complete")
-                remember_pushed_tip(git_dir, work_tree, branch, current)
+                remember_pushed_tip(git_dir, work_tree, branch, current, remote)
                 return
 
             sys.stdout.write(proc.stdout or "")
@@ -232,7 +237,7 @@ def push_snapshot(
                     # The push landed and only its answer was lost: re-parenting would add a second
                     # commit with the same tree (review c305b0a, fable-S3-5).
                     print("push complete (the remote already has this snapshot)")
-                    remember_pushed_tip(git_dir, work_tree, branch, current)
+                    remember_pushed_tip(git_dir, work_tree, branch, current, remote)
                     return
                 # "Moved" means the remote tip is built on what this run started from.  A tip
                 # that differs from *base* because it is the older end of this vault's chain (the

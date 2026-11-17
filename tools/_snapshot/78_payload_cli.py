@@ -236,10 +236,7 @@ def remember_payload_value(vault: Path, value: str | None, *, dry_run: bool) -> 
     """Write the setting after a *complete* real run, never from a preview."""
     if value is None or dry_run:
         return
-    _run(
-        ["git", "-C", str(vault), "config", "snapshot.payload", value],
-        text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-    )
+    write_vault_setting(vault, "snapshot.payload", value)
 
 
 def parse_ratio_argument(text: str) -> float | str:
@@ -294,10 +291,7 @@ def remember_payload_ratio(vault: Path, value: float | str | None, *, dry_run: b
         return
     for key, text in (("snapshot.payloadratio", repr(value)),
                       ("snapshot.payloadratiosource", "typed")):
-        _run(
-            ["git", "-C", str(vault), "config", key, text],
-            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        )
+        write_vault_setting(vault, key, text)
 
 
 def plan_payload(

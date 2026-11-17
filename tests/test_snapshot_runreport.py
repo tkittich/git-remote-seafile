@@ -246,6 +246,13 @@ class JsonTests(_ReportFixture):
         self.assertEqual((doc["status"], doc["exit_code"]), ("failed", snap.EXIT_USAGE))
         self.assertIsNotNone(doc["error"])
 
+    def test_an_abbreviated_json_flag_still_gets_its_document_on_a_usage_error(self):
+        # fable-S4-12: argparse accepts --js for --json; the document test did not.
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err), self.assertRaises(SystemExit):
+            snap.main(["--js", "--no-such-flag"])
+        self.assertEqual(self.document(out.getvalue())["exit_code"], snap.EXIT_USAGE)
+
     def test_flags_that_cannot_be_combined_are_a_usage_error_not_a_failed_run(self):
         rc, out, err = self.snapshot("--json", "--no-push", "--remote", self.remote)
         self.assertEqual(rc, snap.EXIT_USAGE, out + err)

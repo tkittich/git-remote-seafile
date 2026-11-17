@@ -7020,6 +7020,7 @@ def _download_verified(
     """
     part = scratch / f"{item['sha256']}.{os.getpid()}.part"
     last = ""
+    verified = False
     for _attempt in range(3):
         try:
             if not client.download_file_to(rid, source_path, part, max_bytes=item["size"]):
@@ -7031,12 +7032,20 @@ def _download_verified(
             if _sha256_file(part) != item["sha256"]:
                 last = "SHA-256 does not match the manifest"
                 continue
-            os.replace(part, dest)
-            return None
+            verified = True
+            break
         except SnapshotError as exc:
             last = str(exc)
         except Exception as exc:  # transient network or API error: try again
             last = f"{type(exc).__name__}: {exc}"
+    if verified:
+        # Placing the file is not the transfer: a name this volume refuses or a read-only folder fails
+        # the same way every time, and trying again re-downloads the whole object (fable-S3-6).
+        try:
+            os.replace(part, dest)
+            return None
+        except OSError as exc:
+            last = f"could not place the downloaded file: {type(exc).__name__}: {exc}"
     part.unlink(missing_ok=True)
     return last
 
@@ -7408,10 +7417,7 @@ def remember_payload_value(vault: Path, value: str | None, *, dry_run: bool) -> 
     """Write the setting after a *complete* real run, never from a preview."""
     if value is None or dry_run:
         return
-    _run(
-        ["git", "-C", str(vault), "config", "snapshot.payload", value],
-        text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-    )
+    write_vault_setting(vault, "snapshot.payload", value)
 
 
 def parse_ratio_argument(text: str) -> float | str:
@@ -7466,10 +7472,7 @@ def remember_payload_ratio(vault: Path, value: float | str | None, *, dry_run: b
         return
     for key, text in (("snapshot.payloadratio", repr(value)),
                       ("snapshot.payloadratiosource", "typed")):
-        _run(
-            ["git", "-C", str(vault), "config", key, text],
-            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        )
+        write_vault_setting(vault, key, text)
 
 
 def plan_payload(
@@ -8236,21 +8239,26 @@ def human_bytes(n: float) -> str:
 _PUSHED_KEY = "snapshot.pushed"
 
 
-def remember_pushed_tip(git_dir: Path, work_tree: Path, branch: str, tip: str) -> None:
+def remember_pushed_tip(git_dir: Path, work_tree: Path, branch: str, tip: str, remote: str = "") -> None:
     """Record, in the vault, the snapshot the remote last held after one of *our* pushes.
 
     ``--status`` never contacts the remote, so this is what lets it say whether
     the newest snapshot has left this machine.  Only a successful push (or a
     remote already at our tip) writes it; a failed write is not worth failing a
-    backup for.
+    backup for.  The remote is part of the record: a vault pointed at another server has pushed nothing to it
+    (review c305b0a, fable-S3-3).
     """
-    git(git_dir, work_tree, ["config", _PUSHED_KEY, f"{branch} {tip}"], cwd=work_tree, check=False)
+    value = f"{branch} {tip} {remote}" if remote else f"{branch} {tip}"
+    git(git_dir, work_tree, ["config", _PUSHED_KEY, value], cwd=work_tree, check=False)
 
 
-def recorded_pushed_tip(git_dir: Path, work_tree: Path, branch: str) -> str | None:
+def recorded_pushed_tip(git_dir: Path, work_tree: Path, branch: str, remote: str | None = None) -> str | None:
     """The tip recorded by :func:`remember_pushed_tip` for *branch*, or ``None``."""
     proc = git(git_dir, work_tree, ["config", "--get", _PUSHED_KEY], cwd=work_tree, check=False)
-    name, _sep, tip = proc.stdout.strip().partition(" ")
+    name, _sep, rest = proc.stdout.strip().partition(" ")
+    tip, _sep, recorded_remote = rest.partition(" ")
+    if remote and recorded_remote and recorded_remote != remote:
+        return None  # an old two-field record keeps its meaning; one for another remote is not this remote's
     return tip if name == branch and tip else None
 
 
@@ -8302,7 +8310,7 @@ def push_snapshot(
             )
             if proc.returncode == 0:
                 print("push complete")
-                remember_pushed_tip(git_dir, work_tree, branch, current)
+                remember_pushed_tip(git_dir, work_tree, branch, current, remote)
                 return
 
             sys.stdout.write(proc.stdout or "")
@@ -8324,7 +8332,7 @@ def push_snapshot(
                     # The push landed and only its answer was lost: re-parenting would add a second
                     # commit with the same tree (review c305b0a, fable-S3-5).
                     print("push complete (the remote already has this snapshot)")
-                    remember_pushed_tip(git_dir, work_tree, branch, current)
+                    remember_pushed_tip(git_dir, work_tree, branch, current, remote)
                     return
                 # "Moved" means the remote tip is built on what this run started from.  A tip
                 # that differs from *base* because it is the older end of this vault's chain (the
@@ -8683,10 +8691,7 @@ def remember_tuning(vault: Path, tuning: dict[str, Any] | None, *, dry_run: bool
                        # assumed 53 MiB/s -- the opposite of what was measured.
                        ("snapshot.uplink", f"{tuning['upload']:.4g}"),
                        ("snapshot.uplink1", f"{tuning['single']:.4g}")):
-        _run(
-            ["git", "-C", str(vault), "config", key, value],
-            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        )
+        write_vault_setting(vault, key, value)
 
 
 # -- --status: is my backup current? (read-only) ---------------------------------
@@ -8837,7 +8842,7 @@ def _status_pushed(
     """
     if not remote:
         return None, None
-    last = recorded_pushed_tip(git_dir, source, branch)
+    last = recorded_pushed_tip(git_dir, source, branch, remote)
     if last is None:
         print(
             "pushed        : not recorded -- this vault has not pushed since it began "
@@ -9344,7 +9349,7 @@ def verify_restore(repo: Path, rev: str, skip: "set[str] | None" = None) -> list
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )
-        if blob.returncode != 0 or blob.stdout != actual:
+        if blob.returncode != 0 or not link_text_equal(blob.stdout, actual):
             mismatched_symlinks.append(link)
     if not paths:
         return mismatched_symlinks
@@ -9758,6 +9763,21 @@ def restore_drill_command(args: argparse.Namespace) -> int:
         allow_synced=args.allow_synced,
     )
     return 0
+def link_text_equal(blob: bytes, actual: bytes, *, windows: "bool | None" = None) -> bool:
+    """Whether a restored link's target is the one the snapshot holds.
+
+    Git for Windows writes the target of a real link with backslashes, and ``os.readlink`` can return a
+    long-path prefix; the blob holds the portable ``/`` form.  Read as bytes they differed for every target
+    with a separator, and the restore ended "a defect in the checkout" (review c305b0a, fable-S4-4).
+    """
+    if windows is None:
+        windows = os.name == "nt"
+    if windows:
+        actual = actual.removeprefix(b"\\\\?\\").replace(b"\\", b"/")
+        blob = blob.replace(b"\\", b"/")
+    return blob == actual
+
+
 
 def links_as_text_advice(windows: "bool | None" = None) -> str:
     """What to do about symbolic links a restore could only write as text files.
@@ -11210,6 +11230,23 @@ def help_word_to_flag(argv: list[str]) -> list[str]:
     return argv
 
 
+def write_vault_setting(vault: Path, key: str, value: str) -> None:
+    """Write one remembered setting; a failed write is an error, not a silent divergence.
+
+    SNAPSHOT.md promises this for every remembered setting.  The payload writers used to ignore the return
+    code, so a stale ``config.lock`` left ``--no-payload`` "remembered" with exit 0 and the next bare run
+    moved large files back into git (review c305b0a, fable-S3-4).
+    """
+    proc = _run(
+        ["git", "-C", str(vault), "config", key, value],
+        text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    )
+    if proc.returncode != 0:
+        raise SnapshotError(
+            f"could not update the vault's memory ({key}, rc={proc.returncode})\n{(proc.stderr or '').strip()}"
+        )
+
+
 def _read_config_key(git_dir: Path, key: str) -> str:
     """A single value out of the *vault's own* config, or ''.
 
@@ -11756,7 +11793,7 @@ def main(argv: list[str] | None = None) -> int:
         # argparse answers a bad command line with exit 2 and a message on stderr; under --json
         # stdout is then exactly one document too, and it is the document a scheduler parses
         # (gemini-4-hydrogen-E5: it was empty).
-        if exc.code == 2 and "--json" in raw:
+        if exc.code == 2 and any(a == "--json" or (len(a) > 3 and "--json".startswith(a)) for a in raw):
             print(json.dumps({
                 "schema": 1, "tool": "git-seafile-snapshot", "version": tool_version(), "mode": "snapshot",
                 "status": "failed", "exit_code": EXIT_USAGE, "seconds": 0.0, "warnings": [],
@@ -12122,7 +12159,7 @@ def run_command(args: argparse.Namespace) -> int:
             elif commit is None and base == remote_tip:
                 print("the remote already has this snapshot; nothing to push")
                 if base and not args.dry_run:
-                    remember_pushed_tip(git_dir, source, branch, base)
+                    remember_pushed_tip(git_dir, source, branch, base, remote or "")
             else:
                 if not args.no_repack:
                     auto_incremental_repack(git_dir, source)

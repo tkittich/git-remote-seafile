@@ -148,7 +148,7 @@ def _status_pushed(
     """
     if not remote:
         return None, None
-    last = recorded_pushed_tip(git_dir, source, branch)
+    last = recorded_pushed_tip(git_dir, source, branch, remote)
     if last is None:
         print(
             "pushed        : not recorded -- this vault has not pushed since it began "

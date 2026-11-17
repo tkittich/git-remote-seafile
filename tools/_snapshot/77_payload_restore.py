@@ -59,6 +59,7 @@ def _download_verified(
     """
     part = scratch / f"{item['sha256']}.{os.getpid()}.part"
     last = ""
+    verified = False
     for _attempt in range(3):
         try:
             if not client.download_file_to(rid, source_path, part, max_bytes=item["size"]):
@@ -70,12 +71,20 @@ def _download_verified(
             if _sha256_file(part) != item["sha256"]:
                 last = "SHA-256 does not match the manifest"
                 continue
-            os.replace(part, dest)
-            return None
+            verified = True
+            break
         except SnapshotError as exc:
             last = str(exc)
         except Exception as exc:  # transient network or API error: try again
             last = f"{type(exc).__name__}: {exc}"
+    if verified:
+        # Placing the file is not the transfer: a name this volume refuses or a read-only folder fails
+        # the same way every time, and trying again re-downloads the whole object (fable-S3-6).
+        try:
+            os.replace(part, dest)
+            return None
+        except OSError as exc:
+            last = f"could not place the downloaded file: {type(exc).__name__}: {exc}"
     part.unlink(missing_ok=True)
     return last
 

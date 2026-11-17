@@ -1,5 +1,22 @@
 
 
+def write_vault_setting(vault: Path, key: str, value: str) -> None:
+    """Write one remembered setting; a failed write is an error, not a silent divergence.
+
+    SNAPSHOT.md promises this for every remembered setting.  The payload writers used to ignore the return
+    code, so a stale ``config.lock`` left ``--no-payload`` "remembered" with exit 0 and the next bare run
+    moved large files back into git (review c305b0a, fable-S3-4).
+    """
+    proc = _run(
+        ["git", "-C", str(vault), "config", key, value],
+        text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    )
+    if proc.returncode != 0:
+        raise SnapshotError(
+            f"could not update the vault's memory ({key}, rc={proc.returncode})\n{(proc.stderr or '').strip()}"
+        )
+
+
 def _read_config_key(git_dir: Path, key: str) -> str:
     """A single value out of the *vault's own* config, or ''.
 

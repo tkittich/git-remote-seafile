@@ -1,3 +1,18 @@
+def link_text_equal(blob: bytes, actual: bytes, *, windows: "bool | None" = None) -> bool:
+    """Whether a restored link's target is the one the snapshot holds.
+
+    Git for Windows writes the target of a real link with backslashes, and ``os.readlink`` can return a
+    long-path prefix; the blob holds the portable ``/`` form.  Read as bytes they differed for every target
+    with a separator, and the restore ended "a defect in the checkout" (review c305b0a, fable-S4-4).
+    """
+    if windows is None:
+        windows = os.name == "nt"
+    if windows:
+        actual = actual.removeprefix(b"\\\\?\\").replace(b"\\", b"/")
+        blob = blob.replace(b"\\", b"/")
+    return blob == actual
+
+
 
 def links_as_text_advice(windows: "bool | None" = None) -> str:
     """What to do about symbolic links a restore could only write as text files.

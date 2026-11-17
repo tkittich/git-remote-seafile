@@ -17,7 +17,7 @@ def main(argv: list[str] | None = None) -> int:
         # argparse answers a bad command line with exit 2 and a message on stderr; under --json
         # stdout is then exactly one document too, and it is the document a scheduler parses
         # (gemini-4-hydrogen-E5: it was empty).
-        if exc.code == 2 and "--json" in raw:
+        if exc.code == 2 and any(a == "--json" or (len(a) > 3 and "--json".startswith(a)) for a in raw):
             print(json.dumps({
                 "schema": 1, "tool": "git-seafile-snapshot", "version": tool_version(), "mode": "snapshot",
                 "status": "failed", "exit_code": EXIT_USAGE, "seconds": 0.0, "warnings": [],
@@ -383,7 +383,7 @@ def run_command(args: argparse.Namespace) -> int:
             elif commit is None and base == remote_tip:
                 print("the remote already has this snapshot; nothing to push")
                 if base and not args.dry_run:
-                    remember_pushed_tip(git_dir, source, branch, base)
+                    remember_pushed_tip(git_dir, source, branch, base, remote or "")
             else:
                 if not args.no_repack:
                     auto_incremental_repack(git_dir, source)

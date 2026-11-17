@@ -308,7 +308,4 @@ def remember_tuning(vault: Path, tuning: dict[str, Any] | None, *, dry_run: bool
                        # assumed 53 MiB/s -- the opposite of what was measured.
                        ("snapshot.uplink", f"{tuning['upload']:.4g}"),
                        ("snapshot.uplink1", f"{tuning['single']:.4g}")):
-        _run(
-            ["git", "-C", str(vault), "config", key, value],
-            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        )
+        write_vault_setting(vault, key, value)
