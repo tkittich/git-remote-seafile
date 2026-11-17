@@ -144,8 +144,8 @@ def validate_args(args: argparse.Namespace) -> None:
     if (
         args.source is not None
         and args.source_positional is not None
-        and args.source.expanduser().resolve()
-        != Path(args.source_positional).expanduser().resolve()
+        and expand_path(args.source)
+        != expand_path(Path(args.source_positional))
     ):
         problems.append(
             f"two different sources were given: '{args.source_positional}' "
@@ -186,8 +186,8 @@ def resolve_snapshot_settings(
     Returns ``(source, vault, remote, code_remote, exclude, branch)``.
     """
     explicit = args.source or args.source_positional
-    source = (explicit or Path.cwd()).expanduser().resolve()
-    vault = (args.vault or default_vault_for(source)).expanduser().resolve()
+    source = expand_path(explicit or Path.cwd())
+    vault = expand_path(args.vault or default_vault_for(source))
     source, vault = resolve_paths(source, vault)
 
     # A snapshot backs up a repository, as `git push` does: from a subfolder the
@@ -207,7 +207,7 @@ def resolve_snapshot_settings(
         print(f"Note: {source} is inside the repository at {root}; snapshotting "
               f"the whole repository.", flush=True)
         source = root
-        vault = (args.vault or default_vault_for(source)).expanduser().resolve()
+        vault = expand_path(args.vault or default_vault_for(source))
         source, vault = resolve_paths(source, vault)
 
     # A vault may not exist yet, so the bottom of the chain is remembered-first:

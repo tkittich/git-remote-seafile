@@ -487,7 +487,7 @@ def manifest_snapshot_id(entries: list[dict[str, Any]]) -> str:
     """The derived id of a file list: path, size, mode and hash, never a time or user text."""
     ident = hashlib.sha256()
     for item in entries:
-        ident.update(f"{item['path']}\0{item['size']}\0{item['mode']}\0{item['sha256']}\n".encode())
+        ident.update(f"{item['path']}\0{item['size']}\0{item['mode']}\0{item['sha256']}\n".encode("utf-8", "surrogateescape"))
     return "p-" + ident.hexdigest()[:16]
 
 
@@ -534,7 +534,9 @@ def build_manifest(
         size, mtime_ns, _mode, ino, *rest = candidates[rel]
         dev = rest[0] if rest else None
         ctime_ns = rest[1] if len(rest) > 1 else None
-        old = cache.get(rel) or {}
+        old = cache.get(rel)
+        if not isinstance(old, dict):
+            old = {}    # a cache that was edited or damaged: hash afresh (review c305b0a, fable-S2-6)
         hashed_at = old.get("at")
         window = _RACY_WINDOW_NS if racy_window_ns is None else racy_window_ns
         if root_dev is not None and dev is not None and dev != root_dev:

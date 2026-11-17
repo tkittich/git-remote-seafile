@@ -46,6 +46,11 @@ class _LineTap:
 
     def _see(self, line: str) -> None:
         stripped = line.strip()
+        if stripped.startswith(("Warning:", "Error:")):
+            # A new headline ends the one before it, blank line or not: git's own stderr is not
+            # read here, so an Error: could be glued to a Warning: (review c305b0a, fable-S4-5).
+            self._open = None
+            self._open_error = None
         if self._open is not None:
             # A warning is wrapped over several lines (and may list paths); it ends
             # at the blank line that follows it.  Capped, so a stray never swallows

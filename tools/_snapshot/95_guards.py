@@ -7,6 +7,8 @@ def default_vault_for(source: Path) -> Path:
     Predictable, easy to find, and inspectable with plain ``git`` -- a vault the
     user cannot locate is a vault they will not trust.
     """
+    if not source.name:
+        raise SnapshotError(f"{source} has no parent to put a vault beside: pass --vault <directory>")
     return source.with_name(source.name + "-vault")
 
 

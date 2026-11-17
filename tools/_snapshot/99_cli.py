@@ -52,7 +52,7 @@ def run_command(args: argparse.Namespace) -> int:
                 raise SnapshotError("--restore requires --remote <url>")
             if not args.into:
                 raise SnapshotError("--restore requires --into <directory>")
-            into = args.into.expanduser().resolve()
+            into = expand_path(args.into)
             # The snapshot guard protects where the tool *writes* a tree; a
             # restore writes one too, and a restored tree -- secrets included,
             # by design -- inside a synced library would be uploaded straight

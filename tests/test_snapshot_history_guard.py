@@ -68,6 +68,19 @@ class TestIncompleteHistory(unittest.TestCase):
         self.assertIn("the history to read is incomplete", str(ctx.exception))
         self.assertIn("not in its object store", str(ctx.exception))
 
+    def test_a_vault_that_lost_a_manifest_blob_is_refused_on_the_deleting_path_too(self):
+        """Review c305b0a fable-S2-1: with a remote the vault was read through an alternate and
+        nothing walked its objects, so the lost manifest read as "no manifest"."""
+        remote = self.tmp / "remote.git"
+        git(self.tmp, "clone", "-q", "--bare", str(self.vault), str(remote))
+        blob = git(self.vault, "rev-parse", "HEAD:.seafile-payload/manifest.json").stdout.strip()
+        loose = self.vault / ".git" / "objects" / blob[:2] / blob[2:]
+        os.chmod(loose, 0o666)
+        loose.unlink()
+        with self.assertRaises(snap.SnapshotError) as ctx:
+            snap._hashes_in_history(str(remote), self.vault)
+        self.assertIn("the history to read is incomplete", str(ctx.exception))
+
     def test_a_shallow_vault_is_refused(self):
         shallow = self.tmp / "shallow"
         git(self.tmp, "clone", "-q", "--depth", "1", self.vault.as_uri(), str(shallow))

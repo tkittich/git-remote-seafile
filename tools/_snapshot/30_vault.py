@@ -1,8 +1,16 @@
 
 
+def expand_path(path: Path) -> Path:
+    """``path`` with ``~`` and ``~user`` expanded and resolved; an unknown user is a message, not a RuntimeError."""
+    try:
+        return path.expanduser().resolve()
+    except RuntimeError as exc:
+        raise SnapshotError(f"cannot expand {path}: {exc}") from exc
+
+
 def resolve_paths(source: Path, vault: Path) -> tuple[Path, Path]:
-    source = source.expanduser().resolve()
-    vault = vault.expanduser().resolve()
+    source = expand_path(source)
+    vault = expand_path(vault)
 
     if not source.is_dir():
         raise SnapshotError(f"source directory does not exist: {source}")

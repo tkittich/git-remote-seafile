@@ -245,6 +245,10 @@ def _hashes_in_history(
             f"--vault {vault} is not a vault (it has no .git); refusing to run without the "
             "un-pushed snapshots it was meant to protect"
         )
+    if vault is not None and remote is not None:
+        # The vault is read below through an alternate, which no fetch walks: look for its holes here
+        # (review c305b0a, fable-S2-1).  Alone (remote=None) it is walked in place further down.
+        require_complete_history(vault / ".git", walk=True)
     with tempfile.TemporaryDirectory(prefix="grs-payload-gc-") as td:
         # Only the vault to read: use it where it is.  Fetching it into a
         # scratch repository copied the whole vault into the temp directory
@@ -276,7 +280,7 @@ def _hashes_in_history(
             # temp directory (ROADMAP S7).
             alternates = repo / "objects" / "info" / "alternates"
             alternates.parent.mkdir(parents=True, exist_ok=True)
-            alternates.write_text((vault / ".git" / "objects").as_posix() + "\n", encoding="utf-8")
+            alternates.write_bytes((vault / ".git" / "objects").as_posix().encode("utf-8") + b"\n")   # LF: write_text wrote CRLF on Windows (fable-S2-3)
             git(
                 repo, None,
                 ["fetch", "-q", "--no-tags", str(vault),

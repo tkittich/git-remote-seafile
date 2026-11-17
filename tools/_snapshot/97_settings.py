@@ -121,7 +121,7 @@ def remembered_settings(vault: Path, source: Path) -> _Remembered:
 
     remembered_source = first("snapshot.source")
     if remembered_source:
-        resolved = Path(remembered_source).expanduser().resolve()
+        resolved = expand_path(Path(remembered_source))
         if resolved != source.resolve():
             raise SnapshotError(
                 f"this vault belongs to a different source directory:\n"

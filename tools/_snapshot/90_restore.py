@@ -390,6 +390,8 @@ def restore(
     before trying again.  It is not deleted for the user: a restore that failed
     its byte check is the evidence worth looking at.
     """
+    if into.exists() and not into.is_dir():
+        raise SnapshotError(f"restore destination is not a directory: {into}")
     was_empty = not into.exists() or not any(into.iterdir())
     try:
         _restore(remote, into, branch, ref, verify, branch_explicit, allow_low_disk,
@@ -429,6 +431,8 @@ def _restore(
     So: clone without checking anything out, apply the same byte-exact settings
     to the clone, and only then check out.
     """
+    if into.exists() and not into.is_dir():
+        raise SnapshotError(f"restore destination is not a directory: {into}")
     if into.exists() and any(into.iterdir()):
         raise SnapshotError(f"restore destination is not empty: {into}")
 
@@ -679,7 +683,7 @@ def drill_sample(text: str) -> int:
     """The payload files a drill fetches: a positive number, or ``all``."""
     if text == "all":
         return sys.maxsize
-    if not text.isdigit() or int(text) < 1:
+    if not (text.isascii() and text.isdigit()) or int(text) < 1:
         raise SnapshotError(f"--restore-drill takes a positive number or 'all', not '{text}'")
     return int(text)
 

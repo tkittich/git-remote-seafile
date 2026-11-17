@@ -209,7 +209,7 @@ def payload_view(
 
 def payload_command(args: argparse.Namespace) -> int | None:
     """Run a payload sub-command (verify, view, retention); ``None`` for a snapshot run."""
-    vault = args.vault.expanduser().resolve() if args.vault else None
+    vault = expand_path(args.vault) if args.vault else None
     if args.payload_verify is not None:
         return payload_verify(
             args.remote, vault, count=args.payload_verify, allow_low_disk=args.allow_low_disk

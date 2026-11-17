@@ -182,6 +182,17 @@ class JsonTests(_ReportFixture):
         self.assertIn("a.bin", errors[0])
         self.assertIn("b.bin", errors[0])
 
+    def test_an_error_straight_after_a_warning_is_an_error_not_part_of_the_warning(self):
+        """Review c305b0a fable-S4-5: the error was glued to the open warning and `error` was null."""
+        warnings: list[str] = []
+        errors: list[str] = []
+        tap = snap._LineTap(_NullSink(), warnings, errors, set())
+        tap.write("Warning: --allow-synced overrides the guard for this path.\n")
+        tap.write("Error: clone failed (rc=128)\n")
+        tap.write("\n")
+        self.assertEqual(warnings, ["Warning: --allow-synced overrides the guard for this path."])
+        self.assertEqual(errors, ["Error: clone failed (rc=128)"])
+
     def test_the_push_step_warns_through_the_run_report(self):
         """A helper warning on the push must reach --exit-warnings (sonnet D9).
 

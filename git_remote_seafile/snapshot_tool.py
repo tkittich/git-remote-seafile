@@ -864,9 +864,17 @@ def git(
     return proc
 
 
+def expand_path(path: Path) -> Path:
+    """``path`` with ``~`` and ``~user`` expanded and resolved; an unknown user is a message, not a RuntimeError."""
+    try:
+        return path.expanduser().resolve()
+    except RuntimeError as exc:
+        raise SnapshotError(f"cannot expand {path}: {exc}") from exc
+
+
 def resolve_paths(source: Path, vault: Path) -> tuple[Path, Path]:
-    source = source.expanduser().resolve()
-    vault = vault.expanduser().resolve()
+    source = expand_path(source)
+    vault = expand_path(vault)
 
     if not source.is_dir():
         raise SnapshotError(f"source directory does not exist: {source}")
@@ -5339,7 +5347,7 @@ def manifest_snapshot_id(entries: list[dict[str, Any]]) -> str:
     """The derived id of a file list: path, size, mode and hash, never a time or user text."""
     ident = hashlib.sha256()
     for item in entries:
-        ident.update(f"{item['path']}\0{item['size']}\0{item['mode']}\0{item['sha256']}\n".encode())
+        ident.update(f"{item['path']}\0{item['size']}\0{item['mode']}\0{item['sha256']}\n".encode("utf-8", "surrogateescape"))
     return "p-" + ident.hexdigest()[:16]
 
 
@@ -5386,7 +5394,9 @@ def build_manifest(
         size, mtime_ns, _mode, ino, *rest = candidates[rel]
         dev = rest[0] if rest else None
         ctime_ns = rest[1] if len(rest) > 1 else None
-        old = cache.get(rel) or {}
+        old = cache.get(rel)
+        if not isinstance(old, dict):
+            old = {}    # a cache that was edited or damaged: hash afresh (review c305b0a, fable-S2-6)
         hashed_at = old.get("at")
         window = _RACY_WINDOW_NS if racy_window_ns is None else racy_window_ns
         if root_dev is not None and dev is not None and dev != root_dev:
@@ -6487,6 +6497,10 @@ def _hashes_in_history(
             f"--vault {vault} is not a vault (it has no .git); refusing to run without the "
             "un-pushed snapshots it was meant to protect"
         )
+    if vault is not None and remote is not None:
+        # The vault is read below through an alternate, which no fetch walks: look for its holes here
+        # (review c305b0a, fable-S2-1).  Alone (remote=None) it is walked in place further down.
+        require_complete_history(vault / ".git", walk=True)
     with tempfile.TemporaryDirectory(prefix="grs-payload-gc-") as td:
         # Only the vault to read: use it where it is.  Fetching it into a
         # scratch repository copied the whole vault into the temp directory
@@ -6518,7 +6532,7 @@ def _hashes_in_history(
             # temp directory (ROADMAP S7).
             alternates = repo / "objects" / "info" / "alternates"
             alternates.parent.mkdir(parents=True, exist_ok=True)
-            alternates.write_text((vault / ".git" / "objects").as_posix() + "\n", encoding="utf-8")
+            alternates.write_bytes((vault / ".git" / "objects").as_posix().encode("utf-8") + b"\n")   # LF: write_text wrote CRLF on Windows (fable-S2-3)
             git(
                 repo, None,
                 ["fetch", "-q", "--no-tags", str(vault),
@@ -8031,7 +8045,7 @@ def payload_view(
 
 def payload_command(args: argparse.Namespace) -> int | None:
     """Run a payload sub-command (verify, view, retention); ``None`` for a snapshot run."""
-    vault = args.vault.expanduser().resolve() if args.vault else None
+    vault = expand_path(args.vault) if args.vault else None
     if args.payload_verify is not None:
         return payload_verify(
             args.remote, vault, count=args.payload_verify, allow_low_disk=args.allow_low_disk
@@ -9404,6 +9418,8 @@ def restore(
     before trying again.  It is not deleted for the user: a restore that failed
     its byte check is the evidence worth looking at.
     """
+    if into.exists() and not into.is_dir():
+        raise SnapshotError(f"restore destination is not a directory: {into}")
     was_empty = not into.exists() or not any(into.iterdir())
     try:
         _restore(remote, into, branch, ref, verify, branch_explicit, allow_low_disk,
@@ -9443,6 +9459,8 @@ def _restore(
     So: clone without checking anything out, apply the same byte-exact settings
     to the clone, and only then check out.
     """
+    if into.exists() and not into.is_dir():
+        raise SnapshotError(f"restore destination is not a directory: {into}")
     if into.exists() and any(into.iterdir()):
         raise SnapshotError(f"restore destination is not empty: {into}")
 
@@ -9693,7 +9711,7 @@ def drill_sample(text: str) -> int:
     """The payload files a drill fetches: a positive number, or ``all``."""
     if text == "all":
         return sys.maxsize
-    if not text.isdigit() or int(text) < 1:
+    if not (text.isascii() and text.isdigit()) or int(text) < 1:
         raise SnapshotError(f"--restore-drill takes a positive number or 'all', not '{text}'")
     return int(text)
 
@@ -9816,7 +9834,7 @@ def probed_name_problem(into: Path) -> "Callable[[str], str | None] | None":
                 return "ends with a space (this volume refuses or drops it)"
             if not keeps_dot and part.endswith("."):
                 return "ends with a dot (this volume drops it)"
-            if counts_bytes and len(part.encode("utf-8")) > 255:
+            if counts_bytes and len(part.encode("utf-8", "surrogateescape")) > 255:
                 return "is longer than 255 bytes of UTF-8 (this volume counts bytes, not characters)"
             if not keeps_non_ascii and any(ord(char) > 127 for char in part):
                 return "has a character outside ASCII (this volume is mounted without a UTF-8 charset)"
@@ -10607,6 +10625,8 @@ def default_vault_for(source: Path) -> Path:
     Predictable, easy to find, and inspectable with plain ``git`` -- a vault the
     user cannot locate is a vault they will not trust.
     """
+    if not source.name:
+        raise SnapshotError(f"{source} has no parent to put a vault beside: pass --vault <directory>")
     return source.with_name(source.name + "-vault")
 
 
@@ -10871,8 +10891,8 @@ def validate_args(args: argparse.Namespace) -> None:
     if (
         args.source is not None
         and args.source_positional is not None
-        and args.source.expanduser().resolve()
-        != Path(args.source_positional).expanduser().resolve()
+        and expand_path(args.source)
+        != expand_path(Path(args.source_positional))
     ):
         problems.append(
             f"two different sources were given: '{args.source_positional}' "
@@ -10913,8 +10933,8 @@ def resolve_snapshot_settings(
     Returns ``(source, vault, remote, code_remote, exclude, branch)``.
     """
     explicit = args.source or args.source_positional
-    source = (explicit or Path.cwd()).expanduser().resolve()
-    vault = (args.vault or default_vault_for(source)).expanduser().resolve()
+    source = expand_path(explicit or Path.cwd())
+    vault = expand_path(args.vault or default_vault_for(source))
     source, vault = resolve_paths(source, vault)
 
     # A snapshot backs up a repository, as `git push` does: from a subfolder the
@@ -10934,7 +10954,7 @@ def resolve_snapshot_settings(
         print(f"Note: {source} is inside the repository at {root}; snapshotting "
               f"the whole repository.", flush=True)
         source = root
-        vault = (args.vault or default_vault_for(source)).expanduser().resolve()
+        vault = expand_path(args.vault or default_vault_for(source))
         source, vault = resolve_paths(source, vault)
 
     # A vault may not exist yet, so the bottom of the chain is remembered-first:
@@ -11232,7 +11252,7 @@ def remembered_settings(vault: Path, source: Path) -> _Remembered:
 
     remembered_source = first("snapshot.source")
     if remembered_source:
-        resolved = Path(remembered_source).expanduser().resolve()
+        resolved = expand_path(Path(remembered_source))
         if resolved != source.resolve():
             raise SnapshotError(
                 f"this vault belongs to a different source directory:\n"
@@ -11525,6 +11545,11 @@ class _LineTap:
 
     def _see(self, line: str) -> None:
         stripped = line.strip()
+        if stripped.startswith(("Warning:", "Error:")):
+            # A new headline ends the one before it, blank line or not: git's own stderr is not
+            # read here, so an Error: could be glued to a Warning: (review c305b0a, fable-S4-5).
+            self._open = None
+            self._open_error = None
         if self._open is not None:
             # A warning is wrapped over several lines (and may list paths); it ends
             # at the blank line that follows it.  Capped, so a stray never swallows
@@ -11687,7 +11712,7 @@ def run_command(args: argparse.Namespace) -> int:
                 raise SnapshotError("--restore requires --remote <url>")
             if not args.into:
                 raise SnapshotError("--restore requires --into <directory>")
-            into = args.into.expanduser().resolve()
+            into = expand_path(args.into)
             # The snapshot guard protects where the tool *writes* a tree; a
             # restore writes one too, and a restored tree -- secrets included,
             # by design -- inside a synced library would be uploaded straight

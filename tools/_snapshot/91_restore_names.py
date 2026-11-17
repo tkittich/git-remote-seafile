@@ -107,7 +107,7 @@ def probed_name_problem(into: Path) -> "Callable[[str], str | None] | None":
                 return "ends with a space (this volume refuses or drops it)"
             if not keeps_dot and part.endswith("."):
                 return "ends with a dot (this volume drops it)"
-            if counts_bytes and len(part.encode("utf-8")) > 255:
+            if counts_bytes and len(part.encode("utf-8", "surrogateescape")) > 255:
                 return "is longer than 255 bytes of UTF-8 (this volume counts bytes, not characters)"
             if not keeps_non_ascii and any(ord(char) > 127 for char in part):
                 return "has a character outside ASCII (this volume is mounted without a UTF-8 charset)"
