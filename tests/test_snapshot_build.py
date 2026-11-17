@@ -67,11 +67,13 @@ class TestPartsStayCohesive(unittest.TestCase):
         # --check's headroom line is only useful if it is true; a report that
         # silently ordered or counted wrong would flatter every part.
         top_name, top_lines = build_snapshot.largest_parts(1)[0]
-        manual_lines, manual_name = max(
-            (len(path.read_text(encoding="utf-8").splitlines()), path.name)
+        counts = {
+            path.name: len(path.read_text(encoding="utf-8").splitlines())
             for path in build_snapshot.part_paths()
-        )
-        self.assertEqual((top_lines, top_name), (manual_lines, manual_name))
+        }
+        # Two parts can tie for the most lines; either name is a true answer.
+        self.assertEqual(top_lines, max(counts.values()))
+        self.assertEqual(counts[top_name], top_lines)
 
     def test_imports_live_in_one_part(self):
         # Fragments share a namespace; scattering imports across them makes it
