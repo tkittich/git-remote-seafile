@@ -271,18 +271,25 @@ def apply_recorded_mtimes(into: Path) -> tuple[int, int]:
         if (
             not isinstance(rel, str) or isinstance(stamp, bool) or not isinstance(stamp, int)
             or not 0 <= stamp < _MAX_MTIME_NS or path_security_problem(rel) is not None
-            or windows_name_problem(rel) is not None
-            # A record entry is remote data like a manifest entry, so it gets
-            # the same Windows-name check: `.git::$INDEX_ALLOCATION/config`
-            # passed the security check and moved .git/config's time
-            # (REVIEW.sonnet-5.5 D10, reproduced).
+            or (os.name == "nt" and windows_name_problem(rel) is not None)
+            # A record entry is remote data like a manifest entry, so on Windows it gets the same
+            # name check: `.git::$INDEX_ALLOCATION/config` passed the security check and moved
+            # .git/config's time (REVIEW.sonnet-5.5 D10, reproduced).  Only there: on Linux and macOS
+            # a `:` or a trailing dot is a legal name and lost its time for it (gemini-S2-6).
         ):
             skipped += 1
             continue
         plain = into / rel
         target = extended_path(plain)  # past 260 characters on Windows too
         try:
-            if os.path.commonpath([str(root), str(plain.parent.resolve())]) != str(root):
+            parent = plain.parent.resolve()
+            if os.path.commonpath([str(root), str(parent)]) != str(root):
+                skipped += 1
+                continue
+            # A committed link (``tool -> .git``) must not carry an entry into the repository's own files or
+            # the reserved directory; validate_manifest refuses the same shape (review c305b0a, fable-S2-5).
+            if any(parent == guarded or guarded in parent.parents
+                   for guarded in (root / ".git", root / PAYLOAD_RESERVED_DIR)):
                 skipped += 1
                 continue
             if target.is_symlink():

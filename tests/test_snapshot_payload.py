@@ -2999,6 +2999,20 @@ class PayloadRememberVerifyViewAndClockTests(_PayloadFixture):
         self.assertIn("1 file(s) were left out", out)
         self.assertIn("cannot be held", out)
 
+    def test_a_view_reports_two_names_that_collapse_to_one(self):
+        """fable-S3-9: the server holds NFC names, so a composed and a decomposed spelling are one name."""
+        composed, decomposed = "caf\u00e9.bin", "cafe\u0301.bin"
+        (self.src / composed).write_bytes(os.urandom(3000))
+        (self.src / decomposed).write_bytes(os.urandom(3000))
+        if len([n for n in os.listdir(self.src) if n.startswith("caf")]) != 2:
+            self.skipTest("this volume folds the two spellings into one file")
+        self.assertEqual(self.snapshot()[0], 0)
+        rc, out, err = self.view("--payload-view-name", "v")
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn("becomes the same name", out)
+        shown = [k for k in self.server_files() if k.startswith("/pvault-view/v/caf")]
+        self.assertEqual(len(shown), 1, shown)
+
     def test_a_view_is_refused_when_objects_are_missing(self):
         self.assertEqual(self.snapshot()[0], 0)
         del self.stub.files[REPO_ID][self.object_key(self.big2)]

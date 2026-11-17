@@ -5890,6 +5890,33 @@ class ModificationTimeTests(_SnapshotFixture):
         self.assertEqual(victim.stat().st_mtime_ns, before)
         self.assertEqual((into / "ok.txt").stat().st_mtime_ns, 1_500_000_000_000_000_000)
 
+    def test_a_times_entry_is_not_carried_into_dot_git_by_a_committed_link(self):
+        # fable-S2-5: ``tool/config`` beside a link ``tool -> .git`` set the time of .git/config.
+        into = self.tmp / "into-link"
+        (into / ".seafile-payload").mkdir(parents=True)
+        (into / ".git").mkdir()
+        config = into / ".git" / "config"
+        config.write_bytes(b"[core]\n")
+        before = config.stat().st_mtime_ns
+        try:
+            os.symlink(".git", into / "tool", target_is_directory=True)
+        except (OSError, NotImplementedError):
+            self.skipTest("this account cannot create a symbolic link")
+        record = {"format": 1, "files": {"tool/config": 1_500_000_000_000_000_000}}
+        (into / ".seafile-payload" / "mtimes.json").write_text(json.dumps(record), encoding="utf-8")
+        self.assertEqual(snap.apply_recorded_mtimes(into), (0, 1))
+        self.assertEqual(config.stat().st_mtime_ns, before)
+
+    def test_the_windows_name_check_is_not_asked_of_a_posix_restore(self):
+        # gemini-S2-6: a ``:`` or a trailing dot is a legal name off Windows and lost its recorded time.
+        into = self.tmp / "into-posix"
+        (into / ".seafile-payload").mkdir(parents=True)
+        record = {"format": 1, "files": {"a:b.txt": 1_500_000_000_000_000_000}}
+        (into / ".seafile-payload" / "mtimes.json").write_text(json.dumps(record), encoding="utf-8")
+        with unittest.mock.patch.object(snap, "windows_name_problem", side_effect=AssertionError("asked")),                 unittest.mock.patch.object(snap.os, "name", "posix"):
+            applied, skipped = snap.apply_recorded_mtimes(into)       # no such file here: skipped, not refused
+        self.assertEqual((applied, skipped), (0, 1))
+
     def test_a_record_of_another_format_is_not_applied(self):
         """gemini-4-hydrogen-2-E2: ``mtimes.json`` carried a format and nothing read it."""
         into = self.tmp / "into-format"
