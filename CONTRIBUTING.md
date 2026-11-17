@@ -454,7 +454,7 @@ gh attestation verify dist/<artifact> --repo tkittich/git-remote-seafile
 
 ## Maintenance mode
 
-The project is in maintenance mode (decided 2026-11-17, after 64 releases and a review round per
+The project is in maintenance mode (decided 2026-11-17; v0.10.0 is the first release of it, after 64 releases and a review round per
 release that kept finding defects in recently added options). What that means:
 
 - **No new features, no new options.** A new flag, setting or mode needs a written reason in an issue

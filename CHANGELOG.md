@@ -7,7 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-11-17
+
+The first release of the maintenance line (CONTRIBUTING, "Maintenance mode"): no new features or options from here, only fixes, each with a test that fails without it. It closes the c305b0a review round: a new file in a case-renamed folder was left out of an incremental snapshot (a loss), `--exclude ./x` matched nothing, the shared-remote guard compared URL text, `--default-excludes` dropped committed files of an embedded repository, and a dozen inputs ended in a traceback.
+
 ### Fixed
+- **Tests and process** (AA72): a differential fuzz of incremental against fresh snapshots, a per-mode table of the options each mode accepts, fault injection of the snapshot push (every write fails once), and `release_check` runs `check_red_before`.
 - **The c305b0a review round** (AA72; open items in AA73): a new file in a folder renamed by case is no longer left out of an incremental snapshot; `--exclude ./x`, `/x` and an absolute path now match; an inherited `GIT_DIR` no longer reaches the tool's git calls; a payload file with a mtime before 1970 no longer breaks every run; the shared-remote guard compares the place (server, library, path), not the URL text; `--default-excludes` keeps committed files inside an embedded repository; retention refuses a vault with a lost object on the deleting path too; a lost-looking input (`--restore-drill ²`, `--restore --into <file>`, `~nosuchuser`, a non-UTF-8 name, a vault beside a drive root, a damaged cache entry) is a message instead of a traceback; under `--json` an `Error:` after a `Warning:` is reported as the error.
 - **A failed push no longer drops snapshots taken with `--no-push`** (ROADMAP AA60; review dfd2269, fable-E1). The retry re-parented the new tree on the older remote tip and said `push complete`; it now re-parents only when the remote tip is built on what the run started from.
 - **An LFS upload no longer ends with nothing stored when the server refuses the rename of the right copy** (AA61; fable-G0.1, gemini C1): every copy is kept and git-lfs sends the object again.
@@ -2200,6 +2205,7 @@ Data-loss and silent-failure fixes, and the Python floor raised to 3.9.
   with zero-config desktop-client token discovery, distributed locking, remote
   packfile compaction, and a Git LFS custom transfer agent.
 
+[0.10.0]: https://github.com/tkittich/git-remote-seafile/compare/v0.9.27...v0.10.0
 [0.9.27]: https://github.com/tkittich/git-remote-seafile/compare/v0.9.26...v0.9.27
 [0.9.26]: https://github.com/tkittich/git-remote-seafile/compare/v0.9.25...v0.9.26
 [0.9.25]: https://github.com/tkittich/git-remote-seafile/compare/v0.9.24...v0.9.25

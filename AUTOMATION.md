@@ -41,7 +41,7 @@ strings are part of the tested contract; matching on them is stable.
 
 With `--json`, `git seafile-snapshot` prints exactly one JSON line on stdout
 and moves the human-readable text to stderr, so a driver can log one and show
-the other. A wrong command line exits `2` before any document is written, and
+the other. A wrong command line exits `2` and, under `--json`, still writes one document (status `failed`, the reason in `error`); and
 an interrupted run still writes its document (status `failed`) rather than
 dying with no output. The fields:
 
