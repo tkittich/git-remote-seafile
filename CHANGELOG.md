@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.1] - 2026-11-18
+
+A fixes-only release from the c305b0a review round's open list (ROADMAP AA73 to AA75): twenty-one small defects, none a loss, and the first warning pass of the deprecation policy (an option a mode accepts and never reads now warns; it is refused from 0.11).
+
 ### Fixed
 - **`--payload-verify` no longer reads every older manifest** (fable-S2-7): it computed the list of paths only older snapshots hold, which only `--payload-gc` prints, so its cost grew with the history and one unreadable old manifest stopped it.
 - **A restore no longer sets a recorded time through a committed link into `.git`** (fable-S2-5): an entry `tool/config` beside a link `tool -> .git` moved the time of `.git/config`; the reserved payload directory is guarded the same way.
@@ -2231,6 +2235,7 @@ Data-loss and silent-failure fixes, and the Python floor raised to 3.9.
   with zero-config desktop-client token discovery, distributed locking, remote
   packfile compaction, and a Git LFS custom transfer agent.
 
+[0.10.1]: https://github.com/tkittich/git-remote-seafile/compare/v0.10.0...v0.10.1
 [0.10.0]: https://github.com/tkittich/git-remote-seafile/compare/v0.9.27...v0.10.0
 [0.9.27]: https://github.com/tkittich/git-remote-seafile/compare/v0.9.26...v0.9.27
 [0.9.26]: https://github.com/tkittich/git-remote-seafile/compare/v0.9.25...v0.9.26
