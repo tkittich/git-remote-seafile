@@ -3012,6 +3012,8 @@ class PayloadRememberVerifyViewAndClockTests(_PayloadFixture):
 
     def test_a_view_reports_two_names_that_collapse_to_one(self):
         """fable-S3-9: the server holds NFC names, so a composed and a decomposed spelling are one name."""
+        if sys.getfilesystemencoding().lower().replace("-", "") != "utf8":
+            self.skipTest("the C locale cannot name a non-ASCII file")
         composed, decomposed = "caf\u00e9.bin", "cafe\u0301.bin"
         (self.src / composed).write_bytes(os.urandom(3000))
         (self.src / decomposed).write_bytes(os.urandom(3000))
