@@ -3499,6 +3499,8 @@ def build_snapshot(
             path for path in indexed.split("\0")
             if path and (ignorecase_key(path) if folded else path) not in kept_known
         ]
+        if folded:
+            stale += [p for p in case_twins(work_tree, kept, set(to_stage)) if p not in set(stale)]
         if stale:
             drop_from_index(git_dir, work_tree, stale)
         # The pre-filter above is the mechanism; this is the net under it, so a
@@ -4115,6 +4117,31 @@ def _skip_key(path: str) -> str:
     alone decides whether two names are one file.
     """
     return unicodedata.normalize("NFC", path).casefold()
+
+
+def case_twins(work_tree: Path, kept: list[str], staged_now: "set[str]") -> list[str]:
+    """Index entries that are the old spelling of a file just staged under a new one.
+
+    A file renamed by the case of a non-ASCII letter (``Über.txt`` -> ``über.txt``) is one file to NTFS and
+    APFS, which fold every letter, and two to git, which folds A-Z only: the old entry still answers ``lstat``,
+    so it stayed in every snapshot beside the new name (review c305b0a fable-S1-10).  Names of one folded
+    spelling where one was staged now and another was already in the index are the same file when
+    ``samestat`` says so -- the key and the proof of ``payload_skip_matcher`` -- and the old one goes.
+    """
+    groups: dict[str, list[str]] = {}
+    for path in kept:
+        groups.setdefault(_skip_key(path), []).append(path)
+    old: list[str] = []
+    for members in groups.values():
+        fresh = [m for m in members if m in staged_now]
+        for path in (m for m in members if m not in staged_now) if fresh else ():
+            try:
+                here = os.lstat(extended_path(work_tree / path))
+                if any(os.path.samestat(here, os.lstat(extended_path(work_tree / new))) for new in fresh):
+                    old.append(path)
+            except OSError:
+                continue
+    return old
 
 
 def payload_skip_matcher(work_tree: Path, skip_paths: Any) -> Any:

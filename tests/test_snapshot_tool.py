@@ -435,6 +435,22 @@ class SnapshotGuardTests(_SnapshotFixture):
             self.assertTrue(status)
             self.assertEqual(measure, self.vault / ".git" / "objects")
 
+    @unittest.skipUnless(os.name == "nt" or sys.platform == "darwin", "needs a disk that folds more than A-Z")
+    def test_a_file_renamed_by_the_case_of_a_non_ascii_letter_is_not_kept_under_both_names(self):
+        """fable-S1-10 (review c305b0a): NTFS folds U-umlaut, git does not, so the old index entry still
+        answered lstat and stayed in every snapshot next to the new name."""
+        if sys.getfilesystemencoding().lower() != "utf-8":
+            self.skipTest("the file system cannot name a non-ASCII file")
+        (self.code / "\u00dcber.txt").write_bytes(b"one\n")
+        (self.code / "plain.txt").write_bytes(b"plain\n")
+        self.assertEqual(self.snapshot()[0], 0)
+        os.rename(self.code / "\u00dcber.txt", self.code / "\u00fcber.txt")
+        for _ in range(2):
+            rc, out, err = self.snapshot()
+            self.assertEqual(rc, 0, out + err)
+        names = sorted(self.tree())
+        self.assertEqual([n for n in names if n.lower().endswith("ber.txt")], ["\u00fcber.txt"], names)
+
     def test_no_embedded_repos_with_a_commitless_repository_names_the_fix(self):
         bare = self.code / "fresh"
         bare.mkdir()

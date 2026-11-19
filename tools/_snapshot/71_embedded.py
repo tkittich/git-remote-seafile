@@ -305,6 +305,31 @@ def _skip_key(path: str) -> str:
     return unicodedata.normalize("NFC", path).casefold()
 
 
+def case_twins(work_tree: Path, kept: list[str], staged_now: "set[str]") -> list[str]:
+    """Index entries that are the old spelling of a file just staged under a new one.
+
+    A file renamed by the case of a non-ASCII letter (``Über.txt`` -> ``über.txt``) is one file to NTFS and
+    APFS, which fold every letter, and two to git, which folds A-Z only: the old entry still answers ``lstat``,
+    so it stayed in every snapshot beside the new name (review c305b0a fable-S1-10).  Names of one folded
+    spelling where one was staged now and another was already in the index are the same file when
+    ``samestat`` says so -- the key and the proof of ``payload_skip_matcher`` -- and the old one goes.
+    """
+    groups: dict[str, list[str]] = {}
+    for path in kept:
+        groups.setdefault(_skip_key(path), []).append(path)
+    old: list[str] = []
+    for members in groups.values():
+        fresh = [m for m in members if m in staged_now]
+        for path in (m for m in members if m not in staged_now) if fresh else ():
+            try:
+                here = os.lstat(extended_path(work_tree / path))
+                if any(os.path.samestat(here, os.lstat(extended_path(work_tree / new))) for new in fresh):
+                    old.append(path)
+            except OSError:
+                continue
+    return old
+
+
 def payload_skip_matcher(work_tree: Path, skip_paths: Any) -> Any:
     """``skipped(path)``: is *path* one of the payload files kept out of the index?
 
