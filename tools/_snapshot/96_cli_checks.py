@@ -73,6 +73,17 @@ def ignored_option_warnings(args: argparse.Namespace) -> list[str]:
             ("--reset-to-remote", args.reset_to_remote), ("--no-repack", args.no_repack),
             ("--no-object-compression", args.no_object_compression), ("--rebuild-index", args.rebuild_index),
         )
+    elif args.payload_view is not None:
+        given = (
+            ("--source", args.source), ("--branch", args.branch), ("--code-remote", args.code_remote),
+            ("--exclude", args.exclude), ("--default-excludes", args.default_excludes is not None),
+            ("--message", args.message), ("--reset-to-remote", args.reset_to_remote),
+            ("--no-repack", args.no_repack), ("--no-object-compression", args.no_object_compression),
+            ("--rebuild-index", args.rebuild_index), ("--allow-low-disk", args.allow_low_disk),
+            ("--payload-jobs", args.payload_jobs is not None), ("--payload-rehash", args.payload_rehash),
+            ("--payload-skip-changing", args.payload_skip_changing),
+            ("--payload-report-days", args.payload_report_days is not None),
+        )
     else:
         return []
     return [flag for flag, value in given if value]
@@ -83,6 +94,8 @@ def mode_name(args: argparse.Namespace) -> str:
         return "--payload-gc"
     if args.payload_verify is not None:
         return "--payload-verify"
+    if args.payload_view is not None:
+        return "--payload-view"
     return "--restore-drill" if args.restore_drill is not None else "--status" if args.status else "--maintain"
 
 

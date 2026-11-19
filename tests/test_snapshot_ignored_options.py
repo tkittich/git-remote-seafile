@@ -51,6 +51,19 @@ class IgnoredOptionTests(unittest.TestCase):
         self.assertEqual(snap.ignored_option_warnings(_args("--payload-gc", "--remote", "r", "--vault", "v",
                                                             "--allow-low-disk", "--payload-keep", "2")), [])
 
+    def test_a_payload_view_names_the_snapshot_and_payload_options_it_never_reads(self):
+        """gemini-S3-6 (review c305b0a): ``--payload-view`` accepted every option of a snapshot run."""
+        args = _args("--payload-view", "x", "--remote", "r", "--vault", "v", "--payload-view-name", "n",
+                     "--exclude", "e", "--payload-jobs", "2", "--payload-rehash", "--payload-skip-changing",
+                     "--payload-report-days", "3", "--allow-low-disk", "--source", "s")
+        self.assertEqual(snap.ignored_option_warnings(args), [
+            "--source", "--exclude", "--allow-low-disk", "--payload-jobs", "--payload-rehash",
+            "--payload-skip-changing", "--payload-report-days"])
+        self.assertEqual(snap.mode_name(args), "--payload-view")
+        self.assertEqual(snap.ignored_option_warnings(_args(
+            "--payload-view", "x", "--remote", "r", "--vault", "v", "--payload-view-name", "n",
+            "--payload-view-replace")), [])
+
     def test_options_a_mode_does_read_are_not_named(self):
         self.assertEqual(snap.ignored_option_warnings(_args("--restore-drill", "--remote", "r", "--branch", "b",
                                                             "--ref", "x", "--allow-low-disk", "--allow-synced")), [])

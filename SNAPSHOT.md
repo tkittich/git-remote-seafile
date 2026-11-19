@@ -293,6 +293,7 @@ without a decision.
 | `--status` | `--source`, `--vault`, `--branch`, `--remote`, `--code-remote`, `--exclude`, `--default-excludes`, `--payload-min-size`, `--no-payload`, `--payload-auto-ratio`, `--allow-synced` | `--message`, `--allow-low-disk`, `--payload-report-days` |
 | `--maintain` | `--source`, `--vault`, `--allow-synced`, `--no-object-compression`, `--full-repack` | `--remote`, `--branch`, `--allow-low-disk`, `--payload-jobs` |
 | `--payload-gc`, `--payload-verify` | `--remote`, `--vault`, `--allow-low-disk`, and the options of the command itself | `--source`, `--branch`, `--code-remote`, `--default-excludes`, `--message`, `--reset-to-remote`, `--no-repack`, `--no-object-compression`, `--rebuild-index` |
+| `--payload-view` | `--remote`, `--vault`, `--payload-view-name`, `--payload-view-replace` | `--source`, `--branch`, `--code-remote`, `--exclude`, `--default-excludes`, `--message`, `--reset-to-remote`, `--no-repack`, `--no-object-compression`, `--rebuild-index`, `--allow-low-disk`, `--payload-jobs`, `--payload-rehash`, `--payload-skip-changing`, `--payload-report-days` |
 
 Each ignored option prints `Warning: --x has no effect with --mode and will be refused from 0.11; drop it.` before the
 run, which is a `Warning:` like any other (`--exit-warnings` exits 3 on it). The run itself is unchanged.
