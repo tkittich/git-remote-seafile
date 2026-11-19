@@ -40,6 +40,11 @@ STEPS = 5
 
 NAMES = ["a.txt", "B.txt", "d", "D2", "build", "x[1].txt", "-dash", "sp ace.txt", "e.txt",
          "node_modules", "k.pyc", "sub", "inner", "f", "g.bin", ".env"]
+#: ``GRS_FUZZ_NONASCII=1`` adds non-ASCII names and renames that only change their case (fable-S1-10: fixed on
+#: NTFS, open on macOS, so the default run leaves them out).
+NON_ASCII = bool(os.environ.get("GRS_FUZZ_NONASCII"))
+if NON_ASCII:
+    NAMES += ["é.txt", "Über", "übung.txt", "straße.txt"]
 EXCLUDES = [[], ["build"], ["*.pyc"], ["sub/inner"], ["d"], ["node_modules", "*.txt"]]
 _FOLD = str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz")
 
@@ -111,7 +116,8 @@ class IncrementalMatchesFresh(unittest.TestCase):
                 (p / rng.choice(NAMES)).write_bytes(rng.randbytes(5))
                 _git("init", "-q", ".", cwd=p)
             elif op == "case":
-                cands = [p for p in files + dirs[1:] if p.name.isascii() and p.name.swapcase() != p.name]
+                cands = [p for p in files + dirs[1:]
+                         if (NON_ASCII or p.name.isascii()) and p.name.swapcase() != p.name]
                 if cands:
                     p = rng.choice(cands)
                     os.rename(p, p.with_name(p.name.swapcase()))
@@ -145,6 +151,7 @@ class IncrementalMatchesFresh(unittest.TestCase):
         rng = random.Random(seed)
         log = []
         no_embedded = rng.random() < 0.25     # one choice per vault: switching it between runs is refused by design
+        default_excludes = rng.random() < 0.3     # what it expands to is worked out again on every run
         for step in range(STEPS):
             for _ in range(rng.randint(1, 3)):
                 self._mutate(rng)
@@ -153,6 +160,8 @@ class IncrementalMatchesFresh(unittest.TestCase):
                 flags += ["--exclude", pattern]
             if no_embedded:
                 flags.append("--no-embedded-repos")
+            if default_excludes:
+                flags.append("--default-excludes")
             incremental, said_inc = self._snapshot(self.tmp / "vault", flags)
             fresh_dir = self.tmp / "fresh"
             if fresh_dir.exists():
@@ -161,6 +170,8 @@ class IncrementalMatchesFresh(unittest.TestCase):
             log.append(f"step {step} flags={flags}")
             where = f"seed {seed}, " + "; ".join(log[-3:])
             self.assertEqual(incremental is None, fresh is None, f"{where}: {said_inc or said_fresh}")
+            if incremental is None and no_embedded and "does not have a commit checked out" in (said_inc + said_fresh):
+                return          # by design: --no-embedded-repos cannot record a repository without a commit
             if step == 0:
                 self.assertIsNotNone(incremental, f"{where}: the first snapshot failed, so nothing was compared: {said_inc}")
             if incremental is not None:
