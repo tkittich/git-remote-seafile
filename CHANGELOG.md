@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **`--payload-view` no longer loses a file named by its own hash** when another file in the same folder holds the same bytes and sorts after it: the second copy was numbered by the server and the rename moved the first file. A file named by its own hash is now placed last in its folder (review c305b0a fable-S3-2).
 - **A file renamed by the case of a non-ASCII letter** (`Über.txt` to `über.txt` on NTFS or APFS) is no longer kept in every later snapshot under both names, nor a renamed folder's content twice: git folds only A-Z, the disk folds every letter, and the old index entry is now dropped when it is the same file as the new spelling (review c305b0a fable-S1-10).
 - **A vault that takes over ten minutes to download can be joined, and a large embedded repository can be captured**: the joining fetch and the `update-index` batches of an embedded repository ran under the plain 600 s wall clock; they now have the no-progress watchdog and heartbeat of the other long steps (review c305b0a fable-S1-5, S1-6).
 - **A tracked file replaced by a directory that is a git repository with no commit** no longer stops every later snapshot with "does not have a commit checked out" (and a wrong hint about `--no-embedded-repos`): its files are captured as for a fresh vault (review c305b0a fable-S1-4).

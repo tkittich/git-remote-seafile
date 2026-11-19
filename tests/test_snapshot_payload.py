@@ -2717,6 +2717,17 @@ class PayloadRetentionTests(_PayloadFixture):
         )
 
 
+class ViewOrderTests(unittest.TestCase):
+    def test_a_file_named_by_its_own_hash_is_placed_after_a_copy_of_the_same_bytes(self):
+        """fable-S3-2 (review c305b0a): the copy for ``zz-copy.bin`` found ``<sha>`` taken, was numbered
+        ``<sha> (1)``, and the rename then moved the first file; the view lost the name ``<sha>``."""
+        sha = "a" * 64
+        made = [("d", sha, sha), ("d", "zz-copy.bin", sha), ("d", "aa.bin", "b" * 64), ("", sha, sha)]
+        ordered = snap.view_order(made)
+        self.assertEqual([entry[:2] for entry in ordered],
+                         [("", sha), ("d", "aa.bin"), ("d", "zz-copy.bin"), ("d", sha)])
+
+
 class PayloadRememberVerifyViewAndClockTests(_PayloadFixture):
     """The remembered setting, verify, views, the clock domain, the report."""
 

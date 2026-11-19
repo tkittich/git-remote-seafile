@@ -8072,6 +8072,17 @@ def _place_object(client: Any, rid: str, source_dir: str, sha: str, target: str,
         raise SnapshotError(f"the server would not rename an object to {name!r}")
 
 
+def view_order(made: "list[tuple[str, str, str]]") -> "list[tuple[str, str, str]]":
+    """The order a view is built in: within a folder, a file named by its own hash goes last.
+
+    A server-side copy lands under the object's hash and is then renamed.  The file named by its own hash
+    needs no rename, so if it were placed first, the copy for a same-bytes file after it would find the name
+    taken, be numbered ``<sha> (1)``, and the rename would move the first file instead (review c305b0a
+    fable-S3-2).  Placed last, its name is free when the others are done.
+    """
+    return sorted(made, key=lambda entry: (entry[0], entry[1] == entry[2], entry[1], entry[2]))
+
+
 def payload_view(
     remote: str, ref: str, *, name: str | None, replace: bool, vault: Path | None = None
 ) -> int:
@@ -8134,7 +8145,7 @@ def payload_view(
     print(f"building {root}: {len(made)} file(s) ...", flush=True)
     _api(lambda: client.mkdir_p(rid, root), f"creating {root}")
     done_dirs: set[str] = set()
-    for index, (directory, shown_name, sha) in enumerate(sorted(made), 1):
+    for index, (directory, shown_name, sha) in enumerate(view_order(made), 1):
         target = root + ("/" + directory if directory else "")
         if target not in done_dirs:
             _api(lambda t=target: client.mkdir_p(rid, t), f"creating {target}")
