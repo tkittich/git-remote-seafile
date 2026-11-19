@@ -124,7 +124,10 @@ class TestARandomTreeComesBackUnchanged(_SnapshotFixture):
                 vault = self.tmp / f"prop-vault-{seed}"
                 remote = self.tmp / f"prop-remote-{seed}.git"
                 restored = self.tmp / f"prop-restored-{seed}"
-                wanted = generate(src, seed)
+                generate(src, seed)
+                # What the disk holds, not what was asked for: on a folding disk README.TXT/ and README.txt/
+                # are one folder (seed 1082 on NTFS), so the generator's second spelling never existed.
+                wanted = self._files(src)
                 from test_snapshot_tool import _git  # noqa: E402
                 _git(self.tmp, "init", "-q", "--bare", str(remote))
                 rc, out, err = self.run_tool("--source", src, "--vault", vault, "--remote", remote)
