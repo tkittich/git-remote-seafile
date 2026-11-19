@@ -2766,6 +2766,22 @@ class PayloadRememberVerifyViewAndClockTests(_PayloadFixture):
         self.assertIn("1 of 2 payload file(s) were not restored", str(ctx.exception))
         self.assertIn("same file as Alpha.bin", str(ctx.exception))
 
+    def test_a_payload_name_that_differs_from_a_checked_out_file_only_by_case_is_not_verified(self):
+        """gemini-S3-5 a (review c305b0a): git checked out ``Alpha.bin`` and the manifest holds ``alpha.bin``
+        with the same bytes; on a folding volume the file "was already there" and the restore said
+        ``payload verified`` while only ``Alpha.bin`` sat on disk."""
+        into = self.case / "checked-out"
+        into.mkdir()
+        data = b"same bytes"
+        (into / "Alpha.bin").write_bytes(data)
+        if not (into / "alpha.bin").exists():
+            self.skipTest("this volume does not fold case")
+        sha = hashlib.sha256(data).hexdigest()
+        files = [{"path": "alpha.bin", "sha256": sha, "size": len(data), "mtime_ns": 0, "mode": "100644"}]
+        with self.assertRaises(snap.SnapshotError) as ctx:
+            snap._restore_payload_files(None, "rid", "/base", files, into, into / ".scratch")
+        self.assertIn("same file as Alpha.bin", str(ctx.exception))
+
     def test_a_payload_file_with_a_pre_1970_mtime_does_not_brick_the_vault(self):
         """gemini-S2-1 (review c305b0a): such an mtime was committed in the manifest and then refused by
         ``check_manifest_shape`` at the pre-push check, leaving a vault commit every later run tripped on."""

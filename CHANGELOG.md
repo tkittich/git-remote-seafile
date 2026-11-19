@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **A restore on a case-folding volume no longer says `payload verified` for a payload file whose name differs only by case from a file git checked out** (`Alpha.bin` checked out, `alpha.bin` in the manifest): the name is reported as the same file and the restore fails, as it already did for two manifest names (review c305b0a gemini-S3-5 a).
 - **`--payload-view` no longer loses a file named by its own hash** when another file in the same folder holds the same bytes and sorts after it: the second copy was numbered by the server and the rename moved the first file. A file named by its own hash is now placed last in its folder (review c305b0a fable-S3-2).
 - **A file renamed by the case of a non-ASCII letter** (`Über.txt` to `über.txt` on NTFS or APFS) is no longer kept in every later snapshot under both names, nor a renamed folder's content twice: git folds only A-Z, the disk folds every letter, and the old index entry is now dropped when it is the same file as the new spelling (review c305b0a fable-S1-10).
 - **A vault that takes over ten minutes to download can be joined, and a large embedded repository can be captured**: the joining fetch and the `update-index` batches of an embedded repository ran under the plain 600 s wall clock; they now have the no-progress watchdog and heartbeat of the other long steps (review c305b0a fable-S1-5, S1-6).

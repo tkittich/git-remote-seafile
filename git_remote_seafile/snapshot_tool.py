@@ -7188,6 +7188,28 @@ def _claim(owners: dict[tuple[int, int], str], dest: Path, rel: str) -> str | No
     return None if first == rel else first
 
 
+def _spelled_differently(listings: "dict[Path, set[str]]", dest: Path, rel: str) -> str | None:
+    """The name a file already in place goes by, when it is not the manifest's spelling.
+
+    The files git checked out are not in ``owners``, so on a folding volume a manifest name that differs
+    from one of them only by case found "its" file already there with the right bytes and was reported
+    verified while only the other spelling sat on disk (review c305b0a gemini-S3-5 a).  The directory's own
+    listing says which spelling the disk holds; a rerun into the same directory sees the manifest's own.
+    """
+    names = listings.get(dest.parent)
+    if names is None:
+        try:
+            names = {unicodedata.normalize("NFC", name) for name in os.listdir(dest.parent)}
+        except OSError:
+            names = set()
+        listings[dest.parent] = names
+    wanted = unicodedata.normalize("NFC", dest.name)
+    if not names or wanted in names:
+        return None
+    folded = wanted.casefold()
+    return next((name for name in sorted(names) if name.casefold() == folded), "another file")
+
+
 def _restore_payload_files(
     client: Any, rid: str, base: str, files: list[dict[str, Any]], into: Path, scratch: Path
 ) -> None:
@@ -7197,6 +7219,7 @@ def _restore_payload_files(
     #: a folding volume maps to one file must not both count as restored (review dfd2269,
     #: gemini-4-hydrogen-2-G1.1: identical bytes made the second one "verified" in silence).
     owners: dict[tuple[int, int], str] = {}
+    listings: dict[Path, set[str]] = {}
     total_bytes = sum(item["size"] for item in files)
     fetched = 0
     started = last_pulse = time.monotonic()
@@ -7215,7 +7238,7 @@ def _restore_payload_files(
             continue
         if dest.exists() or dest.is_symlink():
             if dest.is_file() and not dest.is_symlink() and _sha256_file(dest) == sha:
-                other = _claim(owners, dest, rel)
+                other = _claim(owners, dest, rel) or _spelled_differently(listings, dest, rel)
                 if other is not None:
                     problems.append(f"{rel}: skipped, this filesystem treats the name as the same "
                                     f"file as {other}, which was restored first")
