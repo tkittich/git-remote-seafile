@@ -41,6 +41,16 @@ class IgnoredOptionTests(unittest.TestCase):
         args = _args("--maintain", "--remote", "r", "--branch", "b", "--allow-low-disk", "--payload-jobs", "2")
         self.assertEqual(snap.ignored_option_warnings(args), ["--remote", "--branch", "--allow-low-disk", "--payload-jobs"])
 
+    def test_the_payload_retention_commands_name_the_snapshot_options_they_never_read(self):
+        for base, mode in ((["--payload-gc", "--remote", "r"], "--payload-gc"),
+                           (["--payload-verify", "all", "--remote", "r"], "--payload-verify")):
+            args = _args(*base, "--reset-to-remote", "--no-repack", "--source", "s", "--branch", "b", "--message", "m")
+            self.assertEqual(snap.ignored_option_warnings(args),
+                             ["--source", "--branch", "--message", "--reset-to-remote", "--no-repack"], mode)
+            self.assertEqual(snap.mode_name(args), mode)
+        self.assertEqual(snap.ignored_option_warnings(_args("--payload-gc", "--remote", "r", "--vault", "v",
+                                                            "--allow-low-disk", "--payload-keep", "2")), [])
+
     def test_options_a_mode_does_read_are_not_named(self):
         self.assertEqual(snap.ignored_option_warnings(_args("--restore-drill", "--remote", "r", "--branch", "b",
                                                             "--ref", "x", "--allow-low-disk", "--allow-synced")), [])

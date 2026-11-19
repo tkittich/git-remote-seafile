@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Deprecated
+- **`--payload-gc` and `--payload-verify` now warn about the snapshot options they never read** (`--source`, `--branch`, `--code-remote`, `--default-excludes`, `--message`, `--reset-to-remote`, `--no-repack`, `--no-object-compression`, `--rebuild-index`); refused from 0.11, like the other options of AA74 (review c305b0a gemini-S2-8).
+
 ## [0.10.1] - 2026-11-18
 
 A fixes-only release from the c305b0a review round's open list (ROADMAP AA73 to AA75): twenty-one small defects, none a loss, and the first warning pass of the deprecation policy (an option a mode accepts and never reads now warns; it is refused from 0.11).

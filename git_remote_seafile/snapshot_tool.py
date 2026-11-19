@@ -10899,12 +10899,23 @@ def ignored_option_warnings(args: argparse.Namespace) -> list[str]:
             ("--remote", args.remote), ("--branch", args.branch), ("--allow-low-disk", args.allow_low_disk),
             ("--payload-jobs", args.payload_jobs is not None),
         )
+    elif args.payload_gc or args.payload_verify is not None:
+        given = (
+            ("--source", args.source), ("--branch", args.branch), ("--code-remote", args.code_remote),
+            ("--default-excludes", args.default_excludes is not None), ("--message", args.message),
+            ("--reset-to-remote", args.reset_to_remote), ("--no-repack", args.no_repack),
+            ("--no-object-compression", args.no_object_compression), ("--rebuild-index", args.rebuild_index),
+        )
     else:
         return []
     return [flag for flag, value in given if value]
 
 
 def mode_name(args: argparse.Namespace) -> str:
+    if args.payload_gc:
+        return "--payload-gc"
+    if args.payload_verify is not None:
+        return "--payload-verify"
     return "--restore-drill" if args.restore_drill is not None else "--status" if args.status else "--maintain"
 
 

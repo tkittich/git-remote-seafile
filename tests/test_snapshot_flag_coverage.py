@@ -81,12 +81,21 @@ ACCEPTED = {
                "--payload-auto-ratio", "--payload-report-days", "--json", "--exit-warnings"},
     "maintain": {"--source", "--vault", "--branch", "--remote", "--allow-synced", "--allow-low-disk",
                  "--payload-jobs", "--json", "--exit-warnings", "--no-object-compression", "--full-repack"},
+    "gc": {"--allow-low-disk", "--allow-shared-remote", "--allow-synced", "--branch", "--code-remote",
+           "--default-excludes", "--exit-warnings", "--json", "--message", "--no-object-compression", "--no-repack",
+           "--payload-grace-days", "--payload-keep", "--rebuild-index", "--reset-to-remote", "--source", "--vault"},
+    "verify": {"--allow-low-disk", "--allow-shared-remote", "--allow-synced", "--branch", "--code-remote",
+               "--default-excludes", "--exclude", "--exit-warnings", "--json", "--message", "--no-object-compression",
+               "--no-repack", "--payload-jobs", "--payload-rehash", "--payload-report-days", "--payload-skip-changing",
+               "--rebuild-index", "--reset-to-remote", "--source", "--vault"},
 }
 MODE_LINES = {
     "restore": ["--restore", "--remote", "r", "--into", "d"],
     "drill": ["--restore-drill", "--remote", "r"],
     "status": ["--status"],
     "maintain": ["--maintain"],
+    "gc": ["--payload-gc", "--remote", "r"],
+    "verify": ["--payload-verify", "all", "--remote", "r"],
 }
 
 
@@ -100,10 +109,13 @@ def _value(action: argparse.Action) -> list[str]:
 class TestEveryModeDecidesEveryOption(unittest.TestCase):
     def test_an_option_warned_as_ignored_is_one_the_mode_accepts(self):
         """The deprecation pass (``ignored_option_warnings``) names only options in the table above."""
-        modes = {"drill": ["--restore-drill", "--remote", "r"], "status": ["--status"], "maintain": ["--maintain"]}
+        modes = {"drill": ["--restore-drill", "--remote", "r"], "status": ["--status"], "maintain": ["--maintain"],
+                 "gc": ["--payload-gc", "--remote", "r"], "verify": ["--payload-verify", "all", "--remote", "r"]}
         every = {"--payload-jobs": "1", "--no-payload": None, "--payload-auto-ratio": "0.5",
                  "--payload-skip-changing": None, "--payload-report-days": "1", "--message": "m",
-                 "--allow-low-disk": None, "--remote": "r", "--branch": "b"}
+                 "--allow-low-disk": None, "--remote": "r", "--branch": "b", "--source": "s", "--code-remote": "c",
+                 "--default-excludes": None, "--reset-to-remote": None, "--no-repack": None,
+                 "--no-object-compression": None, "--rebuild-index": None}
         for mode, base in modes.items():
             argv = list(base)
             for flag, value in every.items():
