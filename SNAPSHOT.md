@@ -96,7 +96,7 @@ snapshot never enters its history.
 | Property | How |
 | :--- | :--- |
 | Interrupted run | Leaves at worst a stale vault index; the source is untouched. The next run overwrites it. |
-| Concurrent snapshots | A vault-local `seafile-snapshot.lock` (created `O_EXCL`); records `hostname pid`, `fsync`ed; reclaimed when the holder is dead *on the same host*, or the file is unparseable and older than a grace window. |
+| Concurrent snapshots | A vault-local `seafile-snapshot.lock` (created `O_EXCL`); records `hostname pid`, `fsync`ed; reclaimed when the holder is dead *on the same host*, or the file is unparseable and older than a grace window. A stale lock is reclaimed by an atomic rename and a second read, so two runs started together cannot both take it. |
 | Torn branch update | `git update-ref` with an **expected old value** — a racing run loses loudly rather than clobbering. |
 | Push | A single ref update, guarded by the helper's distributed lease lock. |
 | Failed push | The local branch is **rolled back** to what the remote actually has — on every failure path, including a failure inside the retry. |

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.2] - 2026-11-20
+
+A fixes-only release (maintenance mode): thirteen defects from the c305b0a review round's open list, none of them a loss of what a vault holds, each with a test that fails without it (one, the long-path time, is simulated), and two more warn-first passes of the deprecation policy.
+
 ### Fixed
 - **`--maintain --vault <vault>` runs from any directory**: it never touches the source, but it took the current directory as the source and refused every vault that remembers another one ("this vault belongs to a different source directory"). Naming the vault alone is enough now (review c305b0a gemini-S4-6).
 - **`--default-excludes` no longer drops what an embedded repository has committed under a recommended name** (`node_modules`, `.venv`, `__pycache__`): the list was held against the source repository's tracked files only, so a nested repository's committed `node_modules/` was left out of the snapshot without a word. Now the nested repositories directly inside a source repository are read too and the pattern is kept with the usual Note. A source that is not itself a repository is unchanged (review c305b0a, sibling of fable-S4-1).
@@ -2251,6 +2255,7 @@ Data-loss and silent-failure fixes, and the Python floor raised to 3.9.
   with zero-config desktop-client token discovery, distributed locking, remote
   packfile compaction, and a Git LFS custom transfer agent.
 
+[0.10.2]: https://github.com/tkittich/git-remote-seafile/compare/v0.10.1...v0.10.2
 [0.10.1]: https://github.com/tkittich/git-remote-seafile/compare/v0.10.0...v0.10.1
 [0.10.0]: https://github.com/tkittich/git-remote-seafile/compare/v0.9.27...v0.10.0
 [0.9.27]: https://github.com/tkittich/git-remote-seafile/compare/v0.9.26...v0.9.27
