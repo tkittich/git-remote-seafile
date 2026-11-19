@@ -6,8 +6,9 @@ random changes to a source tree the tree the *same* vault records must equal the
 records with the same flags, compared with ASCII case folded (the index keeps a first-met spelling by
 design).  Seeds are fixed, so a failure names the seed.  ``GRS_FUZZ_SEEDS=30`` runs 30 more.
 
-Left out on purpose, both recorded in ROADMAP AA73: a file replaced by a directory holding a commitless
-repository (fable-S1-4) and a rename that only changes the case of a non-ASCII letter (fable-S1-10).
+Left out on purpose, recorded in ROADMAP AA73: a rename that only changes the case of a non-ASCII letter
+(fable-S1-10; fixed on NTFS, open on macOS).  Renames, ``.gitignore`` edits and a file replaced by a
+repository are in the mix (the widened run found a tracked file replaced by a folder holding one).
 """
 
 from __future__ import annotations
@@ -70,7 +71,7 @@ class IncrementalMatchesFresh(unittest.TestCase):
 
     def _mutate(self, rng: random.Random) -> None:
         op = rng.choice(["new", "new", "new", "mod", "mod", "del", "f2d", "d2f", "case", "repo",
-                         "commit", "rmdir"])
+                         "commit", "rmdir", "mv", "mv", "ignore", "f2repo"])
         dirs, files = self._walk()
         d = rng.choice(dirs)
         try:
@@ -95,6 +96,20 @@ class IncrementalMatchesFresh(unittest.TestCase):
                 d.write_bytes(b"was a dir")
             elif op == "rmdir" and d != self.src:
                 remove_tree(d)
+            elif op == "mv" and files:
+                p = rng.choice(files + dirs[1:])
+                target = rng.choice(dirs) / rng.choice(NAMES)
+                if not target.exists() and p not in target.parents and p != target:
+                    os.rename(p, target)
+            elif op == "ignore":
+                # the snapshot is of the whole tree, ignored files included, so editing .gitignore must change nothing
+                (d / ".gitignore").write_text("\n".join(rng.sample(NAMES + ["*.txt", "*.bin"], 3)) + "\n")
+            elif op == "f2repo" and files:
+                p = rng.choice(files)
+                p.unlink()
+                p.mkdir()
+                (p / rng.choice(NAMES)).write_bytes(rng.randbytes(5))
+                _git("init", "-q", ".", cwd=p)
             elif op == "case":
                 cands = [p for p in files + dirs[1:] if p.name.isascii() and p.name.swapcase() != p.name]
                 if cands:

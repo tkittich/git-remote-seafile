@@ -172,9 +172,9 @@ def stageable_paths(
         # failed for one with no commit.
         nested_out.extend(e.rstrip("/") for e in entries if e.endswith("/"))
         entries = [e for e in entries if not e.endswith("/")]
-        retyped = retyped_to_repository(git_dir, work_tree)
+        retyped, repos = retyped_to_directory(git_dir, work_tree)
         if retyped:
-            nested_out.extend(retyped)
+            nested_out.extend(repos)
             entries = [e for e in entries if e not in set(retyped)]
     return [
         path

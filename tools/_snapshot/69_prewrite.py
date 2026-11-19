@@ -493,18 +493,23 @@ def prewrite_objects(
     return written, time.monotonic() - start
 
 
-def retyped_to_repository(git_dir: Path, work_tree: Path) -> list[str]:
-    """Tracked files that are now directories holding their own ``.git``.
+def retyped_to_directory(git_dir: Path, work_tree: Path) -> tuple[list[str], list[str]]:
+    """Tracked files that are now directories, and which of those hold their own ``.git``.
 
     ``ls-files -c`` still names the old file and ``-o`` does not repeat the path, so it went to ``git add``,
-    which stopped every rerun with "does not have a commit checked out" (review c305b0a fable-S1-4).  A type
-    change shows in ``-m``; the walk of embedded repositories owns such a path and the stale pass drops the file.
+    which walks into the directory.  If a repository without a commit sits in it, ``add`` stopped every rerun
+    with "does not have a commit checked out": for the directory itself (review c305b0a fable-S1-4) and for a
+    plain folder that holds one (found by the widened differential fuzz).  A type change shows in ``-m``; the
+    folder's own files are listed by ``-o`` and the stale pass drops the old file, and a repository among them
+    is left to the walk of embedded repositories.
     """
     listed = git(git_dir, work_tree, ["ls-files", "-z", "-m"], cwd=work_tree).stdout.split("\0")
-    found = []
+    folders, repositories = [], []
     for path in filter(None, listed):
         here = Path(work_tree) / path
-        if (not os.path.islink(extended_path(here)) and os.path.isdir(extended_path(here))
-                and os.path.exists(extended_path(here / ".git"))):
-            found.append(path)
-    return found
+        if os.path.islink(extended_path(here)) or not os.path.isdir(extended_path(here)):
+            continue
+        folders.append(path)
+        if os.path.exists(extended_path(here / ".git")):
+            repositories.append(path)
+    return folders, repositories

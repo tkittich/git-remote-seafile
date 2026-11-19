@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **A tracked file replaced by a folder that holds a repository with no commit** no longer stops every later snapshot with "does not have a commit checked out": 0.10.2 handled the replaced path being the repository itself, not a plain folder with one inside. Found by the differential fuzz, now widened with renames, `.gitignore` edits and a file replaced by a repository.
+
 ## [0.10.2] - 2026-11-20
 
 A fixes-only release (maintenance mode): thirteen defects from the c305b0a review round's open list, none of them a loss of what a vault holds, each with a test that fails without it (one, the long-path time, is simulated), and two more warn-first passes of the deprecation policy.

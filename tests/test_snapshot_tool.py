@@ -451,6 +451,25 @@ class SnapshotGuardTests(_SnapshotFixture):
         names = sorted(self.tree())
         self.assertEqual([n for n in names if n.lower().endswith("ber.txt")], ["\u00fcber.txt"], names)
 
+    def test_a_tracked_file_replaced_by_a_folder_holding_a_commitless_repository_is_captured(self):
+        """Found by the widened differential fuzz (seed 2023): the replaced path is a plain folder, so the
+        S1-4 check (the path itself is a repository) did not apply, and ``git add`` of the folder reached
+        the nested repository: "'B.txt/f/' does not have a commit checked out", on every rerun."""
+        (self.code / "B.txt").write_bytes(b"a note" + bytes([10]))
+        self.assertEqual(self.snapshot()[0], 0)
+        (self.code / "B.txt").unlink()
+        (self.code / "B.txt" / "f").mkdir(parents=True)
+        (self.code / "B.txt" / "plain.txt").write_bytes(b"beside it" + bytes([10]))
+        (self.code / "B.txt" / "f" / "inside.txt").write_bytes(b"in the repository" + bytes([10]))
+        _git(self.code / "B.txt" / "f", "init", "-q", "-b", "main", ".")
+        for _ in range(2):
+            rc, out, err = self.snapshot()
+            self.assertEqual(rc, 0, out + err)
+        tree = self.tree()
+        self.assertIn("B.txt/f/inside.txt", tree)
+        self.assertIn("B.txt/plain.txt", tree)
+        self.assertNotIn("B.txt", tree)
+
     def test_no_embedded_repos_with_a_commitless_repository_names_the_fix(self):
         bare = self.code / "fresh"
         bare.mkdir()
