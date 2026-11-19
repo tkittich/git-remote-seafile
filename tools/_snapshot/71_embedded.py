@@ -141,6 +141,10 @@ def inline_embedded_repositories(
                 ["update-index", "--add", "-z", "--stdin"],
                 cwd=work_tree,
                 stdin="\0".join(batch) + "\0",
+                # It hashes and writes the objects, so growth is measurable: the watchdog, not the plain
+                # wall clock, bounds a batch of large files (review c305b0a fable-S1-6).
+                status="staging an embedded repository",
+                measure_dir=git_dir / "objects",
             )
         report.append((link, len(files)))
     return report

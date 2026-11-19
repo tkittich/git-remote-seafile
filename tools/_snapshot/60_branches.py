@@ -90,6 +90,10 @@ def fetch_remote_tip(
         ["fetch", "--quiet", "--no-tags", remote, f"refs/heads/{branch}"],
         cwd=work_tree,
         check=False,
+        # The no-progress watchdog and heartbeat, not the plain wall clock: a vault that takes over ten
+        # minutes to download could never be joined (review c305b0a fable-S1-5).
+        status="fetching the vault's history",
+        measure_dir=git_dir / "objects",
     )
     if proc.returncode != 0:
         # "No such branch on the remote" is the not-an-error case, but it

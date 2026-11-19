@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **A vault that takes over ten minutes to download can be joined, and a large embedded repository can be captured**: the joining fetch and the `update-index` batches of an embedded repository ran under the plain 600 s wall clock; they now have the no-progress watchdog and heartbeat of the other long steps (review c305b0a fable-S1-5, S1-6).
 - **A tracked file replaced by a directory that is a git repository with no commit** no longer stops every later snapshot with "does not have a commit checked out" (and a wrong hint about `--no-embedded-repos`): its files are captured as for a fresh vault (review c305b0a fable-S1-4).
 
 ### Deprecated

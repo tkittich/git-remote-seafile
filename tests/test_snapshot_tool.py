@@ -414,6 +414,27 @@ class SnapshotGuardTests(_SnapshotFixture):
         self.assertIn("notes/inside.txt", self.tree())
         self.assertNotIn("notes", self.tree())
 
+    def test_the_joining_fetch_and_an_embedded_batch_run_under_the_watchdog_not_the_plain_clock(self):
+        """fable-S1-5/S1-6 (review c305b0a): both wrote objects under the 600 s wall clock alone, so a vault
+        or an embedded repository that took longer could never be joined or captured."""
+        seen = []
+        real = snap.git
+
+        def spy(git_dir, work_tree, args, **kwargs):
+            seen.append((args[0], kwargs.get("status"), kwargs.get("measure_dir")))
+            return real(git_dir, work_tree, args, **kwargs)
+
+        self._nested_repo()
+        with unittest.mock.patch.object(snap, "git", spy):
+            self.assertEqual(self.snapshot("--remote", self.remote)[0], 0)
+            snap.fetch_remote_tip(self.vault / ".git", self.code, str(self.remote), BRANCH)
+        by_command = {command: (status, measure) for command, status, measure in seen
+                      if command in ("fetch", "update-index") and status}
+        self.assertEqual(sorted(by_command), ["fetch", "update-index"], seen)
+        for status, measure in by_command.values():
+            self.assertTrue(status)
+            self.assertEqual(measure, self.vault / ".git" / "objects")
+
     def test_no_embedded_repos_with_a_commitless_repository_names_the_fix(self):
         bare = self.code / "fresh"
         bare.mkdir()
