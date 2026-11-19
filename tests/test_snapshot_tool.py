@@ -1962,6 +1962,21 @@ class StaleLockTests(_SnapshotFixture):
         self.assertEqual(lock.read_text(encoding="utf-8"), f"{host} {os.getpid()}")
         self.assertEqual([p.name for p in lock.parent.glob("seafile-snapshot.lock*")], ["seafile-snapshot.lock"])
 
+    def test_maintain_with_only_a_vault_runs_from_any_directory(self):
+        """gemini-S4-6 (review c305b0a): ``--maintain`` never touches the source, but a source taken from the
+        current directory made it refuse any vault that remembers another one."""
+        self.assertEqual(self.snapshot()[0], 0)
+        elsewhere = self.tmp / "elsewhere"
+        elsewhere.mkdir()
+        before = pathlib.Path.cwd()
+        os.chdir(elsewhere)
+        try:
+            rc, out, err = self.run_tool("--maintain", "--vault", self.vault)
+        finally:
+            os.chdir(before)
+        self.assertEqual(rc, 0, out + err)
+        self.assertNotIn("different source directory", out + err)
+
     def test_a_lock_from_another_host_is_not_reclaimed(self):
         self.snapshot()
         lock = self.vault / ".git" / "seafile-snapshot.lock"

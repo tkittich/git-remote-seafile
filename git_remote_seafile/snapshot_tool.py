@@ -12067,6 +12067,14 @@ def run_command(args: argparse.Namespace) -> int:
             RUN_FACTS.update(into=str(into), ref=args.ref or args.branch or DEFAULT_BRANCH)
             return 0
 
+        if args.maintain and args.vault and not (args.source or args.source_positional):
+            # Housekeeping works on the vault alone ("never touches the source tree"), so naming the vault is
+            # enough: resolving a source from the current directory refused it from anywhere but the vault's
+            # own source (review c305b0a gemini-S4-6).
+            vault = expand_path(args.vault)
+            check_paths_are_unsynced(("vault", vault), allow_synced=args.allow_synced)
+            return maintain_vault(vault, full_repack=args.full_repack)
+
         source, vault, remote, code_remote, exclude, branch = (
             resolve_snapshot_settings(args)
         )
