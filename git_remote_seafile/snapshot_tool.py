@@ -1889,6 +1889,36 @@ class VaultLock:
         except ValueError:
             return None
 
+    def _remove_if_still(self, holder: tuple[str, int, str | None]) -> bool:
+        """Remove the lock file only if it is still the one that was judged dead.
+
+        Two runs that start together over one stale lock both read the dead holder; the first reclaims
+        and takes the lock, and a plain ``unlink`` by the second then removed the first's *live* file
+        and both held the lock (POSIX; review c305b0a fable-S1-8).  The file is moved aside by an atomic
+        rename, read again, and deleted only if it still names the dead holder; otherwise it is linked
+        back and the reclaim is refused.  A sharing violation is a "not this time", not a crash.
+        """
+        aside = self.path.with_name(f"{self.path.name}.stale.{os.getpid()}")
+        try:
+            os.replace(self.path, aside)
+        except OSError:
+            return False
+        try:
+            text = aside.read_text(encoding="utf-8").strip().split()
+            same = len(text) >= 2 and (text[0], int(text[1]), text[2] if len(text) > 2 else None) == holder
+        except (OSError, ValueError):
+            same = False
+        if not same:
+            try:
+                os.link(aside, self.path)       # fails if a third run has already taken the name
+            except OSError:
+                pass
+        try:
+            aside.unlink()
+        except OSError:
+            pass
+        return same
+
     def _reclaim_if_stale(self) -> bool:
         holder = self._holder()
         if holder is None:
@@ -1924,11 +1954,7 @@ class VaultLock:
             now = process_start_token(pid) if started else None
             if not started or now is None or now == started:
                 return False
-        try:
-            self.path.unlink()
-        except OSError:
-            # Same breadth as __exit__'s retry loop: a sharing violation is a
-            # "not this time", not a crash.
+        if not self._remove_if_still(holder):
             return False
         print(
             f"reclaiming a stale lock left by pid {pid} on this machine "

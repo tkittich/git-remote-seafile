@@ -1923,6 +1923,26 @@ class StaleLockTests(_SnapshotFixture):
         self.assertEqual(rc, 0, err)
         self.assertIn("reclaiming a stale lock", out)
 
+    def test_a_lock_taken_between_the_read_and_the_removal_is_not_removed(self):
+        """fable-S1-8 (review c305b0a): the second run's ``unlink`` removed the first run's live lock and
+        both held it.  The interleaving is forced at ``pid_is_alive``, as in the review's reproduction."""
+        self.snapshot()
+        lock = self.vault / ".git" / "seafile-snapshot.lock"
+        host = socket.gethostname()
+        lock.write_text(f"{host} 4294967295", encoding="utf-8")
+        real = snap.pid_is_alive
+
+        def first_run_reclaims_and_takes_the_lock(pid):
+            if pid == 4294967295:
+                lock.write_text(f"{host} {os.getpid()}", encoding="utf-8")     # run A, now the holder
+            return real(pid)
+
+        with unittest.mock.patch.object(snap, "pid_is_alive", first_run_reclaims_and_takes_the_lock):
+            reclaimed = snap.VaultLock(self.vault / ".git")._reclaim_if_stale()
+        self.assertFalse(reclaimed)
+        self.assertEqual(lock.read_text(encoding="utf-8"), f"{host} {os.getpid()}")
+        self.assertEqual([p.name for p in lock.parent.glob("seafile-snapshot.lock*")], ["seafile-snapshot.lock"])
+
     def test_a_lock_from_another_host_is_not_reclaimed(self):
         self.snapshot()
         lock = self.vault / ".git" / "seafile-snapshot.lock"
