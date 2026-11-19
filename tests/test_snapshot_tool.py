@@ -1840,6 +1840,25 @@ class FirstRunExcludePromptTests(_SnapshotFixture):
         self.assertIn("sub/build/make.py", self.tree())
         self.assertIn("keeps 'sub/build' for this run", out)
 
+    def test_a_committed_node_modules_of_an_embedded_repository_is_kept(self):
+        """The sibling of fable-S4-1 (review c305b0a): the fixed patterns were held against the outer
+        repository's tracked list only, so an embedded repository's committed ``node_modules`` was dropped."""
+        _git(self.code, "init", "-q", "-b", "main")
+        (self.code / "a.txt").write_bytes(b"a" + bytes([10]))
+        _git(self.code, "add", "a.txt")
+        _git(self.code, "commit", "-qm", "outer")
+        sub = self.code / "sub"
+        (sub / "node_modules").mkdir(parents=True)
+        (sub / "node_modules" / "pkg.js").write_bytes(b"vendored" + bytes([10]))
+        _git(sub, "init", "-q")
+        _git(sub, "add", "node_modules/pkg.js")
+        _git(sub, "commit", "-qm", "vendored")
+        rc, out, err = self.run_tool("--source", self.code, "--vault", self.vault, "--no-push",
+                                     "--default-excludes")
+        self.assertEqual(rc, 0, err)
+        self.assertIn("sub/node_modules/pkg.js", self.tree())
+        self.assertIn("keeps 'node_modules' for this run", out)
+
     def test_an_ignored_build_directory_is_left_out_and_listed(self):
         (self.code / ".gitignore").write_bytes(b"node_modules/" + bytes([10]) + b"dist/" + bytes([10]) + b"build/" + bytes([10]))
         (self.code / "build").mkdir()

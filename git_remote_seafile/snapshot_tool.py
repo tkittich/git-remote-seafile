@@ -3730,7 +3730,7 @@ def source_tracked_paths(source: Path) -> list[str]:
     )
     if proc.returncode != 0:
         return []
-    return [p for p in proc.stdout.split("\0") if p]
+    return [p for p in proc.stdout.split("\0") if p] + embedded_tracked_paths(source)
 
 
 def find_virtualenvs(source: Path, excludes: list[str]) -> list[str]:
@@ -4143,6 +4143,34 @@ def _skip_key(path: str) -> str:
     alone decides whether two names are one file.
     """
     return unicodedata.normalize("NFC", path).casefold()
+
+
+def embedded_tracked_paths(source: Path) -> list[str]:
+    """Paths tracked by the repositories embedded directly in the source's own repository.
+
+    The outer repository lists a nested one as a single untracked directory, so a recommended exclude such
+    as ``node_modules`` was held against its own tracked list only and dropped what the nested repository
+    had committed (the sibling of review c305b0a fable-S4-1).  Only a nested repository that git reports as
+    a directory of its own is read, one level deep.
+    """
+    proc = _run(
+        ["git", "-C", str(source), "ls-files", "-z", "-o", "--exclude-standard", "--directory"],
+        text=True, encoding="utf-8", errors="replace", stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+    )
+    if proc.returncode != 0:
+        return []
+    found: list[str] = []
+    for entry in proc.stdout.split("\0"):
+        rel = entry.rstrip("/")
+        if not rel or not entry.endswith("/") or not extended_path(source / rel / ".git").exists():
+            continue
+        inner = _run(
+            ["git", "-C", str(source / rel), "ls-files", "-z"],
+            text=True, encoding="utf-8", errors="replace", stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+        )
+        if inner.returncode == 0:
+            found.extend(f"{rel}/{path}" for path in inner.stdout.split("\0") if path)
+    return found
 
 
 def case_twins(work_tree: Path, kept: list[str], staged_now: "set[str]") -> list[str]:

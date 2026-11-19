@@ -585,7 +585,7 @@ def source_tracked_paths(source: Path) -> list[str]:
     )
     if proc.returncode != 0:
         return []
-    return [p for p in proc.stdout.split("\0") if p]
+    return [p for p in proc.stdout.split("\0") if p] + embedded_tracked_paths(source)
 
 
 def find_virtualenvs(source: Path, excludes: list[str]) -> list[str]:
