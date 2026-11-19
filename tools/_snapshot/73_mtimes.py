@@ -245,6 +245,16 @@ def record_mtimes_in_index(git_dir: Path, work_tree: Path, parent: str | None) -
     return len(times)
 
 
+def _without_extended_prefix(text: str) -> str:
+    """*text* without the ``\\\\?\\`` (or ``\\\\?\\UNC\\``) prefix, so it compares with a plain root."""
+    bs = chr(92)
+    if text.startswith(bs * 2 + "?" + bs + "UNC" + bs):
+        return bs * 2 + text[8:]
+    if text.startswith(bs * 2 + "?" + bs):
+        return text[4:]
+    return text
+
+
 def apply_recorded_mtimes(into: Path) -> tuple[int, int]:
     """Set the recorded times on a restored tree; ``(applied, skipped)``.
 
@@ -282,7 +292,9 @@ def apply_recorded_mtimes(into: Path) -> tuple[int, int]:
         plain = into / rel
         target = extended_path(plain)  # past 260 characters on Windows too
         try:
-            parent = plain.parent.resolve()
+            # Resolved in the extended-length form: a plain ``resolve`` of a folder past 260 characters raised on
+            # a Windows without LongPathsEnabled and the time was skipped (review c305b0a gemini-S2-6 b).
+            parent = Path(_without_extended_prefix(str(extended_path(plain.parent).resolve())))
             if os.path.commonpath([str(root), str(parent)]) != str(root):
                 skipped += 1
                 continue

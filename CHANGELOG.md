@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **A recorded file time is applied under a folder past 260 characters** on a Windows without long paths enabled: the folder was resolved in its plain form, which failed, and the time was skipped (simulated test; review c305b0a gemini-S2-6 b).
 - **Two snapshots started together over one stale lock no longer both take it** (POSIX): the second run's reclaim removed the first run's live lock file. The lock is now moved aside by an atomic rename, read again, and deleted only if it still names the dead holder; otherwise it is put back and the run is refused (review c305b0a fable-S1-8).
 - **A payload restore onto a FAT or exFAT volume mounted on Linux or macOS asks the volume about each name before downloading**, as the git checkout already did: a payload file `dot.` was reported `payload verified` while the volume had dropped the dot, and a name with a colon was downloaded in full before it failed. Both are now skipped and named, with no download (measured on a vfat loop mount; review c305b0a gemini-S3-5 b).
 - **A restore on a case-folding volume no longer says `payload verified` for a payload file whose name differs only by case from a file git checked out** (`Alpha.bin` checked out, `alpha.bin` in the manifest): the name is reported as the same file and the restore fails, as it already did for two manifest names (review c305b0a gemini-S3-5 a).

@@ -5937,6 +5937,30 @@ class ModificationTimeTests(_SnapshotFixture):
         self.assertEqual(rc, snap.EXIT_USAGE)
         self.assertIn("only apply to a snapshot run", err)
 
+    @unittest.skipUnless(os.name == "nt", "extended_path is the identity elsewhere")
+    def test_a_recorded_time_past_max_path_is_applied(self):
+        """gemini-S2-6 b (review c305b0a; simulated, this machine may have long paths on): a plain ``resolve``
+        of a folder past 260 characters raised without LongPathsEnabled and the time was skipped."""
+        into = self.tmp / "into-long"
+        deep = into / ("a" * 90) / ("b" * 90) / ("c" * 90)
+        os.makedirs(snap.extended_path(deep))
+        (snap.extended_path(deep) / "f.txt").write_bytes(b"x")
+        rel = "/".join(["a" * 90, "b" * 90, "c" * 90, "f.txt"])
+        (into / ".seafile-payload").mkdir()
+        record = {"format": 1, "files": {rel: 1_500_000_000_000_000_000}}
+        (into / ".seafile-payload" / "mtimes.json").write_text(json.dumps(record), encoding="utf-8")
+        real = pathlib.Path.resolve
+
+        def resolve(self, *args, **kwargs):
+            text = str(self)
+            if len(text) > 260 and not text.startswith(chr(92) * 2 + "?"):
+                raise OSError(206, "The filename or extension is too long")
+            return real(self, *args, **kwargs)
+
+        with unittest.mock.patch.object(pathlib.Path, "resolve", resolve):
+            self.assertEqual(snap.apply_recorded_mtimes(into), (1, 0))
+        self.assertEqual(os.stat(snap.extended_path(deep / "f.txt")).st_mtime_ns, 1_500_000_000_000_000_000)
+
     def test_a_hostile_record_cannot_reach_outside_the_restored_tree(self):
         victim = self.tmp / "victim.txt"
         victim.write_bytes(b"keep\n")
