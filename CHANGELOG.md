@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **A tracked file replaced by a directory that is a git repository with no commit** no longer stops every later snapshot with "does not have a commit checked out" (and a wrong hint about `--no-embedded-repos`): its files are captured as for a fresh vault (review c305b0a fable-S1-4).
+
 ### Deprecated
 - **`--payload-gc` and `--payload-verify` now warn about the snapshot options they never read** (`--source`, `--branch`, `--code-remote`, `--default-excludes`, `--message`, `--reset-to-remote`, `--no-repack`, `--no-object-compression`, `--rebuild-index`); refused from 0.11, like the other options of AA74 (review c305b0a gemini-S2-8).
 

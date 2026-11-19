@@ -491,3 +491,20 @@ def prewrite_objects(
             file=sys.stderr,
         )
     return written, time.monotonic() - start
+
+
+def retyped_to_repository(git_dir: Path, work_tree: Path) -> list[str]:
+    """Tracked files that are now directories holding their own ``.git``.
+
+    ``ls-files -c`` still names the old file and ``-o`` does not repeat the path, so it went to ``git add``,
+    which stopped every rerun with "does not have a commit checked out" (review c305b0a fable-S1-4).  A type
+    change shows in ``-m``; the walk of embedded repositories owns such a path and the stale pass drops the file.
+    """
+    listed = git(git_dir, work_tree, ["ls-files", "-z", "-m"], cwd=work_tree).stdout.split("\0")
+    found = []
+    for path in filter(None, listed):
+        here = Path(work_tree) / path
+        if (not os.path.islink(extended_path(here)) and os.path.isdir(extended_path(here))
+                and os.path.exists(extended_path(here / ".git"))):
+            found.append(path)
+    return found

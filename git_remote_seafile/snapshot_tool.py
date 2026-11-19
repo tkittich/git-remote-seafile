@@ -3098,6 +3098,23 @@ def prewrite_objects(
     return written, time.monotonic() - start
 
 
+def retyped_to_repository(git_dir: Path, work_tree: Path) -> list[str]:
+    """Tracked files that are now directories holding their own ``.git``.
+
+    ``ls-files -c`` still names the old file and ``-o`` does not repeat the path, so it went to ``git add``,
+    which stopped every rerun with "does not have a commit checked out" (review c305b0a fable-S1-4).  A type
+    change shows in ``-m``; the walk of embedded repositories owns such a path and the stale pass drops the file.
+    """
+    listed = git(git_dir, work_tree, ["ls-files", "-z", "-m"], cwd=work_tree).stdout.split("\0")
+    found = []
+    for path in filter(None, listed):
+        here = Path(work_tree) / path
+        if (not os.path.islink(extended_path(here)) and os.path.isdir(extended_path(here))
+                and os.path.exists(extended_path(here / ".git"))):
+            found.append(path)
+    return found
+
+
 #: How many paths to hand to a single ``update-index`` invocation.  A tree can
 #: hold far more matches than one command line can carry, and Windows' limit is
 #: the smallest of the platforms this runs on.
@@ -3270,6 +3287,10 @@ def stageable_paths(
         # failed for one with no commit.
         nested_out.extend(e.rstrip("/") for e in entries if e.endswith("/"))
         entries = [e for e in entries if not e.endswith("/")]
+        retyped = retyped_to_repository(git_dir, work_tree)
+        if retyped:
+            nested_out.extend(retyped)
+            entries = [e for e in entries if e not in set(retyped)]
     return [
         path
         for path in (entry.rstrip("/") for entry in entries)

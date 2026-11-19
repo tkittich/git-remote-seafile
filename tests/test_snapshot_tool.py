@@ -399,6 +399,21 @@ class SnapshotGuardTests(_SnapshotFixture):
         self.assertEqual(rc, 0, out + err)
         self.assertIn("fresh/notes.txt", self.tree())
 
+    def test_a_tracked_file_replaced_by_a_commitless_repository_is_captured_as_its_files(self):
+        """fable-S1-4 (review c305b0a): ``-c`` still named the old file and ``-o`` the new directory, and the
+        file went to ``git add``, which stopped every rerun with 'does not have a commit checked out'."""
+        (self.code / "notes").write_bytes(b"a note\n")
+        self.assertEqual(self.snapshot()[0], 0)
+        (self.code / "notes").unlink()
+        (self.code / "notes").mkdir()
+        (self.code / "notes" / "inside.txt").write_bytes(b"now a repository\n")
+        _git(self.code / "notes", "init", "-q", "-b", "main", ".")
+        for _ in range(2):
+            rc, out, err = self.snapshot()
+            self.assertEqual(rc, 0, out + err)
+        self.assertIn("notes/inside.txt", self.tree())
+        self.assertNotIn("notes", self.tree())
+
     def test_no_embedded_repos_with_a_commitless_repository_names_the_fix(self):
         bare = self.code / "fresh"
         bare.mkdir()
