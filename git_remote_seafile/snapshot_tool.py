@@ -5008,14 +5008,15 @@ def apply_recorded_mtimes(into: Path) -> tuple[int, int]:
         try:
             # Resolved in the extended-length form: a plain ``resolve`` of a folder past 260 characters raised on
             # a Windows without LongPathsEnabled and the time was skipped (review c305b0a gemini-S2-6 b).
-            parent = Path(_without_extended_prefix(str(extended_path(plain.parent).resolve())))
-            if os.path.commonpath([str(root), str(parent)]) != str(root):
+            parent = os.path.normcase(_without_extended_prefix(str(extended_path(plain.parent).resolve())))
+            if os.path.commonpath([os.path.normcase(str(root)), parent]) != os.path.normcase(str(root)):
                 skipped += 1
                 continue
             # A committed link (``tool -> .git``) must not carry an entry into the repository's own files or
             # the reserved directory; validate_manifest refuses the same shape (review c305b0a, fable-S2-5).
-            if any(parent == guarded or guarded in parent.parents
-                   for guarded in (root / ".git", root / PAYLOAD_RESERVED_DIR)):
+            if any(parent == guarded or parent.startswith(guarded + os.sep)
+                   for guarded in (os.path.normcase(str(root / ".git")),
+                                   os.path.normcase(str(root / PAYLOAD_RESERVED_DIR)))):
                 skipped += 1
                 continue
             if target.is_symlink():
