@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **A payload restore onto a FAT or exFAT volume mounted on Linux or macOS asks the volume about each name before downloading**, as the git checkout already did: a payload file `dot.` was reported `payload verified` while the volume had dropped the dot, and a name with a colon was downloaded in full before it failed. Both are now skipped and named, with no download (measured on a vfat loop mount; review c305b0a gemini-S3-5 b).
 - **A restore on a case-folding volume no longer says `payload verified` for a payload file whose name differs only by case from a file git checked out** (`Alpha.bin` checked out, `alpha.bin` in the manifest): the name is reported as the same file and the restore fails, as it already did for two manifest names (review c305b0a gemini-S3-5 a).
 - **`--payload-view` no longer loses a file named by its own hash** when another file in the same folder holds the same bytes and sorts after it: the second copy was numbered by the server and the rename moved the first file. A file named by its own hash is now placed last in its folder (review c305b0a fable-S3-2).
 - **A file renamed by the case of a non-ASCII letter** (`Über.txt` to `über.txt` on NTFS or APFS) is no longer kept in every later snapshot under both names, nor a renamed folder's content twice: git folds only A-Z, the disk folds every letter, and the old index entry is now dropped when it is the same file as the new spelling (review c305b0a fable-S1-10).

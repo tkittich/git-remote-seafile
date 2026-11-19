@@ -2782,6 +2782,20 @@ class PayloadRememberVerifyViewAndClockTests(_PayloadFixture):
             snap._restore_payload_files(None, "rid", "/base", files, into, into / ".scratch")
         self.assertIn("same file as Alpha.bin", str(ctx.exception))
 
+    def test_the_names_the_volume_refuses_are_judged_by_the_volume_on_every_platform(self):
+        """gemini-S3-5 b (review c305b0a): off Windows the payload restore never asked the volume, so a FAT
+        volume's trailing dot was dropped by the rename and the file was reported verified under a name it
+        does not have.  A volume that refuses ``:`` stands in here (measured on vfat, SNAPSHOT.md section 5)."""
+        into = self.case / "fat-like"
+        into.mkdir()
+        files = [{"path": "a:b.bin", "sha256": "0" * 64, "size": 1, "mtime_ns": 0, "mode": "100644"}]
+        with unittest.mock.patch.object(
+                snap, "destination_name_problem",
+                lambda _into: lambda name: "has a colon this volume refuses" if ":" in name else None):
+            with self.assertRaises(snap.SnapshotError) as ctx:
+                snap._restore_payload_files(None, "rid", "/base", files, into, into / ".scratch")
+        self.assertIn("a:b.bin: skipped, the name has a colon this volume refuses", str(ctx.exception))
+
     def test_a_payload_file_with_a_pre_1970_mtime_does_not_brick_the_vault(self):
         """gemini-S2-1 (review c305b0a): such an mtime was committed in the manifest and then refused by
         ``check_manifest_shape`` at the pre-push check, leaving a vault commit every later run tripped on."""

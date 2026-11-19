@@ -173,16 +173,19 @@ def _restore_payload_files(
     #: gemini-4-hydrogen-2-G1.1: identical bytes made the second one "verified" in silence).
     owners: dict[tuple[int, int], str] = {}
     listings: dict[Path, set[str]] = {}
+    # What the volume under *into* refuses, on every platform: a FAT volume mounted on Linux drops a trailing
+    # dot (the file then sat under another name and was reported verified) or refuses a colon after the whole
+    # object was downloaded (review c305b0a gemini-S3-5 b).  Windows keeps its fixed rules.
+    name_problem = destination_name_problem(into)
     total_bytes = sum(item["size"] for item in files)
     fetched = 0
     started = last_pulse = time.monotonic()
     for index, item in enumerate(files, 1):
         rel, sha = item["path"], item["sha256"]
-        if os.name == "nt":
-            why = windows_name_problem(rel)
-            if why:
-                problems.append(f"{rel}: skipped, the name {why}")
-                continue
+        why = name_problem(rel) if name_problem is not None else None
+        if why:
+            problems.append(f"{rel}: skipped, the name {why}")
+            continue
         dest = extended_path(into / rel)
         try:
             dest.parent.mkdir(parents=True, exist_ok=True)
