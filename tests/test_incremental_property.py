@@ -35,7 +35,8 @@ except ImportError:  # run as ``python -m unittest tests.<module>``
     from tests._helpers import remove_tree  # noqa: E402
 
 SEEDS = (3, 8)
-EXTRA_SEEDS = tuple(range(2000, 2000 + int(os.environ.get("GRS_FUZZ_SEEDS", "0") or 0)))
+_START = int(os.environ.get("GRS_FUZZ_START", "2000") or 2000)      # parallel runs take disjoint ranges
+EXTRA_SEEDS = tuple(range(_START, _START + int(os.environ.get("GRS_FUZZ_SEEDS", "0") or 0)))
 STEPS = 5
 
 NAMES = ["a.txt", "B.txt", "d", "D2", "build", "x[1].txt", "-dash", "sp ace.txt", "e.txt",

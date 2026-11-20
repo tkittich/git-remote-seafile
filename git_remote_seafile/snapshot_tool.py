@@ -3938,6 +3938,22 @@ def _is_special_file(path: str) -> bool:
     return stat.S_ISFIFO(mode) or stat.S_ISSOCK(mode) or stat.S_ISCHR(mode) or stat.S_ISBLK(mode)
 
 
+def _one_directory(work_tree: Path, a: str, b: str) -> bool:
+    """Whether two spellings name the same directory (a folding disk: ``G.BIN`` and ``g.bin``).
+
+    A file replaced by a repository is listed under the index's old spelling and found under the disk's
+    new one; capturing both put every file in twice, as ``G.BIN/x`` and ``g.bin/x``, and the next run's
+    ``git add`` refused the alias.  Same folded key and ``samestat``, so two real directories on a case-sensitive
+    disk are never merged.
+    """
+    if _skip_key(a) != _skip_key(b):
+        return False
+    try:
+        return os.path.samestat(os.lstat(extended_path(work_tree / a)), os.lstat(extended_path(work_tree / b)))
+    except OSError:
+        return False
+
+
 def inline_embedded_repositories(
     git_dir: Path,
     work_tree: Path,
@@ -3961,7 +3977,7 @@ def inline_embedded_repositories(
     """
     links = embedded_repositories(git_dir, work_tree)
     for extra in extra_dirs or ():
-        if extra not in links:
+        if extra not in links and not any(_one_directory(work_tree, extra, link) for link in links):
             links.append(extra)  # a repository with no commit has no gitlink
     if not links:
         return []
@@ -6125,8 +6141,8 @@ def _commit_object(
                                if isinstance(e, dict) and e.get("name") == d), None) == size), None)
         if whole is None:
             return False
-        if existing is not None and not client.delete_entry(rid, stale):
-            return False
+        if existing is not None:
+            client.delete_entry(rid, stale)      # another writer may have removed it: the move below says whether the name is free
         if not client.rename_entry(rid, f"{directory}/{whole}", sha):
             return False
         _sweep(_duplicates(client.list_dir(rid, directory)))

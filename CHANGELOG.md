@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **A file replaced by a repository under a different case of its name** (`G.BIN` became `g.bin`, on a disk that folds case) was captured twice, as `G.BIN/x` and `g.bin/x`, and the next snapshot stopped at git's "will not add file alias". The two spellings are now one directory. Found by the differential fuzz.
+- **Payload upload**: a damaged copy another writer had already deleted left the whole copy stranded as `<sha> (1)`; the move onto the name now decides, as in the LFS path.
 - **A tracked file replaced by a folder that holds a repository with no commit** no longer stops every later snapshot with "does not have a commit checked out": 0.10.2 handled the replaced path being the repository itself, not a plain folder with one inside. Found by the differential fuzz, now widened with renames, `.gitignore` edits and a file replaced by a repository.
 
 ## [0.10.2] - 2026-11-20

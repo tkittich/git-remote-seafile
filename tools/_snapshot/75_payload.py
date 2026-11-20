@@ -392,8 +392,8 @@ def _commit_object(
                                if isinstance(e, dict) and e.get("name") == d), None) == size), None)
         if whole is None:
             return False
-        if existing is not None and not client.delete_entry(rid, stale):
-            return False
+        if existing is not None:
+            client.delete_entry(rid, stale)      # another writer may have removed it: the move below says whether the name is free
         if not client.rename_entry(rid, f"{directory}/{whole}", sha):
             return False
         _sweep(_duplicates(client.list_dir(rid, directory)))

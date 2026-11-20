@@ -394,6 +394,15 @@ class RestoreDrillTests(_ReportFixture):
         for flag in ("--no-repack", "--payload-min-size", "--reset-to-remote", "--record-mtimes"):
             self.assertIn(f"{flag} does not apply to --restore-drill", err)
 
+    def test_the_drill_refuses_the_rest_of_the_snapshot_flags_too(self):
+        """fable-S4-14: deleting any of these rows left the test above green."""
+        rc, out, err = self.run_tool(
+            "--restore-drill", "--remote", self.remote, "--payload-rehash", "--allow-shared-remote",
+            "--no-object-compression", "--no-record-mtimes")
+        self.assertEqual(rc, snap.EXIT_USAGE, out + err)
+        for flag in ("--payload-rehash", "--allow-shared-remote", "--no-object-compression", "--no-record-mtimes"):
+            self.assertIn(f"{flag} does not apply to --restore-drill", err)
+
     def test_status_refuses_the_flags_of_a_snapshot_run(self):
         rc, out, err = self.run_tool(
             "--status", "--reset-to-remote", "--no-repack", "--payload-jobs", "8", "--payload-rehash")

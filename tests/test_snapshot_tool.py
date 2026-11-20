@@ -470,6 +470,24 @@ class SnapshotGuardTests(_SnapshotFixture):
         self.assertIn("B.txt/plain.txt", tree)
         self.assertNotIn("B.txt", tree)
 
+    def test_a_file_replaced_by_a_renamed_repository_is_captured_under_one_spelling(self):
+        """Found by the differential fuzz (seed 8090): ``G.BIN`` (a file) became ``g.bin`` (a repository with
+        no commit).  The index's old spelling and the disk's new one were both captured, so every file sat in
+        the index twice and the next ``git add`` refused the alias."""
+        if not snap.source_folds_case(self.code):
+            self.skipTest("the case alias needs a source that folds case")
+        (self.code / "G.BIN").write_bytes(b"a file" + bytes([10]))
+        self.assertEqual(self.snapshot()[0], 0)
+        (self.code / "G.BIN").unlink()
+        (self.code / "g.bin").mkdir()
+        (self.code / "g.bin" / "build").write_bytes(b"in the repository" + bytes([10]))
+        _git(self.code / "g.bin", "init", "-q", "-b", "main", ".")
+        for _ in range(2):
+            rc, out, err = self.snapshot()
+            self.assertEqual(rc, 0, out + err)
+        spellings = [p for p in self.tree() if p.lower().startswith("g.bin")]
+        self.assertEqual(len(spellings), 1, spellings)
+
     def test_no_embedded_repos_with_a_commitless_repository_names_the_fix(self):
         bare = self.code / "fresh"
         bare.mkdir()
@@ -2074,6 +2092,14 @@ class RestoreVerificationTests(_SnapshotFixture):
         self.assertEqual(rc, 0, err)
         self.assertIn("verified byte-exact against", out)
         self.assertNotIn("for the files written", out)
+
+    def test_the_verified_line_names_a_long_branch_in_full(self):
+        """gemini-4-hydrogen-S4-7: only a commit id is cut to 12 characters, never a branch name."""
+        name = "a-branch-with-a-long-name"
+        self.snapshot("--remote", str(self.remote), "--branch", name)
+        rc, out, err = self.run_tool("--restore", "--remote", self.remote, "--into", self.restored, "--branch", name)
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn(f"verified byte-exact against {name}", out)
 
     def _vault_with_odd_names(self) -> None:
         """A snapshot chain on ``self.remote`` holding names Windows cannot hold.

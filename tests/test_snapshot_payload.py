@@ -2673,6 +2673,29 @@ class PayloadRetentionTests(_PayloadFixture):
         self.assertTrue(snap._commit_object(fake, "r", "/d", f"{sha}.part-1", sha, 15))
         self.assertNotIn(sha, fake.deleted)
 
+    def test_a_damaged_copy_another_writer_already_deleted_does_not_strand_the_duplicate(self):
+        """gemini-4-hydrogen-S2-7: ``delete_entry`` said False for a name that was already gone, and the
+        whole copy was left under ``<sha> (1)``; lfs.py ignores that result and the move says if the name is free."""
+        sha = "h" * 64
+
+        class Fake:
+            def __init__(self):
+                self.renamed = []
+
+            def rename_entry(self, rid, path, new):
+                self.renamed.append((path.rsplit("/", 1)[-1], new))
+                return True
+
+            def list_dir(self, rid, directory):
+                return [{"name": sha, "size": 3}, {"name": f"{sha} (1)", "size": 15}]
+
+            def delete_entry(self, rid, path):
+                return False      # somebody else got there first
+
+        fake = Fake()
+        self.assertTrue(snap._commit_object(fake, "r", "/d", f"{sha}.part-1", sha, 15))
+        self.assertIn((f"{sha} (1)", sha), fake.renamed)
+
     def test_a_copy_of_the_wrong_size_is_never_moved_onto_the_name(self):
         sha = "h" * 64
 
