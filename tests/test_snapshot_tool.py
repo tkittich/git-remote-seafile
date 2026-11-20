@@ -4274,6 +4274,12 @@ class IncrementalStagingTests(_SnapshotFixture):
             (self.code / "model.dat").write_bytes(b"small")
             self.assertFalse(skipped("model.dat"))
 
+    def test_the_payload_skip_matcher_keeps_a_path_it_cannot_stat(self):
+        """Found by the mutation sweep: when the lstat fails the file stays in git (at worst in git and the
+        manifest, never in neither), even when the skip list holds a case twin of the name."""
+        skipped = snap.payload_skip_matcher(self.code, ["Gone.dat"])
+        self.assertFalse(skipped("gone.dat"))
+
     def test_the_payload_skip_matcher_folds_the_case_of_a_non_ascii_letter_too(self):
         """fable-G1.1 (review 134c8af): ``Über.dat`` renamed to ``über.dat`` is one file on NTFS and
         APFS, and the ASCII-only key never asked ``samestat``, so it went into git and the manifest."""

@@ -33,6 +33,15 @@ class IgnoredOptionTests(unittest.TestCase):
             "--payload-jobs", "--no-payload", "--payload-auto-ratio", "--payload-skip-changing",
             "--payload-report-days"])
 
+    def test_a_local_snapshot_names_the_payload_tuning_it_never_reads(self):
+        """gemini-S3-6 (the rest): ``--no-push`` uploads and verifies no payload object."""
+        args = _args("--no-push", "--payload-jobs", "2", "--payload-auto-ratio", "0.5",
+                     "--payload-skip-changing", "--payload-rehash")
+        self.assertEqual(snap.ignored_option_warnings(args), [
+            "--payload-jobs", "--payload-auto-ratio", "--payload-skip-changing", "--payload-rehash"])
+        self.assertEqual(snap.mode_name(args), "--no-push")
+        self.assertEqual(snap.ignored_option_warnings(_args("--no-push")), [])
+
     def test_a_status_names_what_a_report_never_reads(self):
         args = _args("--status", "--message", "hi", "--allow-low-disk", "--payload-report-days", "3")
         self.assertEqual(snap.ignored_option_warnings(args), ["--message", "--allow-low-disk", "--payload-report-days"])

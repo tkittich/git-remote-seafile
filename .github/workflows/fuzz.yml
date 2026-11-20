@@ -1,0 +1,52 @@
+name: Fuzz
+
+# The differential properties under tests/ with far more seeds than the suite runs, on the platforms whose
+# file systems fold case or normalise names (ROADMAP AA73: fable-S1-10 and S4-8 are open on macOS because
+# nobody could run the non-ASCII case-rename and Unicode-twin shapes there).  Started by hand when a change
+# touches staging, embedded repositories, restore or payload mode; nothing in a release waits on it.
+#
+#   gh workflow run fuzz.yml --ref <branch> -f seeds=60
+on:
+  workflow_dispatch:
+    inputs:
+      seeds:
+        description: "Seeds per property and per platform"
+        default: "40"
+      non_ascii:
+        description: "Add non-ASCII names and case renames (GRS_FUZZ_NONASCII)"
+        default: "1"
+
+permissions:
+  contents: read
+
+jobs:
+  fuzz:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest, ubuntu-latest]
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+    - name: Set up Python
+      uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+      with:
+        python-version: "3.14"
+    - name: Install
+      run: |
+        python -m pip install --upgrade pip
+        pip install -e .
+    - name: Fuzz
+      shell: bash
+      env:
+        GRS_FUZZ_SEEDS: ${{ inputs.seeds }}
+        GRS_RESTORE_SEEDS: ${{ inputs.seeds }}
+        GRS_PAYLOAD_SEEDS: ${{ inputs.seeds }}
+        GRS_PROPERTY_SEEDS: ${{ inputs.seeds }}
+        GRS_STATUS_SEEDS: ${{ inputs.seeds }}
+        GRS_FUZZ_NONASCII: ${{ inputs.non_ascii == '1' && '1' || '' }}
+      run: |
+        git config --global user.name ci
+        git config --global user.email ci@example.com
+        python -m unittest tests.test_incremental_property tests.test_restore_property \
+          tests.test_payload_property tests.test_roundtrip_property tests.test_status_property 2>&1 | tee fuzz-output.txt

@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- A snapshot run with `--no-push` now warns about `--payload-jobs`, `--payload-auto-ratio`, `--payload-skip-changing` and `--payload-rehash`, which only tune an upload it does not make; they are refused from 0.11 (the rest of gemini-S3-6).
+
 ### Fixed
 - **A file replaced by a repository under a different case of its name** (`G.BIN` became `g.bin`, on a disk that folds case) was captured twice, as `G.BIN/x` and `g.bin/x`, and the next snapshot stopped at git's "will not add file alias". The two spellings are now one directory. Found by the differential fuzz.
 - **Payload upload**: a damaged copy another writer had already deleted left the whole copy stranded as `<sha> (1)`; the move onto the name now decides, as in the LFS path.

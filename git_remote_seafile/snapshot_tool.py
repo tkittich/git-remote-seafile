@@ -11098,6 +11098,13 @@ def ignored_option_warnings(args: argparse.Namespace) -> list[str]:
             ("--payload-skip-changing", args.payload_skip_changing),
             ("--payload-report-days", args.payload_report_days is not None),
         )
+    elif args.no_push:
+        # A snapshot kept local uploads no payload object and re-checks none, so what only tunes that is dead weight.
+        given = (
+            ("--payload-jobs", args.payload_jobs is not None),
+            ("--payload-auto-ratio", args.payload_auto_ratio is not None),
+            ("--payload-skip-changing", args.payload_skip_changing), ("--payload-rehash", args.payload_rehash),
+        )
     else:
         return []
     return [flag for flag, value in given if value]
@@ -11110,6 +11117,8 @@ def mode_name(args: argparse.Namespace) -> str:
         return "--payload-verify"
     if args.payload_view is not None:
         return "--payload-view"
+    if args.restore_drill is None and not args.status and not args.maintain:
+        return "--no-push"
     return "--restore-drill" if args.restore_drill is not None else "--status" if args.status else "--maintain"
 
 

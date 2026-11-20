@@ -55,7 +55,7 @@ def _git(*args, cwd):
                           encoding="utf-8", errors="replace")
 
 
-class IncrementalMatchesFresh(unittest.TestCase):
+class _IncrementalFixture(unittest.TestCase):   # no tests of its own: other properties build on it
     def setUp(self):
         self.tmp = pathlib.Path(tempfile.mkdtemp(prefix="grs-fuzz-"))
         self.addCleanup(remove_tree, self.tmp)
@@ -180,6 +180,7 @@ class IncrementalMatchesFresh(unittest.TestCase):
                           for k in set(incremental) | set(fresh) if incremental.get(k) != fresh.get(k)}
                 self.assertEqual(differ, {}, f"{where}: incremental vs fresh")
 
+class IncrementalMatchesFresh(_IncrementalFixture):
     def test_fixed_seeds(self):
         for seed in SEEDS + EXTRA_SEEDS:
             with self.subTest(seed=seed):
