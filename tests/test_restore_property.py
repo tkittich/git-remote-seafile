@@ -28,6 +28,7 @@ SEEDS = (11, 14)
 _START = int(os.environ.get("GRS_RESTORE_START", "40000") or 40000)
 EXTRA_SEEDS = tuple(range(_START, _START + int(os.environ.get("GRS_RESTORE_SEEDS", "0") or 0)))
 _FOLD = base._FOLD
+_LINK = b"\x00link"       # what ``_disk`` records for a symbolic link: its bytes are not compared
 
 
 class RestoreMatchesTheSnapshot(base._IncrementalFixture):
@@ -50,7 +51,11 @@ class RestoreMatchesTheSnapshot(base._IncrementalFixture):
                 dirs.remove(".git")
             for name in names:
                 path = pathlib.Path(folder, name)
-                found[path.relative_to(root).as_posix().translate(_FOLD)] = path.read_bytes()
+                key = path.relative_to(root).as_posix().translate(_FOLD)
+                if path.is_symlink():       # a link may come back as a link or as a file holding its target
+                    found[key] = _LINK
+                else:
+                    found[key] = path.read_bytes()
         return found
 
     def _step_check(self, seed: int, step: int, remote: pathlib.Path, flags: list[str], where: str) -> None:
@@ -60,7 +65,7 @@ class RestoreMatchesTheSnapshot(base._IncrementalFixture):
             rc = snap.main(["--source", str(self.src), "--vault", str(vault), "--remote", str(remote), *flags])
         said = (err.getvalue() or out.getvalue()).strip()[-300:]
         if rc != 0:
-            if "does not have a commit checked out" in said and "--no-embedded-repos" in flags:
+            if ("does not have a commit checked out" in said or "repository with no commit" in said) and "--no-embedded-repos" in flags:
                 raise unittest.SkipTest("documented refusal")       # a repository without a commit
             self.fail(f"{where}: the snapshot failed: {said}")
         held = self._held(vault)
@@ -74,7 +79,8 @@ class RestoreMatchesTheSnapshot(base._IncrementalFixture):
         wanted = {path.translate(_FOLD) for path in held}
         self.assertEqual(sorted(set(restored) - wanted), [], f"{where}: the restore wrote what the tree lacks")
         self.assertEqual(sorted(wanted - set(restored)), [], f"{where}: the restore left out what the tree holds")
-        wrong = [p for p in wanted & set(restored) if p in disk and restored[p] != disk[p]]
+        wrong = [p for p in wanted & set(restored)
+                 if p in disk and restored[p] != disk[p] and _LINK not in (restored[p], disk[p])]
         self.assertEqual(wrong, [], f"{where}: restored bytes differ from the disk's")
 
     def _run_restore_seed(self, seed: int) -> None:

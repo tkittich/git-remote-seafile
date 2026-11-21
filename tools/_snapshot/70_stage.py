@@ -224,6 +224,7 @@ def build_snapshot(
     An embedded repository is captured as its files (:func:`inline_embedded_repositories`)
     unless ``capture_embedded`` is false; each one is appended to ``embedded_report``.
     """
+    release_links_that_became_files(git_dir, work_tree)
     reserved = (work_tree / PAYLOAD_RESERVED_DIR).exists()
     # A clock probe a killed run left at the root must not be captured.
     probe_debris = any(is_clock_probe_debris(p.name) for p in work_tree.glob(_PROBE_PREFIX + "*"))

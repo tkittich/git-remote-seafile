@@ -488,6 +488,45 @@ class SnapshotGuardTests(_SnapshotFixture):
         spellings = [p for p in self.tree() if p.lower().startswith("g.bin")]
         self.assertEqual(len(spellings), 1, spellings)
 
+    def test_a_link_replaced_by_a_file_is_recorded_as_a_file_when_git_has_no_symlinks(self):
+        """Found by the exotic differential fuzz (seed 11019 on a Windows git without ``core.symlinks``): git
+        ignores a link-to-file change while that setting is off and kept mode ``120000`` for a regular file, so
+        a restore elsewhere would make a link whose target is the file's bytes."""
+        try:
+            os.symlink("target", self.code / "f")
+        except (OSError, NotImplementedError):
+            self.skipTest("this machine cannot make a symlink")
+        self.assertEqual(self.snapshot()[0], 0)
+        _git(self.vault, "config", "core.symlinks", "false")
+        (self.code / "f").unlink()
+        (self.code / "f").write_bytes(b"now a plain file" + bytes([10]))
+        self.assertEqual(self.snapshot()[0], 0)
+        mode = _git(self.vault, "ls-tree", BRANCH, "--", "f").stdout.split()[0]
+        self.assertEqual(mode, "100644")
+
+    def test_only_a_link_that_became_a_file_is_released_and_only_without_symlinks(self):
+        """Found by the mutation sweep: the release must leave a link that is still a link, a deleted link and
+        any index when git has symlinks (git itself sees the type change there)."""
+        try:
+            os.symlink("target", self.code / "kept")
+            os.symlink("target", self.code / "gone")
+            os.symlink("target", self.code / "plain")
+        except (OSError, NotImplementedError):
+            self.skipTest("this machine cannot make a symlink")
+        self.assertEqual(self.snapshot()[0], 0)
+        (self.code / "gone").unlink()
+        (self.code / "plain").unlink()
+        (self.code / "plain").write_bytes(b"x")
+        git_dir = self.vault / ".git"
+        _git(self.vault, "config", "core.symlinks", "true")
+        self.assertEqual(snap.release_links_that_became_files(git_dir, self.code), [])
+        _git(self.vault, "config", "core.symlinks", "false")
+        self.assertEqual(snap.release_links_that_became_files(git_dir, self.code), ["plain"])
+        staged = _git(self.vault, "ls-files", "-s").stdout
+        self.assertIn("kept", staged)
+        self.assertIn("gone", staged)
+        self.assertNotIn("plain", staged)
+
     def test_no_embedded_repos_with_a_commitless_repository_names_the_fix(self):
         bare = self.code / "fresh"
         bare.mkdir()

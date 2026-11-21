@@ -3150,6 +3150,33 @@ def retyped_to_directory(git_dir: Path, work_tree: Path) -> tuple[list[str], lis
     return folders, repositories
 
 
+def release_links_that_became_files(git_dir: Path, work_tree: Path) -> list[str]:
+    """Drop the index entry of a link that is a regular file now, when git has no symlinks.
+
+    With ``core.symlinks`` off (a Windows git without the privilege, a FAT volume) git ignores a change
+    from link to file and keeps mode ``120000`` for the new bytes, so the tree recorded a link whose target
+    is the file's content and a restore on another machine made that link (found by the exotic differential
+    fuzz, seed 11019).  The entry goes out of the index and ``add`` writes it again as the file it is.
+    Returns the paths released.
+    """
+    setting = git(git_dir, work_tree, ["config", "--bool", "core.symlinks"], cwd=work_tree, check=False)
+    if setting.stdout.strip() != "false":
+        return []
+    listing = git(git_dir, work_tree, ["ls-files", "-s", "-z"], cwd=work_tree).stdout
+    released = []
+    for entry in filter(None, listing.split("\0")):
+        meta, _, path = entry.partition("\t")
+        if not meta.startswith("120000"):
+            continue
+        here = extended_path(Path(work_tree) / path)
+        if os.path.lexists(here) and not os.path.islink(here) and not os.path.isdir(here):
+            released.append(path)
+    if released:
+        index_info = "".join(f"0 {'0' * 40}\t{path}\0" for path in released)
+        git(git_dir, work_tree, ["update-index", "-z", "--index-info"], cwd=work_tree, stdin=index_info)
+    return released
+
+
 #: How many paths to hand to a single ``update-index`` invocation.  A tree can
 #: hold far more matches than one command line can carry, and Windows' limit is
 #: the smallest of the platforms this runs on.
@@ -3374,6 +3401,7 @@ def build_snapshot(
     An embedded repository is captured as its files (:func:`inline_embedded_repositories`)
     unless ``capture_embedded`` is false; each one is appended to ``embedded_report``.
     """
+    release_links_that_became_files(git_dir, work_tree)
     reserved = (work_tree / PAYLOAD_RESERVED_DIR).exists()
     # A clock probe a killed run left at the root must not be captured.
     probe_debris = any(is_clock_probe_debris(p.name) for p in work_tree.glob(_PROBE_PREFIX + "*"))

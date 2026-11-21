@@ -46,6 +46,10 @@ NAMES = ["a.txt", "B.txt", "d", "D2", "build", "x[1].txt", "-dash", "sp ace.txt"
 NON_ASCII = bool(os.environ.get("GRS_FUZZ_NONASCII"))
 if NON_ASCII:
     NAMES += ["é.txt", "Über", "übung.txt", "straße.txt"]
+#: ``GRS_FUZZ_EXOTIC=1`` adds symbolic links (to a file, a folder, nothing, a path outside the tree), links replaced by
+#: files and back, the executable bit and a path past 260 characters.  Off by default: they need a platform that
+#: can make links, and a long path is slow to walk on a Windows without long-path support.
+EXOTIC = bool(os.environ.get("GRS_FUZZ_EXOTIC"))
 EXCLUDES = [[], ["build"], ["*.pyc"], ["sub/inner"], ["d"], ["node_modules", "*.txt"]]
 _FOLD = str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz")
 
@@ -78,10 +82,39 @@ class _IncrementalFixture(unittest.TestCase):   # no tests of its own: other pro
     def _mutate(self, rng: random.Random) -> None:
         op = rng.choice(["new", "new", "new", "mod", "mod", "del", "f2d", "d2f", "case", "repo",
                          "commit", "rmdir", "mv", "mv", "ignore", "f2repo"])
+        if EXOTIC and rng.random() < 0.3:
+            op = rng.choice(["link", "link", "relink", "unlink2f", "exec", "deep"])
         dirs, files = self._walk()
         d = rng.choice(dirs)
         try:
-            if op == "new":
+            if op == "link":
+                target = rng.choice(["a.txt", "sub", "missing", "../outside", str(self.tmp / "outside.txt"), "."])
+                os.symlink(target, d / rng.choice(NAMES), target_is_directory=(target in ("sub", ".")))
+            elif op == "relink" and files:
+                p = rng.choice(files)           # a file, or a link, becomes a link to something else
+                p.unlink()
+                os.symlink(rng.choice(["a.txt", "sub", "missing", str(self.tmp / "outside.txt")]), p)
+            elif op == "unlink2f":
+                links = [x for x in files + dirs[1:] if x.is_symlink()]
+                if links:
+                    x = rng.choice(links)
+                    x.unlink()
+                    if rng.random() < 0.5:
+                        x.write_bytes(rng.randbytes(rng.randint(0, 20)))
+                    else:
+                        x.mkdir()
+                        (x / rng.choice(NAMES)).write_bytes(b"in")
+            elif op == "exec" and files:
+                x = rng.choice([f for f in files if not f.is_symlink()] or files)
+                if not x.is_symlink():
+                    x.chmod(x.stat().st_mode ^ 0o111)
+            elif op == "deep":
+                chain = d
+                for _ in range(rng.randint(5, 8)):
+                    chain = chain / ("deep" + "x" * 40)
+                chain.mkdir(parents=True, exist_ok=True)
+                (chain / rng.choice(NAMES)).write_bytes(rng.randbytes(rng.randint(0, 20)))
+            elif op == "new":
                 p = d / rng.choice(NAMES)
                 if p.is_dir():
                     p = p / rng.choice(NAMES)

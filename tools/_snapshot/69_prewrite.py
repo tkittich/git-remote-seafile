@@ -513,3 +513,30 @@ def retyped_to_directory(git_dir: Path, work_tree: Path) -> tuple[list[str], lis
         if os.path.exists(extended_path(here / ".git")):
             repositories.append(path)
     return folders, repositories
+
+
+def release_links_that_became_files(git_dir: Path, work_tree: Path) -> list[str]:
+    """Drop the index entry of a link that is a regular file now, when git has no symlinks.
+
+    With ``core.symlinks`` off (a Windows git without the privilege, a FAT volume) git ignores a change
+    from link to file and keeps mode ``120000`` for the new bytes, so the tree recorded a link whose target
+    is the file's content and a restore on another machine made that link (found by the exotic differential
+    fuzz, seed 11019).  The entry goes out of the index and ``add`` writes it again as the file it is.
+    Returns the paths released.
+    """
+    setting = git(git_dir, work_tree, ["config", "--bool", "core.symlinks"], cwd=work_tree, check=False)
+    if setting.stdout.strip() != "false":
+        return []
+    listing = git(git_dir, work_tree, ["ls-files", "-s", "-z"], cwd=work_tree).stdout
+    released = []
+    for entry in filter(None, listing.split("\0")):
+        meta, _, path = entry.partition("\t")
+        if not meta.startswith("120000"):
+            continue
+        here = extended_path(Path(work_tree) / path)
+        if os.path.lexists(here) and not os.path.islink(here) and not os.path.isdir(here):
+            released.append(path)
+    if released:
+        index_info = "".join(f"0 {'0' * 40}\t{path}\0" for path in released)
+        git(git_dir, work_tree, ["update-index", "-z", "--index-info"], cwd=work_tree, stdin=index_info)
+    return released

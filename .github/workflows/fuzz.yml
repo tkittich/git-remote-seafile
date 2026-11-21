@@ -15,6 +15,9 @@ on:
       non_ascii:
         description: "Add non-ASCII names and case renames (GRS_FUZZ_NONASCII)"
         default: "1"
+      exotic:
+        description: "Add symbolic links, the executable bit and long paths (GRS_FUZZ_EXOTIC)"
+        default: "1"
 
 permissions:
   contents: read
@@ -45,6 +48,7 @@ jobs:
         GRS_PROPERTY_SEEDS: ${{ inputs.seeds }}
         GRS_STATUS_SEEDS: ${{ inputs.seeds }}
         GRS_FUZZ_NONASCII: ${{ inputs.non_ascii == '1' && '1' || '' }}
+        GRS_FUZZ_EXOTIC: ${{ inputs.exotic == '1' && '1' || '' }}
       run: |
         git config --global user.name ci
         git config --global user.email ci@example.com
