@@ -41,6 +41,12 @@ def _disk(root: pathlib.Path) -> dict[str, bytes]:
 
 
 class PayloadRoundTrip(payload._PayloadFixture):
+    def setUp(self):
+        super().setUp()
+        identity = self.case / "identity.gitconfig"      # a CI runner has none, and the vault needs one to commit
+        identity.write_text("[user]\n\tname = t\n\temail = t@example.com\n", encoding="utf-8")
+        self.env = {**self.env, "GIT_CONFIG_GLOBAL": str(identity)}      # run_tool patches os.environ with this
+
     def _size(self, rng: random.Random) -> int:
         return rng.choice([0, 10, 400, 999, 1000, 1001, 2500, 6000])        # both sides of the threshold
 
