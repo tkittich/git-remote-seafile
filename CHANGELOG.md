@@ -7,7 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Changed
+## [0.10.3] - 2026-11-21
+
+A fixes-only release (maintenance mode): four defects found by widening the differential fuzz (one of them, a link replaced by a file, could record the file as a link), a payload upload fix, and one more warn-first pass of the deprecation policy.
+
+### Deprecated
 - A snapshot run with `--no-push` now warns about `--payload-jobs`, `--payload-auto-ratio`, `--payload-skip-changing` and `--payload-rehash`, which only tune an upload it does not make; they are refused from 0.11 (the rest of gemini-S3-6).
 
 ### Fixed
@@ -2264,6 +2268,7 @@ Data-loss and silent-failure fixes, and the Python floor raised to 3.9.
   with zero-config desktop-client token discovery, distributed locking, remote
   packfile compaction, and a Git LFS custom transfer agent.
 
+[0.10.3]: https://github.com/tkittich/git-remote-seafile/compare/v0.10.2...v0.10.3
 [0.10.2]: https://github.com/tkittich/git-remote-seafile/compare/v0.10.1...v0.10.2
 [0.10.1]: https://github.com/tkittich/git-remote-seafile/compare/v0.10.0...v0.10.1
 [0.10.0]: https://github.com/tkittich/git-remote-seafile/compare/v0.9.27...v0.10.0
