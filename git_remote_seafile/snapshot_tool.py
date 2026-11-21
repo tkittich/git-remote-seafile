@@ -3168,8 +3168,9 @@ def release_links_that_became_files(git_dir: Path, work_tree: Path) -> list[str]
         meta, _, path = entry.partition("\t")
         if not meta.startswith("120000"):
             continue
-        here = extended_path(Path(work_tree) / path)
-        if os.path.lexists(here) and not os.path.islink(here) and not os.path.isdir(here):
+        here = Path(work_tree) / path
+        if (os.path.lexists(extended_path(here)) and not os.path.islink(extended_path(here))
+                and not os.path.isdir(extended_path(here))):
             released.append(path)
     if released:
         index_info = "".join(f"0 {'0' * 40}\t{path}\0" for path in released)

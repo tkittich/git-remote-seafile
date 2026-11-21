@@ -5444,12 +5444,13 @@ class GitCallBudgetTests(_SnapshotFixture):
         self.snapshot()
         (self.code / "README.md").write_bytes(b"changed\n")
         started = self._count_git()
-        # Measured on this fixture: 33 (one is the push's own update-ref), seven of
-        # them config reads, one per question; before the caches 44, a dozen config.
+        # Measured on this fixture: 36 (one is the push's own update-ref), eight of
+        # them config reads, one per question (the eighth asks whether git has symlinks,
+        # so a link that became a file is released); before the caches 44, a dozen config.
         # The margin is for a call a later feature adds on purpose, which should then
         # raise these numbers.
-        self.assertLessEqual(len(started), 35, sorted(started))
-        self.assertLessEqual(started.count("config"), 7, sorted(started))
+        self.assertLessEqual(len(started), 36, sorted(started))
+        self.assertLessEqual(started.count("config"), 8, sorted(started))
 
     def test_config_reads_see_a_write(self):
         vault = self.vault
