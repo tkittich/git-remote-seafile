@@ -21,6 +21,7 @@ from requests.adapters import HTTPAdapter
 from urllib3.util import parse_url as _urllib3_parse_url
 from urllib3.util.retry import Retry
 
+from . import gitcred
 from .git_util import get_git_config_bool
 from .seafile_paths import get_candidate_db_paths
 from .url import is_loopback_host, normalize_netloc
@@ -556,6 +557,7 @@ class SeafileClient:
         self.server_url = (server_url or "").rstrip("/")
         self.token = token
         self.username = username
+        self._git_credential_note = ""
         self.timeout = timeout
         self._force_file_host: bool | None = None  # resolved lazily; see below
         self._server_time_offset: float | None = None
@@ -708,6 +710,8 @@ class SeafileClient:
             return
         if self._credentials_from_accounts_db(require_token):
             return
+        if self._credentials_from_git(require_token):
+            return
         if not self.server_url or (require_token and not self.token):
             raise SeafileAuthError(
                 self._missing_credentials_message(require_token, config_path, cfg_server, cfg_token)
@@ -796,6 +800,32 @@ class SeafileClient:
             sys.stderr.flush()
         return False, cfg_server, cfg_token
 
+    def _credentials_from_git(self, require_token: bool) -> bool:
+        """The last source: ``git credential fill`` (CREDENTIAL.md).
+
+        Only when a server is known (a git answer names no server of its own: the
+        host and path of the request are the server, and git matched them) and a
+        token is wanted.  Never prompts (see :mod:`gitcred`); any failure is a
+        silent "nothing found" with a note for the error message.
+        """
+        self._git_credential_note = ""
+        if not (self.server_url and require_token and not self.token):
+            return False
+        try:
+            outcome = gitcred.fill(self.server_url, self.username)
+        except gitcred.CredentialRequestError as ex:
+            self._git_credential_note = f"git credential helper not asked: {ex}"
+            return False
+        if outcome.found is None:
+            tried = ", ".join(outcome.tried)
+            self._git_credential_note = f"git credential helper had nothing under {tried}" + (
+                f" ({outcome.note})" if outcome.note else ""
+            )
+            return False
+        self._adopt_token(outcome.found.token, "the token from the git credential helper")
+        self._git_credential_username = outcome.found.username
+        return True
+
     def _account_row(self, con: Any) -> tuple[str | None, str | None, str | None] | None:
         """The ``(url, token, username)`` row to use from an open accounts.db.
 
@@ -881,6 +911,8 @@ class SeafileClient:
                     f"{config_path} holds a token but no \"server\", so the token was "
                     "not used: a token is only sent to the server it names"
                 )
+            if getattr(self, "_git_credential_note", ""):
+                skipped.append(self._git_credential_note)
             detail = " (" + "; ".join(skipped) + ")" if skipped else ""
             return (
                 f"Could not find Seafile credentials for '{self.server_url}'{detail}. "
