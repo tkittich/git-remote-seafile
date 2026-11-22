@@ -66,7 +66,7 @@ class RestoreMatchesTheSnapshot(base._IncrementalFixture):
         vault = self.tmp / "vault"
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
             rc = snap.main(["--source", str(self.src), "--vault", str(vault), "--remote", str(remote), *flags])
-        said = (err.getvalue() or out.getvalue()).strip()[-300:]
+        said = (err.getvalue() or out.getvalue()).strip()[-1500:]    # a long path pushed the reason out of 300
         if rc != 0:
             if ("does not have a commit checked out" in said or "repository with no commit" in said) and "--no-embedded-repos" in flags:
                 raise unittest.SkipTest("documented refusal")       # a repository without a commit

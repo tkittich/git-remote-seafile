@@ -382,7 +382,7 @@ def build_snapshot(
             if path and (ignorecase_key(path) if folded else path) not in kept_known
         ]
         if folded:
-            stale += [p for p in case_twins(work_tree, kept, set(to_stage)) if p not in set(stale)]
+            stale += [p for p in case_twins(work_tree, kept) if p not in set(stale)]
         if stale:
             drop_from_index(git_dir, work_tree, stale)
         # The pre-filter above is the mechanism; this is the net under it, so a

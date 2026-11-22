@@ -503,6 +503,17 @@ class SnapshotGuardTests(_SnapshotFixture):
         listed = [n for n in _git(repo, "ls-files", "-z").stdout.split(chr(0)) if n]
         self.assertEqual(sorted(listed), ["plain.txt", "über.txt"])
 
+    def test_a_rename_that_makes_both_spellings_new_to_git_still_drops_the_old_one(self):
+        """Fuzz seed 2094 on macOS: ``straße.txt`` renamed to ``STRASSE.TXT``.  APFS answers ``lstat`` for either
+        name, so git lists both as new or changed and both were staged: ``case_twins`` only looked at an old
+        spelling that was *not* staged now, so neither was old and the snapshot kept both.  The disk's own
+        listing says which spelling is live."""
+        repo = self._twin_index(["STRASSE.TXT", "straße.txt"])
+        (repo / "STRASSE.TXT").write_bytes(b"one" + bytes([10]))
+        with self._folding_lstat():
+            old = snap.case_twins(repo, ["STRASSE.TXT", "straße.txt"])
+        self.assertEqual(old, ["straße.txt"])
+
     def test_two_spellings_that_are_both_on_the_disk_are_both_kept(self):
         """A case-sensitive disk (or two real files): nothing is a twin of anything."""
         repo = self._twin_index(["Über.txt", "über.txt"])

@@ -172,7 +172,7 @@ class _IncrementalFixture(unittest.TestCase):   # no tests of its own: other pro
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
             rc = snap.main(["--source", str(self.src), "--vault", str(vault), "--no-push", *flags])
         if rc != 0:
-            return None, (err.getvalue() or out.getvalue()).strip()[-300:]
+            return None, (err.getvalue() or out.getvalue()).strip()[-1500:]    # the tail holds git's reason, behind a long path
         listing = _git("--git-dir", str(vault / ".git"), "ls-tree", "-r", "-z", "snapshot", cwd=self.tmp).stdout
         entries = {}
         for entry in listing.split("\0"):

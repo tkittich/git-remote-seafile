@@ -374,51 +374,22 @@ def embedded_tracked_paths_walk(source: Path) -> list[str]:
     return found
 
 
-def case_twins(work_tree: Path, kept: list[str], staged_now: "set[str]") -> list[str]:
-    """Index entries that are the old spelling of a file just staged under a new one.
+def old_spellings(work_tree: Path, paths: "list[str]") -> list[str]:
+    """Of *paths*, the ones that are the old spelling of a file the disk lists under another.
 
-    A file renamed by the case of a non-ASCII letter (``Über.txt`` -> ``über.txt``) is one file to NTFS and
-    APFS, which fold every letter, and two to git, which folds A-Z only: the old entry still answers ``lstat``,
-    so it stayed in every snapshot beside the new name (review c305b0a fable-S1-10).  Names of one folded
-    spelling where one was staged now and another was already in the index are the same file when
-    ``samestat`` says so -- the key and the proof of ``payload_skip_matcher`` -- and the old one goes.
+    NTFS and APFS fold every letter, git folds A-Z only (and APFS folds more than NTFS: ``straße.txt`` answers
+    ``lstat`` as ``STRASSE.TXT``), so a file renamed by case leaves its old index entry answering ``lstat``.  Names of
+    one folded spelling are twins; the live one is the spelling its folder lists (NFC, as macOS lists NFD); the others
+    go when ``samestat`` says they are the same file.  Not "staged now": a rename makes both spellings look new to
+    git, so both were staged and neither was old (fuzz seed 2094 on macOS).  Only groups of two or more are looked
+    at, so a tree without twins costs nothing.
     """
     groups: dict[str, list[str]] = {}
-    for path in kept:
-        groups.setdefault(_skip_key(path), []).append(path)
-    old: list[str] = []
-    for members in groups.values():
-        fresh = [m for m in members if m in staged_now]
-        for path in (m for m in members if m not in staged_now) if fresh else ():
-            try:
-                here = os.lstat(extended_path(work_tree / path))
-                if any(os.path.samestat(here, os.lstat(extended_path(work_tree / new))) for new in fresh):
-                    old.append(path)
-            except OSError:
-                continue
-    return old
-
-
-def drop_twin_spellings(git_dir: Path, work_tree: Path) -> None:
-    """After a plain ``git add -A`` on a volume that folds case: drop an index entry that is the old spelling of a file.
-
-    ``case_twins`` does this for the filtered route; the unfiltered route (every run on macOS and Linux with no
-    exclude) never read the index, so ``Über.txt`` renamed to ``über.txt`` stayed in every snapshot beside the new
-    name on APFS (review c305b0a fable-S1-10, reproduced on macOS CI).  An entry is the old spelling when some
-    component of it is not spelled that way in its folder's listing, the same file answers to the name that is,
-    and ``samestat`` says so.  Only index entries sharing a folded name are looked at, so a tree without twins
-    costs one ``ls-files``.
-    """
-    if git(git_dir, work_tree, ["config", "--bool", "core.ignorecase"], cwd=work_tree,
-           check=False).stdout.strip() != "true":
-        return
-    entries = [p for p in git(git_dir, work_tree, ["ls-files", "-z"], cwd=work_tree).stdout.split("\0") if p]
-    groups: dict[str, list[str]] = {}
-    for path in entries:
+    for path in paths:
         groups.setdefault(_skip_key(path), []).append(path)
     twins = [members for members in groups.values() if len(members) > 1]
     if not twins:
-        return
+        return []
     listings: dict[str, set[str]] = {}
 
     def spelled_as_on_disk(path: str) -> bool:
@@ -444,6 +415,32 @@ def drop_twin_spellings(git_dir: Path, work_tree: Path) -> None:
                     old.append(path)
             except OSError:
                 continue
+    return old
+
+
+def case_twins(work_tree: Path, kept: list[str]) -> list[str]:
+    """Index entries that are the old spelling of a file kept under a new one (the filtered route).
+
+    A file renamed by the case of a non-ASCII letter (``Über.txt`` -> ``über.txt``) is one file to NTFS and
+    APFS and two to git: the old entry still answers ``lstat``, so it stayed in every snapshot beside the new
+    name (review c305b0a fable-S1-10).  ``old_spellings`` says which is old.
+    """
+    return old_spellings(work_tree, kept)
+
+
+def drop_twin_spellings(git_dir: Path, work_tree: Path) -> None:
+    """After a plain ``git add -A`` on a volume that folds case: drop an index entry that is the old spelling of a file.
+
+    ``case_twins`` does this for the filtered route; the unfiltered route (every run on macOS and Linux with no
+    exclude) never read the index, so ``Über.txt`` renamed to ``über.txt`` stayed in every snapshot beside the new
+    name on APFS (review c305b0a fable-S1-10, reproduced on macOS CI).  Only index entries sharing a folded name are
+    looked at, so a tree without twins costs one ``ls-files``.
+    """
+    if git(git_dir, work_tree, ["config", "--bool", "core.ignorecase"], cwd=work_tree,
+           check=False).stdout.strip() != "true":
+        return
+    entries = [p for p in git(git_dir, work_tree, ["ls-files", "-z"], cwd=work_tree).stdout.split("\0") if p]
+    old = old_spellings(work_tree, entries)
     if old:
         drop_from_index(git_dir, work_tree, old)
 
