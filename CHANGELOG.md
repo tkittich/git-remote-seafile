@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **A gitlink whose name needs quoting is named as it is spelled in the snapshot warning.** `find_gitlinks` read `ls-tree -r` without `-z`, so a path with a double quote, backslash, tab or newline came back C-quoted (`core.quotepath=false` spares only non-ASCII) and the "embedded git repositories" warning printed the quoted form.
+
 ## [0.10.3] - 2026-11-21
 
 A fixes-only release (maintenance mode): four defects found by widening the differential fuzz (one of them, a link replaced by a file, could record the file as a link), a payload upload fix, and one more warn-first pass of the deprecation policy.

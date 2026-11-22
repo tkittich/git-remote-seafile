@@ -390,6 +390,15 @@ class SnapshotGuardTests(_SnapshotFixture):
         self.assertIn("Warning: these paths are embedded", out)
         self.assertNotIn("nested/inner.txt", self.tree())
 
+    @unittest.skipIf(os.name == "nt", "a double quote cannot be in a Windows file name")
+    def test_a_gitlink_with_a_quote_in_its_name_is_named_as_it_is_spelled(self):
+        """N-ONLY-2: ``ls-tree -r`` without ``-z`` C-quotes a path with ``"``, a backslash, a tab or a newline even
+        under ``core.quotepath=false`` (which only spares non-ASCII), so the warning printed ``"a\\"b"``."""
+        self._nested_repo('a"b')
+        rc, out, _ = self.snapshot("--no-embedded-repos")
+        self.assertEqual(rc, 0)
+        self.assertIn('\n  a"b\n', out)
+
     def test_a_repository_with_no_commit_is_captured_not_a_crash(self):
         bare = self.code / "fresh"
         bare.mkdir()

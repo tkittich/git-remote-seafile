@@ -3646,11 +3646,12 @@ def find_gitlinks(git_dir: Path, work_tree: Path, tree: str) -> list[str]:
     restore therefore produces a broken directory rather than the files, which
     is silent data loss in something sold as a full backup.
     """
-    listing = git(git_dir, work_tree, ["ls-tree", "-r", tree], cwd=work_tree).stdout
+    # ``-z``: without it a non-ASCII path comes back C-quoted under the default core.quotepath.
+    listing = git(git_dir, work_tree, ["ls-tree", "-r", "-z", tree], cwd=work_tree).stdout
     return [
-        line.split("\t", 1)[1]
-        for line in listing.splitlines()
-        if line.startswith("160000 commit ")
+        entry.split("\t", 1)[1]
+        for entry in listing.split("\0")
+        if entry.startswith("160000 commit ")
     ]
 
 
