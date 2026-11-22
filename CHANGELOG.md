@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.4] - 2026-11-22
+
+A fixes-only release (maintenance mode): two bugs reproduced on macOS (APFS) by a CI probe, one on a plain folder with an embedded repository, a gitlink warning that printed a quoted name, and two warn-first deprecations (`--no-embedded-repos`, `--restore --payload-jobs`). Each fix has a test that fails without it.
+
 ### Deprecated
 - `--restore --payload-jobs` now warns: a restore downloads payload objects one at a time and never read the job count (the last of gemini-S3-6); refused from 0.11, `SNAPSHOT.md` "Options by mode" says so.
 - **Announced for 0.11** (the snapshot tool; nothing is refused yet). A run with `--no-embedded-repos` prints a `Warning:` that from 0.11 the option also needs `--allow-gitlinks` (an embedded repository is then recorded as its commit id only, and a restore gives an empty directory). Also planned for 0.11, with the old flags still accepted for one release: subcommands for the snapshot tool (`snapshot`, `restore`, `drill`, `status`, `maintain`, `payload gc|verify|view`). A job with `--exit-warnings` that passes `--no-embedded-repos` exits 3 until it is dropped.
@@ -2278,6 +2282,7 @@ Data-loss and silent-failure fixes, and the Python floor raised to 3.9.
   with zero-config desktop-client token discovery, distributed locking, remote
   packfile compaction, and a Git LFS custom transfer agent.
 
+[0.10.4]: https://github.com/tkittich/git-remote-seafile/compare/v0.10.3...v0.10.4
 [0.10.3]: https://github.com/tkittich/git-remote-seafile/compare/v0.10.2...v0.10.3
 [0.10.2]: https://github.com/tkittich/git-remote-seafile/compare/v0.10.1...v0.10.2
 [0.10.1]: https://github.com/tkittich/git-remote-seafile/compare/v0.10.0...v0.10.1
