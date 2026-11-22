@@ -3574,6 +3574,7 @@ def build_snapshot(
         ]
     else:
         extra_dirs = []
+        drop_twin_spellings(git_dir, work_tree)
 
     # Embedded repositories: their files (the default), or their commit id.
     # Decided from the *directories* that hold a .git, not from gitlinks in the
@@ -4272,6 +4273,55 @@ def case_twins(work_tree: Path, kept: list[str], staged_now: "set[str]") -> list
             except OSError:
                 continue
     return old
+
+
+def drop_twin_spellings(git_dir: Path, work_tree: Path) -> None:
+    """After a plain ``git add -A`` on a volume that folds case: drop an index entry that is the old spelling of a file.
+
+    ``case_twins`` does this for the filtered route; the unfiltered route (every run on macOS and Linux with no
+    exclude) never read the index, so ``Über.txt`` renamed to ``über.txt`` stayed in every snapshot beside the new
+    name on APFS (review c305b0a fable-S1-10, reproduced on macOS CI).  An entry is the old spelling when some
+    component of it is not spelled that way in its folder's listing, the same file answers to the name that is,
+    and ``samestat`` says so.  Only index entries sharing a folded name are looked at, so a tree without twins
+    costs one ``ls-files``.
+    """
+    if git(git_dir, work_tree, ["config", "--bool", "core.ignorecase"], cwd=work_tree,
+           check=False).stdout.strip() != "true":
+        return
+    entries = [p for p in git(git_dir, work_tree, ["ls-files", "-z"], cwd=work_tree).stdout.split("\0") if p]
+    groups: dict[str, list[str]] = {}
+    for path in entries:
+        groups.setdefault(_skip_key(path), []).append(path)
+    twins = [members for members in groups.values() if len(members) > 1]
+    if not twins:
+        return
+    listings: dict[str, set[str]] = {}
+
+    def spelled_as_on_disk(path: str) -> bool:
+        folder = ""
+        for part in path.split("/"):
+            if folder not in listings:
+                try:
+                    listings[folder] = {unicodedata.normalize("NFC", n) for n in os.listdir(extended_path(work_tree / folder))}
+                except OSError:
+                    return True    # cannot tell: keep
+            if unicodedata.normalize("NFC", part) not in listings[folder]:
+                return False
+            folder = f"{folder}/{part}" if folder else part
+        return True
+
+    old: list[str] = []
+    for members in twins:
+        live = [m for m in members if spelled_as_on_disk(m)]
+        for path in (m for m in members if m not in live) if live else ():
+            try:
+                here = os.lstat(extended_path(work_tree / path))
+                if any(os.path.samestat(here, os.lstat(extended_path(work_tree / new))) for new in live):
+                    old.append(path)
+            except OSError:
+                continue
+    if old:
+        drop_from_index(git_dir, work_tree, old)
 
 
 def payload_skip_matcher(work_tree: Path, skip_paths: Any) -> Any:
@@ -10264,8 +10314,23 @@ def classify_missing_names(
 
     collided: list[str] = []
     renamed: list[str] = []
+    # A volume that treats a composed and a decomposed spelling as one name (APFS, HFS+) writes one file
+    # for the pair; both read as present after NFC, so neither was collided and the byte check ended in
+    # "defect in the checkout" (fable-S4-8, reproduced on macOS CI).  More expected names of one NFC form
+    # than the folder lists of it: all of them are collided.
+    listed: dict[str, int] = {}
+    for name in on_disk:
+        listed[_nfc(name)] = listed.get(_nfc(name), 0) + 1
+    wanted: dict[str, int] = {}
     for name in expected:
-        if name in skipped or _nfc(name) in present:
+        if name not in skipped:
+            wanted[_nfc(name)] = wanted.get(_nfc(name), 0) + 1
+    for name in expected:
+        if name in skipped:
+            continue
+        if _nfc(name) in present:
+            if wanted[_nfc(name)] > listed.get(_nfc(name), 0):
+                collided.append(name)
             continue
         if folded[_fold(name)] > 1 or clashes(name):
             collided.append(name)

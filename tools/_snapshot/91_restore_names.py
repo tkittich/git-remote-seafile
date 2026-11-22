@@ -230,8 +230,23 @@ def classify_missing_names(
 
     collided: list[str] = []
     renamed: list[str] = []
+    # A volume that treats a composed and a decomposed spelling as one name (APFS, HFS+) writes one file
+    # for the pair; both read as present after NFC, so neither was collided and the byte check ended in
+    # "defect in the checkout" (fable-S4-8, reproduced on macOS CI).  More expected names of one NFC form
+    # than the folder lists of it: all of them are collided.
+    listed: dict[str, int] = {}
+    for name in on_disk:
+        listed[_nfc(name)] = listed.get(_nfc(name), 0) + 1
+    wanted: dict[str, int] = {}
     for name in expected:
-        if name in skipped or _nfc(name) in present:
+        if name not in skipped:
+            wanted[_nfc(name)] = wanted.get(_nfc(name), 0) + 1
+    for name in expected:
+        if name in skipped:
+            continue
+        if _nfc(name) in present:
+            if wanted[_nfc(name)] > listed.get(_nfc(name), 0):
+                collided.append(name)
             continue
         if folded[_fold(name)] > 1 or clashes(name):
             collided.append(name)

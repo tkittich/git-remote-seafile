@@ -396,6 +396,7 @@ def build_snapshot(
         ]
     else:
         extra_dirs = []
+        drop_twin_spellings(git_dir, work_tree)
 
     # Embedded repositories: their files (the default), or their commit id.
     # Decided from the *directories* that hold a .git, not from gitlinks in the

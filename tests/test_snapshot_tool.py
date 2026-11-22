@@ -460,6 +460,65 @@ class SnapshotGuardTests(_SnapshotFixture):
         names = sorted(self.tree())
         self.assertEqual([n for n in names if n.lower().endswith("ber.txt")], ["\u00fcber.txt"], names)
 
+    def _twin_index(self, spellings):
+        """A repository whose index holds *spellings* (each the same blob) and whose disk holds one file, spelled
+        as the last one, on ``core.ignorecase``.  Returns the repository folder."""
+        repo = self.tmp / "twins"
+        repo.mkdir()
+        _git(repo, "init", "-q", "-b", "main", ".")
+        _git(repo, "config", "core.ignorecase", "true")
+        blob = subprocess.run(
+            ["git", "-C", str(repo), "hash-object", "-w", "--stdin"], input=b"one\n", capture_output=True, check=True
+        ).stdout.decode().strip()
+        for name in spellings:
+            _git(repo, "update-index", "--add", "--cacheinfo", f"100644,{blob},{name}")
+        return repo
+
+    def _folding_lstat(self):
+        """``os.lstat`` as a volume that folds case answers it: any spelling of a name that exists."""
+        real = os.lstat
+
+        def lstat(path, *args, **kwargs):
+            try:
+                return real(path, *args, **kwargs)
+            except FileNotFoundError:
+                folder, name = os.path.split(os.fspath(path))
+                for listed in os.listdir(folder or "."):
+                    if listed.casefold() == name.casefold():
+                        return real(os.path.join(folder, listed), *args, **kwargs)
+                raise
+        return unittest.mock.patch.object(os, "lstat", lstat)
+
+    def test_the_unfiltered_route_drops_the_old_spelling_of_a_renamed_file(self):
+        """fable-S1-10, reproduced on macOS CI: the unfiltered route never read the index, so ``Über.txt`` renamed to
+        ``über.txt`` stayed beside it in every snapshot (the filtered route's ``case_twins`` did not run there).
+        The folding volume is simulated: only ``über.txt`` is on the disk and ``lstat`` answers either spelling."""
+        repo = self._twin_index(["Über.txt", "über.txt", "plain.txt"])
+        (repo / "über.txt").write_bytes(b"one\n")
+        (repo / "plain.txt").write_bytes(b"plain\n")
+        with self._folding_lstat():
+            snap.drop_twin_spellings(repo / ".git", repo)
+        listed = _git(repo, "ls-files").stdout.split()
+        self.assertEqual(sorted(listed), ["plain.txt", "über.txt"])
+
+    def test_two_spellings_that_are_both_on_the_disk_are_both_kept(self):
+        """A case-sensitive disk (or two real files): nothing is a twin of anything."""
+        repo = self._twin_index(["Über.txt", "über.txt"])
+        (repo / "Über.txt").write_bytes(b"one\n")
+        (repo / "über.txt").write_bytes(b"two\n")
+        if len([n for n in os.listdir(repo) if n != ".git"]) < 2:
+            self.skipTest("this disk folds the two spellings into one file")
+        snap.drop_twin_spellings(repo / ".git", repo)
+        self.assertEqual(len(_git(repo, "ls-files").stdout.split()), 2)
+
+    def test_a_vault_that_does_not_fold_case_is_not_looked_at(self):
+        repo = self._twin_index(["Über.txt", "über.txt"])
+        _git(repo, "config", "core.ignorecase", "false")
+        (repo / "über.txt").write_bytes(b"one\n")
+        with self._folding_lstat():
+            snap.drop_twin_spellings(repo / ".git", repo)
+        self.assertEqual(len(_git(repo, "ls-files").stdout.split()), 2)
+
     def test_a_tracked_file_replaced_by_a_folder_holding_a_commitless_repository_is_captured(self):
         """Found by the widened differential fuzz (seed 2023): the replaced path is a plain folder, so the
         S1-4 check (the path itself is a repository) did not apply, and ``git add`` of the folder reached
@@ -1965,8 +2024,12 @@ class FirstRunExcludePromptTests(_SnapshotFixture):
         _git(sub, "init", "-q")
         _git(sub, "add", "node_modules/pkg.js")
         _git(sub, "commit", "-qm", "vendored")
-        rc, out, err = self.run_tool("--source", plain, "--vault", self.vault, "--no-push",
-                                     "--default-excludes")
+        # A plain source has no repository config to lend the vault an identity (a CI runner has none).
+        identity = self.tmp / "identity.gitconfig"
+        identity.write_bytes(b"[user]" + bytes([10]) + b"	name = T" + bytes([10]) + b"	email = t@example.com" + bytes([10]))
+        with unittest.mock.patch.dict(os.environ, {"GIT_CONFIG_GLOBAL": str(identity)}):
+            rc, out, err = self.run_tool("--source", plain, "--vault", self.vault, "--no-push",
+                                         "--default-excludes")
         self.assertEqual(rc, 0, err)
         self.assertIn("sub/node_modules/pkg.js", self.tree())
         self.assertIn("keeps 'node_modules' for this run", out)
@@ -2584,6 +2647,18 @@ class RestoreNameLimitTests(_SnapshotFixture):
         composed = "café.txt"
         decomposed = "café.txt"
         self.assertEqual(snap.classify_missing_names([composed], {decomposed}), ([], []))
+
+    def test_a_composed_and_a_decomposed_name_that_the_volume_writes_as_one_are_collided(self):
+        """fable-S4-8, reproduced on macOS CI: both spellings read as present after NFC, so neither was collided
+        and the byte check ended in "defect in the checkout"."""
+        composed, decomposed = "café", "café"
+        expected = [composed, decomposed, "plain"]
+        self.assertEqual(snap.classify_missing_names(expected, {composed, "plain"}), ([composed, decomposed], []))
+        self.assertEqual(snap.classify_missing_names(expected, {decomposed, "plain"}), ([composed, decomposed], []))
+
+    def test_a_composed_and_a_decomposed_name_that_the_volume_keeps_apart_are_not_collided(self):
+        composed, decomposed = "café", "café"
+        self.assertEqual(snap.classify_missing_names([composed, decomposed], {composed, decomposed}), ([], []))
 
     def test_the_listing_leaves_out_the_git_directory_and_reads_names_as_listed(self):
         (self.restored / ".git").mkdir(parents=True)
