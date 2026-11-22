@@ -559,6 +559,8 @@ class SeafileClient:
         self.username = username
         self._git_credential_note = ""
         self._config_wants_git = False
+        self._git_credential_username: str | None = None  # set only when the token came from git's store
+        self._git_credential_confirmed = False
         self.timeout = timeout
         self._force_file_host: bool | None = None  # resolved lazily; see below
         self._server_time_offset: float | None = None
@@ -837,6 +839,36 @@ class SeafileClient:
         self._adopt_token(outcome.found.token, "the token from the git credential helper")
         self._git_credential_username = outcome.found.username
         return True
+
+    def _git_credential_worked(self) -> None:
+        """Tell git's store the token it gave us authenticated (``approve``, once per client).
+
+        Only for a token that came from git under our own name (R5): a token from the
+        environment or a file is not git's to store."""
+        if self._git_credential_username is None or self._git_credential_confirmed or not self.token:
+            return
+        self._git_credential_confirmed = True
+        try:
+            gitcred.approve(self.server_url, self._git_credential_username, self.token)
+        except gitcred.CredentialRequestError:
+            pass
+
+    def _git_credential_failed(self) -> None:
+        """The server answered ``401`` for a token git gave us: erase that entry (``reject``).
+
+        Never for any other source, and never for a ``403`` (a valid token without permission)."""
+        username = self._git_credential_username
+        if username is None:
+            return
+        self._git_credential_username = None
+        try:
+            if not gitcred.reject(self.server_url, username):
+                sys.stderr.write(
+                    f"Warning: could not erase the stale credential '{username}' from git's store; "
+                    "remove it with your credential manager.\n"
+                )
+        except gitcred.CredentialRequestError:
+            pass
 
     def _account_row(self, con: Any) -> tuple[str | None, str | None, str | None] | None:
         """The ``(url, token, username)`` row to use from an open accounts.db.
@@ -1179,7 +1211,11 @@ class SeafileClient:
 
         url = f"{self.server_url}/api2/repos/"
         resp = self.session.get(url, timeout=self.timeout)
+        if resp.status_code == 200:
+            self._git_credential_worked()
         if resp.status_code != 200:
+            if resp.status_code == 401:
+                self._git_credential_failed()
             if resp.status_code in (401, 403):
                 detail = self._said(resp.text) or "Unauthorized"
                 raise SeafilePermanentError(

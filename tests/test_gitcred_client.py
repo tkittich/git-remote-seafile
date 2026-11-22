@@ -9,13 +9,14 @@ from pathlib import Path
 from unittest.mock import patch
 
 from git_remote_seafile import gitcred
-from git_remote_seafile.client import SeafileAuthError, SeafileClient
+from git_remote_seafile.client import SeafileAPIError, SeafileAuthError, SeafileClient
 
 URL = "https://sf.example/seafile"
 
 
-@unittest.skipUnless(gitcred.have_git(), "git is not installed")
-class GitFallbackTests(unittest.TestCase):
+class _StoreCase(unittest.TestCase):
+    """A home directory whose git config uses a `store` helper on a file of its own."""
+
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
@@ -39,6 +40,9 @@ class GitFallbackTests(unittest.TestCase):
             patcher.start()
             self.addCleanup(patcher.stop)
 
+
+@unittest.skipUnless(gitcred.have_git(), "git is not installed")
+class GitFallbackTests(_StoreCase):
     def test_the_token_comes_from_git_when_nothing_else_has_one(self) -> None:
         gitcred.approve(URL, "seafile-token", "from-git")
         client = SeafileClient(URL)
@@ -88,6 +92,59 @@ class GitFallbackTests(unittest.TestCase):
         with patch.object(gitcred, "_run", side_effect=AssertionError("must be refused first")):
             with self.assertRaises(SeafileAuthError):
                 SeafileClient("https://user:pw@sf.example/")
+
+
+class _Resp:
+    def __init__(self, status: int, body: object = None) -> None:
+        self.status_code = status
+        self._body = body if body is not None else []
+        self.text = ""
+        self.headers: dict[str, str] = {}
+
+    def json(self) -> object:
+        return self._body
+
+
+@unittest.skipUnless(gitcred.have_git(), "git is not installed")
+class ApproveAndRejectTests(_StoreCase):
+    """R5: approve after a good answer, reject after a 401, never for a token that is not git's."""
+
+    def _client(self, status: int) -> SeafileClient:
+        client = SeafileClient(URL, username="alice")
+        client.session.get = lambda *a, **k: _Resp(status)  # type: ignore[method-assign]
+        return client
+
+    def test_a_good_answer_approves_the_entry(self) -> None:
+        gitcred.approve(URL, "seafile-token+alice", "alices")
+        client = self._client(200)
+        with patch.object(gitcred, "approve", wraps=gitcred.approve) as spy:
+            with self.assertRaises(SeafileAPIError):
+                client._resolve_repo_id("missing")  # 200, empty list: library not found, token fine
+        self.assertEqual(spy.call_count, 1)
+        self.assertEqual(spy.call_args.args[1], "seafile-token+alice")
+
+    def test_a_401_erases_our_entry(self) -> None:
+        gitcred.approve(URL, "seafile-token+alice", "revoked")
+        client = self._client(401)
+        with self.assertRaises(SeafileAPIError):
+            client._resolve_repo_id("x")
+        self.assertIsNone(gitcred.fill(URL, "alice").found)
+
+    def test_a_403_keeps_the_entry(self) -> None:
+        gitcred.approve(URL, "seafile-token+alice", "alices")
+        client = self._client(403)
+        with self.assertRaises(SeafileAPIError):
+            client._resolve_repo_id("x")
+        self.assertEqual(gitcred.fill(URL, "alice").found.token, "alices")
+
+    def test_a_token_from_the_environment_is_never_rejected(self) -> None:
+        gitcred.approve(URL, "seafile-token+alice", "alices")
+        with patch.dict("os.environ", {"SEAFILE_SERVER": "https://sf.example", "SEAFILE_TOKEN": "env"}), \
+             patch.object(gitcred, "reject", side_effect=AssertionError("not git's token")):
+            client = self._client(401)
+            with self.assertRaises(SeafileAPIError):
+                client._resolve_repo_id("x")
+        self.assertEqual(gitcred.fill(URL, "alice").found.token, "alices")
 
 
 if __name__ == "__main__":

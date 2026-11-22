@@ -69,7 +69,7 @@ Something not working? `git-remote-seafile doctor <url>` checks, in order, the l
 
 | Command | Description |
 | :--- | :--- |
-| `git-remote-seafile login [server] [--user NAME]` | Sign in with your username and password (and a two-factor code if the server asks) and save the API token to `~/.git-seafile.json`. For machines without the Seafile desktop client; the password is never stored. |
+| `git-remote-seafile login [server] [--user NAME]` | Sign in with your username and password (and a two-factor code if the server asks) and save the API token to `~/.git-seafile.json`. For machines without the Seafile desktop client; the password is never stored. `--store credential` keeps the token in git's credential store instead of the file. |
 | `git-remote-seafile check-auth` | Verify authentication credentials against the Seafile server. |
 | `git-remote-seafile config` | Show every behavioural setting (`seafile.*` git config keys and their environment variables), its effective value and where the value comes from. |
 | `git-remote-seafile check-safety <url>` | Test pre-flight safety guardrails (Trap 1 & 2 path collisions). |

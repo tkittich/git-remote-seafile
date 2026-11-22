@@ -342,6 +342,23 @@ export SEAFILE_TOKEN="d82f8a19234857bf9e349204958671bc9842"
 > meant for is a credential leak. Always set both variables together. The same rule applies to
 > `~/.git-seafile.json`: a `token` with no `server` beside it in the same file is not used.
 
+### Method D: Git's Credential Store (no token in a file)
+On a machine with no desktop client you can keep the token in whatever store git already uses
+(Windows Credential Manager, macOS keychain, libsecret) rather than in `~/.git-seafile.json`:
+
+```bash
+git-remote-seafile login https://seafile.example.com --user you@example.com --store credential
+```
+
+The token is saved under the name `seafile-token+you@example.com`, read back to prove it was kept, and
+only then is any old `token` removed from `~/.git-seafile.json`, which keeps just the server, the
+user name and `credential_store: git`. If git has no credential helper configured, `login` says so and
+changes nothing. It is the last source consulted, except when that file says `credential_store: git`,
+in which case git is asked before the desktop client's `accounts.db`. Nothing is ever prompted for: a
+missing credential is the usual "no credentials" error. Two Seafile servers on one host under one
+account name may share an entry in a helper that ignores paths (git's `store`); use different account
+names or `SEAFILE_TOKEN` for that case. A token the server refuses with `401` is erased from the store.
+
 ### Verifying Authentication
 Run the built-in diagnostic check:
 ```bash

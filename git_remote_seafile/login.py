@@ -140,11 +140,16 @@ def obtain_token(
     raise LoginError(f"{server} answered the login with HTTP {resp.status_code}")
 
 
-def save_credentials(config_path: Path, server: str, token: str, username: str) -> str | None:
+def save_credentials(
+    config_path: Path, server: str, token: str | None, username: str, *, credential_store: str | None = None
+) -> str | None:
     """Write the server and token to *config_path*, owner-only; return a note if one replaced another server.
 
     Other keys in an existing file are kept.  The file is replaced atomically so
-    an interruption cannot leave half a token.
+    an interruption cannot leave half a token.  With ``credential_store="git"`` the
+    token lives in git's credential store (CREDENTIAL.md R7): *token* is ``None``,
+    any ``token`` key left by an earlier plaintext login is removed (it would
+    outrank the store), and the file says where to look.
     """
     existing: dict[str, Any] = {}
     note = None
@@ -158,7 +163,11 @@ def save_credentials(config_path: Path, server: str, token: str, username: str) 
         old = existing.get("server")
         if isinstance(old, str) and old and normalize_netloc(old) != normalize_netloc(server):
             note = f"the file held an account for {old}; it now holds {server} (one account per file)"
-    existing.update({"server": server, "token": token, "username": username})
+    if credential_store:
+        existing.pop("token", None)
+        existing.update({"server": server, "username": username, "credential_store": credential_store})
+    else:
+        existing.update({"server": server, "token": token, "username": username})
     fd, tmp_name = tempfile.mkstemp(prefix=".git-seafile-", suffix=".tmp", dir=str(config_path.parent))
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
@@ -176,6 +185,39 @@ def save_credentials(config_path: Path, server: str, token: str, username: str) 
     return note
 
 
+def _store_in_git(path: Path, server: str, token: str, username: str) -> int:
+    """``login --store credential`` (CREDENTIAL.md R7): approve, prove by read-back, then drop the plaintext."""
+    from . import gitcred
+
+    name = f"{gitcred.USERNAME}+{username}"
+    try:
+        stored = gitcred.approve(server, name, token)
+    except gitcred.CredentialRequestError as ex:
+        sys.stderr.write(f"Error: {ex}; nothing was saved.\n")
+        return 1
+    if not stored:
+        # `git credential approve` exits 0 with no helper or a failing one, so only the read-back says.
+        sys.stderr.write(
+            "Error: git's credential store did not keep the token (no credential.helper configured, "
+            "or the helper refused it); nothing was changed. Fix the helper, or log in without "
+            "--store credential.\n"
+        )
+        return 1
+    try:
+        note = save_credentials(path, server, None, username, credential_store="git")
+    except OSError as ex:
+        sys.stderr.write(f"Error: the config file {path} could not be written: {ex}\n")
+        return 1
+    if note:
+        sys.stderr.write(f"Note: {note}.\n")
+    print(
+        f"Logged in to {server} as {username}; the token is in git's credential store as '{name}', "
+        f"and {path} holds no token (the password is not saved)."
+    )
+    print("Next: git-remote-seafile doctor <seafile://library/path> to check a destination.")
+    return 0
+
+
 def run_login(
     args: list[str],
     *,
@@ -189,15 +231,22 @@ def run_login(
     """``login [<server>] [--user NAME]``.  Returns the exit code."""
     server_arg: str | None = None
     user_arg: str | None = None
+    store: str | None = None
+    usage = "Usage: git-remote-seafile login [<server>] [--user NAME] [--store credential]\n"
     it = iter(args)
     for arg in it:
         if arg == "--user":
             user_arg = next(it, None)
             if not user_arg:
-                sys.stderr.write("Usage: git-remote-seafile login [<server>] [--user NAME]\n")
+                sys.stderr.write(usage)
                 return 2
+        elif arg == "--store":
+            if next(it, None) != "credential":
+                sys.stderr.write(usage)
+                return 2
+            store = "credential"
         elif arg.startswith("-") or server_arg is not None:
-            sys.stderr.write("Usage: git-remote-seafile login [<server>] [--user NAME]\n")
+            sys.stderr.write(usage)
             return 2
         else:
             server_arg = arg
@@ -227,6 +276,8 @@ def run_login(
         sys.stderr.write("\nError: login cancelled; nothing was saved.\n")
         return 1
     path = config_path or Path.home() / CONFIG_NAME
+    if store:
+        return _store_in_git(path, server, token, username)
     try:
         note = save_credentials(path, server, token, username)
     except OSError as ex:

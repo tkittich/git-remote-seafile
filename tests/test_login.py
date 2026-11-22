@@ -11,6 +11,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+from git_remote_seafile import gitcred
 from git_remote_seafile.cli import main
 from git_remote_seafile.login import (
     LoginError,
@@ -198,6 +199,64 @@ class TestLogin(_Fixture):
         with patch("sys.argv", ["git-remote-seafile", "--help"]), patch("sys.stdout", out):
             main()
         self.assertIn("login [<server>]", out.getvalue())
+
+
+@unittest.skipUnless(gitcred.have_git(), "git is not installed")
+class TestLoginStoreCredential(_Fixture):
+    """CREDENTIAL.md R7: approve, prove by read-back, only then drop the plaintext token."""
+
+    def _git_home(self, helper_line):
+        home = Path(self._tmp.name)
+        cfg = home / "gitconfig"
+        cfg.write_text(f"[credential]\n\t{helper_line}\n", encoding="utf-8")
+        env = {"GIT_CONFIG_GLOBAL": str(cfg), "GIT_CONFIG_NOSYSTEM": "1", "HOME": str(home),
+               "USERPROFILE": str(home), "PATH": os.environ.get("PATH", ""),
+               "SYSTEMROOT": os.environ.get("SYSTEMROOT", "")}
+        patcher = patch.dict("os.environ", env, clear=True)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return home
+
+    def _login(self):
+        post = MagicMock(return_value=_resp(200, {"token": "tok123"}))
+        return self.login(["https://s.example", "--user", "me@example.com", "--store", "credential"], [], post)
+
+    def test_the_token_goes_to_git_and_the_file_loses_its_token(self):
+        home = self._git_home("helper = store --file " + str(Path(self._tmp.name) / "cred").replace("\\", "/"))
+        self.config.write_text(json.dumps({"server": "https://s.example", "token": "old", "username": "x"}),
+                               encoding="utf-8")
+        rc, out, err = self._login()
+        self.assertEqual(rc, 0, err)
+        saved = json.loads(self.config.read_text(encoding="utf-8"))
+        self.assertEqual(saved, {"server": "https://s.example", "username": "me@example.com",
+                                 "credential_store": "git"})
+        found = gitcred.fill("https://s.example", "me@example.com").found
+        self.assertEqual(found.token, "tok123")
+        self.assertNotIn("tok123", out + err)
+        self.assertEqual(home, Path(self._tmp.name))
+
+    def test_no_helper_leaves_the_existing_token_and_fails(self):
+        self._git_home("helper =")
+        original = json.dumps({"server": "https://s.example", "token": "old", "username": "x"})
+        self.config.write_text(original, encoding="utf-8")
+        rc, out, err = self._login()
+        self.assertEqual(rc, 1)
+        self.assertEqual(self.config.read_text(encoding="utf-8"), original)
+        self.assertIn("did not keep the token", err)
+
+    def test_a_failing_helper_leaves_the_existing_token_and_fails(self):
+        self._git_home("helper = !exit 1")
+        original = json.dumps({"server": "https://s.example", "token": "old", "username": "x"})
+        self.config.write_text(original, encoding="utf-8")
+        rc, out, err = self._login()
+        self.assertEqual(rc, 1)
+        self.assertEqual(self.config.read_text(encoding="utf-8"), original)
+
+    def test_the_other_values_of_store_are_a_usage_error(self):
+        with patch("sys.stderr", io.StringIO()) as err:
+            rc = run_login(["--store", "keyring"], interactive=True, config_path=self.config)
+        self.assertEqual(rc, 2)
+        self.assertIn("--store credential", err.getvalue())
 
 
 if __name__ == "__main__":

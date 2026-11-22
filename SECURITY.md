@@ -45,7 +45,7 @@ back-branches.
 
 ### Where a token can come from
 
-The helper resolves credentials through three sources, tried in this order and stopping at the first
+The helper resolves credentials through four sources, tried in this order and stopping at the first
 that yields **both** a server and a token:
 
 1. **Environment variables** — `SEAFILE_SERVER` and `SEAFILE_TOKEN`.
@@ -53,8 +53,17 @@ that yields **both** a server and a token:
 3. **The local Seafile desktop client** — the `accounts.db` SQLite database written by the client,
    read read-only.
 
-Nothing else is consulted. The helper writes a credential in exactly one case, when you ask it
-to: `git-remote-seafile login` ([below](#signing-in-with-login)).
+4. **Git's credential store** — `git credential fill`, last (or before the desktop client when the
+   config file says `credential_store: git`). It only ever asks for an entry named `seafile-token` or
+   `seafile-token+<account>`, so a Git or GitLab password for the same host is never asked for, sent or
+   erased; an answer under another name is ignored. It never prompts (askpass programs and Git
+   Credential Manager's interactive modes are switched off) and a helper that hangs is killed, with its
+   child processes, after 20 seconds. The token travels on git's standard input only, never in an
+   argument or environment variable. `reject` is sent only for an entry we asked for, after a `401`.
+
+Nothing else is consulted. The helper writes a credential in exactly two cases, when you ask it
+to: `git-remote-seafile login` ([below](#signing-in-with-login)), and `login --store credential`, which
+saves the token to git's credential store instead of the file.
 
 ### A token is only sent to the server it names
 

@@ -65,9 +65,10 @@ _COMMANDS: tuple[tuple[str, str, str, tuple[tuple[str, str], ...]], ...] = (
      "Test connection and discover refs", ()),
     ("check-safety", "git-remote-seafile check-safety <seafile://url>",
      "Run pre-flight safety checks (Trap 1 & 2)", ()),
-    ("login", "git-remote-seafile login [<server>] [--user NAME]",
+    ("login", "git-remote-seafile login [<server>] [--user NAME] [--store credential]",
      "Sign in with your username and password and save the API token (no desktop client needed)",
-     (("--user NAME", "The account to sign in as (asked for when omitted)"),)),
+     (("--user NAME", "The account to sign in as (asked for when omitted)"),
+      ("--store credential", "Keep the token in git's credential store, not in ~/.git-seafile.json"))),
     ("check-auth", "git-remote-seafile check-auth",
      "Verify active Seafile login", ()),
     ("gc", "git-remote-seafile gc <seafile://url> [--min-packs N | --tail] [--allow-low-disk] "
