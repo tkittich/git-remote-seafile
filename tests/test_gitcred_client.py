@@ -46,7 +46,7 @@ class GitFallbackTests(unittest.TestCase):
         self.assertEqual(client.session.headers.get("Authorization"), "Token from-git")
 
     def test_the_account_name_is_tried_first(self) -> None:
-        gitcred.approve(URL, "seafile-token:alice", "alices")
+        gitcred.approve(URL, "seafile-token+alice", "alices")
         gitcred.approve(URL, "seafile-token", "bare")
         self.assertEqual(SeafileClient(URL, username="alice").token, "alices")
 
@@ -60,7 +60,7 @@ class GitFallbackTests(unittest.TestCase):
             SeafileClient(URL, username="alice")
         message = str(ctx.exception)
         self.assertIn("git credential helper", message)
-        self.assertIn("seafile-token:alice", message)
+        self.assertIn("seafile-token+alice", message)
 
     def test_a_server_with_nothing_to_ask_about_is_unchanged(self) -> None:
         with patch.object(gitcred, "fill", side_effect=AssertionError("no server, nothing to ask")):

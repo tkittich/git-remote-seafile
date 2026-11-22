@@ -100,34 +100,41 @@ class RequestTests(unittest.TestCase):
 
     def test_the_names_to_try(self) -> None:
         self.assertEqual(gitcred.usernames(None), ["seafile-token"])
-        self.assertEqual(gitcred.usernames("alice"), ["seafile-token:alice", "seafile-token"])
+        self.assertEqual(gitcred.usernames("alice"), ["seafile-token+alice", "seafile-token"])
 
 
 class RoundTripTests(GitCredTestCase):
     URL = "https://sf.example/seafile"
 
     def test_approve_then_fill_returns_the_token_through_git_credential_store(self) -> None:
-        self.assertTrue(gitcred.approve(self.URL, "seafile-token:alice", "tok123"))
+        self.assertTrue(gitcred.approve(self.URL, "seafile-token+alice", "tok123"))
         found = gitcred.fill(self.URL, "alice").found
         self.assertIsNotNone(found)
-        self.assertEqual((found.token, found.username), ("tok123", "seafile-token:alice"))
+        self.assertEqual((found.token, found.username), ("tok123", "seafile-token+alice"))
+
+    def test_approve_says_false_when_nothing_was_stored(self) -> None:
+        """git exits 0 on approve with no helper or a failing helper; only a read-back proves it."""
+        for helper in ("", "!f() { exit 1; }; f"):
+            with self.subTest(helper=helper):
+                self.use_helper(helper)
+                self.assertFalse(gitcred.approve(self.URL, "seafile-token", "tok"))
 
     def test_the_bare_name_is_tried_after_the_account_name(self) -> None:
         gitcred.approve(self.URL, "seafile-token", "bare")
         outcome = gitcred.fill(self.URL, "alice")
         self.assertEqual(outcome.found.token, "bare")
-        self.assertEqual(outcome.tried, ["seafile-token:alice", "seafile-token"])
+        self.assertEqual(outcome.tried, ["seafile-token+alice", "seafile-token"])
 
     def test_nothing_stored_says_what_was_tried(self) -> None:
         outcome = gitcred.fill(self.URL, "alice")
         self.assertIsNone(outcome.found)
-        self.assertEqual(outcome.tried, ["seafile-token:alice", "seafile-token"])
+        self.assertEqual(outcome.tried, ["seafile-token+alice", "seafile-token"])
 
     def test_a_git_password_for_the_same_host_is_never_returned_or_erased(self) -> None:
         self.store.write_text("https://bob:GIT-PASSWORD@sf.example\n", encoding="utf-8")
         self.assertIsNone(gitcred.fill(self.URL, "alice").found)
-        gitcred.approve(self.URL, "seafile-token:alice", "tok")
-        self.assertTrue(gitcred.reject(self.URL, "seafile-token:alice"))
+        gitcred.approve(self.URL, "seafile-token+alice", "tok")
+        self.assertTrue(gitcred.reject(self.URL, "seafile-token+alice"))
         self.assertIn("GIT-PASSWORD", self.store.read_text(), "reject must not touch a credential that is not ours")
         self.assertIsNone(gitcred.fill(self.URL, "alice").found)
 

@@ -12,7 +12,7 @@ Three rules shape everything here:
   and the child runs in its own process group, which is killed as a whole at the
   limit so a helper's own child cannot outlive the call or hold a pipe.
 * **Only ever our own entries.**  The username is always ``seafile-token`` or
-  ``seafile-token:<account>``, never empty: with none, a helper returns whatever
+  ``seafile-token+<account>``, never empty: with none, a helper returns whatever
   it has for the host, which on a shared host is the user's Git password.  A
   credential that comes back under another username is ignored, and ``reject``
   is only ever sent for an entry we asked for.
@@ -84,7 +84,7 @@ class Outcome:
 def usernames(account: str | None) -> list[str]:
     """The names to try, most specific first."""
     if account:
-        return [f"{USERNAME}:{account}", USERNAME]
+        return [f"{USERNAME}+{account}", USERNAME]
     return [USERNAME]
 
 
@@ -202,7 +202,7 @@ def _parse(out: str) -> dict[str, str]:
 def fill(server_url: str, account: str | None = None, timeout: float = TIMEOUT) -> Outcome:
     """Ask git for our token for ``server_url``.
 
-    Tries ``seafile-token:<account>`` then ``seafile-token``.  An answer whose
+    Tries ``seafile-token+<account>`` then ``seafile-token``.  An answer whose
     username is not the one sent, or whose path differs from the one sent, is
     ignored: a helper must not be able to hand us someone else's credential.
     """
@@ -228,11 +228,23 @@ def fill(server_url: str, account: str | None = None, timeout: float = TIMEOUT) 
 
 
 def approve(server_url: str, username: str, token: str, timeout: float = TIMEOUT) -> bool:
-    """Store ``token`` under our name.  Call only after it authenticated."""
+    """Store ``token`` under our name and prove it by reading it back.
+
+    Call only after the token authenticated.  False means it was not stored (R7:
+    ``login`` must then leave an existing plaintext ``token`` alone)."""
     request = build_request(server_url, username)
     request["password"] = token
     code, _ = _run("approve", request, timeout)
-    return code == 0
+    if code != 0:
+        return False
+    # ``git credential approve`` exits 0 with no helper, with a failing helper and when a
+    # store rejects the name (measured, git 2.56 and GCM 2.9.1), so only a lookup proves it.
+    lookup = build_request(server_url, username)
+    code, out = _run("fill", lookup, timeout)
+    if code != 0:
+        return False
+    answer = _parse(out)
+    return answer.get("password") == token and answer.get("username", username) == username
 
 
 def reject(server_url: str, username: str, timeout: float = TIMEOUT) -> bool:
