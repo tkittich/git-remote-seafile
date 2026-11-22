@@ -2597,6 +2597,33 @@ class RestoreNameLimitTests(_SnapshotFixture):
             names = snap.names_on_disk(self.restored)
         self.assertEqual(names, {"a/" + "d" * 40 + "/lost.bin"})
 
+    @unittest.skipUnless(os.name == "nt", "extended_path is the identity elsewhere")
+    def test_the_restored_file_count_reaches_a_folder_past_max_path(self):
+        """gemini-4-hydrogen-S4-7: ``_restore`` counts what it wrote with ``walk_long``; with a plain ``os.walk`` a
+        folder past MAX_PATH ended the walk silently and "restored N files" came out short (simulated, as above)."""
+        deep = self.code / "a" / ("d" * 40)
+        os.makedirs(snap.extended_path(deep))
+        with open(snap.extended_path(deep / "lost.bin"), "wb") as handle:
+            handle.write(b"x")
+        self.assertEqual(self.snapshot("--remote", str(self.remote))[0], 0)
+        shallow = self.restored / "a" / ("d" * 40)
+        limit = len(str(shallow))
+        real = os.scandir
+
+        def scandir(path="."):
+            text = os.fspath(path)
+            if isinstance(text, str) and not text.startswith("\\\\?\\") and len(text) >= limit:
+                raise FileNotFoundError(3, "simulated MAX_PATH", text)
+            return real(path)
+
+        with unittest.mock.patch.object(os, "scandir", scandir):
+            rc, out, err = self.restore_to(self.restored)
+        self.assertEqual(rc, 0, out + err)
+        self.assertRegex(out, r"restored (\d+) files")
+        count = int(re.search(r"restored (\d+) files", out).group(1))
+        self.assertEqual(count, sum(len(names) for _f, _d, names in os.walk(snap.extended_path(self.restored))
+                                    if ".git" not in _f))
+
     def test_a_pair_that_collides_is_warned_about_and_is_not_a_defect(self):
         self._vault_with_twin_names("README", "readme", "plain.txt")
         if not self._folds_case():
