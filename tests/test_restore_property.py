@@ -49,6 +49,9 @@ class RestoreMatchesTheSnapshot(base._IncrementalFixture):
         for folder, dirs, names in os.walk(root):
             if ".git" in dirs:
                 dirs.remove(".git")
+            # ``os.walk`` lists a link to a folder among the folders, not the files: it is still an entry
+            # of the tree (GRS_FUZZ_EXOTIC makes ``B.txt -> .``), and "left out" was a harness artifact.
+            names = [*names, *(d for d in dirs if pathlib.Path(folder, d).is_symlink())]
             for name in names:
                 path = pathlib.Path(folder, name)
                 key = path.relative_to(root).as_posix().translate(_FOLD)
