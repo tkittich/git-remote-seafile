@@ -1634,6 +1634,14 @@ class CredentialWarningTests(_SnapshotFixture):
         self.assertIn("look like credentials", out)
         self.assertIn(".env", out)
 
+    def test_no_embedded_repos_warns_that_0_11_needs_allow_gitlinks(self):
+        rc, out, _ = self.snapshot("--no-push", "--no-embedded-repos")
+        self.assertEqual(rc, 0)
+        self.assertIn("Warning: --no-embedded-repos records an embedded repository as a gitlink", out)
+        self.assertIn("--allow-gitlinks", out)
+        rc, out, _ = self.snapshot("--no-push")
+        self.assertNotIn("--allow-gitlinks", out)
+
     def test_the_warning_is_said_once_not_on_every_run(self):
         # On every run it made --exit-warnings exit 3 for ever on a tree with a .env.
         # --default-excludes: the fixture's dist/ would otherwise be a warning of its own.

@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Deprecated
+- **Announced for 0.11** (the snapshot tool; nothing is refused yet). A run with `--no-embedded-repos` prints a `Warning:` that from 0.11 the option also needs `--allow-gitlinks` (an embedded repository is then recorded as its commit id only, and a restore gives an empty directory). Also planned for 0.11, with the old flags still accepted for one release: subcommands for the snapshot tool (`snapshot`, `restore`, `drill`, `status`, `maintain`, `payload gc|verify|view`). A job with `--exit-warnings` that passes `--no-embedded-repos` exits 3 until it is dropped.
+
 ### Fixed
 - **A gitlink whose name needs quoting is named as it is spelled in the snapshot warning.** `find_gitlinks` read `ls-tree -r` without `-z`, so a path with a double quote, backslash, tab or newline came back C-quoted (`core.quotepath=false` spares only non-ASCII) and the "embedded git repositories" warning printed the quoted form.
 

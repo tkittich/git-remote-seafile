@@ -12098,6 +12098,10 @@ def run_command(args: argparse.Namespace) -> int:
         for flag in ignored_option_warnings(args):
             print(f"Warning: {flag} has no effect with {mode_name(args)} and will be refused from 0.11; drop it.",
                   flush=True)
+        if args.no_embedded_repos:
+            print("Warning: --no-embedded-repos records an embedded repository as a gitlink (its commit id, not "
+                  "its files), so a restore gives an empty directory; from 0.11 it also needs --allow-gitlinks.",
+                  flush=True)
         payload_rc = payload_command(args)
         if payload_rc is not None:
             return payload_rc
