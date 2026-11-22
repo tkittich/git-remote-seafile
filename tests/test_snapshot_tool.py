@@ -444,7 +444,7 @@ class SnapshotGuardTests(_SnapshotFixture):
             self.assertTrue(status)
             self.assertTrue(os.path.samefile(measure, self.vault / ".git" / "objects"))
 
-    @unittest.skipUnless(os.name == "nt", "verified on NTFS; macOS (APFS) keeps both names, ROADMAP AA73")
+    @unittest.skipUnless(os.name == "nt" or sys.platform == "darwin", "NTFS and APFS fold every letter; ext4 does not")
     def test_a_file_renamed_by_the_case_of_a_non_ascii_letter_is_not_kept_under_both_names(self):
         """fable-S1-10 (review c305b0a): NTFS folds U-umlaut, git does not, so the old index entry still
         answered lstat and stayed in every snapshot next to the new name."""
@@ -463,6 +463,8 @@ class SnapshotGuardTests(_SnapshotFixture):
     def _twin_index(self, spellings):
         """A repository whose index holds *spellings* (each the same blob) and whose disk holds one file, spelled
         as the last one, on ``core.ignorecase``.  Returns the repository folder."""
+        if sys.getfilesystemencoding().lower().replace("-", "") != "utf8":
+            self.skipTest("the file system cannot name a non-ASCII file")
         repo = self.tmp / "twins"
         repo.mkdir()
         _git(repo, "init", "-q", "-b", "main", ".")
@@ -498,7 +500,7 @@ class SnapshotGuardTests(_SnapshotFixture):
         (repo / "plain.txt").write_bytes(b"plain\n")
         with self._folding_lstat():
             snap.drop_twin_spellings(repo / ".git", repo)
-        listed = _git(repo, "ls-files").stdout.split()
+        listed = [n for n in _git(repo, "ls-files", "-z").stdout.split(chr(0)) if n]
         self.assertEqual(sorted(listed), ["plain.txt", "über.txt"])
 
     def test_two_spellings_that_are_both_on_the_disk_are_both_kept(self):
@@ -509,7 +511,7 @@ class SnapshotGuardTests(_SnapshotFixture):
         if len([n for n in os.listdir(repo) if n != ".git"]) < 2:
             self.skipTest("this disk folds the two spellings into one file")
         snap.drop_twin_spellings(repo / ".git", repo)
-        self.assertEqual(len(_git(repo, "ls-files").stdout.split()), 2)
+        self.assertEqual(len([n for n in _git(repo, "ls-files", "-z").stdout.split(chr(0)) if n]), 2)
 
     def test_a_vault_that_does_not_fold_case_is_not_looked_at(self):
         repo = self._twin_index(["Über.txt", "über.txt"])
@@ -517,7 +519,7 @@ class SnapshotGuardTests(_SnapshotFixture):
         (repo / "über.txt").write_bytes(b"one\n")
         with self._folding_lstat():
             snap.drop_twin_spellings(repo / ".git", repo)
-        self.assertEqual(len(_git(repo, "ls-files").stdout.split()), 2)
+        self.assertEqual(len([n for n in _git(repo, "ls-files", "-z").stdout.split(chr(0)) if n]), 2)
 
     def test_a_tracked_file_replaced_by_a_folder_holding_a_commitless_repository_is_captured(self):
         """Found by the widened differential fuzz (seed 2023): the replaced path is a plain folder, so the
@@ -2717,6 +2719,18 @@ class RestoreNameLimitTests(_SnapshotFixture):
         count = int(re.search(r"restored (\d+) files", out).group(1))
         self.assertEqual(count, sum(len(names) for _f, _d, names in os.walk(snap.extended_path(self.restored))
                                     if ".git" not in _f))
+
+    @unittest.skipUnless(sys.platform == "darwin", "needs a volume that treats a composed and a decomposed name as one")
+    def test_a_unicode_twin_pair_written_as_one_file_is_a_collision_not_a_defect(self):
+        """fable-S4-8, reproduced on macOS CI (the restore ended in "defect in the checkout" with rc 1)."""
+        self._vault_with_twin_names("café", "café")
+        rc, out, err = self.restore_to(self.restored)
+        self.assertEqual(rc, 0, out + err)
+        self.assertNotIn("defect in the checkout", out + err)
+        listing = [n for n in os.listdir(self.restored) if n.startswith("caf")]
+        if len(listing) == 1:                       # APFS: one file for the pair
+            self.assertIn("share a name with another file", out)
+            self.assertNotIn("verified byte-exact against", out)
 
     def test_a_pair_that_collides_is_warned_about_and_is_not_a_defect(self):
         self._vault_with_twin_names("README", "readme", "plain.txt")
