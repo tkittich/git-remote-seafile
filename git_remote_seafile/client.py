@@ -558,6 +558,7 @@ class SeafileClient:
         self.token = token
         self.username = username
         self._git_credential_note = ""
+        self._config_wants_git = False
         self.timeout = timeout
         self._force_file_host: bool | None = None  # resolved lazily; see below
         self._server_time_offset: float | None = None
@@ -708,6 +709,10 @@ class SeafileClient:
         found, cfg_server, cfg_token = self._credentials_from_config_file(config_path, require_token)
         if found:
             return
+        # A file that says "credential_store": "git" for this server asks git first, so the desktop
+        # client's account for the same server cannot outrank what `login --store credential` wrote.
+        if self._config_wants_git and self._credentials_from_git(require_token):
+            return
         if self._credentials_from_accounts_db(require_token):
             return
         if self._credentials_from_git(require_token):
@@ -782,13 +787,20 @@ class SeafileClient:
             cfg_server = cfg.get("server")
             cfg_token = cfg.get("token")
             cfg_user = cfg.get("username") or cfg.get("user")
-            if cfg_user and not self.username:
+            # The account name belongs to the server the file names (CREDENTIAL.md D2): a file
+            # written for server A must not make a lookup for server B ask under A's account.
+            if cfg_user and not self.username and (not cfg_server or self._may_replace_server_url(cfg_server)):
                 self.username = cfg_user
             if cfg_server and (cfg_token or not require_token):
                 if self._may_replace_server_url(cfg_server):
                     self.server_url = cfg_server.rstrip("/")
                     self._adopt_token(cfg_token, f"the token in {config_path}")
                     return True, cfg_server, cfg_token
+            elif cfg_server and not cfg_token and cfg.get("credential_store") == "git":
+                # `login --store credential` wrote this: the host is known, the token is in git's store.
+                if self._may_replace_server_url(cfg_server):
+                    self.server_url = cfg_server.rstrip("/")
+                    self._config_wants_git = True
         except Exception as ex:
             # Not fatal -- accounts.db may still authenticate -- but silence
             # here means a user who mistyped a token in this file gets a bare

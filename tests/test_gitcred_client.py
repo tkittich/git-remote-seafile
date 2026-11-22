@@ -55,6 +55,23 @@ class GitFallbackTests(unittest.TestCase):
              patch.object(gitcred, "fill", side_effect=AssertionError("git must not be asked")):
             self.assertEqual(SeafileClient(URL).token, "env")
 
+    def test_a_config_for_another_server_does_not_lend_its_account(self) -> None:
+        (self.home / ".git-seafile.json").write_text(
+            '{"server": "https://other.example", "username": "alice"}', encoding="utf-8"
+        )
+        gitcred.approve(URL, "seafile-token+alice", "alices")
+        gitcred.approve(URL, "seafile-token", "bare")
+        self.assertEqual(SeafileClient(URL).token, "bare")
+
+    def test_a_git_config_file_asks_git_before_the_desktop_clients_accounts(self) -> None:
+        (self.home / ".git-seafile.json").write_text(
+            '{"server": "https://sf.example/seafile", "username": "alice", "credential_store": "git"}',
+            encoding="utf-8",
+        )
+        gitcred.approve(URL, "seafile-token+alice", "alices")
+        with patch.object(SeafileClient, "_credentials_from_accounts_db", side_effect=AssertionError("too early")):
+            self.assertEqual(SeafileClient(URL).token, "alices")
+
     def test_the_error_says_the_helper_was_tried(self) -> None:
         with self.assertRaises(SeafileAuthError) as ctx:
             SeafileClient(URL, username="alice")
