@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Announced for 0.11** (the snapshot tool; nothing is refused yet). A run with `--no-embedded-repos` prints a `Warning:` that from 0.11 the option also needs `--allow-gitlinks` (an embedded repository is then recorded as its commit id only, and a restore gives an empty directory). Also planned for 0.11, with the old flags still accepted for one release: subcommands for the snapshot tool (`snapshot`, `restore`, `drill`, `status`, `maintain`, `payload gc|verify|view`). A job with `--exit-warnings` that passes `--no-embedded-repos` exits 3 until it is dropped.
 
 ### Fixed
+- **`--default-excludes` no longer drops what an embedded repository committed under `node_modules` (or another fixed pattern) when the source is a plain folder.** The pattern was held against the source repository's tracked files, and a source that is not a repository has none, so a nested repository's committed `node_modules/` went the same way as an uncommitted one (the 0.10.2 fix covered a source that is a repository). The plain folder is now walked for repositories (not into `.git` or `node_modules`) and each one's tracked files are read.
 - **A gitlink whose name needs quoting is named as it is spelled in the snapshot warning.** `find_gitlinks` read `ls-tree -r` without `-z`, so a path with a double quote, backslash, tab or newline came back C-quoted (`core.quotepath=false` spares only non-ASCII) and the "embedded git repositories" warning printed the quoted form.
 
 ## [0.10.3] - 2026-11-21

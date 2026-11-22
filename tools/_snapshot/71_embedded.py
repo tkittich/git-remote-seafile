@@ -349,6 +349,31 @@ def embedded_tracked_paths(source: Path) -> list[str]:
     return found
 
 
+def embedded_tracked_paths_walk(source: Path) -> list[str]:
+    """Paths tracked by the repositories found under a source that is not itself a repository.
+
+    The same question as ``embedded_tracked_paths``, asked of a plain folder: there is no outer repository
+    to list the nested ones, so the folder is walked (not into ``.git``, ``node_modules`` or a repository
+    already found: that one lists its own).  Without it the fixed excludes were held against nothing and
+    dropped what a nested repository had committed (AA73, the non-repository variant of fable-S4-1).
+    """
+    root = str(source)
+    found: list[str] = []
+    for dirpath, dirnames, _files in walk_long(root):
+        if dirpath != root and extended_path(Path(dirpath) / ".git").exists():
+            dirnames[:] = []
+            rel = os.path.relpath(dirpath, root).replace(os.sep, "/")
+            inner = _run(
+                ["git", "-C", dirpath, "ls-files", "-z"],
+                text=True, encoding="utf-8", errors="replace", stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            )
+            if inner.returncode == 0:
+                found.extend(f"{rel}/{path}" for path in inner.stdout.split("\0") if path)
+            continue
+        dirnames[:] = [name for name in dirnames if name not in (".git", "node_modules")]
+    return found
+
+
 def case_twins(work_tree: Path, kept: list[str], staged_now: "set[str]") -> list[str]:
     """Index entries that are the old spelling of a file just staged under a new one.
 

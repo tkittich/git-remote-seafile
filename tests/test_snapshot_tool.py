@@ -1952,6 +1952,25 @@ class FirstRunExcludePromptTests(_SnapshotFixture):
         self.assertIn("sub/node_modules/pkg.js", self.tree())
         self.assertIn("keeps 'node_modules' for this run", out)
 
+    def test_a_committed_node_modules_of_an_embedded_repository_is_kept_when_the_source_is_not_a_repository(self):
+        """AA73, the non-repository variant of the sibling above: the source has no tracked list of its own, so
+        the fixed patterns were held against nothing and an embedded repository's committed ``node_modules`` went."""
+        plain = self.tmp / "plain"
+        (plain / "node_modules" / "pkg").mkdir(parents=True)
+        (plain / "node_modules" / "pkg" / "a.js").write_bytes(b"never committed" + bytes([10]))
+        (plain / "top.txt").write_bytes(b"top" + bytes([10]))
+        sub = plain / "sub"
+        (sub / "node_modules").mkdir(parents=True)
+        (sub / "node_modules" / "pkg.js").write_bytes(b"vendored" + bytes([10]))
+        _git(sub, "init", "-q")
+        _git(sub, "add", "node_modules/pkg.js")
+        _git(sub, "commit", "-qm", "vendored")
+        rc, out, err = self.run_tool("--source", plain, "--vault", self.vault, "--no-push",
+                                     "--default-excludes")
+        self.assertEqual(rc, 0, err)
+        self.assertIn("sub/node_modules/pkg.js", self.tree())
+        self.assertIn("keeps 'node_modules' for this run", out)
+
     def test_an_ignored_build_directory_is_left_out_and_listed(self):
         (self.code / ".gitignore").write_bytes(b"node_modules/" + bytes([10]) + b"dist/" + bytes([10]) + b"build/" + bytes([10]))
         (self.code / "build").mkdir()

@@ -569,14 +569,14 @@ def index_paths(git_dir: Path, work_tree: Path) -> list[str]:
 
 
 def source_tracked_paths(source: Path) -> list[str]:
-    """Paths the source's own git repository tracks; empty when the source is not a repository root.
+    """Paths the source's own git repository tracks (a plain folder: those of the repositories under it).
 
     Read-only (``ls-files`` writes nothing).  Used so that a *recommended*
     exclude never drops source the user has committed: ``build`` also names
     ``tools/build/make.py``.
     """
     if not (source / ".git").exists():
-        return []
+        return embedded_tracked_paths_walk(source)
     proc = _run(
         ["git", "-C", str(source), "ls-files", "-z"],
         text=True,

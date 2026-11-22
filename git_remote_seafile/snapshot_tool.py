@@ -3747,14 +3747,14 @@ def index_paths(git_dir: Path, work_tree: Path) -> list[str]:
 
 
 def source_tracked_paths(source: Path) -> list[str]:
-    """Paths the source's own git repository tracks; empty when the source is not a repository root.
+    """Paths the source's own git repository tracks (a plain folder: those of the repositories under it).
 
     Read-only (``ls-files`` writes nothing).  Used so that a *recommended*
     exclude never drops source the user has committed: ``build`` also names
     ``tools/build/make.py``.
     """
     if not (source / ".git").exists():
-        return []
+        return embedded_tracked_paths_walk(source)
     proc = _run(
         ["git", "-C", str(source), "ls-files", "-z"],
         text=True,
@@ -4221,6 +4221,31 @@ def embedded_tracked_paths(source: Path) -> list[str]:
         )
         if inner.returncode == 0:
             found.extend(f"{rel}/{path}" for path in inner.stdout.split("\0") if path)
+    return found
+
+
+def embedded_tracked_paths_walk(source: Path) -> list[str]:
+    """Paths tracked by the repositories found under a source that is not itself a repository.
+
+    The same question as ``embedded_tracked_paths``, asked of a plain folder: there is no outer repository
+    to list the nested ones, so the folder is walked (not into ``.git``, ``node_modules`` or a repository
+    already found: that one lists its own).  Without it the fixed excludes were held against nothing and
+    dropped what a nested repository had committed (AA73, the non-repository variant of fable-S4-1).
+    """
+    root = str(source)
+    found: list[str] = []
+    for dirpath, dirnames, _files in walk_long(root):
+        if dirpath != root and extended_path(Path(dirpath) / ".git").exists():
+            dirnames[:] = []
+            rel = os.path.relpath(dirpath, root).replace(os.sep, "/")
+            inner = _run(
+                ["git", "-C", dirpath, "ls-files", "-z"],
+                text=True, encoding="utf-8", errors="replace", stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            )
+            if inner.returncode == 0:
+                found.extend(f"{rel}/{path}" for path in inner.stdout.split("\0") if path)
+            continue
+        dirnames[:] = [name for name in dirnames if name not in (".git", "node_modules")]
     return found
 
 
