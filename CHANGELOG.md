@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Deprecated
+- `--restore --payload-jobs` now warns: a restore downloads payload objects one at a time and never read the job count (the last of gemini-S3-6); refused from 0.11, `SNAPSHOT.md` "Options by mode" says so.
 - **Announced for 0.11** (the snapshot tool; nothing is refused yet). A run with `--no-embedded-repos` prints a `Warning:` that from 0.11 the option also needs `--allow-gitlinks` (an embedded repository is then recorded as its commit id only, and a restore gives an empty directory). Also planned for 0.11, with the old flags still accepted for one release: subcommands for the snapshot tool (`snapshot`, `restore`, `drill`, `status`, `maintain`, `payload gc|verify|view`). A job with `--exit-warnings` that passes `--no-embedded-repos` exits 3 until it is dropped.
 
 ### Fixed

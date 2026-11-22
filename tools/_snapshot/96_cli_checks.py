@@ -56,6 +56,9 @@ def ignored_option_warnings(args: argparse.Namespace) -> list[str]:
             ("--payload-skip-changing", args.payload_skip_changing),
             ("--payload-report-days", args.payload_report_days is not None),
         )
+    elif args.restore and not args.maintain:
+        # A restore downloads payload objects one at a time; the job count tunes only an upload.
+        given = (("--payload-jobs", args.payload_jobs is not None),)
     elif args.status:
         given = (
             ("--message", args.message), ("--allow-low-disk", args.allow_low_disk),
@@ -103,6 +106,8 @@ def mode_name(args: argparse.Namespace) -> str:
         return "--payload-verify"
     if args.payload_view is not None:
         return "--payload-view"
+    if args.restore and not args.maintain and args.restore_drill is None and not args.status:
+        return "--restore"
     if args.restore_drill is None and not args.status and not args.maintain:
         return "--no-push"
     return "--restore-drill" if args.restore_drill is not None else "--status" if args.status else "--maintain"

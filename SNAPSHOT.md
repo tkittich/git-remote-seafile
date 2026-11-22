@@ -288,7 +288,7 @@ without a decision.
 
 | Mode | Reads (beyond `--json`, `--exit-warnings`) | Accepted and ignored: warned in 0.10.x, refused from 0.11 |
 | :--- | :--- | :--- |
-| `--restore` | `--remote`, `--into`, `--branch`, `--ref`, `--verify`, `--allow-synced`, `--allow-low-disk`, `--payload-jobs` | none |
+| `--restore` | `--remote`, `--into`, `--branch`, `--ref`, `--verify`, `--allow-synced`, `--allow-low-disk` | `--payload-jobs` |
 | `--restore-drill` | `--remote`, `--branch`, `--ref`, `--allow-synced`, `--allow-low-disk` | `--payload-jobs`, `--no-payload`, `--payload-auto-ratio`, `--payload-skip-changing`, `--payload-report-days` |
 | `--status` | `--source`, `--vault`, `--branch`, `--remote`, `--code-remote`, `--exclude`, `--default-excludes`, `--payload-min-size`, `--no-payload`, `--payload-auto-ratio`, `--allow-synced` | `--message`, `--allow-low-disk`, `--payload-report-days` |
 | `--maintain` | `--source`, `--vault`, `--allow-synced`, `--no-object-compression`, `--full-repack` | `--remote`, `--branch`, `--allow-low-disk`, `--payload-jobs` |

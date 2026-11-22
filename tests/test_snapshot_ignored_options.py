@@ -42,6 +42,13 @@ class IgnoredOptionTests(unittest.TestCase):
         self.assertEqual(snap.mode_name(args), "--no-push")
         self.assertEqual(snap.ignored_option_warnings(_args("--no-push")), [])
 
+    def test_a_restore_names_the_job_count_it_never_reads(self):
+        """gemini-S3-6 (the rest): a restore downloads payload objects one at a time; ``--payload-jobs`` tunes an upload."""
+        args = _args("--restore", "--remote", "r", "--into", "d", "--payload-jobs", "2")
+        self.assertEqual(snap.ignored_option_warnings(args), ["--payload-jobs"])
+        self.assertEqual(snap.mode_name(args), "--restore")
+        self.assertEqual(snap.ignored_option_warnings(_args("--restore", "--remote", "r", "--into", "d")), [])
+
     def test_a_status_names_what_a_report_never_reads(self):
         args = _args("--status", "--message", "hi", "--allow-low-disk", "--payload-report-days", "3")
         self.assertEqual(snap.ignored_option_warnings(args), ["--message", "--allow-low-disk", "--payload-report-days"])
