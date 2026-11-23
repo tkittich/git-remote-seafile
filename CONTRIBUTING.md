@@ -452,15 +452,17 @@ gh attestation verify dist/<artifact> --repo tkittich/git-remote-seafile
 
 ---
 
-## Maintenance mode
+## Maintenance mode (soft)
 
-The project is in maintenance mode (decided 2026-11-17; v0.10.0 is the first release of it, after 64 releases and a review round per
-release that kept finding defects in recently added options). What that means:
+The project is in *soft* maintenance mode. It began as hard maintenance mode (decided 2026-11-17; v0.10.0 is the first
+release of it, after 64 releases and a review round per release that kept finding defects in recently added options) and
+was relaxed on 2026-11-23. What that means:
 
-- **No new features, no new options.** A new flag, setting or mode needs a written reason in an issue
-  first (a bug that cannot be fixed without it, or a security need), and the maintainer's yes. The
-  backlog rows that were closed as "won't do" stay closed: `--on-failure`, `--limit-rate`, retention
-  presets, the doctor bundle, `--restore --only`.
+- **Important work may go in: features, restructures, refactors, behaviour changes, redesigns.** Each needs a written
+  reason (an issue, a spec or a ROADMAP row) and the maintainer's yes before it starts, and it ships with the tests and
+  the documentation of any other change. Small additions that only widen the surface (one more flag for convenience) are
+  still not welcome: the bar is that the change matters. The backlog rows closed as "won't do" stay closed unless the
+  maintainer reopens one: `--on-failure`, `--limit-rate`, retention presets, the doctor bundle.
 - **Every fix has a test that fails without it.** `tools/check_red_before.py <ref>` runs a commit's new
   tests against its parent's code and says which ones were not red.
 - **A fix closes a shape, not a site.** Prefer the guard that fails for the next site too (a table every
