@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Windows: a source holding a name Windows cannot open no longer stops the snapshot.** A tree that came from Linux, an archive or a share can hold `CON`, `aux.txt`, `dir.` or a folder whose name ends in a space. `git add` stopped the whole run on the first one (`unable to index file 'CON'`, rc=128) and every rerun stopped the same way. These paths are now left out and named in a `Warning:` (rename them to have them captured); the rest of the tree is snapshotted, as for a path behind a junction. Found by the Windows odd-name probe of the 0.10.5 bug hunt.
+
 ## [0.10.4] - 2026-11-22
 
 A fixes-only release (maintenance mode): two bugs reproduced on macOS (APFS) by a CI probe, one on a plain folder with an embedded repository, a gitlink warning that printed a quoted name, and two warn-first deprecations (`--no-embedded-repos`, `--restore --payload-jobs`). Each fix has a test that fails without it.

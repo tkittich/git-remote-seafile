@@ -3467,6 +3467,8 @@ def build_snapshot(
                     + (f"\n  ... and {len(dropped) - 10} more" if len(dropped) > 10 else "")
                     + "\nMove what they point at inside the tree, or --exclude the junction."
                 )
+        if os.name == "nt":
+            candidates, nested = leave_out_unaddressable(candidates, nested, unreadable)
         excluded = [
             path
             for path in candidates
@@ -4086,6 +4088,34 @@ def _junction_filter(work_tree: Path) -> Any:
         return False
 
     return behind
+
+
+def leave_out_unaddressable(
+    candidates: list[str], nested: list[str], unreadable: list[str],
+) -> tuple[list[str], list[str]]:
+    """*candidates* and *nested* without the paths Windows cannot address, which are named in a warning.
+
+    A tree that came from Linux, an archive or a share can hold ``CON``, ``aux.txt``, ``dir.`` or a folder whose
+    name ends in a space.  Win32 cannot open them under that name, so ``git add`` stopped the whole run on the
+    first one with ``unable to index file 'CON'`` (rc=128), and a rerun stopped the same way.  The rest of the
+    tree is still a snapshot; these paths are left out and listed, as a path behind a junction is.  A folder git
+    could not open for that reason (``dir.``) is in *unreadable*: it moves from there to the warning, since the
+    rename is the remedy, and what is in it is not listed.
+    """
+    gone = {path for path in (*candidates, *nested) if windows_name_problem(path.rstrip("/")) is not None}
+    for folder in [d for d in unreadable if windows_name_problem(d) is not None]:
+        unreadable.remove(folder)
+        gone.add(folder + "/")
+    if not gone:
+        return candidates, nested
+    listed = sorted(gone)
+    print(
+        f"\nWarning: {len(listed)} path(s) have a name Windows cannot open (a reserved device name, or a name "
+        "ending in a dot or a space), so they were not captured:\n  " + "\n  ".join(listed[:10])
+        + (f"\n  ... and {len(listed) - 10} more" if len(listed) > 10 else "")
+        + "\nRename them to have them captured."
+    )
+    return [p for p in candidates if p not in gone], [p for p in nested if p not in gone]
 
 
 def embedded_roots(paths: list[str], work_tree: Path) -> list[str]:

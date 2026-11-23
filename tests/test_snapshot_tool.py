@@ -256,6 +256,25 @@ class BasicSnapshotTests(_SnapshotFixture):
             self.tree(), {".env", ".gitignore", "README.md", "app.log"}
         )
 
+    @unittest.skipUnless(os.name == "nt", "names only Windows cannot open")
+    def test_a_name_windows_cannot_open_does_not_stop_the_snapshot(self):
+        """``CON`` and a folder ending in a dot are creatable only through ``\\\\?\\``; ``git add`` stopped the whole
+        run on them.  The rest is snapshotted and they are named."""
+        targets = ["\\\\?\\" + str(self.code) + "\\" + name.replace("/", "\\") for name in ("CON", "dir./inner.txt")]
+        try:
+            for target in targets:
+                os.makedirs(os.path.dirname(target), exist_ok=True)
+                with open(target, "wb") as handle:
+                    handle.write(b"x")
+            rc, out, err = self.snapshot()
+            self.assertEqual(rc, 0, err)
+            self.assertIn("CON", out)
+            self.assertIn("README.md", self.tree())
+            self.assertNotIn("CON", self.tree())
+        finally:    # the fixture's own cleanup cannot remove these names
+            os.path.lexists(targets[0]) and os.remove(targets[0])
+            shutil.rmtree(os.path.dirname(targets[1]))
+
     def test_multi_segment_exclude_matches_a_directory_prefix(self):
         """--exclude packages/web/build must exclude MORE than a bare name, not nothing.
 
@@ -513,6 +532,29 @@ class SnapshotGuardTests(_SnapshotFixture):
         with self._folding_lstat():
             old = snap.case_twins(repo, ["STRASSE.TXT", "straße.txt"])
         self.assertEqual(old, ["straße.txt"])
+
+    def test_paths_windows_cannot_open_are_left_out_and_named(self):
+        """Found by running names from Linux through a Windows source: ``CON`` made ``git add`` stop the run
+        (rc=128, ``unable to index file 'CON'``) on every rerun.  The helper that the Windows staging calls
+        drops a reserved name, a trailing dot or space (in a folder too), and names what it dropped."""
+        unreadable = ["dir.", "fine"]
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            kept, nested = snap.leave_out_unaddressable(
+                ["ok.txt", "CON", "a/aux.txt", "space ", "dir /x.txt", "deep/ok.txt"], ["sub/", "nul/"], unreadable)
+        self.assertEqual(kept, ["ok.txt", "deep/ok.txt"])
+        self.assertEqual(nested, ["sub/"])
+        self.assertEqual(unreadable, ["fine"])
+        said = out.getvalue()
+        for name in ("CON", "a/aux.txt", "space ", "dir /x.txt", "nul/", "dir./"):
+            self.assertIn(name, said)
+        self.assertNotIn("ok.txt\n", said)
+
+    def test_nothing_is_said_when_every_name_can_be_opened(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            kept, nested = snap.leave_out_unaddressable(["a.txt", "b/c.txt"], ["r/"], ["x"])
+        self.assertEqual((kept, nested, out.getvalue()), (["a.txt", "b/c.txt"], ["r/"], ""))
 
     def test_two_spellings_that_are_both_on_the_disk_are_both_kept(self):
         """A case-sensitive disk (or two real files): nothing is a twin of anything."""

@@ -289,6 +289,8 @@ def build_snapshot(
                     + (f"\n  ... and {len(dropped) - 10} more" if len(dropped) > 10 else "")
                     + "\nMove what they point at inside the tree, or --exclude the junction."
                 )
+        if os.name == "nt":
+            candidates, nested = leave_out_unaddressable(candidates, nested, unreadable)
         excluded = [
             path
             for path in candidates
