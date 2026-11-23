@@ -242,6 +242,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "its commit id, as 0.9.0 did, instead of capturing its files",
     )
     sections.add_argument(
+        "--allow-gitlinks",
+        action="store_true",
+        help="with --no-embedded-repos: accept that an embedded repository is recorded as a gitlink "
+        "(its commit id, not its files), so a restore gives an empty directory",
+    )
+    sections.add_argument(
         "--rebuild-index",
         action="store_true",
         help="drop the vault's index before staging, so every git-stored file is read and "

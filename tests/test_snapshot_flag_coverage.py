@@ -70,29 +70,21 @@ class TestEveryOptionIsAccountedFor(unittest.TestCase):
 #: mentions elsewhere; this does, per mode.  An option missing here is refused by the mode (good); a new
 #: option that a mode accepts fails the test until someone decides what it means there and lists it.
 #: Entries that a mode really uses are marked in ``USED``; the rest are accepted and ignored today
-#: (ROADMAP AA73: review c305b0a fable-S3-8, S4-13, gemini-S3-6, S4-3) -- shrinking this list is the work.
+#: (ROADMAP AA73/AA74; 0.11 refused the options that 0.10.x warned about, ``test_snapshot_unused_options``).
 ACCEPTED = {
-    "restore": {"--branch", "--ref", "--allow-synced", "--allow-low-disk", "--payload-jobs", "--verify",
-                "--json", "--exit-warnings"},
-    "drill": {"--branch", "--ref", "--allow-synced", "--allow-low-disk", "--no-payload", "--payload-auto-ratio",
-              "--payload-skip-changing", "--payload-jobs", "--payload-report-days", "--json", "--exit-warnings"},
+    "restore": {"--branch", "--ref", "--allow-synced", "--allow-low-disk", "--verify", "--json", "--exit-warnings"},
+    "drill": {"--branch", "--ref", "--allow-synced", "--allow-low-disk", "--json", "--exit-warnings"},
     "status": {"--source", "--vault", "--branch", "--remote", "--code-remote", "--exclude", "--default-excludes",
-               "--message", "--allow-synced", "--allow-low-disk", "--payload-min-size", "--no-payload",
-               "--payload-auto-ratio", "--payload-report-days", "--json", "--exit-warnings"},
-    "maintain": {"--source", "--vault", "--branch", "--remote", "--allow-synced", "--allow-low-disk",
-                 "--payload-jobs", "--json", "--exit-warnings", "--no-object-compression", "--full-repack"},
-    "gc": {"--allow-low-disk", "--allow-shared-remote", "--allow-synced", "--branch", "--code-remote",
-           "--default-excludes", "--exit-warnings", "--json", "--message", "--no-object-compression", "--no-repack",
-           "--payload-grace-days", "--payload-keep", "--rebuild-index", "--reset-to-remote", "--source", "--vault"},
-    "verify": {"--allow-low-disk", "--allow-shared-remote", "--allow-synced", "--branch", "--code-remote",
-               "--default-excludes", "--exclude", "--exit-warnings", "--json", "--message", "--no-object-compression",
-               "--no-repack", "--payload-jobs", "--payload-rehash", "--payload-report-days", "--payload-skip-changing",
-               "--rebuild-index", "--reset-to-remote", "--source", "--vault"},
-    "view": {"--allow-low-disk", "--allow-shared-remote", "--allow-synced", "--branch", "--code-remote",
-             "--default-excludes", "--exclude", "--exit-warnings", "--json", "--message", "--no-object-compression",
-             "--no-repack", "--payload-jobs", "--payload-rehash", "--payload-report-days", "--payload-skip-changing",
-             "--payload-view-name", "--payload-view-replace", "--rebuild-index", "--reset-to-remote", "--source",
-             "--vault"},
+               "--allow-synced", "--payload-min-size", "--no-payload", "--payload-auto-ratio", "--json",
+               "--exit-warnings"},
+    "maintain": {"--source", "--vault", "--allow-synced", "--json", "--exit-warnings", "--no-object-compression",
+                 "--full-repack"},
+    "gc": {"--allow-low-disk", "--allow-shared-remote", "--allow-synced", "--exit-warnings", "--json",
+           "--payload-grace-days", "--payload-keep", "--vault"},
+    "verify": {"--allow-low-disk", "--allow-shared-remote", "--allow-synced", "--exclude", "--exit-warnings", "--json",
+               "--payload-jobs", "--payload-rehash", "--payload-report-days", "--payload-skip-changing", "--vault"},
+    "view": {"--allow-shared-remote", "--allow-synced", "--exit-warnings", "--json", "--payload-view-name",
+             "--payload-view-replace", "--vault"},
 }
 MODE_LINES = {
     "restore": ["--restore", "--remote", "r", "--into", "d"],
@@ -113,27 +105,6 @@ def _value(action: argparse.Action) -> list[str]:
 
 
 class TestEveryModeDecidesEveryOption(unittest.TestCase):
-    def test_an_option_warned_as_ignored_is_one_the_mode_accepts(self):
-        """The deprecation pass (``ignored_option_warnings``) names only options in the table above."""
-        modes = {"drill": ["--restore-drill", "--remote", "r"], "status": ["--status"], "maintain": ["--maintain"],
-                 "gc": ["--payload-gc", "--remote", "r"], "verify": ["--payload-verify", "all", "--remote", "r"],
-                 "view": ["--payload-view", "x", "--remote", "r"]}
-        every = {"--payload-jobs": "1", "--no-payload": None, "--payload-auto-ratio": "0.5",
-                 "--payload-skip-changing": None, "--payload-report-days": "1", "--message": "m",
-                 "--allow-low-disk": None, "--remote": "r", "--branch": "b", "--source": "s", "--code-remote": "c",
-                 "--default-excludes": None, "--reset-to-remote": None, "--no-repack": None,
-                 "--no-object-compression": None, "--rebuild-index": None, "--exclude": "x",
-                 "--payload-rehash": None}
-        for mode, base in modes.items():
-            argv = list(base)
-            for flag, value in every.items():
-                if flag not in base:
-                    argv += [flag] + ([value] if value else [])
-            with contextlib.redirect_stderr(io.StringIO()):
-                named = snap.ignored_option_warnings(snap.parse_args(argv))
-            self.assertTrue(named, mode)
-            self.assertEqual(sorted(set(named) - ACCEPTED[mode]), [], f"--{mode}: warned about an option it refuses")
-
     def test_the_options_a_mode_accepts_are_the_listed_ones(self):
         seen: dict[str, argparse.ArgumentParser] = {}
 

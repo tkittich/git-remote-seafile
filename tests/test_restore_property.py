@@ -99,7 +99,7 @@ class RestoreMatchesTheSnapshot(base._IncrementalFixture):
             for pattern in rng.choice(base.EXCLUDES):
                 flags += ["--exclude", pattern]
             if no_embedded:
-                flags.append("--no-embedded-repos")
+                flags += ["--no-embedded-repos", "--allow-gitlinks"]
             log.append(f"step {step} flags={flags}")
             try:
                 self._step_check(seed, step, remote, flags, f"seed {seed}, " + "; ".join(log[-3:]))

@@ -279,14 +279,14 @@ silent it refuses instead:
 - **A failing vault-config write is an error**, not a silent divergence between
   what the run believes it remembered and what the vault holds.
 
-### Options by mode, and options a mode ignores
+### Options by mode, and options a mode never reads
 
 A snapshot run reads every option. The other modes read a subset; the rest are either refused (`Error: --x does not
-apply to --restore`, exit 2) or, for the few listed below, accepted and ignored for as long as the tool has existed.
-`tests/test_snapshot_flag_coverage.py` lists what each mode accepts today, so a new option cannot slip into a mode
-without a decision.
+apply to --restore`, exit 2). Until 0.10.x the options in the last column below were accepted and ignored (0.10.1 to
+0.10.4 warned about them); since 0.11 they are refused too. `tests/test_snapshot_flag_coverage.py` lists what each mode
+accepts today, so a new option cannot slip into a mode without a decision.
 
-| Mode | Reads (beyond `--json`, `--exit-warnings`) | Accepted and ignored: warned in 0.10.x, refused from 0.11 |
+| Mode | Reads (beyond `--json`, `--exit-warnings`) | Refused since 0.11 (warned in 0.10.x) |
 | :--- | :--- | :--- |
 | `--restore` | `--remote`, `--into`, `--branch`, `--ref`, `--verify`, `--allow-synced`, `--allow-low-disk` | `--payload-jobs` |
 | `--restore-drill` | `--remote`, `--branch`, `--ref`, `--allow-synced`, `--allow-low-disk` | `--payload-jobs`, `--no-payload`, `--payload-auto-ratio`, `--payload-skip-changing`, `--payload-report-days` |
@@ -296,8 +296,12 @@ without a decision.
 | `--payload-view` | `--remote`, `--vault`, `--payload-view-name`, `--payload-view-replace` | `--source`, `--branch`, `--code-remote`, `--exclude`, `--default-excludes`, `--message`, `--reset-to-remote`, `--no-repack`, `--no-object-compression`, `--rebuild-index`, `--allow-low-disk`, `--payload-jobs`, `--payload-rehash`, `--payload-skip-changing`, `--payload-report-days` |
 | snapshot run with `--no-push` | everything else | `--payload-jobs`, `--payload-auto-ratio`, `--payload-skip-changing`, `--payload-rehash` |
 
-Each ignored option prints `Warning: --x has no effect with --mode and will be refused from 0.11; drop it.` before the
-run, which is a `Warning:` like any other (`--exit-warnings` exits 3 on it). The run itself is unchanged.
+Each of them ends the run before it starts with `Error: the arguments do not make sense together: --x does not apply
+to --mode` and exit 2 (`tests/test_snapshot_unused_options.py`). Drop the option; the run it was passed to never read it.
+
+`--no-embedded-repos` records a nested repository as a gitlink, its commit id and not its files, so a restore gives an
+empty directory. Since 0.11 it is refused unless `--allow-gitlinks` is given too; `--allow-gitlinks` alone is refused as
+well, as is either in a mode other than a snapshot run.
 
 ### Exit codes and `--json`
 

@@ -193,7 +193,7 @@ class _IncrementalFixture(unittest.TestCase):   # no tests of its own: other pro
             for pattern in rng.choice(EXCLUDES):
                 flags += ["--exclude", pattern]
             if no_embedded:
-                flags.append("--no-embedded-repos")
+                flags += ["--no-embedded-repos", "--allow-gitlinks"]
             if default_excludes:
                 flags.append("--default-excludes")
             incremental, said_inc = self._snapshot(self.tmp / "vault", flags)

@@ -173,8 +173,8 @@ def embedded_note(report: list[tuple[str, int]]) -> str:
         "as ordinary\nfiles; their .git directories (history, branches, stashes) were not:"
     ]
     lines += [f"  {path} ({count} file(s))" for path, count in report]
-    lines.append("  Back the history up separately, or pass --no-embedded-repos to record "
-                 "only each repository's commit id.")
+    lines.append("  Back the history up separately, or pass --no-embedded-repos "
+                 "--allow-gitlinks to record only each repository's commit id.")
     return "\n".join(lines)
 
 

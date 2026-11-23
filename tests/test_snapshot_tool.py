@@ -416,7 +416,7 @@ class SnapshotGuardTests(_SnapshotFixture):
 
     def test_no_embedded_repos_keeps_the_gitlink_and_the_warning(self):
         self._nested_repo()
-        rc, out, _ = self.snapshot("--no-embedded-repos")
+        rc, out, _ = self.snapshot("--no-embedded-repos", "--allow-gitlinks")
         self.assertEqual(rc, 0)
         self.assertIn("Warning: these paths are embedded", out)
         self.assertNotIn("nested/inner.txt", self.tree())
@@ -426,7 +426,7 @@ class SnapshotGuardTests(_SnapshotFixture):
         """N-ONLY-2: ``ls-tree -r`` without ``-z`` C-quotes a path with ``"``, a backslash, a tab or a newline even
         under ``core.quotepath=false`` (which only spares non-ASCII), so the warning printed ``"a\\"b"``."""
         self._nested_repo('a"b')
-        rc, out, _ = self.snapshot("--no-embedded-repos")
+        rc, out, _ = self.snapshot("--no-embedded-repos", "--allow-gitlinks")
         self.assertEqual(rc, 0)
         self.assertIn('\n  a"b\n', out)
 
@@ -667,7 +667,7 @@ class SnapshotGuardTests(_SnapshotFixture):
         bare.mkdir()
         _git(bare, "init", "-q", "-b", "main", ".")
         (bare / "notes.txt").write_bytes(b"uncommitted\n")
-        rc, out, err = self.snapshot("--no-embedded-repos")
+        rc, out, err = self.snapshot("--no-embedded-repos", "--allow-gitlinks")
         self.assertEqual(rc, 1)
         self.assertIn("--exclude", err)
         self.assertIn("no commit", err)
@@ -678,7 +678,7 @@ class SnapshotGuardTests(_SnapshotFixture):
         (self.code / "sub" / ".git").mkdir(parents=True)
         (self.code / "sub" / "data.txt").write_bytes(b"only copy\n")
         source_head = _git(self.code, "rev-parse", "HEAD").stdout.strip()
-        rc, out, err = self.snapshot("--no-embedded-repos")
+        rc, out, err = self.snapshot("--no-embedded-repos", "--allow-gitlinks")
         listing = _git(self.vault, "ls-tree", "-r", BRANCH).stdout if rc == 0 else ""
         self.assertNotIn(source_head, listing, "the source's own commit was recorded for sub")
         self.assertTrue(rc != 0 or "sub/data.txt" in listing, out + err)
@@ -687,7 +687,7 @@ class SnapshotGuardTests(_SnapshotFixture):
         self._nested_repo()
         self.assertEqual(self.snapshot()[0], 0)
         self.assertIn("nested/inner.txt", self.tree())
-        rc, out, err = self.snapshot("--no-embedded-repos")
+        rc, out, err = self.snapshot("--no-embedded-repos", "--allow-gitlinks")
         self.assertEqual(rc, 0, out + err)
         self.assertNotIn("nested/inner.txt", self.tree())
         self.assertIn("160000", _git(self.vault, "ls-tree", "-r", BRANCH).stdout)
@@ -880,7 +880,7 @@ class SnapshotGuardTests(_SnapshotFixture):
         nested = self._nested_repo()
         want = _git(nested, "rev-parse", "HEAD").stdout.strip()
         self.assertEqual(self.snapshot()[0], 0)
-        rc, out, err = self.snapshot("--no-embedded-repos")
+        rc, out, err = self.snapshot("--no-embedded-repos", "--allow-gitlinks")
         self.assertEqual(rc, 0, out + err)
         listing = _git(self.vault, "ls-tree", BRANCH, "nested").stdout
         self.assertIn(f"160000 commit {want}", listing)
@@ -893,7 +893,7 @@ class SnapshotGuardTests(_SnapshotFixture):
         _git(bare, "init", "-q", "-b", "main", ".")
         (bare / "notes.txt").write_bytes(b"uncommitted\n")
         self.assertEqual(self.snapshot()[0], 0)
-        rc, out, err = self.snapshot("--no-embedded-repos")
+        rc, out, err = self.snapshot("--no-embedded-repos", "--allow-gitlinks")
         self.assertEqual(rc, 1, out + err)
         self.assertIn("--exclude", err)
 
@@ -909,7 +909,7 @@ class SnapshotGuardTests(_SnapshotFixture):
         _git(deep, "commit", "-qm", "deep")
         self.assertEqual(self.snapshot()[0], 0)
         self.assertIn("nested/deep/d.txt", self.tree())
-        rc, out, err = self.snapshot("--no-embedded-repos")
+        rc, out, err = self.snapshot("--no-embedded-repos", "--allow-gitlinks")
         self.assertEqual(rc, 0, out + err)
         links = [l for l in _git(self.vault, "ls-tree", "-r", BRANCH).stdout.splitlines() if l.startswith("160000")]
         self.assertEqual(len(links), 1, links)
@@ -938,7 +938,7 @@ class SnapshotGuardTests(_SnapshotFixture):
 
     def test_a_vault_that_holds_a_gitlink_converts_on_the_next_run(self):
         self._nested_repo()
-        self.assertEqual(self.snapshot("--no-embedded-repos")[0], 0)
+        self.assertEqual(self.snapshot("--no-embedded-repos", "--allow-gitlinks")[0], 0)
         self.assertNotIn("nested/inner.txt", self.tree())
         self.assertEqual(self.snapshot()[0], 0)
         self.assertIn("nested/inner.txt", self.tree())
@@ -1760,14 +1760,6 @@ class CredentialWarningTests(_SnapshotFixture):
         self.assertIn("look like credentials", out)
         self.assertIn(".env", out)
 
-    def test_no_embedded_repos_warns_that_0_11_needs_allow_gitlinks(self):
-        rc, out, _ = self.snapshot("--no-push", "--no-embedded-repos")
-        self.assertEqual(rc, 0)
-        self.assertIn("Warning: --no-embedded-repos records an embedded repository as a gitlink", out)
-        self.assertIn("--allow-gitlinks", out)
-        rc, out, _ = self.snapshot("--no-push")
-        self.assertNotIn("--allow-gitlinks", out)
-
     def test_the_warning_is_said_once_not_on_every_run(self):
         # On every run it made --exit-warnings exit 3 for ever on a tree with a .env.
         # --default-excludes: the fixture's dist/ would otherwise be a warning of its own.
@@ -2398,7 +2390,7 @@ class RestoreVerificationTests(_SnapshotFixture):
         _git(inner, "-c", "user.email=e@x", "-c", "user.name=v",
              "commit", "-q", "-m", "inner")
 
-        self.snapshot("--remote", str(self.remote), "--no-embedded-repos")
+        self.snapshot("--remote", str(self.remote), "--no-embedded-repos", "--allow-gitlinks")
         rc, out, err = self.restore_to(self.restored)
         self.assertEqual(rc, 0, err)
         self.assertIn("embedded git repositories", out)

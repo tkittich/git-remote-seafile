@@ -4062,8 +4062,8 @@ def embedded_note(report: list[tuple[str, int]]) -> str:
         "as ordinary\nfiles; their .git directories (history, branches, stashes) were not:"
     ]
     lines += [f"  {path} ({count} file(s))" for path, count in report]
-    lines.append("  Back the history up separately, or pass --no-embedded-repos to record "
-                 "only each repository's commit id.")
+    lines.append("  Back the history up separately, or pass --no-embedded-repos "
+                 "--allow-gitlinks to record only each repository's commit id.")
     return "\n".join(lines)
 
 
@@ -10814,6 +10814,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "its commit id, as 0.9.0 did, instead of capturing its files",
     )
     sections.add_argument(
+        "--allow-gitlinks",
+        action="store_true",
+        help="with --no-embedded-repos: accept that an embedded repository is recorded as a gitlink "
+        "(its commit id, not its files), so a restore gives an empty directory",
+    )
+    sections.add_argument(
         "--rebuild-index",
         action="store_true",
         help="drop the vault's index before staging, so every git-stored file is read and "
@@ -11213,11 +11219,10 @@ def literal_exclude(path: str) -> str:
     return "".join(f"[{ch}]" if ch in "*?[" else ch for ch in path)
 
 
-def ignored_option_warnings(args: argparse.Namespace) -> list[str]:
-    """Options this mode accepts and never reads: warned about in 0.10.x, refused from 0.11.
+def unused_option_problems(args: argparse.Namespace) -> list[str]:
+    """Options this mode accepts and never reads: warned about in 0.10.x, refused from 0.11 (UPGRADING).
 
     Found by reading what each mode's code path uses (review c305b0a: fable-S3-8, S4-13, gemini-S3-6, S4-3).
-    Refusing at once would break a script that has passed one for years, so ``Warning:`` first (UPGRADING).
     A snapshot run reads every option, so it has no row here.
     """
     given: tuple[tuple[str, Any], ...]
@@ -11268,7 +11273,7 @@ def ignored_option_warnings(args: argparse.Namespace) -> list[str]:
         )
     else:
         return []
-    return [flag for flag, value in given if value]
+    return [f"{flag} does not apply to {mode_name(args)}" for flag, value in given if value]
 
 
 def mode_name(args: argparse.Namespace) -> str:
@@ -11295,7 +11300,7 @@ def validate_args(args: argparse.Namespace) -> None:
     """
     problems: list[str] = (
         payload_gc_conflicts(args) + payload_conflicts(args) + payload_view_conflicts(args)
-        + mtimes_conflicts(args) + status_conflicts(args)
+        + mtimes_conflicts(args) + status_conflicts(args) + unused_option_problems(args)
     )
 
     problems += drill_conflicts(args)
@@ -11371,11 +11376,23 @@ def validate_args(args: argparse.Namespace) -> None:
     if not args.maintain and args.full_repack:
         problems.append("--full-repack only applies to --maintain")
 
-    if args.no_embedded_repos and (
+    other_mode = bool(
         args.payload_gc or args.payload_verify is not None or args.payload_view is not None
         or args.status or args.restore or args.maintain or args.restore_drill is not None
-    ):
+    )
+    if args.no_embedded_repos and other_mode:
         problems.append("--no-embedded-repos only applies to a snapshot run")
+    elif args.no_embedded_repos and not args.allow_gitlinks:
+        # A gitlink is a commit id: a restore gives an empty directory, so it is chosen in so many words.
+        problems.append(
+            "--no-embedded-repos records an embedded repository as a gitlink (its commit id, not its "
+            "files), so a restore gives an empty directory; add --allow-gitlinks to accept that, or "
+            "drop --no-embedded-repos to capture the files"
+        )
+    if args.allow_gitlinks and other_mode:
+        problems.append("--allow-gitlinks only applies to a snapshot run")
+    elif args.allow_gitlinks and not args.no_embedded_repos:
+        problems.append("--allow-gitlinks only applies together with --no-embedded-repos")
 
     if args.no_push and args.remote:
         problems.append("--no-push and --remote contradict each other")
@@ -12228,13 +12245,6 @@ def run_command(args: argparse.Namespace) -> int:
             # on a typo; gemini-4-hydrogen-E5).
             print(f"Error: {exc}", file=sys.stderr)
             return EXIT_USAGE
-        for flag in ignored_option_warnings(args):
-            print(f"Warning: {flag} has no effect with {mode_name(args)} and will be refused from 0.11; drop it.",
-                  flush=True)
-        if args.no_embedded_repos:
-            print("Warning: --no-embedded-repos records an embedded repository as a gitlink (its commit id, not "
-                  "its files), so a restore gives an empty directory; from 0.11 it also needs --allow-gitlinks.",
-                  flush=True)
         payload_rc = payload_command(args)
         if payload_rc is not None:
             return payload_rc

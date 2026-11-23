@@ -109,7 +109,7 @@ _PKG_FROM = re.compile(r"from git_remote_seafile import (?:\(([^)]*)\)|([\w ,]+)
 _RELATIVE = re.compile(r"^[ \t]*from \.(\w*) import (?:\(([^)]*)\)|([\w ,]+))", re.MULTILINE)
 _SNAPSHOT_TESTS = ["test_snapshot_tool", "test_snapshot_payload", "test_snapshot_runreport",
                    "test_snapshot_climb", "test_snapshot_history_guard", "test_snapshot_build",
-                   "test_snapshot_walk_long", "test_snapshot_flag_coverage", "test_snapshot_crashes", "test_snapshot_ignored_options", "test_fault_injection_snapshot",
+                   "test_snapshot_walk_long", "test_snapshot_flag_coverage", "test_snapshot_crashes", "test_snapshot_unused_options", "test_fault_injection_snapshot",
                    "test_incremental_property", "test_launcher", "test_docs_consistency",
                    # Read the parts or the generated file by path, which no import scan sees
                    # (review 9fe723f, gemini G0.2): the raw-read guard and the env-scrub pin.
