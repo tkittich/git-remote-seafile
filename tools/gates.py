@@ -113,13 +113,14 @@ _SNAPSHOT_TESTS = ["test_snapshot_tool", "test_snapshot_payload", "test_snapshot
                    "test_incremental_property", "test_launcher", "test_docs_consistency",
                    # Read the parts or the generated file by path, which no import scan sees
                    # (review 9fe723f, gemini G0.2): the raw-read guard and the env-scrub pin.
-                   "test_client", "test_git_util"]
+                   "test_client", "test_git_util", "test_mutate_sweep"]
 #: Modules whose change reaches the helper process, which the snapshot tests drive.
 _HELPER_SIDE = frozenset({"helper", "packs", "gc", "diagnose"})
 _TOOL_TESTS = {
     "tools/gates.py": ["test_gates"],
     "tools/run_tests_parallel.py": ["test_runner_discovery", "test_gates", "test_suite_shape"],
     "tools/release_check.py": ["test_release_check"],
+    "tools/mutate_sweep.py": ["test_mutate_sweep"],
     "tools/realserver_ci.py": ["test_realserver_ci"],
     "tools/seafile_doctor.py": ["test_seafile_doctor", "test_doctor_library"],
     "tools/verify_docs_guards.py": [],

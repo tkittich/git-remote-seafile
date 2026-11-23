@@ -198,7 +198,10 @@ real data**, even to test. Read-only commands (`--payload-verify`, report-only
   <tests>`**: it rebuilds the snapshot tool for a part, restores the file byte for byte, and says
   KILLED or SURVIVED. A survivor is reported, never hidden. `tools/mutate_sweep.py <part> --tests ...`
   generates the mutations of a whole part in isolated copies, in parallel, and lists the survivors
-  (many are equivalent: read each). `.github/workflows/fuzz.yml` runs the differential properties
+  (many are equivalent: read each). `--select` (needs `coverage`) runs a mutation only against the test
+  classes that reach its line, but it was not faster when measured (67_hashing: 40 min of measuring, one
+  slow class); `--jobs 24` helps on a big machine, and `.github/workflows/mutate.yml` runs a sweep on
+  Linux. `.github/workflows/fuzz.yml` runs the differential properties
   (`tests/test_*_property.py`) with many seeds on macOS, Windows and Linux, by hand.
 - **A fix that closes a shape gets a guard that does not need to know the sites.** Naming
   siblings by hand missed some three rounds running (X10 → Y2 → Z8; Y4 → Z2, Z3). Prefer a
