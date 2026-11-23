@@ -211,6 +211,8 @@ def validate_args(args: argparse.Namespace) -> None:
             "files), so a restore gives an empty directory; add --allow-gitlinks to accept that, or "
             "drop --no-embedded-repos to capture the files"
         )
+    if args.refuse_secrets and other_mode:
+        problems.append("--refuse-secrets only applies to a snapshot run")
     if args.allow_gitlinks and other_mode:
         problems.append("--allow-gitlinks only applies to a snapshot run")
     elif args.allow_gitlinks and not args.no_embedded_repos:

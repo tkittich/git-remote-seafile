@@ -325,14 +325,13 @@ def run_command(args: argparse.Namespace) -> int:
                     "remote that survives."
                 )
 
-            warn_about_secrets(
-                git_dir, source,
-                find_secrets(
-                    index_paths(git_dir, source)
-                    + [item["path"] for item in (manifest or {}).get("files", [])]
-                ),
-                remember=not args.dry_run, local=args.no_push,
+            secrets = find_secrets(
+                index_paths(git_dir, source)
+                + [item["path"] for item in (manifest or {}).get("files", [])]
             )
+            if args.refuse_secrets:
+                refuse_secrets(secrets)
+            warn_about_secrets(git_dir, source, secrets, remember=not args.dry_run, local=args.no_push)
 
             # A real run's ``None`` commit *is* the "tree unchanged" signal:
             # build_snapshot returns one when there is nothing new to record.  A

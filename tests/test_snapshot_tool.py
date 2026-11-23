@@ -1754,6 +1754,35 @@ class DryRunTests(_SnapshotFixture):
 class CredentialWarningTests(_SnapshotFixture):
     """A backup should capture .env -- but the user has to be told it did."""
 
+    def test_refuse_secrets_stops_the_run_before_the_branch_moves_or_anything_is_pushed(self):
+        for extra in ((), ("--dry-run",), ("--no-push",)):
+            with self.subTest(extra=extra):
+                args = extra if extra else ("--remote", self.remote)
+                rc, out, err = self.snapshot("--refuse-secrets", *args)
+                self.assertEqual(rc, 1, out + err)
+                self.assertIn("look like credentials", err)
+                self.assertIn(".env", err)
+                self.assertIn("Leave them out with --exclude", err)
+                self.assertNotEqual(_git(self.vault, "rev-parse", "--verify", BRANCH).returncode, 0)
+                self.assertFalse(self.remote.exists() and _git(self.remote, "rev-parse", "--verify", BRANCH).returncode == 0)
+
+    def test_refuse_secrets_lets_a_run_through_once_the_credential_is_excluded(self):
+        rc, out, err = self.snapshot("--refuse-secrets", "--exclude", ".env", "--no-push")
+        self.assertEqual(rc, 0, out + err)
+        self.assertNotIn(".env", self.tree())
+
+    def test_without_refuse_secrets_the_credential_is_captured_with_a_warning(self):
+        rc, out, err = self.snapshot("--no-push")
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn(".env", self.tree())
+
+    def test_refuse_secrets_is_refused_in_every_mode_but_a_snapshot_run(self):
+        for mode in (["--status"], ["--maintain"], ["--restore", "--remote", "r", "--into", "d"],
+                     ["--restore-drill", "--remote", "r"], ["--payload-gc", "--remote", "r"]):
+            rc, out, err = self.run_tool(*mode, "--refuse-secrets")
+            self.assertEqual(rc, snap.EXIT_USAGE, out + err)
+            self.assertIn("--refuse-secrets only applies to a snapshot run", err)
+
     def test_captured_credentials_are_reported(self):
         rc, out, _ = self.snapshot("--dry-run")
         self.assertEqual(rc, 0)

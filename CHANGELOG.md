@@ -10,6 +10,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 - **The warn-first options of 0.10.1 to 0.10.4 are refused** (usage error, exit 2) instead of warned about and ignored: the options each snapshot mode accepted and never read (`--restore-drill` with five payload options, `--status` with three, `--maintain` with four, `--payload-gc` and `--payload-verify` with nine, `--payload-view` with fifteen, `--restore --payload-jobs`, and four payload options with `--no-push`; `SNAPSHOT.md` "Options by mode" lists them). `ignored_option_warnings` is gone, and with it the `Warning:` and the exit 3 it caused under `--exit-warnings` (ROADMAP AA74).
 
+### Added
+- **`--refuse-secrets`** (opt-in): a snapshot run stops with exit 1 when a captured path looks like a credential (`.env`, private keys), after staging and before the branch moves or anything is pushed, and names the paths; `--exclude` them to go on. A `--dry-run` refuses too. Refused with the other modes (exit 2). Without the flag the credential warning is unchanged.
+
 ### Changed
 - **`--no-embedded-repos` needs `--allow-gitlinks`** (new flag). A gitlink is a commit id, so a restore gives an empty directory; the flag says the caller knows. `--allow-gitlinks` alone, or in a mode other than a snapshot run, is refused.
 

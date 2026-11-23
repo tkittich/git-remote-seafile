@@ -167,6 +167,24 @@ _SECRETS_KEY = "snapshot.secretsseen"
 _SECRETS_LOCAL_FILE = "seafile-snapshot-secrets-seen"
 
 
+def refuse_secrets(secrets: list[str]) -> None:
+    """``--refuse-secrets``: end the run when a captured path looks like a credential.
+
+    Said before the branch moves (nothing but unreferenced objects is left in the vault) and before any
+    push, on every run: the flag is a request, so it is not silenced by having been warned once.
+    """
+    if not secrets:
+        return
+    shown = "\n".join(f"  {path}" for path in secrets[:20])
+    more = f"\n  ... and {len(secrets) - 20} more" if len(secrets) > 20 else ""
+    raise SnapshotError(
+        f"--refuse-secrets: {len(secrets)} captured path(s) look like credentials, and git history is "
+        f"permanent:\n{shown}{more}\nLeave them out with --exclude <path> (nothing was pushed and the branch "
+        "did not move), or drop --refuse-secrets to capture them with a warning."
+    )
+
+
+
 def warn_about_secrets(
     git_dir: Path, work_tree: Path, secrets: list[str], *, remember: bool, local: bool = False
 ) -> None:

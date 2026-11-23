@@ -10814,6 +10814,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "its commit id, as 0.9.0 did, instead of capturing its files",
     )
     sections.add_argument(
+        "--refuse-secrets",
+        action="store_true",
+        help="stop a snapshot run, before the branch moves and before anything is pushed, when a captured "
+        "path looks like a credential (.env, private keys, ...), instead of only warning about it; leave the "
+        "path out with --exclude to go on",
+    )
+    sections.add_argument(
         "--allow-gitlinks",
         action="store_true",
         help="with --no-embedded-repos: accept that an embedded repository is recorded as a gitlink "
@@ -11000,6 +11007,24 @@ _SECRETS_KEY = "snapshot.secretsseen"
 #: Where a --no-push run remembers what it warned about: a file beside the config,
 #: not the config, which a --no-push run does not change (SNAPSHOT section 4).
 _SECRETS_LOCAL_FILE = "seafile-snapshot-secrets-seen"
+
+
+def refuse_secrets(secrets: list[str]) -> None:
+    """``--refuse-secrets``: end the run when a captured path looks like a credential.
+
+    Said before the branch moves (nothing but unreferenced objects is left in the vault) and before any
+    push, on every run: the flag is a request, so it is not silenced by having been warned once.
+    """
+    if not secrets:
+        return
+    shown = "\n".join(f"  {path}" for path in secrets[:20])
+    more = f"\n  ... and {len(secrets) - 20} more" if len(secrets) > 20 else ""
+    raise SnapshotError(
+        f"--refuse-secrets: {len(secrets)} captured path(s) look like credentials, and git history is "
+        f"permanent:\n{shown}{more}\nLeave them out with --exclude <path> (nothing was pushed and the branch "
+        "did not move), or drop --refuse-secrets to capture them with a warning."
+    )
+
 
 
 def warn_about_secrets(
@@ -11389,6 +11414,8 @@ def validate_args(args: argparse.Namespace) -> None:
             "files), so a restore gives an empty directory; add --allow-gitlinks to accept that, or "
             "drop --no-embedded-repos to capture the files"
         )
+    if args.refuse_secrets and other_mode:
+        problems.append("--refuse-secrets only applies to a snapshot run")
     if args.allow_gitlinks and other_mode:
         problems.append("--allow-gitlinks only applies to a snapshot run")
     elif args.allow_gitlinks and not args.no_embedded_repos:
@@ -12528,14 +12555,13 @@ def run_command(args: argparse.Namespace) -> int:
                     "remote that survives."
                 )
 
-            warn_about_secrets(
-                git_dir, source,
-                find_secrets(
-                    index_paths(git_dir, source)
-                    + [item["path"] for item in (manifest or {}).get("files", [])]
-                ),
-                remember=not args.dry_run, local=args.no_push,
+            secrets = find_secrets(
+                index_paths(git_dir, source)
+                + [item["path"] for item in (manifest or {}).get("files", [])]
             )
+            if args.refuse_secrets:
+                refuse_secrets(secrets)
+            warn_about_secrets(git_dir, source, secrets, remember=not args.dry_run, local=args.no_push)
 
             # A real run's ``None`` commit *is* the "tree unchanged" signal:
             # build_snapshot returns one when there is nothing new to record.  A

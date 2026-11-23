@@ -846,7 +846,11 @@ internally consistent but not a point-in-time image of the whole tree.
 credentials, and Git history is forever. The first run, and any run where the set
 of credential-shaped paths changes, lists the ones it captured (a later run with the
 same set stays quiet, exit 0), so the choice of remote is made with that in view. Push it
-only to a library only you can read.
+only to a library only you can read. `--refuse-secrets` (0.11, opt-in: nothing changes without it) turns the
+warning into a refusal on every run: once the tree is staged, and before the branch moves or anything is
+pushed, a captured credential-shaped path ends the run with `Error: --refuse-secrets: ...` (exit 1) and names
+the paths; `--exclude` them to go on. It is refused in every mode but a snapshot run (exit 2), and a
+`--dry-run` refuses too.
 
 **File modes and symlinks** — Git for Windows does not reliably record the
 executable bit (`core.fileMode`), so a restore elsewhere may not reproduce file
