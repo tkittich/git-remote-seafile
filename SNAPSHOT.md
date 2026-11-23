@@ -279,29 +279,38 @@ silent it refuses instead:
 - **A failing vault-config write is an error**, not a silent divergence between
   what the run believes it remembered and what the vault holds.
 
-### Options by mode, and options a mode never reads
+### Commands, and the options each one reads
 
-A snapshot run reads every option. The other modes read a subset; the rest are either refused (`Error: --x does not
-apply to --restore`, exit 2). Until 0.10.x the options in the last column below were accepted and ignored (0.10.1 to
-0.10.4 warned about them); since 0.11 they are refused too. `tests/test_snapshot_flag_coverage.py` lists what each mode
-accepts today, so a new option cannot slip into a mode without a decision.
+Since 0.11 the tool has commands, named by the first word: `git seafile-snapshot` (a bare run is `snapshot`),
+`restore`, `drill`, `status`, `maintain` and `payload gc|verify|view`. They replace the mode flags `--restore`,
+`--restore-drill`, `--status`, `--maintain`, `--payload-gc`, `--payload-verify` and `--payload-view`, which still choose
+their command in 0.11 and print a `Notice:` on stderr; from 0.12 they are refused (UPGRADING). A directory named like a
+command is given as `--source restore` or `snapshot ./restore`.
 
-| Mode | Reads (beyond `--json`, `--exit-warnings`) | Refused since 0.11 (warned in 0.10.x) |
+A snapshot run reads every option except the ones that belong to another command. The other commands read a subset, and
+the rest is refused: `Error: --x does not apply to restore (it is an option of: snapshot)`, exit 2. The table is
+`subcommands.ALLOWED`; `--help` of a command lists only what the command reads, and
+`tests/test_snapshot_flag_coverage.py` checks the table against what each command accepts, so a new option cannot slip
+into a command without a decision. Until 0.10.x the options in the last column below were accepted and ignored (0.10.1
+to 0.10.4 warned about them); since 0.11 they are refused too.
+
+| Command | Reads (beyond `--json`, `--exit-warnings`) | Refused since 0.11 (warned in 0.10.x) |
 | :--- | :--- | :--- |
-| `--restore` | `--remote`, `--into`, `--branch`, `--ref`, `--verify`, `--allow-synced`, `--allow-low-disk` | `--payload-jobs` |
-| `--restore-drill` | `--remote`, `--branch`, `--ref`, `--allow-synced`, `--allow-low-disk` | `--payload-jobs`, `--no-payload`, `--payload-auto-ratio`, `--payload-skip-changing`, `--payload-report-days` |
-| `--status` | `--source`, `--vault`, `--branch`, `--remote`, `--code-remote`, `--exclude`, `--default-excludes`, `--payload-min-size`, `--no-payload`, `--payload-auto-ratio`, `--allow-synced` | `--message`, `--allow-low-disk`, `--payload-report-days` |
-| `--maintain` | `--source`, `--vault`, `--allow-synced`, `--no-object-compression`, `--full-repack` | `--remote`, `--branch`, `--allow-low-disk`, `--payload-jobs` |
-| `--payload-gc`, `--payload-verify` | `--remote`, `--vault`, `--allow-low-disk`, and the options of the command itself | `--source`, `--branch`, `--code-remote`, `--default-excludes`, `--message`, `--reset-to-remote`, `--no-repack`, `--no-object-compression`, `--rebuild-index` |
-| `--payload-view` | `--remote`, `--vault`, `--payload-view-name`, `--payload-view-replace` | `--source`, `--branch`, `--code-remote`, `--exclude`, `--default-excludes`, `--message`, `--reset-to-remote`, `--no-repack`, `--no-object-compression`, `--rebuild-index`, `--allow-low-disk`, `--payload-jobs`, `--payload-rehash`, `--payload-skip-changing`, `--payload-report-days` |
-| snapshot run with `--no-push` | everything else | `--payload-jobs`, `--payload-auto-ratio`, `--payload-skip-changing`, `--payload-rehash` |
+| `restore` | `--remote`, `--into`, `--branch`, `--ref`, `--verify`, `--allow-synced`, `--allow-low-disk` | `--payload-jobs` |
+| `drill [N]` | `--remote`, `--branch`, `--ref`, `--allow-synced`, `--allow-low-disk` | `--payload-jobs`, `--no-payload`, `--payload-auto-ratio`, `--payload-skip-changing`, `--payload-report-days` |
+| `status` | `--source`, `--vault`, `--branch`, `--remote`, `--code-remote`, `--exclude`, `--default-excludes`, `--payload-min-size`, `--no-payload`, `--payload-auto-ratio`, `--allow-synced` | `--message`, `--allow-low-disk`, `--payload-report-days` |
+| `maintain` | `--source`, `--vault`, `--allow-synced`, `--no-object-compression`, `--full-repack` | `--remote`, `--branch`, `--allow-low-disk`, `--payload-jobs` |
+| `payload gc`, `payload verify [N\|all]` | `--remote`, `--vault`, `--allow-low-disk`, and the options of the command itself | `--source`, `--branch`, `--code-remote`, `--default-excludes`, `--message`, `--reset-to-remote`, `--no-repack`, `--no-object-compression`, `--rebuild-index` |
+| `payload view [REF]` | `--remote`, `--vault`, `--payload-view-name`, `--payload-view-replace` | `--source`, `--branch`, `--code-remote`, `--exclude`, `--default-excludes`, `--message`, `--reset-to-remote`, `--no-repack`, `--no-object-compression`, `--rebuild-index`, `--allow-low-disk`, `--payload-jobs`, `--payload-rehash`, `--payload-skip-changing`, `--payload-report-days` |
+| `snapshot --no-push` | everything else | `--payload-jobs`, `--payload-auto-ratio`, `--payload-skip-changing`, `--payload-rehash` |
 
 Each of them ends the run before it starts with `Error: the arguments do not make sense together: --x does not apply
-to --mode` and exit 2 (`tests/test_snapshot_unused_options.py`). Drop the option; the run it was passed to never read it.
+to <command>` and exit 2 (`tests/test_snapshot_unused_options.py`). Drop the option; the run it was passed to never read
+it. The old mode flags and the commands are tested in `tests/test_snapshot_commands.py`.
 
 `--no-embedded-repos` records a nested repository as a gitlink, its commit id and not its files, so a restore gives an
 empty directory. Since 0.11 it is refused unless `--allow-gitlinks` is given too; `--allow-gitlinks` alone is refused as
-well, as is either in a mode other than a snapshot run.
+well, as is either in a command other than a snapshot run.
 
 ### Exit codes and `--json`
 

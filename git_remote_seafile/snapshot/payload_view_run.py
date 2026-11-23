@@ -35,17 +35,6 @@ _VIEW_NAME_BYTES = 255
 
 def add_payload_view_arguments(parser: Any) -> None:
     parser.add_argument(
-        "--payload-view",
-        nargs="?",
-        const="snapshot",
-        default=None,
-        metavar="REF",
-        help="build a browsable directory of real file names for a snapshot of --remote "
-        "(a branch name, or one like snapshot~2; default: the 'snapshot' branch), beside "
-        "the vault as <path>-view/<name>, by server-side copy of the stored objects. "
-        "No data is transferred; it is a convenience view, not a restore",
-    )
-    parser.add_argument(
         "--payload-view-name",
         default=None,
         metavar="NAME",
@@ -63,24 +52,11 @@ def add_payload_view_arguments(parser: Any) -> None:
 def payload_view_conflicts(args: argparse.Namespace) -> list[str]:
     problems: list[str] = []
     if args.payload_view is not None:
-        for flag, value in (("--restore", args.restore), ("--maintain", args.maintain),
-                            ("--dry-run", args.dry_run), ("--payload-gc", args.payload_gc),
-                            ("--payload-verify", args.payload_verify),
-                            ("--payload-min-size", args.payload_min_size),
-                            ("--payload-auto-ratio", args.payload_auto_ratio is not None),
-                            ("--no-payload", args.no_payload)):
-            if value:
-                problems.append(f"{flag} does not apply to --payload-view")
         if not args.remote:
-            problems.append("--payload-view requires --remote <url>")
+            problems.append("payload view requires --remote <url>")
         name = args.payload_view_name
         if name is not None and (not name or "/" in name or "\\" in name or name in (".", "..")):
             problems.append("--payload-view-name must be a plain directory name")
-    else:
-        if args.payload_view_name is not None:
-            problems.append("--payload-view-name only applies to --payload-view")
-        if args.payload_view_replace:
-            problems.append("--payload-view-replace only applies to --payload-view")
     return problems
 
 

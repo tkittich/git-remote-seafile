@@ -223,6 +223,7 @@ from . import (  # noqa: F401  (the modules are re-exported below)
     restore_run,
     restore_names,
     payload_history,
+    subcommands,
     cli_args,
     first_run,
     guards,
@@ -234,7 +235,7 @@ from . import (  # noqa: F401  (the modules are re-exported below)
 
 #: The modules, in the order the old single file concatenated them (a name evaluated at import comes from an
 #: earlier one).
-MODULES = ('common', 'gitrun', 'vault_store', 'profile', 'lock', 'branches', 'hashing', 'climb', 'prewrite', 'stage', 'embedded', 'payload_guards', 'mtimes', 'payload_manifest', 'payload_upload', 'payload_gc_run', 'payload_restore', 'payload_cli', 'payload_view_run', 'remote_ops', 'placement', 'status', 'restore_run', 'restore_names', 'payload_history', 'cli_args', 'first_run', 'guards', 'cli_checks', 'run_settings', 'runreport', 'cli',)
+MODULES = ('common', 'gitrun', 'vault_store', 'profile', 'lock', 'branches', 'hashing', 'climb', 'prewrite', 'stage', 'embedded', 'payload_guards', 'mtimes', 'payload_manifest', 'payload_upload', 'payload_gc_run', 'payload_restore', 'payload_cli', 'payload_view_run', 'remote_ops', 'placement', 'status', 'restore_run', 'restore_names', 'payload_history', 'subcommands', 'cli_args', 'first_run', 'guards', 'cli_checks', 'run_settings', 'runreport', 'cli',)
 
 
 def _export() -> dict[str, str]:

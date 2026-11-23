@@ -50,13 +50,6 @@ def mtimes_conflicts(args: argparse.Namespace) -> list[str]:
     problems: list[str] = []
     if args.record_mtimes and args.no_record_mtimes:
         problems.append("--record-mtimes and --no-record-mtimes contradict each other")
-    if (args.record_mtimes or args.no_record_mtimes) and (
-        args.restore or args.maintain or args.payload_gc or args.payload_verify is not None
-        or args.payload_view is not None
-    ):
-        problems.append(
-            "--record-mtimes and --no-record-mtimes only apply to a snapshot run"
-        )
     return problems
 
 

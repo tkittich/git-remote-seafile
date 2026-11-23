@@ -382,8 +382,8 @@ class RestoreDrillTests(_ReportFixture):
             "--restore-drill", "--remote", self.remote, "--into", self.case / "x", "--dry-run"
         )
         self.assertEqual(rc, snap.EXIT_USAGE)
-        self.assertIn("--into does not apply to --restore-drill", err)
-        self.assertIn("--dry-run does not apply to --restore-drill", err)
+        self.assertIn("--into does not apply to drill", err)
+        self.assertIn("--dry-run does not apply to drill", err)
 
     def test_the_drill_refuses_the_flags_of_a_snapshot_run(self):
         """gemini-4-hydrogen-2-E3: each of these was accepted and ignored."""
@@ -392,7 +392,7 @@ class RestoreDrillTests(_ReportFixture):
             "--reset-to-remote", "--record-mtimes")
         self.assertEqual(rc, snap.EXIT_USAGE, out + err)
         for flag in ("--no-repack", "--payload-min-size", "--reset-to-remote", "--record-mtimes"):
-            self.assertIn(f"{flag} does not apply to --restore-drill", err)
+            self.assertIn(f"{flag} does not apply to drill", err)
 
     def test_the_drill_refuses_the_rest_of_the_snapshot_flags_too(self):
         """fable-S4-14: deleting any of these rows left the test above green."""
@@ -401,19 +401,19 @@ class RestoreDrillTests(_ReportFixture):
             "--no-object-compression", "--no-record-mtimes")
         self.assertEqual(rc, snap.EXIT_USAGE, out + err)
         for flag in ("--payload-rehash", "--allow-shared-remote", "--no-object-compression", "--no-record-mtimes"):
-            self.assertIn(f"{flag} does not apply to --restore-drill", err)
+            self.assertIn(f"{flag} does not apply to drill", err)
 
     def test_status_refuses_the_flags_of_a_snapshot_run(self):
         rc, out, err = self.run_tool(
             "--status", "--reset-to-remote", "--no-repack", "--payload-jobs", "8", "--payload-rehash")
         self.assertEqual(rc, snap.EXIT_USAGE, out + err)
         for flag in ("--reset-to-remote", "--no-repack", "--payload-jobs", "--payload-rehash"):
-            self.assertIn(f"{flag} does not apply to --status", err)
+            self.assertIn(f"{flag} does not apply to status", err)
 
     def test_the_drill_needs_a_remote_and_a_sane_count(self):
         rc, out, err = self.run_tool("--restore-drill")
         self.assertEqual(rc, snap.EXIT_USAGE)      # a missing operand is a wrong command line (fable-E3)
-        self.assertIn("--restore-drill requires --remote", err)
+        self.assertIn("drill requires --remote", err)
         rc, out, err = self.run_tool("--restore-drill", "0", "--remote", self.remote)
         self.assertEqual(rc, snap.EXIT_USAGE)
         self.assertIn("takes a positive number", err)

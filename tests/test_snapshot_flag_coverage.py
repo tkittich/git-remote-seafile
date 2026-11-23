@@ -1,10 +1,10 @@
-"""Every option of the snapshot tool is either checked against the modes it does not apply to, or says why not.
+"""Every option of the snapshot tool belongs to the commands that read it, and each command's table matches what it does.
 
 The review rounds kept finding a flag that one mode silently ignored (``--status --reset-to-remote``,
-``--restore-drill --no-repack``): each fix added the flag to a hand-kept list, and the next new flag was
-forgotten the same way.  This closes the shape.  An option the validation modules never mention
-(``args.<name>``) must be in ``APPLIES_TO_EVERY_MODE`` with the reason, so adding an option without
-deciding what it means in ``--status``, ``--restore``, ``--restore-drill`` and ``--maintain`` fails here.
+``drill --no-repack``): each fix added the flag to a hand-kept list, and the next new flag was forgotten the
+same way.  Since 0.11 one table (``subcommands.ALLOWED``) says what each command reads and
+``cli_checks.options_for_other_commands`` refuses the rest, so the shape is closed by construction; this file
+checks the table against the parser and, command by command, against what ``validate_args`` accepts.
 """
 
 from __future__ import annotations
@@ -15,54 +15,37 @@ import io
 import pathlib
 import sys
 import unittest
-from unittest.mock import patch
 
 _ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_ROOT / "tools"))
 
 import seafile_snapshot as snap  # noqa: E402
 
-#: The modules that decide which options a mode refuses.
-VALIDATION_PARTS = ("cli_checks", "status", "payload_gc_run", "payload_cli", "payload_view_run", "mtimes")
 
-APPLIES_TO_EVERY_MODE = {
-    "json": "the run report (SNAPSHOT.md, exit codes): every mode prints one",
-    "exit_warnings": "the exit status of every mode; it only changes 0 into 3 when a warning was said",
-}
+class TestTheTableAndTheParserAgree(unittest.TestCase):
+    def test_every_option_the_parser_defines_is_read_by_some_command(self):
+        flags = frozenset(snap.option_table().values())
+        self.assertGreater(len(flags), 40, "the parser was not found")
+        read = set()
+        for mode in snap.subcommands.BY_MODE:
+            read |= snap.subcommands.allowed(mode, flags)
+        self.assertEqual(sorted(flags - read), [], "an option no command reads can never be given")
 
+    def test_the_table_names_only_options_that_exist(self):
+        flags = set(snap.option_table().values())
+        named = set(snap.subcommands.NOT_SNAPSHOT)
+        for allowed in snap.subcommands.ALLOWED.values():
+            named |= allowed
+        self.assertEqual(sorted(named - flags), [])
 
-def _dests() -> list[str]:
-    seen: dict[str, argparse.ArgumentParser] = {}
+    def test_a_snapshot_reads_everything_a_command_reads_alone_does_not(self):
+        flags = frozenset(snap.option_table().values())
+        snapshot = snap.subcommands.allowed("snapshot", flags)
+        self.assertEqual(sorted(flags - snapshot), sorted(snap.subcommands.NOT_SNAPSHOT))
 
-    def grab(self, *args, **kwargs):
-        seen["parser"] = self
-        raise SystemExit(0)
-
-    with patch.object(argparse.ArgumentParser, "parse_args", grab):
-        try:
-            snap.main([])
-        except SystemExit:
-            pass
-    return [a.dest for a in seen["parser"]._actions if a.option_strings and a.dest != "help"]
-
-
-class TestEveryOptionIsAccountedFor(unittest.TestCase):
-    def test_an_option_no_validation_mentions_is_declared_to_apply_everywhere(self):
-        text = "".join(
-            (_ROOT / "git_remote_seafile" / "snapshot" / f"{part}.py").read_text(encoding="utf-8") for part in VALIDATION_PARTS
-        )
-        dests = _dests()
-        self.assertGreater(len(dests), 40, "the parser was not found")
-        undecided = sorted(d for d in dests if f"args.{d}" not in text and d not in APPLIES_TO_EVERY_MODE)
-        self.assertEqual(
-            undecided, [],
-            "these options are not refused by any mode and are not declared to apply to every mode: decide "
-            "what each means in --status, --restore, --restore-drill and --maintain (96_cli_checks.py, "
-            "82_status.py) or add it to APPLIES_TO_EVERY_MODE with the reason",
-        )
-
-    def test_the_declared_exceptions_are_options_that_exist(self):
-        self.assertEqual(sorted(set(APPLIES_TO_EVERY_MODE) - set(_dests())), [])
+    def test_every_command_reads_the_options_of_a_run_report(self):
+        for mode, allowed in snap.subcommands.ALLOWED.items():
+            self.assertLessEqual(snap.subcommands.EVERY_COMMAND, allowed, mode)
 
 
 #: What each mode accepts today, found by running ``validate_args`` with the option added to the mode's
@@ -87,13 +70,13 @@ ACCEPTED = {
              "--payload-view-replace", "--vault"},
 }
 MODE_LINES = {
-    "restore": ["--restore", "--remote", "r", "--into", "d"],
-    "drill": ["--restore-drill", "--remote", "r"],
-    "status": ["--status"],
-    "maintain": ["--maintain"],
-    "gc": ["--payload-gc", "--remote", "r"],
-    "verify": ["--payload-verify", "all", "--remote", "r"],
-    "view": ["--payload-view", "x", "--remote", "r"],
+    "restore": ["restore", "--remote", "r", "--into", "d"],
+    "drill": ["drill", "--remote", "r"],
+    "status": ["status"],
+    "maintain": ["maintain"],
+    "gc": ["payload", "gc", "--remote", "r"],
+    "verify": ["payload", "verify", "all", "--remote", "r"],
+    "view": ["payload", "view", "x", "--remote", "r"],
 }
 
 
@@ -106,18 +89,8 @@ def _value(action: argparse.Action) -> list[str]:
 
 class TestEveryModeDecidesEveryOption(unittest.TestCase):
     def test_the_options_a_mode_accepts_are_the_listed_ones(self):
-        seen: dict[str, argparse.ArgumentParser] = {}
-
-        def grab(self, *args, **kwargs):
-            seen["parser"] = self
-            raise SystemExit(0)
-
-        with patch.object(argparse.ArgumentParser, "parse_args", grab):
-            try:
-                snap.main([])
-            except SystemExit:
-                pass
-        actions = [a for a in seen["parser"]._actions if a.option_strings and a.dest != "help"]
+        parser = snap.build_parser("snapshot")
+        actions = [a for a in parser._actions if a.option_strings and a.dest != "help"]
         for mode, base in MODE_LINES.items():
             accepted = set()
             for action in actions:
@@ -137,9 +110,10 @@ class TestEveryModeDecidesEveryOption(unittest.TestCase):
             self.assertEqual(
                 sorted(accepted ^ ACCEPTED[mode]), [],
                 f"--{mode}: the options it accepts changed. A new one must be refused by the mode "
-                "(96_cli_checks.py) or listed in ACCEPTED here with a decision; one that is refused now "
+                "(subcommands.ALLOWED) or listed in ACCEPTED here with a decision; one that is refused now "
                 "should leave the list",
             )
+            self.assertLessEqual(accepted, snap.subcommands.ALLOWED[mode], f"{mode}: accepted but not in the table")
 
 
 if __name__ == "__main__":

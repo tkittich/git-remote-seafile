@@ -1399,7 +1399,7 @@ class PayloadDefaultAndSafeguardTests(_PayloadFixture):
         rc, out, err = self.run_tool("--payload-gc", "--remote", self.remote,
                                      "--payload-no-vault")
         self.assertEqual(rc, snap.EXIT_USAGE, out + err)
-        self.assertIn("only applies to --payload-gc --payload-delete", err)
+        self.assertIn("only applies to payload gc --payload-delete", err)
 
     def test_a_rewritten_history_stops_a_delete_until_it_is_accepted(self):
         self.assertEqual(self.snapshot()[0], 0)
@@ -1604,8 +1604,8 @@ class PayloadDefaultAndSafeguardTests(_PayloadFixture):
              "contradict each other"),
             (("--restore", "--remote", self.remote, "--into", self.case / "x",
               "--no-payload"), "does not apply"),
-            (("--vault", self.vault, "--payload-delete"), "--payload-delete only applies"),
-            (("--vault", self.vault, "--payload-grace-days", "3"), "--payload-grace-days only applies"),
+            (("--vault", self.vault, "--payload-delete"), "--payload-delete does not apply to snapshot"),
+            (("--vault", self.vault, "--payload-grace-days", "3"), "--payload-grace-days does not apply to snapshot"),
             (("--vault", self.vault, "--payload-auto-ratio", "0"), "above 0 and at most 1"),
             (("--vault", self.vault, "--payload-auto-ratio", "1.5"), "above 0 and at most 1"),
             (("--vault", self.vault, "--payload-min-size", "1000", "--payload-auto-ratio", "0.5"),
@@ -1613,9 +1613,9 @@ class PayloadDefaultAndSafeguardTests(_PayloadFixture):
             (("--vault", self.vault, "--no-payload", "--payload-auto-ratio", "0.5"),
              "only applies to the auto rule"),
             (("--restore", "--remote", self.remote, "--into", self.case / "x",
-              "--payload-auto-ratio", "0.5"), "only applies to a snapshot run"),
+              "--payload-auto-ratio", "0.5"), "does not apply to restore"),
             (("--payload-verify", "--remote", self.remote, "--payload-auto-ratio", "0.5"),
-             "does not apply to --payload-verify"),
+             "does not apply to payload verify"),
             (("--payload-gc",), "requires --remote"),
             (("--payload-gc", "--remote", self.remote, "--payload-grace-days", "0"), "at least"),
             (("--restore", "--remote", self.remote, "--into", self.case / "x",
@@ -1818,7 +1818,7 @@ class PayloadRetentionTests(_PayloadFixture):
         rc, out, err = self.run_tool("--payload-gc", "--remote", self.remote,
                                      "--payload-allow-non-owner")
         self.assertNotEqual(rc, 0)
-        self.assertIn("--payload-allow-non-owner only applies to --payload-gc --payload-delete",
+        self.assertIn("--payload-allow-non-owner only applies to payload gc --payload-delete",
                       out + err)
 
     def test_a_report_by_a_non_owner_on_pro_says_its_count_may_be_too_high(self):
@@ -2953,7 +2953,7 @@ class PayloadRememberVerifyViewAndClockTests(_PayloadFixture):
     def test_payload_keep_only_applies_to_gc_and_must_be_positive(self):
         rc, out, err = self.run_tool(self.src, "--vault", self.vault, "--payload-keep", "2")
         self.assertEqual(rc, snap.EXIT_USAGE, out + err)
-        self.assertIn("--payload-keep only applies", err)
+        self.assertIn("--payload-keep does not apply to snapshot", err)
         rc, out, err = self.gc("--payload-keep", "0")
         self.assertEqual(rc, snap.EXIT_USAGE, out + err)
         self.assertIn("at least 1", err)
@@ -3101,7 +3101,7 @@ class PayloadRememberVerifyViewAndClockTests(_PayloadFixture):
     def test_view_flags_only_apply_to_a_view(self):
         rc, out, err = self.run_tool(self.src, "--vault", self.vault, "--payload-view-name", "x")
         self.assertEqual(rc, snap.EXIT_USAGE, out + err)
-        self.assertIn("--payload-view-name only applies", err)
+        self.assertIn("--payload-view-name does not apply to snapshot", err)
         rc, out, err = self.run_tool("--payload-view", "--payload-view-name", "a/b", "--remote", self.remote)
         self.assertEqual(rc, snap.EXIT_USAGE, out + err)
         self.assertIn("plain directory name", err)
@@ -3297,7 +3297,7 @@ class PayloadRememberVerifyViewAndClockTests(_PayloadFixture):
         self.assertIn("seafile:// remote", err)
         rc, out, err = self.run_tool("--payload-gc", "--remote", self.remote, "--no-embedded-repos")
         self.assertEqual(rc, snap.EXIT_USAGE, out + err)
-        self.assertIn("--no-embedded-repos only applies to a snapshot run", err)
+        self.assertIn("--no-embedded-repos does not apply to payload gc", err)
 
     def test_a_preview_does_not_write_a_probe_file_into_the_source(self):
         with unittest.mock.patch.object(snap.payload_manifest, "fs_clock_offset_ns", return_value=0) as offset:
@@ -3696,7 +3696,7 @@ class PayloadSkipChangingTests(_PayloadFixture):
             "--restore", "--remote", self.remote, "--into", self.case / "x", "--payload-skip-changing"
         )
         self.assertEqual(rc, snap.EXIT_USAGE, out + err)
-        self.assertIn("--payload-skip-changing only applies to a snapshot run", err)
+        self.assertIn("--payload-skip-changing does not apply to restore", err)
 
 
 class PayloadTuningTests(_PayloadFixture):

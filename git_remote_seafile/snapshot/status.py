@@ -32,59 +32,6 @@ from . import remote_ops
 # re-hashes precisely because a change that keeps size and mtime can hide.
 
 
-def add_status_arguments(parser: Any) -> None:
-    parser.add_argument(
-        "--status",
-        action="store_true",
-        help="report the last snapshot's time and size, what changed in the "
-        "source since it (a size-and-mtime comparison against the records the "
-        "snapshot wrote -- no staging, no hashing, nothing uploaded), the "
-        "settings the next run would use, and the vault lock",
-    )
-
-
-def status_conflicts(args: argparse.Namespace) -> list[str]:
-    if not args.status:
-        return []
-    problems: list[str] = []
-    if args.restore or args.restore_drill is not None or args.maintain:
-        problems.append(
-            "--status reports and changes nothing, so it does not combine with "
-            "--restore, --restore-drill or --maintain"
-        )
-    if args.payload_gc or args.payload_verify is not None or args.payload_view is not None:
-        problems.append(
-            "--status reports and changes nothing, so it does not combine with "
-            "the payload commands"
-        )
-    if args.record_mtimes or args.no_record_mtimes:
-        problems.append(
-            "--record-mtimes and --no-record-mtimes only apply to a snapshot run"
-        )
-    if args.no_push or args.dry_run:
-        problems.append(
-            "--status describes the next run as it would be made with the vault's "
-            "remembered settings, so it does not combine with --no-push or --dry-run"
-        )
-    # Flags that change what a run does to the vault or the server: --status runs nothing, so
-    # each would be silently ignored (review dfd2269, gemini-4-hydrogen-2-E3).
-    problems += [
-        f"{flag} does not apply to --status"
-        for flag, value in (
-            ("--reset-to-remote", args.reset_to_remote),
-            ("--allow-shared-remote", args.allow_shared_remote),
-            ("--no-repack", args.no_repack),
-            ("--no-object-compression", args.no_object_compression),
-            ("--payload-rehash", args.payload_rehash),
-            ("--payload-skip-changing", args.payload_skip_changing),
-            ("--payload-jobs", args.payload_jobs is not None),
-            ("--rebuild-index", args.rebuild_index),
-        )
-        if value
-    ]
-    return problems
-
-
 def _status_examples(paths: list[str], limit: int = 10) -> list[str]:
     """Up to *limit* paths, then one line saying how many more."""
     shown = [p for p in paths[:limit]]

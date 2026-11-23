@@ -81,9 +81,9 @@ def run_command(args: argparse.Namespace) -> int:
             return restore_run.restore_drill_command(args)
         if args.restore:
             if not args.remote:
-                raise common.SnapshotError("--restore requires --remote <url>")
+                raise common.SnapshotError("restore requires --remote <url>")
             if not args.into:
-                raise common.SnapshotError("--restore requires --into <directory>")
+                raise common.SnapshotError("restore requires --into <directory>")
             into = vault_store.expand_path(args.into)
             # The snapshot guard protects where the tool *writes* a tree; a
             # restore writes one too, and a restored tree -- secrets included,

@@ -119,25 +119,6 @@ def _read_pending(client: Any, rid: str, base: str) -> str:
 
 def add_payload_gc_arguments(parser: Any) -> None:
     parser.add_argument(
-        "--payload-gc",
-        action="store_true",
-        help="payload retention: report the stored objects that no snapshot in the remote's "
-        "history (nor the local vault) references. With --payload-delete, mark them, and "
-        "delete those that stayed unreferenced for --payload-grace-days. Needs --remote; "
-        "--vault adds the local vault's refs",
-    )
-    parser.add_argument(
-        "--payload-verify",
-        nargs="?",
-        const="20",
-        default=None,
-        metavar="N|all",
-        help="download N randomly chosen payload objects (default 20, or 'all') of the newest "
-        "snapshot of the remote and check each against its SHA-256. The server cannot report a "
-        "content hash, so this is the only way to find an object that was damaged after it was "
-        "stored. Needs --remote",
-    )
-    parser.add_argument(
         "--payload-delete",
         action="store_true",
         help="with --payload-gc: act. The first run only marks unreferenced objects; a "
@@ -185,31 +166,19 @@ def add_payload_gc_arguments(parser: Any) -> None:
 
 
 def payload_gc_conflicts(args: argparse.Namespace) -> list[str]:
+    """What is wrong with the operands of ``payload verify`` and ``payload gc`` (the options they do not read are
+    refused by ``cli_checks``)."""
     problems: list[str] = []
     if args.payload_verify is not None:
-        for flag, value in (("--restore", args.restore), ("--maintain", args.maintain),
-                            ("--dry-run", args.dry_run), ("--payload-gc", args.payload_gc),
-                            ("--payload-min-size", args.payload_min_size),
-                            ("--payload-auto-ratio", args.payload_auto_ratio is not None),
-                            ("--no-payload", args.no_payload)):
-            if value:
-                problems.append(f"{flag} does not apply to --payload-verify")
         if not args.remote:
-            problems.append("--payload-verify requires --remote <url>")
+            problems.append("payload verify requires --remote <url>")
         if args.payload_verify != "all" and not args.payload_verify.isdigit():
-            problems.append("--payload-verify takes a count or 'all'")
+            problems.append("payload verify takes a count or 'all'")
         elif args.payload_verify != "all" and int(args.payload_verify) < 1:
-            problems.append("--payload-verify takes a count of at least 1")
+            problems.append("payload verify takes a count of at least 1")
     if args.payload_gc:
-        for flag, value in (("--restore", args.restore), ("--maintain", args.maintain),
-                            ("--dry-run", args.dry_run), ("--payload-min-size", args.payload_min_size),
-                            ("--no-payload", args.no_payload),
-                            ("--payload-jobs", args.payload_jobs), ("--exclude", args.exclude),
-                            ("--no-push", args.no_push)):
-            if value:
-                problems.append(f"{flag} does not apply to --payload-gc")
         if not args.remote:
-            problems.append("--payload-gc requires --remote <url>")
+            problems.append("payload gc requires --remote <url>")
         if args.payload_grace_days < _MIN_GRACE_DAYS:
             problems.append(f"--payload-grace-days must be at least {_MIN_GRACE_DAYS:g}")
         if args.payload_keep is not None and args.payload_keep < 1:
@@ -225,21 +194,9 @@ def payload_gc_conflicts(args: argparse.Namespace) -> list[str]:
                                 ("--payload-allow-non-owner", args.payload_allow_non_owner),
                                 ("--payload-accept-loss", args.payload_accept_loss)):
                 if value:
-                    problems.append(f"{flag} only applies to --payload-gc --payload-delete")
+                    problems.append(f"{flag} only applies to payload gc --payload-delete")
         elif args.payload_no_vault and args.vault:
             problems.append("--payload-no-vault and --vault contradict each other")
-    else:
-        for flag, value in (("--payload-no-vault", args.payload_no_vault),
-                            ("--payload-allow-non-owner", args.payload_allow_non_owner),
-                            ("--payload-accept-loss", args.payload_accept_loss)):
-            if value:
-                problems.append(f"{flag} only applies to --payload-gc")
-        if args.payload_delete:
-            problems.append("--payload-delete only applies to --payload-gc")
-        if args.payload_keep is not None:
-            problems.append("--payload-keep only applies to --payload-gc")
-        if args.payload_grace_days != DEFAULT_GRACE_DAYS:
-            problems.append("--payload-grace-days only applies to --payload-gc")
     return problems
 
 

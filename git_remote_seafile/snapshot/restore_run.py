@@ -710,13 +710,13 @@ def drill_sample(text: str) -> int:
     if text == "all":
         return sys.maxsize
     if not (text.isascii() and text.isdigit()) or int(text) < 1:
-        raise common.SnapshotError(f"--restore-drill takes a positive number or 'all', not '{text}'")
+        raise common.SnapshotError(f"drill takes a positive number or 'all', not '{text}'")
     return int(text)
 
 
 def restore_drill_command(args: argparse.Namespace) -> int:
     if not args.remote:
-        raise common.SnapshotError("--restore-drill requires --remote <url>")
+        raise common.SnapshotError("drill requires --remote <url>")
     restore_drill(
         args.remote, args.branch or common.DEFAULT_BRANCH, args.ref, drill_sample(args.restore_drill),
         branch_explicit=bool(args.branch), allow_low_disk=args.allow_low_disk,

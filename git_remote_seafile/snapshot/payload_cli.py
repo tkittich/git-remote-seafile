@@ -40,7 +40,7 @@ PAYLOAD_DEFAULT_NOTICE = (
 )
 
 
-def add_payload_groups(parser: argparse.ArgumentParser) -> None:
+def add_payload_groups(parser: Any) -> None:
     """Every payload option, in two help groups: taking a snapshot, and tools."""
     from . import payload_view_run
     mode_group = parser.add_argument_group(
@@ -152,7 +152,7 @@ def payload_conflicts(args: argparse.Namespace) -> list[str]:
             problems.append("--payload-report-days does not apply to --dry-run (nothing is pushed)")
         if not (0 <= args.payload_report_days < float("inf")):
             problems.append("--payload-report-days must be 0 or more (a finite number of days)")
-        if args.restore or args.maintain or args.payload_gc or args.no_push:
+        if args.no_push:
             problems.append("--payload-report-days only applies to a snapshot run that pushes")
     if args.no_payload and args.payload_min_size is not None:
         problems.append("--no-payload and --payload-min-size contradict each other")
@@ -172,8 +172,6 @@ def payload_conflicts(args: argparse.Namespace) -> list[str]:
         ):
             problems.append("--payload-auto-ratio only applies to the auto rule "
                             "(--payload-min-size auto)")
-        if args.restore or args.maintain or args.payload_gc:
-            problems.append("--payload-auto-ratio only applies to a snapshot run")
     if args.payload_jobs is not None:
         if args.payload_jobs < 1:
             problems.append("--payload-jobs must be at least 1")
@@ -181,15 +179,6 @@ def payload_conflicts(args: argparse.Namespace) -> list[str]:
             args.payload_min_size is not None and not _explicit_size(args.payload_min_size)
         ):
             problems.append("--payload-jobs only applies when payload mode is on")
-    if args.restore or args.maintain:
-        for flag, given in (("--payload-min-size", args.payload_min_size is not None),
-                            ("--no-payload", args.no_payload)):
-            if given:
-                problems.append(f"{flag} does not apply to --restore or --maintain")
-    if args.payload_rehash and (args.restore or args.maintain or args.payload_gc):
-        problems.append("--payload-rehash only applies to a snapshot run")
-    if args.payload_skip_changing and (args.restore or args.maintain or args.payload_gc):
-        problems.append("--payload-skip-changing only applies to a snapshot run")
     return problems
 
 

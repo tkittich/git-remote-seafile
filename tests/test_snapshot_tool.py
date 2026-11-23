@@ -772,7 +772,7 @@ class SnapshotGuardTests(_SnapshotFixture):
             "--into", str(self.tmp / "nope"), "--rebuild-index",
         )
         self.assertEqual(rc, snap.EXIT_USAGE, out + err)
-        self.assertIn("--rebuild-index does not apply to --restore", out + err)
+        self.assertIn("--rebuild-index does not apply to restore", out + err)
 
     @requires_non_ascii_names
     def test_an_exclude_typed_composed_matches_a_decomposed_name(self):
@@ -1104,11 +1104,11 @@ class ByteExactnessTests(_SnapshotFixture):
     def test_restore_requires_a_remote_and_a_destination(self):
         rc, _, err = self.run_tool("--restore", "--into", self.restored)
         self.assertEqual(rc, snap.EXIT_USAGE)      # a wrong command line, not a failed run (fable-E3)
-        self.assertIn("--restore requires --remote", err)
+        self.assertIn("restore requires --remote", err)
 
         rc, _, err = self.run_tool("--restore", "--remote", self.remote)
         self.assertEqual(rc, snap.EXIT_USAGE)
-        self.assertIn("--restore requires --into", err)
+        self.assertIn("restore requires --into", err)
 
     def test_restore_refuses_a_non_empty_destination(self):
         self.snapshot("--remote", str(self.remote))
@@ -1781,7 +1781,7 @@ class CredentialWarningTests(_SnapshotFixture):
                      ["--restore-drill", "--remote", "r"], ["--payload-gc", "--remote", "r"]):
             rc, out, err = self.run_tool(*mode, "--refuse-secrets")
             self.assertEqual(rc, snap.EXIT_USAGE, out + err)
-            self.assertIn("--refuse-secrets only applies to a snapshot run", err)
+            self.assertIn("--refuse-secrets does not apply to", err)
 
     def test_captured_credentials_are_reported(self):
         rc, out, _ = self.snapshot("--dry-run")
@@ -1946,12 +1946,11 @@ class WarningAndTipTests(_SnapshotFixture):
         text = buf.getvalue()
         order = [
             text.index(title + ":")
-            for title in ("everyday options", "restore and verify", "for scheduled runs",
-                          "local vault housekeeping", "advanced options")
+            for title in ("everyday options", "for scheduled runs", "advanced options")
         ]
         self.assertEqual(order, sorted(order))
         everyday = text[order[0]:order[1]]
-        for flag in ("--remote", "--exclude", "--dry-run", "--status"):
+        for flag in ("--remote", "--exclude", "--dry-run"):
             self.assertIn(flag, everyday)
         # a flag named in no section is still listed, in the last one
         advanced = text[order[-1]:text.index("payload mode")]
@@ -3449,12 +3448,12 @@ class ArgumentValidationTests(unittest.TestCase):
         # quietly takes a new one instead.
         rc, _, err = self.run_tool("--ref", "snapshot~3")
         self.assertEqual(rc, snap.EXIT_USAGE)
-        self.assertIn("--ref only applies to --restore", err)
+        self.assertIn("--ref does not apply to snapshot", err)
 
     def test_into_without_restore_is_refused(self):
         rc, _, err = self.run_tool("--into", "C:/tmp/x")
         self.assertEqual(rc, snap.EXIT_USAGE)
-        self.assertIn("--into only applies to --restore", err)
+        self.assertIn("--into does not apply to snapshot", err)
 
     def test_no_push_and_remote_together_are_refused(self):
         rc, _, err = self.run_tool("--no-push", "--remote", "seafile://code/x")
@@ -3467,7 +3466,7 @@ class ArgumentValidationTests(unittest.TestCase):
             "--dry-run",
         )
         self.assertEqual(rc, snap.EXIT_USAGE)
-        self.assertIn("--dry-run does not apply to --restore", err)
+        self.assertIn("--dry-run does not apply to restore", err)
 
     def test_positional_source_with_restore_is_refused(self):
         # The restore tree comes from the remote; a positional SOURCE here
@@ -3478,7 +3477,7 @@ class ArgumentValidationTests(unittest.TestCase):
             "C:/somewhere",
         )
         self.assertEqual(rc, snap.EXIT_USAGE)
-        self.assertIn("SOURCE (positional) does not apply to --restore", err)
+        self.assertIn("SOURCE (positional) does not apply to restore", err)
 
     def test_source_flag_with_restore_is_refused(self):
         rc, _, err = self.run_tool(
@@ -3486,7 +3485,7 @@ class ArgumentValidationTests(unittest.TestCase):
             "--source", "C:/somewhere",
         )
         self.assertEqual(rc, snap.EXIT_USAGE)
-        self.assertIn("--source does not apply to --restore", err)
+        self.assertIn("--source does not apply to restore", err)
 
     def test_no_object_compression_with_restore_is_refused(self):
         # A restore writes no new objects, so the flag would be silently
@@ -3496,14 +3495,14 @@ class ArgumentValidationTests(unittest.TestCase):
             "--no-object-compression",
         )
         self.assertEqual(rc, snap.EXIT_USAGE)
-        self.assertIn("--no-object-compression does not apply to --restore", err)
+        self.assertIn("--no-object-compression does not apply to restore", err)
 
     def test_maintain_rejects_snapshot_only_flags(self):
         # Housekeeping works on the object store alone; a snapshot flag here
         # would be silently ignored.
         rc, _, err = self.run_tool("--maintain", "--message", "m")
         self.assertEqual(rc, snap.EXIT_USAGE)
-        self.assertIn("--message does not apply to --maintain", err)
+        self.assertIn("--message does not apply to maintain", err)
 
     def test_maintain_and_restore_are_mutually_exclusive(self):
         rc, _, err = self.run_tool(
@@ -3516,14 +3515,14 @@ class ArgumentValidationTests(unittest.TestCase):
         # Outside housekeeping there is no repack to select one for.
         rc, _, err = self.run_tool("--full-repack")
         self.assertEqual(rc, snap.EXIT_USAGE)
-        self.assertIn("--full-repack only applies to --maintain", err)
+        self.assertIn("--full-repack does not apply to snapshot", err)
 
     def test_no_repack_does_not_apply_to_maintain(self):
         # Housekeeping performs the repack itself; skipping it is a snapshot
         # concern and would be silently ignored here.
         rc, _, err = self.run_tool("--maintain", "--no-repack")
         self.assertEqual(rc, snap.EXIT_USAGE)
-        self.assertIn("--no-repack does not apply to --maintain", err)
+        self.assertIn("--no-repack does not apply to maintain", err)
 
 
 class AutoRepackTests(_SnapshotFixture):
@@ -6298,7 +6297,7 @@ class ModificationTimeTests(_SnapshotFixture):
         rc, out, err = self.run_tool("--restore", "--remote", self.remote, "--into",
                                      self.restored, "--record-mtimes")
         self.assertEqual(rc, snap.EXIT_USAGE)
-        self.assertIn("only apply to a snapshot run", err)
+        self.assertIn("--record-mtimes does not apply to restore", err)
 
     @unittest.skipUnless(os.name == "nt", "extended_path is the identity elsewhere")
     def test_a_recorded_time_past_max_path_is_applied(self):
@@ -6756,19 +6755,19 @@ class StatusTests(_SnapshotFixture):
     def test_no_embedded_repos_is_refused_where_it_cannot_apply(self):
         rc, out, err = self.status("--no-embedded-repos")
         self.assertEqual(rc, snap.EXIT_USAGE, out + err)
-        self.assertIn("--no-embedded-repos only applies to a snapshot run", err)
+        self.assertIn("--no-embedded-repos does not apply to status", err)
 
     def test_status_refuses_to_combine_with_the_other_modes(self):
         rc, out, err = self.status("--restore")
         self.assertEqual(rc, snap.EXIT_USAGE, out + err)
-        self.assertIn("does not combine with", err)
+        self.assertIn("--restore and --status are different modes", err)
         rc, out, err = self.status("--record-mtimes")
         self.assertEqual(rc, snap.EXIT_USAGE, out + err)
-        self.assertIn("only apply to a snapshot run", err)
+        self.assertIn("--record-mtimes does not apply to status", err)
         for flag in ("--no-push", "--dry-run"):
             rc, out, err = self.status(flag)
             self.assertEqual(rc, snap.EXIT_USAGE, out + err)
-            self.assertIn("does not combine with --no-push or --dry-run", err)
+            self.assertIn(f"{flag} does not apply to status", err)
 
 
 class RememberedSettingWriteTests(_SnapshotFixture):
