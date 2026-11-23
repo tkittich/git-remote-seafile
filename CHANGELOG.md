@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - **Windows: a source holding a name Windows cannot open no longer stops the snapshot.** A tree that came from Linux, an archive or a share can hold `CON`, `aux.txt`, `dir.` or a folder whose name ends in a space. `git add` stopped the whole run on the first one (`unable to index file 'CON'`, rc=128) and every rerun stopped the same way. These paths are now left out and named in a `Warning:` (rename them to have them captured); the rest of the tree is snapshotted, as for a path behind a junction. Found by the Windows odd-name probe of the 0.10.5 bug hunt.
+- **Windows: a source typed with the extended-length prefix (`--source \\?\C:\data`) no longer ends in a traceback.** The prefix was kept while the walks yield plain paths, so the first run of a vault ended in `ValueError: path is on mount 'C:', start on mount '\\?\C:'`. The prefix is now taken off the resolved source and vault paths, since every stat adds it back itself (fable-G0.4 of review dfd2269, not reproducible until the bug hunt ran it again).
 
 ## [0.10.4] - 2026-11-22
 

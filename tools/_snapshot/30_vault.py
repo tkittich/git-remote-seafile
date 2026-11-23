@@ -3,9 +3,20 @@
 def expand_path(path: Path) -> Path:
     """``path`` with ``~`` and ``~user`` expanded and resolved; an unknown user is a message, not a RuntimeError."""
     try:
-        return path.expanduser().resolve()
+        resolved = path.expanduser().resolve()
     except RuntimeError as exc:
         raise SnapshotError(f"cannot expand {path}: {exc}") from exc
+    if os.name != "nt":
+        return resolved
+    # A source typed with the extended-length prefix stayed prefixed: the walks yield plain paths, and
+    # ``relpath`` of a plain path from a prefixed root raised ValueError (a traceback; fable-G0.4).  Every
+    # stat adds the prefix itself (``extended_path``), so the plain form is the one to carry.
+    text, bs = str(resolved), chr(92)
+    if text.startswith(bs * 2 + "?" + bs + "UNC" + bs):
+        return Path(bs + text[7:])
+    if text.startswith(bs * 2 + "?" + bs):
+        return Path(text[4:])
+    return resolved
 
 
 def resolve_paths(source: Path, vault: Path) -> tuple[Path, Path]:

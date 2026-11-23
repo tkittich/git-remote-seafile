@@ -256,6 +256,18 @@ class BasicSnapshotTests(_SnapshotFixture):
             self.tree(), {".env", ".gitignore", "README.md", "app.log"}
         )
 
+    @unittest.skipUnless(os.name == "nt", "the extended-length prefix is Windows'")
+    def test_a_source_typed_with_the_extended_length_prefix_is_snapshotted(self):
+        """``--source \\\\?\\C:\\...`` stayed prefixed while the walks yield plain paths, and the first run of a
+        payload-sized profile ended in a traceback (``ValueError: path is on mount 'C:', start on mount
+        '\\\\?\\C:'``; fable-G0.4, not reproduced until now)."""
+        prefixed = pathlib.Path("\\\\?\\" + str(self.code))
+        self.assertEqual(snap.expand_path(prefixed), snap.expand_path(self.code))
+        self.assertFalse(str(snap.expand_path(prefixed)).startswith("\\\\?\\"))
+        rc, _, err = self.run_tool("--source", prefixed, "--vault", self.vault)
+        self.assertEqual(rc, 0, err)
+        self.assertIn("README.md", self.tree())
+
     @unittest.skipUnless(os.name == "nt", "names only Windows cannot open")
     def test_a_name_windows_cannot_open_does_not_stop_the_snapshot(self):
         """``CON`` and a folder ending in a dot are creatable only through ``\\\\?\\``; ``git add`` stopped the whole
