@@ -155,7 +155,7 @@ class TestSnapshotToolMessages(unittest.TestCase):
     def test_a_single_other_branch_is_restored_with_a_note(self):
         proc = MagicMock(stdout="refs/remotes/origin/HEAD\nrefs/remotes/origin/snapshot\n")
         out = io.StringIO()
-        with patch.object(snap, "_run", return_value=proc), contextlib.redirect_stdout(out):
+        with patch.object(snap.gitrun, "_run", return_value=proc), contextlib.redirect_stdout(out):
             branch = snap._resolve_assumed_branch(pathlib.Path("clone"), "main")
         self.assertEqual(branch, "snapshot")
         self.assertIn("restoring its only branch", out.getvalue())

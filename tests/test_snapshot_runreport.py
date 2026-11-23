@@ -262,7 +262,7 @@ class JsonTests(_ReportFixture):
 
     def test_a_check_behind_the_push_that_fails_names_an_error_and_prints_its_note_once(self):
         from unittest.mock import patch
-        with patch.object(snap, "verify_payload_after_push", side_effect=snap.SnapshotError("object gone")):
+        with patch.object(snap.payload_upload, "verify_payload_after_push", side_effect=snap.SnapshotError("object gone")):
             rc, out, err = self.snapshot("--json")
         doc = self.document(out)
         self.assertEqual(rc, 1, out + err)
@@ -302,8 +302,8 @@ class ResumeAndProgressTests(_ReportFixture):
                 raise KeyboardInterrupt
             return real(path, *rest)
 
-        with unittest.mock.patch.object(snap, "_CHECKPOINT_SECONDS", 0.0), \
-                unittest.mock.patch.object(snap, "_sha256_file", second_one_dies):
+        with unittest.mock.patch.object(snap.payload_upload, "_CHECKPOINT_SECONDS", 0.0), \
+                unittest.mock.patch.object(snap.payload_upload, "_sha256_file", second_one_dies):
             with self.assertRaises(KeyboardInterrupt):
                 self.snapshot()
         # Read through the loader: the on-disk file is machine-stamped now,
@@ -312,21 +312,21 @@ class ResumeAndProgressTests(_ReportFixture):
         self.assertEqual(list(cache), ["big1.bin"])
 
     def test_hashing_prints_how_much_is_left(self):
-        with unittest.mock.patch.object(snap, "_PULSE_SECONDS", 0.0):
+        with unittest.mock.patch.object(snap.payload_upload, "_PULSE_SECONDS", 0.0):
             rc, out, err = self.snapshot()
         self.assertEqual(rc, 0, out + err)
         self.assertRegex(out, r"progress: [\d.]+ \w+ of [\d.]+ \w+ hashed \(\d+%\), \d+ MiB/s")
 
     def test_a_payload_restore_prints_how_much_is_left(self):
         self.assertEqual(self.snapshot()[0], 0)
-        with unittest.mock.patch.object(snap, "_PULSE_SECONDS", 0.0):
+        with unittest.mock.patch.object(snap.payload_upload, "_PULSE_SECONDS", 0.0):
             rc, out, err, _into = self.restore("progress")
         self.assertEqual(rc, 0, out + err)
         self.assertRegex(out, r"progress: [\d.]+ \w+ of [\d.]+ \w+ downloaded \(\d+%\)")
 
     def test_a_payload_verify_prints_how_much_is_left(self):
         self.assertEqual(self.snapshot()[0], 0)
-        with unittest.mock.patch.object(snap, "_PULSE_SECONDS", 0.0):
+        with unittest.mock.patch.object(snap.payload_upload, "_PULSE_SECONDS", 0.0):
             rc, out, err = self.run_tool("--payload-verify", "all", "--remote", self.remote)
         self.assertEqual(rc, 0, out + err)
         self.assertRegex(out, r"progress: [\d.]+ \w+ of [\d.]+ \w+ checked \(\d+%\)")

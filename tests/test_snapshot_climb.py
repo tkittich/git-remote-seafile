@@ -74,7 +74,7 @@ class ClimberTests(unittest.TestCase):
     def test_without_patience_the_same_server_stops_on_the_shelf(self):
         """The guard test: with one miss allowed, 3 -> 6 gains 7% and the search ends at 3,
         leaving a third of the link unused.  Patience is what makes this test pass."""
-        with unittest.mock.patch.object(snap, "_RAMP_PATIENCE", 1):
+        with unittest.mock.patch.object(snap.climb, "_RAMP_PATIENCE", 1):
             climber = _drive(_curve(MEASURED))
         self.assertEqual(climber.level, 3)
 
@@ -224,13 +224,13 @@ class AdaptiveUploadTests(unittest.TestCase):
                               "mtime_ns": path.stat().st_mtime_ns}
         for name, value in (("_CLIMB_SETTLE_SECONDS", 0.0), ("_CLIMB_WINDOW_SECONDS", 0.05),
                             ("_THROTTLE_PAUSE_SECONDS", 0.05), ("_UPLOAD_START_JOBS", 4)):
-            patcher = unittest.mock.patch.object(snap, name, value)
+            patcher = unittest.mock.patch.object(getattr(snap, snap._OWNER[name]), name, value)
             patcher.start()
             self.addCleanup(patcher.stop)
 
     def _upload(self, server: _FakeServer, jobs):
         out = io.StringIO()
-        with unittest.mock.patch.object(snap, "_open_client", return_value=server):
+        with unittest.mock.patch.object(snap.payload_upload, "_open_client", return_value=server):
             with contextlib.redirect_stdout(out):
                 snap._upload_all(server, "rid", None, "base", self.tmp, self.todo, jobs)
         return out.getvalue()
@@ -296,8 +296,8 @@ class AdaptiveUploadTests(unittest.TestCase):
             meter.add(MIB)
             return None
 
-        with unittest.mock.patch.object(snap, "_CLIMB_SETTLE_SECONDS", 0.15), \
-                unittest.mock.patch.object(snap, "_CLIMB_WINDOW_SECONDS", 0.3):
+        with unittest.mock.patch.object(snap.climb, "_CLIMB_SETTLE_SECONDS", 0.15), \
+                unittest.mock.patch.object(snap.climb, "_CLIMB_WINDOW_SECONDS", 0.3):
             with contextlib.redirect_stdout(io.StringIO()):
                 climber = snap.run_climbing(
                     [str(i) for i in range(150)], work, ceiling=4, meter=meter,
@@ -322,7 +322,7 @@ class ParallelHashingTests(unittest.TestCase):
         self.addCleanup(remove_tree, self.tmp)
         for i in range(24):
             (self.tmp / f"p{i:02d}.bin").write_bytes(bytes([i]) * (1000 + 37 * (i % 5)))
-        patcher = unittest.mock.patch.object(snap, "_HASH_MIN_BYTES", 0)
+        patcher = unittest.mock.patch.object(snap.hashing, "_HASH_MIN_BYTES", 0)
         patcher.start()
         self.addCleanup(patcher.stop)
 
@@ -396,7 +396,7 @@ class ParallelHashingTests(unittest.TestCase):
         sizes = {str(i): MIB for i in range(n)}
         said = []
         env = {"SEAFILE_SNAPSHOT_HASH_WORKERS": workers or ""}
-        with unittest.mock.patch.dict(os.environ, env),                 unittest.mock.patch.object(snap.os, "cpu_count", return_value=cpus),                 unittest.mock.patch.object(snap, "_HASH_SETTLE_SECONDS", 0.05),                 unittest.mock.patch.object(snap, "_HASH_WINDOW_SECONDS", window),                 contextlib.redirect_stdout(io.StringIO()) as out:
+        with unittest.mock.patch.dict(os.environ, env),                 unittest.mock.patch.object(snap.os, "cpu_count", return_value=cpus),                 unittest.mock.patch.object(snap.hashing, "_HASH_SETTLE_SECONDS", 0.05),                 unittest.mock.patch.object(snap.hashing, "_HASH_WINDOW_SECONDS", window),                 contextlib.redirect_stdout(io.StringIO()) as out:
             meter = snap._ByteMeter()
             extra = {} if clock is None else {"clock": clock}
             snap.run_hashing([str(i) for i in range(n)], sizes, lambda r: work(r, meter), meter,
@@ -480,7 +480,7 @@ class ParallelHashingTests(unittest.TestCase):
 
     def test_a_small_set_is_hashed_serially_in_the_order_given(self):
         order = []
-        with unittest.mock.patch.object(snap, "_HASH_MIN_BYTES", 10 ** 9):
+        with unittest.mock.patch.object(snap.hashing, "_HASH_MIN_BYTES", 10 ** 9):
             meter = snap._ByteMeter()
             snap.run_hashing(["c", "a", "b"], {"a": 1, "b": 1, "c": 1},
                              lambda rel: order.append(rel), meter, threading.Event())

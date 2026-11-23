@@ -2703,13 +2703,13 @@ class TestAStateFileTheFolderListsIsNeverAbsent(unittest.TestCase):
             ("git_remote_seafile/packs.py", "fetch_pack_artifact"): "None is an error there",
             ("git_remote_seafile/refs.py", "iter_refs"): "paired with its listing",
             ("git_remote_seafile/refs.py", "_fetch_ref"): "paired with its listing",
-            ("tools/_snapshot/72_payload_guards.py", "_read_json_marker"): "verified.json, a note",
-            ("tools/_snapshot/72_payload_guards.py", "_write_json_marker"): "read-back warning",
+            ("git_remote_seafile/snapshot/payload_guards.py", "_read_json_marker"): "verified.json, a note",
+            ("git_remote_seafile/snapshot/payload_guards.py", "_write_json_marker"): "read-back warning",
         }
         root = Path(__file__).resolve().parent.parent
         files = [p for p in (root / "git_remote_seafile").glob("*.py")
-                 if p.name not in ("client.py", "snapshot_tool.py")]
-        files += list((root / "tools" / "_snapshot").glob("*.py"))
+                 if p.name != "client.py"]
+        files += list((root / "git_remote_seafile" / "snapshot").glob("*.py"))
         found: dict[tuple[str, str], int] = {}
         for path in files:
             tree = ast.parse(path.read_text(encoding="utf-8"))

@@ -1,13 +1,13 @@
-"""Mutate every guard of a part of the snapshot tool, in parallel, and list the mutations no test noticed.
+"""Mutate every guard of a module of the snapshot tool, in parallel, and list the mutations no test noticed.
 
-    python tools/mutate_sweep.py tools/_snapshot/71_embedded.py --jobs 12 \
+    python tools/mutate_sweep.py git_remote_seafile/snapshot/embedded.py --jobs 12 \
         --tests tests.test_snapshot_tool.IncrementalStagingTests tests.test_incremental_property
 
 ``tools/mutate_check.py`` does one hand-picked mutation in the working tree.  This generates them: a comparison
 turned round, ``and`` / ``or`` swapped, a ``not`` dropped, an ``if`` forced either way, a ``return`` of a constant
 flipped, a ``continue`` / ``break`` / call statement removed.  Each runs in its own copy of ``tools/``,
-``tests/`` and ``git_remote_seafile/`` (the part is changed there, ``build_snapshot.py`` rebuilds the flat module,
-the named tests run with ``--failfast``), so the working tree is never touched and workers do not collide.
+``tests/`` and ``git_remote_seafile/`` (the module is changed there, the named tests run with
+``--failfast``), so the working tree is never touched and workers do not collide.
 
 A SURVIVED line is a candidate, not a verdict: many are equivalent (a changed message, a branch that cannot be
 told apart).  Read it, write a test that fails on it when it is a real guard, drop it when it is not.
@@ -99,19 +99,15 @@ def _run_one(item: tuple[int, tuple[int, str, int, int, str]], part: str, tests:
     shown = text[start:end].strip().replace("\n", " ")[:50]
     outcome = "SURVIVED"
     try:
-        built = subprocess.run([sys.executable, "tools/build_snapshot.py"], cwd=copy, capture_output=True)
-        if built.returncode != 0:
-            outcome = "BROKEN"      # the mutant does not build: not a finding
-        else:
-            ran = subprocess.run([sys.executable, "-m", "unittest", "--failfast", *tests], cwd=copy,
-                                 capture_output=True, timeout=timeout)
-            if ran.returncode != 0:
+        ran = subprocess.run([sys.executable, "-m", "unittest", "--failfast", *tests], cwd=copy,
+                             capture_output=True, timeout=timeout)
+        if ran.returncode != 0:
+            outcome = "killed"
+        elif then:      # a cheap first pass, the slow wider set only for what it missed
+            again = subprocess.run([sys.executable, "-m", "unittest", "--failfast", *then], cwd=copy,
+                                   capture_output=True, timeout=timeout)
+            if again.returncode != 0:
                 outcome = "killed"
-            elif then:      # a cheap first pass, the slow wider set only for what it missed
-                again = subprocess.run([sys.executable, "-m", "unittest", "--failfast", *then], cwd=copy,
-                                       capture_output=True, timeout=timeout)
-                if again.returncode != 0:
-                    outcome = "killed"
     except subprocess.TimeoutExpired:
         outcome = "killed"          # a hang is noticed too
     finally:
@@ -121,7 +117,7 @@ def _run_one(item: tuple[int, tuple[int, str, int, int, str]], part: str, tests:
 
 def main(argv: "list[str] | None" = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("part", help="a part of the snapshot tool, e.g. tools/_snapshot/71_embedded.py")
+    parser.add_argument("part", help="a module of the snapshot tool, e.g. git_remote_seafile/snapshot/embedded.py")
     parser.add_argument("--tests", nargs="+", required=True, help="unittest targets that should notice")
     parser.add_argument("--then", nargs="+", help="a wider, slower set run only for a mutation the first set missed")
     parser.add_argument("--jobs", type=int, default=8)

@@ -165,20 +165,18 @@ def _source_text() -> str:
     return "\n".join(
         path.read_text(encoding="utf-8")
         for path in sorted(_SOURCE.glob("*.py"))
-        # generated from tools/_snapshot/*.py, which _env_source_text reads directly
-        if path.name != "snapshot_tool.py"
     )
 
 
 def _env_source_text() -> str:
     """Source that may read a documented environment variable.
 
-    The package, plus the snapshot tool's parts: ``SEAFILE_SNAPSHOT_STALL_LIMIT``
+    The package, plus the snapshot tool's modules: ``SEAFILE_SNAPSHOT_STALL_LIMIT``
     is read there, and a variable the *tools* read is as much a documented
     setting as one the helper reads.  (Config keys and subcommands stay
     package-only: the tools define neither.)
     """
-    tool_paths = sorted((_ROOT / "tools" / "_snapshot").glob("*.py"))
+    tool_paths = sorted((_SOURCE / "snapshot").glob("*.py"))
     tool_paths.append(_ROOT / "tools" / "seafile_doctor.py")
     tool_text = "\n".join(
         path.read_text(encoding="utf-8") for path in tool_paths if path.is_file()
@@ -914,7 +912,7 @@ class TestProseNumbersMatchTheirConstants(unittest.TestCase):
         return f"{mib} MiB"
 
     def test_the_clock_skew_bound_in_payload_md(self):
-        from git_remote_seafile import snapshot_tool as snap
+        import git_remote_seafile.snapshot as snap
 
         seconds = int(snap._MAX_CLOCK_SKEW_SECONDS)
         words = {3600: "an hour", 86400: "a day"}.get(seconds)
@@ -922,7 +920,7 @@ class TestProseNumbersMatchTheirConstants(unittest.TestCase):
         self.assertIn(f"differ by more than {words}", self._flat("PAYLOAD.md"))
 
     def test_the_mark_list_read_cap_in_payload_md(self):
-        from git_remote_seafile import snapshot_tool as snap
+        import git_remote_seafile.snapshot as snap
 
         stated = re.search(r"mark list's (\d+ [KMG]iB) read cap", self._flat("PAYLOAD.md"))
         self.assertIsNotNone(stated, "PAYLOAD.md no longer says \"the mark list's N MiB read cap\"")

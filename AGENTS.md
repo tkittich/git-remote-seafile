@@ -14,8 +14,7 @@ no runtime dependency except `requests`, no dev dependencies.
 | Where | What |
 | :--- | :--- |
 | `git_remote_seafile/` | the package: helper, client, packs, gc, lock, LFS, safety guards |
-| `git_remote_seafile/snapshot_tool.py` | **generated** — never edit it |
-| `tools/_snapshot/NN_*.py` | the sources of the snapshot tool (one flat module, concatenated in name order) |
+| `git_remote_seafile/snapshot/` | the snapshot tool: a package of modules (`gitrun`, `stage`, `payload_*`, `restore_run`, `cli`, ...); the package namespace re-exports every name, **read-only** |
 | `tools/seafile_snapshot.py` | hand-written wrapper that runs the generated module from a checkout |
 | `tests/` | `unittest` suite; `e2e_harness.py` is an in-process Seafile stub |
 | `PAYLOAD.md`, `SNAPSHOT.md`, `DESIGN.md` | specifications; the code is held to them |
@@ -72,18 +71,17 @@ identity and the first CI failures of a release have always been environmental.
 
 ## Rules that are enforced by tests (so you will hit them)
 
-- A snapshot-tool part may not exceed **700 lines** — the largest parts sit
-  close to that limit, so move code out before adding to one. `python
-  tools/build_snapshot.py --check` prints the live sizes against the limit
-  (never write them here; they age). The argument checks live in
-  `96_cli_checks.py`, embedded repositories in `71_embedded.py`, the first-run
-  exclude prompt in `94_first_run.py`, modification times in `73_mtimes.py`,
-  the placement report and the machine/link measurement in `81_placement.py`.
-  A name used as a *default argument* is evaluated at import, so it must come
-  from an earlier part (use `None` and resolve it inside the function). All
-  imports live in `10_setup.py`; a top-level
-  name is defined in exactly one part; nothing evaluated at import time may come
-  from a later part.
+- **The snapshot tool is a package** (`git_remote_seafile/snapshot/`, ordinary modules; until 0.11 it was one
+  generated file built from parts, and that machinery is gone). A top-level name is defined in exactly one
+  module; a module reaches another **through the module** (`gitrun.git(...)`, after `from . import gitrun`),
+  never with `from .gitrun import git`, so a test that patches the defining module
+  (`patch.object(snap.gitrun, "git")`) is seen by every caller. Patching the package namespace (`snap`) is
+  refused with an error that names the module to patch. Anything evaluated at import (a default argument, a
+  constant, a base class) comes from a module earlier in `snapshot.MODULES`; a module used only inside
+  functions may be a later one, imported inside that function. `tests/test_snapshot_package.py` holds these.
+  Where things are: the argument checks in `cli_checks.py`, embedded repositories in `embedded.py`, the
+  first-run exclude prompt in `first_run.py`, modification times in `mtimes.py`, the placement report and the
+  machine/link measurement in `placement.py`. Ruff and mypy check the modules like any others.
 - A test class that defines `test_*` methods must not be subclassed.
 - Notifications are `Warning:`/`Note:`/`Notice:`/`Hint:`/`Error:` in title case, byte
   counts are binary (`KiB`, not `KB`), and every new message is mentioned by a test
@@ -133,9 +131,6 @@ identity and the first CI failures of a release have always been environmental.
   `add` with `update-index`; a directory renamed by case, with a new file in it, was lost
   by both and passed. Also compare an incremental history with a fresh run on the final
   tree, and the tree with what is on disk.
-- **`git add -A` does not take what you did not name.** Adding `tools tests` leaves the
-  regenerated `git_remote_seafile/snapshot_tool.py` behind (a release check caught it);
-  `python tools/build_snapshot.py --check` and `git status` before the commit.
 - **Heredocs through the Bash tool eat backslashes and apostrophes** (see the trap
   above): write an edit script with the Write tool and run it, and read back any line that
   holds a backslash escape (`\n`).

@@ -1,0 +1,29 @@
+
+from __future__ import annotations
+
+
+DEFAULT_BRANCH = "snapshot"
+
+#: How old an unparseable lock file must be before it is reclaimed: a live run
+#: writes its identity immediately after creating the file, so a fresh one may
+#: simply be mid-write.
+_UNPARSEABLE_LOCK_GRACE_SECONDS = 30.0
+
+RECOMMENDED_EXCLUDES = (
+    "node_modules",
+    "venv",
+    ".venv",
+    "__pycache__",
+    "*.pyc",
+    "dist",
+    "build",
+)
+
+# Settings a run remembers in the vault, so a bare re-run repeats the last one.
+# ``source`` is recorded too, and a mismatch is refused (``remembered_settings``)
+# -- the vault names, and belongs to, exactly one source directory.
+_REMEMBERED_KEYS = ("source", "remote", "coderemote", "excludes", "branch")
+
+
+class SnapshotError(RuntimeError):
+    """A failure the operator can act on."""

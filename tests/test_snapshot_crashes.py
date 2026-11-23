@@ -62,7 +62,7 @@ class CrashTests(unittest.TestCase):
     def test_a_name_that_is_not_utf8_is_judged_on_a_volume_that_counts_bytes(self):
         def keeps(_into, name):
             return "é" * 200 not in name          # only the 200-character probe is refused
-        with unittest.mock.patch.object(snap, "_volume_keeps_name", keeps):
+        with unittest.mock.patch.object(snap.restore_names, "_volume_keeps_name", keeps):
             problem = snap.probed_name_problem(self.tmp)
         self.assertIsNotNone(problem)
         self.assertIsNone(problem("dir/" + "\udcff" * 3))    # 3 raw bytes: well under 255

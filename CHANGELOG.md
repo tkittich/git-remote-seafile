@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`--refuse-secrets`** (opt-in): a snapshot run stops with exit 1 when a captured path looks like a credential (`.env`, private keys), after staging and before the branch moves or anything is pushed, and names the paths; `--exclude` them to go on. A `--dry-run` refuses too. Refused with the other modes (exit 2). Without the flag the credential warning is unchanged.
 
 ### Changed
+- **The snapshot tool is a package, not one generated file.** `git_remote_seafile/snapshot_tool.py` (built from `tools/_snapshot/NN_*.py` by `tools/build_snapshot.py`, one flat namespace, a 700-line limit per part) is replaced by the modules of `git_remote_seafile/snapshot/` (`gitrun`, `stage`, `payload_upload`, `restore_run`, `cli`, ...). Behaviour is unchanged. The entry points are the same (`git-seafile-snapshot`, `git-remote-seafile snapshot`, `tools/seafile_snapshot.py`); `git_remote_seafile.snapshot_tool` no longer exists, and the package namespace is read-only (patch the module that defines a name). `tools/build_snapshot.py`, the build gate and `tests/test_snapshot_build.py` are gone; `tests/test_snapshot_package.py` holds the rules that a name is defined once and used through its module.
 - **`--no-embedded-repos` needs `--allow-gitlinks`** (new flag). A gitlink is a commit id, so a restore gives an empty directory; the flag says the caller knows. `--allow-gitlinks` alone, or in a mode other than a snapshot run, is refused.
 
 ### Fixed

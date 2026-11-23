@@ -190,29 +190,21 @@ that talks to the server:
 
 Nothing in CI runs on a FAT-family volume, and the facts differ by driver (SNAPSHOT.md section 5 has the measured tables). To repeat the measurements on Linux (a Debian WSL works): `truncate -s 6G x.img`, `mkfs.vfat -F 32 x.img` or `mkfs.exfat x.img` (`exfatprogs`), `mount -o loop[,iocharset=utf8] x.img /mnt/vol` as root, and make, mount and probe in one command, because a WSL mount does not reliably survive between calls. Debian mounts FAT with `iocharset=ascii`, which refuses every non-ASCII name; pass `iocharset=utf8` to see what Windows would hold. The Windows drivers need a real FAT32 or exFAT drive (a spare disk or a VHD from an elevated shell); remounting them needs an elevated shell too. Keep the tests that need such a volume behind a probe that skips without one.
 
-## The snapshot tool is one module to users and several parts to maintainers
+## The snapshot tool is a package
 
-`git_remote_seafile/snapshot_tool.py` is **generated**. Its source is a handful of
-cohesive parts in `tools/_snapshot/` (`10_setup.py`, `20_gitrun.py`, ...),
-concatenated in name order by `tools/build_snapshot.py` -- no import rewriting, no
-bundler. It lives in the package so it ships in the wheel and installs as
-`git-seafile-snapshot` (and `git-remote-seafile snapshot`); maintainers get units a
-reader can hold. `tools/seafile_snapshot.py` is a hand-written wrapper that runs it
-from a checkout and stands in for it when imported.
+`git_remote_seafile/snapshot/` holds the snapshot tool as ordinary modules (`gitrun.py`, `stage.py`,
+`payload_upload.py`, `restore_run.py`, `cli.py`, ...). It ships in the wheel and installs as
+`git-seafile-snapshot` (and `git-remote-seafile snapshot`). `tools/seafile_snapshot.py` is a hand-written
+wrapper that runs it from a checkout and stands in for the package when imported. Before 0.11 it was one
+generated file (`snapshot_tool.py`, built from `tools/_snapshot/NN_*.py` by `tools/build_snapshot.py`) so it
+could be fetched and run alone; that is gone, and so is the 700-line limit on a part.
 
-```bash
-# edit tools/_snapshot/<part>.py, then:
-python tools/build_snapshot.py           # rewrite git_remote_seafile/snapshot_tool.py
-python tools/build_snapshot.py --check   # exit 1 if it is stale (the test suite does this too)
-```
+Rules, enforced by `tests/test_snapshot_package.py`: a top-level name is defined in exactly one module; a module
+uses another through the module (`gitrun.git(...)`), never a copy of one of its names, so a test patches the
+defining module (`patch.object(snap.gitrun, "git", ...)`; the package namespace `snap` is read-only and says
+which module to patch); nothing is imported at import time from a later module in `snapshot.MODULES`.
 
-Rules for the parts: they are *fragments of one module* sharing a flat namespace
-(no `from ._x import y`); all imports live in `10_setup.py`; a top-level name is
-defined in exactly one part; anything evaluated at import time must come from an
-earlier part; no part grows past 700 lines. `tests/test_snapshot_build.py`
-enforces each of these. Ruff and mypy check the generated file (the parts cannot
-be linted alone -- each uses names another defines). **Never edit
-`git_remote_seafile/snapshot_tool.py` directly**: the next build overwrites it.
+---
 
 ---
 

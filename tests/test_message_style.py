@@ -9,8 +9,7 @@ printed as ``292.4 GB`` by one function and ``9 GiB`` by another; the helper's
 
 The scan reads the *source* with ``ast`` -- string literals only, so comments and
 docstrings are free to say "KB" when they talk about something else -- over the
-snapshot tool's parts and the package (not the generated ``snapshot_tool.py``,
-which would only repeat the parts).
+package, the snapshot tool's modules included.
 """
 
 from __future__ import annotations
@@ -41,11 +40,7 @@ _BASELINE = pathlib.Path(__file__).with_name("untested_messages.txt")
 
 
 def _sources() -> list[pathlib.Path]:
-    parts = sorted((_ROOT / "tools" / "_snapshot").glob("*.py"))
-    package = sorted(
-        p for p in (_ROOT / "git_remote_seafile").rglob("*.py") if p.name != "snapshot_tool.py"
-    )
-    return parts + package
+    return sorted((_ROOT / "git_remote_seafile").rglob("*.py"))
 
 
 def _literals(path: pathlib.Path):

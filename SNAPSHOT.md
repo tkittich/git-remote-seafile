@@ -1,8 +1,8 @@
 # SNAPSHOT.md — full-tree backup to Seafile, `.gitignore`d files included
 
 > **Status: shipped in v0.8.0; payload mode and the installed command in v0.9.0.**
-> The implementation is `git_remote_seafile/snapshot_tool.py` (generated from
-> `tools/_snapshot/`; `tools/seafile_snapshot.py` is a wrapper);
+> The implementation is the package `git_remote_seafile/snapshot/` (`tools/seafile_snapshot.py` is a
+> wrapper);
 > the tests are `tests/test_snapshot_tool.py` (101 cases across 24 classes), and
 > the tool is documented in `SNAPSHOT_GUIDE.md`, `DESIGN.md` §4.10 and
 > `CHANGELOG.md`'s 0.8.0 entry. Everything below describes the tool **as it

@@ -1,0 +1,348 @@
+from __future__ import annotations
+
+import errno
+import os
+import re
+import shutil
+import subprocess
+import unicodedata
+from pathlib import Path
+from typing import Any, Callable
+
+from . import gitrun
+from . import payload_manifest
+from . import payload_restore
+
+
+def link_text_equal(blob: bytes, actual: bytes, *, windows: "bool | None" = None) -> bool:
+    """Whether a restored link's target is the one the snapshot holds.
+
+    Git for Windows writes the target of a real link with backslashes, and ``os.readlink`` can return a
+    long-path prefix; the blob holds the portable ``/`` form.  Read as bytes they differed for every target
+    with a separator, and the restore ended "a defect in the checkout" (review c305b0a, fable-S4-4).
+    """
+    if windows is None:
+        windows = os.name == "nt"
+    if windows:
+        actual = actual.removeprefix(b"\\\\?\\").replace(b"\\", b"/")
+        blob = blob.replace(b"\\", b"/")
+    return blob == actual
+
+
+
+def links_as_text_advice(windows: "bool | None" = None) -> str:
+    """What to do about symbolic links a restore could only write as text files.
+
+    On Windows a link needs Developer Mode; on a FAT, exFAT or NTFS volume under Linux or
+    macOS the volume itself cannot hold one, and Developer Mode is no advice (ROADMAP Z44).
+    """
+    if os.name == "nt" if windows is None else windows:
+        return "Turn on Developer Mode, or restore on Linux or macOS, to get real links"
+    return "Restore onto a Linux or macOS file system (not FAT, exFAT or NTFS) to get real links"
+
+
+def _volume_keeps_name(folder: Path, name: str) -> bool:
+    """Create *name* in *folder* and say whether the folder lists it under exactly that name.
+
+    In bytes, end to end: the question is what the *volume* keeps, not what this process can
+    encode.  With an ASCII filesystem encoding (``LC_ALL=C``, ``PYTHONUTF8=0``) a ``str`` path
+    holding ``é`` raised ``UnicodeEncodeError`` here, which is not an ``OSError``, and the whole
+    restore crashed (found by the locale legs, ROADMAP Z39); and a listing decoded with
+    surrogate escapes would never equal the name asked for.
+    """
+    base = os.fsencode(folder)
+    wanted = name.encode("utf-8", errors="surrogateescape")
+    try:
+        before = set(os.listdir(base))
+        os.close(os.open(os.path.join(base, wanted), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600))
+    except OSError as exc:
+        # Only these say "this volume cannot hold this name" (EINVAL on FAT and exFAT for a colon).
+        # No space, a quota or a transient I/O error say nothing about the name, and used to set
+        # every colon, trailing-dot and non-ASCII file aside as unholdable (review 9fe723f,
+        # fable-G7.1); the checkout then reports whatever is really wrong.
+        return exc.errno not in _REFUSAL_ERRNOS
+    try:
+        created = set(os.listdir(base)) - before
+    except OSError:
+        created = set()
+        try:      # the listing failed, so the probe file is removed by the name it was made under
+            os.unlink(os.path.join(base, wanted))
+        except OSError:
+            pass
+    # Only a name this probe made: a person's file that landed in the folder between the two
+    # listings is not ours to delete (review 8eb416b, glm E1; the project's own rule 7).
+    ours = {entry for entry in created if entry.startswith(_NAME_PROBE_PREFIX)}
+    for leftover in ours:
+        try:
+            os.unlink(os.path.join(base, leftover))
+        except OSError:
+            pass
+    # NFC on both sides: HFS+ and ZFS ``formD`` list ``é`` decomposed, and the volume that holds
+    # the name must not be judged as one that does not (review 853a7a2, sonnet G7.2).
+    return any(_nfc(entry) == _nfc(wanted) for entry in ours)
+
+
+_REFUSAL_ERRNOS = frozenset({errno.EINVAL, errno.ENOENT, errno.EILSEQ, errno.ENAMETOOLONG})
+
+#: Every probe name starts with this, so only such names are ever deleted.
+_NAME_PROBE_PREFIX = b"grs-probe-"
+
+
+def _nfc(name: "bytes | str") -> str:
+    """A listed name as comparable text: UTF-8 decoded without failing, then NFC."""
+    text = name.decode("utf-8", errors="surrogateescape") if isinstance(name, bytes) else name
+    return unicodedata.normalize("NFC", text)
+
+
+def _fold(name: str) -> str:
+    """The key under which two names are one on a volume that ignores case (and normalises)."""
+    return _nfc(name).lower()
+
+
+def destination_name_problem(into: Path) -> "Callable[[str], str | None] | None":
+    """How to judge a name for the volume *into* lives on: a ``name -> reason`` function, or ``None``.
+
+    Windows keeps its fixed rules (:func:`windows_name_problem`).  Elsewhere the folder is
+    asked: a FAT or exFAT volume mounted on Linux or macOS refuses a colon, and FAT32
+    refuses a trailing space, which stopped a restore at git's first error and left half a
+    tree (ROADMAP Z44, measured).  Only the rules the volume enforces are applied; an ext4
+    or APFS destination answers "no problem" after three probes and the checkout runs as before.
+    """
+    if os.name == "nt":
+        return payload_manifest.windows_name_problem
+    return probed_name_problem(into)
+
+
+def probed_name_problem(into: Path) -> "Callable[[str], str | None] | None":
+    """The rules the volume under *into* enforces, found by creating names there."""
+    stem = f"grs-probe-{os.getpid()}"
+    refuses_chars = not _volume_keeps_name(into, f"{stem}:x")
+    keeps_space = _volume_keeps_name(into, f"{stem} ")
+    keeps_dot = _volume_keeps_name(into, f"{stem}.")
+    # A FAT volume mounted with the default ``iocharset=ascii`` (Debian) refuses every
+    # non-ASCII name, which stopped a restore at ``café`` (measured, ROADMAP Z44).
+    keeps_non_ascii = _volume_keeps_name(into, f"{stem}é")
+    # ext4, xfs, btrfs and tmpfs count 255 *bytes* of a name; NTFS and APFS count characters.  A
+    # snapshot made on the second kind can hold 86 Thai letters (258 bytes of UTF-8), and checkout
+    # stopped on it with a partial tree (review 134c8af, fable-G7.1).  Found by asking the volume:
+    # 200 two-byte characters is 400 bytes and 215 characters.
+    counts_bytes = keeps_non_ascii and not _volume_keeps_name(into, f"{stem}{'é' * 200}")
+    if not refuses_chars and keeps_space and keeps_dot and keeps_non_ascii and not counts_bytes:
+        return None
+
+    def problem(rel: str) -> "str | None":
+        for part in rel.split("/"):
+            if refuses_chars and re.search(r'[<>:"|?*\\\x00-\x1f]', part):
+                return "has a character this volume refuses"
+            if not keeps_space and part.endswith(" "):
+                return "ends with a space (this volume refuses or drops it)"
+            if not keeps_dot and part.endswith("."):
+                return "ends with a dot (this volume drops it)"
+            if counts_bytes and len(part.encode("utf-8", "surrogateescape")) > 255:
+                return "is longer than 255 bytes of UTF-8 (this volume counts bytes, not characters)"
+            if not keeps_non_ascii and any(ord(char) > 127 for char in part):
+                return "has a character outside ASCII (this volume is mounted without a UTF-8 charset)"
+        return None
+
+    return problem
+
+
+def snapshot_file_names(repo: Path, rev: str) -> list[str]:
+    """Every file and link path of *rev* (what a restore is meant to write), as text."""
+    listing = gitrun._run(
+        ["git", "-C", str(repo), "ls-tree", "-r", "-z", "--full-tree", rev],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    names: list[str] = []
+    if listing.returncode != 0:
+        return names  # the checkout and the byte check report a revision that cannot be read
+    for entry in listing.stdout.split(b"\0"):
+        meta, _, path = entry.partition(b"\t")
+        fields = meta.split()
+        if len(fields) >= 3 and fields[1] == b"blob":
+            names.append(path.decode("utf-8", errors="surrogateescape"))
+    return names
+
+
+def names_on_disk(repo: Path) -> "set[str] | None":
+    """Every file name below *repo* (not ``.git``), as the folder lists it, or ``None``.
+
+    Listed, not opened: opening ``dot.`` on FAT or NTFS finds the file stored as ``dot``,
+    which is how a name the volume changed passed the byte check (ROADMAP Z45).
+    """
+    found: set[str] = set()
+
+    def fail(error: OSError) -> None:
+        raise error  # os.walk skips a folder it cannot read; here that would read as "every name is missing"
+
+    if not payload_restore.extended_path(repo).is_dir():      # past 260 characters a plain is_dir answers False
+        return None
+    # In bytes off Windows, like the probe: a ``str`` walk of a folder holding ``café`` under an
+    # ASCII filesystem encoding lists ``caf\udcc3\udca9`` while the snapshot's names are decoded
+    # as UTF-8, so every non-ASCII file read as "not written under the name given"
+    # (review 853a7a2, sonnet G7.1; the Z39 fix moved the probe and left this listing).
+    root: Any = str(repo) if os.name == "nt" else os.fsencode(repo)  # bytes or str: one walk, two types
+    git_dir: Any = ".git" if isinstance(root, str) else b".git"
+    try:
+        # walk_long: with long paths off a plain walk fails at the first folder past 260 characters and
+        # the whole check read as "cannot tell" (review dfd2269, gemini-4-hydrogen-2-G1.2, fable-G0.3)
+        for folder, dirs, files in payload_restore.walk_long(root, onerror=fail):
+            if folder == root and git_dir in dirs:
+                dirs.remove(git_dir)
+            base = os.path.relpath(folder, root)
+            links = [d for d in dirs if _islink(os.path.join(folder, d))]
+            for entry in [*files, *links]:
+                text = entry.decode("utf-8", errors="surrogateescape") if isinstance(entry, bytes) else entry
+                prefix = (base.decode("utf-8", errors="surrogateescape") if isinstance(base, bytes) else base)
+                prefix = prefix.replace(os.sep, "/")
+                found.add(text if prefix == "." else f"{prefix}/{text}")
+    except (OSError, ValueError):
+        return None  # a listing that fails says nothing: no false alarm
+    return found
+
+
+def _islink(path: Any) -> bool:
+    """``os.path.islink`` that reaches past 260 characters on Windows (a ``str`` path only)."""
+    return os.path.islink(payload_restore.extended_path(Path(path)) if isinstance(path, str) else path)
+
+
+def classify_missing_names(
+    expected: "list[str]", on_disk: "set[str]", skip: "set[str] | None" = None
+) -> "tuple[list[str], list[str]]":
+    """Names the snapshot holds that the folder does not list, as ``(collided, renamed)``.
+
+    *collided*: the same name once case is ignored as another name of the snapshot, so a
+    folder that ignores case could keep only one (``README`` beside ``readme``).
+    *renamed*: no such twin, so the volume stored it under another name (a trailing dot
+    or space dropped).  Compared in NFC, so a volume that lists names decomposed (HFS+)
+    does not raise a false alarm; names in *skip* (set aside as unholdable) are not asked about.
+    """
+    present = {_nfc(name) for name in on_disk}
+    skipped = skip or set()
+    folded: dict[str, int] = {}
+    for name in expected:
+        folded[_fold(name)] = folded.get(_fold(name), 0) + 1
+    # A folder that ignores case merges ``d/`` and ``D/``: ``d/a.txt`` beside ``D/b.txt`` are both
+    # written, into one folder that keeps the first spelling, so the listing shows neither under
+    # the other's folder spelling.  That is not a lost name (it read as "a trailing dot or space",
+    # review 9fe723f, gemini C1/E2), so a name whose only difference is the case of its folders is
+    # counted as present.  A *file* ``d`` beside a folder ``D`` cannot both be written: one wins,
+    # and everything of the other is collided.
+    def split(name: str) -> "tuple[str, str]":
+        folder, _, base = _nfc(name).rpartition("/")
+        return folder.lower(), base
+
+    loose = {split(name) for name in on_disk}
+    folders: set[str] = set()
+    for name in expected:
+        parts = _nfc(name).lower().split("/")
+        folders.update("/".join(parts[:i]) for i in range(1, len(parts)))
+    both = {key for key in folded if key in folders}     # a file and a folder of one folded name
+
+    def clashes(name: str) -> bool:
+        parts = _nfc(name).lower().split("/")
+        return _fold(name) in both or any("/".join(parts[:i]) in both for i in range(1, len(parts)))
+
+    collided: list[str] = []
+    renamed: list[str] = []
+    # A volume that treats a composed and a decomposed spelling as one name (APFS, HFS+) writes one file
+    # for the pair; both read as present after NFC, so neither was collided and the byte check ended in
+    # "defect in the checkout" (fable-S4-8, reproduced on macOS CI).  More expected names of one NFC form
+    # than the folder lists of it: all of them are collided.
+    listed: dict[str, int] = {}
+    for name in on_disk:
+        listed[_nfc(name)] = listed.get(_nfc(name), 0) + 1
+    wanted: dict[str, int] = {}
+    for name in expected:
+        if name not in skipped:
+            wanted[_nfc(name)] = wanted.get(_nfc(name), 0) + 1
+    for name in expected:
+        if name in skipped:
+            continue
+        if _nfc(name) in present:
+            if wanted[_nfc(name)] > listed.get(_nfc(name), 0):
+                collided.append(name)
+            continue
+        if folded[_fold(name)] > 1 or clashes(name):
+            collided.append(name)
+        elif split(name) in loose:
+            continue
+        else:
+            renamed.append(name)
+    return collided, renamed
+
+
+def report_names_not_restored_as_named(
+    repo: Path, rev: str, skip: "set[str]", mismatched: list[str],
+    said: "list[str] | None" = None,
+) -> list[str]:
+    """Say which names did not come back as named, and return *mismatched* without the collided ones.
+
+    A collision is a limit of the destination, not a defect of the checkout: the byte
+    check named the loser of a pair and told the person to report it (ROADMAP Z45).  Every name
+    reported is appended to *said*, so the caller can tell that a name was left out even when
+    the byte check never listed it (a case pair with the same bytes, fable-G0.4).
+    """
+    on_disk = names_on_disk(repo)
+    if on_disk is None:
+        return mismatched
+    collided, renamed = classify_missing_names(snapshot_file_names(repo, rev), on_disk, skip)
+    for names, text in (
+        (collided, "share a name with another file once upper and lower case are ignored, "
+                   "and the folder restored into ignores case, so only one of each pair could be "
+                   "written"),
+        (renamed, "were not written under the name the snapshot gives them (a trailing dot or "
+                  "space is dropped by some volumes); the bytes are intact, under the changed name"),
+    ):
+        if names:
+            if said is not None:
+                said.extend(names)
+            shown = "\n".join(f"  {name}" for name in names[:10])
+            more = f"\n  ... and {len(names) - 10} more" if len(names) > 10 else ""
+            print(f"\nWarning: {len(names)} file(s) in this snapshot {text}:\n{shown}{more}\n"
+                  "Restore into a folder that keeps names exactly (Linux ext4, or a case-sensitive "
+                  "folder) to get them all; everything else was restored and is verified below.")
+    # The byte check names the twin that was written *last* (``D/x.txt``), this listing the one
+    # that is missing (``d/x.txt``): the exact spelling never matched, so the "defect, please
+    # report it" text still printed beside the right warning (review 853a7a2, sonnet G7.3).
+    # A pair is judged by its folded name, the key the classifier grouped it under.
+    lost = {_fold(name) for name in collided}
+    return [path for path in mismatched if _fold(path) not in lost]
+
+
+def _free_bytes_where(into: Path) -> "int | None":
+    """Free bytes on the volume *into* will be created on, or ``None`` when no ancestor answers.
+
+    *into* usually does not exist yet, and ``shutil.disk_usage`` of a missing path raises, so the
+    floor was skipped for every normal restore and every drill (review 8eb416b, deepseek G4.1).
+    The nearest ancestor that exists is on the same volume the clone will land on.
+    """
+    probe = into
+    while True:
+        try:
+            return shutil.disk_usage(probe).free
+        except OSError:
+            if probe.parent == probe:
+                return None
+            probe = probe.parent
+
+
+def _ensure_local_branch(repo: Path, branch: str) -> None:
+    """Make *branch* a local branch of a ``--no-checkout`` clone, from ``origin/<branch>``.
+
+    A clone has a local branch only for the remote's HEAD; ``git checkout`` makes the others on
+    the way, but the name listing that decides what to write runs before it, and ``ls-tree
+    <branch>`` fails for a branch that is only ``origin/<branch>``.  A branch that is already
+    there, or that no remote branch backs, is left alone: the caller reports what is wrong.
+    """
+    have = gitrun._run(
+        ["git", "-C", str(repo), "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}"],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    )
+    if have.returncode == 0:
+        return
+    gitrun._run(
+        ["git", "-C", str(repo), "branch", branch, f"origin/{branch}"],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    )

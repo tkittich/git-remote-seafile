@@ -175,23 +175,23 @@ class _PayloadFixture(unittest.TestCase):
     def bare(self, *extra: object, vault: pathlib.Path | None = None,
              remote: str | None = None) -> tuple[int, str, str]:
         """A run with no payload flag at all, the auto thresholds scaled to the fixture."""
-        with unittest.mock.patch.object(snap, "_AUTO_UPPER", 8000), \
-                unittest.mock.patch.object(snap, "_AUTO_LOWER", 2000):
+        with unittest.mock.patch.object(snap.payload_upload, "_AUTO_UPPER", 8000), \
+                unittest.mock.patch.object(snap.payload_upload, "_AUTO_LOWER", 2000):
             return self.run_tool(self.src, "--vault", vault or self.vault,
                                  "--remote", remote or self.remote, *extra)
 
     def _existing_vault_without_payload(self) -> None:
         """A vault with an earlier snapshot taken before payload mode was the default."""
-        with unittest.mock.patch.object(snap, "_AUTO_UPPER", 8000), \
-                unittest.mock.patch.object(snap, "_AUTO_LOWER", 2000):
+        with unittest.mock.patch.object(snap.payload_upload, "_AUTO_UPPER", 8000), \
+                unittest.mock.patch.object(snap.payload_upload, "_AUTO_LOWER", 2000):
             rc, out, err = self.run_tool(self.src, "--vault", self.vault, "--no-push")
         self.assertEqual(rc, 0, out + err)
         (self.src / "small.txt").write_bytes(b"changed\n")      # a new snapshot is due
 
     def _existing_vault_without_payload_other(self) -> None:
         other = self.case / "other-vault"
-        with unittest.mock.patch.object(snap, "_AUTO_UPPER", 8000), \
-                unittest.mock.patch.object(snap, "_AUTO_LOWER", 2000):
+        with unittest.mock.patch.object(snap.payload_upload, "_AUTO_UPPER", 8000), \
+                unittest.mock.patch.object(snap.payload_upload, "_AUTO_LOWER", 2000):
             self.assertEqual(
                 self.run_tool(self.src, "--vault", other, "--no-push")[0], 0)
             (self.src / "small.txt").write_bytes(b"other\n")
@@ -304,7 +304,7 @@ class PayloadBasicsTests(_PayloadFixture):
         target = self.src / "big1.bin"
         hours_ago = time.time_ns() - 3 * 3600 * 1_000_000_000
         os.utime(target, ns=(hours_ago, hours_ago))
-        no_ctime = unittest.mock.patch.object(snap, "change_time_ns", lambda path, st: None)
+        no_ctime = unittest.mock.patch.object(snap.payload_guards, "change_time_ns", lambda path, st: None)
         with no_ctime:
             self.assertEqual(self.snapshot()[0], 0)
         before = self.server_files()
@@ -449,7 +449,7 @@ class PayloadBasicsTests(_PayloadFixture):
         self.assertEqual((into / "big1.bin").read_bytes(), self.big1)
 
     def test_a_file_that_changes_between_hash_and_upload_is_refused(self):
-        with unittest.mock.patch.object(snap, "_unchanged", return_value=False):
+        with unittest.mock.patch.object(snap.payload_upload, "_unchanged", return_value=False):
             rc, out, err = self.snapshot()
         self.assertNotEqual(rc, 0)
         self.assertIn("changed since it was hashed", out + err)
@@ -480,7 +480,7 @@ class PayloadBasicsTests(_PayloadFixture):
                                                  original.st_mtime_ns + 4_000_000_000))
                     return real(source, rel, size, mtime_ns)
 
-                with unittest.mock.patch.object(snap, "_unchanged", check):
+                with unittest.mock.patch.object(snap.payload_upload, "_unchanged", check):
                     rc, out, err = self.snapshot()
                 self.assertNotEqual(rc, 0, out + err)
                 self.assertIn("changed since it was hashed", out + err)
@@ -517,7 +517,7 @@ class PayloadBasicsTests(_PayloadFixture):
                 os.utime(target, ns=(original.st_atime_ns, original.st_mtime_ns))
             return True
 
-        with unittest.mock.patch.object(snap, "_unchanged", blind_stat_check):
+        with unittest.mock.patch.object(snap.payload_upload, "_unchanged", blind_stat_check):
             rc, out, err = self.snapshot()
         self.assertNotEqual(rc, 0, out + err)
         self.assertIn("changed while it was being uploaded", out + err)
@@ -552,8 +552,8 @@ class PayloadBasicsTests(_PayloadFixture):
             seen_at_push["present"] = gone["key"] in self.server_files()
             return real_push(*a, **kw)
 
-        with unittest.mock.patch.object(snap, "auto_incremental_repack", delete_an_object_first), \
-                unittest.mock.patch.object(snap, "push_snapshot", push_only_after_repair):
+        with unittest.mock.patch.object(snap.profile, "auto_incremental_repack", delete_an_object_first), \
+                unittest.mock.patch.object(snap.remote_ops, "push_snapshot", push_only_after_repair):
             rc, out, err = self.snapshot()
         self.assertEqual(rc, 0, out + err)
         self.assertTrue(seen_at_push.get("present"),
@@ -573,7 +573,7 @@ class PayloadBasicsTests(_PayloadFixture):
         self.assertEqual(self.snapshot()[0], 0)
         (self.src / "big1.bin").write_bytes(os.urandom(6000))
         with unittest.mock.patch.object(
-            snap, "verify_payload_after_push",
+            snap.payload_upload, "verify_payload_after_push",
             side_effect=snap.SnapshotError(
                 "the snapshot was pushed, but 1 payload object(s) it names are missing"
             ),
@@ -596,7 +596,7 @@ class PayloadBasicsTests(_PayloadFixture):
         self.assertEqual(self.snapshot()[0], 0)
         s2 = os.urandom(6000)
         (self.src / "big1.bin").write_bytes(s2)
-        with unittest.mock.patch.object(snap, "push_snapshot", side_effect=snap.SnapshotError("net down")):
+        with unittest.mock.patch.object(snap.remote_ops, "push_snapshot", side_effect=snap.SnapshotError("net down")):
             rc, out, err = self.snapshot()
         self.assertNotEqual(rc, 0)
         # S2's object is lost, and the file moves on again before the retry.
@@ -657,7 +657,7 @@ class PayloadBasicsTests(_PayloadFixture):
         self.assertEqual(out.count("hashing ["), 0, out)
 
     def test_a_dry_run_still_writes_no_cache_even_when_it_fails(self):
-        with unittest.mock.patch.object(snap, "publish_payload", side_effect=snap.SnapshotError("x")):
+        with unittest.mock.patch.object(snap.payload_cli, "publish_payload", side_effect=snap.SnapshotError("x")):
             rc, out, err = self.snapshot("--dry-run")
         self.assertNotEqual(rc, 0)
         self.assertFalse((self.vault / ".git" / "payload-cache.json").exists())
@@ -665,7 +665,7 @@ class PayloadBasicsTests(_PayloadFixture):
     def test_a_long_upload_prints_how_much_is_left(self):
         for name in ("p1.bin", "p2.bin", "p3.bin"):
             (self.src / name).write_bytes(os.urandom(3000))
-        with unittest.mock.patch.object(snap, "_PULSE_SECONDS", 0.0):
+        with unittest.mock.patch.object(snap.payload_upload, "_PULSE_SECONDS", 0.0):
             rc, out, err = self.snapshot("--payload-jobs", "1")
         self.assertEqual(rc, 0, out + err)
         self.assertRegex(out, r"progress: [\d.]+ \w+ of [\d.]+ \w+ uploaded \(\d+%\), \d+ MiB/s")
@@ -686,7 +686,7 @@ class PayloadBasicsTests(_PayloadFixture):
         def live_file_changed(source, rel, size, mtime_ns):
             return False if rel == "live.bin" else real(source, rel, size, mtime_ns)
 
-        with unittest.mock.patch.object(snap, "_unchanged", side_effect=live_file_changed):
+        with unittest.mock.patch.object(snap.payload_upload, "_unchanged", side_effect=live_file_changed):
             rc, out, err = self.snapshot("--payload-jobs", "1")
         self.assertNotEqual(rc, 0)
         text = out + err
@@ -714,7 +714,7 @@ class PayloadBasicsTests(_PayloadFixture):
             state["hashed"] = True  # build_manifest has read every file by now
             return real_publish(*a, **kw)
 
-        with unittest.mock.patch.object(snap, "publish_payload", side_effect=publish_after_hashing), \
+        with unittest.mock.patch.object(snap.payload_cli, "publish_payload", side_effect=publish_after_hashing), \
                 unittest.mock.patch("builtins.open", side_effect=open_failing_for_gone):
             rc, out, err = self.snapshot("--payload-jobs", "1")
         self.assertNotEqual(rc, 0)
@@ -812,14 +812,14 @@ class PayloadBasicsTests(_PayloadFixture):
         def fat_like(path, st):
             return st.st_mtime_ns   # the FAT family's only timestamp
 
-        with unittest.mock.patch.object(snap, "change_time_ns", fat_like):
+        with unittest.mock.patch.object(snap.payload_guards, "change_time_ns", fat_like):
             rc, out, err = self.snapshot()
         self.assertEqual(rc, 0, out + err)
         # Once per file: ``vouched`` runs twice for each and the count was doubled
         # (gemini-4-hydrogen-E2).  The two payload files of this tree are the whole count.
         self.assertIn("Note: 2 file(s) are on a filesystem with no change time of its own", out + err)
         # Windows' FAT driver answers 0 instead (review 06cc623, gemini E2).
-        with unittest.mock.patch.object(snap, "change_time_ns", lambda path, st: 0):
+        with unittest.mock.patch.object(snap.payload_guards, "change_time_ns", lambda path, st: 0):
             rc, out, err = self.snapshot()
         self.assertEqual(rc, 0, out + err)
         self.assertIn("no change time of its own", out + err)
@@ -832,7 +832,7 @@ class PayloadBasicsTests(_PayloadFixture):
         edited = bytes(b ^ 0x11 for b in self.big1)
         target.write_bytes(edited)
         os.utime(target, ns=(stat.st_atime_ns, stat.st_mtime_ns))
-        with unittest.mock.patch.object(snap, "change_time_ns", fat_like):
+        with unittest.mock.patch.object(snap.payload_guards, "change_time_ns", fat_like):
             rc, out, err = self.snapshot()
         self.assertEqual(rc, 0, out + err)
         self.assertIn("no change time of its own", out + err)
@@ -1074,8 +1074,8 @@ class PayloadManifestAndSelectionTests(_PayloadFixture):
         }
         for name, content in data.items():
             (self.src / name).write_bytes(content)
-        with unittest.mock.patch.object(snap, "_AUTO_UPPER", 8000), \
-                unittest.mock.patch.object(snap, "_AUTO_LOWER", 2000):
+        with unittest.mock.patch.object(snap.payload_upload, "_AUTO_UPPER", 8000), \
+                unittest.mock.patch.object(snap.payload_upload, "_AUTO_LOWER", 2000):
             rc, out, err = self.run_tool(
                 self.src, "--vault", self.vault, "--remote", self.remote, "--payload-min-size", "auto",
             )
@@ -1099,8 +1099,8 @@ class PayloadManifestAndSelectionTests(_PayloadFixture):
             manifest = json.loads(_git(self.vault, "show", "snapshot:.seafile-payload/manifest.json"))
             return {f["path"] for f in manifest["files"]}
 
-        with unittest.mock.patch.object(snap, "_AUTO_UPPER", 8000), \
-                unittest.mock.patch.object(snap, "_AUTO_LOWER", 2000):
+        with unittest.mock.patch.object(snap.payload_upload, "_AUTO_UPPER", 8000), \
+                unittest.mock.patch.object(snap.payload_upload, "_AUTO_LOWER", 2000):
             rc, out, err = self.run_tool(
                 self.src, "--vault", self.vault, "--remote", self.remote, "--payload-min-size", "auto",
             )
@@ -1132,8 +1132,8 @@ class PayloadManifestAndSelectionTests(_PayloadFixture):
         }.items():
             (self.src / name).write_bytes(content)
         survey = snap.new_survey()
-        with unittest.mock.patch.object(snap, "_AUTO_UPPER", 8000), \
-                unittest.mock.patch.object(snap, "_AUTO_LOWER", 2000):
+        with unittest.mock.patch.object(snap.payload_upload, "_AUTO_UPPER", 8000), \
+                unittest.mock.patch.object(snap.payload_upload, "_AUTO_LOWER", 2000):
             found = snap.find_payload_files(self.src, [], 8000, True, 0.9, survey)
         self.assertEqual(set(found), {"huge.bin", "noise.bin"})
         self.assertEqual(survey["big"][0], 1)
@@ -1148,7 +1148,7 @@ class PayloadManifestAndSelectionTests(_PayloadFixture):
         band = [(gib, 0.8, f"f{i}") for i in range(4)] + [(gib, 0.2, "c0")]
         survey = {"small": [10, 5 * gib], "big": [1, 9 * gib], "mid": band}
         payload = {"huge": (9 * gib, 0, "100644", 0, 0, 0)}
-        with unittest.mock.patch.object(snap, "measure_deflate_mibs", return_value=40.0):
+        with unittest.mock.patch.object(snap.placement, "measure_deflate_mibs", return_value=40.0):
             lines = snap.placement_lines(survey, payload, 0.9, self.src, {})
             self.assertEqual(len(lines), 2, lines)
             self.assertIn("--payload-auto-ratio 0.5", lines[1])
@@ -1162,7 +1162,7 @@ class PayloadManifestAndSelectionTests(_PayloadFixture):
             small = {**survey, "mid": [(10 * 1024 ** 2, 0.8, "f")]}
             self.assertEqual(len(snap.placement_lines(small, payload, 0.9, self.src, {})), 1)
         # a fast deflate (it beats the link) leaves nothing to suggest
-        with unittest.mock.patch.object(snap, "measure_deflate_mibs", return_value=5000.0):
+        with unittest.mock.patch.object(snap.placement, "measure_deflate_mibs", return_value=5000.0):
             self.assertEqual(len(snap.placement_lines(survey, payload, 0.9, self.src, {})), 1)
 
     def test_a_run_reports_its_placement(self):
@@ -1170,8 +1170,8 @@ class PayloadManifestAndSelectionTests(_PayloadFixture):
         (self.src / "sub" / "big2.bin").unlink()
         (self.src / "huge.bin").write_bytes(os.urandom(9000))
         (self.src / "half.bin").write_bytes(os.urandom(1500) + b"\0" * 1500)
-        with unittest.mock.patch.object(snap, "_AUTO_UPPER", 8000), \
-                unittest.mock.patch.object(snap, "_AUTO_LOWER", 2000):
+        with unittest.mock.patch.object(snap.payload_upload, "_AUTO_UPPER", 8000), \
+                unittest.mock.patch.object(snap.payload_upload, "_AUTO_LOWER", 2000):
             rc, out, err = self.run_tool(
                 self.src, "--vault", self.vault, "--remote", self.remote, "--payload-min-size", "auto",
             )
@@ -1264,8 +1264,8 @@ class PayloadDefaultAndSafeguardTests(_PayloadFixture):
         self.assertEqual(self.bare()[0], 0)
         self.assertEqual(_git(self.vault, "config", "snapshot.payload").strip(), "auto")
         (self.src / "small.txt").write_bytes(b"local only\n")
-        with unittest.mock.patch.object(snap, "_AUTO_UPPER", 8000), \
-                unittest.mock.patch.object(snap, "_AUTO_LOWER", 2000):
+        with unittest.mock.patch.object(snap.payload_upload, "_AUTO_UPPER", 8000), \
+                unittest.mock.patch.object(snap.payload_upload, "_AUTO_LOWER", 2000):
             rc, out, err = self.run_tool(self.src, "--vault", self.vault, "--no-push")
         # The payload vault is refused with the actionable message, not "needs a remote".
         self.assertNotEqual(rc, 0)
@@ -1289,8 +1289,8 @@ class PayloadDefaultAndSafeguardTests(_PayloadFixture):
         self.assertEqual(self.bare()[0], 0)
         self.assertEqual(_git(self.vault, "config", "snapshot.payload").strip(), "auto")
         (self.src / "small.txt").write_bytes(b"local only\n")
-        with unittest.mock.patch.object(snap, "_AUTO_UPPER", 8000), \
-                unittest.mock.patch.object(snap, "_AUTO_LOWER", 2000):
+        with unittest.mock.patch.object(snap.payload_upload, "_AUTO_UPPER", 8000), \
+                unittest.mock.patch.object(snap.payload_upload, "_AUTO_LOWER", 2000):
             rc, out, err = self.run_tool(self.src, "--vault", self.vault, "--no-push", "--no-payload")
         self.assertEqual(rc, 0, out + err)
         self.assertEqual(_git(self.vault, "config", "snapshot.payload").strip(), "auto")
@@ -1302,15 +1302,15 @@ class PayloadDefaultAndSafeguardTests(_PayloadFixture):
 
     def test_the_default_stays_off_where_payload_mode_cannot_work(self):
         # No remote at all: a purely local snapshot.
-        with unittest.mock.patch.object(snap, "_AUTO_UPPER", 8000), \
-                unittest.mock.patch.object(snap, "_AUTO_LOWER", 2000):
+        with unittest.mock.patch.object(snap.payload_upload, "_AUTO_UPPER", 8000), \
+                unittest.mock.patch.object(snap.payload_upload, "_AUTO_LOWER", 2000):
             rc, out, err = self.run_tool(self.src, "--vault", self.vault, "--no-push")
         self.assertEqual(rc, 0, out + err)
         self.assertIn("big1.bin", _git(self.vault, "ls-tree", "-r", "--name-only", "snapshot"))
         # --no-push: the explicit flag is an error (see the combinations test), the
         # default just stays off.
-        with unittest.mock.patch.object(snap, "_AUTO_UPPER", 8000), \
-                unittest.mock.patch.object(snap, "_AUTO_LOWER", 2000):
+        with unittest.mock.patch.object(snap.payload_upload, "_AUTO_UPPER", 8000), \
+                unittest.mock.patch.object(snap.payload_upload, "_AUTO_LOWER", 2000):
             rc, out, err = self.run_tool(self.src, "--vault", self.case / "v2", "--no-push")
         self.assertEqual(rc, 0, out + err)
         self.assertIn("big1.bin",
@@ -1379,7 +1379,7 @@ class PayloadDefaultAndSafeguardTests(_PayloadFixture):
 
     def test_a_snapshot_by_a_newer_tool_is_warned_about(self):
         self.assertEqual(self.snapshot()[0], 0)
-        with unittest.mock.patch.object(snap, "tool_of_commit", lambda *a: "99.1.0"):
+        with unittest.mock.patch.object(snap.payload_guards, "tool_of_commit", lambda *a: "99.1.0"):
             (self.src / "small.txt").write_bytes(b"newer tool\n")
             rc, out, err = self.snapshot()
         self.assertEqual(rc, 0, out + err)
@@ -1451,7 +1451,7 @@ class PayloadDefaultAndSafeguardTests(_PayloadFixture):
         self.assertIn("last --payload-verify: 0 day(s) ago", out)
 
     def test_an_upload_that_cannot_fit_the_quota_is_warned_about_first(self):
-        with unittest.mock.patch.object(snap, "_account_quota", lambda c: (990, 1000)):
+        with unittest.mock.patch.object(snap.payload_guards, "_account_quota", lambda c: (990, 1000)):
             rc, out, err = self.snapshot()
         self.assertEqual(rc, 0, out + err)
         self.assertIn("quota left", err)
@@ -1496,7 +1496,7 @@ class PayloadDefaultAndSafeguardTests(_PayloadFixture):
             return free
 
         with unittest.mock.patch("shutil.disk_usage", like_the_real_one), \
-                unittest.mock.patch.object(snap, "_run", side_effect=no_clone):
+                unittest.mock.patch.object(snap.gitrun, "_run", side_effect=no_clone):
             rc, out, err, into = self.restore("tight-clone")
         self.assertNotEqual(rc, 0)
         self.assertIn("headroom", out + err)
@@ -1673,7 +1673,7 @@ class PayloadHistoryReadTests(_PayloadFixture):
                              before == after))
             return result
 
-        with unittest.mock.patch.object(snap, "git", spy):
+        with unittest.mock.patch.object(snap.gitrun, "git", spy):
             rc, out, err = self.gc("--vault", self.vault, "--payload-grace-days", "1")
         self.assertEqual(rc, 0, out + err)
         self.assertIn("2 referenced object(s)", out)
@@ -1711,7 +1711,7 @@ class PayloadHistoryReadTests(_PayloadFixture):
         self.assertEqual(self.snapshot()[0], 0)
         (self.src / "big1.bin").write_bytes(bytes(b ^ 0x02 for b in self.big1))
         self.assertEqual(self.snapshot()[0], 0)
-        with unittest.mock.patch.object(snap, "paths_only_in_older_snapshots",
+        with unittest.mock.patch.object(snap.payload_history, "paths_only_in_older_snapshots",
                                         side_effect=AssertionError("read the older manifests")):
             rc, out, err = self.run_tool("--payload-verify", "all", "--remote", self.remote)
         self.assertEqual(rc, 0, out + err)
@@ -1850,7 +1850,7 @@ class PayloadRetentionTests(_PayloadFixture):
         self.stub.files[REPO_ID][debris] = b"x" * 1024
         self.stub.files[REPO_ID][lookalike] = b"mine"
         objects_before = self.object_count() - 2
-        with unittest.mock.patch.object(snap, "_PROBE_DEBRIS_SECONDS", -1):
+        with unittest.mock.patch.object(snap.placement, "_PROBE_DEBRIS_SECONDS", -1):
             rc, out, err = self.gc("--payload-delete", "--payload-grace-days", "1")
         self.assertEqual(rc, 0, out + err)
         self.assertNotIn(debris, self.server_files())
@@ -2005,11 +2005,11 @@ class PayloadRetentionTests(_PayloadFixture):
         key = f"{self.base}/gc-pending.json"
         marks = json.dumps({_sha(str(i).encode()): 1.0 for i in range(100)}).encode()
         self.stub.files[REPO_ID][key] = marks
-        with unittest.mock.patch.object(snap, "_PENDING_MAX_BYTES", len(marks) + 1):
+        with unittest.mock.patch.object(snap.payload_gc_run, "_PENDING_MAX_BYTES", len(marks) + 1):
             rc, out, err = self.gc("--payload-delete")
         self.assertEqual(rc, 0, out + err)
         self.stub.files[REPO_ID][key] = marks
-        with unittest.mock.patch.object(snap, "_PENDING_MAX_BYTES", len(marks) - 1):
+        with unittest.mock.patch.object(snap.payload_gc_run, "_PENDING_MAX_BYTES", len(marks) - 1):
             rc, out, err = self.gc("--payload-delete")
         self.assertEqual(rc, 1, out + err)
         self.assertIn("Remove it and run again", err)
@@ -2021,9 +2021,9 @@ class PayloadRetentionTests(_PayloadFixture):
         advice ("Remove it and run again") led to the same list."""
         marks = {_sha(str(i).encode()): 1.0 for i in range(100)}
         size = len(json.dumps(marks, sort_keys=True).encode("ascii"))
-        with unittest.mock.patch.object(snap, "_PENDING_MAX_BYTES", size):
+        with unittest.mock.patch.object(snap.payload_gc_run, "_PENDING_MAX_BYTES", size):
             self.assertEqual(len(snap.encode_pending(marks)), size)
-        with unittest.mock.patch.object(snap, "_PENDING_MAX_BYTES", size - 1):
+        with unittest.mock.patch.object(snap.payload_gc_run, "_PENDING_MAX_BYTES", size - 1):
             with self.assertRaises(snap.SnapshotError) as cm:
                 snap.encode_pending(marks)
         self.assertIn("it was not written", str(cm.exception))
@@ -2044,7 +2044,7 @@ class PayloadRetentionTests(_PayloadFixture):
         self.assertEqual(self.snapshot()[0], 0)
         orphan = self.orphan()
         server_now = {"t": 50_000_000.0}
-        with unittest.mock.patch.object(snap, "_grace_now", lambda c: server_now["t"]):
+        with unittest.mock.patch.object(snap.payload_gc_run, "_grace_now", lambda c: server_now["t"]):
             rc, out, err = self.gc("--payload-delete", "--payload-grace-days", "1")
         self.assertEqual(rc, 0, out + err)
         self.assertIn("marked 1 newly unreferenced", out)
@@ -2056,7 +2056,7 @@ class PayloadRetentionTests(_PayloadFixture):
         server_now["t"] += 5.0
         local_before = time.time()
         jumped = lambda: local_before + 8 * DAY  # noqa: E731
-        with unittest.mock.patch.object(snap, "_grace_now", lambda c: server_now["t"]), \
+        with unittest.mock.patch.object(snap.payload_gc_run, "_grace_now", lambda c: server_now["t"]), \
                 unittest.mock.patch("time.time", jumped):
             rc, out, err = self.gc("--payload-delete", "--payload-grace-days", "1")
         self.assertEqual(rc, 0, out + err)
@@ -2250,7 +2250,7 @@ class PayloadRetentionTests(_PayloadFixture):
             tips["refs/heads/snapshot"] = "f" * 40  # somebody pushed since the history was read
             return tips
 
-        with unittest.mock.patch.object(snap, "_remote_tips", moved):
+        with unittest.mock.patch.object(snap.payload_gc_run, "_remote_tips", moved):
             rc, out, err = self.gc("--payload-delete", "--payload-grace-days", "1")
         self.assertNotEqual(rc, 0, out + err)
         self.assertIn("nothing was deleted", out + err)
@@ -2270,7 +2270,7 @@ class PayloadRetentionTests(_PayloadFixture):
             self.stub.files[REPO_ID].pop(victim, None)
             return result
 
-        with unittest.mock.patch.object(snap, "push_snapshot", push_then_lose_an_object):
+        with unittest.mock.patch.object(snap.remote_ops, "push_snapshot", push_then_lose_an_object):
             rc, out, err = self.snapshot()
         self.assertEqual(rc, 0, out + err)
         self.assertIn("went missing during the push", out)
@@ -2293,7 +2293,7 @@ class PayloadRetentionTests(_PayloadFixture):
                 tips["refs/heads/snapshot"] = "f" * 40
             return tips
 
-        with unittest.mock.patch.object(snap, "_remote_tips", moved_after_the_first_look):
+        with unittest.mock.patch.object(snap.payload_gc_run, "_remote_tips", moved_after_the_first_look):
             rc, out, err = self.gc("--payload-delete", "--payload-grace-days", "1")
         self.assertNotEqual(rc, 0, out + err)
         self.assertIn("stopped after", out + err)
@@ -2324,7 +2324,7 @@ class PayloadRetentionTests(_PayloadFixture):
         self.assertEqual(self.snapshot()[0], 0)
         s2 = os.urandom(6000)
         (self.src / "big1.bin").write_bytes(s2)
-        with unittest.mock.patch.object(snap, "push_snapshot", side_effect=snap.SnapshotError("net down")):
+        with unittest.mock.patch.object(snap.remote_ops, "push_snapshot", side_effect=snap.SnapshotError("net down")):
             self.assertNotEqual(self.snapshot()[0], 0)
         key = self.object_key(s2)
         self.assertIn(key, self.server_files())
@@ -2498,7 +2498,7 @@ class PayloadRetentionTests(_PayloadFixture):
         s1_commit = _git(self.vault, "rev-parse", "snapshot").strip()
         s2 = os.urandom(6000)
         (self.src / "big1.bin").write_bytes(s2)
-        with unittest.mock.patch.object(snap, "push_snapshot", side_effect=snap.SnapshotError("down")):
+        with unittest.mock.patch.object(snap.remote_ops, "push_snapshot", side_effect=snap.SnapshotError("down")):
             self.assertNotEqual(self.snapshot()[0], 0)
         _git(self.vault, "tag", "keep", "snapshot")
         _git(self.vault, "update-ref", "refs/heads/snapshot", s1_commit)  # the branch moves back
@@ -2813,7 +2813,7 @@ class PayloadRememberVerifyViewAndClockTests(_PayloadFixture):
         into.mkdir()
         files = [{"path": "a:b.bin", "sha256": "0" * 64, "size": 1, "mtime_ns": 0, "mode": "100644"}]
         with unittest.mock.patch.object(
-                snap, "destination_name_problem",
+                snap.restore_names, "destination_name_problem",
                 lambda _into: lambda name: "has a colon this volume refuses" if ":" in name else None):
             with self.assertRaises(snap.SnapshotError) as ctx:
                 snap._restore_payload_files(None, "rid", "/base", files, into, into / ".scratch")
@@ -3029,7 +3029,7 @@ class PayloadRememberVerifyViewAndClockTests(_PayloadFixture):
 
     def test_a_view_that_would_not_fit_the_quota_warns_before_building(self):
         self.assertEqual(self.snapshot()[0], 0)
-        with unittest.mock.patch.object(snap, "_account_quota", return_value=(900, 1000)):
+        with unittest.mock.patch.object(snap.payload_guards, "_account_quota", return_value=(900, 1000)):
             rc, out, err = self.view("--payload-view-name", "tight")
         self.assertEqual(rc, 0, out + err)  # a warning, not a refusal: the owner's quota counts
         self.assertIn("Warning: this run copies (counted at full size)", err)
@@ -3187,7 +3187,7 @@ class PayloadRememberVerifyViewAndClockTests(_PayloadFixture):
         self.assertEqual(sorted(p.name for p in self.src.iterdir()), before)
 
     def test_a_local_source_is_never_written_to_by_the_clock_probe(self):
-        with unittest.mock.patch.object(snap, "_probe_fs_clock") as probe:
+        with unittest.mock.patch.object(snap.payload_manifest, "_probe_fs_clock") as probe:
             rc, out, err = self.bare()
         self.assertEqual(rc, 0, out + err)
         probe.assert_not_called()
@@ -3216,7 +3216,7 @@ class PayloadRememberVerifyViewAndClockTests(_PayloadFixture):
         self.assertEqual(record["files"]["small.txt"], want)
         # payload files carry theirs in the manifest, not here
         self.assertNotIn("big1.bin", record["files"])
-        with unittest.mock.patch.object(snap, "_AUTO_UPPER", 8000),                 unittest.mock.patch.object(snap, "_AUTO_LOWER", 2000):
+        with unittest.mock.patch.object(snap.payload_upload, "_AUTO_UPPER", 8000),                 unittest.mock.patch.object(snap.payload_upload, "_AUTO_LOWER", 2000):
             rc, out, err, into = self.restore("mtimes")
         self.assertEqual(rc, 0, out + err)
         self.assertEqual((into / "small.txt").stat().st_mtime_ns, want)
@@ -3229,8 +3229,8 @@ class PayloadRememberVerifyViewAndClockTests(_PayloadFixture):
         (self.src / "big1.bin.part").write_bytes(decoy)
         rc, out, err = self.bare()
         self.assertEqual(rc, 0, out + err)
-        with unittest.mock.patch.object(snap, "_AUTO_UPPER", 8000), \
-                unittest.mock.patch.object(snap, "_AUTO_LOWER", 2000):
+        with unittest.mock.patch.object(snap.payload_upload, "_AUTO_UPPER", 8000), \
+                unittest.mock.patch.object(snap.payload_upload, "_AUTO_LOWER", 2000):
             rc, out, err, into = self.restore("decoy")
         self.assertEqual(rc, 0, out + err)
         self.assertEqual((into / "big1.bin.part").read_bytes(), decoy)
@@ -3266,14 +3266,14 @@ class PayloadRememberVerifyViewAndClockTests(_PayloadFixture):
         self.assertEqual(self.bare()[0], 0)   # starts the clock
         _git(self.vault, "config", "snapshot.payloadgcreport", str(time.time() - 8 * 86400))
         (self.src / "big1.bin").write_bytes(bytes(b ^ 0x01 for b in self.big1))
-        with unittest.mock.patch.object(snap, "_hashes_in_history", spy):
+        with unittest.mock.patch.object(snap.payload_gc_run, "_hashes_in_history", spy):
             rc, out, err = self.bare()
         self.assertEqual(rc, 0, out + err)
         self.assertIn("payload store report", out)
         self.assertEqual(seen, [None], "the report downloaded the remote's history")
 
     def test_an_interrupt_during_the_report_keeps_what_the_run_earned(self):
-        with unittest.mock.patch.object(snap, "maybe_report_payload_gc", side_effect=KeyboardInterrupt):
+        with unittest.mock.patch.object(snap.payload_cli, "maybe_report_payload_gc", side_effect=KeyboardInterrupt):
             with self.assertRaises(KeyboardInterrupt):
                 self.bare()
         self.assertEqual(_git(self.vault, "config", "snapshot.payload").strip(), "auto")
@@ -3300,7 +3300,7 @@ class PayloadRememberVerifyViewAndClockTests(_PayloadFixture):
         self.assertIn("--no-embedded-repos only applies to a snapshot run", err)
 
     def test_a_preview_does_not_write_a_probe_file_into_the_source(self):
-        with unittest.mock.patch.object(snap, "fs_clock_offset_ns", return_value=0) as offset:
+        with unittest.mock.patch.object(snap.payload_manifest, "fs_clock_offset_ns", return_value=0) as offset:
             rc, out, err = self.bare("--dry-run")
         self.assertEqual(rc, 0, out + err)
         offset.assert_not_called()
@@ -3426,7 +3426,7 @@ class PayloadRememberVerifyViewAndClockTests(_PayloadFixture):
             return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
 
         os.environ.pop("SEAFILE_STRICT_REFS", None)
-        with unittest.mock.patch.object(snap, "git", fake_git):
+        with unittest.mock.patch.object(snap.gitrun, "git", fake_git):
             snap._hashes_in_history("seafile://lib/x", None)
         self.assertEqual(seen, ["1"])
         self.assertNotIn("SEAFILE_STRICT_REFS", os.environ)
@@ -3434,9 +3434,9 @@ class PayloadRememberVerifyViewAndClockTests(_PayloadFixture):
     def test_a_failed_payload_restore_leaves_no_scratch_directory(self):
         self.assertEqual(self.bare()[0], 0)
         with unittest.mock.patch.object(
-            snap, "_download_verified", side_effect=snap.SnapshotError("boom")
-        ), unittest.mock.patch.object(snap, "_AUTO_UPPER", 8000), \
-                unittest.mock.patch.object(snap, "_AUTO_LOWER", 2000):
+            snap.payload_restore, "_download_verified", side_effect=snap.SnapshotError("boom")
+        ), unittest.mock.patch.object(snap.payload_upload, "_AUTO_UPPER", 8000), \
+                unittest.mock.patch.object(snap.payload_upload, "_AUTO_LOWER", 2000):
             rc, out, err, into = self.restore("scratch-gone")
         self.assertNotEqual(rc, 0)
         self.assertFalse((into / ".git" / "grs-restore").exists())
@@ -3496,7 +3496,7 @@ class PayloadRememberVerifyViewAndClockTests(_PayloadFixture):
             return 0, True
 
         out = io.StringIO()
-        with unittest.mock.patch.object(snap, "fs_clock_probe", unmeasurable), \
+        with unittest.mock.patch.object(snap.payload_manifest, "fs_clock_probe", unmeasurable), \
                 contextlib.redirect_stdout(out):
             snap._clock_offset_once_noted(git_dir, self.src)
             snap._clock_offset_once_noted(git_dir, self.src)
@@ -3566,7 +3566,7 @@ class PayloadRememberVerifyViewAndClockTests(_PayloadFixture):
         aged = str(int(time.time() - 8 * 86400))
         _git(self.vault, "config", "snapshot.payloadgcreport", aged)
         (self.src / "big1.bin").write_bytes(bytes(b ^ 0x01 for b in self.big1))
-        with unittest.mock.patch.object(snap, "payload_gc", side_effect=snap.SnapshotError("boom")):
+        with unittest.mock.patch.object(snap.payload_gc_run, "payload_gc", side_effect=snap.SnapshotError("boom")):
             rc, out, err = self.bare()
         self.assertEqual(rc, 0, out + err)
         self.assertIn("payload report skipped: boom", out)
@@ -3635,7 +3635,7 @@ class PayloadSkipChangingTests(_PayloadFixture):
         def check(source, rel, size, mtime_ns):
             return False if rel == name else real(source, rel, size, mtime_ns)
 
-        return unittest.mock.patch.object(snap, "_unchanged", check)
+        return unittest.mock.patch.object(snap.payload_upload, "_unchanged", check)
 
     def _manifest(self) -> dict:
         return json.loads(_git(self.vault, "show", "snapshot:.seafile-payload/manifest.json"))
@@ -3711,11 +3711,11 @@ class PayloadTuningTests(_PayloadFixture):
         self.addCleanup(unittest.mock.patch.stopall)
         for name, value in (("_AUTO_UPPER", 8000), ("_AUTO_LOWER", 2000),
                             ("_WHATIF_MIN_BYTES", 1000), ("_PROBE_BYTES", 65536)):
-            unittest.mock.patch.object(snap, name, value).start()
+            unittest.mock.patch.object(getattr(snap, snap._OWNER[name]), name, value).start()
         # Deflate far slower than any link the probe can measure on loopback, so the
         # break-even is below the floor however loaded the machine running the suite is
         # (at 20 MiB/s a busy runner's 5 MiB/s upload put it at 0.52, not 0.50).
-        unittest.mock.patch.object(snap, "measure_deflate_mibs", return_value=1.0).start()
+        unittest.mock.patch.object(snap.placement, "measure_deflate_mibs", return_value=1.0).start()
 
     def paid(self) -> set[str]:
         manifest = json.loads(_git(self.vault, "show", "snapshot:.seafile-payload/manifest.json"))
@@ -3726,7 +3726,7 @@ class PayloadTuningTests(_PayloadFixture):
 
     def no_probe(self):
         return unittest.mock.patch.object(
-            snap, "probe_link", side_effect=AssertionError("the link was probed"))
+            snap.placement, "probe_link", side_effect=AssertionError("the link was probed"))
 
     def test_the_cutoff_is_where_payload_and_git_take_equally_long_within_bounds(self):
         # fast link, slow deflate: payload wins at any ratio, so the floor
@@ -3819,7 +3819,7 @@ class PayloadTuningTests(_PayloadFixture):
         self.assertEqual([n for n in self.stored_names() if ".part-" in n], [])  # nothing uploaded
 
     def test_a_probe_that_fails_leaves_the_default_and_the_run_succeeds(self):
-        with unittest.mock.patch.object(snap, "probe_link", return_value=None):
+        with unittest.mock.patch.object(snap.placement, "probe_link", return_value=None):
             rc, out, err = self.bare()
         self.assertEqual(rc, 0, out + err)
         self.assertIn("could not measure the link", out)

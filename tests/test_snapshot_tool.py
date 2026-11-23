@@ -465,7 +465,7 @@ class SnapshotGuardTests(_SnapshotFixture):
             return real(git_dir, work_tree, args, **kwargs)
 
         self._nested_repo()
-        with unittest.mock.patch.object(snap, "git", spy):
+        with unittest.mock.patch.object(snap.gitrun, "git", spy):
             self.assertEqual(self.snapshot("--remote", self.remote)[0], 0)
             snap.fetch_remote_tip(self.vault / ".git", self.code, str(self.remote), BRANCH)
         by_command = {command: (status, measure) for command, status, measure in seen
@@ -852,7 +852,7 @@ class SnapshotGuardTests(_SnapshotFixture):
                 )
             return proc
 
-        with unittest.mock.patch.object(snap, "git", git_with_a_warning):
+        with unittest.mock.patch.object(snap.gitrun, "git", git_with_a_warning):
             rc, out, err = self.snapshot()
         self.assertEqual(rc, 1, out + err)
         self.assertIn("could not be read", err)
@@ -867,7 +867,7 @@ class SnapshotGuardTests(_SnapshotFixture):
             return real_run(cmd, *a, **kw)
 
         with unittest.mock.patch.dict(os.environ, {"LC_ALL": "de_DE.UTF-8"}):
-            with unittest.mock.patch.object(snap, "_run", spy):
+            with unittest.mock.patch.object(snap.gitrun, "_run", spy):
                 self.assertEqual(self.snapshot("--dry-run")[0], 0)
         gits = [e for e in seen if "GIT_LITERAL_PATHSPECS" in e]
         self.assertTrue(gits)
@@ -1329,7 +1329,7 @@ class PushRaceTests(_SnapshotFixture):
                 _git(self.remote, "update-ref", f"refs/heads/{BRANCH}", rival)
             return real_git(git_dir, work_tree, args, **kwargs)
 
-        with unittest.mock.patch.object(snap, "git", racing_git):
+        with unittest.mock.patch.object(snap.gitrun, "git", racing_git):
             rc, out, err = self.snapshot("--remote", str(self.remote))
         self.assertEqual(rc, 0, err)
         self.assertIn("re-parenting the snapshot and retrying", out)
@@ -1364,7 +1364,7 @@ class PushRaceTests(_SnapshotFixture):
                 return subprocess.CompletedProcess(args, 1, "", "error: transient failure\n")
             return real_git(git_dir, work_tree, args, **kwargs)
 
-        with unittest.mock.patch.object(snap, "git", push_that_fails_once):
+        with unittest.mock.patch.object(snap.gitrun, "git", push_that_fails_once):
             rc, out, err = self.snapshot("--remote", str(self.remote))
 
         self.assertEqual(rc, 1, out + err)
@@ -1389,7 +1389,7 @@ class PushRaceTests(_SnapshotFixture):
                 return subprocess.CompletedProcess(args, 1, "", "error: connection lost\n")
             return proc
 
-        with unittest.mock.patch.object(snap, "git", push_that_lands_then_fails):
+        with unittest.mock.patch.object(snap.gitrun, "git", push_that_lands_then_fails):
             rc, out, err = self.snapshot("--remote", str(self.remote))
         self.assertEqual(rc, 0, out + err)
         self.assertNotIn("re-parenting", out)
@@ -1419,7 +1419,7 @@ class PushRaceTests(_SnapshotFixture):
             raise snap.SnapshotError("network down")
 
         with unittest.mock.patch.object(
-            snap, "fetch_remote_tip", side_effect=fetch_that_dies_on_retry
+            snap.branches, "fetch_remote_tip", side_effect=fetch_that_dies_on_retry
         ):
             rc, _, err = self.snapshot("--remote", self.remote.as_uri())
 
@@ -2010,7 +2010,7 @@ class FirstRunExcludePromptTests(_SnapshotFixture):
             return subprocess.CompletedProcess(cmd, 0, "", "")
 
         env = {"SEAFILE_SNAPSHOT_STALL_LIMIT": "0.5"}
-        with unittest.mock.patch.dict(os.environ, env), unittest.mock.patch.object(snap, "_run", fake_run),                 unittest.mock.patch.object(snap, "_owner_set_git_timeout", lambda: False):
+        with unittest.mock.patch.dict(os.environ, env), unittest.mock.patch.object(snap.gitrun, "_run", fake_run),                 unittest.mock.patch.object(snap.gitrun, "_owner_set_git_timeout", lambda: False):
             os.environ.pop("SEAFILE_GIT_TIMEOUT", None)
             snap.git(self.vault / ".git", self.code, ["status"], cwd=self.code, check=False)
         self.assertEqual(seen.get("SEAFILE_GIT_TIMEOUT"), "1")
@@ -2219,7 +2219,7 @@ class StaleLockTests(_SnapshotFixture):
                 lock.write_text(f"{host} {os.getpid()}", encoding="utf-8")     # run A, now the holder
             return real(pid)
 
-        with unittest.mock.patch.object(snap, "pid_is_alive", first_run_reclaims_and_takes_the_lock):
+        with unittest.mock.patch.object(snap.lock, "pid_is_alive", first_run_reclaims_and_takes_the_lock):
             reclaimed = snap.VaultLock(self.vault / ".git")._reclaim_if_stale()
         self.assertFalse(reclaimed)
         self.assertEqual(lock.read_text(encoding="utf-8"), f"{host} {os.getpid()}")
@@ -2296,7 +2296,7 @@ class StaleLockTests(_SnapshotFixture):
         failing_kernel32.OpenProcess.return_value = None
         real_get_last_error = ctypes.get_last_error
         with unittest.mock.patch.object(
-            snap, "_win_kernel32", return_value=failing_kernel32
+            snap.lock, "_win_kernel32", return_value=failing_kernel32
         ):
             with unittest.mock.patch.object(
                 ctypes, "get_last_error", return_value=5
@@ -2428,7 +2428,7 @@ class RestoreVerificationTests(_SnapshotFixture):
     def test_a_restore_that_fails_after_the_clone_says_where_it_left_the_tree(self):
         """The retry used to stop with "destination is not empty" and no reason."""
         self.snapshot("--remote", str(self.remote))
-        with unittest.mock.patch.object(snap, "verify_restore", return_value=["README.md"]):
+        with unittest.mock.patch.object(snap.restore_run, "verify_restore", return_value=["README.md"]):
             rc, out, err = self.restore_to(self.restored)
         self.assertEqual(rc, 1, out + err)
         self.assertIn("left in", err)
@@ -2527,27 +2527,27 @@ class RestoreNameLimitTests(_SnapshotFixture):
 
     def test_the_rules_are_the_ones_the_volume_enforces(self):
         probed = snap.probed_name_problem
-        with unittest.mock.patch.object(snap, "_volume_keeps_name", self._fat32_like()):
+        with unittest.mock.patch.object(snap.restore_names, "_volume_keeps_name", self._fat32_like()):
             fat32 = probed(self.tmp)
         self.assertIsNotNone(fat32.__call__("a:b.txt"))
         self.assertIsNotNone(fat32("dir/trail "))
         self.assertIsNotNone(fat32("dot."))
         self.assertIsNone(fat32("Normal name.txt"))
         # exFAT on Linux keeps a trailing space but still refuses a colon and drops a dot.
-        with unittest.mock.patch.object(snap, "_volume_keeps_name", self._fat32_like(keep_space=True)):
+        with unittest.mock.patch.object(snap.restore_names, "_volume_keeps_name", self._fat32_like(keep_space=True)):
             exfat = probed(self.tmp)
         self.assertIsNone(exfat("trail "))
         self.assertIsNotNone(exfat("a:b"))
         # Debian mounts FAT with iocharset=ascii: café cannot be created at all.
         with unittest.mock.patch.object(
-            snap, "_volume_keeps_name", self._fat32_like(keep_space=True, keep_dot=True, keep_non_ascii=False)
+            snap.restore_names, "_volume_keeps_name", self._fat32_like(keep_space=True, keep_dot=True, keep_non_ascii=False)
         ):
             ascii_only = probed(self.tmp)
         self.assertIsNotNone(ascii_only("café.txt"))
         self.assertIsNone(ascii_only("cafe.txt"))
         # A volume that keeps all four has no rule at all: no extra git call, no listing.
         with unittest.mock.patch.object(
-            snap, "_volume_keeps_name",
+            snap.restore_names, "_volume_keeps_name",
             self._fat32_like(refuse_colon=False, keep_space=True, keep_dot=True, keep_non_ascii=True),
         ):
             self.assertIsNone(probed(self.tmp))
@@ -2558,12 +2558,12 @@ class RestoreNameLimitTests(_SnapshotFixture):
             return len(name.encode("utf-8")) <= 255
 
         thai = "ก" * 86
-        with unittest.mock.patch.object(snap, "_volume_keeps_name", ext4):
+        with unittest.mock.patch.object(snap.restore_names, "_volume_keeps_name", ext4):
             problem = snap.probed_name_problem(self.tmp)
         self.assertIsNotNone(problem)
         self.assertIsNotNone(problem(f"dir/{thai}.txt"))
         self.assertIsNone(problem("dir/" + "ก" * 80))
-        with unittest.mock.patch.object(snap, "_volume_keeps_name", lambda folder, name: True):
+        with unittest.mock.patch.object(snap.restore_names, "_volume_keeps_name", lambda folder, name: True):
             self.assertIsNone(snap.probed_name_problem(self.tmp))     # NTFS and APFS: no rule
 
     def test_the_probe_names_its_file_in_bytes(self):
@@ -2594,7 +2594,7 @@ class RestoreNameLimitTests(_SnapshotFixture):
         """ROADMAP Z44: a restore onto FAT from Linux or macOS stopped at git's first
         ``unable to create file a:b.txt`` and left half a tree."""
         self._vault_with_twin_names("ok.txt", "a:b.txt", "trail ")
-        with unittest.mock.patch.object(snap, "_volume_keeps_name", self._fat32_like()):
+        with unittest.mock.patch.object(snap.restore_names, "_volume_keeps_name", self._fat32_like()):
             rc, out, err = self.restore_to(self.restored)
         self.assertEqual(rc, 0, out + err)
         self.assertIn("have names this volume cannot hold", out)
@@ -2617,7 +2617,7 @@ class RestoreNameLimitTests(_SnapshotFixture):
         the listing the one that is missing (``d/x.txt``); only the exact spelling was removed
         from the defect list, so "report it" still printed beside the right warning."""
         names = ["D/x.txt", "d/x.txt", "plain.txt"]
-        with unittest.mock.patch.object(snap, "names_on_disk", return_value={"D/x.txt", "plain.txt"}),                 unittest.mock.patch.object(snap, "snapshot_file_names", return_value=names),                 contextlib.redirect_stdout(io.StringIO()) as said:
+        with unittest.mock.patch.object(snap.restore_names, "names_on_disk", return_value={"D/x.txt", "plain.txt"}),                 unittest.mock.patch.object(snap.restore_names, "snapshot_file_names", return_value=names),                 contextlib.redirect_stdout(io.StringIO()) as said:
             left = snap.report_names_not_restored_as_named(self.restored, "HEAD", set(), ["D/x.txt"])
         self.assertIn("share a name with another file", said.getvalue())
         self.assertEqual(left, [], "the twin that did land is a limit of the volume, not a defect")
@@ -2672,7 +2672,7 @@ class RestoreNameLimitTests(_SnapshotFixture):
         self._vault_with_twin_names("ok.txt", "trail ")
         _git(self.remote, "symbolic-ref", "HEAD", "refs/heads/not-the-snapshot-branch")
         patch = (contextlib.nullcontext() if os.name == "nt"
-                 else unittest.mock.patch.object(snap, "_volume_keeps_name", self._fat32_like()))
+                 else unittest.mock.patch.object(snap.restore_names, "_volume_keeps_name", self._fat32_like()))
         with patch:
             rc, out, err = self.restore_to(self.restored)
         self.assertEqual(rc, 0, out + err)
@@ -3114,7 +3114,7 @@ class DefaultsTests(_SnapshotFixture):
         # helper aborted with no credentials at all.  What is under test is the
         # derivation, not the fetch; the fetch is covered by the multi-machine
         # tests against a local remote.
-        with unittest.mock.patch.object(snap, "fetch_remote_tip", return_value=None):
+        with unittest.mock.patch.object(snap.branches, "fetch_remote_tip", return_value=None):
             rc, out, err = self.run_tool(
                 "--source", self.code, "--vault", self.vault, "--dry-run"
             )
@@ -3272,7 +3272,7 @@ class VaultMemoryTests(_SnapshotFixture):
         (self.code / "id_rsa").write_bytes(b"-----BEGIN OPENSSH PRIVATE KEY-----\n")
         (self.code / "bulk.dat").write_bytes(os.urandom(3 * 1024 * 1024))
         # A small "large tree" bar, so the profile is sampled again on this run.
-        with unittest.mock.patch.object(snap, "_PROFILE_MIN_TREE_BYTES", 1024):
+        with unittest.mock.patch.object(snap.profile, "_PROFILE_MIN_TREE_BYTES", 1024):
             rc, out, err = self.snapshot("--no-push", "--exclude", "src", "--branch", "side",
                                          "--no-record-mtimes", "--default-excludes")
         self.assertEqual(rc, 0, err)
@@ -3537,7 +3537,7 @@ class AutoRepackTests(_SnapshotFixture):
         self.assertGreater(before["count"], 0)
         # A tiny test repo's loose tier is under 1 KiB, which `count-objects`
         # reports as 0, so the gate has to be lowered to zero to open it.
-        with unittest.mock.patch.object(snap, "_REPACK_MIN_LOOSE_BYTES", 0):
+        with unittest.mock.patch.object(snap.profile, "_REPACK_MIN_LOOSE_BYTES", 0):
             snap.auto_incremental_repack(git_dir, self.code)
         after = snap._object_store_stats(git_dir, self.code)
         self.assertEqual(after["count"], 0)
@@ -3548,7 +3548,7 @@ class AutoRepackTests(_SnapshotFixture):
         self.assertEqual(rc, 0)
         git_dir = self.vault / ".git"
         before = snap._object_store_stats(git_dir, self.code)
-        with unittest.mock.patch.object(snap, "_REPACK_MIN_LOOSE_BYTES", 1 << 60):
+        with unittest.mock.patch.object(snap.profile, "_REPACK_MIN_LOOSE_BYTES", 1 << 60):
             snap.auto_incremental_repack(git_dir, self.code)
         after = snap._object_store_stats(git_dir, self.code)
         self.assertEqual(after["count"], before["count"])
@@ -3570,7 +3570,7 @@ class FreeSpaceGuardTests(unittest.TestCase):
             for i in range(3):
                 (src / f"raw{i}.bin").write_bytes(os.urandom(mib * 1024 * 1024))
             usage = shutil._ntuple_diskusage(total=free * 2, used=free, free=free)
-            with unittest.mock.patch.object(snap.shutil, "disk_usage", return_value=usage),                  unittest.mock.patch.object(snap, "_object_store_stats",
+            with unittest.mock.patch.object(snap.shutil, "disk_usage", return_value=usage),                  unittest.mock.patch.object(snap.profile, "_object_store_stats",
                                             return_value={"size": held_kib, "size-pack": 0}):
                 snap.check_free_space(pathlib.Path(td), pathlib.Path(td), src, [],
                                       vault_config or {}, allow_low_disk=allow)
@@ -3622,7 +3622,7 @@ class DryRunUsesTheRawProfileTests(unittest.TestCase):
 
     def test_choose_profile_dry_run_applies_it_and_writes_no_config(self):
         gib_tree = {"total": 4.0 * 1024 ** 3, "payload": 4.0 * 1024 ** 3, "sampled": 1e6, "ratio": 0.99}
-        with tempfile.TemporaryDirectory() as td,              unittest.mock.patch.dict(os.environ, {}, clear=False),              unittest.mock.patch.object(snap, "sample_payload", return_value=gib_tree),              contextlib.redirect_stdout(io.StringIO()):
+        with tempfile.TemporaryDirectory() as td,              unittest.mock.patch.dict(os.environ, {}, clear=False),              unittest.mock.patch.object(snap.profile, "sample_payload", return_value=gib_tree),              contextlib.redirect_stdout(io.StringIO()):
             for k in [k for k in os.environ if k.startswith("GIT_CONFIG_")]:
                 del os.environ[k]
             vault = pathlib.Path(td)
@@ -3683,7 +3683,7 @@ class StaleGitLockHintTests(unittest.TestCase):
             returncode=128, stdout="",
             stderr="fatal: Unable to create 'V/.git/index.lock': File exists.",
         )
-        with unittest.mock.patch.object(snap, "_run", return_value=proc):
+        with unittest.mock.patch.object(snap.gitrun, "_run", return_value=proc):
             with self.assertRaises(snap.SnapshotError) as ctx:
                 snap.git(pathlib.Path("V/.git"), None, ["add", "-A"], cwd=pathlib.Path("."))
         self.assertIn("left its lock behind", str(ctx.exception))
@@ -3696,7 +3696,7 @@ class StaleGitLockHintTests(unittest.TestCase):
             returncode=128, stdout="",
             stderr="fatal: confused by unstable object source data for cda6b24ab12",
         )
-        with unittest.mock.patch.object(snap, "_run", return_value=proc):
+        with unittest.mock.patch.object(snap.gitrun, "_run", return_value=proc):
             with self.assertRaises(snap.SnapshotError) as ctx:
                 snap.git(pathlib.Path("V/.git"), None, ["add", "-A"], cwd=pathlib.Path("."))
         message = str(ctx.exception)
@@ -3715,7 +3715,7 @@ class StaleGitLockHintTests(unittest.TestCase):
                 "fatal: adding files failed\n"
             ),
         )
-        with unittest.mock.patch.object(snap, "_run", return_value=proc):
+        with unittest.mock.patch.object(snap.gitrun, "_run", return_value=proc):
             with self.assertRaises(snap.SnapshotError) as ctx:
                 snap.git(pathlib.Path("V/.git"), None, ["add", "-A"], cwd=pathlib.Path("."))
         message = str(ctx.exception)
@@ -3736,7 +3736,7 @@ class ParallelStagingTests(_SnapshotFixture):
         super().setUp()
         for i in range(12):
             (self.code / f"f{i:02d}.txt").write_bytes(f"file {i}\n".encode() * 20)
-        patcher = unittest.mock.patch.object(snap, "_PREWRITE_MIN_FILES", 3)
+        patcher = unittest.mock.patch.object(snap.prewrite, "_PREWRITE_MIN_FILES", 3)
         patcher.start()
         self.addCleanup(patcher.stop)
 
@@ -3772,7 +3772,7 @@ class ParallelStagingTests(_SnapshotFixture):
                 expects.append(kw.get("expect_bytes"))
             return real(git_dir, work_tree, args, **kw)
 
-        with unittest.mock.patch.object(snap, "git", spy):
+        with unittest.mock.patch.object(snap.gitrun, "git", spy):
             rc, _, err = self._run_in(self.vault, "4")
         self.assertEqual(rc, 0, err)
         self.assertIn("parallel git processes", err)
@@ -3804,9 +3804,9 @@ class ParallelStagingTests(_SnapshotFixture):
                 # usual limit kept the test green, because max(usual, 3 x spent) is the
                 # usual one in a run this short (review 4f1cdd4, glm-5.3 G1.2).
                 raised = 98765.0
-                with unittest.mock.patch.object(snap, "git", spy), \
-                        unittest.mock.patch.object(snap, "_junction_filter", lambda _w: None), \
-                        unittest.mock.patch.object(snap, "stall_limit_after_prewrite",
+                with unittest.mock.patch.object(snap.gitrun, "git", spy), \
+                        unittest.mock.patch.object(snap.embedded, "_junction_filter", lambda _w: None), \
+                        unittest.mock.patch.object(snap.prewrite, "stall_limit_after_prewrite",
                                                    lambda _spent, raised=raised: raised):
                     rc, _, err = self._run_in(self.tmp / f"v-{route}", "4", *extra)
                 self.assertEqual(rc, 0, err)
@@ -3835,7 +3835,7 @@ class ParallelStagingTests(_SnapshotFixture):
                 calls.append(kw.get("stall_limit", snap._UNSET_STALL))
             return real(git_dir, work_tree, args, **kw)
 
-        with unittest.mock.patch.object(snap, "git", spy),                 unittest.mock.patch.object(snap, "_PREWRITE_MIN_FILES", 10 ** 6):
+        with unittest.mock.patch.object(snap.gitrun, "git", spy),                 unittest.mock.patch.object(snap.prewrite, "_PREWRITE_MIN_FILES", 10 ** 6):
             rc, _, err = self._run_in(self.vault, "4")
         self.assertEqual(rc, 0, err)
         self.assertIsInstance(calls[0], snap._UnsetStall)
@@ -3859,8 +3859,8 @@ class ParallelStagingTests(_SnapshotFixture):
         rc, _, err = self._run_in(self.tmp / "v-serial", "1")
         self.assertEqual(rc, 0, err)
         env = {"SEAFILE_SNAPSHOT_STAGE_WORKERS": ""}
-        with unittest.mock.patch.object(snap, "_PREWRITE_BATCH_FILES", 2):
-            with unittest.mock.patch.object(snap, "_RAMP_GAIN", 1000.0):
+        with unittest.mock.patch.object(snap.prewrite, "_PREWRITE_BATCH_FILES", 2):
+            with unittest.mock.patch.object(snap.climb, "_RAMP_GAIN", 1000.0):
                 with unittest.mock.patch.dict(os.environ, env):
                     rc, _, err = self.run_tool("--source", self.code, "--vault", self.tmp / "v-auto")
         self.assertEqual(rc, 0, err)
@@ -4005,7 +4005,7 @@ class IncrementalStagingTests(_SnapshotFixture):
                 lists.append({p for p in kw["stdin"].split("\0") if p})
             return real(git_dir, work_tree, args, **kw)
 
-        with unittest.mock.patch.object(snap, "git", spy):
+        with unittest.mock.patch.object(snap.gitrun, "git", spy):
             rc, _, err = self.snapshot(*self.EXCLUDE, *extra)
         return rc, err, lists
 
@@ -4160,7 +4160,7 @@ class IncrementalStagingTests(_SnapshotFixture):
                         shutil.rmtree(self.code / name)
                 (self.code / "d").mkdir()
                 (self.code / "d" / "x.txt").write_bytes(b"x\n")
-                with unittest.mock.patch.object(snap, "_INDEX_ROUTE_MIN_PATHS", threshold):
+                with unittest.mock.patch.object(snap.prewrite, "_INDEX_ROUTE_MIN_PATHS", threshold):
                     self.assertEqual(self.snapshot(*self.EXCLUDE)[0], 0)
                     os.rename(self.code / "d", self.code / "tmp_d")
                     os.rename(self.code / "tmp_d", self.code / "D")
@@ -4195,8 +4195,8 @@ class IncrementalStagingTests(_SnapshotFixture):
                 (self.code / "strasse" / "a.txt").write_bytes(b"a\n")
                 (self.code / "STRASSE.txt").write_bytes(b"T\n")
                 # The source probe would set the case rule back to the disk's own.
-                with unittest.mock.patch.object(snap, "_INDEX_ROUTE_MIN_PATHS", threshold), \
-                        unittest.mock.patch.object(snap, "_SOURCE_CASE_PROBE", False):
+                with unittest.mock.patch.object(snap.prewrite, "_INDEX_ROUTE_MIN_PATHS", threshold), \
+                        unittest.mock.patch.object(snap.vault_store, "_SOURCE_CASE_PROBE", False):
                     self.assertEqual(self.snapshot(*self.EXCLUDE)[0], 0)
                     _git(self.vault, "config", "core.ignorecase", "true")
                     (self.code / sharp).mkdir()
@@ -4249,7 +4249,7 @@ class IncrementalStagingTests(_SnapshotFixture):
                 # no global one.
                 _git(vault, "config", "user.email", "dev@example.com")
                 _git(vault, "config", "user.name", "Dev")
-                with unittest.mock.patch.object(snap, "_INDEX_ROUTE_MIN_PATHS", threshold):
+                with unittest.mock.patch.object(snap.prewrite, "_INDEX_ROUTE_MIN_PATHS", threshold):
                     rc, _, err = self.run_tool("--source", source, "--vault", vault)
                     self.assertEqual(rc, 0, err)
                     self.assertEqual(_git(vault, "config", "core.ignorecase").stdout.strip(), "false")
@@ -4269,7 +4269,7 @@ class IncrementalStagingTests(_SnapshotFixture):
                                          (None, "true", False)):
             with self.subTest(folds=folds, vault_rule=vault_rule):
                 _git(self.vault, "config", "core.ignorecase", vault_rule)
-                with unittest.mock.patch.object(snap, "source_folds_case", return_value=folds):
+                with unittest.mock.patch.object(snap.vault_store, "source_folds_case", return_value=folds):
                     rc, _, err = self.snapshot("--dry-run", *self.EXCLUDE)
                 self.assertEqual(rc, 0, err)
                 self.assertEqual("Note: A real run sets core.ignorecase" in err, noted, err)
@@ -4369,29 +4369,29 @@ class IncrementalStagingTests(_SnapshotFixture):
             return real(path)
         (self.code / "d").mkdir()
         (self.code / "d" / "new.txt").write_bytes(b"n")
-        with unittest.mock.patch.object(snap, "extended_path", recording):
+        with unittest.mock.patch.object(snap.payload_restore, "extended_path", recording):
             got = snap.spell_like_index(["D/new.txt"], ["d/x.txt"], self.code)
         self.assertEqual(got, ["d/new.txt"])
         self.assertTrue(any(str(p).endswith("new.txt") for p in seen), seen)
 
     #: Every plain stat, walk or scan the snapshot parts still make, with why it is not wrapped.
     #: A new call of the kinds below that is neither wrapped in ``extended_path`` nor listed here
-    #: fails ``test_no_part_stats_or_opens_a_source_path_in_its_plain_form`` (AA22, fable-G0.5).
+    #: fails ``test_no_module_stats_or_opens_a_source_path_in_its_plain_form`` (AA22, fable-G0.5).
     _PLAIN_PATH_CALLS = {
-        ("20_gitrun.py", "for dirpath, _dirnames, filenames in os.walk(path):"): "the vault's own folder",
-        ("20_gitrun.py", "total += os.stat(os.path.join(dirpath, name)).st_size"): "the vault's own folder",
-        ("30_vault.py", "with os.scandir(folder) as it:"): "the case probe near the source root (depth 64 entries)",
-        ("70_stage.py", "reserved = (work_tree / PAYLOAD_RESERVED_DIR).exists()"):
+        ("gitrun.py", "for dirpath, _dirnames, filenames in os.walk(path):"): "the vault's own folder",
+        ("gitrun.py", "total += os.stat(os.path.join(dirpath, name)).st_size"): "the vault's own folder",
+        ("vault_store.py", "with os.scandir(folder) as it:"): "the case probe near the source root (depth 64 entries)",
+        ("stage.py", "reserved = (work_tree / payload_upload.PAYLOAD_RESERVED_DIR).exists()"):
             "a fixed name directly under the tree root",
-        ("77_payload_restore.py", "yield from os.walk(root, onerror=onerror)"):
+        ("payload_restore.py", "yield from os.walk(root, onerror=onerror)"):
             "AA24: walk_long off Windows, where the path form does not matter",
-        ("77_payload_restore.py", "for dirpath, dirnames, filenames in os.walk(long_root, onerror=onerror):"):
+        ("payload_restore.py", "for dirpath, dirnames, filenames in os.walk(long_root, onerror=onerror):"):
             "AA24: walk_long itself walks the extended-length form",
-        ("74_payload_manifest.py", "return os.stat(name).st_mtime_ns"): "a probe file the tool just made in the vault",
-        ("94_first_run.py", "with os.scandir(stack.pop()) as entries:"): "AA24: an advisory size, not a capture",
+        ("payload_manifest.py", "return os.stat(name).st_mtime_ns"): "a probe file the tool just made in the vault",
+        ("first_run.py", "with os.scandir(stack.pop()) as entries:"): "AA24: an advisory size, not a capture",
     }
 
-    def test_no_part_stats_or_opens_a_source_path_in_its_plain_form(self):
+    def test_no_module_stats_or_opens_a_source_path_in_its_plain_form(self):
         """AA22: a plain ``os.lstat(source / rel)`` or ``open(work_tree / path)`` fails past 260
         characters on a Windows without LongPathsEnabled.  Not a list of sites (Z13, AA17 and AA22
         were each the previous round's sibling): (1) any ``lstat``/``stat``/``open`` whose first
@@ -4406,7 +4406,7 @@ class IncrementalStagingTests(_SnapshotFixture):
             # ``root.is_dir()`` of an embedded repository's root was the plain form twice).
             r"|\b(?:root|repo_root)\.(?:is_dir|is_file|exists|is_symlink|iterdir|read_bytes)\("
             r"|\((?:source|work_tree) / (?![\"'])[^)]*\)\.(?:is_dir|is_file|exists|is_symlink)\(")
-        parts = pathlib.Path(snap.__file__).resolve().parents[1] / "tools" / "_snapshot"
+        parts = pathlib.Path(snap.__file__).resolve().parent
         found, used = [], set()
         for part in sorted(parts.glob("*.py")):
             for number, line in enumerate(part.read_text(encoding="utf-8").splitlines(), 1):
@@ -4511,7 +4511,7 @@ class IncrementalStagingTests(_SnapshotFixture):
                 return subprocess.CompletedProcess(cmd, 0, b"b" * 40 + b"\n", b"")
             return subprocess.CompletedProcess(cmd, 0, b"a" * 40 + b"\n", b"")
 
-        with unittest.mock.patch.object(snap, "_run", fake):
+        with unittest.mock.patch.object(snap.gitrun, "_run", fake):
             result = snap.verify_restore(self.tmp, "HEAD")
         self.assertEqual(result, [])
         argv = [c for c in calls if "hash-object" in c and "--stdin-paths" not in c]
@@ -4533,7 +4533,7 @@ class IncrementalStagingTests(_SnapshotFixture):
         def recording(path):
             seen.append(path)
             return real(path)
-        with unittest.mock.patch.object(snap, "extended_path", recording):
+        with unittest.mock.patch.object(snap.payload_restore, "extended_path", recording):
             skipped = snap.payload_skip_matcher(self.code, [nfd])
             self.assertTrue(skipped(nfd))          # exact: no stat needed
             skipped(nfc)
@@ -4611,7 +4611,7 @@ class IncrementalStagingTests(_SnapshotFixture):
                 lists.append(args)
             return real(git_dir, work_tree, args, **kw)
 
-        with unittest.mock.patch.object(snap, "git", spy):
+        with unittest.mock.patch.object(snap.gitrun, "git", spy):
             rc, _, err = self.snapshot()
         self.assertEqual(rc, 0, err)
         self.assertEqual(lists, [["add", "-A", "-f", "."]])
@@ -4640,8 +4640,8 @@ class LongListStagingTests(_SnapshotFixture):
                     verbs.append(list(args))
             return real(git_dir, work_tree, args, **kw)
 
-        with unittest.mock.patch.object(snap, "_INDEX_ROUTE_MIN_PATHS", threshold):
-            with unittest.mock.patch.object(snap, "git", spy):
+        with unittest.mock.patch.object(snap.prewrite, "_INDEX_ROUTE_MIN_PATHS", threshold):
+            with unittest.mock.patch.object(snap.gitrun, "git", spy):
                 rc, _, err = self.run_tool("--source", self.code, "--vault", vault,
                                            *self.EXCLUDE, *extra)
         return rc, err, verbs
@@ -4688,7 +4688,7 @@ class LongListStagingTests(_SnapshotFixture):
         scratch file deleted in that time cost the run."""
         for threshold in (10 ** 9, 2):
             with self.subTest(threshold=threshold), unittest.mock.patch.object(
-                snap, "_INDEX_ROUTE_MIN_PATHS", threshold
+                snap.prewrite, "_INDEX_ROUTE_MIN_PATHS", threshold
             ):
                 commands, drop_first = snap.staging_commands(
                     ["README.md", "gone.txt", "also/gone.txt"], self.code)
@@ -4716,7 +4716,7 @@ class LongListStagingTests(_SnapshotFixture):
             os.unlink(self.code / ("f09.txt" if tracked else "fresh.txt"))
             return found + (["f09.txt"] if tracked else [])
 
-        with unittest.mock.patch.object(snap, "paths_to_stage", listed_then_deleted):
+        with unittest.mock.patch.object(snap.prewrite, "paths_to_stage", listed_then_deleted):
             rc, err, _ = self._run(vault, threshold)
         self.assertEqual(rc, 0, err)
         return _git(vault, "ls-tree", "-r", "--name-only", BRANCH).stdout.split()
@@ -4749,7 +4749,7 @@ class LongListStagingTests(_SnapshotFixture):
             self.assertEqual(self._run(vault, threshold)[0], 0)
             (self.code / "fresh.txt").write_bytes(b"fresh\n")
             with self.subTest(threshold=threshold), unittest.mock.patch.object(
-                snap, "paths_to_stage", listed_then_deleted
+                snap.prewrite, "paths_to_stage", listed_then_deleted
             ):
                 rc, err, verbs = self._run(vault, threshold)
             self.assertEqual(rc, 0, err)
@@ -4758,7 +4758,7 @@ class LongListStagingTests(_SnapshotFixture):
     def test_update_index_is_told_to_remove_what_vanishes_after_the_check(self):
         """The few milliseconds the lstat cannot cover: without ``--remove``
         update-index stops the run on a path that is gone."""
-        with unittest.mock.patch.object(snap, "_INDEX_ROUTE_MIN_PATHS", 1):
+        with unittest.mock.patch.object(snap.prewrite, "_INDEX_ROUTE_MIN_PATHS", 1):
             commands, _drop = snap.staging_commands(["README.md"], self.code)
         self.assertIn("--remove", commands[0][0])
 
@@ -4768,12 +4768,12 @@ class LongListStagingTests(_SnapshotFixture):
         it always did, and runs first."""
         (self.code / "was-a-file").mkdir()
         (self.code / "was-a-file" / "inside.txt").write_bytes(b"x\n")
-        with unittest.mock.patch.object(snap, "_INDEX_ROUTE_MIN_PATHS", 2):
+        with unittest.mock.patch.object(snap.prewrite, "_INDEX_ROUTE_MIN_PATHS", 2):
             commands, drop_first = snap.staging_commands(["README.md", "was-a-file"], self.code)
         self.assertEqual([(c[0][0], c[1]) for c in commands],
                          [("add", "was-a-file\0"), ("update-index", "README.md\0")])
         self.assertEqual(drop_first, [])
-        with unittest.mock.patch.object(snap, "_INDEX_ROUTE_MIN_PATHS", 10 ** 9):
+        with unittest.mock.patch.object(snap.prewrite, "_INDEX_ROUTE_MIN_PATHS", 10 ** 9):
             commands, _ = snap.staging_commands(["README.md", "was-a-file"], self.code)
         self.assertEqual([(c[0][0], c[1]) for c in commands], [("add", "README.md\0was-a-file\0")])
 
@@ -4862,9 +4862,9 @@ class LongListStagingTests(_SnapshotFixture):
                         "f04.txt\nfatal: Unable to process path f04.txt")
             return real(git_dir, work_tree, args, **kw)
 
-        with unittest.mock.patch.object(snap, "_READ_RETRY_PAUSE_SECONDS", 0.0):
-            with unittest.mock.patch.object(snap, "_INDEX_ROUTE_MIN_PATHS", 3):
-                with unittest.mock.patch.object(snap, "git", spy):
+        with unittest.mock.patch.object(snap.prewrite, "_READ_RETRY_PAUSE_SECONDS", 0.0):
+            with unittest.mock.patch.object(snap.prewrite, "_INDEX_ROUTE_MIN_PATHS", 3):
+                with unittest.mock.patch.object(snap.gitrun, "git", spy):
                     rc, _, err = self.run_tool("--source", self.code, "--vault", self.vault,
                                                *self.EXCLUDE)
         self.assertEqual(rc, 0, err)
@@ -4973,7 +4973,7 @@ class _RouteComparison(_SnapshotFixture):
         (self.code / "d" / "x.txt").write_bytes(b"x\n")
         (self.code / "d" / "e" / "y.txt").write_bytes(b"y\n")
         setup(self.code)
-        with unittest.mock.patch.object(snap, "_INDEX_ROUTE_MIN_PATHS", threshold):
+        with unittest.mock.patch.object(snap.prewrite, "_INDEX_ROUTE_MIN_PATHS", threshold):
             rc0, _, err0 = self.run_tool("--source", self.code, "--vault", vault,
                                          *self.EXCLUDE, "--no-push")
             mutate(self.code)
@@ -5167,7 +5167,7 @@ class ChangedWhileReadTests(_SnapshotFixture):
 
     def setUp(self):
         super().setUp()
-        patcher = unittest.mock.patch.object(snap, "_READ_RETRY_PAUSE_SECONDS", 0.0)
+        patcher = unittest.mock.patch.object(snap.prewrite, "_READ_RETRY_PAUSE_SECONDS", 0.0)
         patcher.start()
         self.addCleanup(patcher.stop)
 
@@ -5224,7 +5224,7 @@ class ChangedWhileReadTests(_SnapshotFixture):
                     raise snap.SnapshotError(self.SHORT)
             return real(git_dir, work_tree, args, **kw)
 
-        with unittest.mock.patch.object(snap, "git", spy):
+        with unittest.mock.patch.object(snap.gitrun, "git", spy):
             rc, _, err = self.snapshot()
         self.assertEqual(rc, 0, err)
         self.assertEqual(len(seen), 2)
@@ -5242,7 +5242,7 @@ class SilentInitFailureTests(unittest.TestCase):
     def setUp(self):
         self.tmp = pathlib.Path(tempfile.mkdtemp(prefix="grs-init-"))
         self.addCleanup(remove_tree, self.tmp)
-        patcher = unittest.mock.patch.object(snap, "_INIT_RETRY_SECONDS", 0.0)
+        patcher = unittest.mock.patch.object(snap.vault_store, "_INIT_RETRY_SECONDS", 0.0)
         patcher.start()
         self.addCleanup(patcher.stop)
 
@@ -5261,14 +5261,14 @@ class SilentInitFailureTests(unittest.TestCase):
 
     def test_a_silent_failure_is_tried_again_and_the_run_goes_on(self):
         run, calls = self._fail_first(1)
-        with unittest.mock.patch.object(snap, "_run", run):
+        with unittest.mock.patch.object(snap.gitrun, "_run", run):
             git_dir = snap.ensure_vault(self.tmp / "vault", BRANCH)
         self.assertTrue(git_dir.is_dir())
         self.assertEqual(len(calls), 2)
 
     def test_two_silent_failures_say_that_git_printed_nothing(self):
         run, calls = self._fail_first(2)
-        with unittest.mock.patch.object(snap, "_run", run):
+        with unittest.mock.patch.object(snap.gitrun, "_run", run):
             with self.assertRaises(snap.SnapshotError) as caught:
                 snap.ensure_vault(self.tmp / "vault", BRANCH)
         self.assertEqual(len(calls), 2)
@@ -5276,7 +5276,7 @@ class SilentInitFailureTests(unittest.TestCase):
 
     def test_a_failure_with_a_message_is_not_retried(self):
         run, calls = self._fail_first(5, stderr="fatal: cannot mkdir .git: Permission denied")
-        with unittest.mock.patch.object(snap, "_run", run):
+        with unittest.mock.patch.object(snap.gitrun, "_run", run):
             with self.assertRaises(snap.SnapshotError) as caught:
                 snap.ensure_vault(self.tmp / "vault", BRANCH)
         self.assertEqual(len(calls), 1)
@@ -5354,7 +5354,7 @@ class LargePayloadProfileTests(unittest.TestCase):
             src = self._tree(td, big_files=1, big_size=2 * 1024 * 1024)
             gib = 1024 ** 3
             forced = {"total": 5.0 * gib, "payload": 5.0 * gib, "sampled": 1e6, "ratio": 0.99}
-            with unittest.mock.patch.object(snap, "sample_payload", return_value=forced) as sampler, \
+            with unittest.mock.patch.object(snap.profile, "sample_payload", return_value=forced) as sampler, \
                     contextlib.redirect_stdout(io.StringIO()) as out:
                 snap.choose_profile(vault, git_dir, src, [], snap._read_local_config_map(vault), write=True)
                 self.assertIn("large raw payload detected", out.getvalue())
@@ -5368,7 +5368,7 @@ class LargePayloadProfileTests(unittest.TestCase):
             git_dir = snap.ensure_vault(vault, "main")
             subprocess.run(["git", "-C", str(vault), "config", "core.compression", "6"], check=True)
             src = self._tree(td)
-            with unittest.mock.patch.object(snap, "sample_payload") as sampler:
+            with unittest.mock.patch.object(snap.profile, "sample_payload") as sampler:
                 snap.choose_profile(vault, git_dir, src, [], snap._read_local_config_map(vault), write=True)
             sampler.assert_not_called()
             self.assertEqual(snap._config(vault, "core.compression"), "6")
@@ -5380,7 +5380,7 @@ class LargePayloadProfileTests(unittest.TestCase):
             src = self._tree(td)
             gib = 1024 ** 3
             forced = {"total": 5.0 * gib, "payload": 5.0 * gib, "sampled": 1e6, "ratio": 0.99}
-            with unittest.mock.patch.object(snap, "sample_payload", return_value=forced), \
+            with unittest.mock.patch.object(snap.profile, "sample_payload", return_value=forced), \
                     contextlib.redirect_stdout(io.StringIO()) as out:
                 snap.choose_profile(vault, git_dir, src, [], snap._read_local_config_map(vault), write=False)
             self.assertIn("dry run", out.getvalue())
@@ -5413,7 +5413,7 @@ class LargePayloadProfileTests(unittest.TestCase):
             src = self._tree(td)
             forced = {"total": 6.0 * gib, "payload": 6.0 * gib, "sampled": 1e6, "ratio": 0.99}
             cfg = snap._read_local_config_map(vault)
-            with unittest.mock.patch.object(snap, "sample_payload", return_value=forced), \
+            with unittest.mock.patch.object(snap.profile, "sample_payload", return_value=forced), \
                     contextlib.redirect_stdout(io.StringIO()):
                 snap.choose_profile(vault, git_dir, src, [], cfg, write=True)             # not doubled: final
                 self.assertEqual(snap._config(vault, "core.compression"), "")
@@ -5433,8 +5433,8 @@ class LargePayloadProfileTests(unittest.TestCase):
             src = self._tree(td)
             forced = {"total": 6.0 * gib, "payload": 6.0 * gib, "sampled": 1e6, "ratio": 0.99}
             cfg = snap._read_local_config_map(vault)
-            with unittest.mock.patch.object(snap, "_walk_sizes", return_value=[(6 * gib, "big.bin")]), \
-                    unittest.mock.patch.object(snap, "sample_payload", return_value=forced), \
+            with unittest.mock.patch.object(snap.profile, "_walk_sizes", return_value=[(6 * gib, "big.bin")]), \
+                    unittest.mock.patch.object(snap.profile, "sample_payload", return_value=forced), \
                     contextlib.redirect_stdout(io.StringIO()) as out:
                 snap.choose_profile(vault, git_dir, src, [], cfg, write=True)
             self.assertIn("large raw payload detected", out.getvalue())
@@ -5530,7 +5530,7 @@ class SyncedFolderGuardTests(_SnapshotFixture):
             return real(path)
 
         with unittest.mock.patch.object(
-            snap, "matched_synced_libraries", side_effect=recording
+            snap.guards, "matched_synced_libraries", side_effect=recording
         ):
             rc, _, err = self.snapshot()
         self.assertEqual(rc, 0, err)
@@ -5539,7 +5539,7 @@ class SyncedFolderGuardTests(_SnapshotFixture):
 
     def test_a_synced_vault_is_refused(self):
         with unittest.mock.patch.object(
-            snap,
+            snap.guards,
             "matched_synced_libraries",
             side_effect=lambda p: [self._lib()] if p == self.vault.resolve() else [],
         ):
@@ -5550,7 +5550,7 @@ class SyncedFolderGuardTests(_SnapshotFixture):
 
     def test_a_synced_source_is_refused(self):
         with unittest.mock.patch.object(
-            snap,
+            snap.guards,
             "matched_synced_libraries",
             side_effect=lambda p: [self._lib()] if p == self.code.resolve() else [],
         ):
@@ -5563,7 +5563,7 @@ class SyncedFolderGuardTests(_SnapshotFixture):
         # the guard lets it through -- but says so on stderr, because removing
         # the rule (or re-enabling auto sync) makes this refuse again.
         with unittest.mock.patch.object(
-            snap,
+            snap.guards,
             "matched_synced_libraries",
             side_effect=lambda p: [self._lib(rule="code/")] if p == self.code.resolve() else [],
         ):
@@ -5576,7 +5576,7 @@ class SyncedFolderGuardTests(_SnapshotFixture):
         # A per-library auto-sync disable is persisted in repo.db, so the daemon
         # un-watches that worktree and will not rewrite files under it.
         with unittest.mock.patch.object(
-            snap,
+            snap.guards,
             "matched_synced_libraries",
             side_effect=lambda p: [self._lib(auto_sync=False)] if p == self.code.resolve() else [],
         ):
@@ -5586,7 +5586,7 @@ class SyncedFolderGuardTests(_SnapshotFixture):
 
     def test_allow_synced_overrides_the_refusal(self):
         with unittest.mock.patch.object(
-            snap,
+            snap.guards,
             "matched_synced_libraries",
             side_effect=lambda p: [self._lib()] if p == self.code.resolve() else [],
         ):
@@ -5613,7 +5613,7 @@ class SyncedFolderGuardTests(_SnapshotFixture):
                 "could not check for Seafile-synced folders", err.getvalue()
             )
         with unittest.mock.patch.object(
-            snap, "matched_synced_libraries", return_value=[]
+            snap.guards, "matched_synced_libraries", return_value=[]
         ):
             rc, _, err = self.snapshot()
         self.assertEqual(rc, 0, err)
@@ -5621,7 +5621,7 @@ class SyncedFolderGuardTests(_SnapshotFixture):
     def test_a_synced_restore_destination_is_refused(self):
         self.snapshot("--remote", str(self.remote))
         with unittest.mock.patch.object(
-            snap, "matched_synced_libraries", return_value=[self._lib()]
+            snap.guards, "matched_synced_libraries", return_value=[self._lib()]
         ):
             rc, _, err = self.restore_to(self.restored)
         self.assertEqual(rc, 1)
@@ -5631,7 +5631,7 @@ class SyncedFolderGuardTests(_SnapshotFixture):
     def test_allow_synced_overrides_the_restore_destination_refusal(self):
         self.snapshot("--remote", str(self.remote))
         with unittest.mock.patch.object(
-            snap, "matched_synced_libraries", return_value=[self._lib()]
+            snap.guards, "matched_synced_libraries", return_value=[self._lib()]
         ):
             rc, _, err = self.restore_to(self.restored, "--allow-synced")
         self.assertEqual(rc, 0, err)
@@ -5922,7 +5922,7 @@ class StatusLineTests(unittest.TestCase):
     not on wall clock -- a slow-but-real run must survive, a dead disk must not."""
 
     def test_watchdog_prints_a_status_line_for_slow_commands(self):
-        with unittest.mock.patch.object(snap, "STATUS_INTERVAL", 0.15):
+        with unittest.mock.patch.object(snap.gitrun, "STATUS_INTERVAL", 0.15):
             err = io.StringIO()
             with contextlib.redirect_stderr(err):
                 proc = snap._run(
@@ -5950,7 +5950,7 @@ class StatusLineTests(unittest.TestCase):
                 "time.sleep(0.6)"
             )
             err = io.StringIO()
-            with unittest.mock.patch.object(snap, "STATUS_INTERVAL", 0.12), \
+            with unittest.mock.patch.object(snap.gitrun, "STATUS_INTERVAL", 0.12), \
                     contextlib.redirect_stderr(err):
                 snap._run(
                     [sys.executable, "-c", code],
@@ -5973,7 +5973,7 @@ class StatusLineTests(unittest.TestCase):
                 "time.sleep(0.6)"
             )
             err = io.StringIO()
-            with unittest.mock.patch.object(snap, "STATUS_INTERVAL", 0.12), \
+            with unittest.mock.patch.object(snap.gitrun, "STATUS_INTERVAL", 0.12), \
                     contextlib.redirect_stderr(err):
                 snap._run(
                     [sys.executable, "-c", code],
@@ -6009,8 +6009,8 @@ class StatusLineTests(unittest.TestCase):
         self.assertGreater(need, 0)
 
     def test_watchdog_kills_a_child_that_makes_no_progress(self):
-        with unittest.mock.patch.object(snap, "STATUS_INTERVAL", 0.1), \
-                unittest.mock.patch.object(snap, "STALL_LIMIT", 0.35):
+        with unittest.mock.patch.object(snap.gitrun, "STATUS_INTERVAL", 0.1), \
+                unittest.mock.patch.object(snap.gitrun, "STALL_LIMIT", 0.35):
             err = io.StringIO()
             with contextlib.redirect_stderr(err):
                 with self.assertRaises(snap.SnapshotError) as ctx:
@@ -6040,8 +6040,8 @@ class StatusLineTests(unittest.TestCase):
                 "    p.write_bytes(b'x' * 1000 * (i + 1))\n"
                 "    time.sleep(0.5)\n"
             )
-            with unittest.mock.patch.object(snap, "STATUS_INTERVAL", 0.1), \
-                    unittest.mock.patch.object(snap, "STALL_LIMIT", 2.0):
+            with unittest.mock.patch.object(snap.gitrun, "STATUS_INTERVAL", 0.1), \
+                    unittest.mock.patch.object(snap.gitrun, "STALL_LIMIT", 2.0):
                 proc = snap._run(
                     [sys.executable, "-c", code],
                     status="staging the tree",
@@ -6056,7 +6056,7 @@ class StatusLineTests(unittest.TestCase):
         # verification re-reads every file and writes nothing): the lines keep
         # coming, but however long the step takes it must not be killed.
         err = io.StringIO()
-        with unittest.mock.patch.object(snap, "STATUS_INTERVAL", 0.15), \
+        with unittest.mock.patch.object(snap.gitrun, "STATUS_INTERVAL", 0.15), \
                 contextlib.redirect_stderr(err):
             proc = snap._run(
                 [sys.executable, "-c", "import time; time.sleep(0.8)"],
@@ -6081,7 +6081,7 @@ class StatusLineTests(unittest.TestCase):
             "print(len(data))\n"
         )
         err = io.StringIO()
-        with unittest.mock.patch.object(snap, "STATUS_INTERVAL", 0.15), \
+        with unittest.mock.patch.object(snap.gitrun, "STATUS_INTERVAL", 0.15), \
                 contextlib.redirect_stderr(err):
             proc = snap._run(
                 [sys.executable, "-c", code],
@@ -6121,7 +6121,7 @@ class StatusLineTests(unittest.TestCase):
                 seen.update(kwargs)
             return subprocess.CompletedProcess(args, 0, "", "")
 
-        with unittest.mock.patch.object(snap, "git", fake_git), \
+        with unittest.mock.patch.object(snap.gitrun, "git", fake_git), \
                 contextlib.redirect_stdout(io.StringIO()):
             snap.push_snapshot(
                 pathlib.Path("v"), pathlib.Path("s"), "seafile://code/x", "snapshot",
@@ -6153,7 +6153,7 @@ class StatusLineTests(unittest.TestCase):
             captured["env"] = kwargs.get("env", {})
             return subprocess.CompletedProcess(cmd, 0, "", "")
 
-        with unittest.mock.patch.object(snap, "_run", fake_run),                 unittest.mock.patch.object(snap, "_owner_set_git_timeout", return_value=False):
+        with unittest.mock.patch.object(snap.gitrun, "_run", fake_run),                 unittest.mock.patch.object(snap.gitrun, "_owner_set_git_timeout", return_value=False):
             with unittest.mock.patch.dict(os.environ, {}, clear=False):
                 os.environ.pop("SEAFILE_GIT_TIMEOUT", None)
                 snap.git(pathlib.Path("v"), None, ["status"], cwd=pathlib.Path("."))
@@ -6165,7 +6165,7 @@ class StatusLineTests(unittest.TestCase):
             self.assertEqual(captured["env"]["SEAFILE_GIT_TIMEOUT"], "7200")
             # fable-G11.1 (AA43): the helper reads the variable before ``seafile.gittimeout``, so
             # injecting one lowered a machine owner's configured ceiling to the watchdog's.
-            with unittest.mock.patch.object(snap, "_owner_set_git_timeout", return_value=True),                     unittest.mock.patch.dict(os.environ, {}, clear=False):
+            with unittest.mock.patch.object(snap.gitrun, "_owner_set_git_timeout", return_value=True),                     unittest.mock.patch.dict(os.environ, {}, clear=False):
                 os.environ.pop("SEAFILE_GIT_TIMEOUT", None)
                 snap.git(pathlib.Path("v"), None, ["status"], cwd=pathlib.Path("."))
             self.assertNotIn("SEAFILE_GIT_TIMEOUT", captured["env"])
@@ -6372,7 +6372,7 @@ class ModificationTimeTests(_SnapshotFixture):
         (into / ".seafile-payload").mkdir(parents=True)
         record = {"format": 1, "files": {"a:b.txt": 1_500_000_000_000_000_000}}
         (into / ".seafile-payload" / "mtimes.json").write_text(json.dumps(record), encoding="utf-8")
-        with unittest.mock.patch.object(snap, "windows_name_problem", side_effect=AssertionError("asked")),                 unittest.mock.patch.object(snap.os, "name", "posix"):
+        with unittest.mock.patch.object(snap.payload_manifest, "windows_name_problem", side_effect=AssertionError("asked")),                 unittest.mock.patch.object(snap.os, "name", "posix"):
             applied, skipped = snap.apply_recorded_mtimes(into)       # no such file here: skipped, not refused
         self.assertEqual((applied, skipped), (0, 1))
 
@@ -6526,7 +6526,7 @@ class StatusTests(_SnapshotFixture):
                 )
             return proc
 
-        with unittest.mock.patch.object(snap, "git", git_with_a_warning):
+        with unittest.mock.patch.object(snap.gitrun, "git", git_with_a_warning):
             rc, out, err = self.status()
         self.assertEqual(rc, 0, out + err)
         self.assertIn("0 deleted", out)
@@ -6549,7 +6549,7 @@ class StatusTests(_SnapshotFixture):
         def behind(path: str, self_too: bool = False) -> bool:
             return path.startswith("link/") or (self_too and path == "link")
 
-        with unittest.mock.patch.object(snap, "_status_junction_filter", lambda _src: behind):
+        with unittest.mock.patch.object(snap.status, "_status_junction_filter", lambda _src: behind):
             rc, out, err = self.status()
         self.assertEqual(rc, 0, out + err)
         self.assertIn("changed since: 0 file(s), 0 new, 0 deleted", out)
@@ -6579,7 +6579,7 @@ class StatusTests(_SnapshotFixture):
         before = (self.code / "README.md").stat()
         (self.code / "README.md").write_bytes(b"a much longer line than before, same mtime\n")
         os.utime(self.code / "README.md", ns=(before.st_atime_ns, before.st_mtime_ns))
-        with unittest.mock.patch.object(snap, "_recorded_sizes", return_value={}):
+        with unittest.mock.patch.object(snap.mtimes, "_recorded_sizes", return_value={}):
             rc, out, err = self.status()
         self.assertEqual(rc, 0, out + err)
         self.assertIn("changed since: 0 file(s), 0 new, 0 deleted", out)
@@ -6631,19 +6631,19 @@ class StatusTests(_SnapshotFixture):
         # gemini-S2-5: apply_recorded_mtimes refused it; the two readers here did not.
         doc = json.dumps({"format": 2, "files": {"a.txt": 5}, "sizes": {"a.txt": 1}}).encode()
         done = subprocess.CompletedProcess([], 0, doc, b"")
-        with unittest.mock.patch.object(snap, "git", return_value=done):
+        with unittest.mock.patch.object(snap.gitrun, "git", return_value=done):
             self.assertEqual(snap._recorded_mtimes(self.vault / ".git", self.code, "HEAD"), {})
             self.assertEqual(snap._recorded_sizes(self.vault / ".git", self.code, "HEAD"), {})
             self.assertFalse(snap.has_usable_mtimes(self.vault / ".git", self.code, "HEAD"))
         good = subprocess.CompletedProcess([], 0, json.dumps({"format": 1, "files": {}}).encode(), b"")
-        with unittest.mock.patch.object(snap, "git", return_value=good):
+        with unittest.mock.patch.object(snap.gitrun, "git", return_value=good):
             self.assertTrue(snap.has_usable_mtimes(self.vault / ".git", self.code, "HEAD"))
 
     def test_a_record_of_no_files_still_counts_as_a_record(self):
         # gemini-S3-3: a tree of payload-only files has "files": {}, and a new file read as "uncomparable".
         self.assertEqual(self.snapshot("--no-push", "--record-mtimes")[0], 0)
         (self.code / "added.txt").write_bytes(b"new\n")
-        with unittest.mock.patch.object(snap, "_recorded_mtimes", return_value={}):
+        with unittest.mock.patch.object(snap.mtimes, "_recorded_mtimes", return_value={}):
             rc, out, err = self.status()
         self.assertEqual(rc, 0, out + err)
         self.assertNotIn("could not be compared", out)

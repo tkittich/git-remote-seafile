@@ -7,9 +7,9 @@ reviewed them itself over a dozen rounds: assume all three share blind spots. Ea
 (the last: Fable and Gemini on `134c8af`) read Part G0, the Pro paths from the code, the 429 handling
 and most of the helper, client and payload code; their findings are the rows of Part F. **What no
 reader has yet read, and where most of your time goes (ORDER OF WORK says how):**
-`git_remote_seafile/repair.py`, `diagnose.py`, `login.py`, `lfs_setup.py`; `tools/_snapshot/70_stage.py`
+`git_remote_seafile/repair.py`, `diagnose.py`, `login.py`, `lfs_setup.py`; `git_remote_seafile/snapshot/stage.py`
 line by line; `SNAPSHOT.md` sections 1-3 and 9-16; the settle paths in `lfs.py` and
-`tools/_snapshot/75_payload.py` (two copies of one rule: do they still agree?); and everything that
+`git_remote_seafile/snapshot/payload_upload.py` (two copies of one rule: do they still agree?); and everything that
 only happens on Seafile Professional. Two things this round cannot check and you should not claim
 to: Professional behaviour (no Pro server is available; `GRS_STUB_PRO=1` is the stub's model of it,
 measured on one 13.0.29 image) and any real-server answer (the container legs of `realserver.yml`
@@ -44,8 +44,8 @@ list of measured differences between the stub and a real server; a rule there th
 code or the tests do not keep is a finding), and `ROADMAP.md` §1 (known open items;
 §1.10 holds the dispositions of the last round, §1.9 those of the round before — the row
 IDs there, `Z1`, `Y4`, `B8`, are the ones this prompt uses).
-`git_remote_seafile/snapshot_tool.py` is the concatenation of `tools/_snapshot/NN_*.py`:
-review the parts, never the generated file.
+The snapshot tool is the package `git_remote_seafile/snapshot/` (modules, one per concern; before 0.11 it was a
+generated file built from parts, and an older report may name those parts).
 
 RULES FOR THE WHOLE REVIEW
 - **Several reviewers are working on this commit at the same time**, each a different
@@ -117,12 +117,9 @@ RULES FOR THE WHOLE REVIEW
   a local bare repository as `--remote`. `tools/measure_pathspec_cost.py`,
   `tools/gates.py --list` and `tools/release_check.py --offline` are safe to run. Do not
   point anything at a real vault.
-- `tools/build_snapshot.py` regenerates the tool if you edit a part — and `--check`
-  tells you whether the generated file is stale. The tests import the **generated**
-  `snapshot_tool.py`, so a mutation of a part (deleting a guard) tests nothing until you
-  run `python tools/build_snapshot.py`, and again after restoring it. Run mutations in a
-  copy of their own: a background mutation run rewrites the generated file under any
-  experiment that imports it from the same copy.
+- A mutation of a module (deleting a guard) is seen by the tests at once; there is nothing to rebuild.
+  Run mutations in a copy of their own (`tools/mutate_sweep.py` does), so a background run does not
+  change a file under another experiment.
 - The recorded dispositions are settled ground: Part F's table, §1.2's won't-do rows,
   `PAYLOAD.md` §6.1's "not changed, recorded" paragraphs, `SNAPSHOT.md` §15's
   non-goals and `DESIGN.md` §7. Re-reporting one requires showing that its stated
@@ -225,7 +222,7 @@ are done and which are not: a step you did not reach is not a step with no findi
 3. Part C (hostile server and input), including the unread files it touches.
 4. Part B (the helper), including `repair.py`, `diagnose.py`, `login.py` and `lfs_setup.py`, which
    no reader had covered before this round.
-5. Part E (the snapshot tool), including `tools/_snapshot/70_stage.py` read line by line.
+5. Part E (the snapshot tool), including `git_remote_seafile/snapshot/stage.py` read line by line.
 6. Part G0 (`v0.9.26..HEAD`): read each row, and run its mutation (the budget is below).
 7. Part G, the standing attack areas, in the order G1, G2, G6, G8, G4, then the rest.
 8. Part F: the rows from AA37 on and the open rows; a row that names several tests is mutated
@@ -281,12 +278,12 @@ test fail without it (`tools/mutate_check.py`), and the siblings. Attack in part
   create and the batch copy wait; an upload POST to the file host and the library create do not:
   say which could still fail on one 429 and whether that matters), `Content-Encoding` (AA42) and the
   token's scope as a path (`url.py`, AA52);
-- `walk_long` (`77_payload_restore.py`, AA24): the five source walks now run on the extended-length
+- `walk_long` (`payload_restore.py`, AA24): the five source walks now run on the extended-length
   form and hand back plain paths; find a caller that compares a yielded path with a plain one
   and gets a different answer, or a walk it was not applied to (`git grep -n 'os.walk\|scandir'
   tools/_snapshot`). It could only be tested on a machine with long paths on;
 - the advertised-refs record and a listed-but-unreadable ref (AA39, AA53), `packs.fetch_pack_artifact`'s
-  bounded fallback, `93_cli_args.py` (the parser moved out of `99_cli.py`: anything evaluated at
+  bounded fallback, `cli_args.py` (the parser moved out of `cli.py`: anything evaluated at
   import order?), usage errors exiting 2 (AA55, with `--json`), the retention mark a reused payload
   object clears (AA59).
 
@@ -324,7 +321,7 @@ regex over text miss or over-count: a dynamic import, a comment, a test that run
 process); `tools/release_check.py`; `MANIFEST.in` and its test; the CI images and what still floats.
 G6. FAT, exFAT and a restore destination (`SNAPSHOT.md` section 5 is the spec; every table row is a
 claim): `destination_name_problem` probes the folder with four names and applies only the rules it
-enforces (`91_restore_names.py`). Attack the probe: rules that differ by folder, a probe name that
+enforces (`restore_names.py`). Attack the probe: rules that differ by folder, a probe name that
 collides with a real file, an unwritable destination, a listing that fails halfway, Unicode that
 normalises on the way, a name that is a prefix of another. With a Linux box, restore onto a loop
 device (`CONTRIBUTING.md`, "Testing on FAT and exFAT") and say what you could not do.
@@ -405,9 +402,9 @@ missing?); or persist a setting that weakens a later run (the per-remote pack ca
 Skip anything that needs the attacker to control the user's machine already.
 
 PART E — code of the snapshot tool and payload mode (Phase 2)
-Scope: `tools/_snapshot/NN_*.py`, `tools/seafile_snapshot.py`, `tests/test_snapshot_*.py`. The tool
-is 33 parts and one session does not read them all by line: **read the parts the round sheet assigns
-you by line, and the others by function name** (`python tools/build_snapshot.py --check` lists them);
+Scope: `git_remote_seafile/snapshot/*.py`, `tools/seafile_snapshot.py`, `tests/test_snapshot_*.py`. The tool
+is 32 modules and one session does not read them all by line: **read the modules the round sheet assigns
+you by line, and the others by function name** (`wc -l git_remote_seafile/snapshot/*.py` lists them);
 with no assignment, take them newest first and say in the report which you reached.
 **Slices** (a round with several reviewers gives each one; a single reviewer takes them in this
 order, newest first inside a slice): S1 staging core: `20_gitrun`, `30_vault`, `40_profile`, `50_lock`,
@@ -464,7 +461,7 @@ an HDD or slow-link run) and on the questions no machine in reach could answer.
 | AA23, AA32, AA33 | 429 and retry handling: the ref walk's worker back-off, `Retry-After` capped at 10 s, a write or a POST never re-sent once it may have reached the server, `other=0` (no re-send after an SSL failure), a connection error that names its cause (`SeafileConnectionError`) | done with code and a test each (0.9.26). the rename, the delete, the folder create and the batch copy now wait out a 429 (the stub-level tests are `test_client_retry_cap.py`); an upload POST to the file host and a payload or snapshot worker's own throttle reading are not covered: say which can still fail on one 429, with the input | `test_client_retry_cap.py`: `TestAFolderCreateAndACopyAreSentAgainAfterAThrottle`; `test_realserver.py`: `test_a_listing_holds_every_subfolder_of_a_large_folder`; `test_refs_throttle.py` |
 | AA24 | Windows long-path walks with long paths off | done with code and a test on a machine with long paths ON: `walk_long` walks the extended-length form and hands back plain paths (the plain walk's failure was never shown here; the test shows the helper's contract). Try a walk it was not applied to, and a caller that compares its paths with plain ones | `test_snapshot_walk_long.py`: `TestWalkLong` |
 | AA27, AA31 | a dropped connection is a `SeafileAPIError`; the advertised-refs record of a linked worktree; the Pro owner refusal for `--payload-delete` before the history download | done with code and a test each; try a sibling | `test_client_connection_error.py`; `test_e2e_failed_nested_push.py`: `test_an_error_that_is_not_a_seafile_error_still_triggers_the_cleanup` |
-| AA34-AA36, AA31's rest | fable2 C1 (a body cut mid-stream), C3 (the pack fallback's bound), the surviving mutations, G0.3(b)(c) (the failed-write folder cleanup), `99_cli.py`'s size | done with code in the commits after `v0.9.26` (a test each, mutations KILLED); try a sibling: another streamed read, another `delete_entry` without a lease check (both pack cleanups of a push are fenced since AA37) | `test_client_retry_cap.py`: `test_a_long_retry_after_is_not_slept_through_and_is_said_once`; `test_e2e_failed_nested_push.py`: `test_an_error_that_is_not_a_seafile_error_still_triggers_the_cleanup`; `test_pack_split.py`: `test_a_name_the_remote_held_before_is_not_removed_by_a_refused_attempt` (+1 more: `git grep -n AA34 tests`) |
+| AA34-AA36, AA31's rest | fable2 C1 (a body cut mid-stream), C3 (the pack fallback's bound), the surviving mutations, G0.3(b)(c) (the failed-write folder cleanup), `cli.py`'s size | done with code in the commits after `v0.9.26` (a test each, mutations KILLED); try a sibling: another streamed read, another `delete_entry` without a lease check (both pack cleanups of a push are fenced since AA37) | `test_client_retry_cap.py`: `test_a_long_retry_after_is_not_slept_through_and_is_said_once`; `test_e2e_failed_nested_push.py`: `test_an_error_that_is_not_a_seafile_error_still_triggers_the_cleanup`; `test_pack_split.py`: `test_a_name_the_remote_held_before_is_not_removed_by_a_refused_attempt` (+1 more: `git grep -n AA34 tests`) |
 | AA37-AA49 | held packs (a held name is skipped), the lease fence of both own-upload cleanups, an unreadable known ref, the Content-Encoding refusal, the throttled `DELETE`, the payload and gc retention reports | done with code and a test each in the commits after `9fe723f`; review 134c8af found a regression in the first (AA50) | `test_e2e_stale_clone_pack.py`: `test_a_pack_the_remote_holds_is_not_sent_again`; `test_gc.py`: `TestAMergedPackNamedLikeAHeldOneIsNotUploadedOver`; `test_pack_split.py`: `test_a_pack_the_remote_already_holds_is_not_uploaded_again` (+8 more: `git grep -n AA37 tests`) |
 | AA50-AA59 | review 134c8af: a held pack verified by size (AA50), the LFS and payload settle races and a short LFS object (AA51), the token scope as a path, `http` never replacing `https`, IPv6 brackets, `:secret@` masking (AA52), a listed ref with a bad body and a vanished `refs/heads` (AA53), a non-ASCII case twin and a name over 255 bytes (AA54), the `--no-push` source, `_run_live`'s pipe, exit 2 and `--json` on a bad command line (AA55), small ones (AA56, AA57), a reused payload object clearing its retention mark (AA59) | done with code and a test each in the commits after `134c8af`; try a sibling of each: another place a size or a name is trusted without being read back, another URL parse that drops brackets or the scheme, another `fnmatch` or `casefold` that differs by platform, another stdout pipe read after the child exits | `test_e2e_stale_clone_pack.py`: `test_a_held_pack_at_another_size_is_uploaded_over_not_trusted`; `test_lfs.py`: `test_a_short_local_object_never_replaces_a_good_remote_one`; `test_url.py`: `test_an_ipv6_literal_keeps_its_brackets` |
 | S1 | an unpaged listing may be short | measured complete at 5,100 on CE and Pro; read the claim, and the assertion, adversarially | - (read only, declined or measured: no test) |

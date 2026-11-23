@@ -11,11 +11,8 @@ from __future__ import annotations
 
 import contextlib
 import io
-import os
 import pathlib
-import subprocess
 import sys
-import tempfile
 import unittest
 
 _ROOT = pathlib.Path(__file__).resolve().parent.parent
@@ -31,7 +28,6 @@ class TestGateList(unittest.TestCase):
             self.assertEqual(gates.main(["--list"]), 0)
         text = out.getvalue()
         for fragment in (
-            "build_snapshot.py",
             "-m ruff check .",
             "-m mypy",
             "--platform linux --python-version 3.11",
@@ -64,52 +60,6 @@ class TestFilterReachesTheSuiteOnly(unittest.TestCase):
         self.assertIn(" -k test_snapshot_payload", lines[-1], "-k must reach the suite step")
 
 
-class TestAStaleGeneratedFileIsNamed(unittest.TestCase):
-    """The build step rewrites snapshot_tool.py, so every later gate checks the
-    file on disk; CI checks the committed one (ROADMAP B7)."""
-
-    def _git(self, root, *args):
-        subprocess.run(
-            ["git", "-c", "user.email=t@t", "-c", "user.name=t", *args],
-            cwd=root, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        )
-
-    def test_a_rebuilt_file_that_differs_from_head_is_named_and_one_that_matches_is_not(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = pathlib.Path(tmp)
-            target = root / "git_remote_seafile" / "snapshot_tool.py"
-            target.parent.mkdir()
-            target.write_text("one" + chr(10), encoding="utf-8")
-            self._git(root, "init", "-q")
-            self._git(root, "add", "--", "git_remote_seafile/snapshot_tool.py")
-            self._git(root, "commit", "-qm", "c")
-            self.assertIsNone(gates.generated_differs_from_head(root))
-            target.write_text("two" + chr(10), encoding="utf-8")
-            note = gates.generated_differs_from_head(root)
-            self.assertIsNotNone(note)
-            self.assertIn("git_remote_seafile/snapshot_tool.py", note)
-            self.assertIn("commit it", note)
-
-    def test_no_repository_is_no_note(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            env_dir = os.environ.get("GIT_CEILING_DIRECTORIES")
-            os.environ["GIT_CEILING_DIRECTORIES"] = str(pathlib.Path(tmp).parent)
-            try:
-                self.assertIsNone(gates.generated_differs_from_head(pathlib.Path(tmp)))
-            finally:
-                if env_dir is None:
-                    os.environ.pop("GIT_CEILING_DIRECTORIES", None)
-                else:
-                    os.environ["GIT_CEILING_DIRECTORIES"] = env_dir
-
-    def test_the_check_follows_the_build_step(self):
-        # main() recognises the build step by its argv; a renamed step would
-        # silently drop the note.
-        label, command = gates.STEPS[0]
-        self.assertEqual(command[1:], [str(gates._ROOT / "tools" / "build_snapshot.py")], label)
-
-
-
 class TestTheChangedMap(unittest.TestCase):
     """``--changed``: a mistake in the map may cost time, never coverage."""
 
@@ -131,7 +81,7 @@ class TestTheChangedMap(unittest.TestCase):
         self.assertIn("test_e2e", got)
         self.assertIn("test_message_style", got)
         self.assertNotIn("test_snapshot_payload", got)
-        snap = gates.suite_for_changes(["tools/_snapshot/76_payload_gc.py"])
+        snap = gates.suite_for_changes(["git_remote_seafile/snapshot/payload_gc_run.py"])
         self.assertIn("test_snapshot_payload", snap)
         self.assertNotIn("test_lfs", snap)
         self.assertEqual(gates.suite_for_changes(["tests/test_url.py"]),
@@ -158,12 +108,12 @@ class TestTheChangedMap(unittest.TestCase):
         for stem in gates._SHARED_STEMS:
             self.assertTrue((gates._ROOT / "git_remote_seafile" / f"{stem}.py").exists(), stem)
 
-    def test_a_test_that_reads_the_snapshot_parts_by_path_runs_when_they_change(self):
-        """Gemini G0.2 (review 9fe723f): ``test_client`` globs ``tools/_snapshot`` and
-        ``test_git_util`` loads ``snapshot_tool.py`` by path; the import scan cannot see either."""
+    def test_a_test_that_reads_the_snapshot_modules_by_path_runs_when_they_change(self):
+        """Gemini G0.2 (review 9fe723f): ``test_client`` globs the snapshot package's folder by path;
+        the import scan cannot see that."""
         import re
 
-        reads = re.compile(r"\"_snapshot\"|snapshot_tool\.py|tools/_snapshot")
+        reads = re.compile(r"/ \"snapshot\"|git_remote_seafile/snapshot/")
         covered = set(gates._SNAPSHOT_TESTS) | set(gates._ALWAYS)
         missed = [
             test.stem for test in sorted((gates._ROOT / "tests").glob("test_*.py"))
@@ -171,7 +121,7 @@ class TestTheChangedMap(unittest.TestCase):
             and test.stem not in covered
         ]
         self.assertEqual(missed, [], "add these to _SNAPSHOT_TESTS")
-        self.assertIn("test_client", gates.suite_for_changes(["tools/_snapshot/75_payload.py"]) or [])
+        self.assertIn("test_client", gates.suite_for_changes(["git_remote_seafile/snapshot/payload_upload.py"]) or [])
 
     def test_a_helper_side_change_runs_the_snapshot_tests_that_drive_the_helper(self):
         """fable-G5.1 (review 134c8af): ``test_snapshot_tool`` and ``test_snapshot_payload`` push,

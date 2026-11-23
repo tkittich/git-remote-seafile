@@ -1013,7 +1013,7 @@ def _cmd_desktop_url(rest: list[str]) -> int:
 
 def _cmd_snapshot(rest: list[str]) -> int:
     # Imported here: the snapshot tool is large and a `git push` never needs it.
-    from .snapshot_tool import main as snapshot_main
+    from .snapshot.cli import main as snapshot_main
     try:
         return int(snapshot_main(rest))
     except SystemExit as exc:  # argparse: --help, or a usage error

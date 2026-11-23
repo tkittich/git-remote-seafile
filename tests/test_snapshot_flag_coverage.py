@@ -22,8 +22,8 @@ sys.path.insert(0, str(_ROOT / "tools"))
 
 import seafile_snapshot as snap  # noqa: E402
 
-#: The parts that decide which options a mode refuses.
-VALIDATION_PARTS = ("96_cli_checks", "82_status", "76_payload_gc", "78_payload_cli", "79_payload_view", "73_mtimes")
+#: The modules that decide which options a mode refuses.
+VALIDATION_PARTS = ("cli_checks", "status", "payload_gc_run", "payload_cli", "payload_view_run", "mtimes")
 
 APPLIES_TO_EVERY_MODE = {
     "json": "the run report (SNAPSHOT.md, exit codes): every mode prints one",
@@ -49,7 +49,7 @@ def _dests() -> list[str]:
 class TestEveryOptionIsAccountedFor(unittest.TestCase):
     def test_an_option_no_validation_mentions_is_declared_to_apply_everywhere(self):
         text = "".join(
-            (_ROOT / "tools" / "_snapshot" / f"{part}.py").read_text(encoding="utf-8") for part in VALIDATION_PARTS
+            (_ROOT / "git_remote_seafile" / "snapshot" / f"{part}.py").read_text(encoding="utf-8") for part in VALIDATION_PARTS
         )
         dests = _dests()
         self.assertGreater(len(dests), 40, "the parser was not found")

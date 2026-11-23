@@ -1,0 +1,724 @@
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import re
+import stat
+import threading
+import time
+import zlib
+from pathlib import Path
+from typing import Any
+
+from . import common
+from . import gitrun
+from . import profile
+from . import climb
+from . import payload_guards
+from . import payload_manifest
+
+
+# -- Payload mode --------------------------------------------------------------
+#
+# Large immutable files do not go through git at all.  Each one is stream-hashed
+# (SHA-256) and stored on the server *by its hash*:
+#
+#     <path>/payload/objects/<first two hex>/<sha256>
+#
+# inside the vault's own remote directory (the helper ignores what it does not
+# know; measured against its push, clone, doctor, gc --tail and gc).  The vault
+# commit carries a *manifest* -- path, mode, size, SHA-256, mtime -- so git keeps
+# what git is good at (the file list, the checksums, the history of both) and
+# Seafile keeps what Seafile is good at (big files, shared blocks).
+#
+# Why by hash: an object is never replaced by different bytes, so a snapshot is
+# just a manifest and costs nothing to keep; a rename or a duplicate uploads
+# nothing; concurrent writers cannot conflict (the same name always has the same
+# content); and what the server holds depends on no file name, so the server's
+# name rules (NFC, ``"`` -> ``%22``, 255 bytes) never apply.
+#
+# What makes "the same name always has the same content" true is that an object
+# is written under a temporary name, hashed *as it is sent*, and renamed to its
+# hash only when the bytes that went out are the bytes the name promises.
+#
+# Specification, requirements and the review that shaped this: PAYLOAD.md.
+
+#: Where the manifest lives inside the snapshot tree.  The directory is reserved:
+#: nothing under it is ever staged from the source.
+PAYLOAD_RESERVED_DIR = ".seafile-payload"
+PAYLOAD_MANIFEST = PAYLOAD_RESERVED_DIR + "/manifest.json"
+PAYLOAD_README = PAYLOAD_RESERVED_DIR + "/README.txt"
+PAYLOAD_FORMAT = 2
+_PAYLOAD_HASH_BLOCK = 8 * 1024 * 1024
+#: A cached hash is trusted only if the file's mtime is at least this much older
+#: than the moment *this machine* hashed it (git's "racily clean" rule): a
+#: same-size edit inside the timestamp granularity would otherwise look untouched.
+_RACY_WINDOW_NS = 2_000_000_000
+_CACHE_NAME = "payload-cache.json"
+#: Objects are uploaded under ``<sha>.part-<token>`` and renamed; retention
+#: collects an interrupted run's temporaries through its two phases (D9).
+_PART_SUFFIX = ".part-"
+#: The ``auto`` selection rule (PAYLOAD.md D1): a file is payload when it is at
+#: least ``_AUTO_UPPER`` bytes, or at least ``_AUTO_LOWER`` bytes *and* a sample
+#: of it does not compress.
+_AUTO_UPPER = 64 * 1024 ** 2
+_AUTO_LOWER = 4 * 1024 ** 2
+_AUTO_INCOMPRESSIBLE = 0.9
+_AUTO_SAMPLE_CHUNK = 256 * 1024
+#: Seconds between progress lines while objects upload (an upload of a large tree
+#: runs for an hour, and a line per file says nothing about how much is left).
+_PULSE_SECONDS = 60.0
+#: Seconds between saves of the hash cache while a tree is hashed: what a killed pass
+#: loses is at most this much work.
+_CHECKPOINT_SECONDS = 60.0
+_SIZE_RE = re.compile(r"^\s*(\d+)\s*([kmgt]?)(?:i?b)?\s*$", re.IGNORECASE)
+_SIZE_UNITS = {"": 1, "k": 1024, "m": 1024 ** 2, "g": 1024 ** 3, "t": 1024 ** 4}
+_SHA256_RE = re.compile(r"[0-9a-f]{64}")
+_WIN_RESERVED = re.compile(r"^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$", re.IGNORECASE)
+_MAX_MTIME_NS = 2 ** 62
+
+
+def payload_mtime(ns: int) -> int:
+    """A file's mtime as the manifest may hold it: 0 up to ``_MAX_MTIME_NS - 1``.
+
+    A time before 1970 or past 2**62 ns is real on a disk, but the manifest's shape check refuses it:
+    written as it was, the vault commit was made and the pre-push check then failed on it on every
+    run (review c305b0a, gemini-S2-1).  Every comparison of a stat with a manifest entry clamps too.
+    """
+    return min(max(ns, 0), _MAX_MTIME_NS - 1)
+
+#: ``(size, mtime_ns, mode, inode, device, ctime_ns)`` for one candidate payload file.
+Candidate = tuple[int, int, str, int, int, int]
+
+
+def parse_size(text: str) -> int:
+    """``"64M"``, ``"1g"``, ``"500k"`` or ``"1048576"`` as a byte count (0 = off).
+
+    Whole numbers only: ``-1`` would select every file (empty ones too) and
+    ``0.5`` would read as "off" without saying so.
+    """
+    match = _SIZE_RE.match(text)
+    if not match:
+        raise common.SnapshotError(
+            f"not a size: {text!r} (examples: 64M, 1G, 500k, 1048576, or auto). A bare "
+            "--payload-min-size takes the next argument as its value: put SOURCE first, "
+            "or write --payload-min-size=auto"
+        )
+    return int(match.group(1)) * _SIZE_UNITS[match.group(2).lower()]
+
+
+def payload_location(remote: str) -> tuple[str, str, str | None]:
+    """``(library, payload_dir, server_url)`` for a vault remote URL."""
+    from git_remote_seafile.url import parse_seafile_url
+
+    try:
+        parsed = parse_seafile_url(remote)
+    except ValueError as exc:
+        raise common.SnapshotError(f"payload mode needs a seafile:// remote: {exc}") from None
+    return parsed.library_name, parsed.repo_path.rstrip("/") + "/payload", parsed.server_url
+
+
+def object_dir(sha: str) -> str:
+    return f"objects/{sha[:2]}"
+
+
+def _open_client(server_url: str | None) -> Any:
+    try:
+        from git_remote_seafile.client import SeafileClient
+    except ImportError as exc:  # pragma: no cover - environment problem
+        raise common.SnapshotError(f"payload mode needs the git_remote_seafile package: {exc}") from None
+    return SeafileClient(server_url=server_url)
+
+
+def _api(call: Any, what: str) -> Any:
+    """Run a server call, turning transport and API errors into a snapshot error."""
+    try:
+        return call()
+    except common.SnapshotError:
+        raise
+    except Exception as exc:  # SeafileAPIError, requests errors, JSON errors
+        raise common.SnapshotError(f"{what} failed: {type(exc).__name__}: {exc}") from None
+
+
+def _sha256_file(
+    path: Path, meter: "climb._ByteMeter | None" = None, cancel: "threading.Event | None" = None
+) -> str:
+    """SHA-256 of *path*.  *meter* counts the bytes as they are read (the search for
+    how many files to hash at once reads it); *cancel*, once set, stops the read
+    between blocks so a run that has already failed does not finish a 100 GiB file."""
+    from . import payload_restore
+    digest = hashlib.sha256()
+    try:
+        with open(payload_restore.extended_path(path), "rb") as fh:
+            while True:
+                if cancel is not None and cancel.is_set():
+                    raise common.SnapshotError(f"hashing of {path} was stopped")
+                block = fh.read(_PAYLOAD_HASH_BLOCK)
+                if not block:
+                    break
+                digest.update(block)
+                if meter is not None:
+                    meter.add(len(block))
+    except OSError as exc:
+        # A file another process holds open exclusively (a database, a GIS
+        # project on Windows) cannot be read; a backup that skipped it quietly
+        # would be worse than one that stops and says which.
+        raise common.SnapshotError(f"cannot read {path}: {exc}") from None
+    return digest.hexdigest()
+
+
+class _HashingFile:
+    """A read-only file object that hashes the bytes handed to the uploader.
+
+    The uploader reads the file itself, possibly in chunks and possibly twice
+    (a retried chunk seeks back).  Only a *forward-contiguous* first read is
+    hashed, so the digest is that of the bytes the server received, in order.
+    ``complete`` says whether every byte passed through.
+    """
+
+    def __init__(self, fh: Any, size: int, meter: "climb._ByteMeter | None" = None) -> None:
+        self._fh = fh
+        self._size = size
+        self._meter = meter
+        self._hash = hashlib.sha256()
+        self._hashed = 0
+        #: True once any byte was read a second time (a retried chunk).  The
+        #: digest then describes the *first* attempt, not what the server kept.
+        self.rewound = False
+
+    def read(self, size: int = -1) -> bytes:
+        at = self._fh.tell()
+        data = self._fh.read(size)
+        if data and self._meter is not None:
+            self._meter.add(len(data))
+        if data and at < self._hashed:
+            self.rewound = True
+        if data and at == self._hashed:
+            self._hash.update(data)
+            self._hashed += len(data)
+        return data
+
+    def seek(self, offset: int, whence: int = 0) -> int:
+        return int(self._fh.seek(offset, whence))
+
+    def tell(self) -> int:
+        return int(self._fh.tell())
+
+    @property
+    def complete(self) -> bool:
+        return self._hashed == self._size
+
+    def hexdigest(self) -> str:
+        return self._hash.hexdigest()
+
+
+def _sample_ratio(path: Path, size: int) -> float | None:
+    """Compressed / raw over three 256 KiB chunks of *path* under a fast deflate.
+
+    ``None`` when nothing could be read: unreadable here is unreadable later, and
+    git reports it.  Incompressible data comes out a little *above* 1 (stored
+    blocks cost bytes), up to about 1.06.
+    """
+    from . import payload_restore
+    raw = comp = 0
+    try:
+        with open(payload_restore.extended_path(path), "rb") as fh:
+            for offset in sorted({0, max(0, size // 2 - _AUTO_SAMPLE_CHUNK // 2),
+                                  max(0, size - _AUTO_SAMPLE_CHUNK)}):
+                fh.seek(offset)
+                chunk = fh.read(_AUTO_SAMPLE_CHUNK)
+                raw += len(chunk)
+                comp += len(zlib.compress(chunk, 1))
+    except OSError:
+        return None
+    return comp / raw if raw > 0 else None
+
+
+def _incompressible(path: Path, size: int, ratio: float = _AUTO_INCOMPRESSIBLE) -> bool:
+    """Whether a sample of *path* keeps at least *ratio* of its size under deflate
+    (``--payload-auto-ratio``; 0.9 unless tuned)."""
+    measured = _sample_ratio(path, size)
+    return measured is not None and measured >= ratio
+
+
+def new_survey() -> dict[str, Any]:
+    """An empty record for :func:`find_payload_files`: ``small`` and ``big`` are
+    ``[count, bytes]``; ``mid`` is ``(size, sample ratio, path)`` per 4-64 MiB file."""
+    return {"small": [0, 0], "big": [0, 0], "mid": []}
+
+
+_CLOUD_PLACEHOLDER_ATTRS = 0x1000 | 0x400000  # OFFLINE | RECALL_ON_DATA_ACCESS
+
+
+def find_payload_files(
+    source: Path, excludes: list[str], min_size: int, auto: bool = False,
+    ratio: float = _AUTO_INCOMPRESSIBLE, survey: dict[str, Any] | None = None,
+    sampled: dict[str, float] | None = None,
+) -> dict[str, Candidate]:
+    """``{relative path: (size, mtime_ns, mode, inode)}`` for every payload file.
+
+    A payload file is a *regular* file that no ``--exclude`` removes and that the
+    rule selects: size alone (``size >= min_size``), or with *auto* the rule in
+    PAYLOAD.md D1.  Symlinks stay with git (they are a few bytes and git stores
+    them exactly), as does everything the rule leaves out.  A Windows cloud
+    placeholder (OneDrive "files on demand") is refused by name: reading it would
+    download it.
+
+    With *auto* and a *survey* (see :func:`new_survey`) it also records what the
+    rule saw -- the files under the floor and the sample of every file in the
+    4-64 MiB band, not only those it kept -- so the placement report and its
+    what-if cost no second pass over the tree.
+    """
+    from . import payload_restore
+    found: dict[str, Candidate] = {}
+    placeholders: list[str] = []
+    floor = _AUTO_LOWER if auto else min_size
+    for size, rel in profile._walk_sizes(source, excludes):
+        if rel == PAYLOAD_RESERVED_DIR or rel.startswith(PAYLOAD_RESERVED_DIR + "/"):
+            continue
+        try:
+            st = os.lstat(payload_restore.extended_path(source / rel))
+        except OSError:
+            continue
+        if not stat.S_ISREG(st.st_mode):
+            continue
+        if getattr(st, "st_file_attributes", 0) & _CLOUD_PLACEHOLDER_ATTRS:
+            # Before the size floor (ROADMAP S4): a placeholder below the
+            # floor used to fall through to `git add`, which hydrates it (or
+            # fails) on a tree whose operator was told placeholders are
+            # refused.  One extra lstat per file -- the walk already did one.
+            placeholders.append(rel)
+            continue
+        if size < floor:
+            if survey is not None and auto:
+                survey["small"][0] += 1
+                survey["small"][1] += size
+            continue
+        if auto and size < _AUTO_UPPER:
+            # *sampled* carries an earlier pass's ratios, so choosing a new cut-off
+            # does not read the band again.
+            measured = sampled[rel] if sampled and rel in sampled else _sample_ratio(source / rel, size)
+            if survey is not None and measured is not None:
+                survey["mid"].append((size, measured, rel))
+            if measured is None or measured < ratio:
+                continue
+        if survey is not None and auto and size >= _AUTO_UPPER:
+            survey["big"][0] += 1
+            survey["big"][1] += size
+        mode = "100755" if st.st_mode & stat.S_IXUSR else "100644"
+        found[rel] = (st.st_size, payload_mtime(st.st_mtime_ns), mode, st.st_ino, st.st_dev,
+                      payload_guards.change_time_ns(source / rel, st))
+    if placeholders:
+        shown = ", ".join(placeholders[:5]) + (" ..." if len(placeholders) > 5 else "")
+        raise common.SnapshotError(
+            f"{len(placeholders)} payload file(s) are cloud placeholders (not stored locally), "
+            f"and reading them would download them: {shown}. Make them available offline, "
+            "or --exclude them"
+        )
+    return found
+
+
+# -- the server side -----------------------------------------------------------
+
+
+def _remote_objects(client: Any, rid: str, base: str, shas: set[str]) -> dict[str, int]:
+    """``{sha: size}`` of the objects among *shas* the server already holds.
+
+    Lists only the fan-out directories those hashes fall in (at most 256).
+    """
+    held: dict[str, int] = {}
+    for prefix in sorted({sha[:2] for sha in shas}):
+        entries = _api(
+            lambda p=prefix: client.list_dir(rid, f"{base}/objects/{p}"),
+            f"listing {base}/objects/{prefix}",
+        )
+        for entry in entries:
+            name = entry.get("name")
+            if isinstance(name, str) and name in shas and entry.get("type") != "dir":
+                size = entry.get("size", -1)
+                held[name] = size if isinstance(size, int) and not isinstance(size, bool) else -1
+    return held
+
+
+def _unchanged(source: Path, rel: str, size: int, mtime_ns: int) -> bool:
+    from . import payload_restore
+    try:
+        st = os.lstat(payload_restore.extended_path(source / rel))
+    except OSError:
+        return False
+    return st.st_size == size and payload_mtime(st.st_mtime_ns) == mtime_ns
+
+
+def _commit_object(
+    client: Any, rid: str, directory: str, temp: str, sha: str, size: int
+) -> bool:
+    """Give the verified temporary file its hash name.
+
+    The server's rename is *create-or-duplicate*: on a taken name it answers
+    success and leaves the target untouched with a ``<sha> (1)`` copy beside it
+    (measured on CE 13.0.28 -- the stub models it since 0.9.13; the old code
+    assumed the refusal the stub used to answer, so a damaged object blocked
+    every later snapshot that needed the content, each retry leaving another
+    full-size copy; REVIEW.sonnet-5.5 E7).  So after every rename the directory
+    is listed once, and:
+
+    * no duplicate -- the rename landed on a free name, done;
+    * a duplicate and the existing ``<sha>`` at the *right* size -- another
+      writer stored the same bytes a moment ago (the temporary's digest was
+      proved equal to ``sha`` before any rename), so the copy is dropped;
+    * a duplicate and ``<sha>`` at the *wrong* size -- damage, and the R3
+      carve-out in action: the stale object is deleted and the rename retried
+      once, with the duplicate copies swept either way.
+    """
+    marker = f"{sha} ("
+    stale = f"{directory}/{sha}"
+    temp_path = f"{directory}/{temp}"
+
+    def _duplicates(entries: list) -> list[str]:
+        return [
+            str(e.get("name"))
+            for e in entries
+            if isinstance(e, dict) and str(e.get("name", "")).startswith(marker)
+        ]
+
+    def _sweep(dups: list[str]) -> None:
+        for dup in dups:
+            client.delete_entry(rid, f"{directory}/{dup}")
+
+    if client.rename_entry(rid, temp_path, sha):
+        entries = client.list_dir(rid, directory)
+        dups = _duplicates(entries)
+        if not dups:
+            return True
+        existing = next(
+            (e for e in entries if isinstance(e, dict) and e.get("name") == sha), None
+        )
+        if existing is not None and existing.get("size") == size:
+            # Same bytes under the name already (content addressing): the
+            # duplicate copy the rename left is redundant, not evidence.
+            _sweep(dups)
+            return True
+        # A wrong-size object under the hash name is damage; replace it.  The
+        # create-or-duplicate rename consumed the temporary into the first
+        # duplicate, so that copy is the bytes to move onto the freed name.
+        # The listing above is stale by now if another writer settled the same damage: read
+        # the name again right before it goes, and move only a copy that has our size
+        # (gemini-4-hydrogen-E1; the server has no compare-and-delete, so this narrows the race).
+        entries = client.list_dir(rid, directory)
+        existing = next((e for e in entries if isinstance(e, dict) and e.get("name") == sha), None)
+        if existing is not None and existing.get("size") == size:
+            _sweep(_duplicates(entries))
+            return True
+        whole = next((d for d in _duplicates(entries)
+                      if next((e.get("size") for e in entries
+                               if isinstance(e, dict) and e.get("name") == d), None) == size), None)
+        if whole is None:
+            return False
+        if existing is not None:
+            client.delete_entry(rid, stale)      # another writer may have removed it: the move below says whether the name is free
+        if not client.rename_entry(rid, f"{directory}/{whole}", sha):
+            return False
+        _sweep(_duplicates(client.list_dir(rid, directory)))
+        return True
+    # The rename was refused outright (a deployment that does fail on a taken
+    # name): fall back to judging the existing object by its size.
+    for entry in client.list_dir(rid, directory):
+        if entry.get("name") == sha and entry.get("size") == size:
+            client.delete_entry(rid, temp_path)
+            return True
+    if not client.delete_entry(rid, stale):
+        return False
+    if not client.rename_entry(rid, temp_path, sha):
+        return False
+    _sweep(_duplicates(client.list_dir(rid, directory)))
+    return True
+
+
+def _progress_line(done: int, total: int, elapsed: float, verb: str = "uploaded") -> str:
+    """``progress: 41.2 GiB of 292.0 GiB uploaded (14%), 52 MiB/s, about 1h20m left``.
+
+    *verb* names the work (uploaded, downloaded, hashed, checked), so every long
+    phase reports in the same words.
+    """
+    from . import remote_ops
+    rate = done / 1048576 / elapsed if elapsed > 0 else 0.0
+    left = f", about {gitrun._fmt_elapsed((total - done) / 1048576 / rate)} left" if rate > 0 else ""
+    percent = done * 100 // total if total else 100
+    return (f"progress: {remote_ops.human_bytes(done)} of {remote_ops.human_bytes(total)} {verb} ({percent}%), "
+            f"{rate:.0f} MiB/s{left}")
+
+
+def _upload_all(
+    client: Any, rid: str, server_url: str | None, base: str, source: Path,
+    todo: dict[str, dict[str, Any]], jobs: int | None, skip_changing: bool = False,
+) -> list[str]:
+    """Upload each object in *todo* (``sha -> manifest entry``), *jobs* at once.
+
+    ``jobs=None`` (nothing typed) searches for the number the link can use: it
+    starts at 3, the old fixed default, and climbs while the aggregate rate
+    grows (:func:`run_climbing`).  A typed number is used exactly, as before.
+
+    Returns the paths left out because they changed (always empty unless
+    *skip_changing*, which turns "a file changed" from an error into a list the
+    caller drops from the snapshot; a failed upload is still an error).
+
+    Largest first.  Measured on the real server (2026-11-05, 32 MiB files): 1
+    writer 27 MiB/s, 2 about 40, 4 about 45, 8 about 62, 12 about 65 -- a shelf at
+    3-4 and a rise after it, which is why the search has patience.  Directories are created up front in this thread; each worker
+    thread then uses a client of its own (a ``requests`` session is not meant to
+    be shared).  The first *server* failure stops the queue and is raised once the
+    running uploads have finished -- the next run resumes from what landed.  A file
+    that changed (or vanished) after it was hashed is that file's problem, not the
+    server's: the rest of the queue still goes up, so one live file, such as a
+    database something keeps writing, does not throw away hours of upload, and the
+    run then fails naming every such file.
+
+    Each object goes up under a temporary name through a hashing reader and is
+    renamed to its hash only if the bytes sent are the bytes the name promises.
+    A file edited after it was hashed (or rewritten in place without touching its
+    mtime, which a memory-mapped writer on Windows can do) therefore never ends up
+    under another content's name -- the failure that otherwise survives every
+    later run, because "present at the right size" is all a listing can prove.
+    """
+    from . import payload_restore, remote_ops
+    for prefix in sorted({sha[:2] for sha in todo}):
+        _api(lambda p=prefix: client.mkdir_p(rid, f"{base}/objects/{p}"),
+             f"creating {base}/objects/{prefix}")
+    order = sorted(todo, key=lambda sha: (-todo[sha]["size"], todo[sha]["path"]))
+    local = threading.local()
+    lock = threading.Lock()
+    counter = [0]
+    failed: list[str] = []
+    changed: list[str] = []
+    changed_paths: list[str] = []
+    total_bytes = sum(todo[sha]["size"] for sha in order)
+    uploaded = [0]
+    started = time.monotonic()
+    last_pulse = [started]
+    meter = climb._ByteMeter()
+    seen: set[str] = set()
+
+    def one(sha: str) -> "tuple[str, str] | None":
+        if failed:
+            return None
+        item = todo[sha]
+        rel, size = item["path"], item["size"]
+        if not _unchanged(source, rel, size, item["mtime_ns"]):
+            changed.append(f"{rel}: changed since it was hashed; run again")
+            changed_paths.append(rel)
+            return None
+        with lock:
+            if sha not in seen:      # a throttled retry is the same object, not a new one
+                seen.add(sha)
+                counter[0] += 1
+                print(
+                    f"uploading [{counter[0]}/{len(order)}] {rel} ({remote_ops.human_bytes(size)})",
+                    flush=True,
+                )
+        directory = f"{base}/{object_dir(sha)}"
+        temp = f"{sha}{_PART_SUFFIX}{os.urandom(4).hex()}"
+        try:
+            worker = getattr(local, "client", None)
+            if worker is None:
+                worker = local.client = _open_client(server_url)
+            try:
+                fh = open(payload_restore.extended_path(source / rel), "rb")
+            except OSError as exc:
+                changed.append(f"{rel}: cannot be read any more ({exc}); run again")
+                changed_paths.append(rel)
+                return None
+            with fh:
+                reader = _HashingFile(fh, size, meter)
+                ok = worker.upload_file(rid, directory, temp, reader)
+            if not ok:
+                failed.append(f"{rel}: the server did not accept the upload")
+                return None
+            # A retried chunk means the digest describes the first attempt, not the
+            # bytes the server kept: only a fresh read of the whole file, equal to the
+            # name and with an unchanged stat, vouches for the object then.
+            if reader.rewound:
+                clean = (_sha256_file(source / rel) == sha
+                         and _unchanged(source, rel, size, item["mtime_ns"]))
+            else:
+                clean = reader.complete and reader.hexdigest() == sha
+            if not clean:
+                worker.delete_entry(rid, f"{directory}/{temp}")
+                changed.append(f"{rel}: changed while it was being uploaded; run again")
+                changed_paths.append(rel)
+                return None
+            if not _commit_object(worker, rid, directory, temp, sha, size):
+                worker.delete_entry(rid, f"{directory}/{temp}")
+                failed.append(f"{rel}: the server would not name the object")
+            else:
+                with lock:
+                    uploaded[0] += size
+                    now = time.monotonic()
+                    if now - last_pulse[0] >= _PULSE_SECONDS:
+                        last_pulse[0] = now
+                        print(_progress_line(uploaded[0], total_bytes, now - started), flush=True)
+        except OSError as exc:
+            failed.append(f"{rel}: {exc}")
+        except Exception as exc:  # SeafileAPIError, requests errors: reported once, below
+            text = f"{rel}: {type(exc).__name__}: {exc}"
+            if climb.throttle_status(text):
+                try:     # the half-sent temporary; best effort, the next run sweeps it anyway
+                    cleaner = getattr(local, "client", None)
+                    if cleaner is not None:
+                        cleaner.delete_entry(rid, f"{directory}/{temp}")
+                except Exception:
+                    pass
+                return ("throttled", text)
+            failed.append(text)
+        return None
+
+    if jobs is None:
+        print(f"payload: uploading {len(order)} object(s) with up to {climb._UPLOAD_MAX_JOBS} parallel "
+              f"uploads, found by measuring (starting at {climb._UPLOAD_START_JOBS})", flush=True)
+        climb.run_climbing(order, one, ceiling=climb._UPLOAD_MAX_JOBS, meter=meter,
+                     exhausted=lambda _sha, msg: failed.append(msg))
+    else:
+        # A typed number is exact (DESIGN 3.5), but a push-back is still worth a second
+        # try: the object goes back in the queue, at most twice, at the same level (T19).
+        climb.run_climbing(order, one, ceiling=max(1, jobs), meter=meter, forced=True,
+                     exhausted=lambda _sha, msg: failed.append(msg))
+    if failed:
+        more = (f"; {len(changed)} file(s) also changed while the run was in progress"
+                if changed else "")
+        raise common.SnapshotError(
+            f"{len(failed)} payload upload(s) failed (the next run resumes); first: {failed[0]}{more}"
+        )
+    if changed and not skip_changing:
+        raise common.SnapshotError(
+            f"{len(changed)} payload file(s) changed while the run was in progress; every "
+            f"other file was uploaded and the next run resumes. First: {changed[0]}. Stop "
+            "whatever writes them, leave them out with --exclude, or pass "
+            "--payload-skip-changing to snapshot the rest without them"
+        )
+    return sorted(set(changed_paths))
+
+
+def verify_payload_before_push(
+    git_dir: Path,
+    source: Path,
+    remote: str,
+    remote_tip: str | None,
+    tip: str,
+    manifest: dict[str, Any] | None,
+    jobs: int | None = None,
+) -> None:
+    """Make sure every object a commit about to be pushed names is on the server.
+
+    A run lists the server once, near its start; hours later (or, for an
+    earlier un-pushed snapshot, days) the objects it relied on may be gone.  This
+    re-lists, just before the push, every object named by every manifest in
+    ``remote_tip..tip``.  Missing ones that the current manifest names are
+    re-uploaded from the source; anything else is a snapshot that could not be
+    restored, and the push is refused naming it.
+    """
+    span = f"{remote_tip}..{tip}" if remote_tip else tip
+    listed = gitrun.git(git_dir, source, ["rev-list", span], cwd=source, check=False)
+    if listed.returncode != 0:
+        # An error is not "no commits": this is the guard that stops a push from
+        # naming an object the server lost, and it must not fail open.
+        detail = (listed.stderr or "").strip() or f"exit {listed.returncode}"
+        raise common.SnapshotError(
+            f"could not list the commits about to be pushed ({detail}); refusing to push "
+            "without checking their payload objects on the server"
+        )
+    commits = [c for c in listed.stdout.split() if c]
+    if not commits:
+        return
+    specs = "".join(f"{c}:{PAYLOAD_MANIFEST}\n" for c in commits)
+    checked = gitrun.git(git_dir, source, ["cat-file", "--batch-check"], cwd=source, stdin=specs).stdout
+    needed: dict[str, int] = {}
+    owners: dict[str, str] = {}
+    for line in checked.splitlines():
+        parts = line.split()
+        if len(parts) != 3 or parts[1] != "blob":
+            continue
+        body = gitrun.git(git_dir, source, ["cat-file", "blob", parts[0]], cwd=source).stdout
+        try:
+            data = json.loads(body)
+        except (ValueError, RecursionError):
+            raise common.SnapshotError(
+                f"a payload manifest ({parts[0][:12]}) in the commits about to be pushed is "
+                "unreadable; refusing to push it"
+            ) from None
+        for item in payload_manifest.check_manifest_shape(data):
+            needed[item["sha256"]] = item["size"]
+            owners.setdefault(item["sha256"], item["path"])
+    if not needed:
+        return
+    library, base, server_url = payload_location(remote)
+    client = _api(lambda: _open_client(server_url), "opening the Seafile client")
+    rid = _api(lambda: client.get_repo_id(library), f"finding library {library!r}")
+    held = _remote_objects(client, rid, base, set(needed))
+    missing = {sha for sha, size in needed.items() if held.get(sha) != size}
+    if not missing:
+        return
+    current = {item["sha256"]: item for item in (manifest or {}).get("files", [])}
+    redo = {
+        sha: current[sha] for sha in missing
+        if sha in current and _unchanged(source, current[sha]["path"],
+                                         current[sha]["size"], current[sha]["mtime_ns"])
+    }
+    if redo:
+        print(f"re-uploading {len(redo)} payload object(s) that went missing before the push",
+              flush=True)
+        _upload_all(client, rid, server_url, base, source, redo, jobs)
+        after = _remote_objects(client, rid, base, set(redo))
+        missing -= {sha for sha, item in redo.items() if after.get(sha) == item["size"]}
+    if missing:
+        sample = ", ".join(sorted(owners[sha] for sha in missing)[:5])
+        raise common.SnapshotError(
+            f"{len(missing)} payload object(s) named by snapshots about to be pushed are "
+            f"missing from the server and the source no longer has them (e.g. {sample}); a "
+            "restore of those snapshots would fail. Not pushing"
+        )
+
+
+def verify_payload_after_push(
+    source: Path,
+    remote: str,
+    manifest: dict[str, Any] | None,
+    jobs: int | None = None,
+) -> None:
+    """Look once more, after the push, for the objects the new manifest names.
+
+    The check before the push cannot see a ``--payload-delete`` on another
+    machine that removes an object between that listing and the ref landing: the
+    retention run takes no remote lock, and a lock would not help, because the
+    push verifies before it takes the lock.  The window is a few minutes at
+    most, so one more listing here finds what it took.  An object the source
+    still holds as it was is uploaded again; anything else is reported, because
+    the snapshot just pushed cannot be restored without it.
+    """
+    files = (manifest or {}).get("files") or []
+    if not files:
+        return
+    needed = {item["sha256"]: item for item in files}
+    library, base, server_url = payload_location(remote)
+    client = _api(lambda: _open_client(server_url), "opening the Seafile client")
+    rid = _api(lambda: client.get_repo_id(library), f"finding library {library!r}")
+    held = _remote_objects(client, rid, base, set(needed))
+    missing = {sha for sha, item in needed.items() if held.get(sha) != item["size"]}
+    if not missing:
+        return
+    redo = {
+        sha: needed[sha] for sha in missing
+        if _unchanged(source, needed[sha]["path"], needed[sha]["size"], needed[sha]["mtime_ns"])
+    }
+    if redo:
+        print(f"re-uploading {len(redo)} payload object(s) that went missing during the push "
+              "(a --payload-delete on another machine?)", flush=True)
+        _upload_all(client, rid, server_url, base, source, redo, jobs)
+        after = _remote_objects(client, rid, base, set(redo))
+        missing -= {sha for sha, item in redo.items() if after.get(sha) == item["size"]}
+    if missing:
+        sample = ", ".join(sorted(needed[sha]["path"] for sha in missing)[:5])
+        raise common.SnapshotError(
+            f"the snapshot was pushed, but {len(missing)} payload object(s) it names are missing "
+            f"from the server and the source no longer has them as they were (e.g. {sample}); "
+            "a restore of this snapshot would fail. Take a new snapshot once the files are back"
+        )

@@ -956,15 +956,9 @@ class TestGitTimeoutCeiling(unittest.TestCase):
 
 class SnapshotEnvScrubListTests(unittest.TestCase):
     def test_the_snapshot_tool_scrubs_the_same_variables_as_the_library(self):
-        import importlib.util
-        from pathlib import Path
-
+        from git_remote_seafile import snapshot as module
         from git_remote_seafile.git_util import _GIT_REPO_ENV_VARS
 
-        path = Path(__file__).resolve().parent.parent / "git_remote_seafile" / "snapshot_tool.py"
-        spec = importlib.util.spec_from_file_location("_snapshot_for_env_test", path)
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
         self.assertEqual(tuple(module._REPO_ENV_VARS), tuple(_GIT_REPO_ENV_VARS))
 
 
