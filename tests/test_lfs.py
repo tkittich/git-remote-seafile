@@ -115,6 +115,28 @@ class TestLFSUploadAgainstTheStub(unittest.TestCase):
         self.assertIn("error", resp)
         self.assertEqual(self.stored(), {self.path: self.DATA})
 
+    def test_bytes_of_the_right_size_that_are_not_the_oid_are_never_published_under_it(self):
+        """Nothing was at the name, so the size check alone would have stored them (RESUME.md D1 step 2)."""
+        Path(self.local).write_bytes(b"Z" * len(self.DATA))
+        resp = self.upload()
+        self.assertIn("error", resp)
+        self.assertEqual(self.stored(), {}, "the temporary is dropped and the oid's name stays free")
+
+    def test_only_our_own_copy_is_judged_and_deleted_when_the_rename_says_where_it_landed(self):
+        sha_size = len(self.DATA)
+        client = MagicMock()
+        client.list_dir.return_value = [
+            {"name": self.name, "size": sha_size},
+            {"name": self.name + " (1)", "size": 9},                   # another writer's, not ours
+            {"name": self.name + " (2)", "size": sha_size},            # ours
+        ]
+        agent = LFSTransferAgent(client, REPO_ID, "/git-test")
+        self.addCleanup(agent._temp_dir.cleanup)
+        got = agent._settle_object_name(self.folder, self.name, sha_size, ours=self.name + " (2)")
+        self.assertEqual(got, {"name": self.name, "size": sha_size})
+        deleted = [c.args[1].rsplit("/", 1)[-1] for c in client.delete_entry.call_args_list]
+        self.assertEqual(deleted, [self.name + " (2)"])
+
     def test_a_stale_listing_does_not_delete_the_object_another_uploader_just_settled(self):
         """gemini-4-hydrogen-B1: both settle a damaged object; the second must not delete the
         first one's good result."""
@@ -164,7 +186,7 @@ class TestLFSUploadAgainstTheStub(unittest.TestCase):
         self.assertEqual(self.stored(), {})
 
     def test_a_rename_the_server_does_not_perform_is_an_error_and_leaves_no_part_file(self):
-        with patch.object(self.client, "rename_entry", return_value=False):
+        with patch.object(self.client, "rename_entry", return_value=False),                 patch.object(self.client, "rename_entry_result", return_value=(500, None)):
             resp = self.upload()
         self.assertIn("the server accepted the upload but lists", resp["error"]["message"])
         self.assertEqual(self.stored(), {})

@@ -13,7 +13,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any, TypeGuard
 
-from .client import SeafileClient
+from .client import HashingReader, SeafileClient
 
 #: An upload lands under ``<oid>.part-<token>`` and is renamed onto ``<oid>``.
 PART_SUFFIX = ".part-"
@@ -131,7 +131,7 @@ class LFSTransferAgent:
         except Exception:
             pass
 
-    def _settle_object_name(self, parent_dir: str, filename: str, size: int) -> dict | None:
+    def _settle_object_name(self, parent_dir: str, filename: str, size: int, ours: "str | None" = None) -> dict | None:
         """List the folder after the rename and leave exactly one object, at *size*, if it can.
 
         Seafile's rename onto a taken name answers success and leaves a "<name> (1)" copy
@@ -144,6 +144,10 @@ class LFSTransferAgent:
         listed = [e for e in entries if isinstance(e, dict)]
         held = next((e for e in listed if e.get("name") == filename), None)
         copies = [str(e.get("name")) for e in listed if str(e.get("name", "")).startswith(marker)]
+        if ours is not None:
+            # The rename said where our bytes landed: another writer's "(N)" copy is not ours to judge or
+            # delete -- it may be the only whole object (RESUME.md D1 revision 3).
+            copies = [name for name in copies if name == ours]
         if not copies:
             return held
         if held is not None and held.get("size") == size:
@@ -262,18 +266,38 @@ class LFSTransferAgent:
             # the loser as "<oid> (SFConflict ...)" beside it (ROADMAP Z30, gemini A6).
             # The payload does the same (PAYLOAD.md D5).
             temp = f"{filename}{PART_SUFFIX}{os.urandom(4).hex()}"
+            # A real git-lfs oid is the SHA-256 of the object: hash what is sent and refuse to publish bytes
+            # that are not the oid (RESUME.md D1 step 2).  Other oids (a test's, a hand-made one) are not checked.
+            checked = re.fullmatch(r"[0-9a-f]{64}", oid) is not None
             try:
-                self.client.upload_file(
-                    self.repo_id, parent_dir, temp, Path(local_path), replace=True,
-                    progress_callback=throttle.callback,
-                )
-                self.client.rename_entry(self.repo_id, f"{parent_dir}/{temp}", filename)
+                with open(local_path, "rb") as source:
+                    reader = HashingReader(source, local_size) if checked else None
+                    self.client.upload_file(
+                        self.repo_id, parent_dir, temp, reader if reader is not None else Path(local_path),
+                        replace=True, progress_callback=throttle.callback,
+                    )
+                if reader is not None:
+                    vouched = (_sha256_of(local_path) == oid) if reader.rewound else (
+                        reader.complete and reader.hexdigest() == oid)
+                    if not vouched:
+                        raise RuntimeError("the file changed while it was being uploaded; nothing was stored, push again")
+                ours = None
+                landed = getattr(self.client, "rename_entry_result", None)
+                outcome = landed(self.repo_id, f"{parent_dir}/{temp}", filename) if callable(landed) else None
+                if isinstance(outcome, tuple) and len(outcome) == 2:
+                    status, landing = outcome
+                    if status in (200, 201) and landing is None:
+                        raise RuntimeError("the server accepted the rename but did not say where the object landed; "
+                                           "nothing was stored, push again")
+                    ours = landing if landing and landing != filename else None
+                else:
+                    self.client.rename_entry(self.repo_id, f"{parent_dir}/{temp}", filename)
                 # A 2xx is an acknowledgement, not a proof: a proxy that answers success for a
                 # failed upload made git-lfs record the object as pushed, and `git lfs prune`
                 # may then remove the only copy.  Every other transfer reads back; so does
                 # this one, with the listing the skip above already trusts (review 4f1cdd4,
                 # glm-5.3 G6.1, first reported at v0.9.12).
-                listed = self._settle_object_name(parent_dir, filename, local_size)
+                listed = self._settle_object_name(parent_dir, filename, local_size, ours)
             except Exception:
                 self._drop_part(parent_dir, temp)
                 raise

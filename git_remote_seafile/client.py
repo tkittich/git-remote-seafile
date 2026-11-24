@@ -1943,6 +1943,11 @@ class SeafileClient:
                     continue
             if hasattr(payload, "seek"):
                 payload.seek(start_cur)
+            begin_attempt = getattr(payload, "begin_attempt", None)
+            if begin_attempt is not None and hasattr(payload, "read") and hasattr(payload, "seek"):
+                begin_attempt(start_cur, file_size)     # one digest per attempt, as for a chunk (RESUME.md D1 step 2)
+            else:
+                begin_attempt = None
 
             try:
                 if hasattr(payload, "read") and hasattr(payload, "seek"):
@@ -1998,6 +2003,8 @@ class SeafileClient:
 
             if up_resp is not None:
                 if up_resp.status_code in (200, 201):
+                    if begin_attempt is not None:
+                        payload.accept()    # every attempt that read the whole file must have read the same bytes
                     return True
                 last_error = (
                     f"HTTP {up_resp.status_code} "

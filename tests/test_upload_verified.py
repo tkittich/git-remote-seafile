@@ -13,6 +13,7 @@ import pathlib
 import sys
 import tempfile
 import unittest
+import unittest.mock
 from unittest.mock import patch
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
@@ -113,6 +114,50 @@ class ChunkedUploadFaultTests(unittest.TestCase):
         self.assertEqual(posts["n"], 5)                    # four chunks and one resend
         self.assertEqual(self.held(), DATA)
         self.assertEqual(reader.hexdigest(), hashlib.sha256(DATA).hexdigest())
+
+
+class SingleRequestRetryTests(unittest.TestCase):
+    """A retried single-request upload gets the same one-digest-per-attempt rule as a chunk."""
+
+    def setUp(self) -> None:
+        self.client = SeafileClient(server_url="https://seafile.example.com", token="t")
+        link = unittest.mock.MagicMock(status_code=200, text='"https://seafile.example.com/up/1"')
+        self.client.session.get = unittest.mock.MagicMock(return_value=link)  # type: ignore[method-assign]
+        self.client.mkdir_p = unittest.mock.MagicMock()  # type: ignore[method-assign]
+        patcher = patch.object(client_mod.time, "sleep")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def run_upload(self, first: bytes, second: bytes) -> HashingReader:
+        fh = io.BytesIO(first)
+        reader = HashingReader(fh, len(first))
+        answers = iter([503, 200])
+
+        def xfer(method: str, url: str, **kwargs: object) -> object:
+            body = kwargs["data"]
+            while body.read(64):                       # type: ignore[attr-defined]
+                pass
+            status = next(answers)
+            if status == 503:
+                fh.seek(0)
+                fh.write(second)                       # the file changes between the attempts
+                fh.seek(0)
+            return unittest.mock.MagicMock(status_code=status, text="x")
+
+        with patch.object(self.client, "_xfer", xfer):
+            self.client.upload_file("rid", "/d", "obj.part-1", reader)
+        return reader
+
+    def test_a_retry_that_read_the_same_bytes_publishes_with_the_digest_of_those_bytes(self):
+        data = os.urandom(500)
+        reader = self.run_upload(data, data)
+        self.assertEqual(reader.hexdigest(), hashlib.sha256(data).hexdigest())
+        self.assertFalse(reader.rewound)
+
+    def test_a_retry_that_read_other_bytes_is_refused(self):
+        first = os.urandom(500)
+        with self.assertRaises(UploadSourceChangedError):
+            self.run_upload(first, os.urandom(500))
 
 
 class AttemptDigestTests(unittest.TestCase):
