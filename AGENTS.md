@@ -15,6 +15,7 @@ no runtime dependency except `requests`, no dev dependencies.
 | :--- | :--- |
 | `git_remote_seafile/` | the package: helper, client, packs, gc, lock, LFS, safety guards |
 | `git_remote_seafile/snapshot/` | the snapshot tool: a package of modules (`gitrun`, `stage`, `payload_*`, `restore_run`, `cli`, ...); the package namespace re-exports every name, **read-only** |
+| `git_remote_seafile/blob/` | the blob store (`seafile-blob`, `sfblob`): `refs`, `record`, `cache`, `store`, `tree`, `cli`; spec in the specs tree (STORE.md, CLI.md); first release has no `gc`, pins or `offload` |
 | `tools/seafile_snapshot.py` | hand-written wrapper that runs the generated module from a checkout |
 | `tests/` | `unittest` suite; `e2e_harness.py` is an in-process Seafile stub |
 | `PAYLOAD.md`, `SNAPSHOT.md`, `DESIGN.md` | specifications; the code is held to them |
