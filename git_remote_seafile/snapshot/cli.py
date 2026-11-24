@@ -100,6 +100,7 @@ def run_command(args: argparse.Namespace) -> int:
                 verify=args.verify,
                 branch_explicit=bool(args.branch),
                 allow_low_disk=args.allow_low_disk,
+                only=args.only,
             )
             runreport.RUN_FACTS.update(into=str(into), ref=args.ref or args.branch or common.DEFAULT_BRANCH)
             return 0

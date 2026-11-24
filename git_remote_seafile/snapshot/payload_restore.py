@@ -105,7 +105,8 @@ def _download_verified(
 
 
 def restore_payload(
-    remote: str, into: Path, *, allow_low_disk: bool = False, sample: int | None = None
+    remote: str, into: Path, *, allow_low_disk: bool = False, sample: int | None = None,
+    rev: "str | None" = None, only: Any = None,
 ) -> None:
     """Download and verify the payload a restored snapshot's manifest names.
 
@@ -114,16 +115,27 @@ def restore_payload(
     fails to download or verify is skipped and reported -- the rest is restored
     -- and the run then fails.  A file already in place that verifies is kept, so
     a rerun into the same directory picks up where it stopped.  With *sample* only
-    that many files, chosen at random, are fetched (the restore drill).
+    that many files, chosen at random, are fetched (the restore drill).  With *only* (a
+    ``restore_only.Selection``) the manifest is read from *rev* of the clone -- a partial restore
+    does not write it -- validated whole, and then cut to the selection.
     """
-    manifest_path = into / payload_upload.PAYLOAD_MANIFEST
-    if not manifest_path.is_file():
-        return
-    try:
-        manifest = json.loads(manifest_path.read_bytes())
-    except (ValueError, RecursionError) as exc:
-        raise common.SnapshotError(f"the snapshot's payload manifest is unreadable: {exc}") from None
+    if only is not None:
+        from . import restore_only
+        manifest = restore_only.read_manifest(into, rev or "HEAD")
+        if manifest is None:
+            return
+    else:
+        manifest_path = into / payload_upload.PAYLOAD_MANIFEST
+        if not manifest_path.is_file():
+            return
+        try:
+            manifest = json.loads(manifest_path.read_bytes())
+        except (ValueError, RecursionError) as exc:
+            raise common.SnapshotError(f"the snapshot's payload manifest is unreadable: {exc}") from None
     files = payload_manifest.validate_manifest(manifest, into)
+    in_manifest = len(files)
+    if only is not None:
+        files = [item for item in files if only.contains_path(item["path"])]
     total_files = len(files)
     if sample is not None and sample < total_files:
         files = random.sample(files, sample)
@@ -133,7 +145,7 @@ def restore_payload(
     library, base, server_url = payload_upload.payload_location(remote)
     client = payload_upload._api(lambda: payload_upload._open_client(server_url), "opening the Seafile client")
     rid = payload_upload._api(lambda: client.get_repo_id(library), f"finding library {library!r}")
-    of = f" of {total_files}" if len(files) < total_files else ""
+    of = f" of {in_manifest}" if len(files) < in_manifest else ""
     print(f"restoring {len(files)}{of} payload file(s) from {base}/objects ...", flush=True)
     scratch = extended_path(into / ".git" / "grs-restore")
     scratch.mkdir(parents=True, exist_ok=True)

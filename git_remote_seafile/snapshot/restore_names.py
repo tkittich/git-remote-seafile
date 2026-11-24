@@ -276,6 +276,7 @@ def classify_missing_names(
 def report_names_not_restored_as_named(
     repo: Path, rev: str, skip: "set[str]", mismatched: list[str],
     said: "list[str] | None" = None,
+    unselected: "set[str] | None" = None,
 ) -> list[str]:
     """Say which names did not come back as named, and return *mismatched* without the collided ones.
 
@@ -287,7 +288,10 @@ def report_names_not_restored_as_named(
     on_disk = names_on_disk(repo)
     if on_disk is None:
         return mismatched
-    collided, renamed = classify_missing_names(snapshot_file_names(repo, rev), on_disk, skip)
+    # ``--only``: a path outside the selection is not asked about at all, so an unselected case twin
+    # cannot class a selected file as collided and drop its real mismatch (RESTORE_ONLY.md D4).
+    expected = [name for name in snapshot_file_names(repo, rev) if not unselected or name not in unselected]
+    collided, renamed = classify_missing_names(expected, on_disk, skip)
     for names, text in (
         (collided, "share a name with another file once upper and lower case are ignored, "
                    "and the folder restored into ignores case, so only one of each pair could be "

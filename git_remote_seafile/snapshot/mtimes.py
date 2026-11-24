@@ -264,17 +264,28 @@ def _without_extended_prefix(text: str) -> str:
     return text
 
 
-def apply_recorded_mtimes(into: Path) -> tuple[int, int]:
+def apply_recorded_mtimes(
+    into: Path, *, rev: "str | None" = None, skip: "set[str] | None" = None
+) -> tuple[int, int]:
     """Set the recorded times on a restored tree; ``(applied, skipped)``.
 
     Best effort and bounded to *into*: the record came from a remote, so each
     path goes through the same checks as a manifest path, and a time that does
     not fit is skipped rather than written.
+
+    With *rev* the record is read from that revision of the clone (a partial restore never writes the
+    reserved folder), and the paths in *skip* -- the ones not restored -- are neither set nor counted.
     """
-    from . import payload_manifest, payload_upload, payload_restore
+    from . import payload_manifest, payload_upload, payload_restore, restore_only
     record = into / payload_upload.PAYLOAD_RESERVED_DIR / _MTIMES_NAME
+    raw: "bytes | None" = None
+    if rev is not None:
+        # An absent record means none was taken; one that is there and cannot be read is an error.
+        raw = restore_only.read_blob(into, rev, mtimes_path())
+        if raw is None:
+            return 0, 0
     try:
-        data = json.loads(record.read_text(encoding="utf-8"))
+        data = json.loads(raw if raw is not None else record.read_text(encoding="utf-8"))
         files = data["files"]
         if not isinstance(files, dict):
             return 0, 0
@@ -288,6 +299,8 @@ def apply_recorded_mtimes(into: Path) -> tuple[int, int]:
     root = into.resolve()
     applied = skipped = 0
     for rel, stamp in files.items():
+        if skip and rel in skip:
+            continue
         if (
             not isinstance(rel, str) or isinstance(stamp, bool) or not isinstance(stamp, int)
             or not 0 <= stamp < payload_upload._MAX_MTIME_NS or payload_manifest.path_security_problem(rel) is not None

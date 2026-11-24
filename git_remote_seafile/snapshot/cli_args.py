@@ -131,6 +131,15 @@ def add_options(out: Declared) -> None:
         f"{common.DEFAULT_BRANCH}); any revision works, e.g. 'snapshot~3' to roll back",
     )
     out.add_argument(
+        "--only",
+        action="append",
+        default=None,
+        metavar="PATH",
+        help="restore only this file or folder of the snapshot (repeatable; a path relative to the snapshot's "
+        "root, written with /, matched literally -- no wildcards). The git history still arrives whole; only "
+        "the files named are written and only their payload objects downloaded",
+    )
+    out.add_argument(
         "--dry-run",
         action="store_true",
         help="build the snapshot but do not move the branch or push "

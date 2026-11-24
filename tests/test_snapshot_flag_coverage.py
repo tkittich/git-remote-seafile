@@ -55,7 +55,7 @@ class TestTheTableAndTheParserAgree(unittest.TestCase):
 #: Entries that a mode really uses are marked in ``USED``; the rest are accepted and ignored today
 #: (ROADMAP AA73/AA74; 0.11 refused the options that 0.10.x warned about, ``test_snapshot_unused_options``).
 ACCEPTED = {
-    "restore": {"--branch", "--ref", "--allow-synced", "--allow-low-disk", "--verify", "--json", "--exit-warnings"},
+    "restore": {"--branch", "--ref", "--only", "--allow-synced", "--allow-low-disk", "--verify", "--json", "--exit-warnings"},
     "drill": {"--branch", "--ref", "--allow-synced", "--allow-low-disk", "--json", "--exit-warnings"},
     "status": {"--source", "--vault", "--branch", "--remote", "--code-remote", "--exclude", "--default-excludes",
                "--allow-synced", "--payload-min-size", "--no-payload", "--payload-auto-ratio", "--json",

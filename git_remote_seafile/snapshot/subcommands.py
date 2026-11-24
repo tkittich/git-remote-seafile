@@ -62,7 +62,7 @@ LEGACY_OPERAND = {"--restore-drill", "--payload-verify", "--payload-view"}
 EVERY_COMMAND = frozenset({"--json", "--exit-warnings"})
 ALLOWED: dict[str, frozenset[str]] = {
     "restore": EVERY_COMMAND | {
-        "--remote", "--into", "--branch", "--ref", "--allow-synced", "--allow-low-disk", "--verify",
+        "--remote", "--into", "--branch", "--ref", "--allow-synced", "--allow-low-disk", "--verify", "--only",
     },
     "drill": EVERY_COMMAND | {"--remote", "--branch", "--ref", "--allow-synced", "--allow-low-disk"},
     "status": EVERY_COMMAND | {
@@ -88,7 +88,7 @@ ALLOWED: dict[str, frozenset[str]] = {
 }
 #: What only some other command reads, so a snapshot run does not.
 NOT_SNAPSHOT = frozenset({
-    "--into", "--ref", "--verify", "--full-repack", "--payload-delete", "--payload-keep", "--payload-no-vault",
+    "--into", "--ref", "--verify", "--only", "--full-repack", "--payload-delete", "--payload-keep", "--payload-no-vault",
     "--payload-accept-loss", "--payload-allow-non-owner", "--payload-grace-days", "--payload-view-name",
     "--payload-view-replace",
 })

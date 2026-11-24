@@ -19,6 +19,7 @@ from . import stage
 from . import mtimes
 from . import payload_restore
 from . import remote_ops
+from . import restore_only
 
 
 #: The fixed headroom a restore or drill asks of the destination volume
@@ -52,7 +53,9 @@ def _unrepresentable_paths(repo: Path, rev: str) -> list[str]:
     return [name for name in names if problem(name) is not None]
 
 
-def _checkout_around(repo: Path, rev: str, skipped: list[str], *, detach: bool) -> None:
+def _checkout_around(
+    repo: Path, rev: str, skipped: list[str], *, detach: bool, selection: "restore_only.Selection | None" = None,
+) -> None:
     """Check *rev* out without the paths in *skipped*.
 
     ``git checkout`` refuses a whole tree for one name Windows cannot hold
@@ -74,21 +77,35 @@ def _checkout_around(repo: Path, rev: str, skipped: list[str], *, detach: bool) 
         )
     drop = set(skipped)
     entries = bytearray()
+    #: With a selection the index is still the whole tree (so ``git status`` is clean and a commit deletes
+    #: nothing); the entries outside it are marked skip-worktree and only the selected ones are written.
+    hidden = bytearray()
+    written = bytearray()
     for entry in listing.stdout.split(b"\0"):
         if not entry:
             continue
         meta, _, path = entry.partition(b"\t")
-        if path.decode("utf-8", errors="surrogateescape") in drop:
+        name = path.decode("utf-8", errors="surrogateescape")
+        if name in drop:
             continue
         fields = meta.split()
         entries += fields[0] + b" " + fields[2] + b"\t" + path + b"\0"
-    steps = [
+        if selection is not None:
+            (written if name in selection.git_selected else hidden).extend(path + b"\0")
+    point = (["update-ref", "--no-deref", "HEAD", rev] if detach
+             else ["symbolic-ref", "HEAD", f"refs/heads/{rev}"])
+    steps: "list[tuple[list[str], bytes | None]]" = [
         (["read-tree", "--empty"], None),
         (["update-index", "-z", "--add", "--index-info"], bytes(entries)),
-        (["update-ref", "--no-deref", "HEAD", rev] if detach
-         else ["symbolic-ref", "HEAD", f"refs/heads/{rev}"], None),
-        (["-c", "core.longpaths=true", "checkout-index", "-a", "-f"], None),
     ]
+    if selection is None:
+        steps += [(point, None), (["-c", "core.longpaths=true", "checkout-index", "-a", "-f"], None)]
+    else:
+        if hidden:
+            steps.append((["update-index", "--skip-worktree", "-z", "--stdin"], bytes(hidden)))
+        steps.append((point, None))
+        if written:
+            steps.append((["-c", "core.longpaths=true", "checkout-index", "-f", "-z", "--stdin"], bytes(written)))
     for args, stdin in steps:
         slow = "checkout-index" in args
         proc = gitrun._run(
@@ -152,8 +169,8 @@ def links_written_as_text(repo: Path, rev: str, mismatched: list[str]) -> list[s
     return found
 
 
-def _checkout(repo: Path, rev: str, *, detach: bool = False) -> list[str]:
-    """Check *rev* out; return the paths that could not be written (names this OS cannot hold)."""
+def _prepare_rev(repo: Path, rev: str, *, detach: bool) -> None:
+    """Refuse a revision that reads as a git option; make the branch local so ``branch~3`` resolves."""
     from . import restore_names
     if rev.startswith("-"):
         # A remote ref is a file the library writer controls, and a name like
@@ -166,6 +183,37 @@ def _checkout(repo: Path, rev: str, *, detach: bool = False) -> list[str]:
         )
     if not detach:
         restore_names._ensure_local_branch(repo, rev)
+
+
+def _checkout_selection(repo: Path, rev: str, selection: "restore_only.Selection", *, detach: bool) -> list[str]:
+    """Check out only *selection*; return the selected paths that could not be written.
+
+    Every path the volume cannot hold is left out of the index (git refuses the whole tree for one), but only
+    those inside the selection are reported.
+    """
+    _prepare_rev(repo, rev, detach=detach)
+    unholdable = _unrepresentable_paths(repo, rev)
+    _checkout_around(repo, rev, unholdable, detach=detach, selection=selection)
+    return [path for path in unholdable if selection.contains_path(path)]
+
+
+def _checkout_for(
+    repo: Path, rev: str, detach: bool, only: "list[str] | None"
+) -> "tuple[list[str], restore_only.Selection | None]":
+    """The whole checkout, or with ``--only`` the selection's: values are checked before anything is written (R3)."""
+    if not only:
+        return _checkout(repo, rev, detach=detach), None
+    _prepare_rev(repo, rev, detach=detach)
+    selection = restore_only.select(repo, rev, only)
+    count = len(selection.git_selected) + len(selection.payload_selected)
+    print(f"restoring {count} of {len(selection.tree) + selection.payload_total} path(s): "
+          + ", ".join(value.path for value in selection.values))
+    return _checkout_selection(repo, rev, selection, detach=detach), selection
+
+
+def _checkout(repo: Path, rev: str, *, detach: bool = False) -> list[str]:
+    """Check *rev* out; return the paths that could not be written (names this OS cannot hold)."""
+    _prepare_rev(repo, rev, detach=detach)
     skipped = _unrepresentable_paths(repo, rev)
     if skipped:
         _checkout_around(repo, rev, skipped, detach=detach)
@@ -405,6 +453,7 @@ def restore(
     branch_explicit: bool = True,
     allow_low_disk: bool = False,
     payload_sample: int | None = None,
+    only: "list[str] | None" = None,
 ) -> None:
     """Materialise a snapshot into a new directory; say what a failure leaves behind.
 
@@ -419,7 +468,7 @@ def restore(
     was_empty = not into.exists() or not any(into.iterdir())
     try:
         _restore(remote, into, branch, ref, verify, branch_explicit, allow_low_disk,
-                 payload_sample)
+                 payload_sample, only)
     except common.SnapshotError as exc:
         if was_empty and into.exists() and any(into.iterdir()):
             raise common.SnapshotError(
@@ -438,6 +487,7 @@ def _restore(
     branch_explicit: bool = True,
     allow_low_disk: bool = False,
     payload_sample: int | None = None,
+    only: "list[str] | None" = None,
 ) -> None:
     """Materialise a snapshot into a new directory, byte-for-byte.
 
@@ -510,6 +560,7 @@ def _restore(
     # checking the branch out first would write the whole tree twice.
     target = branch
     verified_rev = branch
+    selection: "restore_only.Selection | None" = None
     if ref and ref != branch:
         # Whether the clone already made the branch depends on what the remote
         # advertises as HEAD: a remote whose HEAD is this branch (the helper's
@@ -551,11 +602,11 @@ def _restore(
                 f"cannot resolve '{ref}' in the vault\n{proc.stderr.strip()}"
             )
         sha = proc.stdout.strip()
-        unholdable = _checkout(into, sha, detach=True)
+        unholdable, selection = _checkout_for(into, sha, True, only)
         target = f"{ref} ({sha[:12]})"
         verified_rev = sha
     else:
-        unholdable = _checkout(into, branch)
+        unholdable, selection = _checkout_for(into, branch, False, only)
     if unholdable:
         shown = "\n".join(f"  {path}" for path in unholdable[:10])
         more = f"\n  ... and {len(unholdable) - 10} more" if len(unholdable) > 10 else ""
@@ -575,7 +626,10 @@ def _restore(
     # where the broken directory actually materialises, so repeat it here
     # rather than let the certification below claim byte-exactness for a tree
     # with holes in it.
-    restored_gitlinks = stage.find_gitlinks(into / ".git", into, verified_rev)
+    restored_gitlinks = [
+        path for path in stage.find_gitlinks(into / ".git", into, verified_rev)
+        if selection is None or selection.contains_path(path)
+    ]
     if restored_gitlinks:
         print(
             "\nWarning: these paths in the restored tree are embedded git "
@@ -593,14 +647,18 @@ def _restore(
     # Git stores no timestamps; the record the snapshot wrote (if it wrote one)
     # puts them back.  After the checkout and before the byte check, which
     # reads content only and so is not affected.
-    applied, skipped = mtimes.apply_recorded_mtimes(into)
+    applied, skipped = (
+        mtimes.apply_recorded_mtimes(into) if selection is None
+        else mtimes.apply_recorded_mtimes(into, rev=verified_rev, skip=selection.unselected)
+    )
     if applied or skipped:
         print(f"restored the modification time of {applied} file(s)"
               + (f" ({skipped} could not be set)" if skipped else ""))
 
     # A restore that differs from the snapshot is not a restore, and the
     # autocrlf class of bug is invisible to `git status` -- so check the bytes.
-    mismatched = verify_restore(into, verified_rev, set(unholdable))
+    unselected = selection.unselected if selection is not None else set()
+    mismatched = verify_restore(into, verified_rev, set(unholdable) | unselected)
     as_text = links_written_as_text(into, verified_rev, mismatched)
     if as_text:
         shown = "\n".join(f"  {path}" for path in as_text[:10])
@@ -614,7 +672,7 @@ def _restore(
         mismatched = [path for path in mismatched if path not in set(as_text)]
     names_said: list[str] = []
     mismatched = restore_names.report_names_not_restored_as_named(
-        into, verified_rev, set(unholdable), mismatched, names_said)
+        into, verified_rev, set(unholdable), mismatched, names_said, unselected=unselected or None)
     names_differ = bool(names_said)
     if mismatched:
         shown = "\n".join(f"  {path}" for path in mismatched[:20])
@@ -646,7 +704,10 @@ def _restore(
             )
         print("git fsck: object store intact")
 
-    payload_restore.restore_payload(remote, into, allow_low_disk=allow_low_disk, sample=payload_sample)
+    payload_restore.restore_payload(
+        remote, into, allow_low_disk=allow_low_disk, sample=payload_sample,
+        rev=verified_rev if selection is not None else None, only=selection,
+    )
 
     files = 0
     for _folder, dirs, names in payload_restore.walk_long(into):
@@ -658,7 +719,9 @@ def _restore(
     # written, not the whole snapshot (AA14); the exit status is unchanged.
     partial = bool(unholdable or as_text or names_differ)
     print(
-        ("verified byte-exact for the files written, against " if partial
+        (f"verified byte-exact for the {selection.file_count} selected file(s) (not the whole snapshot), against "
+         if selection is not None
+         else "verified byte-exact for the files written, against " if partial
          else "verified byte-exact against ") + (
             verified_rev[:12] if re.fullmatch(r"[0-9a-f]{40,64}", verified_rev) else verified_rev)
         + (f" ({len(unholdable)} unrepresentable name(s) excluded)" if unholdable else "")

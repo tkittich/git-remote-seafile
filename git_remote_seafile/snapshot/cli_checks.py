@@ -15,6 +15,7 @@ from . import payload_view_run
 from . import remote_ops
 from . import subcommands
 from . import restore_run
+from . import restore_only
 from . import first_run
 from . import guards
 
@@ -84,6 +85,7 @@ def validate_args(args: argparse.Namespace) -> None:
             problems.append("restore requires --remote <url>")
         if not args.into:
             problems.append("restore requires --into <directory>")
+        problems.extend(restore_only.value_problems(args.only))
     if args.restore_drill is not None:
         if not args.remote:
             problems.append("drill requires --remote <url>")
