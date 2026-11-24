@@ -56,13 +56,17 @@ _LAYOUT_DIR_NAMES = frozenset({
 
 _HEX2 = re.compile(r"[0-9a-f]{2}")
 
+#: Folders of a blob store (``<store>/blobs/<xx>``, ``<store>/pins/<name>``), recognised only when the client says it is
+#: working in a store root, so a repository that happens to hold a ``blobs`` or ``pins`` folder is unaffected.
+_STORE_LAYOUT = re.compile(r"blobs|pins|blobs/[0-9a-f]{2}|pins/[^/]+")
+
 #: Where a fan-out folder may sit, relative to the repository's own path: ``lfs/xx`` and
 #: ``lfs/xx/yy`` (the LFS store), ``payload/objects/xx`` and ``objects/xx``.  A branch
 #: namespace such as ``refs/heads/ab/cd`` is not one of them (review dfd2269, gemini C2).
 _FAN_OUT = re.compile(r"(?:lfs/[0-9a-f]{2}(?:/[0-9a-f]{2})?|(?:payload/)?objects/[0-9a-f]{2})")
 
 
-def _is_layout_dir(parent: str, name: str, root: str | None = None) -> bool:
+def _is_layout_dir(parent: str, name: str, root: str | None = None, store: bool = False) -> bool:
     """True for a folder the helper or the snapshot tool lays out itself.
 
     The fixed names, and the two-hex fan-out folders under ``lfs/`` (two levels)
@@ -80,6 +84,8 @@ def _is_layout_dir(parent: str, name: str, root: str | None = None) -> bool:
         return True
     if root is not None:
         rel = f"{parent.rstrip('/')}/{name}"[len("/" + root.strip("/")) + 1:]
+        if store and _STORE_LAYOUT.fullmatch(rel) is not None:
+            return True          # the blob store's own folders, and only under a store root (STORE.md D2, R9)
         return _FAN_OUT.fullmatch(rel) is not None
     above = parent.rstrip("/").rpartition("/")[2]
     return _HEX2.fullmatch(name) is not None and (
@@ -680,6 +686,8 @@ class SeafileClient:
         #: The repository path whose inside the caller lays out (the helper and the
         #: LFS agent set it); ``None`` judges a folder by its name alone.
         self.layout_root: str | None = None
+        #: True when ``layout_root`` is a blob store's root (the blob command sets it).
+        self.store_layout = False
 
         # `require_credentials=False` is for commands that need to know which
         # server they are talking about but never authenticate -- `desktop-url`
@@ -1539,7 +1547,7 @@ class SeafileClient:
                         )
                         sys.stderr.flush()
                         continue
-                    if not _is_layout_dir(parent, part, self.layout_root):
+                    if not _is_layout_dir(parent, part, self.layout_root, self.store_layout):
                         sys.stderr.write(
                             f"Warning: {copy_path} appeared beside {current} as it was created "
                             "(Seafile makes a numbered copy when two clients create a folder at "

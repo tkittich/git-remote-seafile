@@ -16,7 +16,10 @@ from __future__ import annotations
 import hashlib
 import os
 import stat
+import sys
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 from . import refs
@@ -26,6 +29,8 @@ ADMITTED_MTIME_NS = 1_000_000_000 * 1_000_000_000
 #: A path just handed out is not evicted for this long, so ``gdalinfo "$(sfblob path ...)"`` keeps its file.
 GRACE_SECONDS = 60
 PARTIAL_DIR = "partial"
+#: An abandoned partial or lock file is removed after this long (RESUME.md D4: one expiry).
+PARTIAL_EXPIRY_SECONDS = 7 * 24 * 3600
 
 
 def default_dir() -> Path:
@@ -61,6 +66,27 @@ def _fsync_dir(path: Path) -> None:
         pass
     finally:
         os.close(fd)
+
+
+def _try_lock(fd: int) -> None:
+    """Take an exclusive lock on the whole file without waiting; ``OSError`` when another holder has it."""
+    os.lseek(fd, 0, 0)
+    if sys.platform == "win32":
+        import msvcrt
+        msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+    else:
+        import fcntl
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+
+def _unlock(fd: int) -> None:
+    os.lseek(fd, 0, 0)
+    if sys.platform == "win32":
+        import msvcrt
+        msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+    else:
+        import fcntl
+        fcntl.flock(fd, fcntl.LOCK_UN)
 
 
 class Cache:
@@ -139,6 +165,56 @@ class Cache:
             os.unlink(path)
         except OSError:
             pass          # Windows refuses an open file; the next run tries again
+
+    # -- partials and their lock (RESUME.md D4) -----------------------------------------------------------------
+
+    @contextmanager
+    def fetch_lock(self, hex_digest: str, timeout: float = 900.0) -> Iterator[None]:
+        """One fetch of an object at a time across processes: a **kernel lock** on ``partial/<sha>.lock``.
+
+        A crash or ``kill -9`` releases it (an ``O_EXCL`` file would block every later fetch of that object after
+        the very event resume exists for).  The file itself is left in place and reaped by ``sweep_partials``:
+        unlinking a lock file races a process that is opening the same name, and fails on Windows while held.
+        """
+        folder = self.partial_dir()
+        folder.mkdir(parents=True, exist_ok=True)
+        fd = os.open(folder / f"{hex_digest}.lock", os.O_RDWR | os.O_CREAT, 0o644)
+        deadline = time.monotonic() + timeout
+        try:
+            while True:
+                try:
+                    _try_lock(fd)
+                    break
+                except OSError:
+                    if time.monotonic() > deadline:
+                        raise TimeoutError(f"another process has been fetching {hex_digest} for {int(timeout)} s") from None
+                    time.sleep(0.1)
+            try:
+                yield
+            finally:
+                try:
+                    _unlock(fd)
+                except OSError:
+                    pass
+        finally:
+            os.close(fd)
+
+    def sweep_partials(self, max_age: float = PARTIAL_EXPIRY_SECONDS) -> int:
+        """Remove partial, temporary and lock files not touched for *max_age* seconds; a file in use is skipped."""
+        folder = self.partial_dir()
+        if not folder.is_dir():
+            return 0
+        removed = 0
+        now = time.time()
+        for item in folder.iterdir():
+            try:
+                if now - item.stat().st_mtime < max_age:
+                    continue
+                item.unlink()
+                removed += 1
+            except OSError:
+                pass          # held open (Windows) or already gone: the next sweep tries again
+        return removed
 
     # -- the size bound ----------------------------------------------------------------------------------------
 

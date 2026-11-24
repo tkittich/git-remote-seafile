@@ -158,7 +158,7 @@ class HonestyTests(StoreCase):
             self.store.get(self.ref())
         self.assertIn("could not fetch", str(caught.exception))
         self.assertEqual(self.cache.objects(), [])
-        self.assertEqual(list(self.cache.partial_dir().glob("*")), [])
+        self.assertEqual([p.name for p in self.cache.partial_dir().glob("*") if p.suffix != ".lock"], [])   # a lock file stays (D4)
 
     def test_a_folder_under_an_objects_name_is_not_an_object(self):
         self.store.put(self.source)
@@ -200,6 +200,70 @@ class ConcurrentGetTests(StoreCase):
                 thread.join()
         self.assertEqual(results, [DATA, DATA])
         self.assertEqual(len(calls), 1)
+
+
+class ResumeAcrossRunsTests(StoreCase):
+    def test_a_partial_an_earlier_run_left_is_continued_and_proved_by_the_hash(self):
+        put = self.store.put(self.source)
+        fresh = store.Store(SeafileClient(server_url=self.stub.base_url, token="t"), self.rid, ROOT,
+                            cache_mod.Cache(self.work / "resume"))
+        folder = fresh.cache.partial_dir()
+        folder.mkdir(parents=True)
+        (folder / f"{SHA}.part").write_bytes(DATA[:1000])
+        seen: "list[int]" = []
+        real = SeafileClient.download_file_to
+
+        def watching(self_, repo, path, dest, progress_callback=None, max_bytes=None, resume_from=0):
+            seen.append(resume_from)
+            return real(self_, repo, path, dest, progress_callback, max_bytes, resume_from)
+
+        with patch.object(SeafileClient, "download_file_to", watching):
+            path, _ = fresh.get(put.ref)
+        self.assertEqual(seen, [1000])
+        self.assertEqual(path.read_bytes(), DATA)
+
+    def test_a_partial_of_other_bytes_is_caught_by_the_hash_and_the_fetch_starts_again(self):
+        put = self.store.put(self.source)
+        fresh = store.Store(SeafileClient(server_url=self.stub.base_url, token="t"), self.rid, ROOT,
+                            cache_mod.Cache(self.work / "resume2"))
+        folder = fresh.cache.partial_dir()
+        folder.mkdir(parents=True)
+        (folder / f"{SHA}.part").write_bytes(b"\x00" * 1000)         # not a prefix of the object
+        path, _ = fresh.get(put.ref)
+        self.assertEqual(path.read_bytes(), DATA)
+
+    def test_a_partial_longer_than_the_object_is_discarded(self):
+        put = self.store.put(self.source)
+        fresh = store.Store(SeafileClient(server_url=self.stub.base_url, token="t"), self.rid, ROOT,
+                            cache_mod.Cache(self.work / "resume3"))
+        folder = fresh.cache.partial_dir()
+        folder.mkdir(parents=True)
+        (folder / f"{SHA}.part").write_bytes(b"\x01" * (len(DATA) + 50))
+        self.assertEqual(fresh.get(put.ref)[0].read_bytes(), DATA)
+
+
+class LayoutTests(unittest.TestCase):
+    def test_a_stores_folders_are_layout_only_under_a_store_root(self):
+        from git_remote_seafile.client import _is_layout_dir
+        self.assertTrue(_is_layout_dir("/s", "blobs", "/s", True))
+        self.assertTrue(_is_layout_dir("/s/blobs", "ab", "/s", True))
+        self.assertTrue(_is_layout_dir("/s", "pins", "/s", True))
+        self.assertTrue(_is_layout_dir("/s/pins", "keep-me", "/s", True))
+        self.assertFalse(_is_layout_dir("/s/blobs", "zz", "/s", True))          # not two hex characters
+        self.assertFalse(_is_layout_dir("/s", "somebodys", "/s", True))
+
+    def test_any_other_repository_is_unchanged(self):
+        from git_remote_seafile.client import _is_layout_dir
+        for root, store_flag in (("/s", False), (None, True), (None, False)):
+            with self.subTest(root=root, store=store_flag):
+                self.assertFalse(_is_layout_dir("/s", "blobs", root, store_flag))
+                self.assertFalse(_is_layout_dir("/s", "pins", root, store_flag))
+        self.assertFalse(_is_layout_dir("/other", "blobs", "/s", True))        # outside the store root
+
+    def test_a_store_tells_its_client_where_its_root_is(self):
+        client = SeafileClient(server_url="https://seafile.example.com", token="t")
+        store.Store(client, "rid", "/the/root", cache_mod.Cache(pathlib.Path(tempfile.gettempdir()) / "unused"))
+        self.assertEqual((client.layout_root, client.store_layout), ("/the/root", True))
 
 
 class CatAndGetToTests(StoreCase):

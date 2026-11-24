@@ -157,5 +157,77 @@ class GetTreeTests(TreeCase):
         self.assertEqual((report.restored, report.problems), (4, []))
 
 
+class DryRunTests(TreeCase):
+    def test_a_dry_run_put_changes_nothing_and_says_what_it_would_do(self):
+        report = tree.put_tree(self.make(), self.src, self.work / "blobs.txt", dry_run=True)
+        self.assertEqual(self.stub.files.get(self.rid, {}), {})              # not even the marker
+        self.assertFalse((self.work / "blobs.txt").exists())
+        self.assertTrue(report.dry_run)
+        self.assertEqual((len(report.entries), report.problems), (4, []))
+        self.assertGreaterEqual(report.uploaded, 3)
+
+    def test_a_dry_run_after_a_real_put_would_upload_nothing(self):
+        tree.put_tree(self.make(), self.src, None)
+        before = dict(self.stub.files[self.rid])
+        report = tree.put_tree(self.make(), self.src, self.work / "blobs.txt", dry_run=True)
+        self.assertEqual((report.uploaded, report.present), (0, 4))
+        self.assertEqual(self.stub.files[self.rid], before)
+        self.assertFalse((self.work / "blobs.txt").exists())
+
+    def test_a_dry_run_get_writes_nothing_creates_no_folder_and_touches_no_cache(self):
+        tree.put_tree(self.make(), self.src, self.work / "blobs.txt")
+        out = self.work / "restored"
+        report = tree.get_tree(self.make("fresh"), self.work / "blobs.txt", out, dry_run=True)
+        self.assertEqual((report.restored, report.in_place, report.problems), (4, 0, []))
+        self.assertFalse(out.exists())
+        self.assertFalse((self.work / "fresh").exists())
+
+    def test_a_dry_run_get_still_reports_a_path_that_holds_other_bytes(self):
+        tree.put_tree(self.make(), self.src, self.work / "blobs.txt")
+        out = self.work / "restored"
+        out.mkdir()
+        (out / "a.bin").write_bytes(b"mine")
+        report = tree.get_tree(self.make("fresh"), self.work / "blobs.txt", out, dry_run=True)
+        self.assertEqual(len(report.problems), 1)
+        self.assertEqual((out / "a.bin").read_bytes(), b"mine")
+
+
+class ExcludeTests(TreeCase):
+    def test_excluded_paths_are_not_uploaded_and_not_recorded(self):
+        report = tree.put_tree(self.make(), self.src, self.work / "blobs.txt", exclude=["sub/*"])
+        self.assertEqual(report.excluded, 2)
+        paths = [e.path for e in record.parse((self.work / "blobs.txt").read_text(encoding="utf-8"))]
+        self.assertEqual(paths, ["a.bin", "same-as-a.bin"])
+
+    def test_a_pattern_without_a_slash_matches_across_folders_as_the_shell_tools_do(self):
+        report = tree.put_tree(self.make(), self.src, None, exclude=["*c.bin"])
+        self.assertEqual(report.excluded, 1)
+
+    def test_a_pattern_matches_whatever_unicode_form_either_side_uses(self):
+        self.assertTrue(tree.excluded_by("caf\u00e9/x.bin", ["caf\u0065\u0301/*"]))
+        self.assertTrue(tree.excluded_by("caf\u0065\u0301/x.bin", ["caf\u00e9/*"]))
+        self.assertTrue(tree.excluded_by("a\\b.bin", ["a/*"]))
+
+    def test_excluding_everything_writes_an_empty_record_and_uploads_nothing(self):
+        report = tree.put_tree(self.make(), self.src, self.work / "blobs.txt", exclude=["*"])
+        self.assertEqual((report.excluded, len(report.entries)), (4, 0))
+        self.assertEqual((self.work / "blobs.txt").read_text(encoding="utf-8"), "")
+
+    def test_get_from_leaves_excluded_paths_alone(self):
+        tree.put_tree(self.make(), self.src, self.work / "blobs.txt")
+        out = self.work / "restored"
+        report = tree.get_tree(self.make("fresh"), self.work / "blobs.txt", out, exclude=["sub/*"])
+        self.assertEqual((report.restored, report.excluded), (2, 2))
+        self.assertFalse((out / "sub").exists())
+
+    def test_no_delete_a_restore_never_removes_what_is_not_in_the_record(self):
+        tree.put_tree(self.make(), self.src, self.work / "blobs.txt")
+        out = self.work / "restored"
+        out.mkdir()
+        (out / "mine.txt").write_bytes(b"my file")
+        tree.get_tree(self.make("fresh"), self.work / "blobs.txt", out)
+        self.assertEqual((out / "mine.txt").read_bytes(), b"my file")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -9,7 +9,9 @@ that holds *other* bytes is never overwritten (R4): it is reported and the run f
 from __future__ import annotations
 
 import concurrent.futures
+import fnmatch
 import os
+import unicodedata
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -25,6 +27,8 @@ class PutReport:
     present: int = 0
     skipped: "list[str]" = field(default_factory=list)       # not regular files, or unreadable: said, never silent
     problems: "list[str]" = field(default_factory=list)
+    excluded: int = 0
+    dry_run: bool = False
 
 
 @dataclass
@@ -32,6 +36,14 @@ class GetReport:
     restored: int = 0
     in_place: int = 0
     problems: "list[str]" = field(default_factory=list)
+    excluded: int = 0
+    dry_run: bool = False
+
+
+def excluded_by(path: str, patterns: "tuple[str, ...] | list[str]") -> bool:
+    """True when a relative path matches any ``--exclude`` pattern (shell-style, ``/`` separators, NFC both sides)."""
+    text = unicodedata.normalize("NFC", path.replace("\\", "/"))
+    return any(fnmatch.fnmatchcase(text, unicodedata.normalize("NFC", pattern)) for pattern in patterns)
 
 
 def _walk(directory: Path) -> "tuple[list[Path], list[str]]":
@@ -62,18 +74,26 @@ def _write_atomically(path: Path, text: str) -> None:
 def put_tree(
     base: Store, directory: Path, record_path: "Path | None", jobs: int = 1,
     on_file: "Callable[[str, store.Put], None] | None" = None,
+    *, dry_run: bool = False, exclude: "tuple[str, ...] | list[str]" = (),
 ) -> PutReport:
-    """Upload every regular file under *directory*; write the record file when one is named."""
+    """Upload every regular file under *directory*; write the record file when one is named.
+
+    With *dry_run* nothing is changed: no marker, no upload, no record file; the report says what would happen.
+    *exclude* patterns leave paths out (and so out of the record).
+    """
     if not directory.is_dir():
         raise StoreError(f"{directory} is not a folder")
     files, skipped = _walk(directory)
-    report = PutReport(skipped=skipped)
-    base.check_root(create=True)           # once, before any thread: two first puts would race on the marker
+    kept = [p for p in files if not excluded_by(p.relative_to(directory).as_posix(), exclude)]
+    report = PutReport(skipped=skipped, excluded=len(files) - len(kept), dry_run=dry_run)
+    files = kept
+    if not dry_run:
+        base.check_root(create=True)       # once, before any thread: two first puts would race on the marker
 
     def one(path: Path) -> "tuple[Path, store.Put | None, str | None]":
         worker = base if jobs <= 1 else base.clone()
         try:
-            return path, worker.put(path), None
+            return path, (worker.would_put(path) if dry_run else worker.put(path)), None
         except StoreError as exc:
             return path, None, str(exc)
 
@@ -92,7 +112,7 @@ def put_tree(
         report.present += 0 if done.uploaded else 1
         if on_file is not None:
             on_file(rel, done)
-    if record_path is not None and not report.problems:
+    if record_path is not None and not report.problems and not dry_run:
         # A record of a run that failed would claim files are stored that are not: it is written only on success.
         _write_atomically(record_path, record.render(report.entries))
     return report
@@ -108,16 +128,26 @@ def _in_place(target: Path, entry: record.Entry) -> bool:
         return False
 
 
-def get_tree(base: Store, record_path: Path, destination: Path, jobs: int = 1) -> GetReport:
-    """Restore every path of a record file under *destination*; nothing already there with other bytes is touched."""
+def get_tree(
+    base: Store, record_path: Path, destination: Path, jobs: int = 1,
+    *, dry_run: bool = False, exclude: "tuple[str, ...] | list[str]" = (),
+) -> GetReport:
+    """Restore every path of a record file under *destination*; nothing already there with other bytes is touched.
+
+    With *dry_run* nothing is changed (no folder, no download, not even the cache): ``restored`` counts what would be
+    fetched.  *exclude* patterns leave paths of the record out.
+    """
     try:
         entries = record.parse(record_path.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError) as exc:
         raise StoreError(f"cannot read the record file {record_path}: {exc}") from None
     except record.RecordError as exc:
         raise StoreError(f"{record_path}: {exc}") from None
-    report = GetReport()
-    destination.mkdir(parents=True, exist_ok=True)
+    kept = [e for e in entries if not excluded_by(e.path, exclude)]
+    report = GetReport(excluded=len(entries) - len(kept), dry_run=dry_run)
+    entries = kept
+    if not dry_run:
+        destination.mkdir(parents=True, exist_ok=True)
 
     def one(entry: record.Entry) -> "tuple[str, str | None]":
         target = destination / entry.path
@@ -125,6 +155,8 @@ def get_tree(base: Store, record_path: Path, destination: Path, jobs: int = 1) -
             if _in_place(target, entry):
                 return "in place", None
             return "problem", f"{entry.path}: something else is already there; not overwritten"
+        if dry_run:
+            return "restored", None          # it would be fetched
         worker = base if jobs <= 1 else base.clone()
         temp = target.with_name(target.name + ".sfblob-part")
         try:

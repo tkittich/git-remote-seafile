@@ -89,18 +89,30 @@ def _parser() -> argparse.ArgumentParser:
     common.add_argument("--jobs", type=int, default=1, help="transfers at once for a folder (default 1)")
 
     parser = argparse.ArgumentParser(
-        prog=PROG, description="Keep large, immutable files on a Seafile library under their SHA-256, and get them back verified.")
+        prog=PROG, description="Keep large, immutable files on a Seafile library under their SHA-256, and get them back verified.",
+        epilog=("What each command writes, and who may: `put` creates objects (blobs/<xx>/<sha256>) and, once, the store "
+                "marker; an object is never changed after it is stored (write-once). `get`, `path`, `cat`, `exists` and "
+                "`stat` write nothing on the server; `get` and `path` write only inside the local cache (and `get --to` "
+                "only to a path that did not exist). `--dry-run` changes nothing at all. Nothing here deletes an object "
+                "on the server."),
+        formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="command", metavar="<command>")
 
     put = sub.add_parser("put", parents=[common], help="upload files (or a folder with -r) and print their references")
     put.add_argument("paths", nargs="+", help="files, a folder with -r, or - for standard input")
     put.add_argument("-r", "--recursive", action="store_true", help="upload a folder")
     put.add_argument("--record", metavar="FILE", help="with -r: write path -> reference to FILE (one sorted line per entry, for git)")
+    put.add_argument("--dry-run", action="store_true", help="say what would be uploaded; change nothing (not even the record file)")
+    put.add_argument("--exclude", action="append", default=[], metavar="PATTERN",
+                     help="with -r: leave out paths matching PATTERN (shell-style, matched on the relative path; repeatable)")
 
     get = sub.add_parser("get", parents=[common], help="fetch objects into the cache, verified, and print their paths")
     get.add_argument("refs", nargs="*", help="sha256:<hex> (a prefix of 6 or more hex characters is enough when it is unique)")
     get.add_argument("--to", metavar="DIR", help="copy each object into DIR as its reference (or, with --from, restore the paths there)")
     get.add_argument("--from", dest="record", metavar="FILE", help="restore every path of a record file under --to")
+    get.add_argument("--dry-run", action="store_true", help="with --from: say what would be restored; change nothing")
+    get.add_argument("--exclude", action="append", default=[], metavar="PATTERN",
+                     help="with --from: leave out paths matching PATTERN (shell-style; repeatable)")
 
     path = sub.add_parser("path", parents=[common], help="print the cache path of an object, fetching it first")
     path.add_argument("ref")
@@ -127,19 +139,26 @@ def _put(args: argparse.Namespace) -> int:
         if args.recursive:
             if len(args.paths) != 1:
                 raise UsageError("put -r takes one folder")
-            report = tree.put_tree(base, Path(args.paths[0]), Path(args.record) if args.record else None, args.jobs)
+            report = tree.put_tree(base, Path(args.paths[0]), Path(args.record) if args.record else None, args.jobs,
+                                   dry_run=args.dry_run, exclude=args.exclude)
             for note in report.skipped:
                 sys.stderr.write(f"skipped {note}\n")
             for problem in report.problems:
                 sys.stderr.write(f"{PROG}: {problem}\n")
             _say({"entries": [{"path": e.path, "size": e.size, "ref": str(e.ref)} for e in report.entries],
                   "uploaded": report.uploaded, "present": report.present, "skipped": report.skipped,
-                  "problems": report.problems, "record": args.record},
-                 args, f"{len(report.entries)} file(s): {report.uploaded} uploaded, {report.present} already there"
-                 + (f"; record written to {args.record}" if args.record and not report.problems else ""))
+                  "problems": report.problems, "record": args.record, "excluded": report.excluded,
+                  "dry_run": report.dry_run},
+                 args, (f"dry run, nothing changed: {len(report.entries)} file(s), {report.uploaded} would be uploaded, "
+                        f"{report.present} already there" if report.dry_run else
+                        f"{len(report.entries)} file(s): {report.uploaded} uploaded, {report.present} already there")
+                 + (f", {report.excluded} excluded" if report.excluded else "")
+                 + (f"; record written to {args.record}" if args.record and not report.problems and not report.dry_run else ""))
             return 1 if report.problems else 0
         if args.record:
             raise UsageError("--record needs -r (a folder)")
+        if args.exclude:
+            raise UsageError("--exclude needs -r (a folder)")
         results: "list[dict[str, Any]]" = []
         failed = False
         for item in args.paths:
@@ -151,7 +170,7 @@ def _put(args: argparse.Namespace) -> int:
                 source = Path(name)
                 spooled.append(source)
             try:
-                done = base.put(source)
+                done = base.would_put(source) if args.dry_run else base.put(source)
             except store.StoreError as exc:
                 sys.stderr.write(f"{PROG}: {exc}\n")
                 failed = True
@@ -160,7 +179,7 @@ def _put(args: argparse.Namespace) -> int:
         if not args.json:
             for row in results:
                 sys.stdout.write(f"{row['ref']}  {row['size']}  {row['path']}\n")
-            if results:
+            if results and not args.dry_run:
                 sys.stdout.write("Note: these objects are not protected from `gc` (pins come with a later version)\n")
         else:
             _say({"files": results}, args, "")
@@ -175,12 +194,18 @@ def _get(args: argparse.Namespace) -> int:
     if args.record:
         if not args.to:
             raise UsageError("--from needs --to DIR")
-        report = tree.get_tree(base, Path(args.record), Path(args.to), args.jobs)
+        report = tree.get_tree(base, Path(args.record), Path(args.to), args.jobs, dry_run=args.dry_run, exclude=args.exclude)
         for problem in report.problems:
             sys.stderr.write(f"{PROG}: {problem}\n")
-        _say({"restored": report.restored, "in_place": report.in_place, "problems": report.problems}, args,
-             f"{report.restored} restored, {report.in_place} already in place" + (f", {len(report.problems)} problem(s)" if report.problems else ""))
+        _say({"restored": report.restored, "in_place": report.in_place, "problems": report.problems,
+              "excluded": report.excluded, "dry_run": report.dry_run}, args,
+             (f"dry run, nothing changed: {report.restored} would be restored" if report.dry_run else f"{report.restored} restored")
+             + f", {report.in_place} already in place"
+             + (f", {report.excluded} excluded" if report.excluded else "")
+             + (f", {len(report.problems)} problem(s)" if report.problems else ""))
         return 1 if report.problems else 0
+    if args.dry_run or args.exclude:
+        raise UsageError("--dry-run and --exclude need --from FILE")
     if not args.refs:
         raise UsageError("get needs a reference or --from FILE")
     rows: "list[dict[str, Any]]" = []

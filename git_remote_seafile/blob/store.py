@@ -73,6 +73,11 @@ class Store:
         self.verify_by_download = verify_by_download
         self._factory = factory
         self._marker_checked = False
+        try:
+            client.layout_root = self.root          # a racing mkdir_p knows the store's own folders (STORE.md D2)
+            client.store_layout = True
+        except AttributeError:
+            pass
         self._lock = threading.Lock()
 
     # -- layout -----------------------------------------------------------------------------------------------
@@ -217,6 +222,17 @@ class Store:
             self._prove_by_reading(ref, size)
         return Put(ref, size, uploaded=True)
 
+    def would_put(self, path: Path) -> Put:
+        """What ``put`` would do, changing nothing (not even the marker): ``uploaded`` says it would upload."""
+        try:
+            hex_digest, size = _sha256_and_size(path)
+        except OSError as exc:
+            raise StoreError(f"cannot read {path}: {exc}") from None
+        ref = refs.full(f"sha256:{hex_digest}")
+        names = {str(e.get("name", "")) for e in self._list(self.root)}
+        have = self._listed_size(ref) if MARKER in names else None
+        return Put(ref, size, uploaded=have != size)
+
     def _listed_size(self, ref: refs.Ref) -> "int | None":
         for entry in self._list(self.blob_dir(ref.hex)):
             if entry.get("name") == ref.hex and entry.get("type") != "dir":
@@ -268,7 +284,7 @@ class Store:
             return hit, True
         if not keep:
             return self._fetch(full, size, keep=False), False
-        with _hash_lock(full.hex):          # two paths with the same bytes must not share one partial file
+        with _hash_lock(full.hex), self.cache.fetch_lock(full.hex):    # one fetch at a time: threads, then processes
             hit = self.cache.lookup(full, size)
             if hit is not None:
                 return hit, True
@@ -278,9 +294,15 @@ class Store:
         """Download, check size and hash, and admit into the cache (or, for ``cat``, hand back the proved temporary)."""
         partial_dir = self.cache.partial_dir()
         partial_dir.mkdir(parents=True, exist_ok=True)
-        # One name per process for a kept object (a retry continues it); a private one for ``cat``, which deletes it.
-        part = partial_dir / (f"{full.hex}.{os.getpid()}.part" if keep else f"{full.hex}.{uuid.uuid4().hex}.tmp")
-        part.unlink(missing_ok=True)
+        # One name per object for a kept fetch, so a later run continues what an interrupted one left (RESUME.md D4);
+        # the lock makes it one writer.  ``cat`` takes a private name and deletes it.
+        part = partial_dir / (f"{full.hex}.part" if keep else f"{full.hex}.{uuid.uuid4().hex}.tmp")
+        if keep:
+            self.cache.sweep_partials()
+            if part.exists() and part.stat().st_size > size:
+                part.unlink()          # not a prefix of this object: start again
+        else:
+            part.unlink(missing_ok=True)
         last = ""
         for _attempt in range(3):
             try:

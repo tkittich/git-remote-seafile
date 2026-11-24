@@ -127,6 +127,37 @@ class CommandTests(CliCase):
         self.assertEqual(code, 1)
         self.assertIn("does not overwrite", err)
 
+    def test_a_dry_run_says_so_and_changes_nothing(self):
+        folder = self.work / "folder"
+        folder.mkdir()
+        (folder / "one.bin").write_bytes(DATA)
+        record = self.work / "blobs.txt"
+        code, out, _ = self.run_cli("put", "-r", str(folder), "--record", str(record), "--dry-run")
+        self.assertEqual(code, 0)
+        self.assertIn("dry run, nothing changed", out)
+        self.assertFalse(record.exists())
+        self.assertEqual(self.stub.files.get(self.stub_rid(), {}), {})
+
+    def test_exclude_leaves_paths_out_and_is_counted(self):
+        folder = self.work / "folder"
+        folder.mkdir()
+        (folder / "keep.bin").write_bytes(DATA)
+        (folder / "skip.tmp").write_bytes(b"x")
+        code, out, _ = self.run_cli("put", "-r", str(folder), "--exclude", "*.tmp")
+        self.assertEqual(code, 0)
+        self.assertIn("1 excluded", out)
+        self.assertIn("1 file(s)", out)
+
+    def test_dry_run_and_exclude_need_their_folder_forms(self):
+        self.assertEqual(self.run_cli("put", str(self.source), "--exclude", "*.tmp")[0], 2)
+        code, _, err = self.run_cli("get", f"sha256:{SHA}", "--dry-run")
+        self.assertEqual(code, 2)
+        self.assertIn("need --from", err)
+
+    def stub_rid(self) -> str:
+        from e2e_harness import REPO_ID
+        return REPO_ID
+
     def test_the_cache_command_evicts_and_clears(self):
         self.run_cli("put", str(self.source))
         self.run_cli("get", f"sha256:{SHA}")

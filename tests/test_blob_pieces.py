@@ -5,6 +5,8 @@ from __future__ import annotations
 import hashlib
 import os
 import stat
+import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -186,6 +188,71 @@ class CacheTests(unittest.TestCase):
     def test_the_cache_is_addressed_by_a_full_reference_only(self):
         with self.assertRaises(refs.RefError):
             self.cache.path_of(refs.parse(f"sha256:{SHA[:8]}"))
+
+
+class FetchLockTests(unittest.TestCase):
+    """The lock that makes one fetch of an object at a time across processes (RESUME.md D4)."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.cache = cache.Cache(Path(self._tmp.name) / "cache")
+
+    def holder(self, seconds: float) -> "subprocess.Popen[str]":
+        code = "\n".join([
+            "import sys, time",
+            "from pathlib import Path",
+            "from git_remote_seafile.blob import cache",
+            "c = cache.Cache(Path(sys.argv[1]))",
+            "with c.fetch_lock(sys.argv[2]):",
+            "    print('held', flush=True)",
+            "    time.sleep(float(sys.argv[3]))",
+        ])
+        proc = subprocess.Popen([sys.executable, "-c", code, str(self.cache.root), SHA, str(seconds)],
+                                stdout=subprocess.PIPE, text=True, cwd=str(Path(__file__).resolve().parent.parent))
+        self.addCleanup(lambda: (proc.kill(), proc.wait()))      # the lock file is released before the folder goes
+        assert proc.stdout is not None
+        self.assertEqual(proc.stdout.readline().strip(), "held")
+        return proc
+
+    def test_a_second_process_waits_for_the_first_and_then_gets_the_lock(self):
+        proc = self.holder(1.0)
+        began = time.monotonic()
+        with self.cache.fetch_lock(SHA, timeout=20):
+            waited = time.monotonic() - began
+        self.assertGreater(waited, 0.3)
+        proc.wait(timeout=20)
+
+    def test_a_lock_held_too_long_times_out_with_a_message(self):
+        self.holder(6.0)
+        with self.assertRaises(TimeoutError) as caught:
+            with self.cache.fetch_lock(SHA, timeout=0.5):
+                pass
+        self.assertIn(SHA, str(caught.exception))
+
+    def test_a_killed_holder_releases_the_lock(self):
+        proc = self.holder(60.0)
+        proc.kill()
+        proc.wait(timeout=20)
+        with self.cache.fetch_lock(SHA, timeout=10):
+            pass
+
+    def test_objects_are_locked_independently(self):
+        self.holder(3.0)
+        with self.cache.fetch_lock(OTHER, timeout=5):
+            pass
+
+    def test_the_sweep_removes_old_partials_and_locks_and_keeps_recent_ones(self):
+        folder = self.cache.partial_dir()
+        folder.mkdir(parents=True)
+        old, fresh, lock = folder / "a.part", folder / "b.part", folder / "c.lock"
+        for item in (old, fresh, lock):
+            item.write_bytes(b"x")
+        long_ago = time.time() - 10 * 24 * 3600
+        os.utime(old, (long_ago, long_ago))
+        os.utime(lock, (long_ago, long_ago))
+        self.assertEqual(self.cache.sweep_partials(), 2)
+        self.assertEqual(sorted(p.name for p in folder.iterdir()), ["b.part"])
 
 
 if __name__ == "__main__":
