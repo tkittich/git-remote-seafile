@@ -165,6 +165,15 @@ Why not just keep the repository in a synced folder, a bare repo, a bundle or a 
 - [Contributing Guidelines (CONTRIBUTING.md)](CONTRIBUTING.md): How to contribute, run tests, and adhere to development standards.
 - [Code of Conduct (CODE_OF_CONDUCT.md)](CODE_OF_CONDUCT.md): The standard this project adopts, and how to report a problem.
 
+### Command names
+
+The documentation spells commands out (`git seafile-snapshot`, `git-remote-seafile`) so they can be searched for; every long name has short forms that are the same program. Scripts, cron jobs and CI should use the long form.
+
+| Long form | Short forms |
+| :--- | :--- |
+| `git-remote-seafile` (the helper; git requires this name) | `seafile <command>`, e.g. `seafile login`, `seafile doctor` |
+| `git seafile-snapshot` | `sfsnap`, `git sfsnap`, `seafile snapshot`, `seafile snap` |
+
 ### Whole-tree snapshots: `git seafile-snapshot`
 
 A `.gitignore`d file never enters a commit, so **no remote helper can carry it** — `.env`, a local database, build output. `git seafile-snapshot` (also `sfsnap` or `git sfsnap`) closes that gap: it captures the working tree **as it lies on disk**, ignored files and all, into versioned, byte-exact snapshots in a Seafile library, over the same transport the helper uses.
