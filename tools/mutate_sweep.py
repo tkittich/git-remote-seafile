@@ -30,6 +30,7 @@ import argparse
 import ast
 import concurrent.futures
 import hashlib
+import importlib
 import json
 import os
 import shutil
@@ -41,10 +42,11 @@ import time
 from typing import Any
 from pathlib import Path
 
+coverage: Any
 try:
-    import coverage
+    coverage = importlib.import_module("coverage")
 except ImportError:      # the sweep still runs, without picking tests by the lines they run
-    coverage = None     # type: ignore[assignment]
+    coverage = None
 
 ROOT = Path(__file__).resolve().parent.parent
 _SWAPS = {ast.Eq: "!=", ast.NotEq: "==", ast.Lt: "<=", ast.LtE: "<", ast.Gt: ">=", ast.GtE: ">",
