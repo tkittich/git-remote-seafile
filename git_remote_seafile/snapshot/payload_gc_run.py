@@ -135,6 +135,17 @@ def add_payload_gc_arguments(parser: Any) -> None:
         "then no longer be restored. Default: keep every snapshot",
     )
     parser.add_argument(
+        "--payload-keep-days",
+        type=int,
+        default=None,
+        metavar="D",
+        help="with payload gc: a snapshot counts as using its objects when it is the newest of a branch or tag, "
+        "or among the newest --payload-keep N, or at most D days old (a commit's age comes from its committer "
+        "date and from when this tool first saw it, never from a date alone). Older snapshots can then no "
+        "longer be restored once their objects are deleted; the first run releases nothing for D days. "
+        "Needs --payload-accept-loss with --payload-delete. Not remembered",
+    )
+    parser.add_argument(
         "--payload-no-vault",
         action="store_true",
         help="with payload gc --payload-delete: delete without --vault. Snapshots that "
@@ -183,6 +194,8 @@ def payload_gc_conflicts(args: argparse.Namespace) -> list[str]:
             problems.append(f"--payload-grace-days must be at least {_MIN_GRACE_DAYS:g}")
         if args.payload_keep is not None and args.payload_keep < 1:
             problems.append("--payload-keep must be at least 1")
+        if args.payload_keep_days is not None and args.payload_keep_days < 1:
+            problems.append("--payload-keep-days must be at least 1")
         if args.payload_delete and not args.vault and not args.payload_no_vault:
             problems.append(
                 "--payload-delete needs --vault <the long-lived vault>: a snapshot that is "
@@ -208,11 +221,14 @@ class _History(NamedTuple):
     dropped: list[str]           #: refs seen by the last --payload-delete that lost history
     expired: int                 #: commits --payload-keep leaves out of the count
     lost_paths: tuple[str, ...] = ()  #: paths only the commits --payload-keep leaves out hold
+    reachable: tuple[str, ...] = ()   #: every commit reachable from a ref (the age record is pruned to them)
 
 
 def _hashes_in_history(
     remote: str | None, vault: Path | None, keep: int | None = None,
     seen: dict[str, str] | None = None, want_lost: bool = True,
+    keep_days: int | None = None, commit_seen: "dict[str, float] | None" = None,
+    age_now: "float | None" = None,
 ) -> _History:
     """Every payload object referenced from every ref of *remote* and, when given, of
     the local *vault* (which must be one).  *seen* is the ref tips the last
@@ -288,16 +304,25 @@ def _hashes_in_history(
                 dropped.append(f"{ref} no longer contains {old[:12]}")
         expired = 0
         lost: tuple[str, ...] = ()
-        if keep is None:
-            commits = [c for c in gitrun.git(repo, None, ["rev-list", "--all"], cwd=Path(td)).stdout.split() if c]
+        everything_list = [c for c in gitrun.git(repo, None, ["rev-list", "--all"], cwd=Path(td)).stdout.split() if c]
+        if keep is None and keep_days is None:
+            commits = everything_list
         else:
             refs = gitrun.git(repo, None, ["for-each-ref", "--format=%(refname)"], cwd=Path(td)).stdout.split()
             kept: set[str] = set()
-            for ref in refs:
-                kept.update(gitrun.git(repo, None, ["rev-list", f"--max-count={keep}", ref],
-                                cwd=Path(td)).stdout.split())
+            if keep_days is not None:
+                for ref in refs:   # rule 1: the newest snapshot of every ref (a tag is followed to its commit)
+                    kept.update(gitrun.git(repo, None, ["rev-list", "--max-count=1", ref], cwd=Path(td)).stdout.split())
+                if age_now is None:
+                    kept.update(everything_list)     # no usable server clock: the age rule is not applied
+                else:
+                    kept.update(_young_commits(repo, Path(td), keep_days, commit_seen or {}, age_now))
+            if keep is not None:
+                for ref in refs:
+                    kept.update(gitrun.git(repo, None, ["rev-list", f"--max-count={keep}", ref],
+                                    cwd=Path(td)).stdout.split())
             commits = sorted(kept)
-            everything = set(gitrun.git(repo, None, ["rev-list", "--all"], cwd=Path(td)).stdout.split())
+            everything = set(everything_list)
             # Only a snapshot that has a manifest can become unrestorable: one taken
             # before payload mode is whole in git and stays restorable.
             older = "".join(f"{c}:{payload_upload.PAYLOAD_MANIFEST}\n" for c in sorted(everything - kept))
@@ -310,7 +335,7 @@ def _hashes_in_history(
             # never used, and one unreadable old manifest stopped it (review c305b0a, fable-S2-7).
             lost = payload_history.paths_only_in_older_snapshots(repo, Path(td), kept, everything) if expired and want_lost else ()
         if not commits:
-            return _History({}, 0, 0, tips, dropped, expired, lost)
+            return _History({}, 0, 0, tips, dropped, expired, lost, tuple(everything_list))
         specs = "".join(f"{c}:{payload_upload.PAYLOAD_MANIFEST}\n" for c in commits)
         checked = gitrun.git(repo, None, ["cat-file", "--batch-check"], cwd=Path(td), stdin=specs).stdout
         blobs = sorted({
@@ -329,7 +354,42 @@ def _hashes_in_history(
                 ) from None
             for item in payload_manifest.check_manifest_shape(data, f"the payload manifest {oid[:12]}"):
                 hashes[item["sha256"]] = item["size"]
-        return _History(hashes, len(commits), len(blobs), tips, dropped, expired, lost)
+        return _History(hashes, len(commits), len(blobs), tips, dropped, expired, lost, tuple(everything_list))
+
+
+def _young_commits(
+    repo: Path, work: Path, days: int, first_seen: "dict[str, float]", now: float,
+) -> "set[str]":
+    """The commits at most *days* old, by the committer date and by when this tool first saw them.
+
+    The committer date is written by the machine that committed and a rebase changes only it, so it is
+    believed only as far as the first-seen time allows: a date more than a day after the commit was first
+    seen is aged from the first-seen time (a clock set to 2036 does not keep its snapshots until 2036), and
+    a date in the past is believed only when the tool has also known the commit that long.  Compared in code
+    over every commit: ``rev-list --since`` stops at the first old one and would hide newer ancestors.
+    """
+    young: set[str] = set()
+    listing = gitrun.git(repo, None, ["log", "--all", "--format=%H %ct"], cwd=work).stdout.splitlines()
+    for line in listing:
+        commit, _, stamp = line.partition(" ")
+        if not commit or not stamp.strip().lstrip("-").isdigit():
+            continue
+        committed = float(stamp)
+        first = first_seen.get(commit, now)
+        effective = first if committed > first + 86400 else max(committed, first)
+        if now - effective <= days * 86400:
+            young.add(commit)
+    return young
+
+
+def _clock_usable(client: Any) -> bool:
+    """Whether the server's clock can time the age rule: it sent a ``Date`` and it is near this machine's."""
+    if not getattr(client, "server_time_measured", True):
+        return False
+    try:
+        return abs(float(client.get_server_time()) - time.time()) <= payload_guards._MAX_CLOCK_SKEW_SECONDS
+    except Exception:
+        return False
 
 
 def _remote_tips(remote: str) -> dict[str, str]:
@@ -473,7 +533,7 @@ def _require_room_for_history(client: Any, rid: str, repo_path: str, allow_low_d
 def payload_gc(
     remote: str, vault: Path | None, *, delete: bool, grace_days: float, keep: int | None = None,
     accept_loss: bool = False, from_vault: bool = False, allow_low_disk: bool = False,
-    allow_non_owner: bool = False,
+    allow_non_owner: bool = False, keep_days: int | None = None,
 ) -> int:
     """Report, and with *delete* mark and later remove, unreferenced payload objects.
 
@@ -504,13 +564,41 @@ def payload_gc(
     if not from_vault:
         _require_room_for_history(client, rid, repo_path, allow_low_disk)
     seen = {} if from_vault else payload_guards.read_seen_tips(client, rid, base)
-    history = _hashes_in_history(None if from_vault else remote, vault, keep, seen)
+    if from_vault and keep_days is not None:
+        raise common.SnapshotError("internal error: a vault-only history cannot apply the age rule")
+    # The age of a commit is judged on the server's clock, so its check runs before the history walk.  Every
+    # delete run keeps the first-seen record (so the option, enabled later, finds its history ready); a
+    # report reads it only for the age rule.
+    commit_seen: dict[str, float] = {}
+    seen_copies: list[str] = []
+    read_now = _grace_now(client)
+    age_now: float | None = None
+    if keep_days is not None:
+        payload_guards._require_server_clock(client, delete)
+        age_now = read_now if _clock_usable(client) else None
+        if age_now is None:
+            print(f"Note: the server sent no usable Date, so the age rule of --payload-keep-days {keep_days} was "
+                  "not applied and every snapshot is kept")
+    if delete or keep_days is not None:
+        commit_seen, seen_copies = payload_guards.read_commit_seen(client, rid, base, read_now)
+    history = _hashes_in_history(None if from_vault else remote, vault, keep, seen,
+                                 keep_days=keep_days, commit_seen=commit_seen, age_now=age_now)
     sizes_by_hash, commits, manifests = history.hashes, history.commits, history.manifests
     referenced = set(sizes_by_hash)
     if keep is not None:
         print(f"--payload-keep {keep}: only the newest {keep} snapshot(s) of each branch and "
               f"tag count as using objects; {history.expired} older snapshot(s) become "
               f"unrestorable once their objects are deleted")
+        print(payload_history.lost_paths_line(history.lost_paths))
+    if keep_days is not None and age_now is not None:
+        print(f"--payload-keep-days {keep_days}: a snapshot counts as using objects when it is the newest of a "
+              f"branch or tag"
+              + (f", among the newest {keep}" if keep is not None else "")
+              + f", or at most {keep_days} day(s) old; {history.expired} older snapshot(s) become "
+              "unrestorable once their objects are deleted")
+        if not commit_seen:
+            print(f"first run of the age rule: every commit is first seen now, so nothing is released for "
+                  f"{keep_days} day(s)")
         print(payload_history.lost_paths_line(history.lost_paths))
     if history.dropped:
         print("Warning: the remote's history changed since the last --payload-delete run:\n  "
@@ -601,13 +689,15 @@ def payload_gc(
             "unreferenced; refusing to mark or delete (wrong remote, or a fetch that "
             "returned nothing?)"
         )
-    if (history.dropped or (keep is not None and history.expired)) and not accept_loss:
+    ruled = keep is not None or (keep_days is not None and age_now is not None)
+    if (history.dropped or (ruled and history.expired)) and not accept_loss:
         raise common.SnapshotError(
             "refusing to mark or delete: "
             + ("the remote's history was rewritten since the last --payload-delete run "
                f"({len(history.dropped)} ref(s)); " if history.dropped else "")
-            + (f"--payload-keep {keep} would make {history.expired} older snapshot(s) "
-               "unrestorable; " if keep is not None and history.expired else "")
+            + (f"{'--payload-keep ' + str(keep) if keep is not None else '--payload-keep-days ' + str(keep_days)} "
+               f"would make {history.expired} older snapshot(s) "
+               "unrestorable; " if ruled and history.expired else "")
             + "if that is intended, run again with --payload-accept-loss. Objects that "
             "only those snapshots need would otherwise be deleted after the grace period"
         )
@@ -660,6 +750,7 @@ def payload_gc(
             "has the file, or run payload verify"
         )
     payload_guards.write_seen_tips(client, rid, base, history.tips)
+    payload_guards.write_commit_seen(client, rid, base, commit_seen, history.reachable, read_now, seen_copies)
     swept = placement.sweep_probe_debris(client, rid, f"{base}/objects")
     if swept:
         print(f"removed {swept} file(s) a killed link probe left in {base}/objects")

@@ -74,7 +74,7 @@ ALLOWED: dict[str, frozenset[str]] = {
     },
     "gc": EVERY_COMMAND | {
         "--remote", "--vault", "--allow-low-disk", "--allow-shared-remote", "--allow-synced",
-        "--payload-grace-days", "--payload-keep", "--payload-delete", "--payload-no-vault",
+        "--payload-grace-days", "--payload-keep", "--payload-keep-days", "--payload-delete", "--payload-no-vault",
         "--payload-accept-loss", "--payload-allow-non-owner",
     },
     "verify": EVERY_COMMAND | {
@@ -88,7 +88,7 @@ ALLOWED: dict[str, frozenset[str]] = {
 }
 #: What only some other command reads, so a snapshot run does not.
 NOT_SNAPSHOT = frozenset({
-    "--into", "--ref", "--verify", "--only", "--full-repack", "--payload-delete", "--payload-keep", "--payload-no-vault",
+    "--into", "--ref", "--verify", "--only", "--full-repack", "--payload-delete", "--payload-keep", "--payload-keep-days", "--payload-no-vault",
     "--payload-accept-loss", "--payload-allow-non-owner", "--payload-grace-days", "--payload-view-name",
     "--payload-view-replace",
 })

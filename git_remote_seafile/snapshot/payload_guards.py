@@ -278,6 +278,91 @@ def write_seen_tips(client: Any, rid: str, base: str, tips: dict[str, str]) -> N
     _write_json_marker(client, rid, base, _SEEN_NAME, tips)
 
 
+#: When this tool first saw each commit, by the server's clock (PAYLOAD.md D9a): the age rule of
+#: ``--payload-keep-days`` does not trust a commit's own date.  A file of its own, because ``gc-seen.json``
+#: is ``{ref: oid}`` and ``gc-pending.json`` takes only object names.
+_COMMIT_SEEN_NAME = "gc-commit-seen.json"
+_COMMIT_SEEN_CONFLICT = re.compile(r"^gc-commit-seen \(SFConflict .*\)\.json$")
+COMMIT_SEEN_CAP = 100_000
+_COMMIT_SEEN_FUTURE_SECONDS = 86400
+
+
+def _commit_seen_entries(text: str, where: str, now: float) -> dict[str, float]:
+    try:
+        data = json.loads(text)
+    except (ValueError, RecursionError):
+        raise common.SnapshotError(
+            f"{where} is unreadable. Remove it to start the age record afresh: every commit is then first "
+            "seen now, which keeps every snapshot for the full --payload-keep-days"
+        ) from None
+    if not isinstance(data, dict):
+        raise common.SnapshotError(
+            f"{where} is not an object. Remove it to start the age record afresh (every commit is then first seen now)"
+        )
+    found: dict[str, float] = {}
+    for commit, stamp in data.items():
+        if not isinstance(commit, str) or not re.fullmatch(r"[0-9a-f]{40,64}", commit):
+            continue
+        usable = isinstance(stamp, (int, float)) and not isinstance(stamp, bool) and 0 < stamp <= now + _COMMIT_SEEN_FUTURE_SECONDS
+        found[commit] = float(stamp) if usable else now   # a stamp this tool could not have written is "now": younger, never older
+    return found
+
+
+def read_commit_seen(client: Any, rid: str, base: str, now: float) -> "tuple[dict[str, float], list[str]]":
+    """``({commit: first-seen time}, the conflict copies that were merged)``; ``({}, [])`` for a first run.
+
+    Two machines racing leave a ``gc-commit-seen (SFConflict ...).json`` copy.  Every copy is read and each
+    commit takes its latest first-seen time, the safe direction (the commit looks younger).  A file the folder
+    lists that cannot be read stops the run; a missing one means every commit is first seen now.  Past the cap
+    the entries furthest in the past are dropped, and re-enter as first seen now.
+    """
+    from git_remote_seafile.client import read_listed_text
+
+    names = [_COMMIT_SEEN_NAME]
+    conflicts: list[str] = []
+    try:
+        for entry in client.list_dir(rid, base):
+            name = entry.get("name", "")
+            if isinstance(name, str) and _COMMIT_SEEN_CONFLICT.match(name):
+                conflicts.append(name)
+    except Exception:
+        conflicts = []   # no listing of the folder: only the record itself is read
+    merged: dict[str, float] = {}
+    for name in [*names, *conflicts]:
+        try:
+            text = read_listed_text(client, rid, f"{base}/{name}")
+        except Exception as exc:
+            raise common.SnapshotError(
+                f"could not read {base}/{name} ({type(exc).__name__}: {exc}); the age of the commits cannot be "
+                "judged. Retry, or remove the file (every commit is then first seen now)"
+            ) from None
+        if not text:
+            continue
+        for commit, stamp in _commit_seen_entries(text, f"{base}/{name}", now).items():
+            merged[commit] = max(stamp, merged.get(commit, 0.0))
+    if len(merged) > COMMIT_SEEN_CAP:
+        newest = sorted(merged, key=lambda commit: merged[commit], reverse=True)[:COMMIT_SEEN_CAP]
+        merged = {commit: merged[commit] for commit in newest}
+    return merged, conflicts
+
+
+def write_commit_seen(
+    client: Any, rid: str, base: str, seen: "dict[str, float]", reachable: "list[str] | tuple[str, ...]",
+    now: float, conflicts: "list[str]",
+) -> None:
+    """Write the record for the commits reachable from a ref (the rest are pruned) and remove merged copies."""
+    kept = {commit: seen.get(commit, now) for commit in reachable}
+    if len(kept) > COMMIT_SEEN_CAP:
+        newest = sorted(kept, key=lambda commit: kept[commit], reverse=True)[:COMMIT_SEEN_CAP]
+        kept = {commit: kept[commit] for commit in newest}
+    _write_json_marker(client, rid, base, _COMMIT_SEEN_NAME, kept)
+    for name in conflicts:
+        try:
+            client.delete_entry(rid, f"{base}/{name}")
+        except Exception:
+            pass   # the next write tries again; a copy is merged, never relied on
+
+
 def change_time_ns(path: Path, st: os.stat_result) -> int:
     """The inode's change time, which an in-place edit moves even when the
     modification time is put back.

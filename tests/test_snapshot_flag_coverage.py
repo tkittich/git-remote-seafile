@@ -62,7 +62,7 @@ ACCEPTED = {
                "--exit-warnings"},
     "maintain": {"--source", "--vault", "--allow-synced", "--json", "--exit-warnings", "--no-object-compression",
                  "--full-repack"},
-    "gc": {"--allow-low-disk", "--allow-shared-remote", "--allow-synced", "--exit-warnings", "--json",
+    "gc": {"--allow-low-disk", "--allow-shared-remote", "--allow-synced", "--exit-warnings", "--json", "--payload-keep-days",
            "--payload-grace-days", "--payload-keep", "--vault"},
     "verify": {"--allow-low-disk", "--allow-shared-remote", "--allow-synced", "--exclude", "--exit-warnings", "--json",
                "--payload-jobs", "--payload-rehash", "--payload-report-days", "--payload-skip-changing", "--vault"},
