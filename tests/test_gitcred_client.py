@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import contextlib
+import io
 import os
 import tempfile
 import unittest
@@ -92,6 +94,29 @@ class GitFallbackTests(_StoreCase):
         with patch.object(gitcred, "_run", side_effect=AssertionError("must be refused first")):
             with self.assertRaises(SeafileAuthError):
                 SeafileClient("https://user:pw@sf.example/")
+
+
+class PlaintextTokenNoticeTests(_StoreCase):
+    def _config(self, body: str) -> None:
+        (self.home / ".git-seafile.json").write_text(body, encoding="utf-8")
+
+    def test_a_token_in_the_config_file_is_announced_as_deprecated(self) -> None:
+        self._config('{"server": "https://sf.example/seafile", "token": "plain"}')
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            client = SeafileClient(URL)
+        self.assertEqual(client.token, "plain")
+        self.assertIn("Notice:", err.getvalue())
+        self.assertIn("login --store credential", err.getvalue())
+        self.assertNotIn("Warning:", err.getvalue())
+
+    def test_no_notice_when_the_token_is_not_in_the_file(self) -> None:
+        self._config('{"server": "https://sf.example/seafile", "credential_store": "git"}')
+        gitcred.approve(URL, "seafile-token", "from-git")
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            SeafileClient(URL)
+        self.assertNotIn("stored as plain text", err.getvalue())
 
 
 class _Resp:

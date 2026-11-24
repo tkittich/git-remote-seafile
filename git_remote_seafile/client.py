@@ -696,6 +696,20 @@ class SeafileClient:
         )
         sys.stderr.flush()
 
+    def _note_plaintext_token(self, config_path: Path) -> None:
+        """Say once that a token kept in the config file is deprecated in favour of git's credential store.
+
+        A ``Notice:``, not a ``Warning:``: the token still works and a job run with ``--exit-warnings``
+        must not start failing for it.  Deprecation policy: announced in 0.11, the file token is kept
+        working until a later release says otherwise.
+        """
+        sys.stderr.write(
+            f"Notice: the token in {config_path} is stored as plain text, which is deprecated. "
+            "Run 'git-remote-seafile login --store credential' to keep it in git's credential store "
+            "instead; the file token still works in 0.11.\n"
+        )
+        sys.stderr.flush()
+
     def _load_credentials(self, require_token: bool = True) -> None:
         """Find a server and token: environment, then config file, then the
         Seafile desktop client's accounts.db.
@@ -797,6 +811,8 @@ class SeafileClient:
                 if self._may_replace_server_url(cfg_server):
                     self.server_url = cfg_server.rstrip("/")
                     self._adopt_token(cfg_token, f"the token in {config_path}")
+                    if cfg_token:
+                        self._note_plaintext_token(config_path)
                     return True, cfg_server, cfg_token
             elif cfg_server and not cfg_token and cfg.get("credential_store") == "git":
                 # `login --store credential` wrote this: the host is known, the token is in git's store.

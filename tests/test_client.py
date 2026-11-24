@@ -140,7 +140,8 @@ class TestClientCredentials(unittest.TestCase):
                  patch("sys.stderr", new_callable=io.StringIO) as mock_err:
                 client = SeafileClient()
                 self.assertEqual(client.token, "json-tok")
-                self.assertEqual(mock_err.getvalue(), "")
+                self.assertNotIn("Warning:", mock_err.getvalue())
+                self.assertNotIn("accessible by others", mock_err.getvalue())
 
     def test_load_credentials_from_accounts_db(self):
         with tempfile.TemporaryDirectory() as td:
