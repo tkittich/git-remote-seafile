@@ -63,6 +63,10 @@ sfsnap = "git_remote_seafile.snapshot.cli:main"
 git-sfsnap = "git_remote_seafile.snapshot.cli:main"
 # One name for every tool: `seafile snapshot ...`, `seafile store ...`, `seafile login`.
 seafile = "git_remote_seafile.umbrella:main"
+# The blob store: `seafile-blob put big.tar`, `sfblob get sha256:...`, `git seafile-blob ...`, `seafile blob ...`.
+seafile-blob = "git_remote_seafile.blob.cli:main"
+sfblob = "git_remote_seafile.blob.cli:main"
+git-seafile-blob = "git_remote_seafile.blob.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["git_remote_seafile*"]

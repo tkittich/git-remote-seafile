@@ -42,8 +42,8 @@ def main(argv: "list[str] | None" = None) -> int:
         from .snapshot import cli as snapshot_cli
         return snapshot_cli.main(rest)
     if first == BLOB_WORD:
-        sys.stderr.write("seafile: the blob store is not part of this version yet\n")
-        return 2
+        from .blob import cli as blob_cli
+        return blob_cli.main(rest)
     if first in _helper_commands():
         from . import cli
         sys.argv = ["git-remote-seafile", first, *rest]

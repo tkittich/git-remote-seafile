@@ -18,6 +18,11 @@ class EntryPointTests(unittest.TestCase):
     def scripts(self) -> "dict[str, str]":
         return tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]["scripts"]
 
+    def test_the_blob_names_run_the_same_function(self):
+        scripts = self.scripts()
+        for name in ("seafile-blob", "sfblob", "git-seafile-blob"):
+            self.assertEqual(scripts[name], "git_remote_seafile.blob.cli:main")
+
     def test_the_umbrella_is_an_entry_point(self):
         self.assertEqual(self.scripts()["seafile"], "git_remote_seafile.umbrella:main")
 
@@ -80,10 +85,11 @@ class UmbrellaTests(unittest.TestCase):
             self.assertEqual(self.run_umbrella("doctor", "seafile://lib/repo")[0], 3)
         self.assertEqual(seen, [["git-remote-seafile", "doctor", "seafile://lib/repo"]])
 
-    def test_the_blob_store_is_named_but_not_there_yet(self):
-        code, _, err = self.run_umbrella("blob", "put", "x")
-        self.assertEqual(code, 2)
-        self.assertIn("not part of this version", err)
+    def test_blob_hands_the_rest_to_the_blob_store(self):
+        from unittest.mock import patch
+        with patch("git_remote_seafile.blob.cli.main", return_value=4) as main:
+            self.assertEqual(self.run_umbrella("blob", "get", "sha256:abcdef")[0], 4)
+            main.assert_called_once_with(["get", "sha256:abcdef"])
 
     def test_help_lists_the_tools_and_no_arguments_is_a_usage_error(self):
         code, out, _ = self.run_umbrella("--help")

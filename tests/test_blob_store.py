@@ -13,7 +13,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
-from e2e_harness import REPO_ID, SeafileStub  # noqa: E402
+from e2e_harness import SeafileStub  # noqa: E402
 
 from git_remote_seafile.blob import cache as cache_mod  # noqa: E402
 from git_remote_seafile.blob import refs, store  # noqa: E402
