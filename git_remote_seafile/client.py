@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import Counter
 import difflib
+import hashlib
 import io
 import json
 import os
@@ -14,7 +15,7 @@ import time
 from collections.abc import Iterator
 from typing import Any, Callable
 import uuid
-from urllib.parse import quote, urlparse, urlunparse
+from urllib.parse import quote, unquote, urlparse, urlunparse
 
 import requests
 from requests.adapters import HTTPAdapter
@@ -248,6 +249,92 @@ class TransferAborted(Exception):
     the upload is doomed -- raises this instead, and the two swallow sites let
     it through.
     """
+
+
+class UploadSourceChangedError(Exception):
+    """The bytes a chunk was sent with were not the same on every attempt: the file changed while uploading.
+
+    Deliberately **not** a ``SeafileAPIError``: ``_upload`` retries those, and this must reach the caller,
+    which routes it to "changed while uploading" and not to "the server failed" (RESUME.md D1 8(d)).
+    """
+
+
+class HashingReader:
+    """A read-only file object that hashes the bytes handed to the uploader (RESUME.md D1 step 2).
+
+    Only a *forward-contiguous* first read is hashed, so the digest is that of the bytes the server received,
+    in order.  A chunked upload also drives the attempt protocol: ``begin_attempt`` restores the running hash to
+    the copy taken at the last accepted boundary, and ``accept`` -- called when the server is known to hold the
+    chunk -- requires that **every attempt which read the whole span read the same bytes** (the server may have
+    kept the first attempt although the second is the one that was answered).  The digest then describes what
+    the server holds.  A reader that is rewound some other way keeps the old ``rewound`` flag.
+    """
+
+    def __init__(self, fh: Any, size: int, meter: Any = None) -> None:
+        self._fh = fh
+        self._size = size
+        self._meter = meter
+        self._hash = hashlib.sha256()
+        self._hashed = 0
+        #: True once any byte was read a second time outside the attempt protocol.
+        self.rewound = False
+        self._boundary: "tuple[int, Any]" = (0, self._hash.copy())
+        self._span_end: "int | None" = None
+        self._pending_end = 0
+        self._attempts: list[Any] = []
+
+    def read(self, size: int = -1) -> bytes:
+        at = self._fh.tell()
+        data = self._fh.read(size)
+        if data and self._meter is not None:
+            self._meter.add(len(data))
+        if data and at < self._hashed:
+            self.rewound = True
+        if data and at == self._hashed:
+            self._hash.update(data)
+            self._hashed += len(data)
+        return data
+
+    def seek(self, offset: int, whence: int = 0) -> int:
+        return int(self._fh.seek(offset, whence))
+
+    def tell(self) -> int:
+        return int(self._fh.tell())
+
+    @property
+    def complete(self) -> bool:
+        return self._hashed == self._size
+
+    def hexdigest(self) -> str:
+        return self._hash.hexdigest()
+
+    def _close_attempt(self) -> None:
+        if self._span_end is not None and self._hashed == self._span_end:
+            self._attempts.append(self._hash.copy())
+        self._span_end = None
+
+    def begin_attempt(self, offset: int, length: int) -> None:
+        """A send of ``[offset, offset+length)`` is about to start (the first, or a retry)."""
+        self._close_attempt()
+        at, saved = self._boundary
+        if at != offset:
+            self.rewound = True      # not a position this reader can restore: the caller re-reads, as before
+            return
+        self._hash = saved.copy()
+        self._hashed = at
+        self._span_end = self._pending_end = offset + length
+
+    def accept(self) -> None:
+        """The server holds the span: every attempt that read all of it must have read the same bytes."""
+        self._close_attempt()
+        attempts, self._attempts = self._attempts, []
+        if len({h.hexdigest() for h in attempts}) != 1:
+            # none read the whole span, or two read different bytes: the digest cannot vouch for what is stored
+            raise UploadSourceChangedError("the file changed while it was being uploaded")
+        end = self._pending_end
+        self._boundary = (end, attempts[0].copy())    # the boundary moves to the end of the accepted span
+        self._hash = attempts[0].copy()
+        self._hashed = end
 
 
 def _force_file_host_enabled() -> bool:
@@ -1978,6 +2065,9 @@ class SeafileClient:
             last_error = ""
             for _attempt in range(UPLOAD_CHUNK_ATTEMPTS):
                 fh.seek(start0 + offset)
+                begin_attempt = getattr(fh, "begin_attempt", None)
+                if begin_attempt is not None:
+                    begin_attempt(start0 + offset, length)    # one digest per attempt (RESUME.md D1 step 2)
 
                 def chunk_progress(done: int, total: int, _base: int = offset) -> None:
                     if progress_callback is not None:
@@ -2002,6 +2092,7 @@ class SeafileClient:
                     "Content-Range": f"bytes {offset}-{offset + length - 1}/{file_size}",
                     "Content-Disposition": f'attachment; filename="{safe_name}"',
                 }
+                resp = None
                 try:
                     # No redirect is followed: a chunk is not re-sent where a 3xx points (as in _xfer), and
                     # the 3xx falls to the status check below as the failure it is (review dfd2269,
@@ -2012,12 +2103,30 @@ class SeafileClient:
                     )
                 except requests.RequestException as ex:
                     last_error = f"{type(ex).__name__}: {_scrub_transfer_error(ex, upload_url)}"
-                    continue
-                if resp.status_code == 200:
+                if resp is not None:
+                    if resp.status_code == 200:
+                        last_error = ""
+                        if begin_attempt is not None:
+                            fh.accept()
+                        break
+                    last_error = f"HTTP {resp.status_code} {self._said(resp.text, *self._link_secrets(upload_url))}"
+                # The chunk failed or went unanswered, and the server may hold it all the same: a resend of a
+                # chunk it holds answers 400 (measured on CE 13.0.29, RESUME.md section 1).  Ask before any
+                # resend, and act on the answer, never on a guess.
+                verdict = self._chunk_verdict(repo_id, parent_dir, filename, offset, length, file_size)
+                if verdict == "stored":
                     last_error = ""
+                    if begin_attempt is not None:
+                        fh.accept()
                     break
-                last_error = f"HTTP {resp.status_code} {self._said(resp.text, *self._link_secrets(upload_url))}"
-                if resp.status_code < 500:
+                if verdict == "unknown":
+                    raise SeafileAPIError(
+                        f"Failed to upload {filename} to {parent_dir}: chunk bytes "
+                        f"{offset}-{offset + length - 1} of {file_size}: {last_error}; and the server could not say "
+                        "whether it holds the chunk, so it was not sent again (the half-sent temporary is left "
+                        f"for the collector) (POST {self._error_origin(upload_url)})"
+                    )
+                if resp is not None and resp.status_code < 500:
                     break
             if last_error:
                 raise SeafileAPIError(
@@ -2036,6 +2145,37 @@ class SeafileClient:
                 f"{got} bytes instead of {file_size}; the server may not support Content-Range."
             )
         return True
+
+    def _chunk_verdict(
+        self, repo_id: str, parent_dir: str, filename: str, offset: int, length: int, total: int
+    ) -> str:
+        """After a chunk failed or went unanswered: ``stored``, ``absent`` or ``unknown`` (RESUME.md D1 step 2).
+
+        The answers are measured (CE 13.0.29): in the middle of an upload the count advances by exactly the chunk
+        when it was stored; after the **last** chunk it is 0 and the file is already listed at the total, or the
+        total while the server assembles and the name is not yet listed.  A probe that cannot answer after one
+        retry is ``unknown`` -- not "short" -- and the caller does not resend.
+        """
+        end = offset + length
+        last = end >= total
+        for tries in range(6):
+            held = self.uploaded_bytes(repo_id, parent_dir, filename)
+            if held is None:
+                held = self.uploaded_bytes(repo_id, parent_dir, filename)      # one retry
+                if held is None:
+                    return "unknown"
+            if last and held in (0, total):
+                # 0 is also what a completed upload answers: only the listing tells the two apart
+                listed = next((e for e in self.list_dir(repo_id, parent_dir)
+                               if isinstance(e, dict) and e.get("name") == filename), None)
+                if listed is not None and listed.get("size") == total:
+                    return "stored"
+            if held == offset:
+                return "absent"
+            if not last and held == end:
+                return "stored"
+            time.sleep(0.5 * (tries + 1))        # in flight or assembling: wait and ask again
+        return "unknown"
 
     def download_file_to(
         self,
@@ -2191,6 +2331,16 @@ class SeafileClient:
     def rename_entry(self, repo_id: str, path: str, new_name: str) -> bool:
         """Rename a file or directory in place (same parent).  False when refused,
         which includes a name already taken."""
+        return self.rename_entry_result(repo_id, path, new_name)[0] in (200, 201)
+
+    def rename_entry_result(self, repo_id: str, path: str, new_name: str) -> "tuple[int, str | None]":
+        """Rename, and say what the server answered: ``(status, landing name)``.
+
+        The landing name is where the bytes now are: *new_name*, or ``new_name (1)`` when that name was
+        taken (measured on CE 13.0.29: the reply is a download URL whose last segment, percent-encoded, is
+        the name).  ``None`` when the reply names nothing parseable, which a caller treats as a failure of
+        the object, never as the name being free (RESUME.md D1 step 4, round 4).
+        """
         clean_path = "/" + path.strip("/")
         url = f"{self.server_url}/api2/repos/{repo_id}/file/?p={quote(clean_path, safe='/')}"
         # A 429 is waited out, as a DELETE's is: the rename that publishes a payload or LFS object
@@ -2199,7 +2349,33 @@ class SeafileClient:
         resp = self._send_waiting_out_a_throttle(lambda: self.session.post(
             url, data={"operation": "rename", "newname": new_name}, timeout=self.timeout
         ))
-        return resp.status_code in (200, 201)
+        if resp.status_code not in (200, 201):
+            return resp.status_code, None
+        try:
+            said = resp.text.strip().strip('"')
+            leaf = unquote(urlparse(said).path.rpartition("/")[2]) if said.startswith(("http://", "https://")) else ""
+        except Exception:
+            leaf = ""
+        return resp.status_code, (leaf or None)
+
+    def uploaded_bytes(self, repo_id: str, parent_dir: str, file_name: str) -> "int | None":
+        """Bytes the server holds of a chunked upload in progress under *file_name*; ``None`` when unanswered.
+
+        Measured on CE 13.0.29: the count while the upload is in progress, **0 once it is complete**, and
+        0 for a name that never existed -- so 0 is never proof that nothing is stored (RESUME.md section 1).
+        A failed or malformed answer is ``None``, never 0: "unknown" and "nothing" lead to different actions.
+        """
+        url = f"{self.server_url}/api/v2.1/repos/{repo_id}/file-uploaded-bytes/"
+        try:
+            resp = self.session.get(
+                url, params={"parent_dir": "/" + parent_dir.strip("/"), "file_name": file_name}, timeout=self.timeout
+            )
+            if resp.status_code != 200:
+                return None
+            held = resp.json().get("uploadedBytes")
+        except (requests.RequestException, ValueError, AttributeError):
+            return None
+        return held if isinstance(held, int) and not isinstance(held, bool) and held >= 0 else None
 
     def copy_entries(self, repo_id: str, src_parent: str, names: list[str], dst_parent: str) -> bool:
         """Copy files or directories server-side, within one library.

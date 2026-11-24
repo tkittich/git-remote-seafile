@@ -11,6 +11,8 @@ import zlib
 from pathlib import Path
 from typing import Any
 
+from git_remote_seafile.client import HashingReader, UploadSourceChangedError
+
 from . import common
 from . import gitrun
 from . import profile
@@ -168,49 +170,12 @@ def _sha256_file(
     return digest.hexdigest()
 
 
-class _HashingFile:
-    """A read-only file object that hashes the bytes handed to the uploader.
+class _HashingFile(HashingReader):
+    """The client's hashing reader (RESUME.md D1 step 2): a chunked upload restores the running hash per attempt.
 
-    The uploader reads the file itself, possibly in chunks and possibly twice
-    (a retried chunk seeks back).  Only a *forward-contiguous* first read is
-    hashed, so the digest is that of the bytes the server received, in order.
-    ``complete`` says whether every byte passed through.
+    ``rewound`` stays for a retry outside that protocol (a single-request upload retried): the digest then
+    describes the first attempt and only a fresh read of the file vouches for the object.
     """
-
-    def __init__(self, fh: Any, size: int, meter: "climb._ByteMeter | None" = None) -> None:
-        self._fh = fh
-        self._size = size
-        self._meter = meter
-        self._hash = hashlib.sha256()
-        self._hashed = 0
-        #: True once any byte was read a second time (a retried chunk).  The
-        #: digest then describes the *first* attempt, not what the server kept.
-        self.rewound = False
-
-    def read(self, size: int = -1) -> bytes:
-        at = self._fh.tell()
-        data = self._fh.read(size)
-        if data and self._meter is not None:
-            self._meter.add(len(data))
-        if data and at < self._hashed:
-            self.rewound = True
-        if data and at == self._hashed:
-            self._hash.update(data)
-            self._hashed += len(data)
-        return data
-
-    def seek(self, offset: int, whence: int = 0) -> int:
-        return int(self._fh.seek(offset, whence))
-
-    def tell(self) -> int:
-        return int(self._fh.tell())
-
-    @property
-    def complete(self) -> bool:
-        return self._hashed == self._size
-
-    def hexdigest(self) -> str:
-        return self._hash.hexdigest()
 
 
 def _sample_ratio(path: Path, size: int) -> float | None:
@@ -383,14 +348,30 @@ def _commit_object(
         ]
 
     def _sweep(dups: list[str]) -> None:
-        for dup in dups:
+        # Only our own copy goes when the rename told us where it landed: another writer's ``(N)`` copy
+        # may be the only whole object left (two writers repairing one damaged name left none, measured;
+        # RESUME.md D1 revision 3).  STORE.md D6 collects the others.
+        for dup in ([ours] if ours else dups):
             client.delete_entry(rid, f"{directory}/{dup}")
 
-    if client.rename_entry(rid, temp_path, sha):
+    ours: "str | None" = None
+    with_landing = getattr(client, "rename_entry_result", None)
+    if with_landing is not None:
+        status, landing = with_landing(rid, temp_path, sha)
+        renamed = status in (200, 201)
+        if renamed and landing is None:
+            return False          # a success that names no landing place: nothing may be swept or kept on trust
+        ours = landing if landing and landing != sha else None
+    else:
+        renamed = bool(client.rename_entry(rid, temp_path, sha))
+    if renamed:
         entries = client.list_dir(rid, directory)
         dups = _duplicates(entries)
         if not dups:
-            return True
+            # A rename that answered success must have left the name, as a file, at our size: a dropped
+            # request or another actor's delete would otherwise certify an absent object (RESUME.md D1 step 5).
+            return any(isinstance(e, dict) and e.get("name") == sha and e.get("type") != "dir"
+                       and e.get("size") == size for e in entries)
         existing = next(
             (e for e in entries if isinstance(e, dict) and e.get("name") == sha), None
         )
@@ -410,7 +391,7 @@ def _commit_object(
         if existing is not None and existing.get("size") == size:
             _sweep(_duplicates(entries))
             return True
-        whole = next((d for d in _duplicates(entries)
+        whole = next((d for d in ([ours] if ours else _duplicates(entries))
                       if next((e.get("size") for e in entries
                                if isinstance(e, dict) and e.get("name") == d), None) == size), None)
         if whole is None:
@@ -419,7 +400,8 @@ def _commit_object(
             client.delete_entry(rid, stale)      # another writer may have removed it: the move below says whether the name is free
         if not client.rename_entry(rid, f"{directory}/{whole}", sha):
             return False
-        _sweep(_duplicates(client.list_dir(rid, directory)))
+        if not ours:
+            _sweep(_duplicates(client.list_dir(rid, directory)))
         return True
     # The rename was refused outright (a deployment that does fail on a taken
     # name): fall back to judging the existing object by its size.
@@ -431,7 +413,8 @@ def _commit_object(
         return False
     if not client.rename_entry(rid, temp_path, sha):
         return False
-    _sweep(_duplicates(client.list_dir(rid, directory)))
+    if with_landing is None:      # a client that cannot say where its bytes landed sweeps, as before
+        _sweep(_duplicates(client.list_dir(rid, directory)))
     return True
 
 
@@ -530,7 +513,18 @@ def _upload_all(
                 return None
             with fh:
                 reader = _HashingFile(fh, size, meter)
-                ok = worker.upload_file(rid, directory, temp, reader)
+                try:
+                    ok = worker.upload_file(rid, directory, temp, reader)
+                except UploadSourceChangedError:
+                    # The bytes sent were not the same on every attempt of a chunk: the file changed while it
+                    # was being uploaded (RESUME.md D1 step 1-2).  Not a server failure: the queue goes on.
+                    try:
+                        worker.delete_entry(rid, f"{directory}/{temp}")
+                    except Exception:
+                        pass
+                    changed.append(f"{rel}: changed while it was being uploaded; run again")
+                    changed_paths.append(rel)
+                    return None
             if not ok:
                 failed.append(f"{rel}: the server did not accept the upload")
                 return None

@@ -55,7 +55,8 @@ class TestAChunkIsNotSentToARedirect(unittest.TestCase):
             client._upload_chunked("rid", "/d", "f.bin", io.BytesIO(data), len(data), True,
                                    f"{base}/upload?t=1")
         self.assertIn("HTTP 302", str(ctx.exception))
-        self.assertEqual([c for c, _ in _Redirecting.seen if c == "GET"], [], _Redirecting.seen)
+        # The only GETs are the probe of what the server holds (RESUME.md D1); nothing follows the Location.
+        self.assertEqual([p for c, p in _Redirecting.seen if c == "GET" and "elsewhere" in p], [], _Redirecting.seen)
 
 
 if __name__ == "__main__":

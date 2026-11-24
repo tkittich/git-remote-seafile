@@ -116,6 +116,12 @@ class _Handler(BaseHTTPRequestHandler):
         self._read_body()
 
     # -- endpoints --------------------------------------------------------
+    def _landing_reply(self, landed: str) -> bytes:
+        """What the real server answers to a rename: a download URL whose last segment, percent-encoded, is
+        the name the bytes landed under (measured on CE 13.0.29, RESUME.md section 1)."""
+        leaf = landed.rpartition("/")[2]
+        return json.dumps(f"http://127.0.0.1:{self.stub.port}/seafhttp/files/uuid/{quote(leaf, safe='')}").encode("utf-8")
+
     def do_GET(self):
         self._drain()
         path = urlparse(self.path).path
@@ -213,6 +219,17 @@ class _Handler(BaseHTTPRequestHandler):
             link = f"http://127.0.0.1:{self.stub.port}/upload/{rid}"
             return self._send(200, json.dumps(link).encode("utf-8"))
 
+        if path.startswith("/api/v2.1/repos/") and path.endswith("/file-uploaded-bytes/"):
+            # Measured on CE 13.0.29: the bytes held while an upload is in progress, and 0 once it is
+            # complete -- the same answer as for a name that never existed (RESUME.md section 1).
+            if f.get("uploaded_bytes"):
+                return self._send(f["uploaded_bytes"], b"injected failure")
+            rid = path.split("/")[4]
+            q = parse_qs(urlparse(self.path).query)
+            target = _norm((q.get("parent_dir") or ["/"])[0] + "/" + (q.get("file_name") or [""])[0])
+            held = len(self.stub.partial.get((rid, target), b""))
+            return self._send(200, json.dumps({"uploadedBytes": held}).encode("utf-8"))
+
         if path.startswith("/raw/"):
             rid, p = path.split("/")[2], _norm(self._query_p())
             self.stub.raw_hits.append(p)
@@ -304,9 +321,9 @@ class _Handler(BaseHTTPRequestHandler):
                         n += 1
                         dup = f"{parent}{slash}{stem} ({n}){suffix}"
                     files[dup] = files.pop(p)
-                    return self._send(200, b'"success"')
+                    return self._send(200, self._landing_reply(dup))
                 files[new] = files.pop(p)
-                return self._send(200, b'"success"')
+                return self._send(200, self._landing_reply(new))
         if path == "/api/v2.1/repos/sync-batch-copy-item/":
             req = json.loads(body.decode("utf-8") or "{}")
             rid = req["src_repo_id"]
@@ -366,9 +383,16 @@ class _Handler(BaseHTTPRequestHandler):
                 if start != len(buf):
                     return self._send(400, b'{"error":"unexpected offset"}')
                 buf.extend(filedata)
+                # ``lost_reply_start``: the chunk that starts here is stored and its reply is lost (a proxy
+                # timeout), once -- the case a resend answers ``400`` for (measured on CE 13.0.29).
+                lose = self.stub.faults.get("lost_reply_start") == start
+                if lose:
+                    del self.stub.faults["lost_reply_start"]
                 if end + 1 < total:
-                    return self._send(200, b'{"success": true}')
+                    return self._send(500, b"injected: reply lost") if lose else self._send(200, b'{"success": true}')
                 self.stub.files.setdefault(rid, {})[target] = bytes(self.stub.partial.pop((rid, target)))
+                if lose:
+                    return self._send(500, b"injected: reply lost")
                 body = '[{"id":"uploaded","name":"%s","size":%d}]' % (filename, total)
                 return self._send(200, body.encode())
             self.stub.files.setdefault(rid, {})[target] = filedata

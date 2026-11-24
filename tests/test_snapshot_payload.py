@@ -2472,10 +2472,16 @@ class PayloadRetentionTests(_PayloadFixture):
             self.stub.files[REPO_ID].pop(path, None)
             return True
 
-        with unittest.mock.patch.object(SeafileClient, "rename_entry", lossy_rename):
+        def lossy_result(client, rid, path, new_name):
+            self.stub.files[REPO_ID].pop(path, None)
+            return 200, new_name
+
+        with unittest.mock.patch.object(SeafileClient, "rename_entry", lossy_rename),                 unittest.mock.patch.object(SeafileClient, "rename_entry_result", lossy_result):
             rc, out, err = self.snapshot("--payload-jobs", "1")
         self.assertNotEqual(rc, 0)
-        self.assertIn("missing or the wrong size", out + err)
+        # The commit now lists the name itself and refuses to certify an object that is not there
+        # (RESUME.md D1 step 5); the later whole-vault check is the second line.
+        self.assertTrue("missing or the wrong size" in out + err or "would not name the object" in out + err, out + err)
 
     def test_a_lying_listing_is_a_message_not_a_traceback(self):
         self.assertEqual(self.snapshot()[0], 0)
@@ -2586,6 +2592,70 @@ class PayloadRetentionTests(_PayloadFixture):
         fake = Fake()
         self.assertTrue(snap._commit_object(fake, "r", "/d", "h" * 64 + ".part-1", "h" * 64, 10))
         self.assertEqual(fake.deleted, ["/d/" + "h" * 64 + ".part-1"])
+
+    def test_a_rename_that_reported_success_but_left_no_object_is_not_a_commit(self):
+        """No duplicate is not success on its own: the name must be listed at our size (RESUME.md D1 step 5)."""
+        sha = "d" * 64
+
+        class Fake:
+            def __init__(self, listing):
+                self.listing = listing
+
+            def rename_entry(self, rid, path, new):
+                return True
+
+            def list_dir(self, rid, directory):
+                return self.listing
+
+            def delete_entry(self, rid, path):
+                return True
+
+        for listing in ([], [{"name": sha, "size": 3}], [{"name": sha, "type": "dir"}]):
+            with self.subTest(listing=listing):
+                self.assertFalse(snap._commit_object(Fake(listing), "r", "/d", f"{sha}.part-1", sha, 15))
+        self.assertTrue(snap._commit_object(Fake([{"name": sha, "size": 15, "type": "file"}]), "r", "/d", f"{sha}.part-1", sha, 15))
+
+    def test_only_our_own_copy_is_deleted_when_the_rename_says_where_it_landed(self):
+        """Two writers repairing one damaged object left none (measured, RESUME.md D1 revision 3)."""
+        sha = "e" * 64
+
+        class Fake:
+            def __init__(self, landing):
+                self.landing = landing
+                self.deleted = []
+                self.files = {sha: b"bad", f"{sha} (1)": b"w" * 15, f"{sha} (2)": b"w" * 15}
+
+            def rename_entry_result(self, rid, path, new):
+                return 200, self.landing
+
+            def rename_entry(self, rid, path, new):
+                src = path.rsplit("/", 1)[-1]
+                self.files[new] = self.files.pop(src)
+                return True
+
+            def list_dir(self, rid, directory):
+                return [{"name": n, "size": len(b), "type": "file"} for n, b in self.files.items()]
+
+            def delete_entry(self, rid, path):
+                leaf = path.rsplit("/", 1)[-1]
+                self.deleted.append(leaf)
+                self.files.pop(leaf, None)
+                return True
+
+        mine = Fake(f"{sha} (1)")
+        self.assertTrue(snap._commit_object(mine, "r", "/d", f"{sha}.part-1", sha, 15))
+        self.assertEqual(mine.files.get(sha), b"w" * 15)
+        self.assertIn(f"{sha} (2)", mine.files, "another writer's copy is not ours to delete")
+        self.assertNotIn(f"{sha} (2)", mine.deleted)
+
+        already_good = Fake(f"{sha} (2)")
+        already_good.files[sha] = b"g" * 15
+        self.assertTrue(snap._commit_object(already_good, "r", "/d", f"{sha}.part-1", sha, 15))
+        self.assertEqual(already_good.deleted, [f"{sha} (2)"], "a right-sized object stays; only our copy goes")
+
+        nothing_named = Fake(None)         # a success that names no landing place
+        self.assertFalse(snap._commit_object(nothing_named, "r", "/d", f"{sha}.part-1", sha, 15))
+        self.assertEqual(nothing_named.deleted, [])
 
     def test_a_rename_onto_a_taken_name_makes_a_copy_and_it_is_judged(self):
         """The server's rename is create-or-duplicate (measured on CE 13.0.28).
