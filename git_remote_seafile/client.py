@@ -2044,6 +2044,7 @@ class SeafileClient:
         dest: Any,
         progress_callback: Any = None,
         max_bytes: int | None = None,
+        resume_from: int = 0,
     ) -> bool:
         """Stream a remote file to *dest* without holding it in memory.
 
@@ -2066,8 +2067,30 @@ class SeafileClient:
         be (a restore from a manifest): the stream is cut off the moment it goes
         past that, so a hostile manifest that declares a small size for a huge
         object cannot fill the disk before the size is compared.
+
+        ``resume_from`` continues a partial *dest* of exactly that many bytes
+        (RESUME.md D2): a ``Range: bytes=N-`` request whose answer must be ``206``
+        with a ``Content-Range`` of ``N-<size-1>/<size>``.  A server that ignores
+        the header (``200``) or answers another range makes the download start
+        again from byte 0, never a guess.  The partial is proved only by the
+        caller's own hash at the end.  No ``Range`` is sent for 0, and none when
+        the partial is already as large as the declared object (``max_bytes``):
+        that answers ``416`` for a complete object, which would throw the file
+        away, so the call returns at once and the caller's hash decides.  The
+        declared size bounds the whole object, as ``resume_from + transferred``.
         """
         clean_path = "/" + file_path.strip("/")
+        dest_path = Path(dest)
+        resume = max(0, int(resume_from or 0))
+        if resume:
+            try:
+                held = dest_path.stat().st_size
+            except OSError:
+                held = -1
+            if held != resume or (max_bytes is not None and resume > max_bytes):
+                resume = 0   # the partial is not what the caller says: start again, never guess
+            elif max_bytes is not None and resume == max_bytes:
+                return True  # complete already: the caller's hash decides, no request
         url = f"{self.server_url}/api2/repos/{repo_id}/file/?p={quote(clean_path, safe='/')}"
         resp = self.session.get(url, timeout=self.timeout)
         if resp.status_code == 404:
@@ -2078,11 +2101,28 @@ class SeafileClient:
             raise self._download_link_error(clean_path, resp)
 
         dl_url = self._adjust_url(resp.text.strip().strip('"'))
-        file_resp = self._xfer("get", dl_url, timeout=self.timeout, stream=True, headers=_IDENTITY_ENCODING)
+        headers = dict(_IDENTITY_ENCODING)
+        if resume:
+            headers["Range"] = f"bytes={resume}-"
+        file_resp = self._xfer("get", dl_url, timeout=self.timeout, stream=True, headers=headers)
         try:
             if file_resp.status_code == 404:
                 return False
-            if file_resp.status_code != 200:
+            append = False
+            expected_total = 0
+            if resume and file_resp.status_code == 206:
+                said_range = str(file_resp.headers.get("Content-Range", "")).strip()
+                match = re.fullmatch(r"bytes (\d+)-(\d+)/(\d+)", said_range)
+                if match and int(match.group(1)) == resume and int(match.group(2)) == int(match.group(3)) - 1 >= resume:
+                    append = True
+                    expected_total = int(match.group(3))
+                else:
+                    file_resp.close()   # another range than the one asked for: never appended
+                    return self.download_file_to(repo_id, file_path, dest, progress_callback, max_bytes, 0)
+            elif resume and file_resp.status_code == 416:
+                file_resp.close()
+                return self.download_file_to(repo_id, file_path, dest, progress_callback, max_bytes, 0)
+            elif file_resp.status_code != 200:
                 said = self._said(self._body_sample(file_resp), *self._link_secrets(dl_url))
                 raise SeafileAPIError(
                     f"Failed to download {clean_path}: HTTP {file_resp.status_code} "
@@ -2090,10 +2130,9 @@ class SeafileClient:
                 )
 
             self._refuse_encoded_body(file_resp, clean_path, dl_url)
-            dest_path = Path(dest)
             dest_path.parent.mkdir(parents=True, exist_ok=True)
-            total_size = 0
-            if "Content-Length" in file_resp.headers:
+            total_size = expected_total
+            if not append and "Content-Length" in file_resp.headers:
                 try:
                     total_size = int(file_resp.headers["Content-Length"])
                 except Exception:
@@ -2103,8 +2142,8 @@ class SeafileClient:
                     f"{clean_path} is {total_size} bytes on the server, more than the "
                     f"{max_bytes} expected; not downloading it"
                 )
-            transferred = 0
-            with open(dest_path, "wb") as fh:
+            transferred = resume if append else 0
+            with open(dest_path, "ab" if append else "wb") as fh:
                 for chunk in self._stream_chunks(file_resp, dl_url, 1024 * 1024):
                     if chunk:
                         if max_bytes is not None and transferred + len(chunk) > max_bytes:

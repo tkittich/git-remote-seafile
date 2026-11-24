@@ -6802,7 +6802,7 @@ class LinkAndPlacementTests(unittest.TestCase):
         downloads: list[int] = []
 
         class Client:
-            def download_file_to(self, rid, path, part, max_bytes=None):
+            def download_file_to(self, rid, path, part, max_bytes=None, resume_from=0):
                 downloads.append(1)
                 pathlib.Path(part).write_bytes(data)
                 return True

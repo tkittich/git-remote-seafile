@@ -75,22 +75,28 @@ def _download_verified(
     part = scratch / f"{item['sha256']}.{os.getpid()}.part"
     last = ""
     verified = False
+    part.unlink(missing_ok=True)      # a first attempt starts from nothing; only a retry resumes (RESUME.md D2)
     for _attempt in range(3):
         try:
-            if not client.download_file_to(rid, source_path, part, max_bytes=item["size"]):
+            # A failed transfer leaves its bytes, and the retry continues them; a partial that hashed wrong was
+            # deleted below, so the next attempt starts from byte 0 and never resumes the same bad bytes.
+            held = part.stat().st_size if part.exists() else 0
+            if not client.download_file_to(rid, source_path, part, max_bytes=item["size"], resume_from=held):
                 part.unlink(missing_ok=True)
                 return "object not found on the server"
             if part.stat().st_size != item["size"]:
                 last = f"size {part.stat().st_size}, manifest says {item['size']}"
+                part.unlink(missing_ok=True)
                 continue
             if payload_upload._sha256_file(part) != item["sha256"]:
                 last = "SHA-256 does not match the manifest"
+                part.unlink(missing_ok=True)
                 continue
             verified = True
             break
         except common.SnapshotError as exc:
             last = str(exc)
-        except Exception as exc:  # transient network or API error: try again
+        except Exception as exc:  # transient network or API error: try again, from where it stopped
             last = f"{type(exc).__name__}: {exc}"
     if verified:
         # Placing the file is not the transfer: a name this volume refuses or a read-only folder fails
