@@ -167,7 +167,7 @@ Why not just keep the repository in a synced folder, a bare repo, a bundle or a 
 
 ### Whole-tree snapshots: `git seafile-snapshot`
 
-A `.gitignore`d file never enters a commit, so **no remote helper can carry it** — `.env`, a local database, build output. `git seafile-snapshot` closes that gap: it captures the working tree **as it lies on disk**, ignored files and all, into versioned, byte-exact snapshots in a Seafile library, over the same transport the helper uses.
+A `.gitignore`d file never enters a commit, so **no remote helper can carry it** — `.env`, a local database, build output. `git seafile-snapshot` (also `sfsnap` or `git sfsnap`) closes that gap: it captures the working tree **as it lies on disk**, ignored files and all, into versioned, byte-exact snapshots in a Seafile library, over the same transport the helper uses.
 
 > [!NOTE]
 > **Installed with the package.** `pip install git-remote-seafile` provides the helper (`git-remote-seafile`) *and* the snapshot tool as `git-seafile-snapshot` — so `git seafile-snapshot` works anywhere git finds it on `PATH` — and as `git-remote-seafile snapshot`. From a source checkout, `git seafile-snapshot` runs the same program (the file is a thin wrapper around `git_remote_seafile/snapshot_tool.py`, so existing commands and scheduled jobs keep working). (`git seafile-snapshot --help` is intercepted by git, which looks for a man page: ask with `-h`, or run `git-seafile-snapshot --help`.) The diagnostics script `tools/seafile_doctor.py` below still ships with the source and the sdist only.

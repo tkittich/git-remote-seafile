@@ -58,6 +58,9 @@ Issues = "https://github.com/tkittich/git-remote-seafile/issues"
 git-remote-seafile = "git_remote_seafile.cli:main"
 # `git seafile-snapshot ...` works anywhere git finds this on PATH.
 git-seafile-snapshot = "git_remote_seafile.snapshot.cli:main"
+# Short forms of the same program: `sfsnap ...`, and `git sfsnap ...` where git finds it on PATH.
+sfsnap = "git_remote_seafile.snapshot.cli:main"
+git-sfsnap = "git_remote_seafile.snapshot.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["git_remote_seafile*"]
