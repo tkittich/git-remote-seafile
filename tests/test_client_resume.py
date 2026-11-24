@@ -141,6 +141,14 @@ class ResumeTests(_Fixture):
         self.assertEqual(self.ranges, [None])
         self.assertEqual(self.dest.read_bytes(), OBJECT)
 
+    def test_a_zero_byte_object_sends_no_range_and_no_content_range_is_expected(self):
+        self.dest.write_bytes(b"")
+        self.serve(lambda _range: _response(200, b"", {"Content-Length": "0"}))
+        self.assertTrue(self.download(max_bytes=0, resume_from=0))
+        self.assertTrue(self.download(max_bytes=0, resume_from=5))
+        self.assertEqual(self.ranges, [None, None])
+        self.assertEqual(self.dest.read_bytes(), b"")
+
 
 class RestoreRetryTests(unittest.TestCase):
     """The restore's own retry: a failed transfer is continued, a partial that hashed wrong starts over (R5)."""
