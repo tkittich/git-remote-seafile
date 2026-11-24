@@ -150,6 +150,45 @@ class ResumeTests(_Fixture):
         self.assertEqual(self.dest.read_bytes(), b"")
 
 
+class ProxyAndRangeTests(_Fixture):
+    """Round 4 (Gemini N4/N10, DeepSeek N11): what a ``206`` must also say, and the cap without ``max_bytes``."""
+
+    def test_a_206_whose_content_length_is_not_the_remainder_restarts_from_byte_zero(self):
+        self.dest.write_bytes(OBJECT[:300])
+        honest = _honest(OBJECT)
+
+        def proxy(range_header: "str | None") -> MagicMock:
+            if range_header is None:
+                return honest(None)
+            return _response(206, OBJECT, {            # a proxy that sends the whole body under a 206
+                "Content-Length": str(len(OBJECT)), "Content-Range": f"bytes 300-{len(OBJECT) - 1}/{len(OBJECT)}",
+            })
+
+        self.serve(proxy)
+        self.assertTrue(self.download(max_bytes=len(OBJECT), resume_from=300))
+        self.assertEqual(self.ranges, ["bytes=300-", None])
+        self.assertEqual(self.dest.read_bytes(), OBJECT)
+
+    def test_without_max_bytes_a_206_stops_at_the_total_it_declared(self):
+        self.dest.write_bytes(OBJECT[:300])
+        body = OBJECT[300:] + b"extra"
+        self.serve(lambda _range: _response(206, body, {
+            "Content-Range": f"bytes 300-{len(OBJECT) - 1}/{len(OBJECT)}",
+        }))
+        with self.assertRaises(SeafileAPIError):
+            self.download(resume_from=300)
+        self.assertLessEqual(self.dest.stat().st_size, len(OBJECT))
+
+    def test_the_range_unit_is_matched_case_insensitively(self):
+        self.dest.write_bytes(OBJECT[:300])
+        self.serve(lambda _range: _response(206, OBJECT[300:], {
+            "Content-Length": str(len(OBJECT) - 300), "Content-Range": f"Bytes 300-{len(OBJECT) - 1}/{len(OBJECT)}",
+        }))
+        self.assertTrue(self.download(max_bytes=len(OBJECT), resume_from=300))
+        self.assertEqual(self.ranges, ["bytes=300-"])
+        self.assertEqual(self.dest.read_bytes(), OBJECT)
+
+
 class RestoreRetryTests(unittest.TestCase):
     """The restore's own retry: a failed transfer is continued, a partial that hashed wrong starts over (R5)."""
 
@@ -213,6 +252,34 @@ class RestoreRetryTests(unittest.TestCase):
         why = self.restore._download_verified(client, "rid", "/o/x", self.dest, self.item, self.scratch)
         self.assertIsNone(why)
         self.assertEqual(self.resumed, [0, 400, 0])
+        self.assertEqual(self.dest.read_bytes(), OBJECT)
+
+
+    def test_a_placement_that_fails_keeps_the_verified_file_and_fails_that_one_file(self):
+        from unittest.mock import patch
+        client = self.client([self.append(OBJECT)])
+        with patch.object(self.restore.os, "replace", side_effect=PermissionError("WinError 32")), \
+                patch.object(self.restore.time, "sleep"):
+            why = self.restore._download_verified(client, "rid", "/o/x", self.dest, self.item, self.scratch)
+        self.assertIn("could not place", why or "")
+        self.assertTrue((self.scratch / f"{self.item['sha256']}.{__import__('os').getpid()}.part").exists())
+
+    def test_a_placement_held_for_a_moment_succeeds_after_a_retry(self):
+        from unittest.mock import patch
+        client = self.client([self.append(OBJECT)])
+        real = self.restore.os.replace
+        calls = {"n": 0}
+
+        def flaky(src: object, dst: object) -> None:
+            calls["n"] += 1
+            if calls["n"] < 3:
+                raise PermissionError("WinError 32")
+            real(src, dst)  # type: ignore[arg-type]
+
+        with patch.object(self.restore.os, "replace", side_effect=flaky), patch.object(self.restore.time, "sleep"), \
+                patch.object(self.restore.os, "name", "nt"):
+            why = self.restore._download_verified(client, "rid", "/o/x", self.dest, self.item, self.scratch)
+        self.assertIsNone(why)
         self.assertEqual(self.dest.read_bytes(), OBJECT)
 
 

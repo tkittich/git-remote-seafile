@@ -101,12 +101,26 @@ def _download_verified(
     if verified:
         # Placing the file is not the transfer: a name this volume refuses or a read-only folder fails
         # the same way every time, and trying again re-downloads the whole object (fable-S3-6).
-        try:
-            os.replace(part, dest)
-            return None
-        except OSError as exc:
-            last = f"could not place the downloaded file: {type(exc).__name__}: {exc}"
-    part.unlink(missing_ok=True)
+        # A scanner or indexer on Windows can hold the file for a moment (WinError 5 or 32): that is the one
+        # failure worth a short wait.  The verified bytes are never deleted for failing to move: the scratch
+        # folder is removed with the run, and a rerun fetches again either way.
+        for tries in range(5):
+            try:
+                os.replace(part, dest)
+                return None
+            except PermissionError as exc:
+                last = f"could not place the downloaded file: {type(exc).__name__}: {exc}"
+                if os.name != "nt" or tries == 4:
+                    break
+                time.sleep(0.2 * (tries + 1))
+            except OSError as exc:
+                last = f"could not place the downloaded file: {type(exc).__name__}: {exc}"
+                break
+        return last
+    try:
+        part.unlink(missing_ok=True)
+    except OSError:
+        pass          # a held handle: this one file fails, the restore goes on
     return last
 
 
@@ -242,6 +256,9 @@ def _restore_payload_files(
         why = _download_verified(client, rid, f"{base}/{payload_upload.object_dir(sha)}/{sha}", dest, item, scratch)
         if why is not None:
             problems.append(f"{rel}: {why}")
+            continue
+        if not dest.is_file():       # a placement that reported success must have left the file (round 4, DeepSeek N4)
+            problems.append(f"{rel}: downloaded and verified, but the file is not in place")
             continue
         try:
             if item.get("mode") == "100755" and os.name != "nt":

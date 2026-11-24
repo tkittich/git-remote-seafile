@@ -2112,8 +2112,11 @@ class SeafileClient:
             expected_total = 0
             if resume and file_resp.status_code == 206:
                 said_range = str(file_resp.headers.get("Content-Range", "")).strip()
-                match = re.fullmatch(r"bytes (\d+)-(\d+)/(\d+)", said_range)
-                if match and int(match.group(1)) == resume and int(match.group(2)) == int(match.group(3)) - 1 >= resume:
+                match = re.fullmatch(r"bytes (\d+)-(\d+)/(\d+)", said_range, re.IGNORECASE)   # RFC 9110: the unit is case-insensitive
+                body_says = file_resp.headers.get("Content-Length")
+                if match and int(match.group(1)) == resume and int(match.group(2)) == int(match.group(3)) - 1 >= resume and (
+                    body_says is None or str(body_says).strip() == str(int(match.group(3)) - resume)
+                ):
                     append = True
                     expected_total = int(match.group(3))
                 else:
@@ -2143,12 +2146,22 @@ class SeafileClient:
                     f"{max_bytes} expected; not downloading it"
                 )
             transferred = resume if append else 0
+            if append:
+                try:
+                    unchanged = dest_path.stat().st_size == resume   # the partial moved under us while the request ran
+                except OSError:
+                    unchanged = False
+                if not unchanged:
+                    file_resp.close()
+                    return self.download_file_to(repo_id, file_path, dest, progress_callback, max_bytes, 0)
+            # The declared size bounds the stream; when the caller gave none, the server's own total does.
+            cap = max_bytes if max_bytes is not None else (expected_total if append else None)
             with open(dest_path, "ab" if append else "wb") as fh:
                 for chunk in self._stream_chunks(file_resp, dl_url, 1024 * 1024):
                     if chunk:
-                        if max_bytes is not None and transferred + len(chunk) > max_bytes:
+                        if cap is not None and transferred + len(chunk) > cap:
                             raise SeafileAPIError(
-                                f"{clean_path} is larger than the {max_bytes} bytes expected; "
+                                f"{clean_path} is larger than the {cap} bytes expected; "
                                 "download stopped"
                             )
                         fh.write(chunk)
