@@ -168,6 +168,40 @@ class HonestyTests(StoreCase):
         self.assertFalse(self.store.exists(self.ref()))
 
 
+class ConcurrentGetTests(StoreCase):
+    def test_two_gets_of_one_object_in_one_process_fetch_it_once_and_both_succeed(self):
+        import threading
+        import time
+        put = self.store.put(self.source)
+        fresh_cache = cache_mod.Cache(self.work / "shared")
+        mine = store.Store(SeafileClient(server_url=self.stub.base_url, token="t"), self.rid, ROOT, fresh_cache)
+        yours = store.Store(SeafileClient(server_url=self.stub.base_url, token="t"), self.rid, ROOT, fresh_cache)
+        real = SeafileClient.download_file_to
+        calls: "list[int]" = []
+
+        def slow(self_, *args, **kwargs):
+            calls.append(1)
+            time.sleep(0.3)                      # long enough for the other thread to arrive
+            return real(self_, *args, **kwargs)
+
+        results: "list[object]" = []
+
+        def run(which: store.Store) -> None:
+            try:
+                results.append(which.get(put.ref)[0].read_bytes())
+            except Exception as exc:             # a failure is a result the assertions show
+                results.append(exc)
+
+        with patch.object(SeafileClient, "download_file_to", slow):
+            threads = [threading.Thread(target=run, args=(mine,)), threading.Thread(target=run, args=(yours,))]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+        self.assertEqual(results, [DATA, DATA])
+        self.assertEqual(len(calls), 1)
+
+
 class CatAndGetToTests(StoreCase):
     def test_cat_streams_the_verified_bytes_and_leaves_no_cache_file(self):
         put = self.store.put(self.source)

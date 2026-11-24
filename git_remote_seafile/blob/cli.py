@@ -161,7 +161,7 @@ def _put(args: argparse.Namespace) -> int:
             for row in results:
                 sys.stdout.write(f"{row['ref']}  {row['size']}  {row['path']}\n")
             if results:
-                sys.stdout.write("note: these objects are not protected from `gc` (pins come with a later version)\n")
+                sys.stdout.write("Note: these objects are not protected from `gc` (pins come with a later version)\n")
         else:
             _say({"files": results}, args, "")
         return 1 if failed else 0

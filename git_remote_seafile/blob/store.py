@@ -29,6 +29,14 @@ FORMAT = 1
 #: Names that say a folder is a vault or a helper remote, never a store root (D2).
 _GIT_ENTRIES = frozenset({"payload", "refs", "HEAD", "objects"})
 _PART = ".part-"
+_LOCKS: "dict[str, threading.Lock]" = {}
+_LOCKS_GUARD = threading.Lock()
+
+
+def _hash_lock(hex_digest: str) -> threading.Lock:
+    """One lock per object in this process; a lock across processes is RESUME.md D4 (not built)."""
+    with _LOCKS_GUARD:
+        return _LOCKS.setdefault(hex_digest, threading.Lock())
 
 
 class StoreError(Exception):
@@ -258,9 +266,20 @@ class Store:
         hit = self.cache.lookup(full, size)
         if hit is not None:
             return hit, True
+        if not keep:
+            return self._fetch(full, size, keep=False), False
+        with _hash_lock(full.hex):          # two paths with the same bytes must not share one partial file
+            hit = self.cache.lookup(full, size)
+            if hit is not None:
+                return hit, True
+            return self._fetch(full, size, keep=True), False
+
+    def _fetch(self, full: refs.Ref, size: int, *, keep: bool) -> Path:
+        """Download, check size and hash, and admit into the cache (or, for ``cat``, hand back the proved temporary)."""
         partial_dir = self.cache.partial_dir()
         partial_dir.mkdir(parents=True, exist_ok=True)
-        part = partial_dir / f"{full.hex}.{os.getpid()}.part"
+        # One name per process for a kept object (a retry continues it); a private one for ``cat``, which deletes it.
+        part = partial_dir / (f"{full.hex}.{os.getpid()}.part" if keep else f"{full.hex}.{uuid.uuid4().hex}.tmp")
         part.unlink(missing_ok=True)
         last = ""
         for _attempt in range(3):
@@ -286,10 +305,10 @@ class Store:
             part.unlink(missing_ok=True)
             raise StoreError(f"could not fetch {full}: {last}")
         if not keep:
-            return part, False
+            return part
         path = self.cache.admit(full, part)
         self.cache.evict()
-        return path, False
+        return path
 
     def get_to(self, ref: refs.Ref, destination: Path) -> Path:
         """Copy the verified object to *destination*, which must not exist (R4: ``get`` never overwrites)."""
