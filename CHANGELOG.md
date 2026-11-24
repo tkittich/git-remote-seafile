@@ -27,9 +27,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **The snapshot tool is a package, not one generated file.** `git_remote_seafile/snapshot_tool.py` (built from `tools/_snapshot/NN_*.py` by `tools/build_snapshot.py`, one flat namespace, a 700-line limit per part) is replaced by the modules of `git_remote_seafile/snapshot/` (`gitrun`, `stage`, `payload_upload`, `restore_run`, `cli`, ...). Behaviour is unchanged. The entry points are the same (`git-seafile-snapshot`, `git-remote-seafile snapshot`, `tools/seafile_snapshot.py`); `git_remote_seafile.snapshot_tool` no longer exists, and the package namespace is read-only (patch the module that defines a name). `tools/build_snapshot.py`, the build gate and `tests/test_snapshot_build.py` are gone; `tests/test_snapshot_package.py` holds the rules that a name is defined once and used through its module.
 - **`--no-embedded-repos` needs `--allow-gitlinks`** (new flag). A gitlink is a commit id, so a restore gives an empty directory; the flag says the caller knows. `--allow-gitlinks` alone, or in a mode other than a snapshot run, is refused.
 
+## [0.10.6] - 2026-11-24
+
+A fixes-only release (soft maintenance mode): one data-loss guard. A folder that happens to carry the name of a payload or LFS object is no longer deleted when the object is settled. The fix has a test that fails without it.
+
+### Fixed
+- **A folder named like an object is never deleted.** When a payload object (snapshot tool) or an LFS object was renamed onto its hash name and the server held something else under that name, the settle step could delete it as a "wrong-size object" even if it was a folder. It now leaves a folder alone and reports the object as not stored (so git-lfs sends it again and the snapshot retries). Found by the 0.11 review (N4).
+
+## [0.10.5] - 2026-11-24
+
+A fixes-only release (soft maintenance mode): two Windows bugs found by a bug hunt (names Windows cannot open, a source typed with the extended-length prefix), a test-harness fix, and the plan for v0.11 written down. Each fix has a test that fails without it.
+
 ### Fixed
 - **Windows: a source holding a name Windows cannot open no longer stops the snapshot.** A tree that came from Linux, an archive or a share can hold `CON`, `aux.txt`, `dir.` or a folder whose name ends in a space. `git add` stopped the whole run on the first one (`unable to index file 'CON'`, rc=128) and every rerun stopped the same way. These paths are now left out and named in a `Warning:` (rename them to have them captured); the rest of the tree is snapshotted, as for a path behind a junction. Found by the Windows odd-name probe of the 0.10.5 bug hunt.
 - **Windows: a source typed with the extended-length prefix (`--source \\?\C:\data`) no longer ends in a traceback.** The prefix was kept while the walks yield plain paths, so the first run of a vault ended in `ValueError: path is on mount 'C:', start on mount '\\?\C:'`. The prefix is now taken off the resolved source and vault paths, since every stat adds it back itself (fable-G0.4 of review dfd2269, not reproducible until the bug hunt ran it again).
+
+### Changed
+- **Project policy: soft maintenance mode** (`CONTRIBUTING.md`): important features, restructures, refactors, behaviour changes and redesigns may go in with a written reason and the maintainer's yes; small flag additions are still not welcome.
+- **`UPGRADING.md` and `README.md` say what v0.11 will break and which versions are supported**: options a mode never read are refused (exit 2), `--no-embedded-repos` needs `--allow-gitlinks`, nothing stored changes, and the newest 0.10 release is the last one (no backports).
+- The mutation-sweep development tool gets an opt-in `--select`, 12 jobs by default and a Linux workflow (nothing shipped changes).
 
 ## [0.10.4] - 2026-11-22
 
@@ -2307,6 +2323,8 @@ Data-loss and silent-failure fixes, and the Python floor raised to 3.9.
   with zero-config desktop-client token discovery, distributed locking, remote
   packfile compaction, and a Git LFS custom transfer agent.
 
+[0.10.6]: https://github.com/tkittich/git-remote-seafile/compare/v0.10.5...v0.10.6
+[0.10.5]: https://github.com/tkittich/git-remote-seafile/compare/v0.10.4...v0.10.5
 [0.10.4]: https://github.com/tkittich/git-remote-seafile/compare/v0.10.3...v0.10.4
 [0.10.3]: https://github.com/tkittich/git-remote-seafile/compare/v0.10.2...v0.10.3
 [0.10.2]: https://github.com/tkittich/git-remote-seafile/compare/v0.10.1...v0.10.2

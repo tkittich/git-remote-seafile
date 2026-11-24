@@ -1,0 +1,54 @@
+name: Mutate
+
+# tools/mutate_sweep.py on a Linux runner: one change at a time to a module of the snapshot tool, the tests run
+# for each, and the changes no test noticed listed in the job summary.  A process (and git) starts much faster
+# here than on Windows, so a sweep that takes hours on a desktop takes a fraction of that.  Started by hand
+# after a change to a part with guards; nothing in a release waits on it.
+#
+#   gh workflow run mutate.yml --ref <branch> -f part=git_remote_seafile/snapshot/embedded.py
+on:
+  workflow_dispatch:
+    inputs:
+      part:
+        description: "The module to mutate, e.g. git_remote_seafile/snapshot/embedded.py"
+        required: true
+      tests:
+        description: "Test targets that should notice (module or class names, space separated)"
+        default: "tests.test_snapshot_tool tests.test_snapshot_payload"
+      then:
+        description: "Further targets, tried when the first set lets a mutation through"
+        default: "tests.test_snapshot_climb tests.test_snapshot_crashes tests.test_snapshot_runreport tests.test_snapshot_history_guard tests.test_status_property tests.test_restore_property tests.test_payload_property"
+
+permissions:
+  contents: read
+
+jobs:
+  mutate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+    - name: Set up Python
+      uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+      with:
+        python-version: "3.14"
+    - name: Install
+      run: |
+        python -m pip install --upgrade pip
+        pip install coverage==7.16.2 -e .
+        git config --global user.name ci
+        git config --global user.email ci@example.com
+    - name: Sweep
+      env:
+        PART: ${{ inputs.part }}
+        TESTS: ${{ inputs.tests }}
+        THEN: ${{ inputs.then }}
+      run: |
+        # the inputs are words for the command line, taken from the environment and never from the script text
+        python tools/mutate_sweep.py "$PART" --jobs 4 --tests $TESTS --then $THEN 2>&1 | tee sweep.txt || true
+        {
+          echo "### Mutation sweep of \`$PART\`"
+          echo '```'
+          grep -E "SURVIVED|mutations:" sweep.txt || echo "no result line: see the log"
+          echo '```'
+        } >> "$GITHUB_STEP_SUMMARY"
