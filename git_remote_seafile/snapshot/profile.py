@@ -469,7 +469,7 @@ def maintain_vault(vault: Path, *, full_repack: bool = False) -> int:
     if stats.get("garbage", 0):
         print(f"Note: {stats['garbage']} leftover temporary file(s) from an interrupted run "
               f"hold {remote_ops.human_bytes(stats.get('size-garbage', 0) * 1024)} in objects/pack; "
-              "a snapshot run (or --maintain --full-repack) removes them")
+              "a snapshot run (or maintain --full-repack) removes them")
 
     profile = run_settings._read_config_key(git_dir, "snapshot.profile")
     if profile:
@@ -482,7 +482,7 @@ def maintain_vault(vault: Path, *, full_repack: bool = False) -> int:
         have = remote_ops.human_bytes(free)
         verdict = "fits" if free >= store_bytes else "does NOT fit -- free space first"
         print(f"a full repack would need roughly {need} of headroom; this volume has {have} ({verdict}).")
-        print("re-run with --maintain --full-repack to consolidate the whole store.")
+        print("re-run with maintain --full-repack to consolidate the whole store.")
         return 0
 
     if free < store_bytes:

@@ -148,7 +148,7 @@ class VaultLock:
         self._fd: int | None = None
 
     def holder(self) -> tuple[str, int, str | None] | None:
-        """The lock file's recorded holder, read without touching it (--status)."""
+        """The lock file's recorded holder, read without touching it (status)."""
         return self._holder()
 
     def _holder(self) -> tuple[str, int, str | None] | None:

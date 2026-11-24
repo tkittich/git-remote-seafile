@@ -67,7 +67,7 @@ def paths_only_in_older_snapshots(repo: Path, cwd: Path, kept: "set[str]", every
 
 
 def lost_paths_line(paths: "tuple[str, ...]") -> str:
-    """The sentence ``--payload-gc --payload-keep`` prints about *paths* (empty when there are none)."""
+    """The sentence ``payload gc --payload-keep`` prints about *paths* (empty when there are none)."""
     if not paths:
         return "no payload path is held only by the older snapshots"
     shown = ", ".join(paths[:5]) + (f" (+{len(paths) - 5} more)" if len(paths) > 5 else "")
@@ -79,7 +79,7 @@ def lost_paths_line(paths: "tuple[str, ...]") -> str:
 def release_reused_marks(client: Any, rid: str, base: str, reused: "set[str]") -> int:
     """Drop the retention mark of every object a snapshot found already stored and now names.
 
-    ``--payload-gc --payload-delete`` counts its grace period from the *mark*, so an object
+    ``payload gc --payload-delete`` counts its grace period from the *mark*, so an object
     marked on day 0 that another machine's snapshot starts depending on on day 6.9 was deleted
     a tenth of a day later, before that snapshot was pushed (review 134c8af, fable-D1).  A
     snapshot that names an object has used it: the mark goes, and a later run marks it afresh if

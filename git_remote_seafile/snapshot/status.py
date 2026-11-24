@@ -20,7 +20,7 @@ from . import payload_cli
 from . import remote_ops
 
 
-# -- --status: is my backup current? (read-only) ---------------------------------
+# -- status: is my backup current? (read-only) ---------------------------------
 #
 # Answers "is my backup current?" without staging anything (ROADMAP §1.0).  The
 # last snapshot's time and size come from the vault; what changed in the source
@@ -325,7 +325,7 @@ def status_command(
             "stops until it can be read or is left out with --exclude"
         )
     print(
-        "quota        : not reported -- --status reads only local state; "
+        "quota        : not reported -- status reads only local state; "
         "the library's page on the server names it"
     )
     runreport.RUN_FACTS.update(status={

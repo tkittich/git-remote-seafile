@@ -116,7 +116,7 @@ def run_command(args: argparse.Namespace) -> int:
             cli_checks.resolve_snapshot_settings(args)
         )
 
-        # --status shares the resolution ladder so it reports what the next run
+        # status shares the resolution ladder so it reports what the next run
         # would use, and stops before anything that writes: the vault, its
         # identity settings and the remembered values are read, never made.
         if args.status:
@@ -460,7 +460,7 @@ def run_command(args: argparse.Namespace) -> int:
                         print(f"Warning: {exc}\n", file=sys.stderr, flush=True)
                         payload_cli.END_OF_RUN_NOTES.append(
                             "the snapshot was pushed, but a payload object it names could not "
-                            "be re-verified afterwards; run --payload-verify and take a new "
+                            "be re-verified afterwards; run payload verify and take a new "
                             "snapshot if it names a missing object"
                         )
                         late_failure = True

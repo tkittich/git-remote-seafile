@@ -73,7 +73,7 @@ Restoring
 =========
 ::
 
-    python tools/seafile_snapshot.py --restore \
+    python tools/seafile_snapshot.py restore \
         --remote seafile://code/myproject-vault \
         --into C:/restore/myproject
 
@@ -94,7 +94,7 @@ Do **not** simply ``git clone`` the vault and check out.  On Windows the clone
 inherits ``core.autocrlf=true`` from Git for Windows' system config, and the
 vault's ``info/attributes`` -- the thing that makes it byte-exact -- is not
 carried by a clone, while the source's own ``.gitattributes`` is.  The result is
-a restore with LF rewritten to CRLF.  ``--restore`` applies the byte-exact
+a restore with LF rewritten to CRLF.  ``restore`` applies the byte-exact
 settings to the clone *before* checking out, so the files match the originals.
 
 Usage
@@ -187,7 +187,7 @@ guesses wherever a guess would be silent:
 * **``--code-remote`` must name a real remote** of the source, so a typo fails
   before the snapshot instead of after it.
 * **Flags that would be ignored are errors, not no-ops.**  ``--ref`` without
-  ``--restore`` is the sharp one: a run meant to restore an *old* snapshot would
+  ``restore`` is the sharp one: a run meant to restore an *old* snapshot would
   otherwise quietly take a *new* one.
 * **``--no-push`` and ``--remote`` together** are contradictory and refused.
 """

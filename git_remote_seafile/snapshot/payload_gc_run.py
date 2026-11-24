@@ -121,7 +121,7 @@ def add_payload_gc_arguments(parser: Any) -> None:
     parser.add_argument(
         "--payload-delete",
         action="store_true",
-        help="with --payload-gc: act. The first run only marks unreferenced objects; a "
+        help="with payload gc: act. The first run only marks unreferenced objects; a "
         "later run deletes those still unreferenced after the grace period",
     )
     parser.add_argument(
@@ -129,7 +129,7 @@ def add_payload_gc_arguments(parser: Any) -> None:
         type=int,
         default=None,
         metavar="N",
-        help="with --payload-gc: count only the newest N snapshots of each branch and tag "
+        help="with payload gc: count only the newest N snapshots of each branch and tag "
         "as using objects. Objects only older snapshots need become unused and, with "
         "--payload-delete, are removed after the grace period -- those older snapshots can "
         "then no longer be restored. Default: keep every snapshot",
@@ -137,21 +137,21 @@ def add_payload_gc_arguments(parser: Any) -> None:
     parser.add_argument(
         "--payload-no-vault",
         action="store_true",
-        help="with --payload-gc --payload-delete: delete without --vault. Snapshots that "
+        help="with payload gc --payload-delete: delete without --vault. Snapshots that "
         "exist only in a vault on some machine (not yet pushed) would then count as "
         "unreferenced, so this must be said out loud",
     )
     parser.add_argument(
         "--payload-accept-loss",
         action="store_true",
-        help="with --payload-gc --payload-delete: go on although snapshots would become "
+        help="with payload gc --payload-delete: go on although snapshots would become "
         "unrestorable -- the remote's history was rewritten since the last --payload-delete "
         "run (a branch or tag deleted, a force push), or --payload-keep expires older "
         "snapshots",
     )
     parser.add_argument(
         "--payload-allow-non-owner", action="store_true",
-        help="with --payload-gc --payload-delete: delete although this account does not own "
+        help="with payload gc --payload-delete: delete although this account does not own "
         "the library on Seafile Professional, where a folder permission could hide snapshots "
         "from it; say so only when no folder permission applies to this account",
     )
@@ -160,7 +160,7 @@ def add_payload_gc_arguments(parser: Any) -> None:
         type=float,
         default=DEFAULT_GRACE_DAYS,
         metavar="DAYS",
-        help=f"with --payload-gc: how long an object must stay unreferenced before it is "
+        help=f"with payload gc: how long an object must stay unreferenced before it is "
         f"deleted (default {DEFAULT_GRACE_DAYS:g}, minimum {_MIN_GRACE_DAYS:g})",
     )
 
@@ -306,7 +306,7 @@ def _hashes_in_history(
                              stdin=older).stdout.splitlines()
                 expired = sum(1 for line in listed
                               if len(line.split()) == 3 and line.split()[1] == "blob")
-            # Only --payload-gc prints it: --payload-verify read every older manifest for a value it
+            # Only payload gc prints it: payload verify read every older manifest for a value it
             # never used, and one unreadable old manifest stopped it (review c305b0a, fable-S2-7).
             lost = payload_history.paths_only_in_older_snapshots(repo, Path(td), kept, everything) if expired and want_lost else ()
         if not commits:
@@ -456,7 +456,7 @@ def history_fetch_space_problem(
 def _require_room_for_history(client: Any, rid: str, repo_path: str, allow_low_disk: bool) -> None:
     """Refuse before a command that fetches the remote's history into the temp volume.
 
-    ``--payload-verify`` reads the same history as retention does and is the
+    ``payload verify`` reads the same history as retention does and is the
     command run after something looked wrong, which is when the volume is
     least likely to have room (REVIEW.af9e9e1 T1.1).
     """
@@ -657,7 +657,7 @@ def payload_gc(
             f"the remote's branches or tags changed while objects were being deleted (another "
             f"machine pushed); stopped after {deleted} of {len(due)}. Run it again; if a "
             "restore then names a missing object, take a new snapshot from a tree that still "
-            "has the file, or run --payload-verify"
+            "has the file, or run payload verify"
         )
     payload_guards.write_seen_tips(client, rid, base, history.tips)
     swept = placement.sweep_probe_debris(client, rid, f"{base}/objects")

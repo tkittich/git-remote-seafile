@@ -229,9 +229,9 @@ def verification_note(client: Any, rid: str, base: str) -> str:
     data = _read_json_marker(client, rid, base, _VERIFIED_NAME)
     at = data.get("at")
     if isinstance(at, bool) or not isinstance(at, int):
-        return "last --payload-verify: never (stored objects are not re-checked by a snapshot run)"
+        return "last payload verify: never (stored objects are not re-checked by a snapshot run)"
     days = max(0, int((time.time() - at) // 86400))
-    return (f"last --payload-verify: {days} day(s) ago "
+    return (f"last payload verify: {days} day(s) ago "
             f"({data.get('checked', '?')} of {data.get('of', '?')} object(s))")
 
 
@@ -411,7 +411,7 @@ def _require_whole_history(client: Any, rid: str, delete: bool, *, check: bool =
     risk = client.hidden_history_risk(rid) if check else None
     if isinstance(risk, str) and risk and not delete:
         print(f"Note: {risk}. This report may count live objects as unused; delete nothing "
-              "from it, and run --payload-gc as the library's owner for a count to rely on.")
+              "from it, and run payload gc as the library's owner for a count to rely on.")
         return True
     if isinstance(risk, str) and risk:
         from git_remote_seafile.client import owner_advice
@@ -490,6 +490,6 @@ def encode_pending(fresh: dict[str, Any]) -> bytes:
             f"the mark list would hold {len(fresh)} unused objects ({remote_ops.human_bytes(len(data))}), more "
             f"than the {remote_ops.human_bytes(payload_gc_run._PENDING_MAX_BYTES)} a later run reads; it was not written and "
             "the list already on the server is unchanged. Delete the objects that are due first "
-            "(--payload-gc --payload-delete) so fewer remain on the list"
+            "(payload gc --payload-delete) so fewer remain on the list"
         )
     return data

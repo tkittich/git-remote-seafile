@@ -281,7 +281,7 @@ def resolve_snapshot_settings(
     # Everything that can be checked before a single byte is written: a typo in
     # a remote name or a vault inside a synced folder is far cheaper to catch
     # now than after the first push has published a whole tree.
-    # --maintain and --status push nothing, so a remembered remote that went away (or one the vault shares
+    # maintain and status push nothing, so a remembered remote that went away (or one the vault shares
     # with the source, which --allow-shared-remote cannot be passed to them to allow) must not stop them.
     if remote and not (args.maintain or args.status):
         remote_ops.check_remote_is_not_a_code_remote(

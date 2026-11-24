@@ -68,7 +68,7 @@ def check_manifest_shape(manifest: Any, where: str = "the payload manifest") -> 
     if ident is not None and not (isinstance(ident, str) and _SNAPSHOT_ID_RE.fullmatch(ident)):
         # The field is a name this tool derives, never user text; a value that
         # is not the derived shape is a manifest someone wrote by hand, and it
-        # reaches a server-side directory name in --payload-view.  Refused as
+        # reaches a server-side directory name in payload view.  Refused as
         # unparseable rather than trusted (REVIEW.iq3_s E2).
         raise common.SnapshotError(f"{where} has a snapshot id that is not one this tool writes: {ident!r}")
     for item in files:
@@ -240,7 +240,7 @@ PAYLOAD_README_TEXT = (
     "\n"
     "To get the complete tree back, verified file by file:\n"
     "\n"
-    "    git seafile-snapshot --restore --remote <the vault's seafile:// URL> --into <dir>\n"
+    "    git seafile-snapshot restore --remote <the vault's seafile:// URL> --into <dir>\n"
     "\n"
     "Do not edit or delete this directory; a restore and the payload tools read it.\n"
 )

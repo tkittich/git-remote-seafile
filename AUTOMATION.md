@@ -57,7 +57,7 @@ dying with no output. The fields:
 | `error` | the last `Error:` line, or `null` |
 | `result` | facts of the mode (below); keys are only ever added to, never removed |
 
-A real `--status --json` document (from a local vault that had recorded
+A real `status --json` document (from a local vault that had recorded
 change records but never pushed):
 
 ```json
@@ -74,7 +74,7 @@ Recipes:
 
 ```bash
 git seafile-snapshot --json --exit-warnings | jq -e '.status == "ok"'
-git seafile-snapshot --status --json      | jq -e '.result.status.pushed == true'
+git seafile-snapshot status --json      | jq -e '.result.status.pushed == true'
 ```
 
 The `pushed` field is **three-valued**, and the distinction is the point:
@@ -103,14 +103,14 @@ Two more things a scheduler can see. `--default-excludes` that keeps a `build`,
 `Warning:`, so exit `0`), and every run that leaves something out lists it by
 directory or glob. A restore onto Windows without `core.symlinks` prints a
 `Warning:` for each link it could only write as a text file, so
-`--restore --exit-warnings` exits `3`; `--payload-delete` that finds no server clock
+`restore --exit-warnings` exits `3`; `--payload-delete` that finds no server clock
 (or one an hour or more from yours) is an `Error:` and exits `1` with nothing deleted.
 
 ## An unattended run never asks a question
 
 The first-run question about reproducible directories (`node_modules`,
 virtualenvs, and `build`, `dist` or `venv` where git ignores everything in them — with sizes) is asked only at a terminal; when stdin or
-stdout is not a tty, or the run is `--json`, `--status` or `--maintain`, it is
+stdout is not a tty, or the run is `--json`, `status` or `maintain`, it is
 skipped and the run captures **everything**, then says what it noticed. An
 agent therefore cannot hang on a prompt, and also cannot silently inherit the
 exclude list: exclusions are set by the human, on the command line or in the
@@ -120,14 +120,14 @@ vault's remembered settings.
 
 | Run freely — read-only | Run on a schedule — mutating, additive | Ask the human first |
 |:---|:---|:---|
-| `--status`, `--payload-verify`, `--restore-drill`, `check-safety`, `lock-status`, `check-auth`, `config` | a snapshot (push included); `--dry-run` (initialises a missing vault on disk); `git-remote-seafile doctor` (writes and removes one probe file on the server); `--payload-view` (server-side copies, charged to quota at full size); `git-remote-seafile gc`; `set-head`; `--restore --into` a **new, empty** directory | `--payload-gc --payload-delete` and any `--payload-keep` change; `unlock --force`; `--reset-to-remote`; any `--allow-*` or `--payload-accept-loss` bypass; `doctor --create-library`; restoring anywhere a human's files might already be |
+| `status`, `payload verify`, `drill`, `check-safety`, `lock-status`, `check-auth`, `config` | a snapshot (push included); `--dry-run` (initialises a missing vault on disk); `git-remote-seafile doctor` (writes and removes one probe file on the server); `payload view` (server-side copies, charged to quota at full size); `git-remote-seafile gc`; `set-head`; `restore --into` a **new, empty** directory | `payload gc --payload-delete` and any `--payload-keep` change; `unlock --force`; `--reset-to-remote`; any `--allow-*` or `--payload-accept-loss` bypass; `doctor --create-library`; restoring anywhere a human's files might already be |
 
 The right column is not politeness, it is the shape of the commands: payload
 retention deletes server-side objects, `--force` breaks a lock another machine
 may hold, and the `--allow-*` flags exist precisely to switch off a guard.
-Two guards make the middle column safe to automate: `--restore` refuses a
+Two guards make the middle column safe to automate: `restore` refuses a
 non-empty destination ("restore destination is not empty"), so an agent cannot
-overwrite an existing tree by accident, and `--payload-gc` without
+overwrite an existing tree by accident, and `payload gc` without
 `--payload-delete` only reports what retention would remove.
 
 ## Credentials without a terminal

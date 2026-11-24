@@ -156,7 +156,7 @@ _PUSHED_KEY = "snapshot.pushed"
 def remember_pushed_tip(git_dir: Path, work_tree: Path, branch: str, tip: str, remote: str = "") -> None:
     """Record, in the vault, the snapshot the remote last held after one of *our* pushes.
 
-    ``--status`` never contacts the remote, so this is what lets it say whether
+    ``status`` never contacts the remote, so this is what lets it say whether
     the newest snapshot has left this machine.  Only a successful push (or a
     remote already at our tip) writes it; a failed write is not worth failing a
     backup for.  The remote is part of the record: a vault pointed at another server has pushed nothing to it

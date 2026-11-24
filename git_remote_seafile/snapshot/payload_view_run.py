@@ -27,7 +27,7 @@ from . import payload_gc_run
 #
 # Views are *not* byte-faithful restores: they carry no mode and no mtime, and the
 # server's name rules apply (NFC, a double quote becomes %22, 255 bytes), so a file
-# whose name cannot be held is reported and left out.  `--restore` is the faithful
+# whose name cannot be held is reported and left out.  `restore` is the faithful
 # path.
 
 _VIEW_NAME_BYTES = 255
@@ -38,13 +38,13 @@ def add_payload_view_arguments(parser: Any) -> None:
         "--payload-view-name",
         default=None,
         metavar="NAME",
-        help="with --payload-view: the directory name under <path>-view (default: the "
+        help="with payload view: the directory name under <path>-view (default: the "
         "snapshot id, which is stable for identical content)",
     )
     parser.add_argument(
         "--payload-view-replace",
         action="store_true",
-        help="with --payload-view: delete an existing view of that name first, so "
+        help="with payload view: delete an existing view of that name first, so "
         "'current' can be rebuilt in place",
     )
 

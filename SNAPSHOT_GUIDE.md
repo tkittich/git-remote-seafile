@@ -99,7 +99,7 @@ Defaults are resolved most-specific-first:
 | `--refuse-secrets` | Stop the run, before the branch moves and before anything is pushed, when a captured path looks like a credential (`.env`, keys); `--exclude` it to go on. Without the flag the paths are only listed. |
 | `--allow-gitlinks` | Accept the gitlink that `--no-embedded-repos` records. Refused on its own. |
 | `--record-mtimes` / `--no-record-mtimes` | Record (or not) the modification time of git-stored files in `.seafile-payload/mtimes.json`. On by default for a run that pushes to a `seafile://` remote; an explicit choice is remembered by the vault. |
-| `--payload-report-days N` | Payload mode: print the report-only `--payload-gc` summary when none was printed in N days (default 7, `0` off). |
+| `--payload-report-days N` | Payload mode: print the report-only `payload gc` summary when none was printed in N days (default 7, `0` off). |
 | `--message <text>` | Override the snapshot commit message. |
 | `--code-remote <name>` | Also `git push <name>` in the source repo first; the name is validated up front. |
 | `--no-push` | This run pushes nothing and changes no remembered setting. |
@@ -109,24 +109,24 @@ Defaults are resolved most-specific-first:
 | `--allow-synced` | Proceed even when the source, the vault or a restore destination is inside a Seafile-synced folder ([section 5](#5-what-the-tool-refuses-to-do)). The sync client rewrites files under Git, so this is for a library you have made inert (auto-sync off, or `seafile-ignore.txt` covering it). |
 | `--payload-min-size [<size>\|auto]` | **Payload mode.** Selected files are not put through git: each is SHA-256-hashed and uploaded **by hash** to `<path>/payload/objects/` inside the vault's remote directory, and the commit records a manifest. With no value, or `auto`: files of 64 MiB or more, plus files of 4 MiB or more that do not compress. With a size (`64M`, `1G`): files of at least that size. A restore downloads and verifies them. Objects are never overwritten or deleted by a run, so a snapshot costs nothing to keep and a rename uploads nothing. Needs a remote; cannot be combined with `--no-push`; `0` turns it off. The setting is remembered by the vault after a complete run, so later runs need no flag. Put SOURCE first, or write `--payload-min-size=auto`. See PAYLOAD.md. |
 | `--payload-auto-ratio <R>\|measure` | With the `auto` payload rule, a file of 4–64 MiB goes to payload when a sample of it keeps at least *R* of its size under a fast deflate (default `0.9`: only data that barely compresses). A lower value (e.g. `0.5`) sends moderately compressible data to payload instead of deflating it through git, which is faster when deflate is slow next to your link and gives up git's delta compression between snapshots. `0 < R <= 1`; remembered by a complete real run. A **new vault** with a gigabyte or more of such data measures your deflate speed and your link once on its first real run (four 16 MiB probe files, uploaded and deleted) and remembers a cut-off between `0.5` and `0.9`; an existing vault, or one whose remote already holds payload objects, keeps `0.9` until you set it, and `measure` measures again. A vault that moves files in or out of git by changing it does so once, on the next run. Every run (and `--dry-run`) with the `auto` rule prints a `placement:` line (how many files and bytes go to payload and stay in git) and, when a lower cut-off would plainly be faster on your machine and link, a `Hint:` line saying how many files it would move and the time it would save; the tip changes nothing. |
-| `--payload-skip-changing` | With payload mode, a payload file that changes while it is being read or uploaded (a database, a mailbox, a VM disk) is **left out of this snapshot**, named in a `Warning:`, instead of failing the run and snapshotting nothing. Its last stored version stays in the newest earlier snapshot that has it, **until `--payload-keep` ages that snapshot out**: a file that is skipped run after run is in none of the newer snapshots, so with a short `--payload-keep` its only stored version can be deleted by `--payload-gc --payload-delete`. `--payload-gc --payload-keep N` names such paths (a count and the first five) before it deletes anything. The next quiet run captures the file again. Not remembered; the default is an error. |
+| `--payload-skip-changing` | With payload mode, a payload file that changes while it is being read or uploaded (a database, a mailbox, a VM disk) is **left out of this snapshot**, named in a `Warning:`, instead of failing the run and snapshotting nothing. Its last stored version stays in the newest earlier snapshot that has it, **until `--payload-keep` ages that snapshot out**: a file that is skipped run after run is in none of the newer snapshots, so with a short `--payload-keep` its only stored version can be deleted by `payload gc --payload-delete`. `payload gc --payload-keep N` names such paths (a count and the first five) before it deletes anything. The next quiet run captures the file again. Not remembered; the default is an error. |
 | `--payload-rehash` | With payload mode, ignore the hash cache for this run and hash every payload file again (a tree whose timestamps were restored by a copy tool, or a periodic audit). A real run **remembers** `--payload-min-size` in the vault, so a later bare run keeps using it (`0` is remembered too). |
-| `--payload-gc` | **Payload retention.** Report the stored objects no snapshot references (in any ref of `--remote`, or the local `--vault`, which must be a vault). With `--payload-delete` it marks them, and a later run deletes those that stayed unreferenced for `--payload-grace-days` (default 7, minimum 1). Refuses to act when it finds no manifest, an unreadable one, or a Seafile conflict copy of a ref. |
-| `--payload-verify [<n>\|all]` | **Payload audit.** Download *n* randomly chosen objects (default 20, or `all`) of the newest snapshot of `--remote` and check each against its SHA-256; exit non-zero and name the damaged ones. The server cannot report a content hash, so this is the only way to find an object damaged after it was stored. About 85 MiB/s: all of a 111 GB payload takes roughly 25 minutes. |
-| `--status` | **Is my backup current?** Reports, without staging, hashing or uploading anything: the last snapshot's time and size, what changed in the source since it (a size-and-mtime comparison against the records that snapshot wrote — the manifest for payload files, `mtimes.json` for the git-stored ones), the settings the next run would use, and whether the vault is locked. The comparison is a heuristic and the report says which way it errs: a change that keeps the stats its record holds hides (size and mtime for a payload file and for a git-stored one whose snapshot recorded sizes; mtime alone for an older snapshot's git-stored files), and a file whose time changed without its content shows as changed though the next run would find nothing new. The library's quota is not reported, and it never contacts the remote: its `pushed` line is what this vault recorded at its last push (`yes`, `NO -- N snapshot(s) were taken after the last push`, or `not recorded` for a vault that has not pushed since it began keeping the record), not a look at the server. It does not combine with `--no-push` or `--dry-run`. `--json` carries the counts in `result.status`. |
-| `--restore-drill [<n>\|all]` | **Restore drill.** Prove the newest snapshot of `--remote` restores: clone it into a temporary directory, check every file byte-for-byte, run `git fsck`, download *n* randomly chosen payload files (default 10) and check their SHA-256, then delete the directory. It needs the disk for the whole vault; set `TMP` / `TMPDIR` to use a bigger volume. A failed drill keeps the directory and names it. `--ref snapshot~3` drills an older snapshot. |
+| `payload gc` | **Payload retention.** Report the stored objects no snapshot references (in any ref of `--remote`, or the local `--vault`, which must be a vault). With `--payload-delete` it marks them, and a later run deletes those that stayed unreferenced for `--payload-grace-days` (default 7, minimum 1). Refuses to act when it finds no manifest, an unreadable one, or a Seafile conflict copy of a ref. |
+| `payload verify [<n>\|all]` | **Payload audit.** Download *n* randomly chosen objects (default 20, or `all`) of the newest snapshot of `--remote` and check each against its SHA-256; exit non-zero and name the damaged ones. The server cannot report a content hash, so this is the only way to find an object damaged after it was stored. About 85 MiB/s: all of a 111 GB payload takes roughly 25 minutes. |
+| `status` | **Is my backup current?** Reports, without staging, hashing or uploading anything: the last snapshot's time and size, what changed in the source since it (a size-and-mtime comparison against the records that snapshot wrote — the manifest for payload files, `mtimes.json` for the git-stored ones), the settings the next run would use, and whether the vault is locked. The comparison is a heuristic and the report says which way it errs: a change that keeps the stats its record holds hides (size and mtime for a payload file and for a git-stored one whose snapshot recorded sizes; mtime alone for an older snapshot's git-stored files), and a file whose time changed without its content shows as changed though the next run would find nothing new. The library's quota is not reported, and it never contacts the remote: its `pushed` line is what this vault recorded at its last push (`yes`, `NO -- N snapshot(s) were taken after the last push`, or `not recorded` for a vault that has not pushed since it began keeping the record), not a look at the server. It does not combine with `--no-push` or `--dry-run`. `--json` carries the counts in `result.status`. |
+| `drill [<n>\|all]` | **Restore drill.** Prove the newest snapshot of `--remote` restores: clone it into a temporary directory, check every file byte-for-byte, run `git fsck`, download *n* randomly chosen payload files (default 10) and check their SHA-256, then delete the directory. It needs the disk for the whole vault; set `TMP` / `TMPDIR` to use a bigger volume. A failed drill keeps the directory and names it. `--ref snapshot~3` drills an older snapshot. |
 | `--json` | One JSON document on stdout (`schema`, `mode`, `status` of `ok`/`warnings`/`failed`, `exit_code`, `seconds`, `warnings`, `error`, `result`); the human text moves to stderr. A usage error exits 2 and still writes one document (status `failed`, the reason in `error`). |
 | `--exit-warnings` | Exit `3` instead of `0` when the run completed but printed a `Warning:`. Off by default, so a job that works today does not start failing. |
-| `--payload-view [<ref>]` | **Payload view.** Build a browsable directory of real file names for a snapshot of `--remote` (a branch, or `snapshot~2`; default `snapshot`) at `<path>-view/<name>` in the same library, by server-side copy and rename of the stored objects: no data moves and no extra disk is used, but **quota and library size count each copy at its full size**, so a view of a large snapshot needs that much headroom (the run warns when the account's quota is short; delete the view when you are done with it). A convenience, not a restore: no mode or mtime, and the server's name rules apply (names it cannot hold are reported). `--payload-view-name <name>` picks the directory (default: the snapshot id); `--payload-view-replace` rebuilds an existing one, so `current` can be refreshed. Write the ref as `--payload-view=<ref>`. |
-| `--payload-keep <n>` | With `--payload-gc`, count only the newest *n* snapshots of each branch and tag as using objects, so older snapshots expire: their exclusive objects are removed by `--payload-delete` after the grace period and those snapshots can no longer be restored. Default: keep all. |
-| `--payload-delete` | With `--payload-gc`, act (mark, then delete after the grace period); default: report only. Retention is meant for one machine at a time: do not run it while another machine is pushing snapshots to the same vault (nothing locks the mark list between them). |
-| `--payload-grace-days <n>` | With `--payload-gc`, how long an object must stay unreferenced before it is deleted. |
-| `--restore` | Restore a snapshot instead of taking one; requires `--remote` and `--into` ([section 4](#4-restoring-and-verifying)). |
-| `--into <dir>` | Destination directory for `--restore`. |
-| `--ref <rev>` | Which snapshot to restore. Default: the vault branch tip. Only meaningful with `--restore` — passing it without one is an error, not a no-op. |
-| `--verify` | With `--restore`, also run `git fsck` over the clone. |
+| `payload view [<ref>]` | **Payload view.** Build a browsable directory of real file names for a snapshot of `--remote` (a branch, or `snapshot~2`; default `snapshot`) at `<path>-view/<name>` in the same library, by server-side copy and rename of the stored objects: no data moves and no extra disk is used, but **quota and library size count each copy at its full size**, so a view of a large snapshot needs that much headroom (the run warns when the account's quota is short; delete the view when you are done with it). A convenience, not a restore: no mode or mtime, and the server's name rules apply (names it cannot hold are reported). `--payload-view-name <name>` picks the directory (default: the snapshot id); `--payload-view-replace` rebuilds an existing one, so `current` can be refreshed. Write the ref as `payload view=<ref>`. |
+| `--payload-keep <n>` | With `payload gc`, count only the newest *n* snapshots of each branch and tag as using objects, so older snapshots expire: their exclusive objects are removed by `--payload-delete` after the grace period and those snapshots can no longer be restored. Default: keep all. |
+| `--payload-delete` | With `payload gc`, act (mark, then delete after the grace period); default: report only. Retention is meant for one machine at a time: do not run it while another machine is pushing snapshots to the same vault (nothing locks the mark list between them). |
+| `--payload-grace-days <n>` | With `payload gc`, how long an object must stay unreferenced before it is deleted. |
+| `restore` | Restore a snapshot instead of taking one; requires `--remote` and `--into` ([section 4](#4-restoring-and-verifying)). |
+| `--into <dir>` | Destination directory for `restore`. |
+| `--ref <rev>` | Which snapshot to restore. Default: the vault branch tip. Only meaningful with `restore` — passing it without one is an error, not a no-op. |
+| `--verify` | With `restore`, also run `git fsck` over the clone. |
 
-**Scheduled runs: exit codes and `--json`.** `0` is done (a warning may have been printed), `1` failed (`Error:` on stderr), `2` the command line was wrong, and `3` — only with `--exit-warnings` — completed but printed a `Warning:`. With `--json` stdout is exactly one JSON line (`status` is `ok`, `warnings` or `failed`), so a job can alert with `jq -e '.status == "ok"'` and attach `.warnings` or `.error` to the notification. A payload object is proven present by its listed size only, so a same-size damaged object is reused until `--payload-verify` or a restore finds it: add `--payload-verify 20` to the scheduled recipe (a random sample each night finds damage within days) and `--payload-verify all` now and then. Run `--status` nightly (it reads local state only) and `--restore-drill` now and then (monthly, not nightly: it downloads the vault once) so the first restore is not the day you need it. The full automation contract — including the three-valued `result.status.pushed` and what an AI agent may run without asking — is assembled in [AUTOMATION.md](AUTOMATION.md). Details: SNAPSHOT.md, *Exit codes and `--json`* and *Restore drill*.
+**Scheduled runs: exit codes and `--json`.** `0` is done (a warning may have been printed), `1` failed (`Error:` on stderr), `2` the command line was wrong, and `3` — only with `--exit-warnings` — completed but printed a `Warning:`. With `--json` stdout is exactly one JSON line (`status` is `ok`, `warnings` or `failed`), so a job can alert with `jq -e '.status == "ok"'` and attach `.warnings` or `.error` to the notification. A payload object is proven present by its listed size only, so a same-size damaged object is reused until `payload verify` or a restore finds it: add `payload verify 20` to the scheduled recipe (a random sample each night finds damage within days) and `payload verify all` now and then. Run `status` nightly (it reads local state only) and `drill` now and then (monthly, not nightly: it downloads the vault once) so the first restore is not the day you need it. The full automation contract — including the three-valued `result.status.pushed` and what an AI agent may run without asking — is assembled in [AUTOMATION.md](AUTOMATION.md). Details: SNAPSHOT.md, *Exit codes and `--json`* and *Restore drill*.
 
 **An unchanged tree commits nothing.** The tool compares the new tree against the previous snapshot and stops if they match, so a scheduled job — hourly, say — costs a directory walk and a push that transfers nothing. This is what makes it safe to run far more often than you would run a backup.
 
@@ -179,28 +179,28 @@ and writes this into its own `info/attributes`:
 
 - **An attributes override must name *every* attribute class it means to neutralise.** `* -text` alone does **not** disable `filter`: a source `.gitattributes` carrying `filter=lfs` still applies, and the vault silently stored a **130-byte LFS pointer** while the real bytes went nowhere.
 - **Paths over 260 characters and non-ASCII names are pinned.** `core.longpaths=true` allows deep directory structures on Windows, while `core.quotepath=false` ensures multi-byte international filenames (such as Thai, CJK, or accented Latin) remain legible in snapshot diffs and status output instead of being C-quoted as octal escapes (e.g. `\340\270...`). (If your source repository's own `git status` shows octal escapes, set `git config core.quotepath false` or `git config --global core.quotepath false`).
-- **A plain `git clone` of the vault is lossy.** `info/attributes` is not carried by a clone; the source's `.gitattributes` is. Restoring by cloning the vault by hand can therefore hand you the wrong bytes. That is why `--restore` exists.
+- **A plain `git clone` of the vault is lossy.** `info/attributes` is not carried by a clone; the source's `.gitattributes` is. Restoring by cloning the vault by hand can therefore hand you the wrong bytes. That is why `restore` exists.
 
 ## 4. Restoring and verifying
 
 ```bash
 # Rebuild a tree into a target directory, verifying byte-exactness
-git seafile-snapshot --restore \
+git seafile-snapshot restore \
     --remote seafile://backups/myproject \
     --into ~/restored
 
 # Any revision works -- e.g. roll back three snapshots
-git seafile-snapshot --restore \
+git seafile-snapshot restore \
     --remote seafile://backups/myproject --into ~/restored --ref snapshot~3
 
 # Additionally run `git fsck` over the vault
-git seafile-snapshot --restore \
+git seafile-snapshot restore \
     --remote seafile://backups/myproject --into ~/restored --verify
 ```
 
-`--restore` takes `--remote` (the vault to restore from) and `--into` (a new,
+`restore` takes `--remote` (the vault to restore from) and `--into` (a new,
 empty directory); `--source` and `--vault` do not apply — the tree comes from
-the remote, and the guard refuses flags that would be ignored. `--restore`
+the remote, and the guard refuses flags that would be ignored. `restore`
 clones `--no-checkout`, re-applies the settings above, then checks out — and
 verifies the result on **every** run with
 
@@ -229,7 +229,7 @@ which hashes the bytes as they lie on disk. That is the only one of Git's three 
 - **A vault belongs to one source tree.** The vault records the source directory it first saw and refuses a run that points a *different* tree at it — mixing two trees into one linear chain of snapshots is not something a later reader could undo. Give each tree its own vault.
 - **Neither the source nor the vault may live in a Seafile-synced folder.** Checked at startup, before anything is written. The sync client rewrites files underneath whatever lives in a synced folder and competes with Git for every path — the exact problem this tool exists to avoid.
 - **`--code-remote <name>` must name a real remote** of the source. Without this check a typo would fail *after* the snapshot was built, leaving a commit for a run the user reads as failed.
-- **Flags that would otherwise be ignored are errors.** `--ref` without `--restore` is the sharp one: a run meant to restore an *old* snapshot would quietly take a *new* one instead. `--no-push` together with `--remote` is contradictory and also refused.
+- **Flags that would otherwise be ignored are errors.** `--ref` without `restore` is the sharp one: a run meant to restore an *old* snapshot would quietly take a *new* one instead. `--no-push` together with `--remote` is contradictory and also refused.
 
 ## 6. Several machines, one vault
 
@@ -256,7 +256,7 @@ Every snapshot commit writes new objects into the vault's local object store, an
 
 - **Automatic incremental repack.** Before each push that has a destination, the tool measures its own loose tier, and once it passes 256 MiB it runs `git repack -d` + prune — consolidating *loose objects only*, never touching existing packs. (An object-*count* trigger already exists in git itself: the `git fetch` this tool runs launches `gc --auto` once about 6,700 loose objects exist.) It is best-effort: a failure is reported and the push proceeds anyway. `--no-repack` skips it for one run.
 - **Manual full reset.** `--full-repack` runs `git repack -ad` + prune over the whole store, collapsing everything into one pack. Use it after large deletions or when the local pack count has grown high; nothing runs it automatically.
-- **Report.** `--maintain --vault <vault>` needs no source and runs from any directory. It changes nothing: loose/object/pack counts, object-store size against free disk space, and the storage profile (below).
+- **Report.** `maintain --vault <vault>` needs no source and runs from any directory. It changes nothing: loose/object/pack counts, object-store size against free disk space, and the storage profile (below).
 
 **Large raw payloads get a storage profile, decided once from a sample.** Two git costs scale with raw bytes and buy nothing on data that neither compresses nor deltifies: staging deflates every blob (42 MB/s on incompressible data, 131 MB/s with `core.compression=0`), and `pack-objects` — the helper's push and the vault's own background `gc --auto` — runs a delta search over every blob below `core.bigFileThreshold` (default 512 MiB), which measured 8–10 MB/s regardless of the compression level. On a 20 GB+ tree that is the difference between minutes and a timeout.
 
@@ -305,7 +305,7 @@ git seafile-snapshot C:/code/flood
 git seafile-snapshot C:/code/flood --no-payload
 
 # Restore is the same command as always; it downloads and verifies the payload.
-git seafile-snapshot --restore --remote seafile://code/flood-vault --into D:/restored --verify
+git seafile-snapshot restore --remote seafile://code/flood-vault --into D:/restored --verify
 ```
 
 What to know:
@@ -335,14 +335,14 @@ What to know:
   the vault as it was.
 - **A plain `git clone` of a payload vault does not contain the large files.** It
   holds the manifest and `.seafile-payload/README.txt`; get the tree back with
-  `--restore`.
-- **The store only grows** until you run `--payload-gc` (and `--payload-keep`); a run
+  `restore`.
+- **The store only grows** until you run `payload gc` (and `--payload-keep`); a run
   that uploaded objects prints how many and how large the store is.
 - **How it meets git.** The vault is still an ordinary repository; payload files are simply never staged.
   - *Inside git* a payload snapshot is the small files plus two ordinary blobs, `.seafile-payload/manifest.json` (one line of JSON, sorted keys) and `README.txt`. `git log`, `git show`, `git fsck`, `git gc`, `git repack` and `git clone` work as on any vault; a manifest change shows in `git diff` as one long line, so read it with `git show snapshot:.seafile-payload/manifest.json | python -m json.tool`.
-  - *Outside git* the large files are plain files in `<vault path>/payload/objects/` on the server. Git never sees them, so `git gc` and the helper's `gc`, `gc --tail` and `doctor` neither read nor delete them (the helper ignores a foreign `payload/` directory); only `--payload-gc` removes an object, and only one no snapshot references.
-  - *A checkout is not a restore.* `git clone`, `git checkout` or `git switch` gives you the manifest, not the files; `--restore` (or `--payload-view` for a browsable copy made on the server) is what produces them, and verifies each by SHA-256.
-  - *History rewrites need care.* The manifests are what keep objects alive: `git push --force`, `git filter-repo` or deleting a snapshot branch or tag make older manifests unreachable, and a later `--payload-gc --payload-delete` will then treat their objects as unused.
+  - *Outside git* the large files are plain files in `<vault path>/payload/objects/` on the server. Git never sees them, so `git gc` and the helper's `gc`, `gc --tail` and `doctor` neither read nor delete them (the helper ignores a foreign `payload/` directory); only `payload gc` removes an object, and only one no snapshot references.
+  - *A checkout is not a restore.* `git clone`, `git checkout` or `git switch` gives you the manifest, not the files; `restore` (or `payload view` for a browsable copy made on the server) is what produces them, and verifies each by SHA-256.
+  - *History rewrites need care.* The manifests are what keep objects alive: `git push --force`, `git filter-repo` or deleting a snapshot branch or tag make older manifests unreachable, and a later `payload gc --payload-delete` will then treat their objects as unused.
 - **A snapshot costs nothing to keep.** Objects are not overwritten (the one exception
   is an object found with the wrong size, which is replaced), so a snapshot is a
   manifest; a renamed or duplicated file uploads nothing.
@@ -352,30 +352,30 @@ What to know:
   a later push publishes: the cost payload mode exists to avoid. That run leaves the
   vault's remembered payload setting alone, so the next scheduled push is a payload run
   again). `--dry-run` previews without pushing.
-- **`--payload-verify` audits the newest snapshot only.** Objects that only older or
+- **`payload verify` audits the newest snapshot only.** Objects that only older or
   tagged snapshots reference are found damaged at restore time, not before.
 - **Tags are pins, but only if they are on the remote.** `git tag` in the vault is local;
   push it (`git -C <vault> push <remote> <tag>`) or a retention run on another machine
   does not see it. A pinned snapshot's own objects are kept whatever `--payload-keep`
   says.
 - **The manifest is one line of JSON** (so no text filter can alter it): `git diff` and
-  `git show` of it are not readable. Use `--payload-view` for names, or `jq` on the blob.
+  `git show` of it are not readable. Use `payload view` for names, or `jq` on the blob.
 - **A machine on 0.8.8 or earlier restores a payload vault's git tree only**, without the
   large files and without a warning (it does not know manifests). Restore with 0.9.0 or
   later.
 - **A weekly report, never a deletion.** After a run that pushes, the tool prints the
-  report-only `--payload-gc` summary (stored, in use, reclaimable) when none was printed in
+  report-only `payload gc` summary (stored, in use, reclaimable) when none was printed in
   the last 7 days; `--payload-report-days N` changes the period and `0` turns it off. A
   report that fails is a note, not a failed run, and nothing is deleted without
-  `--payload-gc --payload-delete`.
+  `payload gc --payload-delete`.
 - **Hashing is parallel too, as far as the disk allows.** A first run over a large tree is hours of `sha256` on one core when the disk could feed several. Once more than 512 MiB must be hashed, the run starts with one file at a time, reads the rate over short windows and doubles the number in flight while it grows by 15% (up to the CPU count, at most 16), with the same patience and the same "best level seen" rule as the uploads: `payload: hashing 120 file(s) (15.0 GiB) with up to 16 parallel hashers, found by measuring`, then `payload: settled on 8 parallel hasher(s) (MiB/s by count: 1: 1381, 2: 2410, 4: 3300, 8: 3350)`. On a spinning disk the search finds that more readers only seek and stays at one. Largest files go first, so the last one in flight is small. The manifest and the hash cache are byte-for-byte what the serial loop writes. `SEAFILE_SNAPSHOT_HASH_WORKERS=N` forces exactly N (`1` is the plain serial loop).
 - **Uploads are parallel and verified, and as parallel as the link allows.** Without `--payload-jobs N` the run starts at 3 uploads and doubles while the aggregate rate (bytes per second over ten-second windows) grows by 15%, trying up to 16 and stopping after two levels in a row that did not help; it then settles on the best level it saw and prints `payload: settled on 12 parallel upload(s) (MiB/s by count: 3: 55, 6: 71, 12: 82, 16: 91)`. Two flat steps are allowed because a real server showed a shelf at 3-4 and a 30% rise at 8. A `429`, `502`, `503` or `504` from the server halves the level for the rest of the run and queues the object again (a `Note:` says so); only after that fails twice is it an error. A typed `--payload-jobs N` is used exactly, with no measuring: a push-back puts the object back in the queue the same way, at most twice, and the level stays N. Each object
   goes up under a temporary name, is hashed as it is sent, and is renamed to its hash
   only if the bytes match; the whole set is re-checked just before the vault is pushed.
-- **Look at it, or audit it.** `--payload-view` builds a browsable directory of real
-  names by server-side copy (no data moves); `--payload-verify [N|all]` downloads and
+- **Look at it, or audit it.** `payload view` builds a browsable directory of real
+  names by server-side copy (no data moves); `payload verify [N|all]` downloads and
   hashes a sample, which is the only way to find an object damaged after it was stored.
-- **Retention is explicit.** `--payload-gc` reports what no snapshot references;
+- **Retention is explicit.** `payload gc` reports what no snapshot references;
   `--payload-delete` marks it and a later run deletes it after `--payload-grace-days`;
   `--payload-keep N` lets older snapshots expire (they then cannot be restored). Run it
   from one machine, and set the library's history to keep a few days as a safety net.
@@ -399,7 +399,7 @@ What to know:
   `--payload-min-size auto` / `--payload-auto-ratio <theirs>` to switch).
   Every snapshot commit records the tool's version in a `Git-Remote-Seafile:`
   trailer, and a run warns when it builds on a snapshot written by a newer tool.
-  The store line and the gc report say when `--payload-verify` last ran.
+  The store line and the gc report say when `payload verify` last ran.
 - **What it does not do:** no encryption, no delta between versions of one file (a
   changed file is a whole new object; the server shares unchanged blocks), and a
   file's name must be restorable on the volume you restore to (names it cannot hold are
@@ -436,7 +436,7 @@ Three things to settle first:
 - **A full path to the command.** A scheduler's `PATH` is short. `uv tool install` and `pipx install`
   put `git-seafile-snapshot` in `~/.local/bin` (`%USERPROFILE%\.local\bin` on Windows).
 
-Once a week is also a good moment for `git seafile-snapshot --restore-drill`, which restores the newest
+Once a week is also a good moment for `git seafile-snapshot drill`, which restores the newest
 snapshot into a temporary directory, checks it byte for byte and deletes it ([section 4](#4-restoring-and-verifying)).
 
 ### Linux and macOS: cron

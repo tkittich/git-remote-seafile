@@ -1226,7 +1226,7 @@ class PayloadDefaultAndSafeguardTests(_PayloadFixture):
     def test_the_vault_carries_a_note_on_how_to_read_it(self):
         self.assertEqual(self.bare()[0], 0)
         note = _git(self.vault, "show", "snapshot:.seafile-payload/README.txt")
-        self.assertIn("--restore", note)
+        self.assertIn("seafile-snapshot restore", note)
         self.assertIn("manifest.json", note)
         raw = subprocess.run(
             ["git", "-C", str(self.vault), "show", "snapshot:.seafile-payload/README.txt"],
@@ -1444,11 +1444,11 @@ class PayloadDefaultAndSafeguardTests(_PayloadFixture):
     def test_verify_leaves_a_marker_the_store_line_and_gc_report_show(self):
         self.assertEqual(self.snapshot()[0], 0)
         rc, out, err = self.gc()
-        self.assertIn("last --payload-verify: never", out)
+        self.assertIn("last payload verify: never", out)
         rc, out, err = self.run_tool("--payload-verify", "all", "--remote", self.remote)
         self.assertEqual(rc, 0, out + err)
         rc, out, err = self.gc()
-        self.assertIn("last --payload-verify: 0 day(s) ago", out)
+        self.assertIn("last payload verify: 0 day(s) ago", out)
 
     def test_an_upload_that_cannot_fit_the_quota_is_warned_about_first(self):
         with unittest.mock.patch.object(snap.payload_guards, "_account_quota", lambda c: (990, 1000)):

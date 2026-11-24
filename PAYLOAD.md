@@ -136,7 +136,7 @@ scale: 500,000 files are ~78 MB raw and 1,000,000 files are ~156 MB raw, parsed
 in ~6 s with a ~600 MB transient peak -- survivable on a desktop, and the point
 where `--exclude`ing the bulk starts to matter. The retention mark list is
 ~88 bytes an entry, so the mark list's 64 MiB read cap bites at ~750,000
-marked objects; `--payload-gc` before then keeps the list small. After a
+marked objects; `payload gc` before then keeps the list small. After a
 `repack -ad`, a snapshot that changes 0.1% of the entries adds ~10 kB, 1% adds
 ~110 kB, and one that changes every entry (the hash and mtime of each) adds
 ~6 MB, because the new hashes are incompressible. git's delta absorbs the
@@ -258,9 +258,9 @@ problem, handled differently:
   files that already verify, but the command refuses a non-empty destination
   (A19), so a rerun goes to a new directory.
 
-### D9. Retention — **decided** (`--payload-gc`)
+### D9. Retention — **decided** (`payload gc`)
 
-Nothing in a snapshot run deletes. `--payload-gc --remote URL [--vault DIR]`
+Nothing in a snapshot run deletes. `payload gc --remote URL [--vault DIR]`
 reports; with `--payload-delete` it **marks, and later deletes, in two phases**:
 
 - the first run records, in `payload/gc-pending.json` on the server and by the
@@ -315,9 +315,9 @@ Deleting frees quota at once; disk is freed only after the library's history
 expires and the server's GC runs (measured). Recommended library setting: a short
 history (days), as a safety net for a mistaken delete.
 
-### D10. Views — **decided** (`--payload-view`)
+### D10. Views — **decided** (`payload view`)
 
-`--payload-view[=REF] --remote URL [--payload-view-name NAME] [--payload-view-replace]`
+`payload view[=REF] --remote URL [--payload-view-name NAME] [--payload-view-replace]`
 builds `<vault path>-view/<NAME>` (default NAME: the snapshot id) in the same
 library: for each manifest entry the object is copied server-side into the right
 directory, keeping its hash name, and renamed to the file's name (two calls per
@@ -325,7 +325,7 @@ file, no data moved, and measured to add no blocks -- but the library's quota an
 missing, refuses an existing view unless `--payload-view-replace`, and reports
 files the server cannot name (a component over 255 bytes, or two names that
 collapse to one) instead of failing. A view is a convenience: no mode, no mtime,
-the server's name rules apply, and deleting it loses nothing. `--restore` is the
+the server's name rules apply, and deleting it loses nothing. `restore` is the
 faithful path. It lives beside the vault, never inside the helper's directory.
 
 ### D11. Flags — **decided**
@@ -336,7 +336,7 @@ remembered; measured once for a new vault),
 `--payload-jobs N` (exactly N uploads at once; default: found by measuring -- starts at 3,
 climbs while the aggregate rate grows, up to 16, backs off on a 429/502/503/504; either way a
 pushed-back object is queued again, at most twice, and a typed N is never lowered; measured
-on the test server: 1 upload 27 MiB/s, 2 about 40, 4 about 45, 8 about 62, 12 about 65), `--payload-gc`, `--payload-delete`, `--payload-grace-days N`.
+on the test server: 1 upload 27 MiB/s, 2 about 40, 4 about 45, 8 about 62, 12 about 65), `payload gc`, `--payload-delete`, `--payload-grace-days N`.
 Combinations that would be silently ignored are refused. **A vault with nothing typed and nothing remembered uses `auto`, unless the remote's manifest records another rule: then it is refused and told to name the flag (D13)** (review 9fe723f, fable-D3: the two read as a contradiction). An explicit
 `--payload-min-size` is incompatible with `--no-push`. **A `--no-push` run on a vault whose
 last snapshot used payload mode is refused** (R10 wins over "a default is not a request": a
@@ -359,7 +359,7 @@ deliberate way out. A tree with nothing at or above the threshold writes no mani
 and makes no payload call, so the default costs a small tree nothing. The first run
 that takes the default says so, an existing vault's conversion is announced with a
 `NOTICE` before anything is hashed or uploaded, and a run that uploaded objects prints the size of
-the store (nothing deletes an object until `--payload-gc`). The vault's tree carries
+the store (nothing deletes an object until `payload gc`). The vault's tree carries
 `.seafile-payload/README.txt` beside the manifest, so a plain `git clone` explains
 itself. `--payload-rehash` ignores the hash cache for one run. The `.seafile-payload` directory of a source is never staged.
 
@@ -380,10 +380,10 @@ Nothing here changes what a snapshot contains; each item is a refusal or a note
 | An upload larger than the account's remaining quota | warning before the upload (a warning, not a refusal: the quota that counts is the library owner's) | `test_an_upload_that_cannot_fit_the_quota_is_warned_about_first` |
 | A retention run whose history fetch would fill the temporary volume | refused before the fetch, naming `TMPDIR`/`TEMP` and `--allow-low-disk` | `test_a_retention_run_that_cannot_hold_the_history_is_refused_before_the_fetch` |
 | A restore with too little free disk | the payload download is refused before its first byte when its objects do not fit; the git history is cloned first under a fixed floor of free space only (`SNAPSHOT_GUIDE.md`), so a vault with several GiB of git packs can fill a smaller volume during the clone (`--allow-low-disk` overrides both; review 9fe723f, gemini D2) | `test_a_restore_that_cannot_fit_is_refused_before_downloading` |
-| Stored objects that rot unnoticed | `--payload-verify` leaves `payload/verified.json`; the gc report and the store line say when it last ran | `test_verify_leaves_a_marker_the_store_line_and_gc_report_show` |
+| Stored objects that rot unnoticed | `payload verify` leaves `payload/verified.json`; the gc report and the store line say when it last ran | `test_verify_leaves_a_marker_the_store_line_and_gc_report_show` |
 | A long hashing pass nobody explains (a copy tool reset every timestamp) | the run says how many files were hashed again and why | `test_files_hashed_again_are_explained` |
 
-**A tag is a pin.** `--payload-gc` reads every branch and tag of the remote and of
+**A tag is a pin.** `payload gc` reads every branch and tag of the remote and of
 `--vault`, so `git tag keep-2026-q3 <snapshot>` keeps that snapshot's objects alive
 whatever happens to the branch.
 
@@ -414,7 +414,7 @@ except the reserved directory (payload files are in the manifest).
   file (a symlink's own size says nothing about content). A tool that does not know it
   reads `files` exactly as before, and a record written before it simply has none: the
   parent's record is reused unchanged for an unchanged tree, so such a record stays
-  size-less until the tree changes. `--status` uses it: with a size, a rewrite that
+  size-less until the tree changes. `status` uses it: with a size, a rewrite that
   restores the mtime no longer reads as unchanged.
 - **Cost:** about 70 bytes a file; at 100,000 files about 5 MB raw and 1.5 MB
   compressed, rewritten whenever any file's content changes, and uploaded whole
@@ -457,7 +457,7 @@ data, or surprise. Disposition is one of **fixed**, **handled**, **specified**
 | A5 | mtime restored by a copy tool (`cp -p`, `robocopy`) | cache trusted, content differs | **handled**: inode in the cache key catches most; `--payload-rehash` for the rest |
 | A6 | Another machine's un-pushed snapshot references an object; retention deletes it | data loss | **handled within the grace period**: D9 two-phase, every branch and tag of the remote plus the local vault's (which must be one). Another machine's objects that are uploaded but not pushed are invisible to this machine's retention; a snapshot that names an object already stored clears that object's retention mark, so the grace period restarts for it, and they survive `--payload-grace-days` after which that machine's next run re-uploads them (source unchanged) or refuses to push. Run retention from one machine. A machine offline for longer than the grace period loses the objects it uploaded but did not push: if the source file changed meanwhile, its push is refused naming the snapshot, and the bytes of that intermediate version are gone |
 | A7 | Run interrupted after upload, before push | orphan objects | **handled**: harmless, reused (D5) |
-| A8 | An object is truncated or altered on the server, same size | upload skipped as "present"; backup silently bad until a restore | **handled**: the tool no longer creates this state itself (D5); `--payload-verify [N\|all]` downloads and hashes a sample of the newest snapshot's objects; schedule it as a drill |
+| A8 | An object is truncated or altered on the server, same size | upload skipped as "present"; backup silently bad until a restore | **handled**: the tool no longer creates this state itself (D5); `payload verify [N\|all]` downloads and hashes a sample of the newest snapshot's objects; schedule it as a drill |
 | A9 | `(SFConflict ...)` copies appear next to an object | listing sees a non-hash name | **handled**: ignored, not collected (delete by hand; it costs quota at full size) |
 | A10 | Two paths differ by case, Unicode form, or a trailing dot or space; restore onto Windows or macOS | one overwrites the other, both verify | **fixed**: D8 never overwrites; collisions are skipped and reported |
 | A11 | Payload path looks like a credential | the secrets report covered only staged paths | **fixed**: payload paths scanned |
@@ -476,10 +476,10 @@ data, or surprise. Disposition is one of **fixed**, **handled**, **specified**
 | A24 | A server that rewrites object names | would break "listing proves presence" | **handled**: names are lowercase hex; verified on the real server |
 | A25 | `--payload-jobs` very large on a flaky link | many partial uploads | **handled**: pool is bounded; failure stops the queue |
 | A25b | The server pushes back on parallel uploads (429/502/503/504) | a run that fails for going too fast | **handled**: the level is halved for the rest of the run and the object is queued again (twice at most); `tests/test_snapshot_climb.py` |
-| A26 | A report-only `--payload-gc` after every run | cost of listing 256 directories; a failing report failing the run; a history download | **handled**: at most once per `--payload-report-days` (7), last in the run (after the settings are remembered), never fatal, never deletes, and reads the history from the local vault so it downloads nothing; `test_a_failing_report_never_fails_the_run_that_pushed`, `test_the_routine_report_reads_the_local_vault_not_the_remote` |
+| A26 | A report-only `payload gc` after every run | cost of listing 256 directories; a failing report failing the run; a history download | **handled**: at most once per `--payload-report-days` (7), last in the run (after the settings are remembered), never fatal, never deletes, and reads the history from the local vault so it downloads nothing; `test_a_failing_report_never_fails_the_run_that_pushed`, `test_the_routine_report_reads_the_local_vault_not_the_remote` |
 | A27 | A restore path over 260 characters on Windows | file skipped or `git checkout` fails | **handled**: payload files use extended-length paths and git runs with `core.longpaths=true`; `test_the_vault_and_the_restored_clone_allow_long_paths` |
 | A28 | The run is killed (not interrupted) while a large tree is hashed | the hours of hashing are lost; the next run reads everything again | **handled**: the hash cache is saved about once a minute while hashing (`_CHECKPOINT_SECONDS`) and, as before, whenever the upload then fails; a stale entry still fails the size/mtime/inode/ctime/device key; `test_a_killed_hashing_pass_keeps_what_it_hashed` |
-| A29 | A backup is never restored, so a damaged one is found on the day it is needed | silent loss | **handled on request**: `--restore-drill [N\|all]` restores the newest snapshot into a temporary directory, checks every file byte-for-byte and `git fsck`, verifies N sampled payload files by SHA-256 and deletes it; a failure keeps the directory; `test_a_damaged_object_fails_the_drill_and_keeps_the_directory` |
+| A29 | A backup is never restored, so a damaged one is found on the day it is needed | silent loss | **handled on request**: `drill [N\|all]` restores the newest snapshot into a temporary directory, checks every file byte-for-byte and `git fsck`, verifies N sampled payload files by SHA-256 and deletes it; a failure keeps the directory; `test_a_damaged_object_fails_the_drill_and_keeps_the_directory` |
 | A28 | A directory the tool cannot open (a permission, an ACL) | `git add` prints a warning and exits 0, so everything under it is silently missing from the snapshot | **fixed** (0.9.2): the run stops and names it, `--exclude` leaves it out on purpose; `test_a_directory_that_cannot_be_read_stops_the_run_and_is_named` |
 | A29 | A real file named `<payload file>.part` beside a payload file | the restore's download overwrote it and renamed it away, then certified the tree | **fixed** (0.9.2): downloads stage under `.git/grs-restore/`; `test_a_git_file_named_like_the_download_temp_file_survives_the_restore` |
 | A30 | A symlink `tool -> .git` and a manifest path `tool/hooks/pre-commit` | an executable hook written into the restored repository | **fixed** (0.9.2): protected directories are refused after links are followed; `test_a_link_to_dot_git_cannot_carry_a_payload_write_into_the_repository` |
@@ -583,4 +583,4 @@ probe is exercised through its seams).
 2. ~~Retention helper (D9).~~ Done.
 3. ~~The 131 GiB flood run, as the acceptance test.~~ Done: 633 files, 124.6 GB, restored and verified.
 4. ~~Remembered setting and force-rehash (D11, D6).~~ Done.
-5. Snapshot expiry (`--payload-keep N`), sampled verification (`--payload-verify`), views (D10).
+5. Snapshot expiry (`--payload-keep N`), sampled verification (`payload verify`), views (D10).

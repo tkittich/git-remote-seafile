@@ -139,7 +139,7 @@ def has_usable_mtimes(git_dir: Path, work_tree: Path, rev: str | None) -> bool:
     """Whether snapshot ``rev`` carries a times record this tool reads, even one with no files in it.
 
     ``_recorded_mtimes`` answers ``{}`` both for "no record" and for a record of an empty tree; a tree that
-    holds only payload files has the second, and ``--status`` then called every new file uncomparable
+    holds only payload files has the second, and ``status`` then called every new file uncomparable
     (review c305b0a, gemini-S3-3).
     """
     if not rev:
@@ -238,7 +238,7 @@ def record_mtimes_in_index(git_dir: Path, work_tree: Path, parent: str | None) -
         return 0
     record: dict[str, Any] = {"format": _MTIMES_FORMAT, "files": times}
     if sizes:
-        # Beside the times, not instead of them: `--status` compares size too, so a
+        # Beside the times, not instead of them: `status` compares size too, so a
         # rewrite that restores the mtime no longer reads as "unchanged".
         record["sizes"] = sizes
     document = json.dumps(record, sort_keys=True, separators=(",", ":"))

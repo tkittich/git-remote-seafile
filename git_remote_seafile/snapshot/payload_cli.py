@@ -29,8 +29,8 @@ PAYLOAD_EPILOG = (
     "seafile:// remote. Files of 64 MiB or more, and 4 MiB or more that do not\n"
     "compress, go to Seafile by hash instead of through git; a tree with no such\n"
     "file is snapshotted exactly as without it. --no-payload turns it off, and a\n"
-    "complete real run remembers the setting. --restore, --payload-verify,\n"
-    "--payload-gc and --payload-view act on a remote's payload; see PAYLOAD.md.\n"
+    "complete real run remembers the setting. restore, payload verify,\n"
+    "payload gc and payload view act on a remote's payload; see PAYLOAD.md.\n"
 )
 
 
@@ -55,7 +55,7 @@ def add_payload_groups(parser: Any) -> None:
     tools_group = parser.add_argument_group(
         "payload tools: act on a remote's payload (no snapshot is taken)",
         "Each needs --remote. Reports and verification change nothing; "
-        "--payload-delete and --payload-view write only what they say.",
+        "--payload-delete and payload view write only what they say.",
     )
     payload_gc_run.add_payload_gc_arguments(tools_group)
     payload_view_run.add_payload_view_arguments(tools_group)
@@ -134,9 +134,9 @@ def add_payload_report_argument(parser: Any) -> None:
         type=float,
         default=None,
         metavar="N",
-        help="payload mode: after a run that pushes, print the report-only --payload-gc "
+        help="payload mode: after a run that pushes, print the report-only payload gc "
         "summary (what is stored, in use and reclaimable) when none was printed in the last "
-        "N days (default 7; 0 never). It changes nothing on the server; --payload-gc "
+        "N days (default 7; 0 never). It changes nothing on the server; payload gc "
         "--payload-delete is still the only thing that deletes",
     )
 
@@ -404,7 +404,7 @@ def payload_store_line(remote: str) -> str:
     """One line on what the payload store holds, or ``""`` if it cannot be listed.
 
     Informational: a run is never failed for it.  Snapshots never delete an object,
-    so the number only grows until ``--payload-gc`` / ``--payload-keep`` is used.
+    so the number only grows until ``payload gc`` / ``--payload-keep`` is used.
     """
     from . import remote_ops
     try:
@@ -426,7 +426,7 @@ def payload_store_line(remote: str) -> str:
     except Exception:  # informational only
         return ""
     return (f"payload store: {count} object(s), {remote_ops.human_bytes(total)} on the server "
-            "(snapshots never delete one; --payload-gc reports what no snapshot uses); "
+            "(snapshots never delete one; payload gc reports what no snapshot uses); "
             + checked)
 
 
@@ -660,7 +660,7 @@ _DEFAULT_REPORT_DAYS = 7.0
 def maybe_report_payload_gc(
     git_dir: Path, vault: Path, remote: str, days: float | None, *, now: float | None = None
 ) -> bool:
-    """Print the report-only ``--payload-gc`` summary when one is due; never raises.
+    """Print the report-only ``payload gc`` summary when one is due; never raises.
 
     Reclaimable space is invisible until someone asks, and a store that only
     grows is the one thing payload mode cannot fix by itself.  Asking costs a
