@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.6] - 2026-11-24
+
+A fixes-only release (soft maintenance mode): one data-loss guard. A folder that happens to carry the name of a payload or LFS object is no longer deleted when the object is settled. The fix has a test that fails without it.
+
+### Fixed
+- **A folder named like an object is never deleted.** When a payload object (snapshot tool) or an LFS object was renamed onto its hash name and the server held something else under that name, the settle step could delete it as a "wrong-size object" even if it was a folder. It now leaves a folder alone and reports the object as not stored (so git-lfs sends it again and the snapshot retries). Found by the 0.11 review (N4).
+
 ## [0.10.5] - 2026-11-24
 
 A fixes-only release (soft maintenance mode): two Windows bugs found by a bug hunt (names Windows cannot open, a source typed with the extended-length prefix), a test-harness fix, and the plan for v0.11 written down. Each fix has a test that fails without it.
@@ -2296,6 +2303,7 @@ Data-loss and silent-failure fixes, and the Python floor raised to 3.9.
   with zero-config desktop-client token discovery, distributed locking, remote
   packfile compaction, and a Git LFS custom transfer agent.
 
+[0.10.6]: https://github.com/tkittich/git-remote-seafile/compare/v0.10.5...v0.10.6
 [0.10.5]: https://github.com/tkittich/git-remote-seafile/compare/v0.10.4...v0.10.5
 [0.10.4]: https://github.com/tkittich/git-remote-seafile/compare/v0.10.3...v0.10.4
 [0.10.3]: https://github.com/tkittich/git-remote-seafile/compare/v0.10.2...v0.10.3
