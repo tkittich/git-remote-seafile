@@ -81,7 +81,7 @@ class RecordTests(unittest.TestCase):
                 record.render([self.entry(bad)])
 
     def test_a_bad_file_names_the_line(self):
-        for text, fragment in ((f"a\t1\n", "line 1"), (f"a\tx\tsha256:{SHA}\n", "not a whole number"),
+        for text, fragment in (("a\t1\n", "line 1"), (f"a\tx\tsha256:{SHA}\n", "not a whole number"),
                                (f"a\t1\tsha256:{SHA[:10]}\n", "line 1"),
                                (f"a\t1\tsha256:{SHA}\na\t1\tsha256:{SHA}\n", "twice"),
                                (f"../a\t1\tsha256:{SHA}\n", "line 1"),
