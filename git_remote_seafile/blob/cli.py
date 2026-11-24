@@ -17,7 +17,7 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from ..client import SeafileAuthError
+from ..client import SeafileAPIError, SeafileAuthError
 from ..units import format_bytes
 from . import cache as cache_mod
 from . import refs, store, tree
@@ -62,6 +62,10 @@ def open_store(url: str, cache_dir: "str | None") -> store.Store:
         parsed = parse_seafile_url(url)
     except ValueError as exc:
         raise UsageError(f"not a seafile:// URL: {exc}") from None
+    if parsed.path_defaulted:
+        raise UsageError(
+            f"{url} names a library and no folder: a store needs one, as seafile://<library>/<folder> "
+            "(a bare library would silently use the helper's /git-repo folder)")
     cache = cache_mod.Cache(Path(cache_dir) if cache_dir else None)
     server = parsed.server_url
     plain_http = bool(server) and str(server).lower().startswith("http://")
@@ -309,6 +313,9 @@ def main(argv: "list[str] | None" = None) -> int:
     except UsageError as exc:
         sys.stderr.write(f"{PROG}: {exc}\n")
         return 2
+    except SeafileAPIError as exc:
+        sys.stderr.write(f"{PROG}: the server said: {exc}\n")
+        return 1
     except SeafileAuthError as exc:
         sys.stderr.write(f"{PROG}: {exc}\n")
         return 1

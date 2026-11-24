@@ -313,6 +313,18 @@ class RootTests(StoreCase):
         with self.assertRaises(store.StoreError):
             self.make("/parent/store").put(self.source)
 
+    def test_a_store_is_never_created_inside_another_store(self):
+        self.store.put(self.source)
+        with self.assertRaises(store.StoreError) as caught:
+            self.make(f"{ROOT}/inner").put(self.source)
+        self.assertIn("inside another one", str(caught.exception))
+        self.assertEqual([n for n in self.files() if "/inner/" in n], [])
+
+    def test_a_store_two_levels_below_another_is_refused_too(self):
+        self.store.put(self.source)
+        with self.assertRaises(store.StoreError):
+            self.make(f"{ROOT}/a/b").put(self.source)
+
     def test_get_on_a_folder_with_no_marker_says_so(self):
         with self.assertRaises(store.StoreError) as caught:
             self.store.get(self.ref(hashlib.sha256(b"y").hexdigest()))

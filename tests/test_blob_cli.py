@@ -188,6 +188,22 @@ class FailureTests(CliCase):
         self.assertEqual(code, 1)
         self.assertIn("is not in the store", err)
 
+    def test_a_library_with_no_folder_is_refused_not_put_in_the_helpers_default_folder(self):
+        out, err = io.StringIO(), io.StringIO()
+        with redirect_stdout(out), redirect_stderr(err):
+            code = cli.main(["put", "--store", f"seafile://{self.stub.base_url}/testlib", str(self.source)])
+        self.assertEqual(code, 2)
+        self.assertIn("a store needs one", err.getvalue())
+        self.assertEqual(sum(len(v) for v in self.stub.files.values()), 0)
+
+    def test_a_library_that_does_not_exist_is_a_message_not_a_traceback(self):
+        out, err = io.StringIO(), io.StringIO()
+        with redirect_stdout(out), redirect_stderr(err):
+            code = cli.main(["put", "--store", f"seafile://{self.stub.base_url}/no-such-library/folder", str(self.source)])
+        self.assertEqual(code, 1)
+        self.assertNotIn("Traceback", err.getvalue())
+        self.assertIn("seafile-blob:", err.getvalue())
+
     def test_a_bad_reference_is_named(self):
         code, _, err = self.run_cli("get", "not-a-reference")
         self.assertEqual(code, 1)

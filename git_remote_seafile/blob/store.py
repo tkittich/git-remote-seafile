@@ -134,10 +134,13 @@ class Store:
                     f"{self.root or '/'} is not empty and is not a blob store: it is never adopted. Use an empty "
                     "or new folder")
             parent = self.root.rpartition("/")[0]
-            if parent:
+            while parent:
                 above = {str(e.get("name", "")) for e in self._list(parent)}
                 if above & _GIT_ENTRIES:
                     raise StoreError(f"{parent} looks like a vault or a git remote; a store is not created under it")
+                if MARKER in above:
+                    raise StoreError(f"{parent} is a blob store; a store is not created inside another one")
+                parent = parent.rpartition("/")[0]
             self._write_marker()
             self._marker_checked = True
 
