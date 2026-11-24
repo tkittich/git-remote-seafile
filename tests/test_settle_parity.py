@@ -104,5 +104,29 @@ class TestTheTwoSettleCopiesAgree(unittest.TestCase):
                     self.assertIn(SIZE, server.files.values(), f"{label}: no whole copy left")
 
 
+class _ServerWithAFolder(_Server):
+    """The hash name is taken by a *folder* (N4: a folder is never an object, and never ours to delete)."""
+
+    def list_dir(self, repo_id: str, path: str):
+        return [{"type": "dir" if n == NAME else "file", "name": n, "size": 0 if n == NAME else s}
+                for n, s in sorted(self.files.items())]
+
+
+class TestAFolderUnderTheHashNameIsNeverDeleted(unittest.TestCase):
+    def test_neither_copy_deletes_it_and_neither_reports_success(self):
+        for through in (_through_lfs, _through_payload):
+            with self.subTest(through=through.__name__):
+                server = _ServerWithAFolder({NAME: 0})
+                self.assertFalse(through(server))
+                self.assertNotIn(NAME, server.deleted, "the folder was deleted")
+                self.assertIn(NAME, server.files)
+
+    def test_the_refused_rename_fallback_does_not_delete_it_either(self):
+        server = _ServerWithAFolder({NAME: 0}, refuse_rename_number=1)
+        server.files["tmp.part"] = SIZE
+        self.assertFalse(snap._commit_object(server, "rid", DIR, "tmp.part", NAME, SIZE))
+        self.assertNotIn(NAME, server.deleted)
+
+
 if __name__ == "__main__":
     unittest.main()

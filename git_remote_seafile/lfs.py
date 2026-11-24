@@ -154,6 +154,8 @@ class LFSTransferAgent:
                       if str(e.get("name", "")).startswith(marker) and e.get("size") == size), None)
         if right is None:
             return held
+        if held is not None and held.get("type") == "dir":
+            return None                          # a folder is never an object and never ours to delete (N4)
         if held is not None:
             # Read it again right before it goes: another uploader that settled the same damage
             # a moment ago has put the right object here, and the listing above is stale (the

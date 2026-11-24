@@ -6236,20 +6236,15 @@ def _commit_object(
     * a duplicate and the existing ``<sha>`` at the *right* size -- another
       writer stored the same bytes a moment ago (the temporary's digest was
       proved equal to ``sha`` before any rename), so the copy is dropped;
-    * a duplicate and ``<sha>`` at the *wrong* size -- damage, and the R3
-      carve-out in action: the stale object is deleted and the rename retried
-      once, with the duplicate copies swept either way.
+    * a duplicate and ``<sha>`` at the *wrong* size -- damage (R3 carve-out): the stale
+      object is deleted and the rename retried once, the copies swept either way; a
+      *folder* under the name is never deleted (N4), the object is reported not stored.
     """
-    marker = f"{sha} ("
-    stale = f"{directory}/{sha}"
-    temp_path = f"{directory}/{temp}"
+    marker, stale, temp_path = f"{sha} (", f"{directory}/{sha}", f"{directory}/{temp}"
 
     def _duplicates(entries: list) -> list[str]:
-        return [
-            str(e.get("name"))
-            for e in entries
-            if isinstance(e, dict) and str(e.get("name", "")).startswith(marker)
-        ]
+        return [str(e.get("name")) for e in entries
+                if isinstance(e, dict) and str(e.get("name", "")).startswith(marker)]
 
     def _sweep(dups: list[str]) -> None:
         for dup in dups:
@@ -6284,8 +6279,10 @@ def _commit_object(
                                if isinstance(e, dict) and e.get("name") == d), None) == size), None)
         if whole is None:
             return False
+        if existing is not None and existing.get("type") == "dir":
+            return False                         # N4
         if existing is not None:
-            client.delete_entry(rid, stale)      # another writer may have removed it: the move below says whether the name is free
+            client.delete_entry(rid, stale)      # another writer may have removed it: the move below says if the name is free
         if not client.rename_entry(rid, f"{directory}/{whole}", sha):
             return False
         _sweep(_duplicates(client.list_dir(rid, directory)))
@@ -6293,7 +6290,9 @@ def _commit_object(
     # The rename was refused outright (a deployment that does fail on a taken
     # name): fall back to judging the existing object by its size.
     for entry in client.list_dir(rid, directory):
-        if entry.get("name") == sha and entry.get("size") == size:
+        if entry.get("name") == sha and (entry.get("type") == "dir" or entry.get("size") == size):
+            if entry.get("type") == "dir":
+                return False                     # N4: never delete a folder
             client.delete_entry(rid, temp_path)
             return True
     if not client.delete_entry(rid, stale):
