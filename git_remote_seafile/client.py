@@ -275,6 +275,11 @@ def _sanitize_header_param(val: str) -> str:
     return cleaned.replace("\\", "\\\\").replace('"', '\\"')
 
 
+def _with_ret_json(url: str) -> str:
+    """The upload link with ``ret-json=1``: the reply then names each stored file and its size, which the client checks."""
+    return url + ("&" if "?" in url else "?") + "ret-json=1"
+
+
 #: The upload endpoint refuses a body whose last network read is only the final CRLF; a body this residue modulo this number can
 #: end that way (see StreamingMultipartFile).
 REFUSED_BODY_MODULUS = 512
@@ -297,6 +302,7 @@ class StreamingMultipartFile:
         file_size: int,
         boundary: str | None = None,
         progress_callback: Any = None,
+        boundary_pad: int = 0,
     ):
         base_boundary = boundary or f"----GRSBoundary{uuid.uuid4().hex}"
         self.boundary = base_boundary
@@ -318,8 +324,8 @@ class StreamingMultipartFile:
         # fails again, so the boundary is lengthened until the body is not 2 past a multiple of 512 (which covers every read
         # size that is a multiple of 512; about 1 upload in 512 is lengthened, by a few bytes).  A boundary the caller chose
         # is kept: it is then the caller's to get right.
-        for pad in range(16):
-            self.boundary = base_boundary + "0" * pad
+        for pad in range(boundary_pad, boundary_pad + 16):
+            self.boundary = base_boundary if boundary is not None else base_boundary + "0" * pad
             self.header, self.footer = self._frame(fields, file_field, filename)
             self.total_len = len(self.header) + file_size + len(self.footer)
             if boundary is not None or self.total_len % REFUSED_BODY_MODULUS != REFUSED_BODY_RESIDUE:
@@ -1775,6 +1781,10 @@ class SeafileClient:
         )
         upload_timeout = self._upload_timeout(read_timeout)
         start_cur = payload.tell() if hasattr(payload, "tell") else 0
+        expected_size: int | None = (
+            file_size if (hasattr(payload, "read") and hasattr(payload, "seek"))
+            else len(payload) if isinstance(payload, (bytes, bytearray)) else None
+        )
 
         up_resp = None
         last_error = ""
@@ -1798,13 +1808,14 @@ class SeafileClient:
                         file_obj=payload,
                         file_size=file_size,
                         progress_callback=progress_callback,
+                        boundary_pad=attempt,          # a retry is framed with a longer boundary: other read splits
                     )
                     headers = {
                         "Content-Type": mp.content_type,
                         "Content-Length": str(len(mp)),
                     }
                     up_resp = self._xfer(
-                        "post", upload_url, data=mp, headers=headers, timeout=upload_timeout
+                        "post", _with_ret_json(upload_url), data=mp, headers=headers, timeout=upload_timeout
                     )
                 elif isinstance(payload, (bytes, bytearray)):          # also without a progress callback: one framing, one length rule
                     bio = io.BytesIO(payload)
@@ -1815,19 +1826,20 @@ class SeafileClient:
                         file_obj=bio,
                         file_size=len(payload),
                         progress_callback=progress_callback,
+                        boundary_pad=attempt,
                     )
                     headers = {
                         "Content-Type": mp.content_type,
                         "Content-Length": str(len(mp)),
                     }
                     up_resp = self._xfer(
-                        "post", upload_url, data=mp, headers=headers, timeout=upload_timeout
+                        "post", _with_ret_json(upload_url), data=mp, headers=headers, timeout=upload_timeout
                     )
                 else:
                     files = {"file": (filename, payload)}
                     data = {"parent_dir": clean_parent, "replace": "1" if replace else "0"}
                     up_resp = self._xfer(
-                        "post", upload_url, files=files, data=data, timeout=upload_timeout
+                        "post", _with_ret_json(upload_url), files=files, data=data, timeout=upload_timeout
                     )
                     if progress_callback:
                         try:
@@ -1843,12 +1855,29 @@ class SeafileClient:
 
             if up_resp is not None:
                 if up_resp.status_code in (200, 201):
+                    wrong = self._wrong_stored_size(up_resp, expected_size)
+                    if wrong is not None:
+                        # The server's upload parser can store a body one byte longer than it was sent, and answer 200
+                        # (measured on CE 13.0, same bug as the 400 in StreamingMultipartFile: it depends on where the
+                        # network ends a read); its reply names the size it stored, so a wrong one is caught here, the
+                        # copy is removed when a retry would not replace it, and the retry is framed differently.
+                        landed, got = wrong
+                        last_error = f"the server stored {got} bytes of {filename}, not {expected_size}"
+                        if not replace:
+                            try:
+                                self.delete_entry(repo_id, f"{clean_parent}/{landed}")
+                            except SeafileAPIError:
+                                pass
+                        up_resp = None
+                        continue
                     return True
                 last_error = (
                     f"HTTP {up_resp.status_code} "
                     f"(POST {self._error_origin(upload_url)}) "
                     f"{self._said(up_resp.text, *self._link_secrets(upload_url))}"
                 )
+                if up_resp.status_code == 400 and attempt + 1 < max_attempts:
+                    continue          # the next attempt is framed with a different length (see StreamingMultipartFile)
                 if up_resp.status_code < 500:
                     break
 
@@ -1869,6 +1898,24 @@ class SeafileClient:
                 f"(POST {self._error_origin(upload_url)})"
             )
         return True
+
+    @staticmethod
+    def _wrong_stored_size(resp: Any, expected: "int | None") -> "tuple[str, int] | None":
+        """``(landed name, stored size)`` when the upload reply (``ret-json=1``) names a size other than *expected*."""
+        if expected is None:
+            return None
+        try:
+            entries = resp.json()
+        except Exception:
+            return None
+        if not isinstance(entries, list):
+            return None
+        for entry in entries:
+            if isinstance(entry, dict):
+                size = entry.get("size")
+                if isinstance(size, int) and not isinstance(size, bool) and size != expected:
+                    return str(entry.get("name", "")), size
+        return None
 
     def _upload_timeout(self, read_timeout: float | None = None) -> tuple[float, float]:
         """``(connect, read)`` for an upload request; see the module constant.

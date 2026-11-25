@@ -92,6 +92,39 @@ class AgainstTheServersRuleTests(unittest.TestCase):
             self.assertTrue(self.client.upload_file(self.rid, "/d", "obj.bin", io.BytesIO(data), replace=True))
         self.assertEqual(self.stub.files[self.rid]["/d/obj.bin"], data)
 
+    def test_an_upload_the_server_stored_one_byte_too_long_is_noticed_and_sent_again(self):
+        """The same parser bug also stores a body one byte long and answers 200 (measured); the reply names the size."""
+        data = os.urandom(5000)
+        self.stub.faults["store_plus_one"] = 1
+        self.assertTrue(self.client.upload_file(self.rid, "/d", "obj.bin", data, replace=True))
+        self.assertEqual(self.stub.files[self.rid]["/d/obj.bin"], data)
+
+    def test_a_wrong_sized_copy_that_a_retry_would_not_replace_is_removed_first(self):
+        data = os.urandom(5000)
+        self.stub.faults["store_plus_one"] = 1
+        self.assertTrue(self.client.upload_file(self.rid, "/d", "obj.bin", io.BytesIO(data), replace=False))
+        names = sorted(n for n in self.stub.files[self.rid] if n.startswith("/d/obj"))
+        self.assertEqual([self.stub.files[self.rid][n] for n in names], [data])          # one copy, the right one
+
+    def test_a_400_is_sent_again_with_a_different_framing_and_lands(self):
+        data = os.urandom(5000)
+        self.stub.faults["upload_400_once"] = 1
+        self.assertTrue(self.client.upload_file(self.rid, "/d", "obj.bin", io.BytesIO(data), replace=True))
+        self.assertEqual(self.stub.files[self.rid]["/d/obj.bin"], data)
+
+    def test_a_refusal_that_repeats_is_still_an_error(self):
+        self.stub.faults["upload"] = 400
+        with self.assertRaises(SeafileAPIError):
+            self.client.upload_file(self.rid, "/d", "obj.bin", b"x" * 100, replace=True)
+
+    def test_each_attempt_is_framed_with_a_longer_boundary(self):
+        lengths = []
+        for pad in range(3):
+            body = StreamingMultipartFile(FIELDS, "file", NAME, io.BytesIO(b"x" * 100), 100, boundary_pad=pad)
+            lengths.append(len(body.boundary))
+        self.assertEqual(lengths[1] - lengths[0], 1)
+        self.assertEqual(lengths[2] - lengths[1], 1)
+
     def test_the_stub_really_refuses_that_length_so_these_tests_can_fail(self):
         size = _size_for_residue_2("obj.bin")
         real = StreamingMultipartFile
