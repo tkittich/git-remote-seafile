@@ -95,7 +95,7 @@ def _place(temp: Path, target: Path) -> bool:
 def put_tree(
     base: Store, directory: Path, record_path: "Path | None", jobs: int = 1,
     on_file: "Callable[[str, store.Put], None] | None" = None,
-    *, dry_run: bool = False, exclude: "tuple[str, ...] | list[str]" = (),
+    *, dry_run: bool = False, exclude: "tuple[str, ...] | list[str]" = (), pin: "str | None" = None,
 ) -> PutReport:
     """Upload every regular file under *directory*; write the record file when one is named.
 
@@ -123,7 +123,9 @@ def put_tree(
     def one(path: Path) -> "tuple[Path, store.Put | None, str | None]":
         worker = base if jobs <= 1 else base.clone()
         try:
-            return path, (worker.would_put(path) if dry_run else worker.put(path)), None
+            if dry_run:
+                return path, worker.would_put(path), None
+            return path, (worker.put(path, pin=pin) if pin else worker.put(path)), None
         except StoreError as exc:
             return path, None, str(exc)
 

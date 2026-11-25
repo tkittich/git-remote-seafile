@@ -20,13 +20,13 @@ from typing import Any
 from ..client import SeafileAPIError, SeafileAuthError
 from ..units import format_bytes
 from . import cache as cache_mod
-from . import putlog, refs, store, tree
+from . import gcreport, pins, putlog, refs, store, tree
 from .progress import Progress
 
 PROG = "seafile-blob"
 _SIZE = re.compile(r"(\d+)\s*([kmgt]?)(?:i?b)?", re.IGNORECASE)
 _UNITS = {"": 1, "k": 1 << 10, "m": 1 << 20, "g": 1 << 30, "t": 1 << 40}
-NOT_YET = ("gc", "pin", "unpin", "offload", "verify", "link", "read")
+NOT_YET = ("offload", "link", "read")
 _UNPROTECTED = "Note: these objects are not protected from `gc` (pins come with a later version)"
 
 
@@ -152,6 +152,7 @@ def _parser() -> argparse.ArgumentParser:
     put.add_argument("--exclude", action="append", default=[], metavar="PATTERN",
                      help="with -r: leave out paths matching PATTERN (shell-style, matched on the relative path; repeatable; "
                           "'.git/*' leaves a repository's own folder out)")
+    put.add_argument("--pin", metavar="NAME", help="keep these objects from `gc`: write a pin of that name first (see `pin`)")
     put.add_argument("--no-log", action="store_true",
                      help="do not note this put in the local log `log` searches (it holds local paths)")
 
@@ -182,6 +183,22 @@ def _parser() -> argparse.ArgumentParser:
                        help="keep the cache to N bytes from now on, evicting the least recently used (e.g. 20G; `off` removes the bound)")
     cache.add_argument("--clear", action="store_true", help="remove every cached object")
 
+    pin = sub.add_parser("pin", parents=shared, help="keep objects from `gc` under a pin name (`pin ls` lists the pins)")
+    pin.add_argument("name", help="the pin's name, or `ls` to list pins")
+    pin.add_argument("refs", nargs="*", help="full references to keep")
+    pin.add_argument("--from-file", metavar="FILE", help="read references from FILE, one a line (- for standard input)")
+
+    unpin = sub.add_parser("unpin", parents=shared, help="remove a pin (objects only it kept become unused)")
+    unpin.add_argument("name")
+
+    gc = sub.add_parser("gc", parents=shared, help="report what no pin keeps, and the upload temporaries; deletes nothing")
+    gc.add_argument("--apply", action="store_true", help="(not in this version: object removal comes later)")
+
+    verify = sub.add_parser("verify", parents=shared, help="check that objects are in the store (--deep also reads and hashes them)")
+    verify.add_argument("refs", nargs="*", help="references (default: every object, or those in --from)")
+    verify.add_argument("--from", dest="record", metavar="FILE", help="check every entry of a record file, at its recorded size")
+    verify.add_argument("--deep", action="store_true", help="download each object and check its hash (reads every byte)")
+
     sub.add_parser("ls", parents=shared, help="list the objects in the store, with their sizes")
     sub.add_parser("usage", parents=shared, help="how many objects the store holds, how many bytes, and the local cache")
 
@@ -209,7 +226,7 @@ def _put(args: argparse.Namespace) -> int:
             if len(args.paths) != 1:
                 raise UsageError("put -r takes one folder")
             report = tree.put_tree(base, Path(args.paths[0]), Path(args.record) if args.record else None, args.jobs,
-                                   dry_run=args.dry_run, exclude=args.exclude)
+                                   dry_run=args.dry_run, exclude=args.exclude, pin=args.pin)
             for note in report.skipped:
                 _err(f"Warning: not uploaded ({note})")
             for problem in report.problems:
@@ -236,7 +253,7 @@ def _put(args: argparse.Namespace) -> int:
                       "dry_run": report.dry_run}, args, summary)
             else:
                 _err(summary)
-            if report.entries and not report.dry_run and not report.problems:
+            if report.entries and not report.dry_run and not report.problems and not args.pin:
                 _err(_UNPROTECTED)
             return 1 if report.problems else 0
         if args.record:
@@ -255,7 +272,7 @@ def _put(args: argparse.Namespace) -> int:
                 spooled.append(source)
             progress = _progress(args, "uploaded")
             try:
-                done = base.would_put(source) if args.dry_run else base.put(source, progress=progress)
+                done = base.would_put(source) if args.dry_run else base.put(source, progress=progress, pin=args.pin)
             except store.StoreError as exc:
                 progress.finish()
                 _err(f"{PROG}: {exc}")
@@ -272,7 +289,7 @@ def _put(args: argparse.Namespace) -> int:
             for row in results:
                 if "ref" in row:
                     sys.stdout.write(f"{row['ref']}  {row['size']}  {row['path']}\n")
-            if any("ref" in row for row in results) and not args.dry_run:
+            if any("ref" in row for row in results) and not args.dry_run and not args.pin:
                 _err(_UNPROTECTED)
         return 1 if failed else 0
     finally:
@@ -474,15 +491,137 @@ def _init(args: argparse.Namespace) -> int:
     return 0
 
 
+def _pin(args: argparse.Namespace) -> int:
+    base = open_store(store_url(args.store), args.cache_dir)
+    if args.name == "ls":
+        base.check_root(create=False)
+        held = pins.read_all(base)
+        if args.json:
+            _say({"pins": {name: [str(r) for r in wanted] for name, wanted in held.items()}}, args, "")
+        else:
+            for name, wanted in held.items():
+                sys.stdout.write(f"{name}  {len(set(r.hex for r in wanted))} object(s)\n")
+        return 0
+    texts = list(args.refs)
+    if args.from_file:
+        try:
+            raw = sys.stdin.read() if args.from_file == "-" else Path(args.from_file).read_text(encoding="utf-8")
+        except OSError as exc:
+            raise UsageError(f"cannot read {args.from_file}: {exc}") from None
+        texts += [line.strip() for line in raw.splitlines() if line.strip()]
+    if not texts:
+        raise UsageError("pin needs references, or --from-file FILE")
+    wanted = _refs(texts)
+    if any(not r.is_full for r in wanted):
+        raise UsageError("a pin names full references (sha256:<64 hex>), not prefixes")
+    base.check_root(create=False)
+    pins.write(base, args.name, wanted)          # the pin first, then look: a pinner lists after its pin is readable
+    absent = [r for r in wanted if not base.exists(r)]
+    if absent:
+        _err(f"{PROG}: {len(absent)} object(s) are not in the store (first: {absent[0]}); the pin names them anyway, "
+             "and `put` of the file stores them")
+    _say({"pin": args.name, "references": len({r.hex for r in wanted}), "absent": [str(r) for r in absent]}, args,
+         f"pinned {len({r.hex for r in wanted})} object(s) as {args.name}")
+    return 1 if absent else 0
+
+
+def _unpin(args: argparse.Namespace) -> int:
+    base = open_store(store_url(args.store), args.cache_dir)
+    base.check_root(create=False)
+    removed = pins.remove(base, args.name)
+    _say({"pin": args.name, "removed": removed}, args,
+         f"removed the pin {args.name}" if removed else f"there was no pin {args.name}")
+    return 0
+
+
+def _gc(args: argparse.Namespace) -> int:
+    if args.apply:
+        raise UsageError("gc --apply is not in this version: this version reports, and removes nothing")
+    base = open_store(store_url(args.store), args.cache_dir)
+    risk = None
+    try:
+        risk = base.client.hidden_history_risk(base.repo_id)
+    except Exception:
+        risk = None
+    if risk:
+        _err("Warning: " + risk.replace("refs", "pins"))
+    report = gcreport.scan(base)
+    unused = report.unused
+    rows: "dict[str, Any]" = {"objects": len(report.objects), "bytes": sum(report.objects.values()), "pins": report.pins,
+            "unused": len(unused), "unused_bytes": report.bytes_of(unused), "temporaries": len(report.temporaries),
+            "temporary_bytes": sum(s for _, s in report.temporaries), "copies": len(report.copies),
+            "copy_bytes": sum(s for _, s in report.copies), "foreign": report.foreign, "missing": len(report.missing),
+            "removed": 0}
+    lines = [
+        f"stored : {rows['objects']} object(s), {format_bytes(rows['bytes'])}",
+        f"pinned : {len(report.pinned)} object(s) by {len(report.pins)} pin(s)",
+        f"unused : {rows['unused']} object(s), {format_bytes(rows['unused_bytes'])} (no pin names them)",
+        f"temporaries : {rows['temporaries']}, {format_bytes(rows['temporary_bytes'])} (interrupted uploads)",
+        f"copies : {rows['copies']}, {format_bytes(rows['copy_bytes'])} (`(N)` or conflict copies of an object)",
+    ]
+    if report.foreign:
+        lines.append(f"other  : {len(report.foreign)} entry(ies) that are not the store's (left alone)")
+    if report.missing:
+        lines.append(f"Warning: {len(report.missing)} pinned object(s) are not in the store")
+    lines.append("nothing changed: this version reports and removes nothing. Deleting an object frees the library's quota, "
+                 "and disk space only after the server's history is truncated and its garbage collector has run.")
+    _say(rows, args, "\n".join(lines))
+    return 0
+
+
+def _verify(args: argparse.Namespace) -> int:
+    base = open_store(store_url(args.store), args.cache_dir)
+    base.check_root(create=False)
+    wanted: "list[tuple[refs.Ref, int | None]]" = []
+    if args.record:
+        from . import record
+        try:
+            wanted += [(e.ref, e.size) for e in record.parse(Path(args.record).read_text(encoding="utf-8"))]
+        except (OSError, record.RecordError) as exc:
+            raise UsageError(f"{args.record}: {exc}") from None
+    parsed = _refs(args.refs)
+    wanted += [(_resolved(base, r), None) for r in parsed]
+    if not wanted:
+        wanted = [(r, s) for r, s in base.objects()]
+    rows: "list[dict[str, Any]]" = []
+    bad = 0
+    for ref, size in wanted:
+        problem = None
+        listed = base.stat(ref)
+        if listed is None:
+            problem = "missing"
+        elif size is not None and listed != size:
+            problem = f"stored at {listed} bytes, expected {size}"
+        elif args.deep:
+            progress = _progress(args, "downloaded")
+            try:
+                path, cached = base.get(ref, keep=False, progress=progress)
+                if not cached:
+                    path.unlink(missing_ok=True)
+            except store.StoreError as exc:
+                problem = str(exc)
+            progress.finish()
+        rows.append({"ref": str(ref), "ok": problem is None, **({"problem": problem} if problem else {})})
+        if problem:
+            bad += 1
+            _err(f"{PROG}: {ref}: {problem}")
+    if args.json:
+        _say({"objects": rows, "problems": bad}, args, "")
+    else:
+        _say({}, args, f"{len(rows) - bad} of {len(rows)} object(s) verified" + (" (read and hashed)" if args.deep else " (present; add --deep to read them)"))
+    return 1 if bad else 0
+
+
 _COMMANDS = {"put": _put, "get": _get, "path": _path, "cat": _cat, "exists": _exists, "stat": _stat, "cache": _cache,
-             "ls": _ls, "usage": _usage, "log": _log, "init": _init}
+             "ls": _ls, "usage": _usage, "log": _log, "init": _init, "pin": _pin, "unpin": _unpin, "gc": _gc,
+             "verify": _verify}
 
 
 def main(argv: "list[str] | None" = None) -> int:
     args_in = list(sys.argv[1:] if argv is None else argv)
     parser = _parser()
     if args_in and args_in[0] in NOT_YET:
-        _err(f"{PROG}: `{args_in[0]}` is not in this version yet (put, get, path, cat, exists, stat, cache, ls, usage, log and init are)")
+        _err(f"{PROG}: `{args_in[0]}` is not in this version yet (put, get, path, cat, exists, stat, cache, ls, usage, log, init, pin, unpin, gc and verify are)")
         return 1          # not a mistake in how it was called, so not the usage code
     try:
         args = parser.parse_args(args_in)

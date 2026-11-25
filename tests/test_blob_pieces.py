@@ -204,6 +204,29 @@ class CacheTests(unittest.TestCase):
         self.assertTrue(path.exists())
         self.assertFalse(os.lstat(path).st_mode & stat.S_IWRITE)
 
+    def test_a_saved_bound_trims_down_to_the_low_water_mark_not_one_object_at_a_time(self):
+        past = time.time() - 3600
+        paths = []
+        for i in range(10):
+            path = self.admit(bytes([i]) * 100)
+            os.utime(path, ns=(int((past + i) * 1e9), cache.ADMITTED_MTIME_NS))
+            paths.append(path)
+        self.cache.set_limit(1000)          # ten objects of 100 bytes: exactly at the bound
+        self.assertEqual(self.cache.evict(), [])
+        extra = self.admit(b"x" * 100)
+        removed = self.cache.evict()          # over the bound: down to 70% of it
+        self.assertEqual(len(removed), 11 - 7)
+        self.assertTrue(extra.exists())
+        self.assertLessEqual(self.cache.used(), 700)
+
+    def test_an_explicit_size_fits_exactly_and_does_not_go_lower(self):
+        for i in range(10):
+            path = self.admit(bytes([i]) * 100)
+            os.utime(path, ns=(int((time.time() - 3600 + i) * 1e9), cache.ADMITTED_MTIME_NS))
+        removed = self.cache.evict(900)
+        self.assertEqual(len(removed), 1)
+        self.assertEqual(self.cache.used(), 900)
+
     def test_the_partial_folder_counts_in_the_size_but_is_not_an_object(self):
         self.admit(b"a" * 10)
         self.cache.partial_dir().mkdir(parents=True)

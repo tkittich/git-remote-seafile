@@ -205,14 +205,21 @@ class Store:
 
     # -- put ------------------------------------------------------------------------------------------------------
 
-    def put(self, path: Path, progress: "Callable[[int, int], None] | None" = None) -> Put:
-        """Hash, upload if absent, and prove it: the object is listed at its size under its hash name."""
+    def put(self, path: Path, progress: "Callable[[int, int], None] | None" = None, pin: "str | None" = None) -> Put:
+        """Hash, upload if absent, and prove it: the object is listed at its size under its hash name.
+
+        With *pin* the pin is written (and read back) **before** the object is listed: a pinner lists after its pin is
+        readable, which is what a later ``gc`` relies on (STORE.md D6).
+        """
         self.check_root(create=True)
         try:
             hex_digest, size = _sha256_and_size(path)
         except OSError as exc:
             raise StoreError(f"cannot read {path}: {exc}") from None
         ref = refs.full(f"sha256:{hex_digest}")
+        if pin:
+            from . import pins
+            pins.write(self, pin, [ref])
         have = self._listed_size(ref)
         if have == size:
             return Put(ref, size, uploaded=False)

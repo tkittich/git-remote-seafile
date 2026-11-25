@@ -228,6 +228,98 @@ class CommandTests(CliCase):
         self.assertEqual(code, 0)
         self.assertIn("could not save the store with git config", err)
 
+    def test_pin_ls_and_unpin_round_trip_and_put_pin_writes_the_pin_first(self):
+        code, out, err = self.run_cli("put", str(self.source), "--pin", "keep")
+        self.assertEqual(code, 0)
+        self.assertNotIn("not protected", err)          # a pinned put is protected: no warning
+        code, out, _ = self.run_cli("pin", "ls")
+        self.assertIn("keep  1 object(s)", out)
+        self.assertEqual(self.run_cli("unpin", "keep")[0], 0)
+        self.assertEqual(self.run_cli("pin", "ls")[1], "")
+        self.assertIn("there was no pin keep", self.run_cli("unpin", "keep")[1])
+
+    def test_pin_names_full_references_and_says_when_an_object_is_absent(self):
+        self.run_cli("put", str(self.source))
+        self.assertEqual(self.run_cli("pin", "p1", f"sha256:{SHA}")[0], 0)
+        self.assertEqual(self.run_cli("pin", "p2", f"sha256:{SHA[:10]}")[0], 2)
+        code, _, err = self.run_cli("pin", "p3", "sha256:" + "ab" * 32)
+        self.assertEqual(code, 1)
+        self.assertIn("not in the store", err)
+        self.assertEqual(self.run_cli("pin", "bad/name", f"sha256:{SHA}")[0], 1)
+        listing = json.loads(self.run_cli("pin", "ls", "--json")[1])["pins"]
+        self.assertEqual(sorted(listing), ["p1", "p3"])
+
+    def test_pin_from_a_file_and_the_gc_report_counts_what_no_pin_names(self):
+        other = self.work / "other.bin"
+        other.write_bytes(b"y" * 10)
+        self.run_cli("put", str(self.source))
+        self.run_cli("put", str(other))
+        listfile = self.work / "refs.txt"
+        listfile.write_text(f"sha256:{SHA}\n", encoding="utf-8")
+        self.assertEqual(self.run_cli("pin", "mine", "--from-file", str(listfile))[0], 0)
+        code, out, _ = self.run_cli("gc", "--json")
+        self.assertEqual(code, 0)
+        data = json.loads(out)
+        self.assertEqual((data["objects"], data["unused"], data["removed"]), (2, 1, 0))
+        self.assertEqual(data["pins"], {"mine": 1})
+        before = dict(self.stub.files[self.stub_rid()])
+        text = self.run_cli("gc")[1]
+        self.assertIn("unused : 1 object(s)", text)
+        self.assertIn("nothing changed", text)
+        self.assertEqual(self.stub.files[self.stub_rid()], before)          # a report writes nothing
+
+    def test_gc_apply_is_refused_in_this_version_and_gc_stops_on_a_pin_it_cannot_read(self):
+        self.run_cli("put", str(self.source), "--pin", "keep")
+        self.assertEqual(self.run_cli("gc", "--apply")[0], 2)
+        for name in [n for n in self.stub.files[self.stub_rid()] if n.endswith(".refs")]:
+            self.stub.files[self.stub_rid()][name] = b"not a reference\n"
+        code, _, err = self.run_cli("gc")
+        self.assertEqual(code, 1)
+        self.assertIn("pins/keep/", err)
+        self.assertIn("line 1", err)
+
+    def test_gc_warns_about_a_pinned_object_that_is_not_in_the_store(self):
+        self.run_cli("put", str(self.source))
+        self.run_cli("pin", "later", "sha256:" + "cd" * 32)          # absent: the pin is written, the exit is 1
+        code, out, _ = self.run_cli("gc")
+        self.assertEqual(code, 0)
+        self.assertIn("1 pinned object(s) are not in the store", out)
+
+    def test_verify_says_present_missing_and_with_deep_reads_the_bytes(self):
+        self.run_cli("put", str(self.source))
+        code, out, _ = self.run_cli("verify")
+        self.assertEqual(code, 0)
+        self.assertIn("1 of 1 object(s) verified", out)
+        self.assertIn("--deep", out)
+        code, out, _ = self.run_cli("verify", "--deep")
+        self.assertEqual(code, 0)
+        self.assertIn("read and hashed", out)
+        code, _, err = self.run_cli("verify", "sha256:" + "ab" * 32)
+        self.assertEqual(code, 1)
+        self.assertIn("missing", err)
+
+    def test_verify_deep_catches_an_object_whose_bytes_are_not_its_name(self):
+        self.run_cli("put", str(self.source))
+        rid = self.stub_rid()
+        name = next(n for n in self.stub.files[rid] if n.endswith(SHA))
+        self.stub.files[rid][name] = b"z" * len(DATA)          # same size, other bytes
+        self.assertEqual(self.run_cli("verify")[0], 0)          # present and the right size: the shallow check cannot tell
+        code, _, err = self.run_cli("verify", "--deep")
+        self.assertEqual(code, 1)
+        self.assertIn(SHA, err)
+
+    def test_verify_from_a_record_checks_each_entry_at_its_recorded_size(self):
+        folder = self.work / "folder"
+        folder.mkdir()
+        (folder / "a.bin").write_bytes(DATA)
+        record = self.work / "r.txt"
+        self.run_cli("put", "-r", str(folder), "--record", str(record))
+        self.assertEqual(self.run_cli("verify", "--from", str(record))[0], 0)
+        record.write_text(record.read_text(encoding="utf-8").replace(f"\t{len(DATA)}\t", "\t1\t"), encoding="utf-8")
+        code, _, err = self.run_cli("verify", "--from", str(record))
+        self.assertEqual(code, 1)
+        self.assertIn("expected 1", err)
+
     def test_a_bare_cache_command_reports_the_cache(self):
         code, out, _ = self.run_cli("cache")
         self.assertEqual(code, 0)
@@ -374,7 +466,7 @@ class FailureTests(CliCase):
         self.assertIn("not a reference", err)
 
     def test_the_commands_of_a_later_version_say_so(self):
-        for word in ("gc", "pin", "offload", "verify"):
+        for word in ("offload", "link", "read"):
             out, err = io.StringIO(), io.StringIO()
             with redirect_stdout(out), redirect_stderr(err):
                 code = cli.main([word])

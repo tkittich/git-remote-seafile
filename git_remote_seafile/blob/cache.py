@@ -32,6 +32,9 @@ PARTIAL_DIR = "partial"
 #: The bound ``cache --size`` sets is kept here, so the next command still keeps to it (it is forgotten otherwise
 #: and a cache grows without a word until the disk is full).
 LIMIT_FILE = "limit"
+#: Once the cache is over its bound, eviction goes on down to this fraction of it, so a cache at its limit is not
+#: trimmed by one object on every fetch (SeaDrive's cleaner does the same: 100% to 70%, SEAFILE_SEADRIVE.md).
+LOW_WATER = 0.7
 #: An abandoned partial or lock file is removed after this long (RESUME.md D4: one expiry).
 PARTIAL_EXPIRY_SECONDS = 7 * 24 * 3600
 
@@ -348,20 +351,27 @@ class Cache:
     def used(self) -> int:
         return sum(size for _, size, _ in self.objects()) + self.partial_bytes()
 
-    def evict(self, limit: "int | None" = None) -> "list[Path]":
-        """Remove the least recently used objects until the cache fits; returns what was removed.
+    def evict(self, limit: "int | None" = None, *, low_water: "float | None" = None) -> "list[Path]":
+        """Remove the least recently used objects once the cache is over its bound; returns what was removed.
+
+        Over the bound, eviction goes on down to ``LOW_WATER`` of it (for the saved bound); an explicit *limit* from
+        ``cache --size`` is a request to fit, so it stops at that figure unless *low_water* says otherwise.
 
         A file just handed out (within ``GRACE_SECONDS``) is skipped, and so is one that cannot be unlinked
         (Windows refuses an open file): both are tried again next time.
         """
+        explicit = limit is not None
         limit = self.size_limit if limit is None else limit
         if limit is None:
             return []
         removed: "list[Path]" = []
         total = self.used()
+        if total <= limit:
+            return removed
+        target = limit * (low_water if low_water is not None else (1.0 if explicit else LOW_WATER))
         now = time.time()
         for path, size, atime in sorted(self.objects(), key=lambda item: item[2]):
-            if total <= limit:
+            if total <= target:
                 break
             if now - atime < GRACE_SECONDS:
                 continue
