@@ -399,6 +399,9 @@ class _Handler(BaseHTTPRequestHandler):
                 if start != len(buf):
                     return self._send(400, b'{"error":"unexpected offset"}')
                 buf.extend(filedata)
+                if self.stub.faults.get("chunk_plus_one_at") == start:
+                    del self.stub.faults["chunk_plus_one_at"]
+                    buf.extend(b"\r")          # the server's parser stored this chunk one byte too long (measured on CE 13.0)
                 # ``lost_reply_start``: the chunk that starts here is stored and its reply is lost (a proxy
                 # timeout), once -- the case a resend answers ``400`` for (measured on CE 13.0.29).
                 lose = self.stub.faults.get("lost_reply_start") == start

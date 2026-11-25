@@ -11,7 +11,7 @@ import zlib
 from pathlib import Path
 from typing import Any
 
-from git_remote_seafile.client import HashingReader, UploadSourceChangedError
+from git_remote_seafile.client import UPLOAD_RESTARTS, HashingReader, UploadCorruptedError, UploadSourceChangedError
 
 from . import common
 from . import gitrun
@@ -514,19 +514,32 @@ def _upload_all(
                 changed_paths.append(rel)
                 return None
             with fh:
-                reader = _HashingFile(fh, size, meter)
-                try:
-                    ok = worker.upload_file(rid, directory, temp, reader)
-                except UploadSourceChangedError:
-                    # The bytes sent were not the same on every attempt of a chunk: the file changed while it
-                    # was being uploaded (RESUME.md D1 step 1-2).  Not a server failure: the queue goes on.
+                for restart in range(UPLOAD_RESTARTS + 1):
+                    fh.seek(0)
+                    reader = _HashingFile(fh, size, meter)
                     try:
-                        worker.delete_entry(rid, f"{directory}/{temp}")
-                    except Exception:
-                        pass
-                    changed.append(f"{rel}: changed while it was being uploaded; run again")
-                    changed_paths.append(rel)
-                    return None
+                        ok = worker.upload_file(rid, directory, temp, reader)
+                        break
+                    except UploadSourceChangedError:
+                        # The bytes sent were not the same on every attempt of a chunk: the file changed while it
+                        # was being uploaded (RESUME.md D1 step 1-2).  Not a server failure: the queue goes on.
+                        try:
+                            worker.delete_entry(rid, f"{directory}/{temp}")
+                        except Exception:
+                            pass
+                        changed.append(f"{rel}: changed while it was being uploaded; run again")
+                        changed_paths.append(rel)
+                        return None
+                    except UploadCorruptedError:
+                        # The server stored a chunk one byte too long: not repairable in place, so the object is
+                        # uploaded again under a new temporary name (RESUME.md D1; measured on CE 13.0).
+                        try:
+                            worker.delete_entry(rid, f"{directory}/{temp}")
+                        except Exception:
+                            pass
+                        if restart == UPLOAD_RESTARTS:
+                            raise
+                        temp = f"{sha}{_PART_SUFFIX}{os.urandom(4).hex()}"
             if not ok:
                 failed.append(f"{rel}: the server did not accept the upload")
                 return None

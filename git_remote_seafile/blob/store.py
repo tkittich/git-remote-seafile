@@ -22,7 +22,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, BinaryIO
 
-from ..client import HashingReader, SeafileAPIError, UploadSourceChangedError
+from ..client import UPLOAD_RESTARTS, HashingReader, SeafileAPIError, UploadCorruptedError, UploadSourceChangedError
 from . import cache as cache_mod
 from . import refs
 
@@ -252,16 +252,10 @@ class Store:
         if have == size:
             return Put(ref, size, uploaded=False)
         directory = self.blob_dir(ref.hex)
-        temp = f"{ref.hex}{_PART}{os.urandom(4).hex()}"
         from ..snapshot import payload_upload      # the one commit rule payload and LFS share (RESUME.md D1)
+        temp = ""
         try:
-            with open(path, "rb") as source:
-                reader = HashingReader(source, size)
-                try:
-                    self.client.upload_file(self.repo_id, directory, temp, reader, replace=True, progress_callback=progress)
-                except UploadSourceChangedError:
-                    self._drop(directory, temp)
-                    raise StoreError(f"{path} changed while it was being uploaded; nothing was stored, run again") from None
+            temp, reader = self._upload_temporary(path, size, ref, directory, progress)
             vouched = (_sha256_and_size(path)[0] == ref.hex) if reader.rewound else (
                 reader.complete and reader.hexdigest() == ref.hex)
             if not vouched:
@@ -278,6 +272,33 @@ class Store:
         if self.verify_by_download:
             self._prove_by_reading(ref, size)
         return Put(ref, size, uploaded=True)
+
+    def _upload_temporary(self, path: Path, size: int, ref: refs.Ref, directory: str,
+                          progress: "Callable[[int, int], None] | None") -> "tuple[str, HashingReader]":
+        """Upload *path* under a fresh temporary name; start again under another when the server stored a chunk wrongly.
+
+        The server can store a chunk of a chunked upload one byte too long (its multipart parser, measured on CE 13.0);
+        the client notices at once, and the object cannot be repaired in place, so it is uploaded again.
+        """
+        for restart in range(UPLOAD_RESTARTS + 1):
+            temp = f"{ref.hex}{_PART}{os.urandom(4).hex()}"
+            try:
+                with open(path, "rb") as source:
+                    reader = HashingReader(source, size)
+                    try:
+                        self.client.upload_file(self.repo_id, directory, temp, reader, replace=True, progress_callback=progress)
+                    except UploadSourceChangedError:
+                        self._drop(directory, temp)
+                        raise StoreError(f"{path} changed while it was being uploaded; nothing was stored, run again") from None
+                return temp, reader
+            except UploadCorruptedError as exc:
+                self._drop(directory, temp)
+                if restart == UPLOAD_RESTARTS:
+                    raise StoreError(f"the server stored {path} wrongly {restart + 1} times in a row ({exc})") from None
+            except SeafileAPIError:
+                self._drop(directory, temp)
+                raise
+        raise AssertionError("unreachable")
 
     def would_put(self, path: Path) -> Put:
         """What ``put`` would do, changing nothing (not even the marker): ``uploaded`` says it would upload."""

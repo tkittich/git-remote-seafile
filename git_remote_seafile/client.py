@@ -224,6 +224,15 @@ class SeafileAPIError(Exception):
     pass
 
 
+class UploadCorruptedError(SeafileAPIError):
+    """The server stored a chunk of an upload one byte too long (its multipart parser, measured on CE 13.0).
+
+    The temporary cannot be repaired or restarted under the same name (the server keeps the partial by name and
+    answers ``400 Upload offset is invalid`` to a restart), so the *caller*, which chose the name, starts the object
+    again under a new one.
+    """
+
+
 class SeafileConnectionError(SeafileAPIError, requests.RequestException):
     """The connection dropped, timed out or was refused before the server answered.
 
@@ -552,6 +561,8 @@ UPLOAD_READ_TIMEOUT_SECONDS = 600
 
 #: Attempts per chunk (the first plus retries) before the upload is abandoned.
 UPLOAD_CHUNK_ATTEMPTS = 3
+#: How many times a caller starts an object again under a new temporary name after the server stored a chunk wrongly.
+UPLOAD_RESTARTS = 2
 #: Fresh upload links one upload may ask for after a failed chunk (a link lives an hour; 8 covers a week-long upload).
 UPLOAD_LINK_REFRESHES = 8
 #: A link older than this is replaced before the next chunk is sent.  The server's default lifetime is 3600 s and an
@@ -2245,6 +2256,17 @@ class SeafileClient:
                         last_error = ""
                         if begin_attempt is not None:
                             fh.accept()
+                        if offset + length < file_size:
+                            # A chunk's reply carries no size, and the server can store a chunk one byte too long and still
+                            # answer 200: ask how much it holds now (one request per chunk) and stop at once, not at the end.
+                            held = self.uploaded_bytes(repo_id, parent_dir, filename)
+                            if held is not None and held > offset + length:
+                                raise UploadCorruptedError(
+                                    f"Failed to upload {filename} to {parent_dir}: after the chunk ending at byte "
+                                    f"{offset + length} of {file_size} the server holds {held} bytes (it stored the chunk "
+                                    f"one byte too long); the upload must start again under a new name "
+                                    f"(POST {self._error_origin(upload_url)})"
+                                )
                         break
                     last_error = f"HTTP {resp.status_code} {self._said(resp.text, *self._link_secrets(upload_url))}"
                 # The chunk failed or went unanswered, and the server may hold it all the same: a resend of a
@@ -2256,6 +2278,12 @@ class SeafileClient:
                     if begin_attempt is not None:
                         fh.accept()
                     break
+                if verdict == "corrupt":
+                    raise UploadCorruptedError(
+                        f"Failed to upload {filename} to {parent_dir}: the server holds more than the chunk ending at byte "
+                        f"{offset + length} of {file_size} (it stored the chunk one byte too long); the upload must start again "
+                        f"under a new name (POST {self._error_origin(upload_url)})"
+                    )
                 if verdict == "unknown":
                     raise SeafileAPIError(
                         f"Failed to upload {filename} to {parent_dir}: chunk bytes "
@@ -2281,6 +2309,11 @@ class SeafileClient:
         entries = self.list_dir(repo_id, parent_dir)
         landed = next((e for e in entries if e.get("name") == filename), None)
         got = landed.get("size") if landed else None
+        if isinstance(got, int) and got > file_size:
+            raise UploadCorruptedError(
+                f"Chunked upload of {filename} to {parent_dir} finished but the server holds {got} bytes instead of "
+                f"{file_size} (a chunk was stored one byte too long); the upload must start again under a new name."
+            )
         if got != file_size:
             raise SeafileAPIError(
                 f"Chunked upload of {filename} to {parent_dir} finished but the server holds "
@@ -2312,6 +2345,8 @@ class SeafileClient:
                                if isinstance(e, dict) and e.get("name") == filename), None)
                 if listed is not None and listed.get("size") == total:
                     return "stored"
+            if (not last and held > end) or (last and held > total):
+                return "corrupt"          # more than was sent: the server stored a chunk one byte too long
             if held == offset:
                 return "absent"
             if not last and held == end:

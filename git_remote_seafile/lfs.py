@@ -13,7 +13,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any, TypeGuard
 
-from .client import HashingReader, SeafileClient
+from .client import UPLOAD_RESTARTS, HashingReader, SeafileClient, UploadCorruptedError
 
 #: An upload lands under ``<oid>.part-<token>`` and is renamed onto ``<oid>``.
 PART_SUFFIX = ".part-"
@@ -272,12 +272,24 @@ class LFSTransferAgent:
             # that are not the oid (RESUME.md D1 step 2).  Other oids (a test's, a hand-made one) are not checked.
             checked = re.fullmatch(r"[0-9a-f]{64}", oid) is not None
             try:
-                with open(local_path, "rb") as source:
-                    reader = HashingReader(source, local_size) if checked else None
-                    self.client.upload_file(
-                        self.repo_id, parent_dir, temp, reader if reader is not None else Path(local_path),
-                        replace=True, progress_callback=throttle.callback,
-                    )
+                for restart in range(UPLOAD_RESTARTS + 1):
+                    try:
+                        with open(local_path, "rb") as source:
+                            reader = HashingReader(source, local_size) if checked else None
+                            self.client.upload_file(
+                                self.repo_id, parent_dir, temp, reader if reader is not None else Path(local_path),
+                                replace=True, progress_callback=throttle.callback,
+                            )
+                        break
+                    except UploadCorruptedError:
+                        # The server stored a chunk one byte too long: upload the object again under a new name.
+                        try:
+                            self.client.delete_entry(self.repo_id, f"{parent_dir}/{temp}")
+                        except Exception:
+                            pass
+                        if restart == UPLOAD_RESTARTS:
+                            raise
+                        temp = f"{filename}{PART_SUFFIX}{os.urandom(4).hex()}"
                 if reader is not None:
                     vouched = (_sha256_of(local_path) == oid) if reader.rewound else (
                         reader.complete and reader.hexdigest() == oid)
