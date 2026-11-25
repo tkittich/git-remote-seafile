@@ -77,13 +77,13 @@ def _is_layout_dir(parent: str, name: str, root: str | None = None, store: bool 
     """
     if root is not None:
         path = f"{parent.rstrip('/')}/{name}"
-        top = "/" + root.strip("/")
-        if not path.startswith(top.rstrip("/") + "/"):
+        prefix = ("/" + root.strip("/")).rstrip("/") + "/"          # "/" for a root at the library's top
+        if not path.startswith(prefix):
             return False
     if name in _LAYOUT_DIR_NAMES:
         return True
     if root is not None:
-        rel = f"{parent.rstrip('/')}/{name}"[len("/" + root.strip("/")) + 1:]
+        rel = path[len(prefix):]
         if store and _STORE_LAYOUT.fullmatch(rel) is not None:
             return True          # the blob store's own folders, and only under a store root (STORE.md D2, R9)
         return _FAN_OUT.fullmatch(rel) is not None

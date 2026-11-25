@@ -79,6 +79,14 @@ def _try_lock(fd: int) -> None:
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
 
 
+def _names_the_open_file(fd: int, path: Path) -> bool:
+    try:
+        held, named = os.fstat(fd), os.stat(path)
+    except OSError:
+        return False
+    return (held.st_dev, held.st_ino) == (named.st_dev, named.st_ino)
+
+
 def _unlock(fd: int) -> None:
     os.lseek(fd, 0, 0)
     if sys.platform == "win32":
@@ -147,7 +155,18 @@ class Cache:
                 os.fsync(handle.fileno())
         except OSError:
             pass          # the verification already read every byte; a platform that cannot fsync still renames
-        os.replace(verified, final)
+        for tries in range(5):
+            try:
+                if final.exists():
+                    os.chmod(final, stat.S_IWRITE | stat.S_IREAD)      # a sealed file is read-only: Windows will not replace it
+                os.replace(verified, final)
+                break
+            except PermissionError:
+                # A scanner or another reader holds the old file for a moment (WinError 5 or 32); anywhere else
+                # a refusal is final.
+                if os.name != "nt" or tries == 4:
+                    raise
+                time.sleep(0.2 * (tries + 1))
         _fsync_dir(final.parent)
         self._seal(final)
         return final
@@ -164,7 +183,13 @@ class Cache:
             os.chmod(path, stat.S_IWRITE | stat.S_IREAD)
             os.unlink(path)
         except OSError:
-            pass          # Windows refuses an open file; the next run tries again
+            self._seal_quietly(path)          # Windows refuses an open file: it stays, and stays read-only
+
+    def _seal_quietly(self, path: Path) -> None:
+        try:
+            os.chmod(path, stat.S_IREAD | (0 if os.name == "nt" else stat.S_IRGRP | stat.S_IROTH))
+        except OSError:
+            pass
 
     # -- partials and their lock (RESUME.md D4) -----------------------------------------------------------------
 
@@ -178,26 +203,74 @@ class Cache:
         """
         folder = self.partial_dir()
         folder.mkdir(parents=True, exist_ok=True)
-        fd = os.open(folder / f"{hex_digest}.lock", os.O_RDWR | os.O_CREAT, 0o644)
+        lock_path = folder / f"{hex_digest}.lock"
         deadline = time.monotonic() + timeout
-        try:
-            while True:
-                try:
-                    _try_lock(fd)
-                    break
-                except OSError:
-                    if time.monotonic() > deadline:
-                        raise TimeoutError(f"another process has been fetching {hex_digest} for {int(timeout)} s") from None
-                    time.sleep(0.1)
+        while True:
+            fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o644)
             try:
-                yield
-            finally:
-                try:
-                    _unlock(fd)
-                except OSError:
-                    pass
+                while True:
+                    try:
+                        _try_lock(fd)
+                        break
+                    except OSError:
+                        if time.monotonic() > deadline:
+                            raise TimeoutError(
+                                f"another process has been fetching {hex_digest} for {int(timeout)} s") from None
+                        time.sleep(0.1)
+                if sys.platform != "win32" and not _names_the_open_file(fd, lock_path):
+                    os.close(fd)          # the sweep removed the name while we waited: it now means another file
+                    continue
+            except BaseException:
+                os.close(fd)
+                raise
+            break
+        try:
+            yield
+        finally:
+            try:
+                _unlock(fd)
+            except OSError:
+                pass
+            os.close(fd)
+
+    def _held(self, hex_digest: str) -> bool:
+        """True when a live fetch of this object holds its lock (so its partial must not be removed)."""
+        try:
+            fd = os.open(self.partial_dir() / f"{hex_digest}.lock", os.O_RDWR)
+        except OSError:
+            return False
+        try:
+            try:
+                _try_lock(fd)
+            except OSError:
+                return True
+            _unlock(fd)
+            return False
         finally:
             os.close(fd)
+
+    def _reap_lock(self, path: Path) -> int:
+        """Remove an old lock file nobody holds; the lock is taken first, so no fetch is between open and lock."""
+        try:
+            fd = os.open(path, os.O_RDWR)
+        except OSError:
+            return 0
+        try:
+            try:
+                _try_lock(fd)
+            except OSError:
+                return 0
+            if sys.platform == "win32":
+                _unlock(fd)
+                os.close(fd)
+                fd = -1
+            path.unlink()
+            return 1
+        except OSError:
+            return 0
+        finally:
+            if fd >= 0:
+                os.close(fd)
 
     def sweep_partials(self, max_age: float = PARTIAL_EXPIRY_SECONDS) -> int:
         """Remove partial, temporary and lock files not touched for *max_age* seconds; a file in use is skipped."""
@@ -210,6 +283,11 @@ class Cache:
             try:
                 if now - item.stat().st_mtime < max_age:
                     continue
+                if item.suffix == ".lock":
+                    removed += self._reap_lock(item)
+                    continue
+                if self._held(item.name[:64]):
+                    continue          # a live fetch is writing it: its age is not the point
                 item.unlink()
                 removed += 1
             except OSError:
@@ -282,6 +360,8 @@ class Cache:
         folder = self.partial_dir()
         if folder.is_dir():
             for item in folder.iterdir():
+                if item.suffix == ".lock" or self._held(item.name[:64]):
+                    continue          # a lock file stays; a partial a live fetch holds is not pulled from under it
                 try:
                     item.unlink()
                 except OSError:

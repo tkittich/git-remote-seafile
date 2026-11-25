@@ -64,10 +64,74 @@ class CliCase(unittest.TestCase):
 
 class CommandTests(CliCase):
     def test_put_prints_the_reference_size_and_path_and_says_gc_does_not_know_it(self):
-        code, out, _ = self.run_cli("put", str(self.source))
+        code, out, err = self.run_cli("put", str(self.source))
         self.assertEqual(code, 0)
-        self.assertIn(f"sha256:{SHA}  {len(DATA)}  {self.source}", out)
-        self.assertIn("not protected from `gc`", out)
+        self.assertEqual(out, f"sha256:{SHA}  {len(DATA)}  {self.source}\n")        # standard output is the answer only
+        self.assertIn("not protected from `gc`", err)
+
+    def test_put_of_a_folder_without_r_says_which_command_takes_a_folder(self):
+        folder = self.work / "folder"
+        folder.mkdir()
+        code, out, err = self.run_cli("put", str(folder))
+        self.assertEqual((code, out), (2, ""))
+        self.assertIn("put -r", err)
+        self.assertNotIn("Permission", err)
+
+    def test_the_shared_flags_work_before_the_command_too(self):
+        self.run_cli("put", str(self.source))
+        out, err = io.StringIO(), io.StringIO()
+        with redirect_stdout(out), redirect_stderr(err):
+            code = cli.main(["--store", self.url, "--json", "stat", f"sha256:{SHA}"])
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(out.getvalue())["size"], len(DATA))
+
+    def test_version_is_answered(self):
+        out = io.StringIO()
+        with redirect_stdout(out):
+            code = cli.main(["--version"])
+        self.assertEqual(code, 0)
+        self.assertIn("git-remote-seafile", out.getvalue())
+
+    def test_get_dash_o_names_the_file_and_never_overwrites(self):
+        self.run_cli("put", str(self.source))
+        target = self.work / "report.bin"
+        code, out, _ = self.run_cli("get", f"sha256:{SHA}", "-o", str(target))
+        self.assertEqual(code, 0)
+        self.assertEqual(target.read_bytes(), DATA)
+        self.assertEqual(self.run_cli("get", f"sha256:{SHA}", "-o", str(target))[0], 1)
+        self.assertEqual(self.run_cli("get", f"sha256:{SHA}", f"sha256:{SHA}", "-o", str(self.work / "x"))[0], 2)
+
+    def test_a_short_reference_is_said_in_full_on_standard_error(self):
+        self.run_cli("put", str(self.source))
+        code, out, err = self.run_cli("stat", f"sha256:{SHA[:10]}")
+        self.assertEqual(code, 0)
+        self.assertIn(f"sha256:{SHA[:10]} is sha256:{SHA}", err)
+        self.assertNotIn("Note:", out)
+
+    def test_json_lists_a_failed_item_and_a_malformed_reference_is_a_usage_error(self):
+        self.run_cli("put", str(self.source))
+        missing = "sha256:" + "ab" * 32
+        code, out, _ = self.run_cli("get", f"sha256:{SHA}", missing, "--json")
+        self.assertEqual(code, 1)
+        rows = json.loads(out)["objects"]
+        self.assertEqual(len(rows), 2)
+        self.assertIn("path", rows[0])
+        self.assertIn("not in the store", rows[1]["error"])
+        self.assertEqual(self.run_cli("get", "abc123")[0], 2)
+
+    def test_a_folder_put_without_a_record_file_prints_its_references(self):
+        folder = self.work / "folder"
+        folder.mkdir()
+        (folder / "a.bin").write_bytes(DATA)
+        code, out, err = self.run_cli("put", "-r", str(folder))
+        self.assertEqual(code, 0)
+        self.assertEqual(out, f"sha256:{SHA}  {len(DATA)}  a.bin\n")
+        self.assertIn("1 file(s)", err)
+
+    def test_a_bare_cache_command_reports_the_cache(self):
+        code, out, _ = self.run_cli("cache")
+        self.assertEqual(code, 0)
+        self.assertIn("the cache holds 0 object(s)", out)
 
     def test_get_prints_a_cache_path_holding_the_bytes_and_a_short_reference_works(self):
         self.run_cli("put", str(self.source))
@@ -143,10 +207,10 @@ class CommandTests(CliCase):
         folder.mkdir()
         (folder / "keep.bin").write_bytes(DATA)
         (folder / "skip.tmp").write_bytes(b"x")
-        code, out, _ = self.run_cli("put", "-r", str(folder), "--exclude", "*.tmp")
+        code, out, err = self.run_cli("put", "-r", str(folder), "--exclude", "*.tmp")
         self.assertEqual(code, 0)
-        self.assertIn("1 excluded", out)
-        self.assertIn("1 file(s)", out)
+        self.assertIn("1 excluded", err)
+        self.assertIn("1 file(s)", err)
 
     def test_dry_run_and_exclude_need_their_folder_forms(self):
         self.assertEqual(self.run_cli("put", str(self.source), "--exclude", "*.tmp")[0], 2)
@@ -206,7 +270,7 @@ class FailureTests(CliCase):
 
     def test_a_bad_reference_is_named(self):
         code, _, err = self.run_cli("get", "not-a-reference")
-        self.assertEqual(code, 1)
+        self.assertEqual(code, 2)          # a malformed reference is a usage error (CLI.md 2.3)
         self.assertIn("not a reference", err)
 
     def test_the_commands_of_a_later_version_say_so(self):
@@ -214,7 +278,7 @@ class FailureTests(CliCase):
             out, err = io.StringIO(), io.StringIO()
             with redirect_stdout(out), redirect_stderr(err):
                 code = cli.main([word])
-            self.assertEqual(code, 2)
+            self.assertEqual(code, 1)          # not a mistake in the call, so not the usage code
             self.assertIn("not in this version yet", err.getvalue())
 
     def test_no_command_is_a_usage_error_and_nothing_ever_prompts(self):

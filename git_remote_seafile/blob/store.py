@@ -166,7 +166,9 @@ class Store:
         """The full reference a short one names, from one listing of its fan-out folder."""
         if ref.is_full:
             return ref
-        names = [str(e.get("name", "")) for e in self._list(f"{self.root}/blobs/{refs.fanout(ref)}")]
+        self.check_root(create=False)          # an unmarked folder says so, not "no object starts with"
+        names = [str(e.get("name", "")) for e in self._list(f"{self.root}/blobs/{refs.fanout(ref)}")
+                 if e.get("type") != "dir"]      # a folder named like an object is not one
         try:
             return refs.resolve(ref, names)
         except refs.RefError as exc:
@@ -263,7 +265,8 @@ class Store:
 
     # -- get --------------------------------------------------------------------------------------------------------
 
-    def get(self, ref: refs.Ref, *, keep: bool = True) -> "tuple[Path, bool]":
+    def get(self, ref: refs.Ref, *, keep: bool = True,
+            progress: "Callable[[int, int], None] | None" = None) -> "tuple[Path, bool]":
         """The cached, verified file for *ref* and whether it came from the cache.
 
         A hit costs no request.  A miss downloads into the cache's partial folder, hashes, and only then renames
@@ -286,14 +289,15 @@ class Store:
         if hit is not None:
             return hit, True
         if not keep:
-            return self._fetch(full, size, keep=False), False
+            return self._fetch(full, size, keep=False, progress=progress), False
         with _hash_lock(full.hex), self.cache.fetch_lock(full.hex):    # one fetch at a time: threads, then processes
             hit = self.cache.lookup(full, size)
             if hit is not None:
                 return hit, True
-            return self._fetch(full, size, keep=True), False
+            return self._fetch(full, size, keep=True, progress=progress), False
 
-    def _fetch(self, full: refs.Ref, size: int, *, keep: bool) -> Path:
+    def _fetch(self, full: refs.Ref, size: int, *, keep: bool,
+               progress: "Callable[[int, int], None] | None" = None) -> Path:
         """Download, check size and hash, and admit into the cache (or, for ``cat``, hand back the proved temporary)."""
         partial_dir = self.cache.partial_dir()
         partial_dir.mkdir(parents=True, exist_ok=True)
@@ -310,7 +314,8 @@ class Store:
         for _attempt in range(3):
             try:
                 held = part.stat().st_size if part.exists() else 0
-                if not self.client.download_file_to(self.repo_id, self.blob_path(full), part, max_bytes=size, resume_from=held):
+                if not self.client.download_file_to(self.repo_id, self.blob_path(full), part, progress_callback=progress,
+                                                 max_bytes=size, resume_from=held):
                     part.unlink(missing_ok=True)
                     raise StoreError(f"{full} is not in the store")
                 if part.stat().st_size != size:
@@ -335,9 +340,10 @@ class Store:
         self.cache.evict()
         return path
 
-    def get_to(self, ref: refs.Ref, destination: Path) -> Path:
+    def get_to(self, ref: refs.Ref, destination: Path,
+               progress: "Callable[[int, int], None] | None" = None) -> Path:
         """Copy the verified object to *destination*, which must not exist (R4: ``get`` never overwrites)."""
-        source, _ = self.get(ref)
+        source, _ = self.get(ref, progress=progress)
         try:
             with open(source, "rb") as src, open(destination, "xb") as dst:
                 shutil.copyfileobj(src, dst, 1 << 20)
@@ -347,9 +353,9 @@ class Store:
             raise StoreError(f"cannot write {destination}: {exc}") from None
         return destination
 
-    def cat(self, ref: refs.Ref, out: BinaryIO) -> int:
+    def cat(self, ref: refs.Ref, out: BinaryIO, progress: "Callable[[int, int], None] | None" = None) -> int:
         """Write the verified object to *out*; nothing is written before the whole object has been proved."""
-        path, cached = self.get(ref, keep=False)
+        path, cached = self.get(ref, keep=False, progress=progress)
         try:
             written = 0
             with open(path, "rb") as handle:

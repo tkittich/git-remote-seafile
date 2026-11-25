@@ -339,8 +339,11 @@ def _commit_object(
     marker, stale, temp_path = f"{sha} (", f"{directory}/{sha}", f"{directory}/{temp}"
 
     def _duplicates(entries: list) -> list[str]:
+        # A copy is a *file* named exactly ``<name> (N)`` (RESUME.md D1 step 5): not a folder, and not
+        # ``<name> (1).part-...`` or ``<name> (backup)``.
         return [str(e.get("name")) for e in entries
-                if isinstance(e, dict) and str(e.get("name", "")).startswith(marker)]
+                if isinstance(e, dict) and e.get("type") != "dir"
+                and re.fullmatch(re.escape(marker) + r"\d+\)", str(e.get("name", "")))]
 
     def _sweep(dups: list[str]) -> None:
         # Only our own copy goes when the rename told us where it landed: another writer's ``(N)`` copy

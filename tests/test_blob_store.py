@@ -252,6 +252,23 @@ class LayoutTests(unittest.TestCase):
         self.assertFalse(_is_layout_dir("/s/blobs", "zz", "/s", True))          # not two hex characters
         self.assertFalse(_is_layout_dir("/s", "somebodys", "/s", True))
 
+    def test_a_store_at_the_top_of_a_library_keeps_its_first_character(self):
+        from git_remote_seafile.client import _is_layout_dir
+        for root in ("", "/"):
+            with self.subTest(root=root):
+                self.assertTrue(_is_layout_dir("/blobs", "ab", root, True))          # was read as "lobs/ab"
+                self.assertTrue(_is_layout_dir("/lfs", "ab", root, False))
+                self.assertFalse(_is_layout_dir("/blobs", "zz", root, True))
+
+    def test_a_rename_that_times_out_is_a_connection_error_not_a_traceback(self):
+        import requests
+        from git_remote_seafile.client import SeafileAPIError, SeafileConnectionError
+        client = SeafileClient(server_url="https://seafile.example.com", token="t")
+        with patch.object(requests.Session, "send", side_effect=requests.ReadTimeout("slow")):
+            with self.assertRaises(SeafileConnectionError) as caught:
+                client.rename_entry_result("rid", "/a/b", "c")
+        self.assertIsInstance(caught.exception, SeafileAPIError)          # every `except SeafileAPIError` sees it
+
     def test_any_other_repository_is_unchanged(self):
         from git_remote_seafile.client import _is_layout_dir
         for root, store_flag in (("/s", False), (None, True), (None, False)):

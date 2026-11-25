@@ -157,6 +157,79 @@ class GetTreeTests(TreeCase):
         self.assertEqual((report.restored, report.problems), (4, []))
 
 
+class RoundFiveTests(TreeCase):
+    def test_a_users_own_part_file_is_never_deleted_by_a_restore(self):
+        tree.put_tree(self.make(), self.src, self.work / "blobs.txt")
+        out = self.work / "restored"
+        out.mkdir()
+        for name in ("a.bin.sfblob-part", "a.bin.sfblob-part-0000", "a.bin.sfblob-tmp"):
+            (out / name).write_bytes(b"mine " + name.encode())
+        report = tree.get_tree(self.make("c"), self.work / "blobs.txt", out)
+        self.assertEqual((report.restored, report.problems), (4, []))
+        for name in ("a.bin.sfblob-part", "a.bin.sfblob-part-0000", "a.bin.sfblob-tmp"):
+            self.assertEqual((out / name).read_bytes(), b"mine " + name.encode())
+        self.assertEqual([p.name for p in out.rglob("*") if ".sfblob-part-" in p.name and p.name != "a.bin.sfblob-part-0000"], [])
+
+    def test_a_file_that_appears_during_the_fetch_is_not_replaced(self):
+        tree.put_tree(self.make(), self.src, self.work / "blobs.txt")
+        out = self.work / "restored"
+        real = store.Store.get_to
+
+        def late(self_, ref, destination, progress=None):
+            result = real(self_, ref, destination, progress)
+            target = out / "a.bin"
+            if destination.name.startswith("a.bin."):
+                target.write_bytes(b"arrived meanwhile")
+            return result
+
+        with patch.object(store.Store, "get_to", late):
+            report = tree.get_tree(self.make("c"), self.work / "blobs.txt", out)
+        self.assertEqual((out / "a.bin").read_bytes(), b"arrived meanwhile")
+        self.assertTrue(any("a.bin" in p and "appeared" in p for p in report.problems))
+        self.assertEqual([p.name for p in out.iterdir() if "sfblob-part" in p.name], [])
+
+    def test_the_record_file_inside_the_folder_is_not_uploaded_and_runs_agree(self):
+        record_path = self.src / "blobs.txt"
+        first = tree.put_tree(self.make(), self.src, record_path)
+        text = record_path.read_text(encoding="utf-8")
+        second = tree.put_tree(self.make(), self.src, record_path)
+        self.assertNotIn("blobs.txt", [e.path for e in record.parse(text)])
+        self.assertEqual(record_path.read_text(encoding="utf-8"), text)
+        self.assertIn("blobs.txt: the record file itself", second.skipped)      # the first run found none to leave out
+        self.assertEqual(first.problems, [])
+        self.assertEqual(second.uploaded, 0)
+        out = self.work / "restored"
+        self.assertEqual(tree.get_tree(self.make("c"), record_path, out).problems, [])
+        self.assertEqual(tree.get_tree(self.make("c"), record_path, out).in_place, 4)
+
+    def test_a_size_the_hash_overrules_is_a_warning_and_the_file_is_placed(self):
+        tree.put_tree(self.make(), self.src, self.work / "blobs.txt")
+        path = self.work / "blobs.txt"
+        path.write_text(path.read_text(encoding="utf-8").replace("\t100\t", "\t999\t"), encoding="utf-8")
+        out = self.work / "restored"
+        report = tree.get_tree(self.make("c"), path, out)
+        self.assertEqual((report.restored, report.problems), (4, []))
+        self.assertEqual(len(report.warnings), 1)
+        self.assertIn("sub/b.bin", report.warnings[0])
+        self.assertEqual((out / "sub" / "b.bin").read_bytes(), self.contents["sub/b.bin"])
+
+    def test_two_files_whose_names_differ_only_in_unicode_form_are_a_problem_not_one_line(self):
+        nfc, nfd = "caf\u00e9.bin", "caf\u0065\u0301.bin"
+        folder = self.work / "twins"
+        folder.mkdir()
+        (folder / nfc).write_bytes(b"same")
+        try:
+            (folder / nfd).write_bytes(b"same")
+        except OSError:
+            self.skipTest("this volume cannot hold both spellings")
+        if len(list(folder.iterdir())) != 2:
+            self.skipTest("this volume folds the two spellings into one file")
+        report = tree.put_tree(self.make(), folder, self.work / "twins.txt")
+        self.assertEqual(len(report.problems), 1)
+        self.assertIn("Unicode", report.problems[0])
+        self.assertFalse((self.work / "twins.txt").exists())
+
+
 class DryRunTests(TreeCase):
     def test_a_dry_run_put_changes_nothing_and_says_what_it_would_do(self):
         report = tree.put_tree(self.make(), self.src, self.work / "blobs.txt", dry_run=True)

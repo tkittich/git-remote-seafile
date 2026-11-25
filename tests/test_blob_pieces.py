@@ -72,10 +72,21 @@ class RecordTests(unittest.TestCase):
         text = record.render([self.entry(decomposed.replace("/", "\\"))])
         self.assertEqual(text.split("\t")[0], "caf\u00e9/x.bin")
 
-    def test_two_spellings_of_one_path_are_one_entry_or_a_conflict(self):
-        record.render([self.entry("caf\u00e9"), self.entry("caf\u0065\u0301")])      # the same entry twice: one line
-        with self.assertRaises(record.RecordError):
-            record.render([self.entry("caf\u00e9"), self.entry("caf\u0065\u0301", OTHER)])
+    def test_two_spellings_of_one_path_are_an_error_whether_or_not_the_bytes_are_equal(self):
+        for second in (self.entry("caf\u0065\u0301"), self.entry("caf\u0065\u0301", OTHER)):
+            with self.assertRaises(record.RecordError):
+                record.render([self.entry("caf\u00e9"), second])
+
+    def test_a_bom_a_conflict_marker_and_a_non_ascii_digit_are_read_or_named(self):
+        good = f"a.bin\t3\tsha256:{SHA}\n"
+        self.assertEqual([e.path for e in record.parse("\ufeff" + good)], ["a.bin"])
+        with self.assertRaises(record.RecordError) as caught:
+            record.parse(good + "<<<<<<< HEAD\n")
+        self.assertIn("line 2", str(caught.exception))
+        self.assertIn("conflict", str(caught.exception))
+        for digit in ("\u00b2", "\u0663"):
+            with self.assertRaises(record.RecordError):
+                record.parse(f"a.bin\t{digit}\tsha256:{SHA}\n")
 
     def test_a_hostile_path_is_refused(self):
         for bad in ("", "/etc/passwd", "../x", "a/../b", "a//b", "C:/x", "a\tb", "a\nb", "./x", "a/."):
@@ -178,6 +189,21 @@ class CacheTests(unittest.TestCase):
         self.assertEqual(self.cache.clear(), 1)
         self.assertEqual(self.cache.objects(), [])
 
+    def test_admitting_an_object_the_cache_already_holds_replaces_the_sealed_file(self):
+        first = self.admit()
+        second = self.admit()          # a read-only file under the name: Windows refuses to replace it unless it is unsealed first
+        self.assertEqual(first, second)
+        self.assertEqual(second.read_bytes(), DATA)
+        self.assertFalse(os.lstat(second).st_mode & stat.S_IWRITE)
+
+    @unittest.skipUnless(os.name == "nt", "POSIX unlinks an open file")
+    def test_a_file_that_cannot_be_dropped_stays_read_only(self):
+        path = self.admit()
+        with open(path, "rb"):
+            self.cache._drop(path)
+        self.assertTrue(path.exists())
+        self.assertFalse(os.lstat(path).st_mode & stat.S_IWRITE)
+
     def test_the_partial_folder_counts_in_the_size_but_is_not_an_object(self):
         self.admit(b"a" * 10)
         self.cache.partial_dir().mkdir(parents=True)
@@ -188,6 +214,36 @@ class CacheTests(unittest.TestCase):
     def test_the_cache_is_addressed_by_a_full_reference_only(self):
         with self.assertRaises(refs.RefError):
             self.cache.path_of(refs.parse(f"sha256:{SHA[:8]}"))
+
+
+class ProgressTests(unittest.TestCase):
+    def test_nothing_is_drawn_unless_standard_error_is_a_terminal_or_it_is_asked_for(self):
+        import io
+        from git_remote_seafile.blob.progress import Progress
+        pipe = io.StringIO()
+        Progress("uploaded", pipe)(5, 10)
+        self.assertEqual(pipe.getvalue(), "")
+        shown = io.StringIO()
+        bar = Progress("uploaded", shown, enabled=True, interval=0)
+        bar(5, 10)
+        bar(10, 10)
+        bar.finish()
+        text = shown.getvalue()
+        self.assertIn("5 B of 10 B uploaded (50%)", text)
+        self.assertIn("(100%)", text)
+        self.assertTrue(text.endswith("\r"))          # the line is wiped before the answer
+
+    def test_a_redraw_is_throttled_but_the_last_update_is_always_drawn(self):
+        import io
+        from git_remote_seafile.blob.progress import Progress
+        now = [0.0]
+        out = io.StringIO()
+        bar = Progress("downloaded", out, enabled=True, interval=1.0, clock=lambda: now[0])
+        for done in (1, 2, 3):
+            now[0] += 0.1
+            bar(done, 10)
+        bar(10, 10)
+        self.assertEqual(out.getvalue().count("progress:"), 2)
 
 
 class FetchLockTests(unittest.TestCase):
@@ -210,7 +266,7 @@ class FetchLockTests(unittest.TestCase):
         ])
         proc = subprocess.Popen([sys.executable, "-c", code, str(self.cache.root), SHA, str(seconds)],
                                 stdout=subprocess.PIPE, text=True, cwd=str(Path(__file__).resolve().parent.parent))
-        self.addCleanup(lambda: (proc.kill(), proc.wait()))      # the lock file is released before the folder goes
+        self.addCleanup(lambda: (proc.kill(), proc.wait(), proc.stdout and proc.stdout.close()))      # the lock file is released before the folder goes
         assert proc.stdout is not None
         self.assertEqual(proc.stdout.readline().strip(), "held")
         return proc
@@ -236,6 +292,36 @@ class FetchLockTests(unittest.TestCase):
         proc.wait(timeout=20)
         with self.cache.fetch_lock(SHA, timeout=10):
             pass
+
+    def test_clear_and_the_sweep_leave_a_partial_a_live_fetch_holds(self):
+        folder = self.cache.partial_dir()
+        folder.mkdir(parents=True)
+        partial, other = folder / f"{SHA}.part", folder / f"{OTHER}.part"
+        partial.write_bytes(b"x" * 5)
+        other.write_bytes(b"y" * 5)
+        long_ago = time.time() - 10 * 24 * 3600
+        for item in (partial, other):
+            os.utime(item, (long_ago, long_ago))
+        proc = self.holder(5.0)
+        self.cache.clear()
+        self.assertTrue(partial.exists(), "pulled from under a running fetch")
+        self.assertFalse(other.exists())
+        other.write_bytes(b"y")
+        os.utime(other, (long_ago, long_ago))
+        os.utime(partial, (long_ago, long_ago))
+        self.cache.sweep_partials()
+        self.assertTrue(partial.exists())
+        self.assertFalse(other.exists())
+        proc.kill()
+        proc.wait(timeout=20)
+        self.cache.clear()
+        self.assertFalse(partial.exists(), "once the fetch is gone it is an ordinary partial")
+
+    def test_a_lock_file_survives_clear(self):
+        with self.cache.fetch_lock(SHA, timeout=5):
+            pass
+        self.cache.clear()
+        self.assertTrue((self.cache.partial_dir() / f"{SHA}.lock").exists())
 
     def test_objects_are_locked_independently(self):
         self.holder(3.0)

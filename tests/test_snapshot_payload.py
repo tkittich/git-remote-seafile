@@ -2657,6 +2657,34 @@ class PayloadRetentionTests(_PayloadFixture):
         self.assertFalse(snap._commit_object(nothing_named, "r", "/d", f"{sha}.part-1", sha, 15))
         self.assertEqual(nothing_named.deleted, [])
 
+    def test_only_a_file_named_exactly_name_and_a_number_counts_as_a_copy(self):
+        """A folder, an upload temporary's copy and a user's own name are not copies (RESUME.md D1 step 5)."""
+        sha = "f" * 64
+
+        class Fake:
+            def __init__(self):
+                self.deleted = []
+                self.listing = [
+                    {"name": sha, "size": 15, "type": "file"},
+                    {"name": f"{sha} (2)", "type": "dir"},
+                    {"name": f"{sha} (1).part-9", "size": 15, "type": "file"},
+                    {"name": f"{sha} (backup)", "size": 15, "type": "file"},
+                ]
+
+            def rename_entry_result(self, rid, path, new):
+                return 200, new
+
+            def list_dir(self, rid, directory):
+                return self.listing
+
+            def delete_entry(self, rid, path):
+                self.deleted.append(path.rsplit("/", 1)[-1])
+                return True
+
+        fake = Fake()
+        self.assertTrue(snap._commit_object(fake, "r", "/d", f"{sha}.part-1", sha, 15))
+        self.assertEqual(fake.deleted, [])
+
     def test_a_rename_onto_a_taken_name_makes_a_copy_and_it_is_judged(self):
         """The server's rename is create-or-duplicate (measured on CE 13.0.28).
 

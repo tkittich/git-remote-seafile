@@ -7,6 +7,7 @@ A line is ``<path>\t<size>\t<reference>``: the path in NFC with ``/`` separators
 
 from __future__ import annotations
 
+import re
 import unicodedata
 from dataclasses import dataclass
 
@@ -42,10 +43,11 @@ def render(entries: "list[Entry]") -> str:
     seen: "dict[str, Entry]" = {}
     for entry in entries:
         key = normalise_path(entry.path)
-        normal = Entry(key, entry.size, refs.full(str(entry.ref)))
-        if key in seen and seen[key] != normal:
-            raise RecordError(f"two different entries for {key!r}")
-        seen[key] = normal
+        # A record cannot name one path twice, equal bytes or not: two files that differ only in Unicode form
+        # would otherwise become one line and be restored as one file (round 5, DeepSeek N8).
+        if key in seen:
+            raise RecordError(f"{key!r} appears twice (paths that differ only in Unicode form are one path)")
+        seen[key] = Entry(key, entry.size, refs.full(str(entry.ref)))
     lines = [f"{e.path}\t{e.size}\t{e.ref}" for e in sorted(seen.values(), key=lambda e: e.path.encode("utf-8"))]
     return "".join(line + "\n" for line in lines)
 
@@ -53,14 +55,16 @@ def render(entries: "list[Entry]") -> str:
 def parse(text: str) -> "list[Entry]":
     """The entries of a record file; a bad line, a duplicated path or a path that is not normal is an error that names it."""
     entries: "dict[str, Entry]" = {}
-    for number, raw in enumerate(text.splitlines(), 1):
+    for number, raw in enumerate(text.lstrip("\ufeff").splitlines(), 1):
         if not raw.strip():
             continue
+        if raw.startswith(("<<<<<<<", "=======", ">>>>>>>")):
+            raise RecordError(f"line {number}: a git merge conflict marker; resolve the conflict in the record file first")
         fields = raw.split("\t")
         if len(fields) != 3:
             raise RecordError(f"line {number}: expected <path>, <size>, <reference> separated by tabs")
         path, size_text, ref_text = fields
-        if not size_text.isdigit():
+        if not re.fullmatch(r"[0-9]+", size_text):
             raise RecordError(f"line {number}: the size is not a whole number of bytes: {size_text!r}")
         try:
             key = normalise_path(path)

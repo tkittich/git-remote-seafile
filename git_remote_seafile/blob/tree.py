@@ -36,6 +36,7 @@ class GetReport:
     restored: int = 0
     in_place: int = 0
     problems: "list[str]" = field(default_factory=list)
+    warnings: "list[str]" = field(default_factory=list)      # said, but the file was placed (a size the hash overrules)
     excluded: int = 0
     dry_run: bool = False
 
@@ -66,9 +67,28 @@ def _walk(directory: Path) -> "tuple[list[Path], list[str]]":
 
 
 def _write_atomically(path: Path, text: str) -> None:
-    temp = path.with_name(path.name + ".sfblob-tmp")
-    temp.write_text(text, encoding="utf-8", newline="\n")
-    os.replace(temp, path)
+    # A name only this call can have made: a predictable one would overwrite, then delete, a user's file.
+    temp = path.with_name(f"{path.name}.sfblob-tmp-{os.urandom(4).hex()}")
+    try:
+        temp.write_text(text, encoding="utf-8", newline="\n")
+        os.replace(temp, path)
+    finally:
+        temp.unlink(missing_ok=True)
+
+
+def _place(temp: Path, target: Path) -> bool:
+    """Give *temp* the name *target* unless something already has it; one act, so nothing is replaced in a window."""
+    try:
+        os.link(temp, target)
+    except FileExistsError:
+        return False
+    except OSError:          # a volume without hard links (FAT, some shares): check, then replace
+        if target.exists() or target.is_symlink():
+            return False
+        os.replace(temp, target)
+        return True
+    temp.unlink()
+    return True
 
 
 def put_tree(
@@ -84,6 +104,15 @@ def put_tree(
     if not directory.is_dir():
         raise StoreError(f"{directory} is not a folder")
     files, skipped = _walk(directory)
+    if record_path is not None:
+        # The record sits in the folder it describes (`put -r . --record blobs.txt`): it is not part of the data,
+        # and uploading its previous bytes under its own name would make it disagree with itself forever.
+        own = os.path.normcase(os.path.abspath(record_path))
+        leave = [p for p in files if os.path.normcase(os.path.abspath(p)) == own
+                 or os.path.normcase(os.path.abspath(p)).startswith(own + ".sfblob-tmp")]
+        for p in leave:
+            skipped.append(f"{p.relative_to(directory).as_posix()}: the record file itself")
+        files = [p for p in files if p not in leave]
     kept = [p for p in files if not excluded_by(p.relative_to(directory).as_posix(), exclude)]
     report = PutReport(skipped=skipped, excluded=len(files) - len(kept), dry_run=dry_run)
     files = kept
@@ -102,11 +131,22 @@ def put_tree(
     else:
         with concurrent.futures.ThreadPoolExecutor(jobs) as pool:
             results = list(pool.map(one, files))
+    spelled: "dict[str, str]" = {}
     for path, done, problem in results:
         rel = path.relative_to(directory).as_posix()
         if problem is not None or done is None:
             report.problems.append(f"{rel}: {problem}")
             continue
+        try:
+            normal = record.normalise_path(rel)
+        except record.RecordError as exc:
+            report.problems.append(f"{rel}: {exc}")
+            continue
+        if normal in spelled:
+            report.problems.append(
+                f"{rel}: the same path as {spelled[normal]} once Unicode forms are made equal; a record names a path once")
+            continue
+        spelled[normal] = rel
         report.entries.append(record.Entry(rel, done.size, done.ref))
         report.uploaded += 1 if done.uploaded else 0
         report.present += 0 if done.uploaded else 1
@@ -158,24 +198,23 @@ def get_tree(
         if dry_run:
             return "restored", None          # it would be fetched
         worker = base if jobs <= 1 else base.clone()
-        temp = target.with_name(target.name + ".sfblob-part")
+        # A name no one else can have: the temporary is deleted on every path out, so it must be ours alone
+        # (a user's `<name>.sfblob-part` was deleted by a predictable name, round 5).
+        temp = target.with_name(f"{target.name}.sfblob-part-{os.urandom(4).hex()}")
         try:
             target.parent.mkdir(parents=True, exist_ok=True)
             worker.get_to(entry.ref, temp)
-            if temp.stat().st_size != entry.size:
-                temp.unlink(missing_ok=True)
-                return "problem", f"{entry.path}: the object is {entry.ref} but the record says {entry.size} bytes"
-            if target.exists() or target.is_symlink():          # appeared while we fetched: never replace it
-                temp.unlink(missing_ok=True)
+            if not _place(temp, target):          # appeared while we fetched: never replace it
                 return "problem", f"{entry.path}: something appeared there while it was fetched; not overwritten"
-            os.replace(temp, target)
+            size = target.stat().st_size
+            if size != entry.size:
+                # The hash proved the object; the record's size is the weaker witness and does not unmake it.
+                report.warnings.append(f"{entry.path}: the record says {entry.size} bytes, the object is {size}; restored")
             return "restored", None
-        except StoreError as exc:
-            temp.unlink(missing_ok=True)
+        except (StoreError, OSError) as exc:
             return "problem", f"{entry.path}: {exc}"
-        except OSError as exc:
+        finally:
             temp.unlink(missing_ok=True)
-            return "problem", f"{entry.path}: {exc}"
 
     if jobs <= 1:
         outcomes = [one(e) for e in entries]
