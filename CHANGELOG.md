@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.7] - 2026-11-25
+
+A fixes-only release (soft maintenance mode): a chunked upload that ran longer than an hour failed, because the upload link expires an hour after it was issued. The fix has tests that fail without it and was checked against a real server.
+
 ### Fixed
 - **A chunked upload that took longer than an hour failed.** An upload link is checked on every chunk and expires an hour after it was issued (`web_token_expire_time`, default 3600 s), and the client used the one link it got for the first chunk until the last. Measured on a CE 13.0 container with the lifetime set to 60 s: a chunk sent on an expired link is not read and gets no answer (a timeout or an aborted connection; only a very small body gets a `403`), and the upload failed. A 50 GiB payload or LFS upload slower than about 14 MiB/s therefore died at the hour. The client now asks for a fresh link before it sends a chunk on one older than 45 minutes, and after a chunk failed by timeout, reset or `403` (the partial is kept by path, not by token, so the upload continues), up to eight times per upload. The same upload then finished with the right SHA-256.
 
@@ -2306,6 +2310,7 @@ Data-loss and silent-failure fixes, and the Python floor raised to 3.9.
   with zero-config desktop-client token discovery, distributed locking, remote
   packfile compaction, and a Git LFS custom transfer agent.
 
+[0.10.7]: https://github.com/tkittich/git-remote-seafile/compare/v0.10.6...v0.10.7
 [0.10.6]: https://github.com/tkittich/git-remote-seafile/compare/v0.10.5...v0.10.6
 [0.10.5]: https://github.com/tkittich/git-remote-seafile/compare/v0.10.4...v0.10.5
 [0.10.4]: https://github.com/tkittich/git-remote-seafile/compare/v0.10.3...v0.10.4
