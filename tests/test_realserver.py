@@ -1457,5 +1457,109 @@ class LargeListingTests(_RealServerFixture):
         return f"{'Pro' if _server_is_pro(cls.client) else 'CE'} {info.get('version', '?')}"
 
 
+@unittest.skipUnless(_LIBRARY, "set SEAFILE_TEST_LIBRARY to a scratch library to run these")
+class BlobStoreRealServerTests(_RealServerFixture):
+    """The blob store against a real server (CE and Pro): what the stub cannot say.
+
+    One store folder under the run's scratch folder; every command runs in-process through ``blob.cli.main``
+    with the run's own server and token, so the answers are the ones a user's shell would get.
+    """
+
+    def setUp(self):
+        import io as _io
+        from contextlib import redirect_stderr, redirect_stdout
+
+        from git_remote_seafile.blob import cli
+
+        self._cli, self._io, self._redirect = cli, _io, (redirect_stdout, redirect_stderr)
+        self.work = Path(tempfile.mkdtemp(prefix="grs-blob-real-"))
+        self.addCleanup(remove_tree, self.work)
+        self.store = f"seafile://{self.client.server_url}/{_LIBRARY}/{self.base}/blob-{self.id().rsplit('.', 1)[-1][:40]}"
+        self.cache = str(self.work / "cache")
+
+    def run_blob(self, *args, check=True):
+        out, err = self._io.StringIO(), self._io.StringIO()
+        out.buffer = self._io.BytesIO()          # type: ignore[attr-defined]
+        with self._redirect[0](out), self._redirect[1](err):
+            code = self._cli.main([args[0], "--store", self.store, "--cache-dir", self.cache, *args[1:]])
+        if check and code != 0:
+            self.fail(f"sfblob {' '.join(args)} -> {code}\n{out.getvalue()}\n{err.getvalue()}")
+        return code, out.getvalue(), err.getvalue()
+
+    def _file(self, name, data):
+        path = self.work / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+        return path
+
+    def test_a_file_goes_up_and_comes_back_verified_and_is_listed(self):
+        import hashlib
+
+        data = os.urandom(300_000)
+        sha = hashlib.sha256(data).hexdigest()
+        source = self._file("big.bin", data)
+        _, out, err = self.run_blob("put", str(source), "--no-log")
+        self.assertIn(f"sha256:{sha}  {len(data)}", out)
+        self.assertNotIn("sha256:", err)          # standard error carries notes, never the answer
+        _, path_out, _ = self.run_blob("path", f"sha256:{sha}")
+        self.assertEqual(Path(path_out.strip()).read_bytes(), data)
+        self.assertIn(f"sha256:{sha}  {len(data)}", self.run_blob("ls")[1])
+        self.assertEqual(self.run_blob("stat", f"sha256:{sha[:10]}")[1].split()[1], str(len(data)))
+        self.assertEqual(self.run_blob("exists", f"sha256:{sha}")[0], 0)
+        self.assertEqual(self.run_blob("exists", "sha256:" + "ab" * 32, check=False)[0], 1)
+        self.assertEqual(self.run_blob("put", str(source), "--no-log", "--json")[1].count('"uploaded": false'), 1)
+
+    def test_a_folder_with_a_record_restores_byte_exact_and_a_rerun_uploads_nothing(self):
+        import json
+
+        folder = self.work / "tree"
+        files = {f"d{i % 4}/f{i:03d}.bin": os.urandom(1_000 + i * 37) for i in range(40)}
+        for rel, data in files.items():
+            self._file(f"tree/{rel}", data)
+        record = self.work / "blobs.txt"
+        self.run_blob("put", "-r", str(folder), "--record", str(record), "--no-log")
+        again = json.loads(self.run_blob("put", "-r", str(folder), "--no-log", "--json")[1])
+        self.assertEqual((again["uploaded"], again["present"]), (0, 40))
+        into = self.work / "restored"
+        self.run_blob("get", "--from", str(record), "--to", str(into))
+        for rel, data in files.items():
+            self.assertEqual((into / rel).read_bytes(), data, rel)
+        self.assertEqual(self.run_blob("verify", "--from", str(record), "--deep")[0], 0)
+
+    def test_pins_keep_objects_out_of_the_gc_report_and_unpin_releases_them(self):
+        import json
+
+        keep = self._file("keep.bin", os.urandom(5_000))
+        other = self._file("other.bin", os.urandom(6_000))
+        self.run_blob("put", str(keep), "--pin", "mine", "--no-log")
+        self.run_blob("put", str(other), "--no-log")
+        report = json.loads(self.run_blob("gc", "--json")[1])
+        self.assertEqual((report["objects"], report["unused"], report["removed"]), (2, 1, 0))
+        self.assertIn("mine  1 object(s)", self.run_blob("pin", "ls")[1])
+        self.run_blob("unpin", "mine")
+        self.assertEqual(json.loads(self.run_blob("gc", "--json")[1])["unused"], 2)
+
+    def test_a_request_body_of_the_length_the_server_refuses_uploads_byte_exact(self):
+        """Regression for the 400 the upload parser gave when the last read was only the final CRLF (0.10.7).
+
+        The file is sized so that, framed with a boundary of the usual length, the body is 24578 bytes (6 * 4096 + 2), a
+        length measured to fail every time behind the image's nginx (other body sizes align differently there).  The client
+        lengthens the boundary now.
+        """
+        import io
+        import uuid
+
+        from git_remote_seafile.client import StreamingMultipartFile
+
+        name = "refused-length.bin"
+        folder = f"/{self.base}/length"          # the parent folder is a field of the body, so it is part of the length
+        framing = StreamingMultipartFile({"parent_dir": folder, "replace": "1"}, "file", name, io.BytesIO(b""), 0,
+                                         boundary=f"----GRSBoundary{uuid.uuid4().hex}").total_len
+        data = os.urandom(24578 - framing)          # a body of 24578 bytes: 6 * 4096 + 2, a length measured to fail (CE 13.0)
+        self.assertTrue(self.client.upload_file(self.rid, folder, name, io.BytesIO(data), replace=True))
+        got = self.client.get_file_bytes(self.rid, f"{folder}/{name}")
+        self.assertEqual(got, data)
+
+
 if __name__ == "__main__":
     unittest.main()
