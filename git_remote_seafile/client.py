@@ -525,8 +525,13 @@ UPLOAD_READ_TIMEOUT_SECONDS = 600
 
 #: Attempts per chunk (the first plus retries) before the upload is abandoned.
 UPLOAD_CHUNK_ATTEMPTS = 3
-#: Fresh upload links one upload may ask for (a link lives an hour; 8 covers a week-long upload).
+#: Fresh upload links one upload may ask for after a failed chunk (a link lives an hour; 8 covers a week-long upload).
 UPLOAD_LINK_REFRESHES = 8
+#: A link older than this is replaced before the next chunk is sent.  The server's default lifetime is 3600 s and an
+#: expired link does not always answer ``403``: **a large body sent to one is not read, and the request hangs until
+#: the transfer times out** (measured on CE 13.0 with the lifetime set to 60 s), so waiting for the refusal costs a
+#: whole timeout per chunk.  A server set to a shorter lifetime is caught by the failure path instead.
+UPLOAD_LINK_MAX_AGE = 2700.0
 
 #: How long a ref-sized write (a 41-byte file under the lock, behind a fence that
 #: proved ownership moments before) waits for the server's reply.  The 600 s above
@@ -2067,9 +2072,12 @@ class SeafileClient:
         """Upload *fh* as ``Content-Range`` chunks and prove the result is whole.
 
         An upload link **expires an hour after it was issued, mid-upload included** (the server looks the token up on
-        every chunk and never extends it; read from its source, SEAFILE_SERVER.md): a chunk then answers
-        ``403 Access token not found``.  The partial is kept by path, not by token, so a fresh link continues it:
-        with *refresh_url* the client asks for one and sends the chunk again (the probe has said it is not held).
+        every chunk and never extends it; read from its source and measured on CE 13.0).  An expired link answers
+        ``403 Access token not found`` to a small body, but a large one is **not read and the request hangs** until
+        the transfer times out.  The partial is kept by path, not by token, so a fresh link continues it.  With
+        *refresh_url* the client replaces a link older than ``UPLOAD_LINK_MAX_AGE`` before sending the next chunk, and
+        after a chunk failed by timeout, reset or ``403``, before sending it again.
+        The probe has said a chunk is not held before it is sent again.
 
         The server assembles the chunks under *filename* and the file appears
         when the last one lands.  A server (or proxy) that ignores
@@ -2084,9 +2092,24 @@ class SeafileClient:
         safe_name = _sanitize_header_param(filename)
         offset = 0
         refreshes = 0
+        issued = time.monotonic()
+
+        def renew() -> None:
+            nonlocal upload_url, url, session, issued
+            try:
+                fresh = refresh_url() if refresh_url is not None else upload_url
+            except SeafileAPIError:
+                return          # no new link now: the old one is tried again, and the attempt budget decides
+            upload_url = fresh
+            url = upload_url + ("&" if "?" in upload_url else "?") + "ret-json=1"
+            session = self._transfer_session(upload_url)
+            issued = time.monotonic()
+
         while offset < file_size:
             length = min(UPLOAD_CHUNK_BYTES, file_size - offset)
             last_error = ""
+            if refresh_url is not None and time.monotonic() - issued > UPLOAD_LINK_MAX_AGE:
+                renew()
             for _attempt in range(UPLOAD_CHUNK_ATTEMPTS):
                 fh.seek(start0 + offset)
                 begin_attempt = getattr(fh, "begin_attempt", None)
@@ -2150,12 +2173,10 @@ class SeafileClient:
                         "whether it holds the chunk, so it was not sent again (the half-sent temporary is left "
                         f"for the collector) (POST {self._error_origin(upload_url)})"
                     )
-                if (resp is not None and resp.status_code == 403 and refresh_url is not None
-                        and verdict == "absent" and refreshes < UPLOAD_LINK_REFRESHES):
-                    upload_url = refresh_url()          # the link expired: the chunk was refused before it was read
-                    url = upload_url + ("&" if "?" in upload_url else "?") + "ret-json=1"
-                    session = self._transfer_session(upload_url)
+                if (refresh_url is not None and verdict == "absent" and refreshes < UPLOAD_LINK_REFRESHES
+                        and (resp is None or resp.status_code == 403)):
                     refreshes += 1
+                    renew()          # the link expired (a large body to one is not read: a timeout, or a 403)
                     continue
                 if resp is not None and resp.status_code < 500:
                     break

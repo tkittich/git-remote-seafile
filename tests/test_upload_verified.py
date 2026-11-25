@@ -70,6 +70,20 @@ class ChunkedUploadFaultTests(unittest.TestCase):
         self.assertGreaterEqual(self.stub.link_serial, 4)          # one link per chunk here
         self.assertFalse(reader.rewound)
 
+    def test_an_expired_link_that_drops_the_connection_instead_of_answering_403_is_replaced_too(self):
+        """Measured on CE 13.0: a large body sent to an expired link is not read and the request hangs."""
+        self.stub.faults["expire_link_after"] = 1
+        self.stub.faults["expire_link_drop"] = 1
+        reader = self.upload()
+        self.assertEqual(self.held(), DATA)
+        self.assertEqual(reader.hexdigest(), hashlib.sha256(DATA).hexdigest())
+
+    def test_a_link_older_than_the_limit_is_replaced_before_a_chunk_is_sent_on_it(self):
+        with patch.object(client_mod, "UPLOAD_LINK_MAX_AGE", 0.0):
+            self.upload()
+        self.assertEqual(self.held(), DATA)
+        self.assertGreaterEqual(self.stub.link_serial, 4)          # a fresh link for every chunk, no failed request first
+
     def test_a_link_that_keeps_expiring_fails_with_the_status_after_the_refreshes_are_spent(self):
         self.stub.faults["expire_link_after"] = 1
         with patch.object(client_mod, "UPLOAD_LINK_REFRESHES", 1):
@@ -114,6 +128,8 @@ class ChunkedUploadFaultTests(unittest.TestCase):
 
         def wrapped(url: str) -> object:
             session = real(url)
+            if getattr(session, "_counted", False):
+                return session          # the client keeps one session per host: wrap it once, not once per new link
             post = session.post
 
             def counted(*args: object, **kwargs: object) -> object:
@@ -123,6 +139,7 @@ class ChunkedUploadFaultTests(unittest.TestCase):
                 return post(*args, **kwargs)
 
             session.post = counted   # type: ignore[method-assign]
+            session._counted = True  # type: ignore[attr-defined]
             return session
 
         with patch.object(self.client, "_transfer_session", wrapped):

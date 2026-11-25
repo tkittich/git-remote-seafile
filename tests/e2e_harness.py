@@ -355,6 +355,11 @@ class _Handler(BaseHTTPRequestHandler):
             token = parse_qs(urlparse(self.path).query).get("t", ["0"])[0]
             used = self.stub.link_uses[token] = self.stub.link_uses.get(token, 0) + 1
             if self.stub.faults.get("expire_link_after") and used > self.stub.faults["expire_link_after"]:
+                if self.stub.faults.get("expire_link_drop"):
+                    # A large body sent to an expired link is not read and the request hangs (measured on CE 13.0);
+                    # here the connection is simply dropped, which a client sees as a failed request, not a 403.
+                    self.close_connection = True
+                    return None
                 return self._send(403, b'{"error": "Access token not found"}')
             if self.stub.faults.get("upload"):
                 return self._send(self.stub.faults["upload"], b"injected failure")
