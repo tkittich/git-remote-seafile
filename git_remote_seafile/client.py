@@ -2117,8 +2117,7 @@ class SeafileClient:
                 )
                 if up_resp.status_code == 403 and fresh_link_retry and attempt + 1 < max_attempts:
                     # A refused upload is tried once more on a new link: a reused link may have expired (a 403 for a
-                    # small body; a large one hangs instead).  A 400 is not retried: the one 400 seen in practice was
-                    # the body-length case StreamingMultipartFile avoids, and the same request fails again.
+                    # small body; a large one hangs instead).  A 400 is retried below, framed with a longer boundary.
                     fresh_link_retry -= 1
                     continue
                 if up_resp.status_code == 400 and attempt + 1 < max_attempts:
@@ -2353,7 +2352,7 @@ class SeafileClient:
         self, repo_id: str, parent_dir: str, filename: str, offset: int, length: int, total: int,
         offset_refused: bool = False,
     ) -> str:
-        """After a chunk failed or went unanswered: ``stored``, ``absent`` or ``unknown`` (RESUME.md D1 step 2).
+        """After a chunk failed or went unanswered: ``stored``, ``absent``, ``corrupt`` or ``unknown`` (RESUME.md D1 step 2).
 
         The answers are measured (CE 13.0.29): in the middle of an upload the count advances by exactly the chunk
         when it was stored; after the **last** chunk it is 0 and the file is already listed at the total, or the

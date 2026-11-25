@@ -55,7 +55,9 @@ def render(entries: "list[Entry]") -> str:
 def parse(text: str) -> "list[Entry]":
     """The entries of a record file; a bad line, a duplicated path or a path that is not normal is an error that names it."""
     entries: "dict[str, Entry]" = {}
-    for number, raw in enumerate(text.lstrip("\ufeff").splitlines(), 1):
+    # Split on the line feed only: ``str.splitlines`` also breaks at U+0085, U+2028 and U+2029, which are legal in a file
+    # name, so a record written for such a path could not be read back (review R6 N10).  A CR before the LF is a CRLF file.
+    for number, raw in enumerate((line.removesuffix("\r") for line in text.lstrip("\ufeff").split("\n")), 1):
         if not raw.strip():
             continue
         if raw.startswith(("<<<<<<<", "=======", ">>>>>>>")):

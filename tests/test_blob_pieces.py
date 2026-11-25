@@ -63,6 +63,16 @@ class RecordTests(unittest.TestCase):
         self.assertEqual(text.splitlines(), [f"a.bin\t9\tsha256:{OTHER}", f"b/two.bin\t5\tsha256:{SHA}"])
         self.assertEqual([e.path for e in record.parse(text)], ["a.bin", "b/two.bin"])
 
+    def test_a_path_with_a_unicode_line_separator_reads_back(self):
+        """Review R6 N10: ``str.splitlines`` breaks at U+0085, U+2028 and U+2029, which a file name may hold."""
+        paths = ["a\u0085b.txt", "c d.txt", "e f.txt"]
+        text = record.render([self.entry(p) for p in paths])
+        self.assertEqual(sorted(e.path for e in record.parse(text)), sorted(paths))
+
+    def test_a_record_with_windows_line_ends_reads_back(self):
+        text = record.render([self.entry("a.bin"), self.entry("b.bin", OTHER)]).replace("\n", "\r\n")
+        self.assertEqual([e.path for e in record.parse(text)], ["a.bin", "b.bin"])
+
     def test_the_same_input_in_any_order_is_the_same_file(self):
         one = [self.entry("z"), self.entry("a", OTHER), self.entry("m")]
         self.assertEqual(record.render(one), record.render(list(reversed(one))))
