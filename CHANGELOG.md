@@ -31,9 +31,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`--no-embedded-repos` needs `--allow-gitlinks`** (new flag). A gitlink is a commit id, so a restore gives an empty directory; the flag says the caller knows. `--allow-gitlinks` alone, or in a mode other than a snapshot run, is refused.
 
 ### Fixed
+- **Blob store, small files:** inside one folder run the check before an upload may use a listing up to 30 seconds old (a re-run over present files costs one listing per fan-out folder, not one per file; a single-file `put` and `--pin` always ask the server), one upload link is asked for per folder and reused, an upload refused with `403` is tried once more on a fresh link, and `--jobs` defaults to 4 for folders (the server answers `Retry-After` above that).
+
+## [0.10.7] - 2026-11-25
+
+A fixes-only release (soft maintenance mode): two ways an upload failed, both found by measuring a real server. A chunked upload that ran longer than an hour failed (the upload link expires an hour after it was issued), and about one upload in a few thousand was refused with `400` because of where the network happened to end its body. Each fix has tests that fail without it and was checked against a real server.
+
+### Fixed
 - **A chunked upload that took longer than an hour failed.** An upload link is checked on every chunk and expires an hour after it was issued (`web_token_expire_time`, default 3600 s), and the client used the one link it got for the first chunk until the last. Measured on a CE 13.0 container with the lifetime set to 60 s: a chunk sent on an expired link is not read and gets no answer (a timeout or an aborted connection; only a very small body gets a `403`), and the upload failed. A 50 GiB payload or LFS upload slower than about 14 MiB/s therefore died at the hour. The client now asks for a fresh link before it sends a chunk on one older than 45 minutes, and after a chunk failed by timeout, reset or `403` (the partial is kept by path, not by token, so the upload continues), up to eight times per upload. The same upload then finished with the right SHA-256.
 - **An upload could fail with `400 Bad request.`, or be stored one byte too long, about once in a thousand times.** The server's upload parser (`upload-file.c`) mishandles a multipart body when the network happens to end a read at certain places near the end: measured on CE 13.0, of 4,200 consecutive body lengths four residues modulo 4096 misbehaved, two answering `400` and two **storing the file with one extra byte and answering `200`** (the upload reply then names the wrong size). It depends on where reads end, so it is partly timing-dependent, and a retry framed the same way can fail again. The client now sends `ret-json=1` on every upload, compares the size the server names with the size it sent, removes a wrong copy a retry would not replace, and retries a wrong size or a `400` with a longer multipart boundary (other read splits); the boundary is also kept away from the length where the final CRLF arrives alone. The same 4,200 lengths through the client: every stored size right, no errors. The report for the Seafile project is [haiwen/seafile#3125](https://github.com/haiwen/seafile/issues/3125); the reproduction is `tools/repro_upload_400.py` in the specs repository.
-- **Blob store, small files:** inside one folder run the check before an upload may use a listing up to 30 seconds old (a re-run over present files costs one listing per fan-out folder, not one per file; a single-file `put` and `--pin` always ask the server), one upload link is asked for per folder and reused, an upload refused with `403` is tried once more on a fresh link, and `--jobs` defaults to 4 for folders (the server answers `Retry-After` above that).
 
 ## [0.10.6] - 2026-11-24
 
@@ -2331,6 +2337,7 @@ Data-loss and silent-failure fixes, and the Python floor raised to 3.9.
   with zero-config desktop-client token discovery, distributed locking, remote
   packfile compaction, and a Git LFS custom transfer agent.
 
+[0.10.7]: https://github.com/tkittich/git-remote-seafile/compare/v0.10.6...v0.10.7
 [0.10.6]: https://github.com/tkittich/git-remote-seafile/compare/v0.10.5...v0.10.6
 [0.10.5]: https://github.com/tkittich/git-remote-seafile/compare/v0.10.4...v0.10.5
 [0.10.4]: https://github.com/tkittich/git-remote-seafile/compare/v0.10.3...v0.10.4
