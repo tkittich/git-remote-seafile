@@ -642,7 +642,7 @@ def _verify(args: argparse.Namespace) -> int:
         elif args.deep:
             progress = _progress(args, "downloaded")
             try:
-                path, cached = base.get(ref, keep=False, progress=progress)
+                path, cached = base.get(ref, keep=False, use_cache=False, progress=progress)
                 if not cached:
                     path.unlink(missing_ok=True)
             except store.StoreError as exc:

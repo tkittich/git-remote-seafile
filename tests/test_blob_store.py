@@ -141,6 +141,20 @@ class HonestyTests(StoreCase):
         self.assertIn("changed while it was being uploaded", str(caught.exception))
         self.assertFalse([n for n in self.files() if f"/{SHA}" in n], self.files())
 
+    def test_a_failed_commit_does_not_leave_a_wrong_sized_object_under_the_hash_name(self):
+        """The rename landed on the free name but the server holds other bytes there (review R6 N7)."""
+        key = f"{ROOT}/blobs/{SHA[:2]}/{SHA}"
+        self.store.check_root(create=True)
+
+        def landed_wrong(client, rid, directory, temp, sha, size):
+            self.stub.files[rid][key] = DATA + b"\r"          # the object is there, one byte too long
+            return False
+
+        with patch("git_remote_seafile.snapshot.payload_upload._commit_object", landed_wrong):
+            with self.assertRaises(store.StoreError):
+                self.store.put(self.source)
+        self.assertNotIn(key, self.files())          # not left for `exists` to vouch for
+
     def test_a_damaged_object_under_the_name_is_replaced_by_the_bytes_it_promises(self):
         self.store.put(self.source)
         key = f"{ROOT}/blobs/{SHA[:2]}/{SHA}"

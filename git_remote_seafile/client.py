@@ -383,6 +383,11 @@ def _with_ret_json(url: str) -> str:
     return url + ("&" if "?" in url else "?") + "ret-json=1"
 
 
+def _is_our_landing(landed: str, filename: str) -> bool:
+    """Whether *landed*, the name an upload reply gives, is the file this upload wrote: ``name`` or ``name (N)``."""
+    return bool(landed) and (landed == filename or re.fullmatch(re.escape(filename) + r" \(\d+\)", landed) is not None)
+
+
 #: The upload endpoint refuses a body whose last network read is only the final CRLF; a body this residue modulo this number can
 #: end that way (see StreamingMultipartFile).
 REFUSED_BODY_MODULUS = 512
@@ -2086,7 +2091,9 @@ class SeafileClient:
                         # copy is removed when a retry would not replace it, and the retry is framed differently.
                         landed, got = wrong
                         last_error = f"the server stored {got} bytes of {filename}, not {expected_size}"
-                        if not replace:
+                        if not replace and _is_our_landing(landed, filename):
+                            # Only a name that is ours: a reply entry with another or no name must never reach
+                            # ``delete_entry`` (an empty name is the parent folder, and that call removes folders).
                             try:
                                 self.delete_entry(repo_id, f"{clean_parent}/{landed}")
                             except SeafileAPIError:

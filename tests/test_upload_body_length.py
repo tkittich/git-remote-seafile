@@ -106,6 +106,14 @@ class AgainstTheServersRuleTests(unittest.TestCase):
         names = sorted(n for n in self.stub.files[self.rid] if n.startswith("/d/obj"))
         self.assertEqual([self.stub.files[self.rid][n] for n in names], [data])          # one copy, the right one
 
+    def test_a_reply_that_names_no_file_never_deletes_the_parent_folder_or_another_file(self):
+        """The cleanup of a wrong-sized ``replace=False`` upload deletes only a name that is ours (review R6 N4)."""
+        self.stub.files.setdefault(self.rid, {})["/d/other-writer.refs"] = b"theirs"
+        self.stub.faults["reply_without_name"] = 1
+        self.assertTrue(self.client.upload_file(self.rid, "/d", "mine.refs", io.BytesIO(b"x" * 100), replace=False))
+        self.assertEqual(self.stub.files[self.rid]["/d/other-writer.refs"], b"theirs")          # still there
+        self.assertEqual(self.stub.files[self.rid]["/d/mine.refs"], b"x" * 100)
+
     def test_a_400_is_sent_again_with_a_different_framing_and_lands(self):
         data = os.urandom(5000)
         self.stub.faults["upload_400_once"] = 1

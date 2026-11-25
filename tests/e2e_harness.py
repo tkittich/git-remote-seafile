@@ -436,6 +436,8 @@ class _Handler(BaseHTTPRequestHandler):
                 copy = f"{folder}/{stem}{tag}.{ext}" if dot and stem else f"{target}{tag}"
                 self.stub.files[rid][copy] = filedata
                 self.stub.conflict_copies.append(copy)
+            if self.stub.faults.pop("reply_without_name", None) and "ret-json=1" in self.path:
+                return self._send(200, b'[{"id": "0000", "size": 1}]')          # a broken proxy or server: a size, no name
             if "ret-json=1" not in self.path:
                 return self._send(200, b'"e14654ea2bd7646d541370d2f47ee8afd1165762"')          # a bare file id, as the server answers
             return self._send(200, ('[{"id":"uploaded","name":"%s","size":%d}]' % (filename, len(filedata))).encode())

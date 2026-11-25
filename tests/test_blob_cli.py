@@ -335,6 +335,16 @@ class CommandTests(CliCase):
         self.assertEqual(code, 1)
         self.assertIn(SHA, err)
 
+    def test_verify_deep_reads_the_servers_copy_even_when_the_cache_holds_the_object(self):
+        self.run_cli("put", str(self.source))
+        self.assertEqual(self.run_cli("get", f"sha256:{SHA}", "-o", str(self.work / "out.bin"))[0], 0)          # now cached
+        rid = self.stub_rid()
+        name = next(n for n in self.stub.files[rid] if n.endswith(SHA))
+        self.stub.files[rid][name] = b"z" * len(DATA)
+        code, _, err = self.run_cli("verify", "--deep")
+        self.assertEqual(code, 1)          # the cached copy is good; the server's is not, and the server's is what is judged
+        self.assertIn(SHA, err)
+
     def test_verify_from_a_record_checks_each_entry_at_its_recorded_size(self):
         folder = self.work / "folder"
         folder.mkdir()

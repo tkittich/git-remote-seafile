@@ -263,6 +263,7 @@ class Store:
                 raise StoreError(f"{path} changed while it was being uploaded; nothing was stored, run again")
             if not payload_upload._commit_object(self.client, self.repo_id, directory, temp, ref.hex, size):
                 self._drop(directory, temp)
+                self._drop_wrong_size(directory, ref, size)
                 raise StoreError(f"the server would not give the object its name ({ref}); run again")
         except SeafileAPIError as exc:
             self._drop(directory, temp)
@@ -326,6 +327,20 @@ class Store:
         self._presence[folder] = (time.monotonic(), sizes)
         return sizes.get(ref.hex)
 
+    def _drop_wrong_size(self, directory: str, ref: refs.Ref, size: int) -> None:
+        """Remove a *file* under the hash name that is listed at another size than the object has.
+
+        A failed commit can leave one (the rename landed on the free name and the server stored other bytes); such an
+        object is damage that no reader is ever given (R3), and ``exists`` would say yes to it until the next ``put``
+        replaced it (R5).  A directory under the name is never deleted.
+        """
+        try:
+            for entry in self._list(directory):
+                if entry.get("name") == ref.hex and entry.get("type") != "dir" and entry.get("size") != size:
+                    self.client.delete_entry(self.repo_id, f"{directory}/{ref.hex}")
+        except Exception:
+            pass          # the next put replaces a wrong-size object (R5)
+
     def _drop(self, directory: str, temp: str) -> None:
         try:
             if any(e.get("name") == temp for e in self._list(directory)):
@@ -346,14 +361,25 @@ class Store:
 
     # -- get --------------------------------------------------------------------------------------------------------
 
-    def get(self, ref: refs.Ref, *, keep: bool = True,
+    def get(self, ref: refs.Ref, *, keep: bool = True, use_cache: bool = True,
             progress: "Callable[[int, int], None] | None" = None) -> "tuple[Path, bool]":
         """The cached, verified file for *ref* and whether it came from the cache.
 
         A hit costs no request.  A miss downloads into the cache's partial folder, hashes, and only then renames
         into the cache (R3, R6).  With ``keep=False`` a fetched object is not admitted (``cat``): the caller deletes
-        the returned temporary file.
+        the returned temporary file.  With ``use_cache=False`` (``verify --deep``, which must judge the server's
+        bytes and not a copy that was good once) the cache is not looked at: the object is always downloaded, and
+        ``keep`` must be ``False``.
         """
+        if not use_cache:
+            if keep:
+                raise ValueError("use_cache=False reads the server's copy only to judge it: keep must be False")
+            self.check_root(create=False)
+            full = self.resolve(ref)
+            size = self.stat(full)
+            if size is None:
+                raise StoreError(f"{full} is not in the store")
+            return self._fetch(full, size, keep=False, progress=progress), False
         if ref.is_full:
             hit = self.cache.lookup(ref)
             if hit is not None:
