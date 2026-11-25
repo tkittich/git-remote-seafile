@@ -438,6 +438,7 @@ class StreamingMultipartFile:
             self.total_len = len(self.header) + file_size + len(self.footer)
             if boundary is not None or self.total_len % REFUSED_BODY_MODULUS != REFUSED_BODY_RESIDUE:
                 break
+        self.pad_used = pad          # a retry starts above it: the same length would repeat the same read splits
         self._pos = 0
 
     def _frame(self, fields: dict[str, str], file_field: str, filename: str) -> "tuple[bytes, bytes]":
@@ -2011,6 +2012,7 @@ class SeafileClient:
         up_resp = None
         last_error = ""
         fresh_link_retry = 1
+        pad_floor = 0
         for attempt in range(max_attempts):
             if attempt:
                 time.sleep(0.3 * attempt)
@@ -2036,8 +2038,9 @@ class SeafileClient:
                         file_obj=payload,
                         file_size=file_size,
                         progress_callback=progress_callback,
-                        boundary_pad=attempt,          # a retry is framed with a longer boundary: other read splits
+                        boundary_pad=pad_floor,          # a retry is framed with a longer boundary: other read splits
                     )
+                    pad_floor = mp.pad_used + 1
                     headers = {
                         "Content-Type": mp.content_type,
                         "Content-Length": str(len(mp)),
@@ -2054,8 +2057,9 @@ class SeafileClient:
                         file_obj=bio,
                         file_size=len(payload),
                         progress_callback=progress_callback,
-                        boundary_pad=attempt,
+                        boundary_pad=pad_floor,
                     )
+                    pad_floor = mp.pad_used + 1
                     headers = {
                         "Content-Type": mp.content_type,
                         "Content-Length": str(len(mp)),
@@ -2218,6 +2222,7 @@ class SeafileClient:
             last_error = ""
             if refresh_url is not None and time.monotonic() - issued > UPLOAD_LINK_MAX_AGE:
                 renew()
+            pad_floor = 0
             for _attempt in range(UPLOAD_CHUNK_ATTEMPTS):
                 fh.seek(start0 + offset)
                 begin_attempt = getattr(fh, "begin_attempt", None)
@@ -2240,7 +2245,9 @@ class SeafileClient:
                     file_obj=fh,
                     file_size=length,
                     progress_callback=chunk_progress,
+                    boundary_pad=pad_floor,          # a chunk that was refused is framed with a longer boundary
                 )
+                pad_floor = mp.pad_used + 1
                 headers = {
                     "Content-Type": mp.content_type,
                     "Content-Length": str(len(mp)),
@@ -2279,7 +2286,9 @@ class SeafileClient:
                 # The chunk failed or went unanswered, and the server may hold it all the same: a resend of a
                 # chunk it holds answers 400 (measured on CE 13.0.29, RESUME.md section 1).  Ask before any
                 # resend, and act on the answer, never on a guess.
-                verdict = self._chunk_verdict(repo_id, parent_dir, filename, offset, length, file_size)
+                offset_refused = resp is not None and resp.status_code == 400 and "offset" in (resp.text or "").lower()
+                verdict = self._chunk_verdict(repo_id, parent_dir, filename, offset, length, file_size,
+                                              offset_refused=offset_refused)
                 if verdict == "stored":
                     last_error = ""
                     if begin_attempt is not None:
@@ -2303,6 +2312,8 @@ class SeafileClient:
                     refreshes += 1
                     renew()          # the link expired (a large body to one is not read: a timeout, or a 403)
                     continue
+                if resp is not None and resp.status_code == 400 and verdict == "absent" and _attempt + 1 < UPLOAD_CHUNK_ATTEMPTS:
+                    continue          # refused and nothing stored (the body-length case): framed with a longer boundary
                 if resp is not None and resp.status_code < 500:
                     break
             if last_error:
@@ -2329,14 +2340,18 @@ class SeafileClient:
         return True
 
     def _chunk_verdict(
-        self, repo_id: str, parent_dir: str, filename: str, offset: int, length: int, total: int
+        self, repo_id: str, parent_dir: str, filename: str, offset: int, length: int, total: int,
+        offset_refused: bool = False,
     ) -> str:
         """After a chunk failed or went unanswered: ``stored``, ``absent`` or ``unknown`` (RESUME.md D1 step 2).
 
         The answers are measured (CE 13.0.29): in the middle of an upload the count advances by exactly the chunk
         when it was stored; after the **last** chunk it is 0 and the file is already listed at the total, or the
         total while the server assembles and the name is not yet listed.  A probe that cannot answer after one
-        retry is ``unknown`` -- not "short" -- and the caller does not resend.
+        retry is ``unknown`` -- not "short" -- and the caller does not resend.  ``corrupt`` is a count above what was
+        sent (the server stored a chunk one byte too long); so is a count that is neither the chunk's offset nor its end
+        after the server refused the offset (*offset_refused*): the bytes it holds are not the ones sent, and waiting
+        does not change that.
         """
         end = offset + length
         last = end >= total
@@ -2352,12 +2367,17 @@ class SeafileClient:
                                if isinstance(e, dict) and e.get("name") == filename), None)
                 if listed is not None and listed.get("size") == total:
                     return "stored"
+                size = listed.get("size") if listed is not None else None
+                if isinstance(size, int) and not isinstance(size, bool) and size > total:
+                    return "corrupt"          # the last chunk was stored one byte too long
             if (not last and held > end) or (last and held > total):
                 return "corrupt"          # more than was sent: the server stored a chunk one byte too long
             if held == offset:
                 return "absent"
             if not last and held == end:
                 return "stored"
+            if offset_refused and not last and held != offset and held != end:
+                return "corrupt"          # the server refused our offset and holds neither it nor the chunk's end
             time.sleep(0.5 * (tries + 1))        # in flight or assembling: wait and ask again
         return "unknown"
 

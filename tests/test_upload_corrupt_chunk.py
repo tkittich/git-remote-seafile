@@ -62,6 +62,43 @@ class CorruptChunkTests(unittest.TestCase):
         with self.assertRaises(UploadCorruptedError):
             self.client.upload_file(self.rid, "/d", "obj.part-aa", io.BytesIO(DATA), replace=True)
 
+    def test_a_chunk_refused_with_nothing_stored_is_sent_again_framed_longer(self):
+        """The final-CRLF 400 of a chunk stores nothing; the chunk is resent with another boundary (review R6 N3)."""
+        self.stub.faults["chunk_400_at"] = 3000
+        self.assertTrue(self.client.upload_file(self.rid, "/d", "obj.part-aa", io.BytesIO(DATA), replace=True))
+        self.assertEqual(self.stub.files[self.rid]["/d/obj.part-aa"], DATA)
+
+    def test_a_chunk_stored_long_whose_probe_went_unanswered_is_still_found_by_the_next_chunk(self):
+        """N6: the per-chunk probe fails once, the next chunk answers ``400 unexpected offset``: that is corruption."""
+        self.stub.faults["chunk_plus_one_at"] = 0
+        real, calls = SeafileClient.uploaded_bytes, []
+
+        def flaky(self_, *args, **kwargs):
+            calls.append(1)
+            return None if len(calls) == 1 else real(self_, *args, **kwargs)
+
+        with patch.object(SeafileClient, "uploaded_bytes", flaky):
+            with self.assertRaises(UploadCorruptedError):
+                self.client.upload_file(self.rid, "/d", "obj.part-aa", io.BytesIO(DATA), replace=True)
+
+    def test_a_retry_is_framed_longer_than_the_attempt_before(self):
+        """N8: attempt 1 must not repeat attempt 0's length when attempt 0 had to be lengthened already."""
+        size = next(n for n in range(1, 999)
+                    if client_mod.StreamingMultipartFile({"parent_dir": "/d", "replace": "1"}, "file", "o.bin", io.BytesIO(b""), n).pad_used > 0)
+        data, lengths, real = os.urandom(size), [], self.client._xfer
+
+        def refusing(method, url, **kwargs):
+            lengths.append(kwargs["headers"]["Content-Length"])
+            if len(lengths) <= 2:
+                response = client_mod.requests.Response()
+                response.status_code = 400
+                return response
+            return real(method, url, **kwargs)
+
+        with patch.object(self.client, "_xfer", refusing):
+            self.assertTrue(self.client.upload_file(self.rid, "/d", "o.bin", io.BytesIO(data), replace=True))
+        self.assertEqual(len(set(lengths)), 3, lengths)          # three attempts, three different lengths
+
     def test_the_blob_store_starts_the_object_again_under_a_new_name(self):
         cache = cache_mod.Cache(self.work / "cache")
 

@@ -399,6 +399,9 @@ class _Handler(BaseHTTPRequestHandler):
                 # in which case every chunk simply replaces the file.
                 start, end, total = (int(g) for g in rng.groups())
                 buf = self.stub.partial.setdefault((rid, target), bytearray())
+                if self.stub.faults.get("chunk_400_at") == start:
+                    del self.stub.faults["chunk_400_at"]
+                    return self._send(400, b'{"error": "Bad request.\n"}')          # refused, nothing stored (the body-length case)
                 if start != len(buf):
                     return self._send(400, b'{"error":"unexpected offset"}')
                 buf.extend(filedata)
