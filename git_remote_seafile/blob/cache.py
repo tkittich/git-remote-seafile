@@ -29,6 +29,9 @@ ADMITTED_MTIME_NS = 1_000_000_000 * 1_000_000_000
 #: A path just handed out is not evicted for this long, so ``gdalinfo "$(sfblob path ...)"`` keeps its file.
 GRACE_SECONDS = 60
 PARTIAL_DIR = "partial"
+#: The bound ``cache --size`` sets is kept here, so the next command still keeps to it (it is forgotten otherwise
+#: and a cache grows without a word until the disk is full).
+LIMIT_FILE = "limit"
 #: An abandoned partial or lock file is removed after this long (RESUME.md D4: one expiry).
 PARTIAL_EXPIRY_SECONDS = 7 * 24 * 3600
 
@@ -100,7 +103,24 @@ def _unlock(fd: int) -> None:
 class Cache:
     def __init__(self, root: "Path | None" = None, size_limit: "int | None" = None) -> None:
         self.root = Path(root) if root is not None else default_dir()
-        self.size_limit = size_limit
+        self.size_limit = size_limit if size_limit is not None else self._saved_limit()
+
+    def _saved_limit(self) -> "int | None":
+        try:
+            text = (self.root / LIMIT_FILE).read_text(encoding="ascii").strip()
+            return int(text) if text.isdigit() else None
+        except (OSError, ValueError):
+            return None
+
+    def set_limit(self, limit: "int | None") -> None:
+        """Keep to *limit* bytes from now on (``None`` removes the bound)."""
+        self.size_limit = limit
+        path = self.root / LIMIT_FILE
+        if limit is None:
+            path.unlink(missing_ok=True)
+            return
+        self.root.mkdir(parents=True, exist_ok=True)
+        path.write_text(str(limit), encoding="ascii")
 
     def path_of(self, ref: refs.Ref) -> Path:
         if not ref.is_full:

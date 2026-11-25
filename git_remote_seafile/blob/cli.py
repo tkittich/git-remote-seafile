@@ -20,13 +20,13 @@ from typing import Any
 from ..client import SeafileAPIError, SeafileAuthError
 from ..units import format_bytes
 from . import cache as cache_mod
-from . import refs, store, tree
+from . import putlog, refs, store, tree
 from .progress import Progress
 
 PROG = "seafile-blob"
 _SIZE = re.compile(r"(\d+)\s*([kmgt]?)(?:i?b)?", re.IGNORECASE)
 _UNITS = {"": 1, "k": 1 << 10, "m": 1 << 20, "g": 1 << 30, "t": 1 << 40}
-NOT_YET = ("gc", "pin", "unpin", "offload", "verify", "link", "read", "usage")
+NOT_YET = ("gc", "pin", "unpin", "offload", "verify", "link", "read")
 _UNPROTECTED = "Note: these objects are not protected from `gc` (pins come with a later version)"
 
 
@@ -152,6 +152,8 @@ def _parser() -> argparse.ArgumentParser:
     put.add_argument("--exclude", action="append", default=[], metavar="PATTERN",
                      help="with -r: leave out paths matching PATTERN (shell-style, matched on the relative path; repeatable; "
                           "'.git/*' leaves a repository's own folder out)")
+    put.add_argument("--no-log", action="store_true",
+                     help="do not note this put in the local log `log` searches (it holds local paths)")
 
     get = sub.add_parser("get", parents=shared, help="fetch objects into the cache, verified, and print their paths")
     get.add_argument("refs", nargs="*", help="sha256:<hex> (a prefix of 6 or more hex characters is enough when it is unique)")
@@ -176,8 +178,22 @@ def _parser() -> argparse.ArgumentParser:
     stat.add_argument("ref")
 
     cache = sub.add_parser("cache", parents=shared, help="show, bound or empty the local cache")
-    cache.add_argument("--size", metavar="N", help="evict the least recently used until the cache fits (e.g. 20G)")
+    cache.add_argument("--size", metavar="N",
+                       help="keep the cache to N bytes from now on, evicting the least recently used (e.g. 20G; `off` removes the bound)")
     cache.add_argument("--clear", action="store_true", help="remove every cached object")
+
+    sub.add_parser("ls", parents=shared, help="list the objects in the store, with their sizes")
+    sub.add_parser("usage", parents=shared, help="how many objects the store holds, how many bytes, and the local cache")
+
+    log = sub.add_parser("log", parents=shared,
+                         help="find a reference again by the file's name, from what this machine put (local; no network)")
+    log.add_argument("pattern", nargs="?", help="part of a path, or a shell pattern such as '*survey*.tif'")
+
+    init = sub.add_parser("init", parents=shared,
+                          help="check the login and the store, create it, and remember it so --store is not needed again")
+    init.add_argument("url", nargs="?", help="seafile://<library>/<folder> (default: the store already configured)")
+    init.add_argument("--global", dest="global_scope", action="store_true",
+                      help="save it for every repository (the default outside a repository; inside one it is saved there)")
     return parser
 
 
@@ -185,7 +201,8 @@ def _put(args: argparse.Namespace) -> int:
     for item in args.paths:
         if item != "-" and Path(item).is_dir() and not args.recursive:
             raise UsageError(f"{item} is a folder: use `{PROG} put -r {item} --record FILE` to upload what is in it")
-    base = open_store(store_url(args.store), args.cache_dir)
+    url = store_url(args.store)
+    base = open_store(url, args.cache_dir)
     spooled: "list[Path]" = []
     try:
         if args.recursive:
@@ -194,12 +211,19 @@ def _put(args: argparse.Namespace) -> int:
             report = tree.put_tree(base, Path(args.paths[0]), Path(args.record) if args.record else None, args.jobs,
                                    dry_run=args.dry_run, exclude=args.exclude)
             for note in report.skipped:
-                _err(f"Warning: skipped {note}")
+                _err(f"Warning: not uploaded ({note})")
             for problem in report.problems:
                 _err(f"{PROG}: {problem}")
-            if not args.record and not args.json:
+            if report.dry_run and not args.json:
+                for e in report.entries:                # the plan, one line per file
+                    sys.stdout.write(f"{'+ would upload' if e.path in report.new else '= already there'}  {e.size}  {e.path}\n")
+            elif not args.record and not args.json:
                 for e in report.entries:                # no record file: the references are the answer
                     sys.stdout.write(f"{e.ref}  {e.size}  {e.path}\n")
+            if not args.dry_run and not args.no_log:
+                root = os.path.abspath(args.paths[0])
+                putlog.append(base.cache, url, [(str(e.ref), e.size, os.path.join(root, *e.path.split("/")))
+                                                for e in report.entries])
             summary = (f"dry run, nothing changed: {len(report.entries)} file(s), {report.uploaded} would be uploaded, "
                        f"{report.present} already there" if report.dry_run else
                        f"{len(report.entries)} file(s): {report.uploaded} uploaded, {report.present} already there")
@@ -240,6 +264,8 @@ def _put(args: argparse.Namespace) -> int:
                 continue
             progress.finish()
             results.append({"path": item, "ref": str(done.ref), "size": done.size, "uploaded": done.uploaded})
+            if not args.dry_run and not args.no_log and item != "-":
+                putlog.append(base.cache, url, [(str(done.ref), done.size, os.path.abspath(item))])
         if args.json:
             _say({"files": results}, args, "")
         else:
@@ -366,23 +392,97 @@ def _cache(args: argparse.Namespace) -> int:
     if args.clear:
         removed = cache.clear()
     elif args.size:
-        removed = len(cache.evict(parse_size(args.size)))
+        if args.size.strip().lower() == "off":
+            cache.set_limit(None)
+        else:
+            limit = parse_size(args.size)
+            cache.set_limit(limit)
+            removed = len(cache.evict(limit))
     used = cache.used()
     held = len(cache.objects())
-    _say({"removed": removed, "used": used, "objects": held, "directory": str(cache.root)}, args,
+    bound = f", kept to {format_bytes(cache.size_limit)}" if cache.size_limit is not None else ", no size bound (--size sets one)"
+    _say({"removed": removed, "used": used, "objects": held, "directory": str(cache.root), "limit": cache.size_limit}, args,
          (f"removed {removed} object(s); " if (args.clear or args.size) else "")
-         + f"the cache holds {held} object(s), {format_bytes(used)}, in {cache.root}")
+         + f"the cache holds {held} object(s), {format_bytes(used)}{bound}, in {cache.root}")
     return 0
 
 
-_COMMANDS = {"put": _put, "get": _get, "path": _path, "cat": _cat, "exists": _exists, "stat": _stat, "cache": _cache}
+def _ls(args: argparse.Namespace) -> int:
+    base = open_store(store_url(args.store), args.cache_dir)
+    rows = base.objects()
+    if args.json:
+        _say({"objects": [{"ref": str(r), "size": s} for r, s in rows]}, args, "")
+    else:
+        for ref, size in rows:
+            sys.stdout.write(f"{ref}  {size}\n")
+    return 0
+
+
+def _usage(args: argparse.Namespace) -> int:
+    url = store_url(args.store)
+    base = open_store(url, args.cache_dir)
+    rows = base.objects()
+    total = sum(s for _, s in rows)
+    cache = base.cache
+    _say({"store": url, "objects": len(rows), "bytes": total, "cache_objects": len(cache.objects()),
+          "cache_bytes": cache.used(), "cache_limit": cache.size_limit}, args,
+         f"{url}: {len(rows)} object(s), {format_bytes(total)}\n"
+         f"cache {cache.root}: {len(cache.objects())} object(s), {format_bytes(cache.used())}"
+         + (f", kept to {format_bytes(cache.size_limit)}" if cache.size_limit is not None else ""))
+    return 0
+
+
+def _log(args: argparse.Namespace) -> int:
+    base_cache = cache_mod.Cache(Path(args.cache_dir) if args.cache_dir else None)
+    rows = putlog.search(base_cache, args.pattern)
+    if args.json:
+        _say({"puts": rows}, args, "")
+    else:
+        for row in rows:
+            sys.stdout.write(f"{row.get('ref')}  {row.get('size')}  {row.get('path')}\n")
+        if not rows:
+            _err("Note: nothing logged on this machine matches" if args.pattern else
+                 "Note: nothing has been put from this machine yet (or --no-log / SFBLOB_LOG=off was used)")
+    return 0 if rows else 1
+
+
+def _init(args: argparse.Namespace) -> int:
+    import subprocess
+    url = args.url
+    if not url:
+        try:
+            url = store_url(None)
+        except UsageError:
+            raise UsageError("init needs the store: `sfblob init seafile://<library>/<folder>`") from None
+    base = open_store(url, args.cache_dir)
+    entries = base._list(base.root)
+    existed = any(e.get("name") == store.MARKER for e in entries)
+    base.check_root(create=True)
+    saved = ""
+    if args.url:
+        inside = subprocess.run(["git", "rev-parse", "--is-inside-work-tree"], capture_output=True, text=True).returncode == 0
+        scope = "--global" if (args.global_scope or not inside) else "--local"
+        done = subprocess.run(["git", "config", scope, "seafile.blob.store", url], capture_output=True, text=True)
+        saved = scope[2:] if done.returncode == 0 else ""
+        if not saved:
+            _err("Note: could not save the store with git config; set SFBLOB_STORE instead")
+    lines = [f"store ready: {url}" + (" (it already was)" if existed else " (created)"),
+             f"saved as git config seafile.blob.store ({saved})" if saved else "",
+             "next: `sfblob put FILE` stores a file and prints its reference; `sfblob get REF -o FILE` brings it back; "
+             "`sfblob log NAME` finds a reference again"]
+    _say({"store": url, "created": not existed, "saved": saved}, args, "\n".join(line for line in lines if line))
+    return 0
+
+
+_COMMANDS = {"put": _put, "get": _get, "path": _path, "cat": _cat, "exists": _exists, "stat": _stat, "cache": _cache,
+             "ls": _ls, "usage": _usage, "log": _log, "init": _init}
 
 
 def main(argv: "list[str] | None" = None) -> int:
     args_in = list(sys.argv[1:] if argv is None else argv)
     parser = _parser()
     if args_in and args_in[0] in NOT_YET:
-        _err(f"{PROG}: `{args_in[0]}` is not in this version yet (put, get, path, cat, exists, stat and cache are)")
+        _err(f"{PROG}: `{args_in[0]}` is not in this version yet (put, get, path, cat, exists, stat, cache, ls, usage, log and init are)")
         return 1          # not a mistake in how it was called, so not the usage code
     try:
         args = parser.parse_args(args_in)

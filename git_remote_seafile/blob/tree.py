@@ -26,6 +26,7 @@ class PutReport:
     uploaded: int = 0
     present: int = 0
     skipped: "list[str]" = field(default_factory=list)       # not regular files, or unreadable: said, never silent
+    new: "set[str]" = field(default_factory=set)             # paths whose object was (or would be) uploaded
     problems: "list[str]" = field(default_factory=list)
     excluded: int = 0
     dry_run: bool = False
@@ -149,6 +150,8 @@ def put_tree(
         spelled[normal] = rel
         report.entries.append(record.Entry(rel, done.size, done.ref))
         report.uploaded += 1 if done.uploaded else 0
+        if done.uploaded:
+            report.new.add(rel)
         report.present += 0 if done.uploaded else 1
         if on_file is not None:
             on_file(rel, done)

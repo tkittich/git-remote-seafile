@@ -106,6 +106,7 @@ class CommandTests(CliCase):
         code, out, err = self.run_cli("stat", f"sha256:{SHA[:10]}")
         self.assertEqual(code, 0)
         self.assertIn(f"sha256:{SHA[:10]} is sha256:{SHA}", err)
+        self.assertIn("scripts and records should keep the full reference", err)
         self.assertNotIn("Note:", out)
 
     def test_json_lists_a_failed_item_and_a_malformed_reference_is_a_usage_error(self):
@@ -127,6 +128,105 @@ class CommandTests(CliCase):
         self.assertEqual(code, 0)
         self.assertEqual(out, f"sha256:{SHA}  {len(DATA)}  a.bin\n")
         self.assertIn("1 file(s)", err)
+
+    def test_ls_and_usage_show_what_the_store_holds(self):
+        self.run_cli("put", str(self.source))
+        other = self.work / "other.bin"
+        other.write_bytes(b"x" * 10)
+        self.run_cli("put", str(other))
+        code, out, _ = self.run_cli("ls")
+        self.assertEqual(code, 0)
+        self.assertIn(f"sha256:{SHA}  {len(DATA)}", out)
+        self.assertEqual(len(out.splitlines()), 2)
+        code, out, _ = self.run_cli("usage", "--json")
+        data = json.loads(out)
+        self.assertEqual((data["objects"], data["bytes"]), (2, len(DATA) + 10))
+        self.assertIn("cli-store", data["store"])
+
+    def test_the_put_log_finds_a_reference_by_the_files_name_and_clearing_the_cache_keeps_it(self):
+        self.run_cli("put", str(self.source))
+        code, out, _ = self.run_cli("log", "data")
+        self.assertEqual(code, 0)
+        self.assertIn(f"sha256:{SHA}  {len(DATA)}  {self.source}", out)
+        self.assertEqual(self.run_cli("log", "*.BIN")[0], 0)          # case-insensitive, shell-style
+        self.assertEqual(self.run_cli("cache", "--clear")[0], 0)
+        self.assertEqual(self.run_cli("log", "data")[0], 0)
+        self.assertEqual(self.run_cli("log", "no-such-name")[0], 1)
+
+    def test_no_log_writes_nothing_and_a_dry_run_logs_nothing(self):
+        self.run_cli("put", str(self.source), "--no-log")
+        self.run_cli("put", str(self.source), "--dry-run")
+        self.assertEqual(self.run_cli("log")[0], 1)
+
+    def test_a_folder_put_is_logged_with_each_files_path(self):
+        folder = self.work / "folder"
+        (folder / "sub").mkdir(parents=True)
+        (folder / "sub" / "a.bin").write_bytes(DATA)
+        self.run_cli("put", "-r", str(folder), "--record", str(self.work / "r.txt"))
+        code, out, _ = self.run_cli("log", "a.bin")
+        self.assertEqual(code, 0)
+        self.assertIn(os.path.join(str(folder), "sub", "a.bin"), out)
+
+    def test_a_dry_run_folder_put_lists_every_file_and_what_it_would_do(self):
+        folder = self.work / "folder"
+        folder.mkdir()
+        (folder / "new.bin").write_bytes(b"n" * 7)
+        (folder / "old.bin").write_bytes(DATA)
+        self.run_cli("put", str(folder / "old.bin"))
+        code, out, _ = self.run_cli("put", "-r", str(folder), "--dry-run")
+        self.assertEqual(code, 0)
+        self.assertIn("+ would upload  7  new.bin", out)
+        self.assertIn(f"= already there  {len(DATA)}  old.bin", out)
+
+    def test_a_cache_bound_is_kept_for_the_next_command(self):
+        self.run_cli("put", str(self.source))
+        self.run_cli("get", f"sha256:{SHA}")
+        code, out, _ = self.run_cli("cache", "--size", "1G")
+        self.assertIn("kept to 1.0 GiB", out)
+        code, out, _ = self.run_cli("cache")
+        self.assertIn("kept to 1.0 GiB", out)
+        code, out, _ = self.run_cli("cache", "--size", "off")
+        self.assertIn("no size bound", out)
+        self.assertIn("no size bound", self.run_cli("cache")[1])
+
+    def test_init_creates_the_store_validates_it_and_says_what_to_do_next(self):
+        config = self.work / "gitconfig"          # never the developer's own ~/.gitconfig
+        with patch.dict(os.environ, {"GIT_CONFIG_GLOBAL": str(config)}):
+            code, out, _ = self.run_cli("init", self.url, "--global")
+        self.assertEqual(code, 0)
+        self.assertIn("store ready", out)
+        self.assertIn("created", out)
+        self.assertIn(self.url, config.read_text(encoding="utf-8"))
+        self.assertIn(".seafile-store", " ".join(self.stub.files.get(self.stub_rid(), {})))
+        with patch.dict(os.environ, {"GIT_CONFIG_GLOBAL": str(config)}):
+            again = self.run_cli("init", self.url, "--global")[1]
+        self.assertIn("it already was", again)
+
+    def test_init_refuses_what_put_refuses(self):
+        code, _, err = self.run_cli("init", f"seafile://{self.stub.base_url}/testlib")
+        self.assertEqual(code, 2)
+        self.assertIn("a store needs one", err)
+        code, _, err = self.run_cli("init", f"seafile://{self.stub.base_url}/no-such-library/folder")
+        self.assertEqual(code, 1)
+        self.assertNotIn("Traceback", err)
+
+    def test_a_skipped_path_is_a_warning_on_standard_error(self):
+        folder = self.work / "folder"
+        folder.mkdir()
+        (folder / "a.bin").write_bytes(DATA)
+        with patch.object(cli.tree, "_walk", return_value=([folder / "a.bin"], ["x.lnk: not a regular file"])):
+            code, out, err = self.run_cli("put", "-r", str(folder))
+        self.assertEqual(code, 0)
+        self.assertIn("Warning: not uploaded (x.lnk: not a regular file)", err)
+        self.assertNotIn("Warning", out)
+
+    def test_init_says_when_git_config_could_not_save_the_store(self):
+        import subprocess
+        failed = subprocess.CompletedProcess([], 1, "", "boom")
+        with patch.object(subprocess, "run", return_value=failed):
+            code, out, err = self.run_cli("init", self.url, "--global")
+        self.assertEqual(code, 0)
+        self.assertIn("could not save the store with git config", err)
 
     def test_a_bare_cache_command_reports_the_cache(self):
         code, out, _ = self.run_cli("cache")

@@ -186,6 +186,23 @@ class Store:
     def exists(self, ref: refs.Ref) -> bool:
         return self.stat(ref) is not None
 
+    def objects(self) -> "list[tuple[refs.Ref, int]]":
+        """Every object in the store with its size: one listing of ``blobs/``, then one per fan-out folder that exists."""
+        self.check_root(create=False)
+        found: "list[tuple[refs.Ref, int]]" = []
+        for fan in sorted(str(e.get("name", "")) for e in self._list(f"{self.root}/blobs") if e.get("type") == "dir"):
+            if len(fan) != 2:
+                continue
+            for entry in self._list(f"{self.root}/blobs/{fan}"):
+                name, size = str(entry.get("name", "")), entry.get("size")
+                if (entry.get("type") != "dir" and len(name) == 64 and name.startswith(fan)
+                        and isinstance(size, int) and not isinstance(size, bool)):
+                    try:
+                        found.append((refs.full(f"sha256:{name}"), size))
+                    except refs.RefError:
+                        continue          # a name that is not an object (a conflict copy, a user's file): not listed
+        return found
+
     # -- put ------------------------------------------------------------------------------------------------------
 
     def put(self, path: Path, progress: "Callable[[int, int], None] | None" = None) -> Put:
