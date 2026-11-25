@@ -612,7 +612,7 @@ class TestClientAPI(unittest.TestCase):
 
         self.assertEqual(
             session.post.call_args[0][0],
-            "https://seafile.example.com/seafhttp/upload-api/abc123",
+            "https://seafile.example.com/seafhttp/upload-api/abc123?ret-json=1",          # the reply then names the stored size
         )
 
     def test_upload_failure_names_the_endpoint_but_not_the_token(self):
