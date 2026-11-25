@@ -16,6 +16,7 @@ from .client import (
     SeafileAPIError,
     SeafilePermanentError,
     TransferAborted,
+    UploadCorruptedError,
     is_listed_file,
     read_listed_text,
 )
@@ -1281,9 +1282,11 @@ class RemoteHelper:
                     raise
                 except Exception as ex:
                     status = size_refusal(ex, up_size)
-                    if status is None:
+                    stored_wrong = isinstance(ex, UploadCorruptedError)
+                    if status is None and not stored_wrong:
                         raise
-                    # Nothing of this attempt may stay: the retry's packs have other names.
+                    # Nothing of this attempt may stay: the retry's packs have other names (and a copy the server
+                    # stored with other bytes under its final name would break every fetch: R6 N2).
                     # Only while this push still holds the lease: a name another push adopted
                     # since the listing is not ours (fable-A1).
                     for name in [*landed, idx_name, pack_name]:
@@ -1295,6 +1298,8 @@ class RemoteHelper:
                             self.client.delete_entry(self.repo_id, f"{pack_dir}/{name}")
                         except Exception:
                             pass
+                    if status is None:
+                        raise          # stored wrong, not refused for its size: no split to try
                     raise _UploadRefused(up_size, status, ex) from ex
                 if not have_pack:
                     sent_bytes += up_size

@@ -230,6 +230,24 @@ class TestUnverifiedUploadCleanup(E2ETestCase):
         )
 
 
+class TestPackStoredOneByteLong(E2ETestCase):
+    """The server's parser can store an upload one byte too long under its final name and answer 200 (measured, CE 13.0).
+
+    The client sends again and, when every attempt is stored wrong, raises ``UploadCorruptedError``.  A pack left at its
+    final name would break every later fetch and gc, so the push removes what it wrote (review R6 N2).
+    """
+
+    def test_a_push_whose_pack_is_stored_long_every_time_leaves_nothing_behind_and_moves_no_ref(self):
+        src = init_repo(self.work / "src_long", self.env)
+        commit_file(src, "a.txt", "hello" + chr(10), "base commit", self.env)
+        run_git(["remote", "add", "origin", self.url("longpack")], src, self.env)
+        self.stub.faults["store_long_for"] = "/objects/pack/"
+        proc = run_git(["push", "-u", "origin", "main"], src, self.env, check=False)
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertEqual(self.stub.packs("/longpack"), [], "a pack stored wrong must not stay at its final name")
+        self.assertNotIn("/longpack/refs/heads/main", self.stub.files.get(REPO_ID, {}))
+
+
 class TestFetchFailureIsLoud(E2ETestCase):
     """A clone whose pack transfer fails must fail, not produce an empty repo.
 

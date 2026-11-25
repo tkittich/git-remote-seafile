@@ -420,6 +420,8 @@ class _Handler(BaseHTTPRequestHandler):
                     return self._send(500, b"injected: reply lost")
                 body = '[{"id":"uploaded","name":"%s","size":%d}]' % (filename, total)
                 return self._send(200, body.encode())
+            if (self.stub.faults.get("store_long_for") or "\x00") in target:
+                filedata = filedata + b"\r"          # every upload to a matching name is stored one byte long, every attempt
             if self.stub.faults.pop("store_plus_one", None):
                 filedata = filedata + b"\r"          # the server's parser stored one byte too many (measured on CE 13.0)
             if self.stub.faults.pop("upload_400_once", None):

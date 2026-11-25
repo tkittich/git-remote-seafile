@@ -11,7 +11,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from .client import SeafileAPIError, SeafileClient
+from .client import SeafileAPIError, SeafileClient, UploadCorruptedError
 from .config import RemoteConfig
 from .git_util import PACK_BIG_FILE_THRESHOLD, clean_git_env, run_git_checked
 from .lock import RemoteLock, describe_ownership_failure
@@ -297,6 +297,22 @@ def _upload_new_packs(
     follows still compares what is listed to the local file.
     """
     uploaded: set[str] = set()      # every name that now holds the new content, sent or held
+    sent: list[str] = []            # the names this call wrote (not the held ones)
+    try:
+        return _send_new_packs(client, repo_id, pack_dir, new_packs, on_upload_progress, held, uploaded, sent)
+    except UploadCorruptedError:
+        # The server stored one of them with other bytes under its final name: left there, every fetch and the next
+        # gc would die in index-pack on it (R6 N2).  Only what this call wrote is removed; held names are untouched.
+        for name in sent:
+            try:
+                client.delete_entry(repo_id, f"{pack_dir}/{name}")
+            except Exception:
+                pass
+        raise
+
+
+def _send_new_packs(client: SeafileClient, repo_id: str, pack_dir: str, new_packs: list[Path],
+                    on_upload_progress: Any, held: Any, uploaded: set[str], sent: list[str]) -> set[str]:
     for np in new_packs:
         n_idx = np.with_suffix(".idx")
         # Kept by the caller's cleanup either way: a held name is also a candidate to delete.
@@ -309,11 +325,13 @@ def _upload_new_packs(
         # names, so an interrupted publish leaves an inert orphan `.idx`
         # rather than a pack whose index never landed.
         if n_idx.is_file() and n_idx.name not in held:
+            sent.append(n_idx.name)
             client.upload_file(
                 repo_id, pack_dir, n_idx.name, n_idx, replace=True, progress_callback=on_upload_progress
             )
         if np.name in held:
             continue
+        sent.append(np.name)
         client.upload_file(
             repo_id, pack_dir, np.name, np, replace=True, progress_callback=on_upload_progress
         )

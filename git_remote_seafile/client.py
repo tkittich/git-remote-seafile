@@ -2013,7 +2013,9 @@ class SeafileClient:
         last_error = ""
         fresh_link_retry = 1
         pad_floor = 0
+        wrong_last = False          # the last attempt was answered 200 with a stored size other than the one sent
         for attempt in range(max_attempts):
+            wrong_last = False
             if attempt:
                 time.sleep(0.3 * attempt)
                 try:
@@ -2094,6 +2096,7 @@ class SeafileClient:
                         # network ends a read); its reply names the size it stored, so a wrong one is caught here, the
                         # copy is removed when a retry would not replace it, and the retry is framed differently.
                         landed, got = wrong
+                        wrong_last = True
                         last_error = f"the server stored {got} bytes of {filename}, not {expected_size}"
                         if not replace and _is_our_landing(landed, filename):
                             # Only a name that is ours: a reply entry with another or no name must never reach
@@ -2134,6 +2137,13 @@ class SeafileClient:
                     f"HTTP {up_resp.status_code} "
                     f"(POST {self._error_origin(upload_url)}) "
                     f"{self._said(up_resp.text, *self._link_secrets(upload_url))}"
+                )
+            if wrong_last:
+                # Not a transport failure: the server answered 200 and holds other bytes under the name.  A caller that
+                # uploaded straight onto a final name must remove it; one that chose a temporary name starts again.
+                raise UploadCorruptedError(
+                    f"Failed to upload {filename} to {clean_parent}: {last_error} "
+                    f"(POST {self._error_origin(upload_url)})"
                 )
             raise SeafileAPIError(
                 f"Failed to upload {filename} to {clean_parent}: {last_error} "

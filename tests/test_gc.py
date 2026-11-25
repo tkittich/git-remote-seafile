@@ -1290,6 +1290,26 @@ class TestAMergedPackNamedLikeAHeldOneIsNotUploadedOver(unittest.TestCase):
             self.assertEqual(kept, {"pack-a.pack", "pack-a.idx"})
 
 
+class TestAMergedPackStoredLongIsRemovedAgain(unittest.TestCase):
+    """The server can store an upload one byte too long under its final name (review R6 N2): left there, every fetch and
+    the next gc would die on it, so what this call wrote is removed and the held names are not touched."""
+
+    def test_a_corrupted_upload_removes_what_this_call_wrote_and_nothing_held(self):
+        import tempfile
+
+        from git_remote_seafile.client import UploadCorruptedError
+        client = MagicMock()
+        client.upload_file.side_effect = [True, UploadCorruptedError("stored one byte too long")]
+        with tempfile.TemporaryDirectory() as td:
+            pack = Path(td) / "pack-a.pack"
+            pack.write_bytes(b"P")
+            (Path(td) / "pack-a.idx").write_bytes(b"I")
+            with self.assertRaises(UploadCorruptedError):
+                gc_module._upload_new_packs(client, "r", "/p", [pack], None, held=frozenset({"pack-old.pack"}))
+        removed = sorted(c.args[1] for c in client.delete_entry.call_args_list)
+        self.assertEqual(removed, ["/p/pack-a.idx", "/p/pack-a.pack"])
+
+
 class TestGcSubprocessTimeout(unittest.TestCase):
     """H-24 -- compaction holds the remote lease while it works, so a git child
     that never returns must fail the run rather than hold the lease open past
