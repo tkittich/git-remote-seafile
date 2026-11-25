@@ -275,6 +275,12 @@ def _sanitize_header_param(val: str) -> str:
     return cleaned.replace("\\", "\\\\").replace('"', '\\"')
 
 
+#: The upload endpoint refuses a body whose last network read is only the final CRLF; a body this residue modulo this number can
+#: end that way (see StreamingMultipartFile).
+REFUSED_BODY_MODULUS = 512
+REFUSED_BODY_RESIDUE = 2
+
+
 class StreamingMultipartFile:
     """Streams multipart/form-data with Content-Length without buffering file contents in memory.
 
@@ -292,7 +298,8 @@ class StreamingMultipartFile:
         boundary: str | None = None,
         progress_callback: Any = None,
     ):
-        self.boundary = boundary or f"----GRSBoundary{uuid.uuid4().hex}"
+        base_boundary = boundary or f"----GRSBoundary{uuid.uuid4().hex}"
+        self.boundary = base_boundary
         self.file_obj = file_obj
         self.file_size = file_size
         self.filename = filename  # named in read()'s short-source error
@@ -303,6 +310,23 @@ class StreamingMultipartFile:
         except Exception:
             self._file_start_pos = 0
 
+        # The server's upload parser answers ``400 Bad request.`` when the very last read of the body is the 2-byte CRLF that
+        # follows the closing boundary (upload-file.c: the closing line is consumed without its CRLF, and the CRLF then
+        # reads as a blank header line).  Where reads end is the network's doing; behind the usual nginx they are 4096
+        # bytes, so a body of 4096 * k + 2 bytes fails every time and for any content (measured on CE 13.0: of 4,200
+        # consecutive body lengths only those failed; sending the last byte alone is fine).  A retry with the same length
+        # fails again, so the boundary is lengthened until the body is not 2 past a multiple of 512 (which covers every read
+        # size that is a multiple of 512; about 1 upload in 512 is lengthened, by a few bytes).  A boundary the caller chose
+        # is kept: it is then the caller's to get right.
+        for pad in range(16):
+            self.boundary = base_boundary + "0" * pad
+            self.header, self.footer = self._frame(fields, file_field, filename)
+            self.total_len = len(self.header) + file_size + len(self.footer)
+            if boundary is not None or self.total_len % REFUSED_BODY_MODULUS != REFUSED_BODY_RESIDUE:
+                break
+        self._pos = 0
+
+    def _frame(self, fields: dict[str, str], file_field: str, filename: str) -> "tuple[bytes, bytes]":
         prefix = []
         for name, val in fields.items():
             # A field *value* sits between the header block and the next
@@ -325,10 +349,7 @@ class StreamingMultipartFile:
             f'Content-Disposition: form-data; name="{safe_field}"; filename="{safe_filename}"\r\n'
             f"Content-Type: application/octet-stream\r\n\r\n".encode("utf-8")
         )
-        self.header = b"".join(prefix)
-        self.footer = f"\r\n--{self.boundary}--\r\n".encode("utf-8")
-        self.total_len = len(self.header) + file_size + len(self.footer)
-        self._pos = 0
+        return b"".join(prefix), f"\r\n--{self.boundary}--\r\n".encode("utf-8")
 
     @property
     def content_type(self) -> str:
@@ -1785,7 +1806,7 @@ class SeafileClient:
                     up_resp = self._xfer(
                         "post", upload_url, data=mp, headers=headers, timeout=upload_timeout
                     )
-                elif isinstance(payload, (bytes, bytearray)) and progress_callback is not None:
+                elif isinstance(payload, (bytes, bytearray)):          # also without a progress callback: one framing, one length rule
                     bio = io.BytesIO(payload)
                     mp = StreamingMultipartFile(
                         fields={"parent_dir": clean_parent, "replace": "1" if replace else "0"},
