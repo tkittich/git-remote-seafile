@@ -67,7 +67,34 @@ class CommandTests(CliCase):
         code, out, err = self.run_cli("put", str(self.source))
         self.assertEqual(code, 0)
         self.assertEqual(out, f"sha256:{SHA}  {len(DATA)}  {self.source}\n")        # standard output is the answer only
-        self.assertIn("not protected from `gc`", err)
+        self.assertIn("not pinned", err)
+        self.assertIn("--pin NAME", err)
+
+    def test_put_warns_when_the_files_are_larger_than_the_quota_left_but_still_uploads(self):
+        self.stub.faults["quota"] = (1000, 1000 + len(DATA) - 1)          # one byte too little room
+        code, out, err = self.run_cli("put", str(self.source))
+        self.assertEqual(code, 0)                                         # a warning, never a refusal
+        self.assertIn("quota left", err)
+        self.assertIn(f"sha256:{SHA}", out)
+
+    def test_put_of_a_folder_warns_with_the_total_of_the_files(self):
+        folder = self.work / "tree"
+        folder.mkdir()
+        for name in ("a", "b"):
+            (folder / name).write_bytes(DATA)
+        self.stub.faults["quota"] = (0, len(DATA) + 5)                    # room for one file, not two
+        _, _, err = self.run_cli("put", "-r", str(folder))
+        self.assertIn("quota left", err)
+
+    def test_put_says_nothing_about_quota_when_the_files_fit_or_the_server_names_no_quota(self):
+        self.stub.faults["quota"] = (0, len(DATA) * 10)
+        self.assertNotIn("quota", self.run_cli("put", str(self.source))[2])
+        self.stub.faults.pop("quota")
+        self.assertNotIn("quota", self.run_cli("put", str(self.source), "--pin", "again")[2])
+
+    def test_put_dry_run_does_not_ask_about_quota(self):
+        self.stub.faults["quota"] = (0, 1)
+        self.assertNotIn("quota", self.run_cli("put", str(self.source), "--dry-run")[2])
 
     def test_put_of_a_folder_without_r_says_which_command_takes_a_folder(self):
         folder = self.work / "folder"

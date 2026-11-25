@@ -120,7 +120,8 @@ Once over its bound the cache trims down to 70% of it, so it is not trimmed one 
 
 - **Objects are write-once.** An object is never changed after it is stored. Nothing in this version deletes an object on the server.
 - **Deleting frees quota, not disk.** When a later version removes objects, the library's quota falls at once, but the disk space is freed only after the server's history is truncated and its garbage collector (`seafserv-gc`) has run; both are the server administrator's.
-- **A bare `put` is not protected from `gc`.** Say `--pin` for objects you want kept.
+- **A bare `put` is not pinned, so `gc` reports its objects as unreferenced.** Say `--pin NAME` for objects you want kept.
+- **A big upload may restart by itself.** The server's upload parser can store a chunk one byte too long without an error; `put` notices after the chunk, deletes the temporary and uploads the object again under a new name (up to twice, then it fails and says why). It only costs time.
 - **Small files are slow.** Measured on one Seafile CE server: about 4 files a second for `put -r`, at 8 to 12 requests per file. A folder of 50,000 small files takes hours. Put them in one archive (`tar`) and store that.
 - **Over plain `http://`** a `put` is proved by reading the object back, never by the hash the upload computed.
 - **Large uploads** continue across the server's one-hour upload-link limit, and a request the server's parser mishandles is noticed by its stored size and sent again (0.10.7).

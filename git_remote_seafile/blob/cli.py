@@ -27,7 +27,7 @@ PROG = "seafile-blob"
 _SIZE = re.compile(r"(\d+)\s*([kmgt]?)(?:i?b)?", re.IGNORECASE)
 _UNITS = {"": 1, "k": 1 << 10, "m": 1 << 20, "g": 1 << 30, "t": 1 << 40}
 NOT_YET = ("offload", "link", "read")
-_UNPROTECTED = "Note: these objects are not protected from `gc` (pins come with a later version)"
+_UNPROTECTED = "Note: these objects are not pinned, so `gc` would report them as unreferenced: use --pin NAME to protect them"
 
 
 class UsageError(Exception):
@@ -91,6 +91,48 @@ def _say(payload: "dict[str, Any]", args: argparse.Namespace, text: str) -> None
 
 def _err(text: str) -> None:
     sys.stderr.write(text if text.endswith("\n") else text + "\n")
+
+
+def quota_warning(client: Any, need_bytes: int) -> "str | None":
+    """A warning when the files to put could not fit the account's quota; ``None`` when they fit or it cannot be told.
+
+    *need_bytes* is an upper bound (objects already in the store are not uploaded again), so this is a warning and
+    never a refusal. The quota that counts is the library owner's, which is not necessarily this account.
+    """
+    from ..snapshot import payload_guards
+    try:
+        quota = payload_guards._account_quota(client)
+    except Exception:                      # informational only
+        return None
+    if quota is None:
+        return None
+    usage, total = quota
+    free = max(total - usage, 0)
+    if need_bytes <= free:
+        return None
+    return (f"Warning: these files are up to {format_bytes(need_bytes)} but the account has {format_bytes(free)} of quota left "
+            f"({format_bytes(usage)} of {format_bytes(total)} used); objects already in the store are skipped, but a "
+            f"larger upload will probably fail partway. Free space or ask for more first; stored objects are kept.")
+
+
+def _bytes_to_put(paths: "list[str]", recursive: bool) -> int:
+    """The total size of what a ``put`` was asked to upload, as far as it can be told without reading it."""
+    total = 0
+    files: "list[Path]" = []
+    for item in paths:
+        if item == "-":
+            continue
+        source = Path(item)
+        if recursive and source.is_dir():
+            files.extend(tree._walk(source)[0])
+        else:
+            files.append(source)
+    for path in files:
+        try:
+            total += path.stat().st_size
+        except OSError:
+            pass
+    return total
 
 
 def _progress(args: argparse.Namespace, verb: str) -> Progress:
@@ -222,6 +264,10 @@ def _put(args: argparse.Namespace) -> int:
     url = store_url(args.store)
     base = open_store(url, args.cache_dir)
     spooled: "list[Path]" = []
+    if not args.dry_run:
+        note = quota_warning(base.client, _bytes_to_put(args.paths, args.recursive))
+        if note:
+            _err(note)
     try:
         if args.recursive:
             if len(args.paths) != 1:

@@ -146,6 +146,9 @@ class _Handler(BaseHTTPRequestHandler):
             return self._json([{"id": REPO_ID, "name": REPO_NAME}])
 
         if path == "/api2/account/info/":
+            if f.get("quota"):          # (usage, total) in bytes: the account's quota, as the real server reports it
+                usage, total = f["quota"]
+                return self._json({"email": "e2e@example.com", "usage": usage, "total": total})
             return self._json({"email": "e2e@example.com"})
 
         if path == "/api2/server-info/":

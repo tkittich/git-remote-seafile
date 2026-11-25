@@ -122,6 +122,12 @@ identity and the first CI failures of a release have always been environmental.
   scripts with the Write tool, to the Windows temp directory (Python's `/tmp`
   is not Git Bash's), and use the Edit tool for any string containing `\n`.
   `ruff` finds the damage; a NUL byte in a test file is a SyntaxError.
+- **A caller that picks a temporary upload name must restart on `UploadCorruptedError`.**
+  The server's multipart parser can store a chunk one byte too long and answer `200`;
+  the client notices after the chunk and cannot repair it, because the server keeps the
+  partial by name. The blob store, payload and LFS delete the temporary and upload again
+  under a new name (`UPLOAD_RESTARTS`). A new upload caller needs the same loop and a
+  test with the `chunk_plus_one_at` fault of `tests/e2e_harness.py`.
 - **Check `git status` before `git add -A`.** A scratch file in the root
   (`empty`, `REVIEW.*.tmp`) is easy to commit.
 - **A patch undone anywhere but on the patcher stays live.** A `patch(...)`
