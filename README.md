@@ -143,6 +143,7 @@ Why not just keep the repository in a synced folder, a bare repo, a bundle or a 
 - [User's Guide (USER_GUIDE.md)](USER_GUIDE.md): Full walkthrough of setup, configuration files, multi-account usage, and dual-remote (GitHub + Seafile) setups.
 - [Known limitations (USER_GUIDE.md §14)](USER_GUIDE.md#known-limitations-and-what-they-mean-for-you): The places the tool, Git or Seafile stops short — advisory locking, request and object size limits (including Git for Windows and 4 GiB files), encrypted libraries, tested-server scope, snapshot caveats — and what each means for you.
 - [Snapshot Guide (SNAPSHOT_GUIDE.md)](SNAPSHOT_GUIDE.md): How to take, restore and verify a snapshot with `git seafile-snapshot`, and what it costs.
+- [Blob Guide (BLOB_GUIDE.md)](BLOB_GUIDE.md): Keep large files on a library under their SHA-256 and get them back verified, with `seafile-blob` (`sfblob`).
 - [Automation & AI Agents (AUTOMATION.md)](AUTOMATION.md): The one-page contract for schedulers, scripts and agents — exit codes, message levels, `--json`, `jq` recipes, and which commands an agent may run without asking.
 - [Upgrading (UPGRADING.md)](UPGRADING.md): What may change for you from one release to the next.
 - [Changelog (CHANGELOG.md)](CHANGELOG.md): What changed in each release.
@@ -173,6 +174,7 @@ The documentation spells commands out (`git seafile-snapshot`, `git-remote-seafi
 | :--- | :--- |
 | `git-remote-seafile` (the helper; git requires this name) | `seafile <command>`, e.g. `seafile login`, `seafile doctor` |
 | `git seafile-snapshot` | `sfsnap`, `git sfsnap`, `seafile snapshot`, `seafile snap` |
+| `seafile-blob` | `sfblob`, `git-seafile-blob`, `seafile blob` |
 
 ### Whole-tree snapshots: `git seafile-snapshot`
 
