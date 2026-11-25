@@ -11,6 +11,7 @@ from __future__ import annotations
 import concurrent.futures
 import fnmatch
 import os
+import threading
 import unicodedata
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -18,6 +19,38 @@ from pathlib import Path
 
 from . import record, store
 from .store import Store, StoreError
+
+
+class _Workers:
+    """One store (one client, one set of connections and upload links) per worker thread, closed at the end of the run.
+
+    A client is not shared across threads, but one per *file* (the first version) meant a new login, new sessions and a
+    new upload link for every file at ``--jobs`` above 1 (review R6 N5: 601 clients and 601 link requests for 600 files).
+    """
+
+    def __init__(self, base: Store, jobs: int) -> None:
+        self._base, self._jobs = base, jobs
+        self._local = threading.local()
+        self._made: "list[Store]" = []
+        self._lock = threading.Lock()
+
+    def get(self) -> Store:
+        if self._jobs <= 1:
+            return self._base
+        worker = getattr(self._local, "store", None)
+        if worker is None:
+            worker = self._local.store = self._base.clone()
+            with self._lock:
+                self._made.append(worker)
+        return worker
+
+    def close(self) -> None:
+        for worker in self._made:
+            if worker is not self._base:
+                try:
+                    worker.client.close()
+                except Exception:
+                    pass
 
 
 @dataclass
@@ -120,8 +153,10 @@ def put_tree(
     if not dry_run:
         base.check_root(create=True)       # once, before any thread: two first puts would race on the marker
 
+    workers = _Workers(base, jobs)
+
     def one(path: Path) -> "tuple[Path, store.Put | None, str | None]":
-        worker = base if jobs <= 1 else base.clone()
+        worker = workers.get()
         try:
             if dry_run:
                 return path, worker.would_put(path), None
@@ -134,7 +169,10 @@ def put_tree(
             results = [one(p) for p in files]
         else:
             with concurrent.futures.ThreadPoolExecutor(jobs) as pool:
-                results = list(pool.map(one, files))
+                try:
+                    results = list(pool.map(one, files))
+                finally:
+                    workers.close()
     spelled: "dict[str, str]" = {}
     for path, done, problem in results:
         rel = path.relative_to(directory).as_posix()
@@ -209,6 +247,8 @@ def get_tree(
                 return f"{part} is a link; nothing is written through a link"
         return None
 
+    workers = _Workers(base, jobs)
+
     def one(entry: record.Entry) -> "tuple[str, str | None]":
         reason = (name_problem(entry.path) if name_problem is not None else None) or link_on_the_way(entry.path)
         if reason:
@@ -220,7 +260,7 @@ def get_tree(
             return "problem", f"{entry.path}: something else is already there; not overwritten"
         if dry_run:
             return "restored", None          # it would be fetched
-        worker = base if jobs <= 1 else base.clone()
+        worker = workers.get()
         # A name no one else can have: the temporary is deleted on every path out, so it must be ours alone
         # (a user's `<name>.sfblob-part` was deleted by a predictable name, round 5).
         temp = target.with_name(f"{target.name}.sfblob-part-{os.urandom(4).hex()}")
@@ -243,7 +283,10 @@ def get_tree(
         outcomes = [one(e) for e in entries]
     else:
         with concurrent.futures.ThreadPoolExecutor(jobs) as pool:
-            outcomes = list(pool.map(one, entries))
+            try:
+                outcomes = list(pool.map(one, entries))
+            finally:
+                workers.close()
     for kind, problem in outcomes:
         if kind == "restored":
             report.restored += 1

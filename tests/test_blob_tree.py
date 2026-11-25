@@ -81,6 +81,28 @@ class PutTreeTests(TreeCase):
         self.assertEqual(one.problems + many.problems, [])
         self.assertEqual((self.work / "one.txt").read_bytes(), (self.work / "many.txt").read_bytes())
 
+    def test_parallel_jobs_make_one_client_per_thread_not_one_per_file(self):
+        """Review R6 N5: a new client per file meant a new login, sessions and upload link for every file."""
+        many = self.work / "many-files"
+        many.mkdir()
+        for i in range(24):
+            (many / f"f{i:02}.txt").write_bytes(os.urandom(50) + bytes([i]))
+        made, real = [], store.Store.clone
+
+        def counting(self_):
+            made.append(1)
+            return real(self_)
+
+        with patch.object(store.Store, "clone", counting):
+            report = tree.put_tree(self.make(), many, self.work / "many.txt", jobs=4)
+        self.assertEqual(report.problems, [])
+        self.assertLessEqual(len(made), 4, f"{len(made)} clients for 24 files at 4 jobs")
+        made.clear()
+        with patch.object(store.Store, "clone", counting):
+            got = tree.get_tree(self.make("c"), self.work / "many.txt", self.work / "many-out", jobs=4)
+        self.assertEqual(got.problems, [])
+        self.assertLessEqual(len(made), 4)
+
     @unittest.skipIf(os.name == "nt", "symlinks need privileges on Windows")
     def test_a_link_is_skipped_and_said(self):
         os.symlink(self.src / "a.bin", self.src / "link.bin")
