@@ -350,6 +350,10 @@ class _Handler(BaseHTTPRequestHandler):
             return self._send(200, b'{"success":true}')
 
         if path.startswith("/upload/"):
+            # The server's upload endpoint answers 400 to a body whose length is 2 more than a multiple of 4096
+            # (measured on CE 13.0): the stub does too, so a client that can send such a length fails its tests.
+            if len(body) % 4096 == 2:
+                return self._send(400, b'{"error": "Bad request. "}')
             # ``expire_link_after``: a link answers this many chunk POSTs and then ``403 Access token not found``,
             # as the server's absolute token lifetime does (SEAFILE_SERVER.md); a new link starts afresh.
             token = parse_qs(urlparse(self.path).query).get("t", ["0"])[0]

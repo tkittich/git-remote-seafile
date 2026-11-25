@@ -124,7 +124,8 @@ def _common(top: bool) -> argparse.ArgumentParser:
                         help="the store: seafile://<library>/<folder> (default: $SFBLOB_STORE or git config seafile.blob.store)")
     common.add_argument("--cache-dir", default=default(None), help="the local cache (default: $SFBLOB_CACHE or the user's cache folder)")
     common.add_argument("--json", action="store_true", default=default(False), help="answer with one JSON document")
-    common.add_argument("--jobs", type=int, default=default(1), help="transfers at once for a folder (default 1)")
+    common.add_argument("--jobs", type=int, default=default(4), help="transfers at once for a folder (default 4; the server "
+                                                                       "slows a client down above about that)")
     common.add_argument("-q", "--quiet", action="store_true", default=default(False), help="no progress line")
     return common
 

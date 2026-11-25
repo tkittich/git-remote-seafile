@@ -230,6 +230,32 @@ class RoundFiveTests(TreeCase):
         self.assertFalse((self.work / "twins.txt").exists())
 
 
+class PresenceCacheTests(TreeCase):
+    def test_a_folder_run_lists_each_fan_out_folder_once_for_its_pre_checks(self):
+        tree.put_tree(self.make(), self.src, None)
+        before = self.stub.dir_calls
+        again = tree.put_tree(self.make(), self.src, None)
+        self.assertEqual(again.uploaded, 0)
+        distinct = {hashlib.sha256(d).hexdigest()[:2] for d in self.contents.values()}
+        self.assertLessEqual(self.stub.dir_calls - before, len(distinct) + 3)          # + the marker check and the root
+
+    def test_a_single_put_always_asks_the_server(self):
+        base = self.make()
+        one = self.src / "a.bin"
+        base.put(one)
+        before = self.stub.dir_calls
+        base.put(one)
+        base.put(one)
+        self.assertGreaterEqual(self.stub.dir_calls - before, 2)          # a fresh listing for each
+
+    def test_a_damaged_object_is_still_repaired_by_a_single_put_right_after_a_folder_run(self):
+        base = self.make()
+        tree.put_tree(base, self.src, None)
+        name = next(n for n in self.stub.files[self.rid] if n.endswith(hashlib.sha256(self.contents["a.bin"]).hexdigest()))
+        self.stub.files[self.rid][name] = b"short"
+        self.assertTrue(base.put(self.src / "a.bin").uploaded)
+
+
 class DryRunTests(TreeCase):
     def test_a_dry_run_put_changes_nothing_and_says_what_it_would_do(self):
         report = tree.put_tree(self.make(), self.src, self.work / "blobs.txt", dry_run=True)

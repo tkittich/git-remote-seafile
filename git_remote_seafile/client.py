@@ -369,6 +369,12 @@ def _sanitize_header_param(val: str) -> str:
     return cleaned.replace("\\", "\\\\").replace('"', '\\"')
 
 
+#: The upload endpoint refuses a body whose last network read is only the final CRLF; a body this residue modulo this number can
+#: end that way (see StreamingMultipartFile).
+REFUSED_BODY_MODULUS = 512
+REFUSED_BODY_RESIDUE = 2
+
+
 class StreamingMultipartFile:
     """Streams multipart/form-data with Content-Length without buffering file contents in memory.
 
@@ -386,7 +392,8 @@ class StreamingMultipartFile:
         boundary: str | None = None,
         progress_callback: Any = None,
     ):
-        self.boundary = boundary or f"----GRSBoundary{uuid.uuid4().hex}"
+        base_boundary = boundary or f"----GRSBoundary{uuid.uuid4().hex}"
+        self.boundary = base_boundary
         self.file_obj = file_obj
         self.file_size = file_size
         self.filename = filename  # named in read()'s short-source error
@@ -397,6 +404,23 @@ class StreamingMultipartFile:
         except Exception:
             self._file_start_pos = 0
 
+        # The server's upload parser answers ``400 Bad request.`` when the very last read of the body is the 2-byte CRLF that
+        # follows the closing boundary (upload-file.c: the closing line is consumed without its CRLF, and the CRLF then
+        # reads as a blank header line).  Where reads end is the network's doing; behind the usual nginx they are 4096
+        # bytes, so a body of 4096 * k + 2 bytes fails every time and for any content (measured on CE 13.0: of 4,200
+        # consecutive body lengths only those failed; sending the last byte alone is fine).  A retry with the same length
+        # fails again, so the boundary is lengthened until the body is not 2 past a multiple of 512 (which covers every read
+        # size that is a multiple of 512; about 1 upload in 512 is lengthened, by a few bytes).  A boundary the caller chose
+        # is kept: it is then the caller's to get right.
+        for pad in range(16):
+            self.boundary = base_boundary + "0" * pad
+            self.header, self.footer = self._frame(fields, file_field, filename)
+            self.total_len = len(self.header) + file_size + len(self.footer)
+            if boundary is not None or self.total_len % REFUSED_BODY_MODULUS != REFUSED_BODY_RESIDUE:
+                break
+        self._pos = 0
+
+    def _frame(self, fields: dict[str, str], file_field: str, filename: str) -> "tuple[bytes, bytes]":
         prefix = []
         for name, val in fields.items():
             # A field *value* sits between the header block and the next
@@ -419,10 +443,7 @@ class StreamingMultipartFile:
             f'Content-Disposition: form-data; name="{safe_field}"; filename="{safe_filename}"\r\n'
             f"Content-Type: application/octet-stream\r\n\r\n".encode("utf-8")
         )
-        self.header = b"".join(prefix)
-        self.footer = f"\r\n--{self.boundary}--\r\n".encode("utf-8")
-        self.total_len = len(self.header) + file_size + len(self.footer)
-        self._pos = 0
+        return b"".join(prefix), f"\r\n--{self.boundary}--\r\n".encode("utf-8")
 
     @property
     def content_type(self) -> str:
@@ -645,6 +666,9 @@ class _CappedRetry(Retry):
 
 class SeafileClient:
     """Lightweight HTTP client for Seafile Web API v2.1."""
+
+    #: Ask for one upload link per folder and reuse it (a caller that sends many small files into one folder).
+    reuse_upload_links = False
 
     def __init__(
         self,
@@ -1908,8 +1932,17 @@ class SeafileClient:
         clean_parent = ("/" + parent_dir.strip("/")).rstrip("/") or "/"
         self.mkdir_p(repo_id, clean_parent)
 
-        # 1. Get upload link
-        def _get_upload_url() -> str:
+        # 1. Get upload link.  An upload token is reusable (read from the server's source), so a caller that sends
+        # many small files into one folder (the blob store) asks for it once per folder and reuses it until it is
+        # older than UPLOAD_LINK_MAX_AGE; a refused or failed upload asks again (*force*).
+        link_cache: "dict[tuple[str, str], tuple[str, float]]" = self.__dict__.setdefault("_upload_links", {})
+
+        def _get_upload_url(force: bool = False) -> str:
+            key = (repo_id, clean_parent)
+            if self.reuse_upload_links and not force:
+                hit = link_cache.get(key)
+                if hit is not None and time.monotonic() - hit[1] < UPLOAD_LINK_MAX_AGE:
+                    return hit[0]
             link_url = f"{self.server_url}/api2/repos/{repo_id}/upload-link/?p={quote(clean_parent, safe='/')}"
             resp = self.session.get(link_url, timeout=self.timeout)
             if resp.status_code != 200:
@@ -1917,7 +1950,10 @@ class SeafileClient:
                     f"Failed to get upload link for {clean_parent}: HTTP {resp.status_code} "
                     f"{self._said(resp.text)}" + _denied_hint(resp, "write")
                 )
-            return self._adjust_url(resp.text.strip().strip('"'))
+            fresh = self._adjust_url(resp.text.strip().strip('"'))
+            if self.reuse_upload_links:
+                link_cache[key] = (fresh, time.monotonic())
+            return fresh
 
         upload_url = _get_upload_url()
 
@@ -1933,7 +1969,7 @@ class SeafileClient:
             if file_size >= CHUNKED_UPLOAD_MIN_BYTES:
                 return self._upload_chunked(
                     repo_id, clean_parent, filename, payload, file_size, replace,
-                    upload_url, progress_callback, refresh_url=_get_upload_url,
+                    upload_url, progress_callback, refresh_url=lambda: _get_upload_url(True),
                 )
 
         is_rewindable = (hasattr(payload, "read") and hasattr(payload, "seek")) or isinstance(
@@ -1948,11 +1984,12 @@ class SeafileClient:
 
         up_resp = None
         last_error = ""
+        fresh_link_retry = 1
         for attempt in range(max_attempts):
             if attempt:
                 time.sleep(0.3 * attempt)
                 try:
-                    upload_url = _get_upload_url()
+                    upload_url = _get_upload_url(True)
                 except Exception as ex:
                     last_error = f"Failed to refresh upload link: {ex}"
                     continue
@@ -1981,7 +2018,7 @@ class SeafileClient:
                     up_resp = self._xfer(
                         "post", upload_url, data=mp, headers=headers, timeout=upload_timeout
                     )
-                elif isinstance(payload, (bytes, bytearray)) and progress_callback is not None:
+                elif isinstance(payload, (bytes, bytearray)):          # also without a progress callback: one framing, one length rule
                     bio = io.BytesIO(payload)
                     mp = StreamingMultipartFile(
                         fields={"parent_dir": clean_parent, "replace": "1" if replace else "0"},
@@ -2026,6 +2063,12 @@ class SeafileClient:
                     f"(POST {self._error_origin(upload_url)}) "
                     f"{self._said(up_resp.text, *self._link_secrets(upload_url))}"
                 )
+                if up_resp.status_code == 403 and fresh_link_retry and attempt + 1 < max_attempts:
+                    # A refused upload is tried once more on a new link: a reused link may have expired (a 403 for a
+                    # small body; a large one hangs instead).  A 400 is not retried: the one 400 seen in practice was
+                    # the body-length case StreamingMultipartFile avoids, and the same request fails again.
+                    fresh_link_retry -= 1
+                    continue
                 if up_resp.status_code < 500:
                     break
 

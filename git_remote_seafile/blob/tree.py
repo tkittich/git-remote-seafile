@@ -129,11 +129,12 @@ def put_tree(
         except StoreError as exc:
             return path, None, str(exc)
 
-    if jobs <= 1:
-        results = [one(p) for p in files]
-    else:
-        with concurrent.futures.ThreadPoolExecutor(jobs) as pool:
-            results = list(pool.map(one, files))
+    with base.presence_cached():
+        if jobs <= 1:
+            results = [one(p) for p in files]
+        else:
+            with concurrent.futures.ThreadPoolExecutor(jobs) as pool:
+                results = list(pool.map(one, files))
     spelled: "dict[str, str]" = {}
     for path, done, problem in results:
         rel = path.relative_to(directory).as_posix()

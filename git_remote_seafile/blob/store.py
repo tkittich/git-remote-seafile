@@ -14,8 +14,10 @@ import os
 import shutil
 import tempfile
 import threading
+import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, BinaryIO
@@ -26,6 +28,12 @@ from . import refs
 
 MARKER = ".seafile-store"
 FORMAT = 1
+#: How long, **inside one folder run** (``Store.presence_cached``), a listing of a fan-out folder answers "is the object
+#: there?" for an upload.  The proofs that follow an upload (the listing after it, the rename's own listing) are always
+#: fresh; this only spares the check before it, so a re-run or a resumed run over thousands of objects costs one listing
+#: per folder, not one per file.  A single-file ``put`` never uses it (a damaged object must be seen at once, R5), and
+#: neither does the pinned form (it lists after its pin is readable, STORE.md D6).
+PRESENCE_TTL_SECONDS = 30.0
 #: Names that say a folder is a vault or a helper remote, never a store root (D2).
 _GIT_ENTRIES = frozenset({"payload", "refs", "HEAD", "objects"})
 _PART = ".part-"
@@ -73,6 +81,13 @@ class Store:
         self.verify_by_download = verify_by_download
         self._factory = factory
         self._marker_checked = False
+        #: fan-out folder -> (when it was listed, {object name: size}); shared with the clones a folder run makes
+        self._presence: "dict[str, tuple[float, dict[str, int]]]" = {}
+        self._presence_ttl = 0.0          # 0: every check asks the server
+        try:
+            client.reuse_upload_links = True          # one upload link per folder, not one per object
+        except AttributeError:
+            pass
         try:
             client.layout_root = self.root          # a racing mkdir_p knows the store's own folders (STORE.md D2)
             client.store_layout = True
@@ -94,7 +109,20 @@ class Store:
             return self
         other = self._factory()
         other._marker_checked = self._marker_checked
+        other._presence = self._presence
+        other._presence_ttl = self._presence_ttl
         return other
+
+    @contextmanager
+    def presence_cached(self) -> "Iterator[None]":
+        """For one folder run: an upload's pre-check may use a listing up to ``PRESENCE_TTL_SECONDS`` old."""
+        self._presence.clear()
+        self._presence_ttl = PRESENCE_TTL_SECONDS
+        try:
+            yield
+        finally:
+            self._presence_ttl = 0.0
+            self._presence.clear()
 
     def _list(self, path: str) -> "list[dict[str, Any]]":
         try:
@@ -220,7 +248,7 @@ class Store:
         if pin:
             from . import pins
             pins.write(self, pin, [ref])
-        have = self._listed_size(ref)
+        have = self._listed_size(ref, fresh=bool(pin))
         if have == size:
             return Put(ref, size, uploaded=False)
         directory = self.blob_dir(ref.hex)
@@ -245,7 +273,7 @@ class Store:
         except SeafileAPIError as exc:
             self._drop(directory, temp)
             raise StoreError(f"upload of {path} failed: {exc}") from None
-        if self._listed_size(ref) != size:
+        if self._listed_size(ref, fresh=True) != size:
             raise StoreError(f"the server lists {ref} at another size than {size} after the upload; run again")
         if self.verify_by_download:
             self._prove_by_reading(ref, size)
@@ -262,12 +290,20 @@ class Store:
         have = self._listed_size(ref) if MARKER in names else None
         return Put(ref, size, uploaded=have != size)
 
-    def _listed_size(self, ref: refs.Ref) -> "int | None":
-        for entry in self._list(self.blob_dir(ref.hex)):
-            if entry.get("name") == ref.hex and entry.get("type") != "dir":
-                size = entry.get("size")
-                return size if isinstance(size, int) and not isinstance(size, bool) else None
-        return None
+    def _listed_size(self, ref: refs.Ref, *, fresh: bool = False) -> "int | None":
+        """The listed size of an object, or ``None``.  ``fresh=False`` may answer from a listing up to
+        ``PRESENCE_TTL_SECONDS`` old; ``fresh=True`` always asks the server (and refreshes the shared listing)."""
+        folder = self.blob_dir(ref.hex)
+        held = self._presence.get(folder)
+        if not fresh and held is not None and time.monotonic() - held[0] < self._presence_ttl:
+            return held[1].get(ref.hex)
+        sizes: "dict[str, int]" = {}
+        for entry in self._list(folder):
+            name, size = entry.get("name"), entry.get("size")
+            if entry.get("type") != "dir" and isinstance(name, str) and isinstance(size, int) and not isinstance(size, bool):
+                sizes[name] = size
+        self._presence[folder] = (time.monotonic(), sizes)
+        return sizes.get(ref.hex)
 
     def _drop(self, directory: str, temp: str) -> None:
         try:
