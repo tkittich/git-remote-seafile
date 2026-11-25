@@ -1219,7 +1219,9 @@ class TestStreamingTransfers(unittest.TestCase):
         """Small payloads (packfiles, refs) keep working unchanged."""
         captured = self._capture_upload()
         self.assertTrue(self.client.upload_file("repo1", "/seafile", "test.txt", b"content"))
-        self.assertEqual(captured["payload"], b"content")
+        # The bytes are framed like every other upload (one multipart framing, one length rule), so the transfer layer
+        # sees a reader over them: what matters is what is sent.
+        self.assertEqual(captured["content"], b"content")
 
     def test_streaming_multipart_file_progress_callback(self):
         """StreamingMultipartFile invokes progress callback as chunks are read."""

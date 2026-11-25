@@ -411,6 +411,10 @@ class _Handler(BaseHTTPRequestHandler):
                     return self._send(500, b"injected: reply lost")
                 body = '[{"id":"uploaded","name":"%s","size":%d}]' % (filename, total)
                 return self._send(200, body.encode())
+            if self.stub.faults.pop("store_plus_one", None):
+                filedata = filedata + b"\r"          # the server's parser stored one byte too many (measured on CE 13.0)
+            if self.stub.faults.pop("upload_400_once", None):
+                return self._send(400, b'{"error": "Bad request.\\n"}')
             self.stub.files.setdefault(rid, {})[target] = filedata
             if self.stub.faults.get("upload_lost_answer") and self.stub.faults["upload_lost_answer"] in target:
                 # The write landed and the answer did not (a proxy timeout): outcome unknown.
@@ -426,7 +430,9 @@ class _Handler(BaseHTTPRequestHandler):
                 copy = f"{folder}/{stem}{tag}.{ext}" if dot and stem else f"{target}{tag}"
                 self.stub.files[rid][copy] = filedata
                 self.stub.conflict_copies.append(copy)
-            return self._send(200, b'{"id":"uploaded"}')
+            if "ret-json=1" not in self.path:
+                return self._send(200, b'"e14654ea2bd7646d541370d2f47ee8afd1165762"')          # a bare file id, as the server answers
+            return self._send(200, ('[{"id":"uploaded","name":"%s","size":%d}]' % (filename, len(filedata))).encode())
 
         return self._send(404, b"{}")
 
