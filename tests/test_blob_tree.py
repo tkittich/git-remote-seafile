@@ -256,6 +256,51 @@ class PresenceCacheTests(TreeCase):
         self.assertTrue(base.put(self.src / "a.bin").uploaded)
 
 
+class RestoreGuardTests(TreeCase):
+    """``get --from`` has the guards the snapshot restore has: refused names, links on the way, long Windows paths."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        tree.put_tree(self.make(), self.src, self.work / "blobs.txt")
+
+    def test_a_name_the_volume_refuses_is_reported_and_the_rest_is_restored(self):
+        from git_remote_seafile.snapshot import restore_names
+        refuse = lambda rel: "has a character this volume refuses" if "deeper" in rel else None          # noqa: E731
+        with patch.object(restore_names, "destination_name_problem", return_value=refuse):
+            report = tree.get_tree(self.make("c"), self.work / "blobs.txt", self.work / "out")
+        self.assertEqual(report.restored, 3)
+        self.assertEqual(len(report.problems), 1)
+        self.assertIn("sub/deeper/c.bin", report.problems[0])
+        self.assertIn("not restored", report.problems[0])
+        self.assertFalse((self.work / "out" / "sub" / "deeper").exists())
+
+    def test_a_link_on_the_way_is_never_written_through(self):
+        out, elsewhere = self.work / "out", self.work / "elsewhere"
+        out.mkdir()
+        elsewhere.mkdir()
+        try:
+            os.symlink(elsewhere, out / "sub", target_is_directory=True)
+        except (OSError, NotImplementedError):
+            self.skipTest("this machine cannot make a link")
+        report = tree.get_tree(self.make("c"), self.work / "blobs.txt", out)
+        self.assertEqual(sorted(p.split(":")[0] for p in report.problems), ["sub/b.bin", "sub/deeper/c.bin"])
+        self.assertTrue(all("is a link" in p for p in report.problems))
+        self.assertEqual(list(elsewhere.iterdir()), [])          # nothing went through the link
+        self.assertEqual(report.restored, 2)
+
+    @unittest.skipUnless(os.name == "nt", "the 260-character limit is Windows'")
+    def test_a_path_past_260_characters_is_restored_on_windows(self):
+        long_name = "/".join(["d" * 60] * 5 + ["file.bin"])          # about 320 characters below the destination
+        entries = [record.Entry(long_name, len(self.contents["a.bin"]),
+                                next(e.ref for e in record.parse((self.work / "blobs.txt").read_text(encoding="utf-8")) if e.path == "a.bin"))]
+        rec = self.work / "long.txt"
+        rec.write_text(record.render(entries), encoding="utf-8")
+        report = tree.get_tree(self.make("c"), rec, self.work / "out")
+        self.assertEqual((report.restored, report.problems), (1, []))
+        from git_remote_seafile.snapshot import payload_restore
+        self.assertEqual(payload_restore.extended_path(self.work / "out" / long_name).read_bytes(), self.contents["a.bin"])
+
+
 class DryRunTests(TreeCase):
     def test_a_dry_run_put_changes_nothing_and_says_what_it_would_do(self):
         report = tree.put_tree(self.make(), self.src, self.work / "blobs.txt", dry_run=True)

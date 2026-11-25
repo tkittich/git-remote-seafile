@@ -192,11 +192,28 @@ def get_tree(
     kept = [e for e in entries if not excluded_by(e.path, exclude)]
     report = GetReport(excluded=len(entries) - len(kept), dry_run=dry_run)
     entries = kept
+    # The guards the snapshot restore already has (SNAPSHOT.md): names this volume refuses, a link on the way, and paths past
+    # Windows' 260 characters.  Nothing is written through a link, and a name the volume would refuse is reported, not half-made.
+    from ..snapshot import payload_restore, restore_names
+    dest = Path(os.path.abspath(destination))
     if not dry_run:
-        destination.mkdir(parents=True, exist_ok=True)
+        payload_restore.extended_path(dest).mkdir(parents=True, exist_ok=True)
+    name_problem = (restore_names.destination_name_problem(dest) if not dry_run and dest.is_dir()
+                    else (restore_names.destination_name_problem(dest.parent) if os.name == "nt" else None))
+
+    def link_on_the_way(rel: str) -> "str | None":
+        here = dest
+        for part in rel.split("/")[:-1]:
+            here = here / part
+            if payload_restore.extended_path(here).is_symlink():
+                return f"{part} is a link; nothing is written through a link"
+        return None
 
     def one(entry: record.Entry) -> "tuple[str, str | None]":
-        target = destination / entry.path
+        reason = (name_problem(entry.path) if name_problem is not None else None) or link_on_the_way(entry.path)
+        if reason:
+            return "problem", f"{entry.path}: {reason}; not restored"
+        target = payload_restore.extended_path(dest / entry.path)
         if target.exists() or target.is_symlink():
             if _in_place(target, entry):
                 return "in place", None
