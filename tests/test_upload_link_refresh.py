@@ -57,7 +57,8 @@ class UploadLinkExpiryTests(unittest.TestCase):
         self.assertEqual(hashlib.sha256(held).hexdigest(), hashlib.sha256(DATA).hexdigest())
 
     def test_a_link_older_than_the_limit_is_replaced_before_a_chunk_is_sent_on_it(self):
-        with patch.object(client_mod, "UPLOAD_LINK_MAX_AGE", -1.0)          # negative: a clock that ticks every 15 ms (Windows) can read equal twice, and 0 is then not older:
+        # Negative: a clock that ticks every 15 ms (Windows) can read equal twice, and 0 is then not "older".
+        with patch.object(client_mod, "UPLOAD_LINK_MAX_AGE", -1.0):
             self.upload()
         self.assertEqual(self.stub.files[self.rid]["/d/obj.bin"], DATA)
         self.assertGreaterEqual(self.stub.link_serial, 4)
