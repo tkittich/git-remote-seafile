@@ -216,7 +216,8 @@ class _Handler(BaseHTTPRequestHandler):
             if f.get("upload_link"):
                 return self._send(f["upload_link"], b"injected failure")
             rid = self._rid()
-            link = f"http://127.0.0.1:{self.stub.port}/upload/{rid}"
+            self.stub.link_serial += 1
+            link = f"http://127.0.0.1:{self.stub.port}/upload/{rid}?t={self.stub.link_serial}"
             return self._send(200, json.dumps(link).encode("utf-8"))
 
         if path.startswith("/api/v2.1/repos/") and path.endswith("/file-uploaded-bytes/"):
@@ -349,6 +350,12 @@ class _Handler(BaseHTTPRequestHandler):
             return self._send(200, b'{"success":true}')
 
         if path.startswith("/upload/"):
+            # ``expire_link_after``: a link answers this many chunk POSTs and then ``403 Access token not found``,
+            # as the server's absolute token lifetime does (SEAFILE_SERVER.md); a new link starts afresh.
+            token = parse_qs(urlparse(self.path).query).get("t", ["0"])[0]
+            used = self.stub.link_uses[token] = self.stub.link_uses.get(token, 0) + 1
+            if self.stub.faults.get("expire_link_after") and used > self.stub.faults["expire_link_after"]:
+                return self._send(403, b'{"error": "Access token not found"}')
             if self.stub.faults.get("upload"):
                 return self._send(self.stub.faults["upload"], b"injected failure")
             if len(body) > self.stub.faults.get("max_upload", len(body)):
@@ -446,6 +453,9 @@ class SeafileStub:
         self.faults: dict[str, int] = {}
         #: Directory listings answered since the last reset (``dir_fail_nth`` counts them).
         self.dir_calls = 0
+        #: Upload links issued, and chunk POSTs seen per link (``expire_link_after``).
+        self.link_serial = 0
+        self.link_uses: dict[str, int] = {}
         #: Writes (POST, DELETE) seen since the last reset (``fail_write_n`` counts them).
         self.write_calls = 0
         self.dir_lock = threading.Lock()
@@ -491,6 +501,8 @@ class SeafileStub:
         self.files.clear()
         self.faults.clear()
         self.dir_calls = 0
+        self.link_serial = 0
+        self.link_uses.clear()
         self.conflict_copy_for = ""
         self.conflict_copies = []
         self.raw_hits.clear()

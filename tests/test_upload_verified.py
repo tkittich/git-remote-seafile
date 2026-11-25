@@ -61,6 +61,22 @@ class ChunkedUploadFaultTests(unittest.TestCase):
         self.assertEqual(reader.hexdigest(), hashlib.sha256(DATA).hexdigest())
         self.assertFalse(reader.rewound)
 
+    def test_an_upload_link_that_expires_mid_upload_is_replaced_and_the_upload_goes_on(self):
+        """A link lives an hour from issue and is checked on every chunk (SEAFILE_SERVER.md); the partial is by path."""
+        self.stub.faults["expire_link_after"] = 1          # each link answers one chunk, then 403
+        reader = self.upload()
+        self.assertEqual(self.held(), DATA)
+        self.assertEqual(reader.hexdigest(), hashlib.sha256(DATA).hexdigest())
+        self.assertGreaterEqual(self.stub.link_serial, 4)          # one link per chunk here
+        self.assertFalse(reader.rewound)
+
+    def test_a_link_that_keeps_expiring_fails_with_the_status_after_the_refreshes_are_spent(self):
+        self.stub.faults["expire_link_after"] = 1
+        with patch.object(client_mod, "UPLOAD_LINK_REFRESHES", 1):
+            with self.assertRaises(client_mod.SeafileAPIError) as caught:
+                self.upload()
+        self.assertIn("HTTP 403", str(caught.exception))
+
     def test_a_middle_chunk_stored_with_its_reply_lost_is_not_resent_and_the_object_is_whole(self):
         self.stub.faults["lost_reply_start"] = 3000
         reader = self.upload()

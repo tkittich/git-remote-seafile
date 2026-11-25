@@ -525,6 +525,8 @@ UPLOAD_READ_TIMEOUT_SECONDS = 600
 
 #: Attempts per chunk (the first plus retries) before the upload is abandoned.
 UPLOAD_CHUNK_ATTEMPTS = 3
+#: Fresh upload links one upload may ask for (a link lives an hour; 8 covers a week-long upload).
+UPLOAD_LINK_REFRESHES = 8
 
 #: How long a ref-sized write (a 41-byte file under the lock, behind a fence that
 #: proved ownership moments before) waits for the server's reply.  The 600 s above
@@ -1926,7 +1928,7 @@ class SeafileClient:
             if file_size >= CHUNKED_UPLOAD_MIN_BYTES:
                 return self._upload_chunked(
                     repo_id, clean_parent, filename, payload, file_size, replace,
-                    upload_url, progress_callback,
+                    upload_url, progress_callback, refresh_url=_get_upload_url,
                 )
 
         is_rewindable = (hasattr(payload, "read") and hasattr(payload, "seek")) or isinstance(
@@ -2060,8 +2062,14 @@ class SeafileClient:
         replace: bool,
         upload_url: str,
         progress_callback: Any = None,
+        refresh_url: "Callable[[], str] | None" = None,
     ) -> bool:
         """Upload *fh* as ``Content-Range`` chunks and prove the result is whole.
+
+        An upload link **expires an hour after it was issued, mid-upload included** (the server looks the token up on
+        every chunk and never extends it; read from its source, SEAFILE_SERVER.md): a chunk then answers
+        ``403 Access token not found``.  The partial is kept by path, not by token, so a fresh link continues it:
+        with *refresh_url* the client asks for one and sends the chunk again (the probe has said it is not held).
 
         The server assembles the chunks under *filename* and the file appears
         when the last one lands.  A server (or proxy) that ignores
@@ -2075,6 +2083,7 @@ class SeafileClient:
         session = self._transfer_session(upload_url)
         safe_name = _sanitize_header_param(filename)
         offset = 0
+        refreshes = 0
         while offset < file_size:
             length = min(UPLOAD_CHUNK_BYTES, file_size - offset)
             last_error = ""
@@ -2141,6 +2150,13 @@ class SeafileClient:
                         "whether it holds the chunk, so it was not sent again (the half-sent temporary is left "
                         f"for the collector) (POST {self._error_origin(upload_url)})"
                     )
+                if (resp is not None and resp.status_code == 403 and refresh_url is not None
+                        and verdict == "absent" and refreshes < UPLOAD_LINK_REFRESHES):
+                    upload_url = refresh_url()          # the link expired: the chunk was refused before it was read
+                    url = upload_url + ("&" if "?" in upload_url else "?") + "ret-json=1"
+                    session = self._transfer_session(upload_url)
+                    refreshes += 1
+                    continue
                 if resp is not None and resp.status_code < 500:
                     break
             if last_error:
