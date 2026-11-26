@@ -66,6 +66,7 @@ class Soak:
         self.lock = threading.Lock()
         self.ledger = (work / "ledger.jsonl").open("a", encoding="utf-8")
         self.stderr_seen: "list[str]" = []
+        self.failures: "list[str]" = []          # the first commands that failed for a reason other than a kill, for the summary
         self.put_ok: "dict[str, str]" = {}          # sha256 -> path, for a put that exited 0
         self.pin_ok: "set[str]" = set()          # shas whose put --pin exited 0
         self.maybe_missing: "set[str]" = set()          # shas of a put --pin that was killed or failed
@@ -75,7 +76,7 @@ class Soak:
         env = dict(os.environ)
         env.update({"SEAFILE_TOKEN": os.environ.get("SEAFILE_TOKEN", "t"), "SEAFILE_SERVER": self.server,
                     "SFBLOB_CACHE": str(self.work / f"cache{worker}"), "SFBLOB_STORE": self.store, "SFBLOB_LOG": "off",
-                    "PYTHONPATH": str(ROOT)})
+                    "PYTHONPATH": str(ROOT), "SEAFILE_FORCE_FILE_HOST": "1"})          # a container on a port other than 80
         env.pop("HTTP_PROXY", None)
         env.pop("HTTPS_PROXY", None)
         return env
@@ -99,6 +100,8 @@ class Soak:
                                           "killed": killed}) + "\n")
             self.ledger.flush()
             os.fsync(self.ledger.fileno())
+            if not killed and proc.returncode not in (0, 1) and len(self.failures) < 6:
+                self.failures.append(f"exit {proc.returncode}: {' '.join(argv)[:100]} -> {err.strip()[-250:]}")
             if "Traceback" in err:
                 self.stderr_seen.append(f"worker {worker} {argv}: {err[-400:]}")
         return (None if killed else proc.returncode), out, err
@@ -270,6 +273,8 @@ def main(argv: "list[str] | None" = None) -> int:
             stub.stop()
         if scratch is not None:
             scratch()
+        for failure in soak.failures:
+            sys.stdout.write(f"FAILED COMMAND: {failure}\n")
         for problem in problems:
             sys.stdout.write(f"ORACLE: {problem}\n")
         sys.stdout.write("soak: oracle clean\n" if not problems else f"soak: {len(problems)} problem(s)\n")
