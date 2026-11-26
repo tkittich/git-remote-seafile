@@ -99,7 +99,7 @@ _SNAPSHOT_TESTS = ["test_snapshot_tool", "test_snapshot_payload", "test_snapshot
                    "test_incremental_property", "test_launcher", "test_docs_consistency",
                    # Read the parts or the generated file by path, which no import scan sees
                    # (review 9fe723f, gemini G0.2): the raw-read guard and the env-scrub pin.
-                   "test_client", "test_git_util"]
+                   "test_client", "test_git_util", "test_blob_round6b"]
 #: Modules whose change reaches the helper process, which the snapshot tests drive.
 _HELPER_SIDE = frozenset({"helper", "packs", "gc", "diagnose"})
 _TOOL_TESTS = {
@@ -203,6 +203,10 @@ def _with_test_importers(modules: set[str], root: Path) -> set[str]:
     return found
 
 
+def _blob_tests(root: Path) -> list[str]:
+    return sorted(p.stem for p in (root / "tests").glob("test_blob*.py"))
+
+
 def suite_for_changes(paths: list[str], root: Path = _ROOT) -> list[str] | None:
     """The test modules the changed *paths* can reach; ``None`` means the whole suite.
 
@@ -225,8 +229,15 @@ def suite_for_changes(paths: list[str], root: Path = _ROOT) -> list[str] | None:
         code = True
         if path.startswith("git_remote_seafile/") and path.endswith(".py"):
             stem = name[:-3]
+            if path.startswith("git_remote_seafile/blob/"):
+                # The blob store is a sub-package: its stems ("cli", "refs") collide with top-level modules in the import graph,
+                # which mapped an edit of blob/cli.py to the *helper's* tests and none of the blob ones (review R7 Gemini P4).
+                modules.update(_blob_tests(root))
+                modules.update({"test_entry_points", "test_docs_consistency"})
+                continue
             if path.startswith("git_remote_seafile/snapshot/"):
                 modules.update(_SNAPSHOT_TESTS)
+                modules.update(_blob_tests(root))          # the blob store imports snapshot code (payload_upload and others)
                 continue
             if graph is None:
                 graph = _package_graph(root)

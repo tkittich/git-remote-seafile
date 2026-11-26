@@ -53,7 +53,7 @@ def search(cache: "cache_mod.Cache", pattern: "str | None") -> "list[dict[str, o
     wild = any(c in needle for c in "*?[")
     found: "list[dict[str, object]]" = []
     try:
-        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        lines = path.read_text(encoding="utf-8", errors="replace").split("\n")          # not splitlines: U+2028 is legal in a path
     except OSError:
         return []
     for line in lines:

@@ -27,6 +27,7 @@ from . import cache as cache_mod
 from . import refs
 
 MARKER = ".seafile-store"
+MARKER_MAX_BYTES = 64 * 1024          # a marker is a few dozen bytes; a planted large file is not read whole
 #: Feature names this version understands, by list.  Empty in format 1; a later version adds names here.
 KNOWN_FEATURES: "dict[str, tuple[str, ...]]" = {"incompat": (), "ro_compat": (), "compat": ()}
 FORMAT = 1
@@ -72,6 +73,40 @@ def _sha256_and_size(path: Path) -> "tuple[str, int]":
             digest.update(block)
             size += len(block)
     return digest.hexdigest(), size
+
+
+def place_new(temp: Path, target: Path) -> bool:
+    """Give *temp* the name *target* unless something already has it; one act, so nothing is replaced in a window.
+
+    A hard link refuses a taken name atomically.  On a volume without hard links (FAT, some shares): Windows renames,
+    which also refuses a taken name and is atomic; elsewhere the name is claimed with ``O_EXCL`` and the bytes are
+    copied into it (a kill in the copy leaves a short file under the name: the restore reports it, never overwrites it).
+    """
+    try:
+        os.link(temp, target)
+    except FileExistsError:
+        return False
+    except OSError:
+        if os.name == "nt":
+            try:
+                os.rename(temp, target)
+            except FileExistsError:
+                return False
+            return True
+        try:
+            fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0), 0o644)
+        except FileExistsError:
+            return False
+        try:
+            with os.fdopen(fd, "wb") as dst, open(temp, "rb") as src:
+                shutil.copyfileobj(src, dst, 1 << 20)
+                dst.flush()
+                os.fsync(dst.fileno())
+        except BaseException:
+            target.unlink(missing_ok=True)
+            raise
+    temp.unlink()
+    return True
 
 
 class Store:
@@ -160,28 +195,36 @@ class Store:
             if not create:
                 raise StoreError(
                     f"{self.root or '/'} is not a blob store (no {MARKER}); put something in it first with `put`")
-            holds_git = sorted(names & _GIT_ENTRIES)
-            if holds_git:
-                raise StoreError(
-                    f"{self.root or '/'} looks like a vault or a git remote (it holds {', '.join(holds_git)}); "
-                    "choose another folder")
-            if entries:
-                raise StoreError(
-                    f"{self.root or '/'} is not empty and is not a blob store: it is never adopted. Use an empty "
-                    "or new folder")
-            self._refuse_vault_neighbours()
-            parent = self.root.rpartition("/")[0]
-            while True:          # up to and including the library root, which is the empty path
-                above = {str(e.get("name", "")) for e in self._list(parent or "/")}
-                if above & _GIT_ENTRIES:
-                    raise StoreError(f"{parent or '/'} looks like a vault or a git remote; a store is not created under it")
-                if MARKER in above:
-                    raise StoreError(f"{parent or '/'} is a blob store; a store is not created inside another one")
-                if not parent:
-                    break
-                parent = parent.rpartition("/")[0]
+            self._refuse_unfit_root(entries, names)
             self._write_marker()
             self._marker_checked = True
+
+    def _refuse_unfit_root(self, entries: "list[dict[str, Any]]", names: "set[str]") -> None:
+        """Every reason (STORE.md D2) a folder with no marker may not become a store; changes nothing.
+
+        ``check_root`` calls it before writing the marker and ``would_put`` (``put --dry-run``) calls it so that a dry
+        run refuses what the real run refuses (review R7).
+        """
+        holds_git = sorted(names & _GIT_ENTRIES)
+        if holds_git:
+            raise StoreError(
+                f"{self.root or '/'} looks like a vault or a git remote (it holds {', '.join(holds_git)}); "
+                "choose another folder")
+        if entries:
+            raise StoreError(
+                f"{self.root or '/'} is not empty and is not a blob store: it is never adopted. Use an empty "
+                "or new folder")
+        self._refuse_vault_neighbours()
+        parent = self.root.rpartition("/")[0]
+        while True:          # up to and including the library root, which is the empty path
+            above = {str(e.get("name", "")) for e in self._list(parent or "/")}
+            if above & _GIT_ENTRIES:
+                raise StoreError(f"{parent or '/'} looks like a vault or a git remote; a store is not created under it")
+            if MARKER in above:
+                raise StoreError(f"{parent or '/'} is a blob store; a store is not created inside another one")
+            if not parent:
+                break
+            parent = parent.rpartition("/")[0]
 
     def _refuse_vault_neighbours(self) -> None:
         """D2: not ``<vault>/payload`` (the folder payload mode owns), and not under ``<x>-view`` beside a vault ``<x>``
@@ -207,16 +250,16 @@ class Store:
         body = json.dumps({"format": FORMAT, "id": uuid.uuid4().hex}).encode("utf-8")
         try:
             self.client.upload_file(self.repo_id, self.root or "/", MARKER, body, replace=False)
-            back = self.client.get_file_bytes(self.repo_id, f"{self.root}/{MARKER}")
         except SeafileAPIError as exc:
             raise StoreError(f"could not write the store marker: {exc}") from None
-        if back != body:
-            # A marker stored one byte long would make every later command refuse the folder: say so now.
-            raise StoreError(f"the store marker was written but did not read back as written; remove {self.root}/{MARKER} and run again")
+        # Two first puts race (D18 row 6): the loser's bytes land as a ``(N)`` copy and the name holds the winner's marker, so
+        # the proof is "a valid marker is there", never "my bytes are" (review R7 Gemini P3, DeepSeek P1).  A marker stored
+        # one byte long is a CR, which is JSON whitespace and reads fine; anything that does not parse fails here.
+        self._read_marker()
 
     def _read_marker(self) -> None:
         try:
-            raw = self.client.get_file_bytes(self.repo_id, f"{self.root}/{MARKER}")
+            raw = self.client.get_file_bytes(self.repo_id, f"{self.root}/{MARKER}", max_bytes=MARKER_MAX_BYTES)
             data = json.loads(raw.decode("utf-8")) if raw else {}
         except (SeafileAPIError, ValueError, AttributeError, UnicodeDecodeError):
             raise StoreError(f"{self.root}/{MARKER} cannot be read as a store marker") from None
@@ -362,10 +405,10 @@ class Store:
         except OSError as exc:
             raise StoreError(f"cannot read {path}: {exc}") from None
         ref = refs.full(f"sha256:{hex_digest}")
-        names = {str(e.get("name", "")) for e in self._list(self.root)}
-        if MARKER not in names and names & _GIT_ENTRIES:
-            raise StoreError(f"{self.root or '/'} looks like a vault or a git remote (it holds "
-                             f"{', '.join(sorted(names & _GIT_ENTRIES))}); choose another folder")
+        entries = self._list(self.root)
+        names = {str(e.get("name", "")) for e in entries}
+        if MARKER not in names:
+            self._refuse_unfit_root(entries, names)          # what the real put would refuse, said without writing
         have = self._listed_size(ref) if MARKER in names else None
         return Put(ref, size, uploaded=have != size)
 
@@ -536,22 +579,30 @@ class Store:
                progress: "Callable[[int, int], None] | None" = None) -> Path:
         """Copy the verified object to *destination*, which must not exist (R4: ``get`` never overwrites)."""
         source, _ = self.get(ref, progress=progress)
-        created = False
+        destination = Path(destination)
+        if destination.exists() or destination.is_symlink():
+            raise StoreError(f"{destination} already exists; get does not overwrite")
+        # Staged under a name of our own beside the destination, then placed in one act that refuses a taken name: a
+        # failed copy, a kill or a power cut leaves a stage file (ours, deleted on every path out we control), never half a
+        # file under the name the caller asked for (review R7 DeepSeek P3, Gemini).
+        stage = destination.with_name(f".sfblob-part-{os.urandom(8).hex()}")
         try:
-            with open(source, "rb") as src, open(destination, "xb") as dst:
-                created = True          # the name is ours from here: a failed copy must not leave half a file under it
+            with open(source, "rb") as src, open(stage, "xb") as dst:
                 shutil.copyfileobj(src, dst, 1 << 20)
-        except FileExistsError:
-            raise StoreError(f"{destination} already exists; get does not overwrite") from None
-        except BaseException as exc:
-            if created:
+                dst.flush()
                 try:
-                    Path(destination).unlink()
+                    os.fsync(dst.fileno())
                 except OSError:
                     pass
-            if isinstance(exc, OSError):
-                raise StoreError(f"cannot write {destination}: {exc}") from None
-            raise
+            if not place_new(stage, destination):
+                raise StoreError(f"{destination} already exists; get does not overwrite")
+        except OSError as exc:
+            raise StoreError(f"cannot write {destination}: {exc}") from None
+        finally:
+            try:
+                stage.unlink(missing_ok=True)
+            except OSError:
+                pass
         return destination
 
     def cat(self, ref: refs.Ref, out: BinaryIO, progress: "Callable[[int, int], None] | None" = None) -> int:

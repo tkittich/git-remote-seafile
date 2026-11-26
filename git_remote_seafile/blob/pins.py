@@ -78,8 +78,10 @@ def remove(store: "Store", name: str) -> bool:
 
 def parse(text: str, where: str) -> "list[refs.Ref]":
     found: "list[refs.Ref]" = []
-    for number, line in enumerate(text.splitlines(), 1):
-        if not line.strip():
+    # Split on line feeds only (U+2028 is not a line break here), and allow ``# ...`` comment lines: a later version may write
+    # metadata (who pinned, until when) into a pin file and an older reader must not refuse it for that.
+    for number, line in enumerate(text.split("\n"), 1):
+        if not line.strip() or line.lstrip().startswith("#"):
             continue
         try:
             ref = refs.parse(line.strip())

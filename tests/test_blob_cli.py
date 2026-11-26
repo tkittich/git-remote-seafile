@@ -309,7 +309,7 @@ class CommandTests(CliCase):
         self.run_cli("put", str(self.source))
         self.run_cli("pin", "later", "sha256:" + "cd" * 32)          # absent: the pin is written, the exit is 1
         code, out, err = self.run_cli("gc")
-        self.assertEqual(code, 0)
+        self.assertEqual(code, 1)          # the store is not what its pins say: 0 means consistent
         self.assertIn("1 pinned object(s) are not in the store", err)          # a warning: stderr, stdout is the answer
         self.assertNotIn("Warning", out)
 

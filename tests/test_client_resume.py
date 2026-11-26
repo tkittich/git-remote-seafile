@@ -107,6 +107,22 @@ class ResumeTests(_Fixture):
         self.assertEqual(self.ranges, ["bytes=300-", None])
         self.assertEqual(self.dest.read_bytes(), OBJECT)
 
+    def test_a_partial_that_changes_while_the_request_runs_is_not_appended_to(self):
+        """The size re-check after the response arrives (review R6 B9): a partial another process grew is not continued."""
+        self.dest.write_bytes(OBJECT[:300])
+        honest = _honest(OBJECT)
+
+        def grown_meanwhile(range_header: "str | None") -> MagicMock:
+            if range_header is not None:
+                with open(self.dest, "ab") as handle:
+                    handle.write(b"another process wrote this")
+            return honest(range_header)
+
+        self.serve(grown_meanwhile)
+        self.assertTrue(self.download(max_bytes=len(OBJECT), resume_from=300))
+        self.assertEqual(self.ranges, ["bytes=300-", None])
+        self.assertEqual(self.dest.read_bytes(), OBJECT)
+
     def test_a_416_starts_again_instead_of_keeping_the_partial(self):
         self.dest.write_bytes(b"x" * 300)
         honest = _honest(OBJECT)

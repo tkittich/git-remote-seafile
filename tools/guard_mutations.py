@@ -65,6 +65,25 @@ M = [
     (B + "record.py", 'if text.startswith("\\ufeff"):', "if False:", T + "RecordRoundSevenTests.test_a_path_cannot_start_with_a_byte_order_mark"),
     (B + "record.py", "if len(fields) > 3:", "if False:", T + "RecordRoundSevenTests.test_a_line_with_more_fields_says_a_newer_version_may_have_written_it"),
     (B + "gcreport.py", "if name in _NEWER_ROOT:", "if False:", T + "RoundSevenTests.test_the_report_keeps_a_newer_versions_entries_apart_from_foreign_ones"),
+    # round 7, from Gemini, DeepSeek and Qwen
+    (B + "store.py", "        # one byte long is a CR, which is JSON whitespace and reads fine; anything that does not parse fails here.\n        self._read_marker()", "        # one byte long is a CR, which is JSON whitespace and reads fine; anything that does not parse fails here.\n        pass", T + "PutGuardTests.test_a_marker_that_is_not_a_marker_when_read_back_is_refused"),
+    (B + "store.py", "        # one byte long is a CR, which is JSON whitespace and reads fine; anything that does not parse fails here.\n        self._read_marker()", "        if self.client.get_file_bytes(self.repo_id, f\"{self.root}/{MARKER}\") != body:\n            raise StoreError(\"did not read back\")", T + "PutGuardTests.test_two_first_puts_both_succeed_and_the_winners_marker_stays"),
+    (B + "store.py", "            self._refuse_unfit_root(entries, names)          # what the real put would refuse", "            pass          # what the real put would refuse", T + "DryRunRefusalTests"),
+    (B + "tree.py", "    if dry_run or not dest.is_dir():", "    if not dest.is_dir():", T + "TreeRoundSevenTests.test_a_dry_run_writes_no_probe_file"),
+    (B + "tree.py", "        return True          # cannot tell", "        return False          # cannot tell", T + "TreeRoundSevenTests.test_a_probe_that_cannot_be_made_counts_the_names_as_colliding"),
+    (B + "tree.py", "        if entry.path in folders:", "        if False:", T + "TreeRoundSevenTests.test_a_file_and_a_folder_of_the_same_name_in_one_record_are_refused_everywhere"),
+    (B + "tree.py", '            if any("/".join(parts[:n]) in folder_clashes for n in range(1, len(parts))):', "            if False:", T + "TreeRoundSevenTests.test_a_folder_and_a_file_that_differ_only_in_case_are_refused_where_case_folds"),
+    (B + "store.py", "            if not place_new(stage, destination):\n                raise StoreError(f\"{destination} already exists; get does not overwrite\")", "            os.replace(stage, destination)", T + "TreeRoundSevenTests.test_get_to_that_loses_a_race_for_the_name_keeps_the_other_file"),
+    (B + "gcreport.py", "or not _FANOUT.fullmatch(fan_name):", "or len(fan_name) != 2:", T + "ReportAndPinRoundSevenTests.test_the_markers_copy_a_pin_comment_and_a_wrong_fanout_name"),
+    (B + "gcreport.py", "elif _TEMPORARY.fullmatch(name) and name.startswith(fan_name):", "elif _TEMPORARY.fullmatch(name):", T + "ReportAndPinRoundSevenTests.test_the_markers_copy_a_pin_comment_and_a_wrong_fanout_name"),
+    (B + "gcreport.py", '_MARKER_COPY = re.compile(r" \\((\\d+|SFConflict [^)]*)\\)" + re.escape(MARKER) + "|" + ', '_MARKER_COPY = re.compile(r"(?!)" + "|" + ', T + "ReportAndPinRoundSevenTests.test_the_markers_copy_a_pin_comment_and_a_wrong_fanout_name"),
+    (B + "pins.py", 'enumerate(text.split("\\n"), 1)', "enumerate(text.splitlines(), 1)", T + "ReportAndPinRoundSevenTests.test_a_pin_file_may_carry_comment_lines_and_u2028_is_not_a_line_break"),
+    (B + "pins.py", ' or line.lstrip().startswith("#")', "", T + "ReportAndPinRoundSevenTests.test_a_pin_file_may_carry_comment_lines_and_u2028_is_not_a_line_break"),
+    ("git_remote_seafile/client.py", "timeout=self.timeout, allow_redirects=False", "timeout=self.timeout", T + "RenameRedirectTests.test_a_301_names_the_landing_in_its_location_and_is_not_followed"),
+    ("git_remote_seafile/client.py", "        if resp.status_code in (301, 302):", "        if False:", T + "RenameRedirectTests.test_a_301_names_the_landing_in_its_location_and_is_not_followed"),
+    (B + "cli.py", "        exit_code = 1          # the store is not what its pins say", "        exit_code = 0          # the store is not what its pins say", "tests.test_blob_cli.CommandTests.test_gc_warns_about_a_pinned_object_that_is_not_in_the_store"),
+    ("tools/gates.py", '                modules.update(_blob_tests(root))\n                modules.update({"test_entry_points", "test_docs_consistency"})', '                modules.update({"test_entry_points", "test_docs_consistency"})', T + "GatesMappingTests"),
+    ("git_remote_seafile/client.py", "                if not unchanged:\n                    file_resp.close()", "                if False:\n                    file_resp.close()", "tests.test_client_resume.ResumeTests.test_a_partial_that_changes_while_the_request_runs_is_not_appended_to"),
 ]
 
 only = sys.argv[1:]
@@ -84,7 +103,9 @@ for n, (path, old, new, test) in enumerate(M):
         tail = [l for l in (r.stderr or "").splitlines() if l.startswith(("OK", "FAILED"))]
         red = r.returncode != 0
         skipped = "skipped" in (tail[0] if tail else "") and not red
-        print(n, "RED " if red else ("SKIPPED" if skipped else "GREEN <-- survived"), test.split(".")[-1][:70], tail[:1])
+        errored = red and bool(tail) and "errors=" in tail[0] and "failures=" not in tail[0]
+        label = "RED (error: read it)" if errored else ("RED " if red else ("SKIPPED" if skipped else "GREEN <-- survived"))
+        print(n, label, test.split(".")[-1][:70], tail[:1])
         if not red:
             survived.append(n)
     finally:

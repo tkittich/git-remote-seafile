@@ -15,7 +15,7 @@ import time
 from collections.abc import Iterator
 from typing import Any, Callable
 import uuid
-from urllib.parse import quote, unquote, urlparse, urlunparse
+from urllib.parse import parse_qs, quote, unquote, urlparse, urlunparse
 
 import requests
 from requests.adapters import HTTPAdapter
@@ -2560,9 +2560,20 @@ class SeafileClient:
         # A 429 is waited out, as a DELETE's is: the rename that publishes a payload or LFS object
         # answered a bare False for it, and the caller read that as "a name already taken"
         # (review 134c8af, fable-E2).
+        # Not followed: Seafile answers a rename with ``301`` whose ``Location`` names the landing (measured on CE 13.0.29, review
+        # R7 Opus P4 and Gemini).  Following it made a second request, minted a download token, and behind a proxy that
+        # emits an ``http://`` Location dropped the Authorization header and answered 401 *after the rename had succeeded*.
         resp = self._send_waiting_out_a_throttle(lambda: self.session.post(
-            url, data={"operation": "rename", "newname": new_name}, timeout=self.timeout
+            url, data={"operation": "rename", "newname": new_name}, timeout=self.timeout, allow_redirects=False
         ))
+        if resp.status_code in (301, 302):
+            try:
+                where = parse_qs(urlparse(resp.headers.get("Location", "")).query).get("p", [""])[0]
+                leaf = where.rstrip("/").rpartition("/")[2]
+            except Exception:
+                leaf = ""
+            # A redirect with a landing name is the success answer: reported as 200, as the callers expect.
+            return (200, leaf) if leaf else (resp.status_code, None)
         if resp.status_code not in (200, 201):
             return resp.status_code, None
         try:

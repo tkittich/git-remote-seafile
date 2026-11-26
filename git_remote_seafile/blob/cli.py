@@ -608,10 +608,11 @@ def _gc(args: argparse.Namespace) -> int:
     report = gcreport.scan(base)
     unused = report.unused
     rows: "dict[str, Any]" = {"objects": len(report.objects), "bytes": sum(report.objects.values()), "pins": report.pins,
-            "unused": len(unused), "unused_bytes": report.bytes_of(unused), "temporaries": len(report.temporaries),
+            "unused": len(unused), "unused_list": [f"sha256:{h}" for h in unused], "unused_bytes": report.bytes_of(unused), "temporaries": len(report.temporaries),
             "temporary_bytes": sum(s for _, s in report.temporaries), "copies": len(report.copies),
             "copy_bytes": sum(s for _, s in report.copies), "foreign": report.foreign, "newer": report.newer, "missing": len(report.missing),
             "removed": 0}
+    exit_code = 0
     lines = [
         f"stored : {rows['objects']} object(s), {format_bytes(rows['bytes'])}",
         f"pinned : {len(report.pinned)} object(s) by {len(report.pins)} pin(s)",
@@ -625,10 +626,11 @@ def _gc(args: argparse.Namespace) -> int:
         lines.append(f"other  : {len(report.foreign)} entry(ies) that are not the store's (left alone)")
     if report.missing:
         _err(f"Warning: {len(report.missing)} pinned object(s) are not in the store")          # stdout is the answer only
+        exit_code = 1          # the store is not what its pins say: 0 means consistent
     lines.append("nothing changed: this version reports and removes nothing. Deleting an object frees the library's quota, "
                  "and disk space only after the server's history is truncated and its garbage collector has run.")
     _say(rows, args, "\n".join(lines))
-    return 0
+    return exit_code
 
 
 def _verify(args: argparse.Namespace) -> int:

@@ -11,7 +11,6 @@ from __future__ import annotations
 import concurrent.futures
 import fnmatch
 import os
-import shutil
 import stat
 import sys
 import threading
@@ -132,27 +131,7 @@ def _write_atomically(path: Path, text: str) -> None:
         temp.unlink(missing_ok=True)
 
 
-def _place(temp: Path, target: Path) -> bool:
-    """Give *temp* the name *target* unless something already has it; one act, so nothing is replaced in a window."""
-    try:
-        os.link(temp, target)
-    except FileExistsError:
-        return False
-    except OSError:
-        # A volume without hard links (FAT, some shares): claim the name with O_EXCL, which refuses a name that exists,
-        # then copy into it.  Never ``os.replace`` onto a name this run has not proved free (review R6 D1).
-        try:
-            fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0), 0o644)
-        except FileExistsError:
-            return False
-        try:
-            with os.fdopen(fd, "wb") as dst, open(temp, "rb") as src:
-                shutil.copyfileobj(src, dst, 1 << 20)
-        except BaseException:
-            target.unlink(missing_ok=True)
-            raise
-    temp.unlink()
-    return True
+_place = store.place_new          # kept under its old name: the tests and callers patch ``tree.os.link``
 
 
 def put_tree(
@@ -259,17 +238,17 @@ def _in_place(target: Path, entry: record.Entry) -> bool:
 
 def _folds_case(dest: Path, dry_run: bool) -> bool:
     """Does the volume under *dest* treat names that differ only in case as one?  Found by creating a name there."""
+    if dry_run or not dest.is_dir():
+        return os.name == "nt" or sys.platform == "darwin"          # a dry run writes nothing, not even a probe
     probe = f"sfblob-case-{os.urandom(4).hex()}A"
     try:
-        if dest.is_dir():
-            (dest / probe).write_bytes(b"")
-            try:
-                return (dest / probe.lower()).exists()
-            finally:
-                (dest / probe).unlink(missing_ok=True)
+        (dest / probe).write_bytes(b"")
+        try:
+            return (dest / probe.lower()).exists()
+        finally:
+            (dest / probe).unlink(missing_ok=True)
     except OSError:
-        pass
-    return dry_run and (os.name == "nt" or sys.platform == "darwin")
+        return True          # cannot tell: treat colliding names as colliding (they are refused and named, never lost)
 
 
 def _case_collisions(entries: "list[record.Entry]", dest: Path, dry_run: bool) -> "dict[str, str]":
@@ -278,17 +257,36 @@ def _case_collisions(entries: "list[record.Entry]", dest: Path, dry_run: bool) -
     The restore would place one and call the other "something else is already there" (or, with equal bytes, count it as
     in place and lose it silently), so neither is restored and both are named (review R6 G4, D7, Q1).
     """
+    found: "dict[str, str]" = {}
+    # A path that is also a folder of another path (``foo`` and ``foo/bar``) cannot be restored on any volume.
+    folders = {"/".join(e.path.split("/")[:n]) for e in entries for n in range(1, len(e.path.split("/")))}
+    for entry in entries:
+        if entry.path in folders:
+            found[entry.path] = "is a file here and a folder in another path of the record"
     groups: "dict[str, list[str]]" = {}
     for entry in entries:
         groups.setdefault(unicodedata.normalize("NFC", entry.path).casefold(), []).append(entry.path)
     clashing = {key: paths for key, paths in groups.items() if len(paths) > 1}
-    if not clashing or not _folds_case(dest, dry_run):
-        return {}
-    found: "dict[str, str]" = {}
-    for paths in clashing.values():
-        for path in paths:
-            others = ", ".join(repr(p) for p in paths if p != path)
-            found[path] = f"differs only in case from {others}, and this volume treats them as one name"
+    # The same, one level up: ``Dir/child.txt`` and a file ``dir``, which differ only in case.
+    folded_folders: "dict[str, str]" = {}
+    for folder in folders:
+        folded_folders.setdefault(unicodedata.normalize("NFC", folder).casefold(), folder)
+    folder_clashes: "set[str]" = set()
+    for entry in entries:
+        key = unicodedata.normalize("NFC", entry.path).casefold()
+        if key in folded_folders and folded_folders[key] != entry.path:
+            clashing.setdefault(key, [entry.path])
+            clashing[key] = sorted({*clashing[key], entry.path, folded_folders[key]})
+            folder_clashes.add(folded_folders[key])
+    if clashing and _folds_case(dest, dry_run):
+        for paths in clashing.values():
+            for path in paths:
+                others = ", ".join(repr(p) for p in paths if p != path)
+                found.setdefault(path, f"differs only in case from {others}, and this volume treats them as one name")
+        for entry in entries:          # what lies inside such a folder is refused with it, never half restored
+            parts = entry.path.split("/")
+            if any("/".join(parts[:n]) in folder_clashes for n in range(1, len(parts))):
+                found.setdefault(entry.path, "is inside a folder that differs only in case from a file of the record")
     return found
 
 

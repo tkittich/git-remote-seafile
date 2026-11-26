@@ -17,11 +17,14 @@ from .store import MARKER
 if TYPE_CHECKING:
     from .store import Store
 
-_MARKER_COPY = re.compile(re.escape(MARKER) + r" \((\d+|SFConflict [^)]*)\)")
+# The server puts the copy's number before the last dot: ``.seafile-store`` is a name with no stem, so the copy is
+# `` (1).seafile-store`` (STORE.md D2, measured); the other order is accepted too.
+_MARKER_COPY = re.compile(r" \((\d+|SFConflict [^)]*)\)" + re.escape(MARKER) + "|" + re.escape(MARKER) + r" \((\d+|SFConflict [^)]*)\)")
 #: Entries a later version (``gc --apply``) writes: reported as the store's own, never as foreign, so a script that acts on
 #: ``foreign`` cannot be told to remove them.  Reserved now so 0.11 does not call them strangers.
 _NEWER_ROOT = frozenset({"gc", "gc-pending.json", "locks"})
 _NEWER_TOMBSTONE = re.compile(r"([0-9a-f]{64})\.gc-[0-9a-f]+")
+_FANOUT = re.compile(r"[0-9a-f]{2}")
 _OBJECT = re.compile(r"[0-9a-f]{64}")
 _TEMPORARY = re.compile(r"([0-9a-f]{64})\.part-[0-9a-f]+")
 _COPY = re.compile(r"([0-9a-f]{64}) \((\d+|SFConflict [^)]*)\)")
@@ -67,7 +70,7 @@ def scan(store: "Store") -> Report:
                     report.foreign.append(f"pins/{name}/{inner.get('name', '')}")
     for fan in sorted(store._list(f"{store.root}/blobs"), key=lambda e: str(e.get("name", ""))):
         fan_name = str(fan.get("name", ""))
-        if fan.get("type") != "dir" or len(fan_name) != 2:
+        if fan.get("type") != "dir" or not _FANOUT.fullmatch(fan_name):
             report.foreign.append(f"blobs/{fan_name}")
             continue
         for entry in store._list(f"{store.root}/blobs/{fan_name}"):
@@ -77,11 +80,11 @@ def scan(store: "Store") -> Report:
                 report.foreign.append(f"blobs/{fan_name}/{name}")
             elif _OBJECT.fullmatch(name) and name.startswith(fan_name):
                 report.objects[name] = size
-            elif _TEMPORARY.fullmatch(name):
+            elif _TEMPORARY.fullmatch(name) and name.startswith(fan_name):
                 report.temporaries.append((name, size))
-            elif _COPY.fullmatch(name):
+            elif _COPY.fullmatch(name) and name.startswith(fan_name):
                 report.copies.append((name, size))
-            elif _NEWER_TOMBSTONE.fullmatch(name):
+            elif _NEWER_TOMBSTONE.fullmatch(name) and name.startswith(fan_name):
                 report.newer.append(f"blobs/{fan_name}/{name}")
             else:
                 report.foreign.append(f"blobs/{fan_name}/{name}")

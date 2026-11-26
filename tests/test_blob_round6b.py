@@ -101,11 +101,30 @@ class PutGuardTests(StoreCase):
         with self.assertRaises(store.StoreError):
             self.store.resolve(refs_short(SHA[:10]))
 
-    def test_the_marker_must_read_back_as_written(self):
+    def test_a_marker_that_is_not_a_marker_when_read_back_is_refused(self):
         with patch.object(self.store.client, "get_file_bytes", return_value=b"{}"):
             with self.assertRaises(store.StoreError) as caught:
                 self.store.put(self.source)
-        self.assertIn("did not read back", str(caught.exception))
+        self.assertIn("another format", str(caught.exception))
+
+    def test_two_first_puts_both_succeed_and_the_winners_marker_stays(self):
+        """D18 row 6: the loser's marker lands as a copy and the name holds the winner's (review R7 Gemini P3, DeepSeek P1)."""
+        import json
+        real = self.store.client.upload_file
+        winner = json.dumps({"format": 1, "id": "w" * 32}).encode()
+        state = {"first": True}
+
+        def racing(repo_id, parent, name, data, **kwargs):
+            if state["first"] and name == ".seafile-store":
+                state["first"] = False
+                real(repo_id, parent, name, winner, replace=False)          # the other writer got there first
+            return real(repo_id, parent, name, data, **kwargs)
+
+        self.stub.faults["replace_copies"] = True
+        with patch.object(self.store.client, "upload_file", racing):
+            self.assertTrue(self.store.put(self.source).uploaded)
+        self.assertIn(f"{ROOT}/ (1).seafile-store", self.files())          # the loser's marker, as a copy
+        self.assertEqual(json.loads(self.files()[f"{ROOT}/.seafile-store"])["id"], "w" * 32)
 
 
 def refs_short(text: str):
@@ -617,6 +636,185 @@ class CaseSpellingTests(TreeCase):
         self.assertFalse(tree._in_place(self.work / "a.txt", entry))
         entry = record.Entry("A.txt", len(data), entry.ref)
         self.assertTrue(tree._in_place(self.work / "A.txt", entry))
+
+
+class DryRunRefusalTests(StoreCase):
+    """A dry run refuses what the real run refuses (Gemini, DeepSeek and Qwen found three holes in the first fix)."""
+
+    def test_under_a_vault_two_levels_up(self):
+        self.stub.files.setdefault(self.rid, {})["/vault/refs/heads/main"] = b"x"
+        with self.assertRaises(store.StoreError):
+            self.make("/vault/store").would_put(self.source)
+
+    def test_under_the_view_folder_of_a_vault(self):
+        self.stub.files.setdefault(self.rid, {})["/vault/refs/heads/main"] = b"x"
+        with self.assertRaises(store.StoreError):
+            self.make("/vault-view/store").would_put(self.source)
+
+    def test_in_a_folder_that_is_not_empty_and_not_a_store(self):
+        self.stub.files.setdefault(self.rid, {})[f"{ROOT}/somebody-elses.txt"] = b"x"
+        with self.assertRaises(store.StoreError):
+            self.store.would_put(self.source)
+
+    def test_inside_another_store(self):
+        self.store.put(self.source)
+        with self.assertRaises(store.StoreError):
+            self.make(f"{ROOT}/inner").would_put(self.source)
+
+    def test_an_empty_new_folder_is_fine_and_nothing_is_written(self):
+        self.assertTrue(self.store.would_put(self.source).uploaded)
+        self.assertEqual(self.files(), {})
+
+
+class TreeRoundSevenTests(TreeCase):
+    def _record(self, lines):
+        base = self.make()
+        entries = []
+        for path, data in lines:
+            temp = self.work / "obj.bin"
+            temp.write_bytes(data)
+            done = base.put(temp)
+            entries.append(record.Entry(path, done.size, done.ref))
+        target = self.work / "case.txt"
+        target.write_text(record.render(entries), encoding="utf-8", newline="\n")
+        return target
+
+    def test_a_dry_run_writes_no_probe_file(self):
+        rec = self._record([("A.txt", b"one"), ("a.txt", b"two")])
+        out = self.work / "out"
+        out.mkdir()
+        with patch.object(pathlib.Path, "write_bytes", side_effect=AssertionError("wrote in a dry run")):
+            tree.get_tree(self.make("c"), rec, out, dry_run=True)
+        self.assertEqual(list(out.iterdir()), [])
+
+    def test_a_probe_that_cannot_be_made_counts_the_names_as_colliding(self):
+        rec = self._record([("A.txt", b"one"), ("a.txt", b"two")])
+        out = self.work / "out"
+        with patch.object(pathlib.Path, "write_bytes", side_effect=OSError("read-only")):
+            report = tree.get_tree(self.make("c"), rec, out)
+        self.assertEqual(report.restored, 0)
+        self.assertEqual(len(report.problems), 2)
+
+    def test_a_file_and_a_folder_of_the_same_name_in_one_record_are_refused_everywhere(self):
+        rec = self._record([("foo", b"a file"), ("foo/bar", b"in a folder")])
+        report = tree.get_tree(self.make("c"), rec, self.work / "out")
+        self.assertEqual(report.restored, 1)          # foo/bar cannot be told apart from the clash: the file is refused
+        self.assertTrue(any(p.startswith("foo:") and "folder" in p for p in report.problems))
+
+    def test_a_folder_and_a_file_that_differ_only_in_case_are_refused_where_case_folds(self):
+        rec = self._record([("Dir/child.txt", b"one"), ("dir", b"two")])
+        with patch.object(tree, "_folds_case", return_value=True):
+            report = tree.get_tree(self.make("c"), rec, self.work / "out")
+        self.assertEqual(report.restored, 0)
+        self.assertTrue(any("only in case" in p for p in report.problems))
+
+    def test_get_to_stages_beside_the_destination_and_places_without_replacing(self):
+        base = self.make()
+        temp = self.work / "obj.bin"
+        temp.write_bytes(b"payload bytes")
+        done = base.put(temp)
+        out = self.work / "got.bin"
+        names = []
+        real = store.place_new
+
+        def spy(stage, target):
+            names.append(stage.name)
+            return real(stage, target)
+
+        with patch.object(store, "place_new", spy):
+            base.get_to(done.ref, out)
+        self.assertEqual(out.read_bytes(), b"payload bytes")
+        self.assertTrue(names and names[0].startswith(".sfblob-part-"))
+        self.assertEqual([p.name for p in self.work.iterdir() if p.name.startswith(".sfblob-part-")], [])
+
+    def test_get_to_that_loses_a_race_for_the_name_keeps_the_other_file(self):
+        base = self.make()
+        temp = self.work / "obj.bin"
+        temp.write_bytes(b"payload bytes")
+        done = base.put(temp)
+        out = self.work / "got.bin"
+        with patch.object(store, "place_new", lambda stage, target: (target.write_bytes(b"theirs"), False)[1]):
+            with self.assertRaises(store.StoreError):
+                base.get_to(done.ref, out)
+        self.assertEqual(out.read_bytes(), b"theirs")
+
+
+class ReportAndPinRoundSevenTests(StoreCase):
+    def test_the_markers_copy_a_pin_comment_and_a_wrong_fanout_name(self):
+        self.store.put(self.source, pin="keep")
+        files = self.stub.files[self.rid]
+        files[f"{ROOT}/ (1).seafile-store"] = b"{}"                         # the copy's name as the server makes it
+        files[f"{ROOT}/blobs/zz/note.txt"] = b"x"                          # a folder that is not a fan-out name
+        wrong = "ab" + SHA[2:]
+        files[f"{ROOT}/blobs/cd/{wrong}.part-deadbeef"] = b"x"             # a temporary in the wrong fan-out folder
+        report = gcreport.scan(self.store)
+        self.assertNotIn(" (1).seafile-store", report.foreign)
+        self.assertIn("blobs/zz", report.foreign)
+        self.assertIn(f"blobs/cd/{wrong}.part-deadbeef", report.foreign)
+        self.assertEqual(report.temporaries, [])
+
+    def test_a_pin_file_may_carry_comment_lines_and_u2028_is_not_a_line_break(self):
+        ref = "sha256:" + "ab" * 32
+        text = "# pinned by a later version\n" + ref + chr(0x2028) + ref + "\n"
+        with self.assertRaises(store.StoreError):          # U+2028 stays in the line, so these are not two references
+            pins.parse(text, "where")
+        self.assertEqual([str(r) for r in pins.parse("# a comment\n" + ref + "\n", "where")], [ref])
+
+    def test_gc_lists_the_unused_objects_and_a_missing_pin_target_is_exit_1(self):
+        # exercised through the command line in test_blob_cli; here the report's own lists
+        self.store.put(self.source)
+        report = gcreport.scan(self.store)
+        self.assertEqual(report.unused, [SHA])
+
+
+class RenameRedirectTests(unittest.TestCase):
+    def _client(self, response):
+        client = SeafileClient(server_url="http://127.0.0.1:1", token="t")
+        client._send_waiting_out_a_throttle = lambda call: response          # type: ignore[method-assign]
+        return client
+
+    def test_a_301_names_the_landing_in_its_location_and_is_not_followed(self):
+        seen = {}
+
+        class Resp:
+            status_code = 301
+            headers = {"Location": "http://host/api2/repos/r/file/?p=/dir/name%20(1).bin"}
+            text = '"success"'
+
+        client = SeafileClient(server_url="http://127.0.0.1:1", token="t")
+
+        def fake_send(call):
+            class Session:
+                def post(self_, url, **kwargs):
+                    seen.update(kwargs)
+                    return Resp()
+            client.session = Session()          # type: ignore[assignment]
+            return call()
+
+        client._send_waiting_out_a_throttle = fake_send          # type: ignore[method-assign]
+        self.assertEqual(client.rename_entry_result("r", "/dir/tmp.bin", "name.bin"), (200, "name (1).bin"))
+        self.assertIs(seen.get("allow_redirects"), False)
+
+    def test_a_301_with_no_usable_location_is_not_a_success(self):
+        class Resp:
+            status_code = 301
+            headers: "dict[str, str]" = {}
+            text = ""
+
+        self.assertEqual(self._client(Resp()).rename_entry_result("r", "/d/a", "b"), (301, None))
+
+
+class GatesMappingTests(unittest.TestCase):
+    def test_an_edit_of_a_blob_module_reaches_the_blob_tests(self):
+        sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "tools"))
+        try:
+            import gates
+        finally:
+            sys.path.pop(0)
+        for changed in ("git_remote_seafile/blob/cli.py", "git_remote_seafile/blob/refs.py",
+                        "git_remote_seafile/snapshot/payload_upload.py"):
+            reached = gates.suite_for_changes([changed])
+            self.assertTrue(reached is None or {"test_blob_cli", "test_blob_store", "test_blob_tree"} <= set(reached), changed)
 
 
 class CommitSeenTests(unittest.TestCase):
