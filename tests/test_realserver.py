@@ -1560,6 +1560,42 @@ class BlobStoreRealServerTests(_RealServerFixture):
         got = self.client.get_file_bytes(self.rid, f"{folder}/{name}")
         self.assertEqual(got, data)
 
+    def test_the_unlengthened_framing_shows_the_parser_bug_or_the_defence_is_not_exercised(self):
+        """D-5 (round 6, DeepSeek): the test above passes on an image where the bug does not show, for a reason unrelated to the
+        defence.  This one sends the body *unlengthened* (nothing adds to the boundary), at the length measured to fail, and says
+        what the server did: refused it (400), stored it one byte long, or stored it exactly.  Only the first two exercise the
+        defence; on an exact answer it skips and names the server's version, so the day the shape stops being dangerous is visible."""
+        import json
+        import uuid
+
+        name = "unlengthened.bin"
+        folder = f"/{self.base}/unlengthened"
+        self.client.mkdir_p(self.rid, folder)
+        boundary = f"----GRSBoundary{uuid.uuid4().hex}"
+        head = (f"--{boundary}\r\nContent-Disposition: form-data; name=\"parent_dir\"\r\n\r\n{folder}\r\n"
+                f"--{boundary}\r\nContent-Disposition: form-data; name=\"replace\"\r\n\r\n1\r\n"
+                f"--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{name}\"\r\n"
+                "Content-Type: application/octet-stream\r\n\r\n").encode()
+        tail = f"\r\n--{boundary}--\r\n".encode()
+        data = os.urandom(24578 - len(head) - len(tail))          # the whole body is 6 * 4096 + 2 bytes
+        link_url = f"{self.client.server_url}/api2/repos/{self.rid}/upload-link/?p={quote(folder, safe='/')}"
+        link = self.client._adjust_url(self.client.session.get(link_url, timeout=60).text.strip().strip('"'))
+        reply = self.client.session.post(link + "?ret-json=1", data=head + data + tail, timeout=120,
+                                         headers={"Content-Type": f"multipart/form-data; boundary={boundary}"})
+        version = _server_info(self.client).get("version", "unknown")
+        if reply.status_code == 400:
+            return          # refused: the defence (a longer boundary) is what makes the client's upload work
+        self.assertEqual(reply.status_code, 200, reply.text[:200])
+        try:
+            stored = int(json.loads(reply.text)[0]["size"])
+        except (ValueError, KeyError, IndexError, TypeError):
+            self.fail(f"a 200 that names no size: {reply.text[:200]!r}")
+        if stored == len(data) + 1:
+            return          # stored one byte long: the defence (the reply's size check) is what catches it
+        self.assertEqual(stored, len(data), "stored at a size that is neither exact nor one byte long")
+        self.skipTest(f"server {version} stored the unlengthened 24578-byte body exactly: the parser bug did not show here, so the "
+                      "landing test above does not exercise the defence on this image")
+
 
 if __name__ == "__main__":
     unittest.main()
