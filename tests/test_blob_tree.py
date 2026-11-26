@@ -237,10 +237,10 @@ class RoundFiveTests(TreeCase):
         nfc, nfd = "caf\u00e9.bin", "caf\u0065\u0301.bin"
         folder = self.work / "twins"
         folder.mkdir()
-        (folder / nfc).write_bytes(b"same")
         try:
+            (folder / nfc).write_bytes(b"same")
             (folder / nfd).write_bytes(b"same")
-        except OSError:
+        except (OSError, UnicodeError):    # UnicodeEncodeError under the C locale, where a name cannot hold a non-ASCII letter
             self.skipTest("this volume cannot hold both spellings")
         if len(list(folder.iterdir())) != 2:
             self.skipTest("this volume folds the two spellings into one file")

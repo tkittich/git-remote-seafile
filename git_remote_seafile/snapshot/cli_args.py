@@ -378,7 +378,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         build_parser("snapshot").error(str(exc))
     subcommands.say_legacy(legacy)
     args = build_parser(mode).parse_args(rest)
-    typed = vars(build_parser(mode, suppress=True).parse_args(rest))
+    # Python before 3.12 gives an *absent* positional that has a ``type`` its default run through that type (``Path("==SUPPRESS==")``),
+    # so the sentinel is compared by its text: otherwise SOURCE looked typed on every command (CI, Python 3.10 and 3.11).
+    typed = {dest: value for dest, value in vars(build_parser(mode, suppress=True).parse_args(rest)).items()
+             if str(value) != argparse.SUPPRESS}
     table = option_table()
     args.given = frozenset(dest for dest in typed if dest in table)
     args.mode = mode

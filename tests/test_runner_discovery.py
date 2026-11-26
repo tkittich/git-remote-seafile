@@ -192,7 +192,10 @@ class RunnerRobustnessTests(unittest.TestCase):
                 raise KeyboardInterrupt
             real_sleep(seconds)
 
-        with unittest.mock.patch.object(self.runner, "_collect_targets", return_value=["tests.fake.Target"]), \
+        # ``main`` plans from ``_discover_tests`` (a dict of class -> test ids), not from ``_collect_targets``: patching the old name
+        # left the real suite (600-odd targets) to run against the fake worker, which took two minutes and failed on POSIX.
+        with unittest.mock.patch.object(self.runner, "_discover_tests", return_value={"tests.fake.Target": ["tests.fake.Target.test_x"]}), \
+                unittest.mock.patch.object(self.runner, "_load_timings", return_value={}), \
                 unittest.mock.patch.object(self.runner, "_start_worker", return_value=entry), \
                 unittest.mock.patch.object(self.runner.time, "sleep", side_effect=interrupt_once), \
                 unittest.mock.patch("sys.stderr", new_callable=__import__("io").StringIO) as err:
