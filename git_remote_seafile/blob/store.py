@@ -54,6 +54,16 @@ class StoreError(Exception):
     """A store problem a person can act on (the message says what and what to do)."""
 
 
+class StoreTransportError(StoreError):
+    """The server or the network failed (a dropped connection, a timeout): the command may be run again.  ``sfblob`` exits 3
+    for it, and 1 for a fact about the store (an object that is not there, a marker it will not use)."""
+
+
+def _failure(what: str, exc: Exception) -> StoreError:
+    from ..client import SeafileConnectionError
+    return (StoreTransportError if isinstance(exc, SeafileConnectionError) else StoreError)(what)
+
+
 class DestinationExists(StoreError):
     """``get`` found the destination taken (before the copy, or when the placing found it taken): never overwritten."""
 
@@ -127,6 +137,7 @@ class Store:
         self._factory = factory
         self._marker_checked = False
         self._read_only_because: "list[str]" = []          # ``ro_compat`` features of the marker this version lacks
+        self.marker: "dict[str, Any]" = {}          # the marker as last read (``status`` shows it)
         #: fan-out folder -> (when it was listed, {object name: size}); shared with the clones a folder run makes
         self._presence: "dict[str, tuple[float, dict[str, int]]]" = {}
         self._presence_ttl = 0.0          # 0: every check asks the server
@@ -156,6 +167,7 @@ class Store:
         other = self._factory()
         other._marker_checked = self._marker_checked
         other._read_only_because = self._read_only_because
+        other.marker = self.marker
         other._presence = self._presence
         other._presence_ttl = self._presence_ttl
         return other
@@ -175,7 +187,7 @@ class Store:
         try:
             entries = self.client.list_dir(self.repo_id, path or "/")
         except SeafileAPIError as exc:
-            raise StoreError(f"could not list {path or '/'} in the library: {exc}") from None
+            raise _failure(f"could not list {path or '/'} in the library: {exc}", exc) from None
         return [e for e in entries if isinstance(e, dict)] if isinstance(entries, list) else []
 
     # -- the marker (D2) --------------------------------------------------------------------------------------
@@ -274,6 +286,7 @@ class Store:
             raise StoreError(f"{self.root}/{MARKER} is a marker of another format; this version reads format {FORMAT}")
         # Feature lists (as ext4's): a later version that must stop older ones can say so without a new format number,
         # which would stop them *reading* as well.  Absent means empty; an unknown ``compat`` name is ignored.
+        self.marker = data
         for key in ("incompat", "ro_compat", "compat"):
             value = data.get(key, [])
             if not isinstance(value, list) or not all(isinstance(name, str) for name in value):
@@ -371,7 +384,7 @@ class Store:
                 raise StoreError(f"the server would not give the object its name ({ref}); run again")
         except SeafileAPIError as exc:
             self._drop(directory, temp)
-            raise StoreError(f"upload of {path} failed: {exc}") from None
+            raise _failure(f"upload of {path} failed: {exc}", exc) from None
         if self._listed_size(ref, fresh=True) != size:
             raise StoreError(f"the server lists {ref} at another size than {size} after the upload; run again")
         if self.verify_by_download:

@@ -1,7 +1,7 @@
 """``seafile-blob`` (``sfblob``, ``git-seafile-blob``, ``seafile blob``): the blob store's command line (STORE.md D3, CLI.md).
 
 Plain lines by default and one JSON document with ``--json``; no prompt ever (a command is told what to do by its
-flags); exit 0 success, 1 failure, 2 usage error.  Standard output is the answer and nothing else; every note,
+flags); exit 0 success, 1 failure (a fact about the store), 2 usage error, 3 the server or the network failed (run it again).  Standard output is the answer and nothing else; every note,
 warning and progress line goes to standard error.  ``offload``, ``link`` and ``read`` are not in this version.
 """
 
@@ -17,7 +17,7 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from ..client import SeafileAPIError, SeafileAuthError
+from ..client import SeafileAPIError, SeafileAuthError, SeafileConnectionError
 from ..units import format_bytes
 from . import cache as cache_mod
 from . import gcreport, pins, putlog, refs, store, tree
@@ -232,6 +232,8 @@ def _parser() -> argparse.ArgumentParser:
     pin.add_argument("name", help="the pin's name, or `ls` to list pins")
     pin.add_argument("refs", nargs="*", help="full references to keep (with `ls`: the one pin to list)")
     pin.add_argument("--from-file", metavar="FILE", help="read references from FILE, one a line (- for standard input)")
+    pin.add_argument("--from-record", metavar="FILE", help="pin every object a record file names (so the roots live on the server, "
+                     "where every machine's `gc` sees them)")
 
     unpin = sub.add_parser("unpin", parents=shared, help="remove a pin (objects only it kept become unused)")
     unpin.add_argument("name")
@@ -243,10 +245,13 @@ def _parser() -> argparse.ArgumentParser:
     verify.add_argument("refs", nargs="*", help="references (default: every object, or those in --from)")
     verify.add_argument("--from", dest="record", metavar="FILE", help="check every entry of a record file, at its recorded size")
     verify.add_argument("--deep", action="store_true", help="download each object and check its hash (reads every byte)")
+    verify.add_argument("--subset", metavar="K/N", help="only the objects whose fan-out folder falls in part K of N (1 <= K <= N): "
+                        "run 1/7 to 7/7 on seven days to check every object, with no state file")
 
     for name in NOT_YET:          # known words, so a global flag before one answers "not yet" and not a usage error
         sub.add_parser(name, parents=shared, add_help=False).add_argument("rest", nargs=argparse.REMAINDER)
 
+    sub.add_parser("status", parents=shared, help="is this store all right? marker, counts, pins, cache, and what to run next")
     sub.add_parser("ls", parents=shared, help="list the objects in the store, with their sizes")
     sub.add_parser("usage", parents=shared, help="how many objects the store holds, how many bytes, and the local cache")
 
@@ -503,6 +508,45 @@ def _usage(args: argparse.Namespace) -> int:
     return 0
 
 
+def _status(args: argparse.Namespace) -> int:
+    """One read-only look: which store, what it holds, what no pin names, what a pin names that is gone, and the next command."""
+    url = store_url(args.store)
+    base = open_store(url, args.cache_dir)
+    base.check_root(create=False)
+    report = gcreport.scan(base)
+    cache = base.cache
+    features = {key: list(base.marker.get(key, [])) for key in ("incompat", "ro_compat", "compat") if base.marker.get(key)}
+    next_steps: "list[str]" = []
+    if report.missing:
+        next_steps.append("sfblob put <the file> --pin <name>   (a pinned object is not in the store: store it again)")
+    if report.unused:
+        next_steps.append("sfblob pin <name> <reference>   (objects no pin names would be collected: keep the ones you need)")
+    if report.foreign:
+        next_steps.append("look at the entries `sfblob gc` calls foreign: this version leaves them alone")
+    if base._read_only_because:
+        next_steps.append("use a newer sfblob to write to this store")
+    rows: "dict[str, Any]" = {
+        "store": url, "format": base.marker.get("format"), "features": features, "writable": not base._read_only_because,
+        "objects": len(report.objects), "bytes": sum(report.objects.values()), "pins": len(report.pins),
+        "pinned_objects": len(report.pinned), "unused": len(report.unused), "missing": len(report.missing),
+        "foreign": len(report.foreign), "newer": len(report.newer), "temporaries": len(report.temporaries),
+        "cache_objects": len(cache.objects()), "cache_bytes": cache.used(), "cache_limit": cache.size_limit, "next": next_steps}
+    lines = [
+        f"store    : {url} (format {rows['format']}{', ' + ', '.join(f'{k}: {v}' for k, v in features.items()) if features else ''}"
+        f"{'' if rows['writable'] else '; read-only for this version'})",
+        f"objects  : {rows['objects']}, {format_bytes(rows['bytes'])}",
+        f"pins     : {rows['pins']} pin(s) keep {rows['pinned_objects']} object(s); {rows['unused']} object(s) no pin names; "
+        f"{rows['missing']} pinned object(s) not in the store",
+        f"cache    : {rows['cache_objects']} object(s), {format_bytes(rows['cache_bytes'])}"
+        + (f", kept to {format_bytes(cache.size_limit)}" if cache.size_limit is not None else ""),
+    ]
+    if rows["foreign"] or rows["newer"] or rows["temporaries"]:
+        lines.append(f"other    : {rows['foreign']} foreign, {rows['newer']} from a newer version, {rows['temporaries']} interrupted upload(s)")
+    lines += ["next     : " + step for step in next_steps] or ["next     : nothing to do"]
+    _say(rows, args, "\n".join(lines))
+    return 1 if report.missing else 0
+
+
 def _log(args: argparse.Namespace) -> int:
     base_cache = cache_mod.Cache(Path(args.cache_dir) if args.cache_dir else None)
     rows = putlog.search(base_cache, args.pattern)
@@ -548,7 +592,7 @@ def _init(args: argparse.Namespace) -> int:
 def _pin(args: argparse.Namespace) -> int:
     base = open_store(store_url(args.store), args.cache_dir)
     if args.name == "ls":
-        if args.from_file or len(args.refs) > 1:
+        if args.from_file or args.from_record or len(args.refs) > 1:
             raise UsageError("`pin ls` takes at most one pin name; to pin references, give the pin another name")
         base.check_root(create=False)
         held = pins.read_all(base)
@@ -569,8 +613,14 @@ def _pin(args: argparse.Namespace) -> int:
         except OSError as exc:
             raise UsageError(f"cannot read {args.from_file}: {exc}") from None
         texts += [line.strip() for line in raw.splitlines() if line.strip()]
+    if args.from_record:
+        from . import record
+        try:
+            texts += [str(e.ref) for e in record.parse(Path(args.from_record).read_text(encoding="utf-8"))]
+        except (OSError, record.RecordError) as exc:
+            raise UsageError(f"{args.from_record}: {exc}") from None
     if not texts:
-        raise UsageError("pin needs references, or --from-file FILE")
+        raise UsageError("pin needs references, or --from-file FILE, or --from-record FILE")
     wanted = _refs(texts)
     if any(not r.is_full for r in wanted):
         raise UsageError("a pin names full references (sha256:<64 hex>), not prefixes")
@@ -636,6 +686,14 @@ def _gc(args: argparse.Namespace) -> int:
     return exit_code
 
 
+def _subset(text: str) -> "tuple[int, int]":
+    """``K/N`` -> (K, N): part K of N, by the object's two-hex fan-out folder (deterministic, so no state file is needed)."""
+    match = re.fullmatch(r"(\d+)/(\d+)", text.strip())
+    if not match or not 1 <= int(match.group(1)) <= int(match.group(2)) <= 256:
+        raise UsageError(f"--subset {text!r}: write K/N with 1 <= K <= N <= 256, as 3/7")
+    return int(match.group(1)), int(match.group(2))
+
+
 def _verify(args: argparse.Namespace) -> int:
     base = open_store(store_url(args.store), args.cache_dir)
     base.check_root(create=False)
@@ -650,6 +708,9 @@ def _verify(args: argparse.Namespace) -> int:
     wanted += [(_resolved(base, r), None) for r in parsed]
     if not wanted and not args.record:
         wanted = [(r, s) for r, s in base.objects()]          # an empty record names nothing: it verifies nothing
+    if args.subset:
+        part, parts = _subset(args.subset)
+        wanted = [(r, s) for r, s in wanted if int(r.hex[:2], 16) % parts == part - 1]
     rows: "list[dict[str, Any]]" = []
     bad = 0
     for ref, size in wanted:
@@ -680,7 +741,7 @@ def _verify(args: argparse.Namespace) -> int:
 
 
 _COMMANDS = {"put": _put, "get": _get, "path": _path, "cat": _cat, "exists": _exists, "stat": _stat, "cache": _cache,
-             "ls": _ls, "usage": _usage, "log": _log, "init": _init, "pin": _pin, "unpin": _unpin, "gc": _gc,
+             "ls": _ls, "usage": _usage, "status": _status, "log": _log, "init": _init, "pin": _pin, "unpin": _unpin, "gc": _gc,
              "verify": _verify}
 
 
@@ -695,19 +756,25 @@ def main(argv: "list[str] | None" = None) -> int:
         parser.print_help(sys.stderr)
         return 2
     if args.command in NOT_YET:
-        _err(f"{PROG}: `{args.command}` is not in this version yet (put, get, path, cat, exists, stat, cache, ls, usage, log, init, pin, unpin, gc and verify are)")
+        _err(f"{PROG}: `{args.command}` is not in this version yet (put, get, path, cat, exists, stat, cache, ls, usage, status, log, init, pin, unpin, gc and verify are)")
         return 1          # not a mistake in how it was called, so not the usage code
     try:
         return _COMMANDS[args.command](args)
     except UsageError as exc:
         _err(f"{PROG}: {exc}")
         return 2
+    except SeafileConnectionError as exc:
+        _err(f"{PROG}: the server or the network failed ({exc}); run it again")
+        return 3
     except SeafileAPIError as exc:
         _err(f"{PROG}: the server said: {exc}")
         return 1
     except SeafileAuthError as exc:
         _err(f"{PROG}: {exc}")
         return 1
+    except store.StoreTransportError as exc:
+        _err(f"{PROG}: {exc} (the server or the network failed: run it again)")
+        return 3
     except (store.StoreError, refs.RefError, OSError) as exc:
         _err(f"{PROG}: {exc}")
         return 1

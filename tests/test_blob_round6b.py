@@ -491,6 +491,66 @@ class CommandGuardTests(CliCase):
     def stub_rid(self) -> str:
         return next(iter(self.stub.files), "")
 
+    # -- the 0.11.1 items folded in --------------------------------------------------------------------------------
+
+    def test_status_says_what_the_store_holds_and_what_to_run_next(self):
+        self.run_cli("put", "--pin", "keep", str(self.source))
+        other = self.work / "other.bin"
+        other.write_bytes(os.urandom(3000))
+        self.run_cli("put", str(other))
+        code, out, _ = self.run_cli("status")
+        self.assertEqual(code, 0)
+        for text in ("store    :", "objects  : 2", "1 object(s) no pin names", "cache    :", "sfblob pin <name> <reference>"):
+            self.assertIn(text, out)
+        code, out, _ = self.run_cli("status", "--json")
+        data = __import__("json").loads(out)
+        self.assertEqual((data["objects"], data["pins"], data["unused"], data["missing"], data["writable"]), (2, 1, 1, 0, True))
+
+    def test_status_exits_1_and_names_the_fix_when_a_pinned_object_is_gone(self):
+        self.run_cli("put", str(self.source))
+        self.run_cli("pin", "later", "sha256:" + "cd" * 32)
+        code, out, _ = self.run_cli("status")
+        self.assertEqual(code, 1)
+        self.assertIn("sfblob put <the file> --pin", out)
+
+    def test_verify_subset_partitions_the_objects_by_fan_out_folder(self):
+        for n in range(8):
+            (self.work / f"f{n}.bin").write_bytes(os.urandom(500 + n))
+            self.run_cli("put", str(self.work / f"f{n}.bin"))
+        seen = []
+        for part in (1, 2, 3):
+            code, out, _ = self.run_cli("verify", "--subset", f"{part}/3", "--json")
+            self.assertEqual(code, 0)
+            seen.append({row["ref"] for row in __import__("json").loads(out)["objects"]})
+        self.assertEqual(len(set().union(*seen)), 8)          # together: every object
+        self.assertEqual(sum(len(s) for s in seen), 8)          # and no object twice
+        for bad in ("0/3", "4/3", "x", "1/300"):
+            self.assertEqual(self.run_cli("verify", "--subset", bad)[0], 2, bad)
+
+    def test_pin_from_record_pins_every_object_the_record_names(self):
+        folder = self.work / "tree"
+        folder.mkdir()
+        for n in range(3):
+            (folder / f"f{n}.bin").write_bytes(os.urandom(400 + n))
+        record = self.work / "blobs.txt"
+        self.assertEqual(self.run_cli("put", "-r", str(folder), "--record", str(record))[0], 0)
+        self.assertEqual(self.run_cli("pin", "tree", "--from-record", str(record))[0], 0)
+        self.assertIn("tree  3 object(s)", self.run_cli("pin", "ls")[1])
+
+    def test_a_dropped_connection_exits_3_and_a_fact_about_the_store_exits_1(self):
+        from git_remote_seafile.client import SeafileConnectionError
+        self.run_cli("put", str(self.source))
+        with patch.object(SeafileClient, "list_dir", side_effect=SeafileConnectionError("timed out")):
+            code, _, err = self.run_cli("ls")
+        self.assertEqual(code, 3)
+        self.assertIn("run it again", err)
+        self.assertEqual(self.run_cli("exists", "sha256:" + "ef" * 32)[0], 1)
+
+    def test_a_connection_error_that_escapes_a_command_exits_3_too(self):
+        from git_remote_seafile.client import SeafileConnectionError
+        with patch.object(cli, "open_store", side_effect=SeafileConnectionError("refused")):
+            self.assertEqual(self.run_cli("ls")[0], 3)
+
 
 class SmallFixTests(unittest.TestCase):
     def test_a_token_with_a_line_feed_is_never_handed_to_git(self):

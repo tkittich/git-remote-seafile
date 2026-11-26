@@ -98,6 +98,12 @@ M = [
     (B + "store.py", "        if not self._marker_checked:\n            self.check_root(create=False)          # the marker's feature lists", "        if False:\n            self.check_root(create=False)          # the marker's feature lists", T + "RoundSevenTests.test_the_pins_api_on_a_fresh_store_object_still_honours_the_marker"),
     (B + "tree.py", "        if names is None:\n            names = {unicodedata.normalize", "        if True:\n            names = {unicodedata.normalize", T + "RestoreCostTests.test_a_restore_copies_each_file_once_and_lists_each_folder_once"),
     (B + "cli.py", '"missing_list": [', '"missing_x": [', "tests.test_blob_cli.CommandTests.test_gc_json_names_the_missing_objects", "error_ok"),
+    # folded in from 0.11.1: status, --subset, pin --from-record, exit code 3
+    (B + "cli.py", 'run it again")\n        return 3', 'run it again")\n        return 1', "tests.test_blob_round6b.CommandGuardTests.test_a_connection_error_that_escapes_a_command_exits_3_too"),
+    (B + "cli.py", 'run it again)")\n        return 3', 'run it again)")\n        return 1', "tests.test_blob_round6b.CommandGuardTests.test_a_dropped_connection_exits_3_and_a_fact_about_the_store_exits_1"),
+    (B + "cli.py", "wanted = [(r, s) for r, s in wanted if int(r.hex[:2], 16) % parts == part - 1]", "pass", "tests.test_blob_round6b.CommandGuardTests.test_verify_subset_partitions_the_objects_by_fan_out_folder"),
+    (B + "cli.py", "    if args.from_record:\n        from . import record", "    if False:\n        from . import record", "tests.test_blob_round6b.CommandGuardTests.test_pin_from_record_pins_every_object_the_record_names", "error_ok"),
+    (B + "cli.py", "    return 1 if report.missing else 0", "    return 0", "tests.test_blob_round6b.CommandGuardTests.test_status_exits_1_and_names_the_fix_when_a_pinned_object_is_gone"),
 ]
 
 only = sys.argv[1:]

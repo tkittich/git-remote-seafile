@@ -80,6 +80,7 @@ A reference kept outside the store (git, a notebook) does not protect an object 
 sfblob put dataset.tar --pin thesis        # the pin is written first, then the object is listed
 sfblob pin thesis sha256:<full reference>... [--from-file refs.txt]
 sfblob pin ls                 # every pin; `sfblob pin ls NAME` shows one
+sfblob pin thesis --from-record blobs.txt   # keep every object a record file names (the roots live on the server)
 sfblob unpin thesis
 ```
 
@@ -91,6 +92,8 @@ In this version `gc` is a **report only**: it says what no pin names, which inte
 sfblob verify                      # every object is present
 sfblob verify --deep               # also reads each object back and hashes it (reads every byte)
 sfblob verify --from blobs.txt     # every entry of a record, at its recorded size
+sfblob verify --deep --subset 3/7  # a seventh of the objects (by fan-out folder): run 1/7 to 7/7 on seven days, no state file
+sfblob status                      # is this store all right? marker, counts, pins, cache, and the next command to run
 sfblob exists sha256:...           # exit 1 when one is missing
 sfblob ls                          # every object and its size
 sfblob usage                       # how many objects and bytes, and the local cache
@@ -113,7 +116,7 @@ Once over its bound the cache trims down to 70% of it, so it is not trimmed one 
 
 - Standard output is the answer and nothing else; notes, warnings and progress go to standard error.
 - `--json` answers with one JSON document, including the items that failed. Nothing ever prompts.
-- Exit codes: `0` success, `1` failure (a missing object, a server error), `2` a usage error (including a malformed reference). `exists` exits 1 when any reference is missing.
+- Exit codes: `0` success, `1` failure (a fact about the store: a missing object, a marker this version will not use, a pin that names an object that is gone), `2` a usage error (including a malformed reference), `3` the server or the network failed (a dropped connection, a timeout: run it again), `130` interrupted. `exists` exits 1 when any reference is missing.
 - The shared flags (`--store`, `--cache-dir`, `--json`, `--jobs`, `-q`) work before or after the command's name.
 
 ## 9. What to know before you rely on it
@@ -136,7 +139,8 @@ Once over its bound the cache trims down to 70% of it, so it is not trimmed one 
 | `path REF`, `cat REF` | the cache path; the bytes on standard output |
 | `exists REF...`, `stat REF` | presence; size |
 | `ls`, `usage` | the objects; counts and sizes |
-| `verify [REF...]` | presence and size; `--deep`, `--from RECORD` |
+| `verify [REF...]` | presence and size; `--deep`, `--from RECORD`, `--subset K/N` |
+| `status` | one read-only look at the store: marker, counts, pins, cache, and what to run next |
 | `pin NAME REF...`, `pin ls`, `unpin NAME` | keep objects from a later `gc` |
 | `gc` | a report; changes nothing |
 | `log [PATTERN]` | find a reference by the file's name (local) |
