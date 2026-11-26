@@ -87,14 +87,14 @@ class Soak:
         killed = False
         if kill:
             try:
-                out, err = proc.communicate(timeout=rng.uniform(0.1, 1.5))
+                raw_out, raw_err = proc.communicate(timeout=rng.uniform(0.1, 1.5))
             except subprocess.TimeoutExpired:
                 proc.kill()
                 killed = True
-                out, err = proc.communicate()
+                raw_out, raw_err = proc.communicate()
         else:
-            out, err = proc.communicate(timeout=300)
-        out, err = out.decode("utf-8", "replace"), err.decode("utf-8", "replace")          # `cat` writes bytes
+            raw_out, raw_err = proc.communicate(timeout=300)
+        out, err = raw_out.decode("utf-8", "replace"), raw_err.decode("utf-8", "replace")          # `cat` writes bytes
         with self.lock:
             self.ledger.write(json.dumps({"t": round(time.time(), 2), "worker": worker, "argv": argv, "rc": None if killed else proc.returncode,
                                           "killed": killed}) + "\n")
@@ -241,7 +241,7 @@ def main(argv: "list[str] | None" = None) -> int:
             server = args.server.rstrip("/")
             scratch = _container_login(server, args)
         else:
-            from e2e_harness import SeafileStub
+            from e2e_harness import SeafileStub  # type: ignore[import-not-found]
             stub = SeafileStub().start()
             server = stub.base_url
         store_url = f"seafile://{server}/{args.library or 'testlib'}/soak-{args.seed}"
