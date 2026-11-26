@@ -56,6 +56,7 @@ include tools/realserver_ci.py
 include tools/release_check.py
 include tools/mutate_check.py
 include tools/guard_mutations.py
+include tools/soak_blob.py
 include tools/check_red_before.py
 
 # CHANGELOG.md and ROADMAP.md link the desktop-client patch; an sdist that

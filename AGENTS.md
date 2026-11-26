@@ -209,6 +209,11 @@ real data**, even to test. Read-only commands (`--payload-verify`, report-only
   It removes each listed guard in turn, runs its test, and exits 1 for a survivor. Round 6 found that
   two reviewers could delete 8 of 12 and 5 of 24 guards with the suite staying green. Run it before a
   release candidate (a few minutes; POSIX-only rows say SKIPPED on Windows, so run those in Debian too).
+- **Soak the blob store before a release candidate.** `python tools/soak_blob.py --seconds 600 --workers 4` runs the real command
+  line in several processes on one store with random kills and injected faults, then an oracle (every object hash-clean, every
+  `put` that exited 0 present, no pin naming an object that no killed `put --pin` explains, fresh `get`s byte-identical, no
+  traceback). Against the stub it takes minutes; `--server URL` runs it on a throwaway container. There are no field users, so this
+  is the test that stands in for them.
 - **A fix that closes a shape gets a guard that does not need to know the sites.** Naming
   siblings by hand missed some three rounds running (X10 → Y2 → Z8; Y4 → Z2, Z3). Prefer a
   test that fails for the *next* site too: the vault config compared byte for byte after
