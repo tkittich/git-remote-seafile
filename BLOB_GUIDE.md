@@ -112,6 +112,25 @@ sfblob cache --clear
 
 Once over its bound the cache trims down to 70% of it, so it is not trimmed one object at a time. A path printed by `get` or `path` is not evicted for a minute.
 
+## 7b. Files you already back up with the snapshot tool
+
+A git vault in payload mode keeps its large files at `<vault>/payload/objects/<sha256[:2]>/<sha256>`, which is the same name and the same bytes as a blob object. So the commands that only read can open the vault as it is, with no copy and no upload:
+
+```
+sfblob --store seafile://<library>/<vault folder> --payload-vault ls
+sfblob --store seafile://<library>/<vault folder> --payload-vault get -o big.tar sha256:<reference>
+sfblob --store seafile://<library>/<vault folder> --payload-vault verify --deep --subset 1/7
+```
+
+`--payload-vault` works with `get`, `path`, `cat`, `exists`, `stat`, `ls`, `usage`, `verify` and `payload-record`; it is read-only (`put`, `pin`, `unpin`, `gc`, `init` and `status` are refused), and a vault is never adopted as a store without it. To restore the vault's payload files by path, write a record from a snapshot's manifest and use it with `get --from`:
+
+```
+sfblob --store seafile://<library>/<vault folder> --payload-vault payload-record -o vault.txt   # the newest snapshot, or --rev
+sfblob --store seafile://<library>/<vault folder> --payload-vault get --from vault.txt --to restored/
+```
+
+The record holds only the **payload** files (path, size, sha256). The vault's other files (the small ones git keeps), their modes and their modification times are not in it, and the command says how many it left out: do not delete the vault on the strength of the record. Nothing is moved or copied: the payload stays where the snapshot tool put it, and a payload `gc` still sees it as its own.
+
 ## 8. Scripts and AI agents
 
 - Standard output is the answer and nothing else; notes, warnings and progress go to standard error.

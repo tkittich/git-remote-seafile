@@ -107,6 +107,13 @@ M = [
     # structured --json failures
     (B + "cli.py", "        if getattr(args, \"json\", False):\n            sys.stdout.write(json.dumps({\"ok\": False,", "        if False:\n            sys.stdout.write(json.dumps({\"ok\": False,", "tests.test_blob_round6b.CommandGuardTests.test_json_failures_are_one_document_with_a_code_and_whether_to_retry", "error_ok"),
     (B + "cli.py", 'failed: run it again)", retryable=True)', 'failed: run it again)", retryable=False)', "tests.test_blob_round6b.CommandGuardTests.test_json_failures_are_one_document_with_a_code_and_whether_to_retry"),
+    # D1a and D1b: a vault's payload, read-only
+    (B + "payload_view.py", '        raise StoreError(READ_ONLY.format(what="put"))\n\n    def would_put', '        return None\n\n    def would_put', "tests.test_blob_payload_view.PayloadViewTests.test_nothing_can_be_written_and_nothing_was"),
+    (B + "payload_view.py", "        pass          # never the store's layout rules", "        client.store_layout = True", "tests.test_blob_payload_view.PayloadViewTests.test_the_client_is_never_told_it_is_a_stores_layout"),
+    (B + "payload_view.py", '    OBJECTS = "payload/objects"', '    OBJECTS = "blobs"', "tests.test_blob_payload_view.PayloadViewTests.test_the_read_verbs_work_on_a_vaults_payload_objects"),
+    (B + "payload_view.py", 'if not any(e.get("name") == "payload"', 'if False and not any(e.get("name") == "payload"', "tests.test_blob_payload_view.PayloadViewTests.test_a_folder_with_no_payload_is_not_a_vault"),
+    (B + "cli.py", "    if _PAYLOAD_VAULT and args.command in _NEEDS_A_STORE:", "    if False:", "tests.test_blob_payload_view.PayloadVaultCommandTests.test_the_commands_that_write_are_refused_with_a_usage_error"),
+    (B + "cli.py", "    if other:\n        _err(f\"Note: {other} other file(s)", "    if False:\n        _err(f\"Note: {other} other file(s)", "tests.test_blob_payload_view.PayloadRecordTests.test_payload_record_writes_the_record_says_what_it_leaves_out_and_get_from_restores_it"),
 ]
 
 only = sys.argv[1:]

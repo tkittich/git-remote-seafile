@@ -57,6 +57,12 @@ def store_url(given: "str | None") -> str:
     return url
 
 
+#: Set by ``main`` for the command that runs: ``--payload-vault`` opens a vault's payload objects, read-only.
+_PAYLOAD_VAULT = False
+#: What cannot be done to a vault's payload (it is read-only and is not a store).
+_NEEDS_A_STORE = frozenset({"put", "pin", "unpin", "gc", "init", "status"})
+
+
 def open_store(url: str, cache_dir: "str | None") -> store.Store:
     from ..client import SeafileClient
     from ..url import parse_seafile_url
@@ -79,6 +85,9 @@ def open_store(url: str, cache_dir: "str | None") -> store.Store:
         # Decided from the server the client actually uses, not from the URL's text: ``seafile://lib/folder`` names no
         # server, and the one in the configuration may be plain http (review R6 G3, D2).
         plain_http = str(client.server_url or "").lower().startswith("http://")
+        if _PAYLOAD_VAULT:
+            from .payload_view import PayloadView
+            return PayloadView(client, known["id"], parsed.repo_path, cache, verify_by_download=plain_http, factory=factory)
         return store.Store(client, known["id"], parsed.repo_path, cache, verify_by_download=plain_http, factory=factory)
 
     return factory()
@@ -171,6 +180,9 @@ def _common(top: bool) -> argparse.ArgumentParser:
     common.add_argument("--jobs", type=int, default=default(4), help="transfers at once for a folder (default 4; the server "
                                                                        "slows a client down above about that)")
     common.add_argument("-q", "--quiet", action="store_true", default=default(False), help="no progress line")
+    common.add_argument("--payload-vault", action="store_true", default=default(False),
+                        help="read the store address as a git vault in payload mode: its payload/objects are read, never written "
+                             "(get, path, cat, exists, stat, ls, usage, verify, payload-record)")
     return common
 
 
@@ -251,6 +263,10 @@ def _parser() -> argparse.ArgumentParser:
     for name in NOT_YET:          # known words, so a global flag before one answers "not yet" and not a usage error
         sub.add_parser(name, parents=shared, add_help=False).add_argument("rest", nargs=argparse.REMAINDER)
 
+    prec = sub.add_parser("payload-record", parents=shared, help="write a record file (path, size, sha256) for a vault's payload "
+                                                              "files, from a snapshot's manifest (use with --payload-vault and get --from)")
+    prec.add_argument("--rev", help="the snapshot (default: the newest branch of the vault)")
+    prec.add_argument("-o", "--output", required=True, metavar="FILE", help="the record file to write (it must not exist)")
     sub.add_parser("status", parents=shared, help="is this store all right? marker, counts, pins, cache, and what to run next")
     sub.add_parser("ls", parents=shared, help="list the objects in the store, with their sizes")
     sub.add_parser("usage", parents=shared, help="how many objects the store holds, how many bytes, and the local cache")
@@ -508,6 +524,51 @@ def _usage(args: argparse.Namespace) -> int:
     return 0
 
 
+def _manifest_of_vault(url: str, rev: "str | None") -> "tuple[dict[str, Any], int]":
+    """The payload manifest of the vault's snapshot, and how many other files that snapshot keeps in git.  Clones the vault's git
+    data (small: payload files are not in git) with the helper, into a temporary folder that is removed."""
+    import subprocess
+
+    from ..snapshot import gitrun, payload_manifest, payload_upload
+    with tempfile.TemporaryDirectory(prefix="sfblob-vault-") as scratch:
+        git_dir = Path(scratch) / "vault.git"
+        cloned = subprocess.run(["git", "clone", "--bare", "--quiet", url, str(git_dir)], capture_output=True, text=True, timeout=1800)
+        if cloned.returncode != 0:
+            raise store.StoreError(f"could not read the vault's git data from {url}: {cloned.stderr.strip()[-300:]}")
+        work = Path(scratch)
+        if not rev:
+            heads = gitrun.git(git_dir, None, ["for-each-ref", "--sort=-committerdate", "--count=1", "--format=%(objectname)",
+                                               "refs/heads"], cwd=work, check=False)
+            rev = heads.stdout.strip() or "HEAD"
+        manifest = payload_manifest.load_manifest(git_dir, work, rev)
+        if manifest is None:
+            raise store.StoreError(f"{rev[:12]} of the vault has no payload manifest ({payload_upload.PAYLOAD_MANIFEST}): "
+                                   "it holds no payload files")
+        listing = gitrun.git(git_dir, None, ["ls-tree", "-r", "--name-only", rev], cwd=work, check=False)
+        in_git = len([line for line in listing.stdout.splitlines() if line and not line.startswith(payload_upload.PAYLOAD_RESERVED_DIR)])
+        return manifest, in_git
+
+
+def _payload_record(args: argparse.Namespace) -> int:
+    from . import payload_view, record
+    if not _PAYLOAD_VAULT:
+        raise UsageError("payload-record reads a vault: add --payload-vault and name the vault with --store")
+    out = Path(args.output)
+    if out.exists():
+        raise UsageError(f"{out} already exists; payload-record does not overwrite")
+    url = store_url(args.store)
+    manifest, other = _manifest_of_vault(url, args.rev)
+    entries = payload_view.records_from_manifest(manifest)
+    out.write_text(record.render(entries), encoding="utf-8", newline="\n")
+    total = sum(e.size for e in entries)
+    _say({"record": str(out), "files": len(entries), "bytes": total, "other_files_in_git": other}, args,
+         f"wrote {len(entries)} payload file(s), {format_bytes(total)}, to {out}")
+    if other:
+        _err(f"Note: {other} other file(s) of this snapshot are kept in git, not in the payload, and are not in this record "
+             "(nor are modes or modification times): deleting the vault after using the record would lose them")
+    return 0
+
+
 def _status(args: argparse.Namespace) -> int:
     """One read-only look: which store, what it holds, what no pin names, what a pin names that is gone, and the next command."""
     url = store_url(args.store)
@@ -741,7 +802,7 @@ def _verify(args: argparse.Namespace) -> int:
 
 
 _COMMANDS = {"put": _put, "get": _get, "path": _path, "cat": _cat, "exists": _exists, "stat": _stat, "cache": _cache,
-             "ls": _ls, "usage": _usage, "status": _status, "log": _log, "init": _init, "pin": _pin, "unpin": _unpin, "gc": _gc,
+             "ls": _ls, "usage": _usage, "status": _status, "payload-record": _payload_record, "log": _log, "init": _init, "pin": _pin, "unpin": _unpin, "gc": _gc,
              "verify": _verify}
 
 
@@ -754,6 +815,11 @@ def main(argv: "list[str] | None" = None) -> int:
         return int(exc.code) if isinstance(exc.code, int) else 2
     if not args.command:
         parser.print_help(sys.stderr)
+        return 2
+    global _PAYLOAD_VAULT
+    _PAYLOAD_VAULT = bool(getattr(args, "payload_vault", False))
+    if _PAYLOAD_VAULT and args.command in _NEEDS_A_STORE:
+        _err(f"{PROG}: --payload-vault opens a vault's payload read-only: `{args.command}` is for a blob store")
         return 2
     if args.command in NOT_YET:
         _err(f"{PROG}: `{args.command}` is not in this version yet (put, get, path, cat, exists, stat, cache, ls, usage, status, log, init, pin, unpin, gc and verify are)")

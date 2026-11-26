@@ -124,6 +124,9 @@ def place_new(temp: Path, target: Path) -> bool:
 
 
 class Store:
+    #: Where the objects are, under the root.  ``payload_view.PayloadView`` reads a vault's ``payload/objects`` instead.
+    OBJECTS = "blobs"
+
     def __init__(
         self, client: Any, repo_id: str, root: str, cache: "cache_mod.Cache | None" = None,
         *, verify_by_download: bool = False, factory: "Callable[[], Store] | None" = None,
@@ -141,6 +144,10 @@ class Store:
         #: fan-out folder -> (when it was listed, {object name: size}); shared with the clones a folder run makes
         self._presence: "dict[str, tuple[float, dict[str, int]]]" = {}
         self._presence_ttl = 0.0          # 0: every check asks the server
+        self._configure_client(client)
+        self._lock = threading.Lock()
+
+    def _configure_client(self, client: Any) -> None:
         try:
             client.reuse_upload_links = True          # one upload link per folder, not one per object
         except AttributeError:
@@ -150,12 +157,11 @@ class Store:
             client.store_layout = True
         except AttributeError:
             pass
-        self._lock = threading.Lock()
 
     # -- layout -----------------------------------------------------------------------------------------------
 
     def blob_dir(self, hex_digest: str) -> str:
-        return f"{self.root}/blobs/{hex_digest[:2]}"
+        return f"{self.root}/{self.OBJECTS}/{hex_digest[:2]}"
 
     def blob_path(self, ref: refs.Ref) -> str:
         return f"{self.blob_dir(ref.hex)}/{ref.hex}"
@@ -308,7 +314,7 @@ class Store:
         if ref.is_full:
             return ref
         self.check_root(create=False)          # an unmarked folder says so, not "no object starts with"
-        names = [str(e.get("name", "")) for e in self._list(f"{self.root}/blobs/{refs.fanout(ref)}")
+        names = [str(e.get("name", "")) for e in self._list(f"{self.root}/{self.OBJECTS}/{refs.fanout(ref)}")
                  if e.get("type") != "dir"]      # a folder named like an object is not one
         try:
             return refs.resolve(ref, names)
@@ -332,10 +338,10 @@ class Store:
         """Every object in the store with its size: one listing of ``blobs/``, then one per fan-out folder that exists."""
         self.check_root(create=False)
         found: "list[tuple[refs.Ref, int]]" = []
-        for fan in sorted(str(e.get("name", "")) for e in self._list(f"{self.root}/blobs") if e.get("type") == "dir"):
+        for fan in sorted(str(e.get("name", "")) for e in self._list(f"{self.root}/{self.OBJECTS}") if e.get("type") == "dir"):
             if len(fan) != 2:
                 continue
-            for entry in self._list(f"{self.root}/blobs/{fan}"):
+            for entry in self._list(f"{self.root}/{self.OBJECTS}/{fan}"):
                 name, size = str(entry.get("name", "")), entry.get("size")
                 if (entry.get("type") != "dir" and len(name) == 64 and name.startswith(fan)
                         and isinstance(size, int) and not isinstance(size, bool)):
