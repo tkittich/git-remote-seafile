@@ -98,7 +98,9 @@ class GitFallbackTests(_StoreCase):
 
 class PlaintextTokenNoticeTests(_StoreCase):
     def _config(self, body: str) -> None:
-        (self.home / ".git-seafile.json").write_text(body, encoding="utf-8")
+        path = self.home / ".git-seafile.json"
+        path.write_text(body, encoding="utf-8")
+        path.chmod(0o600)          # a config readable by others earns a "Warning:" on POSIX, which these tests do not mean to see
 
     def test_a_token_in_the_config_file_is_announced_as_deprecated(self) -> None:
         self._config('{"server": "https://sf.example/seafile", "token": "plain"}')

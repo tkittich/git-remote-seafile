@@ -46,7 +46,11 @@ class GitCredTestCase(unittest.TestCase):
         self.addCleanup(patcher.stop)
 
     def use_helper(self, helper: str) -> None:
-        self.config.write_text(f"[credential]\n\thelper = {helper}\n", encoding="utf-8")
+        # Quoted: an unquoted ``;`` or ``#`` starts a comment in a git config value, so ``!f() { a; b; }; f`` reached git as
+        # ``!f() { a`` (a syntax error) and every helper that was meant to answer failed at once: the tests that expect
+        # "no answer" passed for that reason, not the one they name (found on Debian, round 8).
+        value = '"' + helper.replace("\\", "\\\\").replace('"', '\\"') + '"' if helper else ""
+        self.config.write_text(f"[credential]\n\thelper = {value}\n", encoding="utf-8")
 
     def askpass(self) -> Path:
         """A GIT_ASKPASS program that records every call and answers ``secret``."""

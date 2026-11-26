@@ -957,7 +957,8 @@ class RestoreCostTests(TreeCase):
         with patch.object(tree.os, "listdir", counting_listdir):
             again = tree.get_tree(self.make("c"), self.work / "blobs.txt", out)
         self.assertEqual(again.in_place, 4)
-        self.assertLessEqual(len(listings), 3)          # three folders, listed once each (it was once per file)
+        mine = [p for p in listings if str(p).startswith(str(out))]          # other code lists folders too (name probes)
+        self.assertLessEqual(len(mine), 3)          # three folders, listed once each (it was once per file)
 
     @unittest.skipUnless(os.name == "nt", "needs a volume that finds a folder under another case")
     def test_a_folder_on_the_way_spelled_otherwise_is_not_in_place(self):
