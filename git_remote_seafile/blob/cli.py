@@ -758,30 +758,32 @@ def main(argv: "list[str] | None" = None) -> int:
     if args.command in NOT_YET:
         _err(f"{PROG}: `{args.command}` is not in this version yet (put, get, path, cat, exists, stat, cache, ls, usage, status, log, init, pin, unpin, gc and verify are)")
         return 1          # not a mistake in how it was called, so not the usage code
+    def failed(code: str, status: int, message: str, retryable: bool = False) -> int:
+        """Say it on standard error as ever; with ``--json`` also as one document on standard output, so a program can tell "the
+        network failed, run it again" from "that object is not in the store" without reading prose."""
+        _err(f"{PROG}: {message}")
+        if getattr(args, "json", False):
+            sys.stdout.write(json.dumps({"ok": False, "error": {"code": code, "message": message, "retryable": retryable,
+                                                                "exit": status}}, sort_keys=True) + "\n")
+        return status
+
     try:
         return _COMMANDS[args.command](args)
     except UsageError as exc:
-        _err(f"{PROG}: {exc}")
-        return 2
+        return failed("usage", 2, str(exc))
     except SeafileConnectionError as exc:
-        _err(f"{PROG}: the server or the network failed ({exc}); run it again")
-        return 3
+        return failed("network", 3, f"the server or the network failed ({exc}); run it again", retryable=True)
     except SeafileAPIError as exc:
-        _err(f"{PROG}: the server said: {exc}")
-        return 1
+        return failed("server", 1, f"the server said: {exc}")
     except SeafileAuthError as exc:
-        _err(f"{PROG}: {exc}")
-        return 1
+        return failed("auth", 1, str(exc))
     except store.StoreTransportError as exc:
-        _err(f"{PROG}: {exc} (the server or the network failed: run it again)")
-        return 3
+        return failed("network", 3, f"{exc} (the server or the network failed: run it again)", retryable=True)
     except (store.StoreError, refs.RefError, OSError) as exc:
-        _err(f"{PROG}: {exc}")
-        return 1
+        return failed("store" if isinstance(exc, (store.StoreError, refs.RefError)) else "io", 1, str(exc))
     except KeyboardInterrupt:
         _err("\nInterrupted.")
         return 130
-
 
 if __name__ == "__main__":
     sys.exit(main())

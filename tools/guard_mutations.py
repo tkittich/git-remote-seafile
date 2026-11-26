@@ -104,6 +104,9 @@ M = [
     (B + "cli.py", "wanted = [(r, s) for r, s in wanted if int(r.hex[:2], 16) % parts == part - 1]", "pass", "tests.test_blob_round6b.CommandGuardTests.test_verify_subset_partitions_the_objects_by_fan_out_folder"),
     (B + "cli.py", "    if args.from_record:\n        from . import record", "    if False:\n        from . import record", "tests.test_blob_round6b.CommandGuardTests.test_pin_from_record_pins_every_object_the_record_names", "error_ok"),
     (B + "cli.py", "    return 1 if report.missing else 0", "    return 0", "tests.test_blob_round6b.CommandGuardTests.test_status_exits_1_and_names_the_fix_when_a_pinned_object_is_gone"),
+    # structured --json failures
+    (B + "cli.py", "        if getattr(args, \"json\", False):\n            sys.stdout.write(json.dumps({\"ok\": False,", "        if False:\n            sys.stdout.write(json.dumps({\"ok\": False,", "tests.test_blob_round6b.CommandGuardTests.test_json_failures_are_one_document_with_a_code_and_whether_to_retry", "error_ok"),
+    (B + "cli.py", 'return failed("network", 3, f"the server or the network failed ({exc}); run it again", retryable=True)', 'return failed("network", 3, f"the server or the network failed ({exc}); run it again", retryable=False)', "tests.test_blob_round6b.CommandGuardTests.test_json_failures_are_one_document_with_a_code_and_whether_to_retry"),
 ]
 
 only = sys.argv[1:]

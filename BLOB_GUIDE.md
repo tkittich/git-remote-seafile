@@ -116,6 +116,7 @@ Once over its bound the cache trims down to 70% of it, so it is not trimmed one 
 
 - Standard output is the answer and nothing else; notes, warnings and progress go to standard error.
 - `--json` answers with one JSON document, including the items that failed. Nothing ever prompts.
+- With `--json` a failure is one document on standard output as well as the text on standard error: `{"ok": false, "error": {"code": "network", "message": "...", "retryable": true, "exit": 3}}`. The codes are `usage` (2), `network` (3, retryable: run it again), `server`, `auth`, `store` (a fact about the store: not in the store, a marker this version will not use) and `io` (1). Without `--json` nothing is written to standard output.
 - Exit codes: `0` success, `1` failure (a fact about the store: a missing object, a marker this version will not use, a pin that names an object that is gone), `2` a usage error (including a malformed reference), `3` the server or the network failed (a dropped connection, a timeout: run it again), `130` interrupted. `exists` exits 1 when any reference is missing.
 - The shared flags (`--store`, `--cache-dir`, `--json`, `--jobs`, `-q`) work before or after the command's name.
 

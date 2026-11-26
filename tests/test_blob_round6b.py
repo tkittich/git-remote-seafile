@@ -546,6 +546,26 @@ class CommandGuardTests(CliCase):
         self.assertIn("run it again", err)
         self.assertEqual(self.run_cli("exists", "sha256:" + "ef" * 32)[0], 1)
 
+    def test_json_failures_are_one_document_with_a_code_and_whether_to_retry(self):
+        import json
+        from git_remote_seafile.client import SeafileConnectionError
+        self.run_cli("put", str(self.source))
+        with patch.object(SeafileClient, "list_dir", side_effect=SeafileConnectionError("timed out")):
+            code, out, err = self.run_cli("ls", "--json")
+        error = json.loads(out)["error"]
+        self.assertEqual((code, error["code"], error["retryable"], error["exit"]), (3, "network", True, 3))
+        self.assertIn("run it again", err)          # the text is still on standard error
+        code, out, _ = self.run_cli("stat", "sha256:" + "ab" * 32, "--json")
+        error = json.loads(out)["error"]
+        self.assertEqual((code, error["code"], error["retryable"]), (1, "store", False))
+        code, out, _ = self.run_cli("verify", "--subset", "9/3", "--json")
+        self.assertEqual((code, json.loads(out)["error"]["code"]), (2, "usage"))
+        self.assertEqual(json.loads(out)["ok"], False)
+
+    def test_without_json_a_failure_writes_nothing_to_standard_output(self):
+        code, out, _ = self.run_cli("stat", "sha256:" + "ab" * 32)
+        self.assertEqual((code, out), (1, ""))
+
     def test_a_connection_error_that_escapes_a_command_exits_3_too(self):
         from git_remote_seafile.client import SeafileConnectionError
         with patch.object(cli, "open_store", side_effect=SeafileConnectionError("refused")):
