@@ -533,6 +533,18 @@ class SmallFixTests(unittest.TestCase):
         self.assertEqual(len(asked), 1)
 
 
+class CommitSeenTests(unittest.TestCase):
+    def test_a_folder_that_cannot_be_listed_stops_the_age_rule(self):
+        from git_remote_seafile.snapshot import common, payload_guards
+
+        class Broken:
+            def list_dir(self, rid, path):
+                raise ConnectionError("down")
+
+        with self.assertRaises(common.SnapshotError):
+            payload_guards.read_commit_seen(Broken(), "rid", "/base", 1_000_000.0)
+
+
 if __name__ == "__main__":
     tempfile.gettempdir()
     unittest.main()

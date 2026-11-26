@@ -205,6 +205,10 @@ real data**, even to test. Read-only commands (`--payload-verify`, report-only
   slow class); `--jobs 24` helps on a big machine, and `.github/workflows/mutate.yml` runs a sweep on
   Linux. `.github/workflows/fuzz.yml` runs the differential properties
   (`tests/test_*_property.py`) with many seeds on macOS, Windows and Linux, by hand.
+- **A guard of the blob store (or a fix a reviewer asked for) gets a row in `tools/guard_mutations.py`.**
+  It removes each listed guard in turn, runs its test, and exits 1 for a survivor. Round 6 found that
+  two reviewers could delete 8 of 12 and 5 of 24 guards with the suite staying green. Run it before a
+  release candidate (a few minutes; POSIX-only rows say SKIPPED on Windows, so run those in Debian too).
 - **A fix that closes a shape gets a guard that does not need to know the sites.** Naming
   siblings by hand missed some three rounds running (X10 → Y2 → Z8; Y4 → Z2, Z3). Prefer a
   test that fails for the *next* site too: the vault config compared byte for byte after

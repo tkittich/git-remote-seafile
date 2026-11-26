@@ -325,8 +325,13 @@ def read_commit_seen(client: Any, rid: str, base: str, now: float) -> "tuple[dic
             name = entry.get("name", "")
             if isinstance(name, str) and _COMMIT_SEEN_CONFLICT.match(name):
                 conflicts.append(name)
-    except Exception:
-        conflicts = []   # no listing of the folder: only the record itself is read
+    except Exception as exc:
+        # Without the listing a conflict copy (another machine's first-seen times, which are younger) could be missed and a
+        # young commit judged old enough to delete: stop, as for an unreadable record (review R6 G23).  A folder that does
+        # not exist yet lists as empty and does not come here.
+        raise common.SnapshotError(
+            f"could not list {base} ({type(exc).__name__}: {exc}); the age of the commits cannot be judged. Retry"
+        ) from None
     merged: dict[str, float] = {}
     for name in [*names, *conflicts]:
         try:
