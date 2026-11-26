@@ -62,6 +62,12 @@ def walk_long(root: "Path | str", onerror: "Callable[[OSError], Any] | None" = N
         yield dirpath, dirnames, filenames
 
 
+def _retries_a_held_placement() -> bool:
+    """Only Windows holds a file for a scanner or indexer, so only there is a short wait worth it (a function, so a test
+    can say "Windows" without patching ``os.name``, which changes how the whole standard library behaves)."""
+    return os.name == "nt"
+
+
 def _download_verified(
     client: Any, rid: str, source_path: str, dest: Path, item: dict[str, Any], scratch: Path
 ) -> str | None:
@@ -110,7 +116,7 @@ def _download_verified(
                 return None
             except PermissionError as exc:
                 last = f"could not place the downloaded file: {type(exc).__name__}: {exc}"
-                if os.name != "nt" or tries == 4:
+                if not _retries_a_held_placement() or tries == 4:
                     break
                 time.sleep(0.2 * (tries + 1))
             except OSError as exc:

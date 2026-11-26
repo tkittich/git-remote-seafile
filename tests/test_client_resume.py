@@ -293,7 +293,7 @@ class RestoreRetryTests(unittest.TestCase):
             real(src, dst)  # type: ignore[arg-type]
 
         with patch.object(self.restore.os, "replace", side_effect=flaky), patch.object(self.restore.time, "sleep"), \
-                patch.object(self.restore.os, "name", "nt"):
+                patch.object(self.restore, "_retries_a_held_placement", return_value=True):
             why = self.restore._download_verified(client, "rid", "/o/x", self.dest, self.item, self.scratch)
         self.assertIsNone(why)
         self.assertEqual(self.dest.read_bytes(), OBJECT)
