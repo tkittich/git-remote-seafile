@@ -84,6 +84,11 @@ M = [
     (B + "cli.py", "        exit_code = 1          # the store is not what its pins say", "        exit_code = 0          # the store is not what its pins say", "tests.test_blob_cli.CommandTests.test_gc_warns_about_a_pinned_object_that_is_not_in_the_store"),
     ("tools/gates.py", '                modules.update(_blob_tests(root))\n                modules.update({"test_entry_points", "test_docs_consistency"})', '                modules.update({"test_entry_points", "test_docs_consistency"})', T + "GatesMappingTests"),
     ("git_remote_seafile/client.py", "                if not unchanged:\n                    file_resp.close()", "                if False:\n                    file_resp.close()", "tests.test_client_resume.ResumeTests.test_a_partial_that_changes_while_the_request_runs_is_not_appended_to"),
+    # round 8 (Opus)
+    (B + "store.py", "            if not isinstance(value, list) or not all(isinstance(name, str) for name in value):", "            if False:", T + "RoundSevenTests.test_a_feature_value_that_is_not_a_list_of_names_refuses_the_store"),
+    (B + "store.py", "            self.check_root(create=False)          # reads the marker: a store this version may not write is refused here too\n            self.require_writable()", "            pass", T + "RoundSevenTests.test_a_dry_run_into_a_read_only_store_is_refused"),
+    (B + "tree.py", 'stages = [p for p in files if p.name.startswith(".sfblob-part-")]', "stages = []", T + "StageFileTests"),
+    ("tools/gates.py", "            if reached & _blob_imports(root):\n                modules.update(_blob_tests(root))", "            pass", T + "GatesMappingTests"),
 ]
 
 only = sys.argv[1:]

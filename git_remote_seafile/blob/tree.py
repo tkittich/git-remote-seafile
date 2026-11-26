@@ -147,6 +147,10 @@ def put_tree(
     if not directory.is_dir():
         raise StoreError(f"{directory} is not a folder")
     files, skipped, walk_problems = _walk(directory)
+    # A stage file an interrupted ``get`` left in this folder is not data (review R8 Opus P12).
+    stages = [p for p in files if p.name.startswith(".sfblob-part-")]
+    skipped.extend(f"{p.relative_to(directory).as_posix()}: an unfinished stage file of sfblob" for p in stages)
+    files = [p for p in files if p not in stages]
     if record_path is not None:
         # The record sits in the folder it describes (`put -r . --record blobs.txt`): it is not part of the data,
         # and uploading its previous bytes under its own name would make it disagree with itself forever.

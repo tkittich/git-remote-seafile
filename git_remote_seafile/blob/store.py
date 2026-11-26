@@ -267,8 +267,15 @@ class Store:
             raise StoreError(f"{self.root}/{MARKER} is a marker of another format; this version reads format {FORMAT}")
         # Feature lists (as ext4's): a later version that must stop older ones can say so without a new format number,
         # which would stop them *reading* as well.  Absent means empty; an unknown ``compat`` name is ignored.
-        unknown = {key: [str(n) for n in data.get(key, []) if str(n) not in KNOWN_FEATURES.get(key, ())]
-                   for key in ("incompat", "ro_compat") if isinstance(data.get(key, []), list)}
+        for key in ("incompat", "ro_compat", "compat"):
+            value = data.get(key, [])
+            if not isinstance(value, list) or not all(isinstance(name, str) for name in value):
+                # A feature value this version cannot read as a list of names must not read as "no features": that is how a
+                # later version's lever against older writers would fail open (review R8 Opus P2).
+                raise StoreError(f"{self.root}/{MARKER} has a {key!r} this version cannot read (not a list of names); "
+                                 "use a newer sfblob")
+        unknown = {key: [n for n in data.get(key, []) if n not in KNOWN_FEATURES.get(key, ())]
+                   for key in ("incompat", "ro_compat")}
         if unknown.get("incompat"):
             raise StoreError(f"{self.root}/{MARKER} needs features this version does not have ({', '.join(unknown['incompat'])}); "
                              "use a newer sfblob")
@@ -409,6 +416,9 @@ class Store:
         names = {str(e.get("name", "")) for e in entries}
         if MARKER not in names:
             self._refuse_unfit_root(entries, names)          # what the real put would refuse, said without writing
+        else:
+            self.check_root(create=False)          # reads the marker: a store this version may not write is refused here too
+            self.require_writable()
         have = self._listed_size(ref) if MARKER in names else None
         return Put(ref, size, uploaded=have != size)
 

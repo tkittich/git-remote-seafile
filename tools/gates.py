@@ -207,6 +207,22 @@ def _blob_tests(root: Path) -> list[str]:
     return sorted(p.stem for p in (root / "tests").glob("test_blob*.py"))
 
 
+_BLOB_UP_IMPORT = re.compile(r"^[ \t]*from \.\.(\w*) import (?:\(([^)]*)\)|([\w ,]+))", re.MULTILINE)
+
+
+def _blob_imports(root: Path) -> set[str]:
+    """The top-level package modules the blob package imports (``from ..units import ...``): an edit of one of them can break
+    the blob store, and the import graph does not scan ``blob/`` (review R8 Opus P11)."""
+    found: set[str] = set()
+    for path in (root / "git_remote_seafile" / "blob").glob("*.py"):
+        for module, *names in _BLOB_UP_IMPORT.findall(path.read_text(encoding="utf-8")):
+            if module:
+                found.add(module)
+            else:
+                found.update(_split_names("".join(names)))
+    return found
+
+
 def suite_for_changes(paths: list[str], root: Path = _ROOT) -> list[str] | None:
     """The test modules the changed *paths* can reach; ``None`` means the whole suite.
 
@@ -246,6 +262,8 @@ def suite_for_changes(paths: list[str], root: Path = _ROOT) -> list[str] | None:
             reached = _reached_by(stem, graph)
             if reached & _SHARED_STEMS:
                 return None
+            if reached & _blob_imports(root):
+                modules.update(_blob_tests(root))
             tests, snapshot = _importers(reached, root)
             # The end-to-end runs drive the helper as a process, so they import
             # nothing by name and still reach every helper-side module.

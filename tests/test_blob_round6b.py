@@ -591,6 +591,18 @@ class RoundSevenTests(StoreCase):
             other.exists(self.ref())
         self.assertIn("newer sfblob", str(caught.exception))
 
+    def test_a_feature_value_that_is_not_a_list_of_names_refuses_the_store(self):
+        for bad in ("packs", {"packs": 1}, 5, [1, 2], None):
+            other = self._marker(incompat=bad)
+            with self.assertRaises(store.StoreError, msg=repr(bad)) as caught:
+                other.exists(self.ref())
+            self.assertIn("cannot read", str(caught.exception))
+
+    def test_a_dry_run_into_a_read_only_store_is_refused(self):
+        other = self._marker(ro_compat=["tombstones"])
+        with self.assertRaises(store.StoreError):
+            other.would_put(self.source)
+
     def test_an_unknown_compat_feature_is_ignored(self):
         other = self._marker(compat=["hint"])
         self.assertTrue(other.put(self.source).ref.hex == SHA)
@@ -804,6 +816,14 @@ class RenameRedirectTests(unittest.TestCase):
         self.assertEqual(self._client(Resp()).rename_entry_result("r", "/d/a", "b"), (301, None))
 
 
+class StageFileTests(TreeCase):
+    def test_a_stage_file_left_by_an_interrupted_get_is_not_uploaded(self):
+        (self.src / ".sfblob-part-0123456789abcdef").write_bytes(b"half a file")
+        report = tree.put_tree(self.make(), self.src, None)
+        self.assertTrue(any("stage file" in s for s in report.skipped))
+        self.assertNotIn(".sfblob-part-0123456789abcdef", [e.path for e in report.entries])
+
+
 class GatesMappingTests(unittest.TestCase):
     def test_an_edit_of_a_blob_module_reaches_the_blob_tests(self):
         sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "tools"))
@@ -811,8 +831,8 @@ class GatesMappingTests(unittest.TestCase):
             import gates
         finally:
             sys.path.pop(0)
-        for changed in ("git_remote_seafile/blob/cli.py", "git_remote_seafile/blob/refs.py",
-                        "git_remote_seafile/snapshot/payload_upload.py"):
+        for changed in ("git_remote_seafile/blob/cli.py", "git_remote_seafile/blob/refs.py", "git_remote_seafile/units.py",
+                        "git_remote_seafile/url.py", "git_remote_seafile/snapshot/payload_upload.py"):
             reached = gates.suite_for_changes([changed])
             self.assertTrue(reached is None or {"test_blob_cli", "test_blob_store", "test_blob_tree"} <= set(reached), changed)
 
