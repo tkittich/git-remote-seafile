@@ -55,6 +55,16 @@ M = [
     ("git_remote_seafile/snapshot/restore_only.py", ' or re.match(r"^[A-Za-z]:", path)', "", T + "SmallFixTests.test_a_drive_letter_behind_dot_slash_is_refused"),
     ("git_remote_seafile/umbrella.py", "sys.argv = saved ", "pass ", T + "SmallFixTests.test_the_umbrella_keeps_the_callers_argv_and_answers_version"),
     ("git_remote_seafile/client.py", "if not asked_git and self._credentials_from_git", "if self._credentials_from_git", T + "SmallFixTests.test_git_is_asked_for_a_credential_once_when_the_config_asks_for_it"),
+    # round 7 (Opus)
+    (B + "store.py", "            except ReadBackMismatch:\n                # Wrong bytes", "            except StoreError:\n                # Wrong bytes", T + "RoundSevenTests.test_a_read_that_failed_proves_nothing_and_deletes_nothing"),
+    (B + "store.py", 'if unknown.get("incompat"):', "if False:", T + "RoundSevenTests.test_an_unknown_incompat_feature_refuses_everything"),
+    (B + "store.py", "        self.check_root(create=True)\n        self.require_writable()", "        self.check_root(create=True)", T + "RoundSevenTests.test_an_unknown_ro_compat_feature_lets_a_store_be_read_but_not_written"),
+    (B + "store.py", "        self.check_root(create=False)          # a full reference skips", "        pass          # a full reference skips", T + "RoundSevenTests.test_an_unknown_incompat_feature_refuses_everything"),
+    (B + "pins.py", "if isinstance(listed, int) and not isinstance(listed, bool) and listed != len(data):", "if False:", T + "RoundSevenTests.test_a_pin_body_shorter_than_the_listing_says_is_refused"),
+    (B + "tree.py", '        if not any(unicodedata.normalize("NFC", n)', '        if False and not any(unicodedata.normalize("NFC", n)', T + "CaseSpellingTests.test_a_file_found_under_another_spelling_is_not_in_place"),
+    (B + "record.py", 'if text.startswith("\\ufeff"):', "if False:", T + "RecordRoundSevenTests.test_a_path_cannot_start_with_a_byte_order_mark"),
+    (B + "record.py", "if len(fields) > 3:", "if False:", T + "RecordRoundSevenTests.test_a_line_with_more_fields_says_a_newer_version_may_have_written_it"),
+    (B + "gcreport.py", "if name in _NEWER_ROOT:", "if False:", T + "RoundSevenTests.test_the_report_keeps_a_newer_versions_entries_apart_from_foreign_ones"),
 ]
 
 only = sys.argv[1:]

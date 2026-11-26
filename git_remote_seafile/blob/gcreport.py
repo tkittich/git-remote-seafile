@@ -18,6 +18,10 @@ if TYPE_CHECKING:
     from .store import Store
 
 _MARKER_COPY = re.compile(re.escape(MARKER) + r" \((\d+|SFConflict [^)]*)\)")
+#: Entries a later version (``gc --apply``) writes: reported as the store's own, never as foreign, so a script that acts on
+#: ``foreign`` cannot be told to remove them.  Reserved now so 0.11 does not call them strangers.
+_NEWER_ROOT = frozenset({"gc", "gc-pending.json", "locks"})
+_NEWER_TOMBSTONE = re.compile(r"([0-9a-f]{64})\.gc-[0-9a-f]+")
 _OBJECT = re.compile(r"[0-9a-f]{64}")
 _TEMPORARY = re.compile(r"([0-9a-f]{64})\.part-[0-9a-f]+")
 _COPY = re.compile(r"([0-9a-f]{64}) \((\d+|SFConflict [^)]*)\)")
@@ -32,6 +36,7 @@ class Report:
     temporaries: "list[tuple[str, int]]" = field(default_factory=list)
     copies: "list[tuple[str, int]]" = field(default_factory=list)
     foreign: "list[str]" = field(default_factory=list)
+    newer: "list[str]" = field(default_factory=list)                # the store's own, written by a later version
     missing: "list[str]" = field(default_factory=list)              # named by a pin, not in the store
 
     def bytes_of(self, hexes: "list[str]") -> int:
@@ -48,7 +53,9 @@ def scan(store: "Store") -> Report:
     # D2: whatever else is in the store's own folders is reported once and left alone.
     for entry in store._list(store.root or "/"):
         name = str(entry.get("name", ""))
-        if name not in ("blobs", "pins", MARKER) and not _MARKER_COPY.fullmatch(name):
+        if name in _NEWER_ROOT:
+            report.newer.append(name)
+        elif name not in ("blobs", "pins", MARKER) and not _MARKER_COPY.fullmatch(name):
             report.foreign.append(name)
     for entry in store._list(f"{store.root}/pins"):
         name = str(entry.get("name", ""))
@@ -74,6 +81,8 @@ def scan(store: "Store") -> Report:
                 report.temporaries.append((name, size))
             elif _COPY.fullmatch(name):
                 report.copies.append((name, size))
+            elif _NEWER_TOMBSTONE.fullmatch(name):
+                report.newer.append(f"blobs/{fan_name}/{name}")
             else:
                 report.foreign.append(f"blobs/{fan_name}/{name}")
     report.unused = sorted(h for h in report.objects if h not in report.pinned)

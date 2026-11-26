@@ -33,6 +33,8 @@ def normalise_path(path: str) -> str:
     parts = text.split("/")
     if any(p in ("", ".", "..") for p in parts):
         raise RecordError(f"not a plain relative path: {path!r}")
+    if text.startswith("\ufeff"):
+        raise RecordError(f"a path cannot start with U+FEFF (a byte order mark): {path!r}")
     if any(ord(c) < 32 or ord(c) == 127 for c in text):
         raise RecordError(f"a control character in a path: {path!r}")
     return text
@@ -63,6 +65,9 @@ def parse(text: str) -> "list[Entry]":
         if raw.startswith(("<<<<<<<", "=======", ">>>>>>>")):
             raise RecordError(f"line {number}: a git merge conflict marker; resolve the conflict in the record file first")
         fields = raw.split("\t")
+        if len(fields) > 3:
+            raise RecordError(f"line {number}: more than three fields (<path>, <size>, <reference>); this record may have "
+                              "been written by a newer sfblob")
         if len(fields) != 3:
             raise RecordError(f"line {number}: expected <path>, <size>, <reference> separated by tabs")
         path, size_text, ref_text = fields

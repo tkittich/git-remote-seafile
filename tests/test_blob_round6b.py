@@ -533,6 +533,92 @@ class SmallFixTests(unittest.TestCase):
         self.assertEqual(len(asked), 1)
 
 
+class RoundSevenTests(StoreCase):
+    """Round 7 (Opus): the read-back that failed, the marker's feature lists, one folder's case, a BOM, a truncated pin."""
+
+    def test_a_read_that_failed_proves_nothing_and_deletes_nothing(self):
+        from git_remote_seafile.client import SeafileAPIError
+        self.store.verify_by_download = True
+        with patch.object(self.store.client, "download_file_to", side_effect=SeafileAPIError("timed out")):
+            with self.assertRaises(store.StoreError) as caught:
+                self.store.put(self.source)
+        self.assertIn("verify --deep", str(caught.exception))
+        self.assertIn(f"{ROOT}/blobs/{SHA[:2]}/{SHA}", self.files())          # possibly another writer's verified object
+
+    def _marker(self, **extra):
+        import json
+        self.store.put(self.source)
+        key = f"{ROOT}/.seafile-store"
+        data = json.loads(self.files()[key])
+        data.update(extra)
+        self.stub.files[self.rid][key] = json.dumps(data).encode()
+        return self.make()
+
+    def test_an_unknown_ro_compat_feature_lets_a_store_be_read_but_not_written(self):
+        other = self._marker(ro_compat=["tombstones"])
+        self.assertTrue(other.exists(self.ref()))
+        with self.assertRaises(store.StoreError):
+            other.put(self.source)          # even an object already there: a put is a write
+        with self.assertRaises(store.StoreError) as caught:
+            other.put(self.source, pin="keep")
+        self.assertIn("not write", str(caught.exception))
+        with self.assertRaises(store.StoreError):
+            pins.remove(other, "keep")
+        self.assertEqual(self.files().get(f"{ROOT}/pins"), None)
+
+    def test_an_unknown_incompat_feature_refuses_everything(self):
+        other = self._marker(incompat=["newlayout"])
+        with self.assertRaises(store.StoreError) as caught:
+            other.exists(self.ref())
+        self.assertIn("newer sfblob", str(caught.exception))
+
+    def test_an_unknown_compat_feature_is_ignored(self):
+        other = self._marker(compat=["hint"])
+        self.assertTrue(other.put(self.source).ref.hex == SHA)
+
+    def test_a_pin_body_shorter_than_the_listing_says_is_refused(self):
+        self.store.put(self.source, pin="keep")
+        real = self.store.client.get_file_bytes
+        with patch.object(self.store.client, "get_file_bytes", lambda *a, **k: (real(*a, **k) or b"")[:-1]):
+            with self.assertRaises(store.StoreError) as caught:
+                pins.read_all(self.store)
+        self.assertIn("listing says", str(caught.exception))
+
+    def test_the_report_keeps_a_newer_versions_entries_apart_from_foreign_ones(self):
+        self.store.put(self.source)
+        files = self.stub.files[self.rid]
+        files[f"{ROOT}/gc-pending.json"] = b"{}"
+        files[f"{ROOT}/gc/run1/x"] = b"x"
+        files[f"{ROOT}/blobs/{SHA[:2]}/{SHA}.gc-ab12"] = b"x"
+        report = gcreport.scan(self.store)
+        self.assertEqual(sorted(report.newer), sorted(["gc-pending.json", "gc", f"blobs/{SHA[:2]}/{SHA}.gc-ab12"]))
+        self.assertEqual(report.foreign, [])
+
+
+class RecordRoundSevenTests(unittest.TestCase):
+    def test_a_path_cannot_start_with_a_byte_order_mark(self):
+        with self.assertRaises(record.RecordError):
+            record.normalise_path("\ufeffdata.bin")
+
+    def test_a_line_with_more_fields_says_a_newer_version_may_have_written_it(self):
+        with self.assertRaises(record.RecordError) as caught:
+            record.parse("a.bin\t5\tsha256:" + "ab" * 32 + "\textra\n")
+        self.assertIn("newer sfblob", str(caught.exception))
+
+
+class CaseSpellingTests(TreeCase):
+    @unittest.skipUnless(os.name == "nt", "needs a volume that finds a file under another case")
+    def test_a_file_found_under_another_spelling_is_not_in_place(self):
+        data = b"same bytes"
+        (self.work / "A.txt").write_bytes(data)
+        import hashlib
+        from git_remote_seafile.blob import refs
+        entry = record.Entry("a.txt", len(data), refs.full("sha256:" + hashlib.sha256(data).hexdigest()))
+        self.assertFalse(tree._in_place(self.work / "a.txt", entry))
+        entry = record.Entry("A.txt", len(data), entry.ref)
+        self.assertTrue(tree._in_place(self.work / "A.txt", entry))
+
+
 class CommitSeenTests(unittest.TestCase):
     def test_a_folder_that_cannot_be_listed_stops_the_age_rule(self):
         from git_remote_seafile.snapshot import common, payload_guards

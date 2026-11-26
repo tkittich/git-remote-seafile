@@ -27,6 +27,8 @@ from . import cache as cache_mod
 from . import refs
 
 MARKER = ".seafile-store"
+#: Feature names this version understands, by list.  Empty in format 1; a later version adds names here.
+KNOWN_FEATURES: "dict[str, tuple[str, ...]]" = {"incompat": (), "ro_compat": (), "compat": ()}
 FORMAT = 1
 #: How long, **inside one folder run** (``Store.presence_cached``), a listing of a fan-out folder answers "is the object
 #: there?" for an upload.  The proofs that follow an upload (the listing after it, the rename's own listing) are always
@@ -49,6 +51,10 @@ def _hash_lock(hex_digest: str) -> threading.Lock:
 
 class StoreError(Exception):
     """A store problem a person can act on (the message says what and what to do)."""
+
+
+class ReadBackMismatch(StoreError):
+    """The bytes read back are not the object's (as opposed to a read that failed): the only proof that justifies a delete."""
 
 
 @dataclass(frozen=True)
@@ -81,6 +87,7 @@ class Store:
         self.verify_by_download = verify_by_download
         self._factory = factory
         self._marker_checked = False
+        self._read_only_because: "list[str]" = []          # ``ro_compat`` features of the marker this version lacks
         #: fan-out folder -> (when it was listed, {object name: size}); shared with the clones a folder run makes
         self._presence: "dict[str, tuple[float, dict[str, int]]]" = {}
         self._presence_ttl = 0.0          # 0: every check asks the server
@@ -109,6 +116,7 @@ class Store:
             return self
         other = self._factory()
         other._marker_checked = self._marker_checked
+        other._read_only_because = self._read_only_because
         other._presence = self._presence
         other._presence_ttl = self._presence_ttl
         return other
@@ -189,6 +197,12 @@ class Store:
                     raise StoreError(f"{self.root} is under {'/' + '/'.join(parts[:depth + 1])}, the view folder of the "
                                      f"vault {sibling}; a payload view replaces it. Choose another folder")
 
+    def require_writable(self) -> None:
+        """Refuse a write to a store whose marker asks for features this version lacks (``ro_compat``)."""
+        if self._read_only_because:
+            raise StoreError(f"{self.root}/{MARKER} needs features this version does not have "
+                             f"({', '.join(self._read_only_because)}): it may read this store but not write to it; use a newer sfblob")
+
     def _write_marker(self) -> None:
         body = json.dumps({"format": FORMAT, "id": uuid.uuid4().hex}).encode("utf-8")
         try:
@@ -208,6 +222,14 @@ class Store:
             raise StoreError(f"{self.root}/{MARKER} cannot be read as a store marker") from None
         if not isinstance(data, dict) or data.get("format") != FORMAT:
             raise StoreError(f"{self.root}/{MARKER} is a marker of another format; this version reads format {FORMAT}")
+        # Feature lists (as ext4's): a later version that must stop older ones can say so without a new format number,
+        # which would stop them *reading* as well.  Absent means empty; an unknown ``compat`` name is ignored.
+        unknown = {key: [str(n) for n in data.get(key, []) if str(n) not in KNOWN_FEATURES.get(key, ())]
+                   for key in ("incompat", "ro_compat") if isinstance(data.get(key, []), list)}
+        if unknown.get("incompat"):
+            raise StoreError(f"{self.root}/{MARKER} needs features this version does not have ({', '.join(unknown['incompat'])}); "
+                             "use a newer sfblob")
+        self._read_only_because = unknown.get("ro_compat") or []
 
     # -- references -------------------------------------------------------------------------------------------
 
@@ -225,6 +247,7 @@ class Store:
 
     def stat(self, ref: refs.Ref) -> "int | None":
         """The size of the stored object, or ``None`` when it is not there (a folder under the name is not an object)."""
+        self.check_root(create=False)          # a full reference skips ``resolve``'s check: the marker is read here
         full = self.resolve(ref)
         for entry in self._list(self.blob_dir(full.hex)):
             if entry.get("name") == full.hex and entry.get("type") != "dir":
@@ -264,6 +287,7 @@ class Store:
             from . import pins
             pins.check_name(pin)          # a bad name is refused before anything is written, the marker included
         self.check_root(create=True)
+        self.require_writable()
         try:
             hex_digest, size = _sha256_and_size(path)
         except OSError as exc:
@@ -296,8 +320,10 @@ class Store:
         if self.verify_by_download:
             try:
                 self._prove_by_reading(ref, size)
-            except StoreError:
+            except ReadBackMismatch:
                 # Wrong bytes under the hash name at the right size: the next ``put`` would see it present and skip it.
+                # Only a *proven* mismatch deletes: a read that merely failed proves nothing, and the object under the name
+                # may be another writer's, already verified (review R7 P1).
                 self._drop_object(directory, ref)
                 raise
         return Put(ref, size, uploaded=True)
@@ -395,9 +421,12 @@ class Store:
             try:
                 found = self.client.download_file_to(self.repo_id, self.blob_path(ref), probe, max_bytes=size)
             except SeafileAPIError as exc:
-                raise StoreError(f"could not read {ref} back to prove it: {exc}") from None
-            if not found or probe.stat().st_size != size or _sha256_and_size(probe)[0] != ref.hex:
-                raise StoreError(f"{ref} did not read back as the bytes that were sent; run again")
+                raise StoreError(f"could not read {ref} back to prove it ({exc}); the object was left as it is: "
+                                 f"run `sfblob verify --deep {ref}`") from None
+            if not found:
+                raise StoreError(f"{ref} was not there to read back; run again")
+            if probe.stat().st_size != size or _sha256_and_size(probe)[0] != ref.hex:
+                raise ReadBackMismatch(f"{ref} did not read back as the bytes that were sent; run again")
 
     # -- get --------------------------------------------------------------------------------------------------------
 

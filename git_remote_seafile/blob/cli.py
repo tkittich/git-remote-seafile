@@ -610,7 +610,7 @@ def _gc(args: argparse.Namespace) -> int:
     rows: "dict[str, Any]" = {"objects": len(report.objects), "bytes": sum(report.objects.values()), "pins": report.pins,
             "unused": len(unused), "unused_bytes": report.bytes_of(unused), "temporaries": len(report.temporaries),
             "temporary_bytes": sum(s for _, s in report.temporaries), "copies": len(report.copies),
-            "copy_bytes": sum(s for _, s in report.copies), "foreign": report.foreign, "missing": len(report.missing),
+            "copy_bytes": sum(s for _, s in report.copies), "foreign": report.foreign, "newer": report.newer, "missing": len(report.missing),
             "removed": 0}
     lines = [
         f"stored : {rows['objects']} object(s), {format_bytes(rows['bytes'])}",
@@ -619,6 +619,8 @@ def _gc(args: argparse.Namespace) -> int:
         f"temporaries : {rows['temporaries']}, {format_bytes(rows['temporary_bytes'])} (interrupted uploads)",
         f"copies : {rows['copies']}, {format_bytes(rows['copy_bytes'])} (`(N)` or conflict copies of an object)",
     ]
+    if report.newer:
+        lines.append(f"newer  : {len(report.newer)} entry(ies) written by a newer version of sfblob (left alone)")
     if report.foreign:
         lines.append(f"other  : {len(report.foreign)} entry(ies) that are not the store's (left alone)")
     if report.missing:

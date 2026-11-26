@@ -44,6 +44,7 @@ def pin_folder(store: "Store", name: str) -> str:
 def write(store: "Store", name: str, wanted: "list[refs.Ref]") -> str:
     """Write one pin file naming *wanted* and prove it is readable; returns the file's name."""
     folder = pin_folder(store, name)
+    store.require_writable()
     full = sorted({str(r) for r in wanted})
     if not full:
         raise StoreError("nothing to pin")
@@ -62,6 +63,7 @@ def write(store: "Store", name: str, wanted: "list[refs.Ref]") -> str:
 def remove(store: "Store", name: str) -> bool:
     """Remove a pin's folder; ``False`` when there was none (a pin another run removed is not an error)."""
     folder = pin_folder(store, name)
+    store.require_writable()
     present = [e for e in store._list(f"{store.root}/{PINS}") if e.get("name") == name]
     if not present:
         return False
@@ -107,6 +109,11 @@ def read_all(store: "Store") -> "dict[str, list[refs.Ref]]":
                 raise StoreError(f"cannot read the pin file {where} ({exc}); nothing is decided from a pin that cannot be read") from None
             if data is None:
                 raise StoreError(f"the pin file {where} is listed but cannot be read; nothing is decided from it")
+            listed = entry.get("size")
+            if isinstance(listed, int) and not isinstance(listed, bool) and listed != len(data):
+                # A proxy that cut the body at a line end would give a valid pin with fewer references: fail-open for gc.
+                raise StoreError(f"the pin file {where} read back at {len(data)} bytes, the listing says {listed}; "
+                                 "nothing is decided from it")
             try:
                 found = parse(data.decode("utf-8"), where)
             except UnicodeDecodeError:

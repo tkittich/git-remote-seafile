@@ -246,6 +246,11 @@ def _in_place(target: Path, entry: record.Entry) -> bool:
     try:
         if target.is_symlink() or not target.is_file() or target.stat().st_size != entry.size:
             return False
+        # The folder may fold case where the volume at the destination's root does not (a vfat mount, a casefold folder):
+        # a file found under *another* spelling is not this path (review R7 P3).
+        if not any(unicodedata.normalize("NFC", n) == unicodedata.normalize("NFC", target.name)
+                   for n in os.listdir(target.parent)):
+            return False
         from .cache import _sha256_file
         return _sha256_file(target) == entry.ref.hex
     except OSError:
