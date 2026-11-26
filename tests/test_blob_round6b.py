@@ -394,13 +394,13 @@ class TreeGuardTests(TreeCase):
     def test_the_staging_name_does_not_depend_on_the_file_name(self):
         tree.put_tree(self.make(), self.src, self.work / "blobs.txt")
         staged = []
-        real = store.Store.get_to
+        real = store.place_new
 
-        def spy(self_, ref, destination, progress=None):
-            staged.append(destination.name)
-            return real(self_, ref, destination, progress)
+        def spy(stage, target):
+            staged.append(stage.name)
+            return real(stage, target)
 
-        with patch.object(store.Store, "get_to", spy):
+        with patch.object(store, "place_new", spy):
             tree.get_tree(self.make("c"), self.work / "blobs.txt", self.work / "out")
         self.assertTrue(staged)
         self.assertTrue(all(n.startswith(".sfblob-part-") and len(n) == len(".sfblob-part-") + 16 for n in staged))
@@ -607,6 +607,23 @@ class RoundSevenTests(StoreCase):
         other = self._marker(compat=["hint"])
         self.assertTrue(other.put(self.source).ref.hex == SHA)
 
+    def test_the_pins_api_on_a_fresh_store_object_still_honours_the_marker(self):
+        """``pins.write`` and ``pins.remove`` read the marker themselves (review R8 Gemini P5): no earlier call primes them."""
+        self._marker(ro_compat=["tombstones"])
+        for call in (lambda s: pins.write(s, "bypass", [self.ref()]), lambda s: pins.remove(s, "bypass")):
+            with self.assertRaises(store.StoreError):
+                call(self.make())
+        self._marker(incompat=["newlayout"])
+        with self.assertRaises(store.StoreError):
+            pins.write(self.make(), "bypass", [self.ref()])
+
+    def test_a_marker_that_cannot_be_read_says_how_to_start_afresh(self):
+        self.store.put(self.source)
+        self.stub.files[self.rid][f"{ROOT}/.seafile-store"] = b"not json at all"
+        with self.assertRaises(store.StoreError) as caught:
+            self.make().exists(self.ref())
+        self.assertIn("remove", str(caught.exception))
+
     def test_a_pin_body_shorter_than_the_listing_says_is_refused(self):
         self.store.put(self.source, pin="keep")
         real = self.store.client.get_file_bytes
@@ -779,6 +796,28 @@ class ReportAndPinRoundSevenTests(StoreCase):
         self.assertEqual(report.unused, [SHA])
 
 
+class LandingNameTests(unittest.TestCase):
+    """The name a 301's Location gives is what callers delete by: it must be a plain name (review R8 DeepSeek P2, Gemini P10)."""
+
+    def _answer(self, location: str):
+        class Resp:
+            status_code = 301
+            headers = {"Location": location}
+            text = '"success"'
+
+        client = SeafileClient(server_url="http://127.0.0.1:1", token="t")
+        client._send_waiting_out_a_throttle = lambda call: Resp()          # type: ignore[method-assign]
+        return client.rename_entry_result("r", "/d/a", "b")
+
+    def test_a_plus_in_a_name_stays_a_plus(self):
+        self.assertEqual(self._answer("http://h/api2/repos/r/file/?p=/d/a+b.txt"), (200, "a+b.txt"))
+        self.assertEqual(self._answer("http://h/api2/repos/r/file/?p=/d/a%2Bb%20c.txt"), (200, "a+b c.txt"))
+
+    def test_a_landing_that_is_not_a_plain_name_is_refused(self):
+        for bad in ("/blobs/ab/..", "/blobs/ab/.", "/", "", "/d/a%2Fb"):
+            self.assertEqual(self._answer(f"http://h/api2/repos/r/file/?p={bad}"), (301, None), bad)
+
+
 class RenameRedirectTests(unittest.TestCase):
     def _client(self, response):
         client = SeafileClient(server_url="http://127.0.0.1:1", token="t")
@@ -814,6 +853,43 @@ class RenameRedirectTests(unittest.TestCase):
             text = ""
 
         self.assertEqual(self._client(Resp()).rename_entry_result("r", "/d/a", "b"), (301, None))
+
+
+class RestoreCostTests(TreeCase):
+    def test_a_restore_copies_each_file_once_and_lists_each_folder_once(self):
+        tree.put_tree(self.make(), self.src, self.work / "blobs.txt")
+        copies, listings = [], []
+        real_copy, real_listdir = store.shutil.copyfileobj, os.listdir
+
+        def counting_copy(src, dst, length=0):
+            copies.append(1)
+            return real_copy(src, dst, length)
+
+        def counting_listdir(path="."):
+            listings.append(str(path))
+            return real_listdir(path)
+
+        out = self.work / "out"
+        with patch.object(store.shutil, "copyfileobj", counting_copy):
+            first = tree.get_tree(self.make("c"), self.work / "blobs.txt", out)
+        self.assertEqual(first.restored, 4)
+        self.assertEqual(len(copies), 4)          # cache to stage, once per file; the stage is linked, not copied again
+        with patch.object(tree.os, "listdir", counting_listdir):
+            again = tree.get_tree(self.make("c"), self.work / "blobs.txt", out)
+        self.assertEqual(again.in_place, 4)
+        self.assertLessEqual(len(listings), 3)          # three folders, listed once each (it was once per file)
+
+    @unittest.skipUnless(os.name == "nt", "needs a volume that finds a folder under another case")
+    def test_a_folder_on_the_way_spelled_otherwise_is_not_in_place(self):
+        import hashlib
+
+        from git_remote_seafile.blob import refs
+        (self.work / "Sub").mkdir()
+        (self.work / "Sub" / "file.txt").write_bytes(b"same bytes")
+        entry = record.Entry("sub/file.txt", 10, refs.full("sha256:" + hashlib.sha256(b"same bytes").hexdigest()))
+        self.assertFalse(tree._in_place(self.work / "sub" / "file.txt", entry, None, (self.work, "sub/file.txt")))
+        entry = record.Entry("Sub/file.txt", 10, entry.ref)
+        self.assertTrue(tree._in_place(self.work / "Sub" / "file.txt", entry, None, (self.work, "Sub/file.txt")))
 
 
 class StageFileTests(TreeCase):

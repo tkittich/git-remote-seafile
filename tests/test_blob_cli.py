@@ -258,7 +258,7 @@ class CommandTests(CliCase):
     def test_pin_ls_and_unpin_round_trip_and_put_pin_writes_the_pin_first(self):
         code, out, err = self.run_cli("put", str(self.source), "--pin", "keep")
         self.assertEqual(code, 0)
-        self.assertNotIn("not protected", err)          # a pinned put is protected: no warning
+        self.assertNotIn("not pinned", err)          # a pinned put is protected: no warning (the real sentence, R8 DeepSeek P5)
         code, out, _ = self.run_cli("pin", "ls")
         self.assertIn("keep  1 object(s)", out)
         self.assertEqual(self.run_cli("unpin", "keep")[0], 0)
@@ -312,6 +312,15 @@ class CommandTests(CliCase):
         self.assertEqual(code, 1)          # the store is not what its pins say: 0 means consistent
         self.assertIn("1 pinned object(s) are not in the store", err)          # a warning: stderr, stdout is the answer
         self.assertNotIn("Warning", out)
+
+    def test_gc_json_names_the_missing_objects(self):
+        self.run_cli("put", str(self.source))
+        absent = "sha256:" + "cd" * 32
+        self.run_cli("pin", "later", absent)
+        code, out, err = self.run_cli("gc", "--json")
+        self.assertEqual(code, 1)
+        self.assertEqual(__import__("json").loads(out)["missing_list"], [absent])
+        self.assertIn(absent, err)
 
     def test_verify_says_present_missing_and_with_deep_reads_the_bytes(self):
         self.run_cli("put", str(self.source))

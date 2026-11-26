@@ -54,6 +54,10 @@ class StoreError(Exception):
     """A store problem a person can act on (the message says what and what to do)."""
 
 
+class DestinationExists(StoreError):
+    """``get`` found the destination taken (before the copy, or when the placing found it taken): never overwritten."""
+
+
 class ReadBackMismatch(StoreError):
     """The bytes read back are not the object's (as opposed to a read that failed): the only proof that justifies a delete."""
 
@@ -242,6 +246,8 @@ class Store:
 
     def require_writable(self) -> None:
         """Refuse a write to a store whose marker asks for features this version lacks (``ro_compat``)."""
+        if not self._marker_checked:
+            self.check_root(create=False)          # the marker's feature lists are read before anything is written (R8 Gemini P5)
         if self._read_only_because:
             raise StoreError(f"{self.root}/{MARKER} needs features this version does not have "
                              f"({', '.join(self._read_only_because)}): it may read this store but not write to it; use a newer sfblob")
@@ -262,7 +268,8 @@ class Store:
             raw = self.client.get_file_bytes(self.repo_id, f"{self.root}/{MARKER}", max_bytes=MARKER_MAX_BYTES)
             data = json.loads(raw.decode("utf-8")) if raw else {}
         except (SeafileAPIError, ValueError, AttributeError, UnicodeDecodeError):
-            raise StoreError(f"{self.root}/{MARKER} cannot be read as a store marker") from None
+            raise StoreError(f"{self.root}/{MARKER} cannot be read as a store marker (if this folder holds nothing else of "
+                             f"value, remove {self.root}/{MARKER} and run `put` again to make it a store afresh)") from None
         if not isinstance(data, dict) or data.get("format") != FORMAT:
             raise StoreError(f"{self.root}/{MARKER} is a marker of another format; this version reads format {FORMAT}")
         # Feature lists (as ext4's): a later version that must stop older ones can say so without a new format number,
@@ -591,7 +598,7 @@ class Store:
         source, _ = self.get(ref, progress=progress)
         destination = Path(destination)
         if destination.exists() or destination.is_symlink():
-            raise StoreError(f"{destination} already exists; get does not overwrite")
+            raise DestinationExists(f"{destination} already exists; get does not overwrite")
         # Staged under a name of our own beside the destination, then placed in one act that refuses a taken name: a
         # failed copy, a kill or a power cut leaves a stage file (ours, deleted on every path out we control), never half a
         # file under the name the caller asked for (review R7 DeepSeek P3, Gemini).
@@ -605,7 +612,7 @@ class Store:
                 except OSError:
                     pass
             if not place_new(stage, destination):
-                raise StoreError(f"{destination} already exists; get does not overwrite")
+                raise DestinationExists(f"{destination} already exists; get does not overwrite")
         except OSError as exc:
             raise StoreError(f"cannot write {destination}: {exc}") from None
         finally:

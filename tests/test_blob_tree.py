@@ -198,11 +198,9 @@ class RoundFiveTests(TreeCase):
         real = store.Store.get_to
 
         def late(self_, ref, destination, progress=None):
-            result = real(self_, ref, destination, progress)
-            target = out / "a.bin"
-            if destination.name.startswith(".sfblob-part-"):
-                target.write_bytes(b"arrived meanwhile")
-            return result
+            if destination.name == "a.bin":
+                destination.write_bytes(b"arrived meanwhile")          # the name is taken before the copy is placed
+            return real(self_, ref, destination, progress)
 
         with patch.object(store.Store, "get_to", late):
             report = tree.get_tree(self.make("c"), self.work / "blobs.txt", out)

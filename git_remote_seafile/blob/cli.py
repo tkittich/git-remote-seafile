@@ -611,6 +611,7 @@ def _gc(args: argparse.Namespace) -> int:
             "unused": len(unused), "unused_list": [f"sha256:{h}" for h in unused], "unused_bytes": report.bytes_of(unused), "temporaries": len(report.temporaries),
             "temporary_bytes": sum(s for _, s in report.temporaries), "copies": len(report.copies),
             "copy_bytes": sum(s for _, s in report.copies), "foreign": report.foreign, "newer": report.newer, "missing": len(report.missing),
+            "missing_list": [f"sha256:{h}" for h in report.missing],
             "removed": 0}
     exit_code = 0
     lines = [
@@ -625,7 +626,9 @@ def _gc(args: argparse.Namespace) -> int:
     if report.foreign:
         lines.append(f"other  : {len(report.foreign)} entry(ies) that are not the store's (left alone)")
     if report.missing:
-        _err(f"Warning: {len(report.missing)} pinned object(s) are not in the store")          # stdout is the answer only
+        shown = ", ".join(f"sha256:{h}" for h in report.missing[:3]) + (" ..." if len(report.missing) > 3 else "")
+        _err(f"Warning: {len(report.missing)} pinned object(s) are not in the store ({shown}); `put` the file with --pin to restore "
+             "one, or `unpin` the pin that names it")          # stdout is the answer only
         exit_code = 1          # the store is not what its pins say: 0 means consistent
     lines.append("nothing changed: this version reports and removes nothing. Deleting an object frees the library's quota, "
                  "and disk space only after the server's history is truncated and its garbage collector has run.")

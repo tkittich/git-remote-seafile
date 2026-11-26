@@ -225,14 +225,43 @@ def put_tree(
     return report
 
 
-def _in_place(target: Path, entry: record.Entry) -> bool:
+class _Listings:
+    """The names in each folder, listed once per run: ``_in_place`` asked for it once per *file* (a restore of one big folder
+    was quadratic: 18 s of listings at 3,000 entries, review R8 DeepSeek P9)."""
+
+    def __init__(self) -> None:
+        self._names: "dict[str, set[str]]" = {}
+        self._lock = threading.Lock()
+
+    def has(self, folder: Path, name: str) -> bool:
+        key = os.path.normcase(str(folder))
+        with self._lock:
+            names = self._names.get(key)
+        if names is None:
+            names = {unicodedata.normalize("NFC", n) for n in os.listdir(folder)}
+            with self._lock:
+                self._names[key] = names
+        return unicodedata.normalize("NFC", name) in names
+
+
+def _in_place(target: Path, entry: record.Entry, listings: "_Listings | None" = None,
+              below: "tuple[Path, str] | None" = None) -> bool:
+    """Is *target* this entry, already?  *below* is ``(destination, relative path)``: every folder on the way must also be
+    spelled as the record spells it (a vfat mount inside an ext4 destination, a casefold folder)."""
+    from ..snapshot import payload_restore
+    listings = listings or _Listings()
     try:
         if target.is_symlink() or not target.is_file() or target.stat().st_size != entry.size:
             return False
-        # The folder may fold case where the volume at the destination's root does not (a vfat mount, a casefold folder):
-        # a file found under *another* spelling is not this path (review R7 P3).
-        if not any(unicodedata.normalize("NFC", n) == unicodedata.normalize("NFC", target.name)
-                   for n in os.listdir(target.parent)):
+        # The volume may fold case where the destination's root does not: a file found under *another* spelling is not this
+        # path (review R7 P3, R8 Gemini P9: and neither is one found under a folder spelled otherwise).
+        if below is not None:
+            here = payload_restore.extended_path(below[0])
+            for part in below[1].split("/")[:-1]:
+                if not listings.has(here, part):
+                    return False
+                here = here / part
+        if not listings.has(target.parent, target.name):
             return False
         from .cache import _sha256_file
         return _sha256_file(target) == entry.ref.hex
@@ -331,6 +360,7 @@ def get_tree(
         return None
 
     workers = _Workers(base, jobs)
+    listings = _Listings()
 
     def one(entry: record.Entry) -> "tuple[str, str | None]":
         if entry.path in colliding:
@@ -340,33 +370,26 @@ def get_tree(
             return "problem", f"{entry.path}: {reason}; not restored"
         target = payload_restore.extended_path(dest / entry.path)
         if target.exists() or target.is_symlink():
-            if _in_place(target, entry):
+            if _in_place(target, entry, listings, (dest, entry.path)):
                 return "in place", None
             return "problem", f"{entry.path}: something else is already there; not overwritten"
         if dry_run:
             return "restored", None          # it would be fetched
         worker = workers.get()
-        # A name no one else can have: the temporary is deleted on every path out, so it must be ours alone
-        # (a user's `<name>.sfblob-part` was deleted by a predictable name, round 5).
-        # A fixed length, whatever the name: ``<name>.sfblob-part-..`` made a 235-character name too long to stage.
-        temp = target.with_name(f".sfblob-part-{os.urandom(8).hex()}")
         try:
             target.parent.mkdir(parents=True, exist_ok=True)
-            worker.get_to(entry.ref, temp)
-            if not _place(temp, target):          # appeared while we fetched: never replace it
-                return "problem", f"{entry.path}: something appeared there while it was fetched; not overwritten"
+            # ``get_to`` stages beside the target under a name of its own and places it without replacing: staging here as well
+            # copied every file three times on a volume without hard links (review R8 DeepSeek P10, Gemini P8).
+            worker.get_to(entry.ref, target)
             size = target.stat().st_size
             if size != entry.size:
                 # The hash proved the object; the record's size is the weaker witness and does not unmake it.
                 report.warnings.append(f"{entry.path}: the record says {entry.size} bytes, the object is {size}; restored")
             return "restored", None
+        except store.DestinationExists:
+            return "problem", f"{entry.path}: something appeared there while it was fetched; not overwritten"
         except (StoreError, OSError) as exc:
             return "problem", f"{entry.path}: {exc}"
-        finally:
-            try:
-                temp.unlink(missing_ok=True)
-            except OSError:
-                pass
 
     if jobs <= 1:
         outcomes = [one(e) for e in entries]

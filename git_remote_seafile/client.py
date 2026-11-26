@@ -15,7 +15,7 @@ import time
 from collections.abc import Iterator
 from typing import Any, Callable
 import uuid
-from urllib.parse import parse_qs, quote, unquote, urlparse, urlunparse
+from urllib.parse import quote, unquote, urlparse, urlunparse
 
 import requests
 from requests.adapters import HTTPAdapter
@@ -2568,8 +2568,17 @@ class SeafileClient:
         ))
         if resp.status_code in (301, 302):
             try:
-                where = parse_qs(urlparse(resp.headers.get("Location", "")).query).get("p", [""])[0]
+                # ``unquote``, not ``parse_qs``: a literal ``+`` in a file name is not a space (review R8 Gemini P10), and the
+                # landing is a *name*: an empty one, ``.``, ``..`` or one holding a slash is refused, because a caller deletes by it
+                # (DeepSeek P2: ``p=/blobs/ab/..`` would have named the folder above).
+                query = urlparse(resp.headers.get("Location", "")).query
+                where = unquote(next((part[2:] for part in query.split("&") if part.startswith("p=")), ""))
                 leaf = where.rstrip("/").rpartition("/")[2]
+                folder = "/".join(x for x in where.rstrip("/").rpartition("/")[0].split("/") if x)
+                asked = "/".join(x for x in clean_path.rstrip("/").rpartition("/")[0].split("/") if x)
+                # a rename keeps the folder: a landing in another one is not an answer to this rename
+                if leaf in ("", ".", "..") or "/" in leaf or "\\" in leaf or folder != asked:
+                    leaf = ""
             except Exception:
                 leaf = ""
             # A redirect with a landing name is the success answer: reported as 200, as the callers expect.
@@ -2579,6 +2588,8 @@ class SeafileClient:
         try:
             said = resp.text.strip().strip('"')
             leaf = unquote(urlparse(said).path.rpartition("/")[2]) if said.startswith(("http://", "https://")) else ""
+            if leaf in (".", "..") or "/" in leaf or "\\" in leaf:
+                leaf = ""
         except Exception:
             leaf = ""
         return resp.status_code, (leaf or None)
