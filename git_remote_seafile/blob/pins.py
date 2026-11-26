@@ -29,6 +29,8 @@ MAX_PIN_FILE_BYTES = 8 * 1024 * 1024
 
 
 def check_name(name: str) -> str:
+    if name == "ls":
+        raise StoreError("`ls` is not a pin name: `pin ls` lists the pins")
     if not _NAME.fullmatch(name) or name.endswith((" ", ".")):
         raise StoreError(f"{name!r} is not a pin name: use letters, digits, '.', '_', '-' or a space, starting with a letter "
                          "or digit, up to 64 characters")
@@ -106,8 +108,13 @@ def read_all(store: "Store") -> "dict[str, list[refs.Ref]]":
             if data is None:
                 raise StoreError(f"the pin file {where} is listed but cannot be read; nothing is decided from it")
             try:
-                wanted.extend(parse(data.decode("utf-8"), where))
+                found = parse(data.decode("utf-8"), where)
             except UnicodeDecodeError:
                 raise StoreError(f"the pin file {where} is not text; nothing is decided from it") from None
+            if not found:
+                # ``write`` never writes an empty pin, so an empty body is a read that lost its bytes (a proxy, a
+                # truncated reply): reading it as "pins nothing" would let a later gc delete what the pin keeps.
+                raise StoreError(f"the pin file {where} is empty; nothing is decided from it")
+            wanted.extend(found)
         result[name] = wanted
     return result

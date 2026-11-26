@@ -241,7 +241,7 @@ class CommandTests(CliCase):
         folder = self.work / "folder"
         folder.mkdir()
         (folder / "a.bin").write_bytes(DATA)
-        with patch.object(cli.tree, "_walk", return_value=([folder / "a.bin"], ["x.lnk: not a regular file"])):
+        with patch.object(cli.tree, "_walk", return_value=([folder / "a.bin"], ["x.lnk: not a regular file"], [])):
             code, out, err = self.run_cli("put", "-r", str(folder))
         self.assertEqual(code, 0)
         self.assertIn("Warning: not uploaded (x.lnk: not a regular file)", err)
@@ -308,9 +308,10 @@ class CommandTests(CliCase):
     def test_gc_warns_about_a_pinned_object_that_is_not_in_the_store(self):
         self.run_cli("put", str(self.source))
         self.run_cli("pin", "later", "sha256:" + "cd" * 32)          # absent: the pin is written, the exit is 1
-        code, out, _ = self.run_cli("gc")
+        code, out, err = self.run_cli("gc")
         self.assertEqual(code, 0)
-        self.assertIn("1 pinned object(s) are not in the store", out)
+        self.assertIn("1 pinned object(s) are not in the store", err)          # a warning: stderr, stdout is the answer
+        self.assertNotIn("Warning", out)
 
     def test_verify_says_present_missing_and_with_deep_reads_the_bytes(self):
         self.run_cli("put", str(self.source))

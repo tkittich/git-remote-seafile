@@ -85,6 +85,14 @@ def _try_lock(fd: int) -> None:
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
 
 
+def _lstat_mode(path: Path) -> int:
+    """The mode of what is at *path* without following a link; 0 when there is nothing."""
+    try:
+        return os.lstat(path).st_mode
+    except OSError:
+        return 0
+
+
 def _names_the_open_file(fd: int, path: Path) -> bool:
     try:
         held, named = os.fstat(fd), os.stat(path)
@@ -179,12 +187,19 @@ class Cache:
         except OSError:
             pass          # the verification already read every byte; a platform that cannot fsync still renames
         for tries in range(5):
+            unsealed = False
             try:
-                if final.exists():
-                    os.chmod(final, stat.S_IWRITE | stat.S_IREAD)      # a sealed file is read-only: Windows will not replace it
+                # A sealed file is read-only and Windows will not replace it; elsewhere a rename replaces it as it is.
+                # A link at the name is never followed (``chmod`` would change its target), and the old file is sealed
+                # again if the replacement fails (review R6 G8, G15).
+                if os.name == "nt" and stat.S_ISREG(_lstat_mode(final)):
+                    os.chmod(final, stat.S_IWRITE | stat.S_IREAD)
+                    unsealed = True
                 os.replace(verified, final)
                 break
             except PermissionError:
+                if unsealed:
+                    self._seal_quietly(final)
                 # A scanner or another reader holds the old file for a moment (WinError 5 or 32); anywhere else
                 # a refusal is final.
                 if os.name != "nt" or tries == 4:
@@ -287,6 +302,8 @@ class Cache:
                 _unlock(fd)
                 os.close(fd)
                 fd = -1
+            elif not _names_the_open_file(fd, path):
+                return 0          # another sweep already removed this file and a fetch made a new one at the name
             path.unlink()
             return 1
         except OSError:
@@ -351,7 +368,8 @@ class Cache:
     def used(self) -> int:
         return sum(size for _, size, _ in self.objects()) + self.partial_bytes()
 
-    def evict(self, limit: "int | None" = None, *, low_water: "float | None" = None) -> "list[Path]":
+    def evict(self, limit: "int | None" = None, *, low_water: "float | None" = None,
+              grace: float = GRACE_SECONDS) -> "list[Path]":
         """Remove the least recently used objects once the cache is over its bound; returns what was removed.
 
         Over the bound, eviction goes on down to ``LOW_WATER`` of it (for the saved bound); an explicit *limit* from
@@ -373,7 +391,7 @@ class Cache:
         for path, size, atime in sorted(self.objects(), key=lambda item: item[2]):
             if total <= target:
                 break
-            if now - atime < GRACE_SECONDS:
+            if now - atime < grace:
                 continue
             self._drop(path)
             if not path.exists():

@@ -2,7 +2,7 @@
 
 Plain lines by default and one JSON document with ``--json``; no prompt ever (a command is told what to do by its
 flags); exit 0 success, 1 failure, 2 usage error.  Standard output is the answer and nothing else; every note,
-warning and progress line goes to standard error.  ``gc``, ``pin``, ``offload`` and ``verify`` are not in this version.
+warning and progress line goes to standard error.  ``offload``, ``link`` and ``read`` are not in this version.
 """
 
 from __future__ import annotations
@@ -70,13 +70,15 @@ def open_store(url: str, cache_dir: "str | None") -> store.Store:
             "(a bare library would silently use the helper's /git-repo folder)")
     cache = cache_mod.Cache(Path(cache_dir) if cache_dir else None)
     server = parsed.server_url
-    plain_http = bool(server) and str(server).lower().startswith("http://")
     known: "dict[str, str]" = {}          # the library is looked up once, not once per file of a folder
 
     def factory() -> store.Store:
         client = SeafileClient(server_url=server)
         if "id" not in known:
             known["id"] = client.get_repo_id(parsed.library_name)
+        # Decided from the server the client actually uses, not from the URL's text: ``seafile://lib/folder`` names no
+        # server, and the one in the configuration may be plain http (review R6 G3, D2).
+        plain_http = str(client.server_url or "").lower().startswith("http://")
         return store.Store(client, known["id"], parsed.repo_path, cache, verify_by_download=plain_http, factory=factory)
 
     return factory()
@@ -228,7 +230,7 @@ def _parser() -> argparse.ArgumentParser:
 
     pin = sub.add_parser("pin", parents=shared, help="keep objects from `gc` under a pin name (`pin ls` lists the pins)")
     pin.add_argument("name", help="the pin's name, or `ls` to list pins")
-    pin.add_argument("refs", nargs="*", help="full references to keep")
+    pin.add_argument("refs", nargs="*", help="full references to keep (with `ls`: the one pin to list)")
     pin.add_argument("--from-file", metavar="FILE", help="read references from FILE, one a line (- for standard input)")
 
     unpin = sub.add_parser("unpin", parents=shared, help="remove a pin (objects only it kept become unused)")
@@ -241,6 +243,9 @@ def _parser() -> argparse.ArgumentParser:
     verify.add_argument("refs", nargs="*", help="references (default: every object, or those in --from)")
     verify.add_argument("--from", dest="record", metavar="FILE", help="check every entry of a record file, at its recorded size")
     verify.add_argument("--deep", action="store_true", help="download each object and check its hash (reads every byte)")
+
+    for name in NOT_YET:          # known words, so a global flag before one answers "not yet" and not a usage error
+        sub.add_parser(name, parents=shared, add_help=False).add_argument("rest", nargs=argparse.REMAINDER)
 
     sub.add_parser("ls", parents=shared, help="list the objects in the store, with their sizes")
     sub.add_parser("usage", parents=shared, help="how many objects the store holds, how many bytes, and the local cache")
@@ -453,6 +458,8 @@ def _stat(args: argparse.Namespace) -> int:
 def _cache(args: argparse.Namespace) -> int:
     cache = cache_mod.Cache(Path(args.cache_dir) if args.cache_dir else None)
     removed = 0
+    if args.clear and args.size:
+        raise UsageError("--clear and --size together: say one (--clear empties the cache, --size bounds it)")
     if args.clear:
         removed = cache.clear()
     elif args.size:
@@ -461,7 +468,7 @@ def _cache(args: argparse.Namespace) -> int:
         else:
             limit = parse_size(args.size)
             cache.set_limit(limit)
-            removed = len(cache.evict(limit))
+            removed = len(cache.evict(limit, grace=0))          # asked for now: nothing is "just handed out"
     used = cache.used()
     held = len(cache.objects())
     bound = f", kept to {format_bytes(cache.size_limit)}" if cache.size_limit is not None else ", no size bound (--size sets one)"
@@ -541,8 +548,14 @@ def _init(args: argparse.Namespace) -> int:
 def _pin(args: argparse.Namespace) -> int:
     base = open_store(store_url(args.store), args.cache_dir)
     if args.name == "ls":
+        if args.from_file or len(args.refs) > 1:
+            raise UsageError("`pin ls` takes at most one pin name; to pin references, give the pin another name")
         base.check_root(create=False)
         held = pins.read_all(base)
+        if args.refs:
+            if args.refs[0] not in held:
+                raise store.StoreError(f"there is no pin {args.refs[0]!r}")
+            held = {args.refs[0]: held[args.refs[0]]}
         if args.json:
             _say({"pins": {name: [str(r) for r in wanted] for name, wanted in held.items()}}, args, "")
         else:
@@ -587,11 +600,11 @@ def _gc(args: argparse.Namespace) -> int:
     base = open_store(store_url(args.store), args.cache_dir)
     risk = None
     try:
-        risk = base.client.hidden_history_risk(base.repo_id)
+        risk = base.client.hidden_history_risk(base.repo_id, noun="pins")
     except Exception:
         risk = None
     if risk:
-        _err("Warning: " + risk.replace("refs", "pins"))
+        _err("Warning: " + risk)
     report = gcreport.scan(base)
     unused = report.unused
     rows: "dict[str, Any]" = {"objects": len(report.objects), "bytes": sum(report.objects.values()), "pins": report.pins,
@@ -609,7 +622,7 @@ def _gc(args: argparse.Namespace) -> int:
     if report.foreign:
         lines.append(f"other  : {len(report.foreign)} entry(ies) that are not the store's (left alone)")
     if report.missing:
-        lines.append(f"Warning: {len(report.missing)} pinned object(s) are not in the store")
+        _err(f"Warning: {len(report.missing)} pinned object(s) are not in the store")          # stdout is the answer only
     lines.append("nothing changed: this version reports and removes nothing. Deleting an object frees the library's quota, "
                  "and disk space only after the server's history is truncated and its garbage collector has run.")
     _say(rows, args, "\n".join(lines))
@@ -628,8 +641,8 @@ def _verify(args: argparse.Namespace) -> int:
             raise UsageError(f"{args.record}: {exc}") from None
     parsed = _refs(args.refs)
     wanted += [(_resolved(base, r), None) for r in parsed]
-    if not wanted:
-        wanted = [(r, s) for r, s in base.objects()]
+    if not wanted and not args.record:
+        wanted = [(r, s) for r, s in base.objects()]          # an empty record names nothing: it verifies nothing
     rows: "list[dict[str, Any]]" = []
     bad = 0
     for ref, size in wanted:
@@ -667,9 +680,6 @@ _COMMANDS = {"put": _put, "get": _get, "path": _path, "cat": _cat, "exists": _ex
 def main(argv: "list[str] | None" = None) -> int:
     args_in = list(sys.argv[1:] if argv is None else argv)
     parser = _parser()
-    if args_in and args_in[0] in NOT_YET:
-        _err(f"{PROG}: `{args_in[0]}` is not in this version yet (put, get, path, cat, exists, stat, cache, ls, usage, log, init, pin, unpin, gc and verify are)")
-        return 1          # not a mistake in how it was called, so not the usage code
     try:
         args = parser.parse_args(args_in)
     except SystemExit as exc:
@@ -677,6 +687,9 @@ def main(argv: "list[str] | None" = None) -> int:
     if not args.command:
         parser.print_help(sys.stderr)
         return 2
+    if args.command in NOT_YET:
+        _err(f"{PROG}: `{args.command}` is not in this version yet (put, get, path, cat, exists, stat, cache, ls, usage, log, init, pin, unpin, gc and verify are)")
+        return 1          # not a mistake in how it was called, so not the usage code
     try:
         return _COMMANDS[args.command](args)
     except UsageError as exc:

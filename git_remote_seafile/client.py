@@ -876,11 +876,12 @@ class SeafileClient:
             return
         # A file that says "credential_store": "git" for this server asks git first, so the desktop
         # client's account for the same server cannot outrank what `login --store credential` wrote.
-        if self._config_wants_git and self._credentials_from_git(require_token):
+        asked_git = self._config_wants_git
+        if asked_git and self._credentials_from_git(require_token):
             return
         if self._credentials_from_accounts_db(require_token):
             return
-        if self._credentials_from_git(require_token):
+        if not asked_git and self._credentials_from_git(require_token):          # not twice: each is a `git credential fill`
             return
         if not self.server_url or (require_token and not self.token):
             raise SeafileAuthError(
@@ -1294,7 +1295,7 @@ class SeafileClient:
         except (requests.RequestException, ValueError):
             return None
 
-    def hidden_history_risk(self, repo_id: str) -> str | None:
+    def hidden_history_risk(self, repo_id: str, noun: str = "refs") -> str | None:
         """Why this account may not see the library's whole history; ``None`` when it does.
 
         On Seafile Professional a folder permission can hide part of a library from
@@ -1304,7 +1305,7 @@ class SeafileClient:
         account would delete what only that ref reaches.  Community Edition has no
         folder permissions, and the owner is never restricted by them.  On Pro, an
         account or owner the server does not report is a risk too: cannot tell is
-        not "safe".
+        not "safe".  *noun* is what the warning says is hidden ("refs" for a Git remote, "pins" for the blob store).
         """
         # Only an answer that names the edition settles it: a server-info that failed
         # or came back without a feature list is "cannot tell", which on this path is a
@@ -1318,7 +1319,7 @@ class SeafileClient:
         if not isinstance(features, list):
             return ("the server did not say which edition it runs (/api2/server-info/ gave no "
                     "feature list), and on Seafile Professional a folder permission can hide "
-                    "refs from an account that is not the owner")
+                    f"{noun} from an account that is not the owner")
         if "seafile-pro" not in features:
             return None
         account = self._json_or_none("/api2/account/info/")
@@ -1343,14 +1344,14 @@ class SeafileClient:
                 return None
         if isinstance(owner, str) and is_group_owner(owner):
             return (f"this library is owned by a group ({owner}), so no account is its owner, "
-                    "and on Seafile Professional a folder permission can hide refs from any "
+                    f"and on Seafile Professional a folder permission can hide {noun} from any "
                     "member")
         if not (isinstance(email, str) and email and isinstance(owner, str) and owner):
             return ("the server did not say which account owns this library, and on Seafile "
-                    "Professional a folder permission can hide refs from an account that is not "
+                    f"Professional a folder permission can hide {noun} from an account that is not "
                     "the owner")
         return (f"this account ({email}) is not the library's owner ({owner}), and on Seafile "
-                "Professional a folder permission can hide refs from it (an 'invisible' folder "
+                f"Professional a folder permission can hide {noun} from it (an 'invisible' folder "
                 "is left out of its listing)")
 
     def get_repo_id(self, name_or_id: str) -> str:

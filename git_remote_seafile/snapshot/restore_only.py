@@ -45,7 +45,7 @@ def parse(values: "list[str]") -> "tuple[list[Value], list[str]]":
         why = None
         if not text:
             why = "is empty"
-        elif text.startswith("/") or re.match(r"^[A-Za-z]:", text) or text.startswith("\\\\"):
+        elif text.startswith("/") or re.match(r"^[A-Za-z]:", text) or re.match(r"^[A-Za-z]:", path) or text.startswith("\\\\"):
             why = "is an absolute path; write it relative to the snapshot's root"
         elif os.name == "nt" and "\\" in text:
             why = "uses a backslash; write the path with /"

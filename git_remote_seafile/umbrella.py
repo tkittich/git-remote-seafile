@@ -38,6 +38,10 @@ def main(argv: "list[str] | None" = None) -> int:
         sys.stdout.write(_HELP)
         return 0 if args else 2
     first, rest = args[0], args[1:]
+    if first in ("-V", "--version"):
+        from . import __version__
+        sys.stdout.write(f"git-remote-seafile {__version__}\n")
+        return 0
     if first in SNAPSHOT_WORDS:
         from .snapshot import cli as snapshot_cli
         return snapshot_cli.main(rest)
@@ -46,8 +50,11 @@ def main(argv: "list[str] | None" = None) -> int:
         return blob_cli.main(rest)
     if first in _helper_commands():
         from . import cli
-        sys.argv = ["git-remote-seafile", first, *rest]
-        return cli.main()
+        saved, sys.argv = sys.argv, ["git-remote-seafile", first, *rest]
+        try:
+            return cli.main()
+        finally:
+            sys.argv = saved          # a caller of ``main`` in-process keeps its own argv
     sys.stderr.write(f"seafile: unknown tool or command '{first}'\n\n{_HELP}")
     return 2
 

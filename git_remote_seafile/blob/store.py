@@ -161,23 +161,44 @@ class Store:
                 raise StoreError(
                     f"{self.root or '/'} is not empty and is not a blob store: it is never adopted. Use an empty "
                     "or new folder")
+            self._refuse_vault_neighbours()
             parent = self.root.rpartition("/")[0]
-            while parent:
-                above = {str(e.get("name", "")) for e in self._list(parent)}
+            while True:          # up to and including the library root, which is the empty path
+                above = {str(e.get("name", "")) for e in self._list(parent or "/")}
                 if above & _GIT_ENTRIES:
-                    raise StoreError(f"{parent} looks like a vault or a git remote; a store is not created under it")
+                    raise StoreError(f"{parent or '/'} looks like a vault or a git remote; a store is not created under it")
                 if MARKER in above:
-                    raise StoreError(f"{parent} is a blob store; a store is not created inside another one")
+                    raise StoreError(f"{parent or '/'} is a blob store; a store is not created inside another one")
+                if not parent:
+                    break
                 parent = parent.rpartition("/")[0]
             self._write_marker()
             self._marker_checked = True
+
+    def _refuse_vault_neighbours(self) -> None:
+        """D2: not ``<vault>/payload`` (the folder payload mode owns), and not under ``<x>-view`` beside a vault ``<x>``
+        (a payload view replaces it, and the store with it)."""
+        parts = [p for p in self.root.split("/") if p]
+        if parts and parts[-1] == "payload":
+            raise StoreError(f"{self.root} is named payload, the folder a payload-mode remote owns; choose another folder")
+        for depth, part in enumerate(parts):
+            if part.endswith("-view") and len(part) > len("-view"):
+                sibling = "/" + "/".join(parts[:depth] + [part[: -len("-view")]])
+                names = {str(e.get("name", "")) for e in self._list(sibling)}
+                if names & _GIT_ENTRIES:
+                    raise StoreError(f"{self.root} is under {'/' + '/'.join(parts[:depth + 1])}, the view folder of the "
+                                     f"vault {sibling}; a payload view replaces it. Choose another folder")
 
     def _write_marker(self) -> None:
         body = json.dumps({"format": FORMAT, "id": uuid.uuid4().hex}).encode("utf-8")
         try:
             self.client.upload_file(self.repo_id, self.root or "/", MARKER, body, replace=False)
+            back = self.client.get_file_bytes(self.repo_id, f"{self.root}/{MARKER}")
         except SeafileAPIError as exc:
             raise StoreError(f"could not write the store marker: {exc}") from None
+        if back != body:
+            # A marker stored one byte long would make every later command refuse the folder: say so now.
+            raise StoreError(f"the store marker was written but did not read back as written; remove {self.root}/{MARKER} and run again")
 
     def _read_marker(self) -> None:
         try:
@@ -239,6 +260,9 @@ class Store:
         With *pin* the pin is written (and read back) **before** the object is listed: a pinner lists after its pin is
         readable, which is what a later ``gc`` relies on (STORE.md D6).
         """
+        if pin:
+            from . import pins
+            pins.check_name(pin)          # a bad name is refused before anything is written, the marker included
         self.check_root(create=True)
         try:
             hex_digest, size = _sha256_and_size(path)
@@ -246,7 +270,6 @@ class Store:
             raise StoreError(f"cannot read {path}: {exc}") from None
         ref = refs.full(f"sha256:{hex_digest}")
         if pin:
-            from . import pins
             pins.write(self, pin, [ref])
         have = self._listed_size(ref, fresh=bool(pin))
         if have == size:
@@ -271,7 +294,12 @@ class Store:
         if self._listed_size(ref, fresh=True) != size:
             raise StoreError(f"the server lists {ref} at another size than {size} after the upload; run again")
         if self.verify_by_download:
-            self._prove_by_reading(ref, size)
+            try:
+                self._prove_by_reading(ref, size)
+            except StoreError:
+                # Wrong bytes under the hash name at the right size: the next ``put`` would see it present and skip it.
+                self._drop_object(directory, ref)
+                raise
         return Put(ref, size, uploaded=True)
 
     def _upload_temporary(self, path: Path, size: int, ref: refs.Ref, directory: str,
@@ -309,6 +337,9 @@ class Store:
             raise StoreError(f"cannot read {path}: {exc}") from None
         ref = refs.full(f"sha256:{hex_digest}")
         names = {str(e.get("name", "")) for e in self._list(self.root)}
+        if MARKER not in names and names & _GIT_ENTRIES:
+            raise StoreError(f"{self.root or '/'} looks like a vault or a git remote (it holds "
+                             f"{', '.join(sorted(names & _GIT_ENTRIES))}); choose another folder")
         have = self._listed_size(ref) if MARKER in names else None
         return Put(ref, size, uploaded=have != size)
 
@@ -340,6 +371,15 @@ class Store:
                     self.client.delete_entry(self.repo_id, f"{directory}/{ref.hex}")
         except Exception:
             pass          # the next put replaces a wrong-size object (R5)
+
+    def _drop_object(self, directory: str, ref: refs.Ref) -> None:
+        """Remove the file under the hash name (a directory there is never deleted); best effort."""
+        try:
+            for entry in self._list(directory):
+                if entry.get("name") == ref.hex and entry.get("type") != "dir":
+                    self.client.delete_entry(self.repo_id, f"{directory}/{ref.hex}")
+        except Exception:
+            pass
 
     def _drop(self, directory: str, temp: str) -> None:
         try:
@@ -406,11 +446,24 @@ class Store:
     def _fetch(self, full: refs.Ref, size: int, *, keep: bool,
                progress: "Callable[[int, int], None] | None" = None) -> Path:
         """Download, check size and hash, and admit into the cache (or, for ``cat``, hand back the proved temporary)."""
-        partial_dir = self.cache.partial_dir()
-        partial_dir.mkdir(parents=True, exist_ok=True)
         # One name per object for a kept fetch, so a later run continues what an interrupted one left (RESUME.md D4);
-        # the lock makes it one writer.  ``cat`` takes a private name and deletes it.
-        part = partial_dir / (f"{full.hex}.part" if keep else f"{full.hex}.{uuid.uuid4().hex}.tmp")
+        # the lock makes it one writer.  ``cat`` takes a private name in the system temporary folder, outside the cache,
+        # so ``cache --clear`` and ``cache --size`` neither delete nor count it (review R6 G17).
+        if keep:
+            partial_dir = self.cache.partial_dir()
+            partial_dir.mkdir(parents=True, exist_ok=True)
+            part = partial_dir / f"{full.hex}.part"
+        else:
+            part = Path(tempfile.gettempdir()) / f"sfblob-cat-{full.hex[:12]}.{uuid.uuid4().hex}.tmp"
+        try:
+            return self._fetch_into(full, size, part, keep=keep, progress=progress)
+        except BaseException:
+            if not keep:
+                part.unlink(missing_ok=True)          # also on Ctrl-C, which is not an ``Exception``
+            raise
+
+    def _fetch_into(self, full: refs.Ref, size: int, part: Path, *, keep: bool,
+                    progress: "Callable[[int, int], None] | None") -> Path:
         if keep:
             self.cache.sweep_partials()
             if part.exists() and part.stat().st_size > size:
@@ -439,7 +492,10 @@ class Store:
             except Exception as exc:       # a dropped transfer: the next attempt continues the partial
                 last = f"{type(exc).__name__}: {exc}"
         else:
-            part.unlink(missing_ok=True)
+            if not keep:
+                part.unlink(missing_ok=True)
+            # A kept partial stays when only the transfer failed, so the next run continues from it (RESUME.md D4);
+            # a size or hash mismatch removed it above.
             raise StoreError(f"could not fetch {full}: {last}")
         if not keep:
             return part
@@ -451,13 +507,22 @@ class Store:
                progress: "Callable[[int, int], None] | None" = None) -> Path:
         """Copy the verified object to *destination*, which must not exist (R4: ``get`` never overwrites)."""
         source, _ = self.get(ref, progress=progress)
+        created = False
         try:
             with open(source, "rb") as src, open(destination, "xb") as dst:
+                created = True          # the name is ours from here: a failed copy must not leave half a file under it
                 shutil.copyfileobj(src, dst, 1 << 20)
         except FileExistsError:
             raise StoreError(f"{destination} already exists; get does not overwrite") from None
-        except OSError as exc:
-            raise StoreError(f"cannot write {destination}: {exc}") from None
+        except BaseException as exc:
+            if created:
+                try:
+                    Path(destination).unlink()
+                except OSError:
+                    pass
+            if isinstance(exc, OSError):
+                raise StoreError(f"cannot write {destination}: {exc}") from None
+            raise
         return destination
 
     def cat(self, ref: refs.Ref, out: BinaryIO, progress: "Callable[[int, int], None] | None" = None) -> int:

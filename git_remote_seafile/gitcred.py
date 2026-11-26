@@ -233,6 +233,8 @@ def approve(server_url: str, username: str, token: str, timeout: float = TIMEOUT
     Call only after the token authenticated.  False means it was not stored (R7:
     ``login`` must then leave an existing plaintext ``token`` alone)."""
     request = build_request(server_url, username)
+    if not token or _BAD.search(token):          # a line feed would add fields to the request; the token is never echoed
+        return False
     request["password"] = token
     code, _ = _run("approve", request, timeout)
     if code != 0:

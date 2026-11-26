@@ -200,7 +200,7 @@ class RoundFiveTests(TreeCase):
         def late(self_, ref, destination, progress=None):
             result = real(self_, ref, destination, progress)
             target = out / "a.bin"
-            if destination.name.startswith("a.bin."):
+            if destination.name.startswith(".sfblob-part-"):
                 target.write_bytes(b"arrived meanwhile")
             return result
 

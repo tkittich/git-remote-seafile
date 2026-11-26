@@ -43,6 +43,10 @@ def main(argv: list[str] | None = None) -> int:
                 pass
     gitrun.forget_config_reads()  # a caller may have changed config since the last run
     raw = cli_checks.help_word_to_flag(sys.argv[1:] if argv is None else argv)
+    if raw == ["--version"]:
+        from .. import __version__
+        print(f"git-remote-seafile {__version__}")
+        return 0
     try:
         args = cli_args.parse_args(raw)
     except SystemExit as exc:

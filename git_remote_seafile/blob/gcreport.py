@@ -12,10 +12,12 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from . import pins
+from .store import MARKER
 
 if TYPE_CHECKING:
     from .store import Store
 
+_MARKER_COPY = re.compile(re.escape(MARKER) + r" \((\d+|SFConflict [^)]*)\)")
 _OBJECT = re.compile(r"[0-9a-f]{64}")
 _TEMPORARY = re.compile(r"([0-9a-f]{64})\.part-[0-9a-f]+")
 _COPY = re.compile(r"([0-9a-f]{64}) \((\d+|SFConflict [^)]*)\)")
@@ -41,8 +43,21 @@ def scan(store: "Store") -> Report:
     report = Report()
     held = pins.read_all(store)
     for name, wanted in held.items():
-        report.pins[name] = len(wanted)
+        report.pins[name] = len({r.hex for r in wanted})          # as ``pin ls`` counts: a reference named twice is one
         report.pinned.update(r.hex for r in wanted)
+    # D2: whatever else is in the store's own folders is reported once and left alone.
+    for entry in store._list(store.root or "/"):
+        name = str(entry.get("name", ""))
+        if name not in ("blobs", "pins", MARKER) and not _MARKER_COPY.fullmatch(name):
+            report.foreign.append(name)
+    for entry in store._list(f"{store.root}/pins"):
+        name = str(entry.get("name", ""))
+        if entry.get("type") != "dir":
+            report.foreign.append(f"pins/{name}")
+        else:
+            for inner in store._list(f"{store.root}/pins/{name}"):
+                if inner.get("type") == "dir":
+                    report.foreign.append(f"pins/{name}/{inner.get('name', '')}")
     for fan in sorted(store._list(f"{store.root}/blobs"), key=lambda e: str(e.get("name", ""))):
         fan_name = str(fan.get("name", ""))
         if fan.get("type") != "dir" or len(fan_name) != 2:
@@ -53,7 +68,7 @@ def scan(store: "Store") -> Report:
             size = size if isinstance(size, int) and not isinstance(size, bool) else 0
             if entry.get("type") == "dir":
                 report.foreign.append(f"blobs/{fan_name}/{name}")
-            elif _OBJECT.fullmatch(name):
+            elif _OBJECT.fullmatch(name) and name.startswith(fan_name):
                 report.objects[name] = size
             elif _TEMPORARY.fullmatch(name):
                 report.temporaries.append((name, size))

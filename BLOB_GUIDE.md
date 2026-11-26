@@ -27,7 +27,7 @@ Log in once (the same login as the other tools: `git-remote-seafile login`, or t
 sfblob init seafile://<library>/<folder>
 ```
 
-`init` checks the login and the folder, creates the store (a marker file and a `blobs/` folder), and saves the address as the git config `seafile.blob.store` so no other command needs it (`--global` saves it for every repository, which is the default outside one). To name a store without saving it, give `--store seafile://<library>/<folder>` or set `SFBLOB_STORE`.
+`init` checks the login and the folder, creates the store (a marker file; `blobs/` appears with the first object), and saves the address as the git config `seafile.blob.store` so no other command needs it (`--global` saves it for every repository, which is the default outside one). To name a store without saving it, give `--store seafile://<library>/<folder>` or set `SFBLOB_STORE`.
 
 A store is never made inside a vault, a git remote or another store, and a folder that holds something else is never adopted: use an empty or new folder.
 
@@ -79,7 +79,7 @@ A reference kept outside the store (git, a notebook) does not protect an object 
 ```
 sfblob put dataset.tar --pin thesis        # the pin is written first, then the object is listed
 sfblob pin thesis sha256:<full reference>... [--from-file refs.txt]
-sfblob pin ls
+sfblob pin ls                 # every pin; `sfblob pin ls NAME` shows one
 sfblob unpin thesis
 ```
 
@@ -102,7 +102,7 @@ Fetched objects are kept in a read-only cache (`$SFBLOB_CACHE`, or the user's ca
 
 ```
 sfblob cache                  # what it holds, and its bound
-sfblob cache --size 20G       # keep it to 20 GiB from now on (the least recently used go first)
+sfblob cache --size 20G       # keep it to 20 GiB from now on; the least recently used go first, at once
 sfblob cache --size off       # no bound
 sfblob cache --clear
 ```
