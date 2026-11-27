@@ -565,6 +565,9 @@ UPLOAD_CHUNK_BYTES = 128 * 1024 * 1024
 #: the size.  The connect timeout stays short.
 UPLOAD_READ_TIMEOUT_SECONDS = 600
 
+#: The rate the wait after a last chunk assumes the server assembles at (see ``_chunk_verdict``); an assumption.
+ASSEMBLY_BYTES_PER_SECOND = 100 * 1024 * 1024
+
 #: Attempts per chunk (the first plus retries) before the upload is abandoned.
 UPLOAD_CHUNK_ATTEMPTS = 3
 #: How many times a caller starts an object again under a new temporary name after the server stored a chunk wrongly.
@@ -2365,7 +2368,12 @@ class SeafileClient:
         """
         end = offset + length
         last = end >= total
-        for tries in range(6):
+        # After the last chunk the server assembles the file, and that takes longer the bigger the file is: the wait grows
+        # with *total* (5 s more per 500 MiB, at most the upload reply timeout), so a big object is not called ``unknown``
+        # only because the server was still working.  The rate is an assumption, not a measurement: nobody could run a
+        # 50 GiB upload here (PLAN_0.12), and a wait that is too long costs time only after a failed last chunk.
+        extra_rounds = int(min(total / ASSEMBLY_BYTES_PER_SECOND, UPLOAD_READ_TIMEOUT_SECONDS) / 5) if last else 0
+        for tries in range(6 + extra_rounds):
             held = self.uploaded_bytes(repo_id, parent_dir, filename)
             if held is None:
                 held = self.uploaded_bytes(repo_id, parent_dir, filename)      # one retry
@@ -2388,7 +2396,7 @@ class SeafileClient:
                 return "stored"
             if offset_refused and not last and held != offset and held != end:
                 return "corrupt"          # the server refused our offset and holds neither it nor the chunk's end
-            time.sleep(0.5 * (tries + 1))        # in flight or assembling: wait and ask again
+            time.sleep(min(0.5 * (tries + 1), 5.0))        # in flight or assembling: wait and ask again
         return "unknown"
 
     def download_file_to(

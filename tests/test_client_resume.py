@@ -80,6 +80,31 @@ class StreamedHashTests(_Fixture):
             self.download(max_bytes=len(OBJECT), resume_from=300, hasher=object())
 
 
+class LastChunkWaitTests(_Fixture):
+    """After the last chunk the server assembles the file; the wait for it grows with the size, and only there."""
+
+    def sleeps(self, total: int, *, last: bool) -> "list[float]":
+        from unittest.mock import patch
+
+        offset = total - 10 if last else 0
+        self.client.uploaded_bytes = MagicMock(return_value=offset + 3)      # neither stored nor absent
+        with patch("git_remote_seafile.client.time.sleep") as slept:
+            verdict = self.client._chunk_verdict("repo1", "/d", "f", offset, 10, total)
+        self.assertEqual(verdict, "unknown")
+        return [call.args[0] for call in slept.call_args_list]
+
+    def test_a_small_upload_waits_as_it_always_did(self):
+        self.assertEqual(self.sleeps(1 << 20, last=True), [0.5, 1.0, 1.5, 2.0, 2.5, 3.0])
+
+    def test_a_big_upload_waits_longer_after_its_last_chunk_but_each_pause_stays_short(self):
+        waits = self.sleeps(50 << 30, last=True)
+        self.assertGreater(sum(waits), 300)
+        self.assertLessEqual(max(waits), 5.0)
+
+    def test_a_chunk_that_is_not_the_last_never_gets_the_longer_wait(self):
+        self.assertEqual(len(self.sleeps(50 << 30, last=False)), 6)
+
+
 class ResumeTests(_Fixture):
     def test_a_partial_is_continued_with_a_range_and_ends_as_the_whole_object(self):
         self.dest.write_bytes(OBJECT[:300])
