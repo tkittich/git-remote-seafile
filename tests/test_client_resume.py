@@ -87,7 +87,7 @@ class LastChunkWaitTests(_Fixture):
         from unittest.mock import patch
 
         offset = total - 10 if last else 0
-        self.client.uploaded_bytes = MagicMock(return_value=offset + 3)      # neither stored nor absent
+        self.client.uploaded_bytes = MagicMock(return_value=offset + 3)  # type: ignore[method-assign]  # neither stored nor absent
         with patch("git_remote_seafile.client.time.sleep") as slept:
             verdict = self.client._chunk_verdict("repo1", "/d", "f", offset, 10, total)
         self.assertEqual(verdict, "unknown")
