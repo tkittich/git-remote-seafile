@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-11-27
+
+A feature release and the first breaking one (see UPGRADING.md: it breaks little). The blob store (`seafile-blob`) is new and add-only: it stores, pins, verifies and reads objects by hash, and it can read a git vault's payload objects read-only; nothing in it deletes. The snapshot tool has commands, the token can live in git's credential store, and uploads survive a lost reply and a dropped download. Reviewed over eight rounds, soaked on Seafile CE and Pro 13.0 containers.
+
 ### Removed
 - **The warn-first options of 0.10.1 to 0.10.4 are refused** (usage error, exit 2) instead of warned about and ignored: the options each snapshot mode accepted and never read (`--restore-drill` with five payload options, `--status` with three, `--maintain` with four, `--payload-gc` and `--payload-verify` with nine, `--payload-view` with fifteen, `--restore --payload-jobs`, and four payload options with `--no-push`; `SNAPSHOT.md` "Options by mode" lists them). `ignored_option_warnings` is gone, and with it the `Warning:` and the exit 3 it caused under `--exit-warnings` (ROADMAP AA74).
 
@@ -2362,6 +2366,7 @@ Data-loss and silent-failure fixes, and the Python floor raised to 3.9.
   with zero-config desktop-client token discovery, distributed locking, remote
   packfile compaction, and a Git LFS custom transfer agent.
 
+[0.11.0]: https://github.com/tkittich/git-remote-seafile/compare/v0.10.7...v0.11.0
 [0.10.7]: https://github.com/tkittich/git-remote-seafile/compare/v0.10.6...v0.10.7
 [0.10.6]: https://github.com/tkittich/git-remote-seafile/compare/v0.10.5...v0.10.6
 [0.10.5]: https://github.com/tkittich/git-remote-seafile/compare/v0.10.4...v0.10.5
