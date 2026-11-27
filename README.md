@@ -6,6 +6,8 @@
 
 A transparent, zero-thrash **Git remote helper** for Seafile servers.
 
+Three tools, one login: the Git remote helper itself, `git seafile-snapshot` (whole-tree backups, ignored files included) and, new in 0.11, **`seafile-blob`** (large files kept by hash and read back verified).
+
 `git-remote-seafile` allows you to use your private Seafile server (Community or Professional Edition; both editions of 13.0 are tested: CE 13.0.29 and Pro 13.0.29) as an authentic, secure (HTTPS/TLS), access-controlled Git remote backend using native Git commands (`git clone`, `git push`, `git pull`).
 
 > **Status: soft maintenance mode (v0.10.0 onwards).** Fixes, each with a test that fails without it, and important changes (a feature, a restructure, a redesign) with a written reason and the maintainer's yes. See [CONTRIBUTING](CONTRIBUTING.md#maintenance-mode-soft). **Supported versions:** the current release only. v0.11 broke little ([what and why](UPGRADING.md)); the last 0.10 release gets no backports.
@@ -212,6 +214,21 @@ git seafile-snapshot restore --remote seafile://code/myproject-vault \
 **Large trees:** payload mode (on by default; `--no-payload` turns it off) stores big, already-compressed files on the server by hash instead of through git — no second local copy, no staging pass, and a snapshot that costs nothing to keep; each run says where its files went, and the cut-off for compressible files is tunable (`--payload-auto-ratio`). A 131 GiB tree took 38 minutes and restored byte-exact. See [SNAPSHOT_GUIDE.md §9](SNAPSHOT_GUIDE.md#9-large-payloads-payload-mode) and [PAYLOAD.md](PAYLOAD.md).
 
 The destination, branch and exclusions (or the choice of `--default-excludes`, which leaves `build`, `dist` and `venv` out only where git ignores everything in them) are **remembered in the vault** after the first run, so a scheduled job can be nothing more than `git seafile-snapshot` (cron, systemd and Task Scheduler recipes: [SNAPSHOT_GUIDE.md section 10](SNAPSHOT_GUIDE.md#10-running-it-on-a-schedule)). It maintains a **separate vault repository** whose `--work-tree` is the source, so the source stays read-only and untouched. Byte-exactness is enforced with `core.autocrlf=false` plus `* -text -filter -ident -working-tree-encoding` in the vault's own `info/attributes` — a plain `git clone` of the vault silently loses that, which is why `restore` exists. Recommended junk exclusions are **never applied silently**: an unattended run captures everything and tells you what it noticed, and a first run at a terminal lists the reproducible directories it found (`node_modules`, virtualenvs, `dist`) with their sizes and asks, because a backup that quietly omits a file is worse than a large one. See [SNAPSHOT_GUIDE.md](SNAPSHOT_GUIDE.md) for the walkthrough and [SNAPSHOT.md](SNAPSHOT.md) for the full design.
+
+### Large files by hash: `seafile-blob` (new in 0.11)
+
+Keep datasets, model weights and recordings on a Seafile library under their SHA-256 and get them back **verified**. A reference (`sha256:<64 hex>`) means the same bytes everywhere, so it can live in git, a database or a build file while the bytes stay on the server you already have.
+
+```bash
+sfblob init seafile://data/blobs                # once: name a store (a folder nothing else uses)
+sfblob put dataset.tar                          # sha256:ab12...  734003200  dataset.tar  (uploads only what is missing)
+sfblob get sha256:ab12cd -o dataset.tar         # fetched, hashed, and only then handed over
+sfblob put -r data/ --record blobs.txt          # a folder: one sorted line per file, merges cleanly in git
+sfblob get --from blobs.txt --to restored/      # restores every path, each proved by its hash
+sfblob verify --deep --subset 1/7               # re-read a seventh of the store from the server and judge the bytes
+```
+
+The store is **add-only**: it never deletes anything (removal comes in a later release), an upload that the server stores wrong is noticed and not kept, an interrupted download continues, and `--json` gives a machine-readable answer or a coded failure. It can also read a snapshot vault's payload objects read-only (`--payload-vault`). It is meant for large, rarely-read data that a team already keeps on Seafile, not as a general object store: see [what to know before you rely on it](BLOB_GUIDE.md#9-what-to-know-before-you-rely-on-it) and the [Blob Guide](BLOB_GUIDE.md).
 
 ### Diagnostics for the Seafile desktop client
 
