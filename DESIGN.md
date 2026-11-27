@@ -47,12 +47,12 @@ Recent community efforts (such as the `vacaboja/seafile` fork and [PR #2988](htt
   3. **Lock file propagation**: `.git/*.lock` files still sync across devices, freezing active repositories on secondary machines.
   4. **Merge conflicts**: Offline or simultaneous commits continue generating unresolvable `(SFConflict ...)` files rather than 3-way Git merges.
 
-### 2.2 The Windows Dilemma: Same-Second Edits & Mandatory File Locks
+### 2.2 Sync-Client Pitfalls: Same-Second Edits & Windows File Locks
 
-On Windows systems, desktop syncing of active code introduces additional OS-level failure modes:
+Desktop and CLI syncing of active code introduces additional client-level failure modes:
 
-1. **1-Second `mtime` Truncation ("Racy Sync")**:  
-   Seafile's index format (`common/index/index.c`, adapted from Git's internal directory cache) tracks modification timestamps in integer seconds (`ce_mtime.sec`). Standard Windows CRT file stats truncate `st_mtime` to whole seconds. If an automated script, compiler, or Git command modifies a file multiple times within the **same second** without altering the byte length:
+1. **1-Second `mtime` Truncation ("Racy Sync")** *(all platforms)*:  
+   Seafile's index format (`common/index/index.c`, adapted from Git's internal directory cache) zeroes sub-second timestamps (`ce_mtime.nsec = 0`) and stores modification timestamps in integer seconds (`ce_mtime.sec`), with Git's `is_racy_timestamp` check compiled out under `#if 0`. If an automated script, compiler, or Git command modifies a file multiple times within the **same second** without altering the byte length (reproduced on Windows Client 9.0.22 and Linux `seaf-cli` 9.0.22):
    ```text
    Disk mtime == Index mtime  AND  Disk size == Index size
    ```
