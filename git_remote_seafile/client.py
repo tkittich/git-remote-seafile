@@ -2399,6 +2399,7 @@ class SeafileClient:
         progress_callback: Any = None,
         max_bytes: int | None = None,
         resume_from: int = 0,
+        hasher: Any = None,
     ) -> bool:
         """Stream a remote file to *dest* without holding it in memory.
 
@@ -2432,7 +2433,13 @@ class SeafileClient:
         that answers ``416`` for a complete object, which would throw the file
         away, so the call returns at once and the caller's hash decides.  The
         declared size bounds the whole object, as ``resume_from + transferred``.
+
+        ``hasher`` (anything with ``update(bytes)``) is fed every byte as it arrives, so a caller that wants only the
+        digest can pass ``os.devnull`` as *dest* and need no scratch space.  It sees the whole body or nothing it can
+        trust: with ``resume_from`` it would miss the partial's bytes, so that combination is refused.
         """
+        if hasher is not None and resume_from:
+            raise ValueError("hasher cannot be combined with resume_from: it would not see the bytes already held")
         clean_path = "/" + file_path.strip("/")
         dest_path = Path(dest)
         resume = max(0, int(resume_from or 0))
@@ -2475,10 +2482,10 @@ class SeafileClient:
                     expected_total = int(match.group(3))
                 else:
                     file_resp.close()   # another range than the one asked for: never appended
-                    return self.download_file_to(repo_id, file_path, dest, progress_callback, max_bytes, 0)
+                    return self.download_file_to(repo_id, file_path, dest, progress_callback, max_bytes, 0, hasher=hasher)
             elif resume and file_resp.status_code == 416:
                 file_resp.close()
-                return self.download_file_to(repo_id, file_path, dest, progress_callback, max_bytes, 0)
+                return self.download_file_to(repo_id, file_path, dest, progress_callback, max_bytes, 0, hasher=hasher)
             elif file_resp.status_code != 200:
                 said = self._said(self._body_sample(file_resp), *self._link_secrets(dl_url))
                 raise SeafileAPIError(
@@ -2507,7 +2514,7 @@ class SeafileClient:
                     unchanged = False
                 if not unchanged:
                     file_resp.close()
-                    return self.download_file_to(repo_id, file_path, dest, progress_callback, max_bytes, 0)
+                    return self.download_file_to(repo_id, file_path, dest, progress_callback, max_bytes, 0, hasher=hasher)
             # The declared size bounds the stream; when the caller gave none, the server's own total does.
             cap = max_bytes if max_bytes is not None else (expected_total if append else None)
             with open(dest_path, "ab" if append else "wb") as fh:
@@ -2519,6 +2526,8 @@ class SeafileClient:
                                 "download stopped"
                             )
                         fh.write(chunk)
+                        if hasher is not None:
+                            hasher.update(chunk)
                         transferred += len(chunk)
                         if progress_callback:
                             try:

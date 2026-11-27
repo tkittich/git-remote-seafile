@@ -62,6 +62,24 @@ class _Fixture(unittest.TestCase):
         return self.client.download_file_to("repo1", "/o", self.dest, **kwargs)   # type: ignore[arg-type]
 
 
+class StreamedHashTests(_Fixture):
+    """A caller that wants only the digest passes a hasher and ``os.devnull``: nothing is stored, nothing is read twice."""
+
+    def test_the_hasher_sees_every_byte_and_nothing_is_written_to_dest(self):
+        import hashlib
+        import os
+
+        self.serve(_honest(OBJECT))
+        digest = hashlib.sha256()
+        self.assertTrue(self.client.download_file_to("repo1", "/o", os.devnull, max_bytes=len(OBJECT), hasher=digest))
+        self.assertEqual(digest.hexdigest(), hashlib.sha256(OBJECT).hexdigest())
+
+    def test_a_hasher_with_a_partial_is_refused_because_it_would_miss_the_partial(self):
+        self.serve(_honest(OBJECT))
+        with self.assertRaises(ValueError):
+            self.download(max_bytes=len(OBJECT), resume_from=300, hasher=object())
+
+
 class ResumeTests(_Fixture):
     def test_a_partial_is_continued_with_a_range_and_ends_as_the_whole_object(self):
         self.dest.write_bytes(OBJECT[:300])

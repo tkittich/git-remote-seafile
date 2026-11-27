@@ -79,6 +79,21 @@ class Put:
     uploaded: bool          # False: the object was already there at the right size (R5)
 
 
+class _CountingHash:
+    """A sha256 that also counts the bytes it was given: what a streamed read-back is judged by."""
+
+    def __init__(self) -> None:
+        self._digest = hashlib.sha256()
+        self.size = 0
+
+    def update(self, block: bytes) -> None:
+        self._digest.update(block)
+        self.size += len(block)
+
+    def hexdigest(self) -> str:
+        return self._digest.hexdigest()
+
+
 def _sha256_and_size(path: Path) -> "tuple[str, int]":
     digest = hashlib.sha256()
     size = 0
@@ -495,17 +510,18 @@ class Store:
 
     def _prove_by_reading(self, ref: refs.Ref, size: int) -> None:
         """Over http the bytes are proved only by reading them back (D8)."""
-        with tempfile.TemporaryDirectory(prefix="sfblob-verify-") as scratch:
-            probe = Path(scratch) / "object"
-            try:
-                found = self.client.download_file_to(self.repo_id, self.blob_path(ref), probe, max_bytes=size)
-            except SeafileAPIError as exc:
-                raise StoreError(f"could not read {ref} back to prove it ({exc}); the object was left as it is: "
-                                 f"run `sfblob verify --deep {ref}`") from None
-            if not found:
-                raise StoreError(f"{ref} was not there to read back; run again")
-            if probe.stat().st_size != size or _sha256_and_size(probe)[0] != ref.hex:
-                raise ReadBackMismatch(f"{ref} did not read back as the bytes that were sent; run again")
+        # Hashed as it arrives and written nowhere (os.devnull): proving a 50 GiB object needs no 50 GiB of scratch
+        # space and no second pass over it.
+        seen = _CountingHash()
+        try:
+            found = self.client.download_file_to(self.repo_id, self.blob_path(ref), os.devnull, max_bytes=size, hasher=seen)
+        except SeafileAPIError as exc:
+            raise StoreError(f"could not read {ref} back to prove it ({exc}); the object was left as it is: "
+                             f"run `sfblob verify --deep {ref}`") from None
+        if not found:
+            raise StoreError(f"{ref} was not there to read back; run again")
+        if seen.size != size or seen.hexdigest() != ref.hex:
+            raise ReadBackMismatch(f"{ref} did not read back as the bytes that were sent; run again")
 
     # -- get --------------------------------------------------------------------------------------------------------
 
