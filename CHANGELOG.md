@@ -7,15 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **A short read-back no longer deletes a stored object.** Over plain `http://` a blob `put` proves its object by reading it back. A body that ended early (a connection that closed cleanly, a proxy that cut the response, no error raised) counted as a *proven mismatch*, and `put` then deleted the object at its hash name, which may be another writer's already verified object. A short read is now a failed read: the object is left as it is and the error says to run `verify --deep`. Only the right number of bytes with another hash deletes. Found by the round 9 review (Opus P5); present in every blob release.
+
 ## [0.11.1] - 2026-11-27
 
-Replaces 0.11.0, which was withdrawn the day it was published (its release and tag were deleted; the number is not reused). Everything in 0.11.0 is in this release. One thing changed, and it is the reason for the withdrawal: the `seafile` command is removed. One data-safety fix is also in: a short read-back no longer deletes a stored object.
+Replaces 0.11.0, which was withdrawn the day it was published (its release and tag were deleted; the number is not reused). Everything in 0.11.0 is in this release. One thing changed, and it is the reason for the withdrawal: the `seafile` command is removed.
 
 ### Removed
 - **The umbrella command `seafile` is gone, with no replacement.** 0.11.0 installed a command named `seafile` (`seafile login`, `seafile snapshot`, `seafile blob`). The name belongs to Seafile itself, not to this project: it could shadow or be shadowed by a program of that name, and it read as an official tool. A renamed umbrella would only have been a fourth name for tools that already have short ones, so there is none: the helper is `git-remote-seafile` (`login`, `doctor`, ... as before), the snapshot tool `sfsnap` (or `git-seafile-snapshot`) and the blob store `sfblob` (or `seafile-blob`). It existed in one withdrawn release for a few hours. No other command name changes.
 
 ### Fixed
-- **A short read-back no longer deletes a stored object.** Over plain `http://` a blob `put` proves its object by reading it back. A body that ended early (a connection that closed cleanly, a proxy that cut the response, no error raised) counted as a *proven mismatch*, and `put` then deleted the object at its hash name, which may be another writer's already verified object. A short read is now a failed read: the object is left as it is and the error says to run `verify --deep`. Only the right number of bytes with another hash deletes. Found by the round 9 review (Opus P5); present in every blob release.
 - The large-listing test against a real server waits out an HTTP 429 from the load it makes itself (one Pro run of 0.11.0 failed on it). No change to what the tools do.
 
 ## [0.11.0] - 2026-11-27 (withdrawn)
