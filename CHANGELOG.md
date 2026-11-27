@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.2] - 2026-11-27
+
+A fixes-only release: one data-safety fix found by the round 9 review.
+
 ### Fixed
 - **A short read-back no longer deletes a stored object.** Over plain `http://` a blob `put` proves its object by reading it back. A body that ended early (a connection that closed cleanly, a proxy that cut the response, no error raised) counted as a *proven mismatch*, and `put` then deleted the object at its hash name, which may be another writer's already verified object. A short read is now a failed read: the object is left as it is and the error says to run `verify --deep`. Only the right number of bytes with another hash deletes. Found by the round 9 review (Opus P5); present in every blob release.
 
@@ -2381,6 +2385,7 @@ Data-loss and silent-failure fixes, and the Python floor raised to 3.9.
   with zero-config desktop-client token discovery, distributed locking, remote
   packfile compaction, and a Git LFS custom transfer agent.
 
+[0.11.2]: https://github.com/tkittich/git-remote-seafile/compare/v0.11.1...v0.11.2
 [0.11.1]: https://github.com/tkittich/git-remote-seafile/compare/v0.10.7...v0.11.1
 [0.11.0]: https://github.com/tkittich/git-remote-seafile/compare/v0.10.7...1cb90a9
 [0.10.7]: https://github.com/tkittich/git-remote-seafile/compare/v0.10.6...v0.10.7
