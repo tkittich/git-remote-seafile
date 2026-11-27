@@ -22,7 +22,7 @@ from test_blob_cli import CliCase  # noqa: E402
 from test_blob_store import DATA, ROOT, SHA, StoreCase  # noqa: E402
 from test_blob_tree import TreeCase  # noqa: E402
 
-from git_remote_seafile import gitcred, umbrella  # noqa: E402
+from git_remote_seafile import gitcred  # noqa: E402
 from git_remote_seafile.blob import cache as cache_mod  # noqa: E402
 from git_remote_seafile.blob import cli, gcreport, pins, record, store, tree  # noqa: E402
 from git_remote_seafile.client import SeafileClient  # noqa: E402
@@ -581,19 +581,6 @@ class SmallFixTests(unittest.TestCase):
         values, problems = restore_only.parse(["./C:/evil"])
         self.assertEqual(values, [])
         self.assertEqual(len(problems), 1)
-
-    def test_the_umbrella_keeps_the_callers_argv_and_answers_version(self):
-        from git_remote_seafile import cli as helper_cli
-        keep = list(sys.argv)
-        word = sorted(set(helper_cli._HANDLERS) - {"snapshot"})[0]
-        with patch.object(helper_cli, "main", return_value=0) as main:
-            self.assertEqual(umbrella.main([word]), 0)
-        main.assert_called_once()
-        self.assertEqual(sys.argv, keep)
-        out = io.StringIO()
-        with contextlib.redirect_stdout(out):
-            self.assertEqual(umbrella.main(["--version"]), 0)
-        self.assertIn("git-remote-seafile", out.getvalue())
 
     def test_the_snapshot_tool_answers_version(self):
         from git_remote_seafile.snapshot import cli as snapshot_cli

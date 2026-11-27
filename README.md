@@ -174,9 +174,9 @@ The documentation spells commands out (`git seafile-snapshot`, `git-remote-seafi
 
 | Long form | Short forms |
 | :--- | :--- |
-| `git-remote-seafile` (the helper; git requires this name) | `seafile <command>`, e.g. `seafile login`, `seafile doctor` |
-| `git seafile-snapshot` | `sfsnap`, `git sfsnap`, `seafile snapshot`, `seafile snap` |
-| `seafile-blob` | `sfblob`, `git-seafile-blob`, `seafile blob` |
+| `git-remote-seafile` (the helper; git requires this name) | none: `git-remote-seafile login`, `git-remote-seafile doctor` |
+| `git seafile-snapshot` | `sfsnap`, `git sfsnap` |
+| `seafile-blob` | `sfblob`, `git-seafile-blob` |
 
 ### Whole-tree snapshots: `git seafile-snapshot`
 

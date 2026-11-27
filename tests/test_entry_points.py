@@ -23,8 +23,13 @@ class EntryPointTests(unittest.TestCase):
         for name in ("seafile-blob", "sfblob", "git-seafile-blob"):
             self.assertEqual(scripts[name], "git_remote_seafile.blob.cli:main")
 
-    def test_the_umbrella_is_an_entry_point(self):
-        self.assertEqual(self.scripts()["seafile"], "git_remote_seafile.umbrella:main")
+    def test_no_command_is_named_like_seafile_itself(self):
+        # 0.11.0 shipped an umbrella command called ``seafile`` and was withdrawn for it; ``sfgit`` followed and was dropped
+        # as one name too many.  The names are the helper (git requires it), the snapshot tool and the blob store.
+        self.assertEqual(
+            sorted(self.scripts()),
+            sorted(["git-remote-seafile", "git-seafile-snapshot", "sfsnap", "git-sfsnap", "seafile-blob", "sfblob", "git-seafile-blob"]),
+        )
 
     def test_the_snapshot_short_names_run_the_same_function_as_the_long_one(self):
         scripts = self.scripts()
@@ -51,62 +56,6 @@ class EntryPointTests(unittest.TestCase):
                 cli.main()
         self.assertIn("git-seafile-snapshot", out.getvalue())
         self.assertNotIn("usage: sfsnap", out.getvalue())
-
-
-class UmbrellaTests(unittest.TestCase):
-    """``seafile`` forwards to the existing mains and holds no logic of its own."""
-
-    def run_umbrella(self, *args: str) -> "tuple[int, str, str]":
-        import io
-        from contextlib import redirect_stderr, redirect_stdout
-        from git_remote_seafile import umbrella
-        out, err = io.StringIO(), io.StringIO()
-        with redirect_stdout(out), redirect_stderr(err):
-            code = umbrella.main(list(args))
-        return code, out.getvalue(), err.getvalue()
-
-    def test_snapshot_and_snap_hand_the_rest_to_the_snapshot_tool(self):
-        from unittest.mock import patch
-        for word in ("snapshot", "snap"):
-            with self.subTest(word=word), patch("git_remote_seafile.snapshot.cli.main", return_value=7) as main:
-                self.assertEqual(self.run_umbrella(word, "restore", "--remote", "x")[0], 7)
-                main.assert_called_once_with(["restore", "--remote", "x"])
-
-    def test_a_helper_command_runs_the_helper_with_its_own_program_name(self):
-        import sys
-        from unittest.mock import patch
-        seen: "list[list[str]]" = []
-
-        def fake_main() -> int:
-            seen.append(list(sys.argv))
-            return 3
-
-        with patch("git_remote_seafile.cli.main", fake_main), patch.object(sys, "argv", list(sys.argv)):
-            self.assertEqual(self.run_umbrella("doctor", "seafile://lib/repo")[0], 3)
-        self.assertEqual(seen, [["git-remote-seafile", "doctor", "seafile://lib/repo"]])
-
-    def test_blob_hands_the_rest_to_the_blob_store(self):
-        from unittest.mock import patch
-        with patch("git_remote_seafile.blob.cli.main", return_value=4) as main:
-            self.assertEqual(self.run_umbrella("blob", "get", "sha256:abcdef")[0], 4)
-            main.assert_called_once_with(["get", "sha256:abcdef"])
-
-    def test_help_lists_the_tools_and_no_arguments_is_a_usage_error(self):
-        code, out, _ = self.run_umbrella("--help")
-        self.assertEqual(code, 0)
-        for text in ("seafile snapshot", "seafile blob", "git-remote-seafile"):
-            self.assertIn(text, out)
-        self.assertEqual(self.run_umbrella()[0], 2)
-
-    def test_an_unknown_word_is_refused_with_the_help(self):
-        code, _, err = self.run_umbrella("frobnicate")
-        self.assertEqual(code, 2)
-        self.assertIn("unknown tool or command 'frobnicate'", err)
-
-    def test_every_helper_command_is_reachable_and_the_snapshot_word_is_not_shadowed(self):
-        from git_remote_seafile import cli, umbrella
-        self.assertEqual(umbrella._helper_commands(), frozenset(cli._HANDLERS) - {"snapshot"})
-        self.assertTrue(set(umbrella.SNAPSHOT_WORDS).isdisjoint(umbrella._helper_commands()))
 
 
 if __name__ == "__main__":

@@ -56,7 +56,6 @@ M = [
     (B + "cli.py", 'risk = base.client.hidden_history_risk(base.repo_id, noun="pins")', "risk = None", T + "CommandGuardTests.test_the_pro_warning_reaches_standard_error_in_gc"),
     ("git_remote_seafile/gitcred.py", "if not token or _BAD.search(token):", "if not token:", T + "SmallFixTests.test_a_token_with_a_line_feed_is_never_handed_to_git"),
     ("git_remote_seafile/snapshot/restore_only.py", ' or re.match(r"^[A-Za-z]:", path)', "", T + "SmallFixTests.test_a_drive_letter_behind_dot_slash_is_refused"),
-    ("git_remote_seafile/umbrella.py", "sys.argv = saved ", "pass ", T + "SmallFixTests.test_the_umbrella_keeps_the_callers_argv_and_answers_version"),
     ("git_remote_seafile/client.py", "if not asked_git and self._credentials_from_git", "if self._credentials_from_git", T + "SmallFixTests.test_git_is_asked_for_a_credential_once_when_the_config_asks_for_it"),
     # round 7 (Opus)
     (B + "store.py", "            except ReadBackMismatch:\n                # Wrong bytes", "            except StoreError:\n                # Wrong bytes", T + "RoundSevenTests.test_a_read_that_failed_proves_nothing_and_deletes_nothing"),

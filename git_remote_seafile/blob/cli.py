@@ -1,4 +1,4 @@
-"""``seafile-blob`` (``sfblob``, ``git-seafile-blob``, ``seafile blob``): the blob store's command line (STORE.md D3, CLI.md).
+"""``seafile-blob`` (``sfblob``, ``git-seafile-blob``): the blob store's command line (STORE.md D3, CLI.md).
 
 Plain lines by default and one JSON document with ``--json``; no prompt ever (a command is told what to do by its
 flags); exit 0 success, 1 failure (a fact about the store), 2 usage error, 3 the server or the network failed (run it again).  Standard output is the answer and nothing else; every note,
