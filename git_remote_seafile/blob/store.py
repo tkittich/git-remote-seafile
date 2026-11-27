@@ -516,8 +516,8 @@ class Store:
         try:
             found = self.client.download_file_to(self.repo_id, self.blob_path(ref), os.devnull, max_bytes=size, hasher=seen)
         except SeafileAPIError as exc:
-            raise StoreError(f"could not read {ref} back to prove it ({exc}); the object was left as it is: "
-                             f"run `sfblob verify --deep {ref}`") from None
+            raise _failure(f"could not read {ref} back to prove it ({exc}); the object was left as it is: "
+                           f"run `sfblob verify --deep {ref}`", exc) from None
         if not found:
             raise StoreError(f"{ref} was not there to read back; run again")
         if seen.size < size:

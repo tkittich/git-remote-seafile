@@ -532,7 +532,10 @@ def _manifest_of_vault(url: str, rev: "str | None") -> "tuple[dict[str, Any], in
     from ..snapshot import gitrun, payload_manifest, payload_upload
     with tempfile.TemporaryDirectory(prefix="sfblob-vault-") as scratch:
         git_dir = Path(scratch) / "vault.git"
-        cloned = subprocess.run(["git", "clone", "--bare", "--quiet", url, str(git_dir)], capture_output=True, text=True, timeout=1800)
+        # ``--``: an address that starts with a dash is never read as an option; the caller's GIT_DIR and friends are not inherited
+        env = {k: v for k, v in os.environ.items() if k not in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE")}
+        cloned = subprocess.run(["git", "clone", "--bare", "--quiet", "--", url, str(git_dir)], capture_output=True, text=True,
+                                timeout=1800, env=env)
         if cloned.returncode != 0:
             raise store.StoreError(f"could not read the vault's git data from {url}: {cloned.stderr.strip()[-300:]}")
         work = Path(scratch)
@@ -554,12 +557,18 @@ def _payload_record(args: argparse.Namespace) -> int:
     if not _PAYLOAD_VAULT:
         raise UsageError("payload-record reads a vault: add --payload-vault and name the vault with --store")
     out = Path(args.output)
-    if out.exists():
+    if out.exists() or out.is_symlink():
         raise UsageError(f"{out} already exists; payload-record does not overwrite")
     url = store_url(args.store)
+    if not url.startswith("seafile://"):
+        raise UsageError(f"{url!r} is not a seafile:// address: payload-record reads a vault through git-remote-seafile")
     manifest, other = _manifest_of_vault(url, args.rev)
     entries = payload_view.records_from_manifest(manifest)
-    out.write_text(record.render(entries), encoding="utf-8", newline="\n")
+    try:
+        rendered = record.render(entries)
+    except record.RecordError as exc:          # a payload file name a record cannot hold (a control character): said, not a traceback
+        raise store.StoreError(f"the vault holds a file the record format cannot name: {exc}") from None
+    out.write_text(rendered, encoding="utf-8", newline="\n")
     total = sum(e.size for e in entries)
     _say({"record": str(out), "files": len(entries), "bytes": total, "other_files_in_git": other}, args,
          f"wrote {len(entries)} payload file(s), {format_bytes(total)}, to {out}")
@@ -816,14 +825,6 @@ def main(argv: "list[str] | None" = None) -> int:
     if not args.command:
         parser.print_help(sys.stderr)
         return 2
-    global _PAYLOAD_VAULT
-    _PAYLOAD_VAULT = bool(getattr(args, "payload_vault", False))
-    if _PAYLOAD_VAULT and args.command in _NEEDS_A_STORE:
-        _err(f"{PROG}: --payload-vault opens a vault's payload read-only: `{args.command}` is for a blob store")
-        return 2
-    if args.command in NOT_YET:
-        _err(f"{PROG}: `{args.command}` is not in this version yet (put, get, path, cat, exists, stat, cache, ls, usage, status, log, init, pin, unpin, gc and verify are)")
-        return 1          # not a mistake in how it was called, so not the usage code
     def failed(code: str, status: int, message: str, retryable: bool = False) -> int:
         """Say it on standard error as ever; with ``--json`` also as one document on standard output, so a program can tell "the
         network failed, run it again" from "that object is not in the store" without reading prose."""
@@ -832,6 +833,13 @@ def main(argv: "list[str] | None" = None) -> int:
             sys.stdout.write(json.dumps({"ok": False, "error": {"code": code, "message": message, "retryable": retryable,
                                                                 "exit": status}}, sort_keys=True) + "\n")
         return status
+
+    global _PAYLOAD_VAULT
+    _PAYLOAD_VAULT = bool(getattr(args, "payload_vault", False))
+    if _PAYLOAD_VAULT and args.command in _NEEDS_A_STORE:
+        return failed("usage", 2, f"--payload-vault opens a vault's payload read-only: `{args.command}` is for a blob store")
+    if args.command in NOT_YET:
+        return failed("store", 1, f"`{args.command}` is not in this version yet (put, get, path, cat, exists, stat, cache, ls, usage, status, log, init, pin, unpin, gc and verify are)")          # not a mistake in how it was called, so not the usage code
 
     try:
         return _COMMANDS[args.command](args)

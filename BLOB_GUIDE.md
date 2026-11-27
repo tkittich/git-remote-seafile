@@ -1,6 +1,6 @@
 # seafile-blob: User's Guide
 
-Keep large files on a Seafile library under their SHA-256, and get them back verified. A **reference** (`sha256:<64 hex>`) means the same bytes everywhere and always, so it can live in git, a database row or a notebook. The command is `seafile-blob`; the short forms are `sfblob`, `git-seafile-blob` and `seafile blob`, all the same program (the examples use `sfblob`).
+Keep large files on a Seafile library under their SHA-256, and get them back verified. A **reference** (`sha256:<64 hex>`) means the same bytes everywhere and always, so it can live in git, a database row or a notebook. The command is `seafile-blob`; the short forms are `sfblob` and `git-seafile-blob`, both the same program (the examples use `sfblob`).
 
 It is for **large, rarely-read data that a team already keeps on Seafile**: datasets, model weights, recordings, build artefacts. It is not a general object store: a small file costs several requests (about 0.1 s each on the servers measured), and the server slows a client down above about four transfers at once.
 

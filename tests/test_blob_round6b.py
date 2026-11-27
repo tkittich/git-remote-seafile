@@ -46,6 +46,15 @@ class ReadBackProofTests(StoreCase):
             return True
         return patch.object(client, "download_file_to", fake)
 
+    def test_a_dropped_connection_during_the_read_back_is_a_transport_failure_that_deletes_nothing(self):
+        # Round 9 (DeepSeek P4, Gemini P4): it was exit 1, "a fact about the store, do not retry"; it is exit 3, "run it again"
+        from git_remote_seafile.client import SeafileConnectionError
+        self.store.verify_by_download = True
+        with patch.object(self.store.client, "download_file_to", side_effect=SeafileConnectionError("reset by peer")):
+            with self.assertRaises(store.StoreTransportError):
+                self.store.put(self.source)
+        self.assertIn(f"{ROOT}/blobs/{SHA[:2]}/{SHA}", self.files())          # the object was left as it is
+
     def test_a_body_that_ended_early_proves_nothing_and_deletes_nothing(self):
         # Round 9 (Opus P5): a short read-back counted as a proven mismatch and put deleted the object at its hash name,
         # which may be another writer's verified object.  A short read is a failed read.

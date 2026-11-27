@@ -104,6 +104,13 @@ class PayloadVaultCommandTests(PayloadFixture):
             self.assertIn("blob store", err)
         self.assertEqual(self.stub.files[self.rid], self.before)
 
+    def test_the_refusal_of_a_write_command_is_a_json_failure_too(self):
+        # Round 9 (Gemini P8a): these two early exits printed nothing on standard output with --json
+        code, text, _ = self.run_cli("put", str(self.source), "--payload-vault", "--json")
+        self.assertEqual(code, 2)
+        document = json.loads(text)
+        self.assertEqual((document["ok"], document["error"]["code"], document["error"]["exit"]), (False, "usage", 2))
+
     def test_without_the_flag_a_vault_is_never_adopted_as_a_store(self):
         code, _, err = self.run_cli("put", str(self.source))
         self.assertEqual(code, 1)
@@ -160,6 +167,37 @@ class PayloadRecordTests(PayloadFixture):
 
     def test_payload_record_needs_the_vault_flag(self):
         self.assertEqual(self.run_cli("payload-record", "-o", str(self.work / "r.txt"))[0], 2)
+
+    def test_a_file_name_a_record_cannot_hold_is_said_not_a_traceback(self):
+        # Round 9 (DeepSeek P3): a tab is legal in a file name and a record line is tab-separated; this raised RecordError out of main
+        weird = {"files": [{"path": "a" + chr(9) + "b.txt", "size": len(SMALL), "mode": "100644", "sha256": obj(SMALL), "mtime_ns": 1}]}
+        recfile = self.work / "weird.txt"
+        with patch.object(cli, "_manifest_of_vault", return_value=(weird, 0)):
+            code, _, err = self.run_cli("payload-record", "-o", str(recfile), "--payload-vault")
+        self.assertEqual(code, 1)
+        self.assertIn("cannot name", err)
+        self.assertFalse(recfile.exists())
+
+    def test_a_store_address_that_is_not_seafile_never_reaches_git(self):
+        # Round 9 (Gemini P5, DeepSeek P12): ``--store=--upload-pack=...`` was handed to ``git clone`` as an option
+        with patch("subprocess.run", side_effect=AssertionError("git must not be started")):
+            code, _, err = self.run_cli("payload-record", "-o", str(self.work / "r.txt"), "--payload-vault",
+                                        "--store=--upload-pack=evil")
+        self.assertEqual(code, 2)
+        self.assertIn("not a seafile:// address", err)
+
+    def test_git_is_given_the_address_after_a_double_dash_and_not_the_callers_git_dir(self):
+        seen = {}
+
+        def fake_run(command, **kwargs):
+            seen["command"], seen["env"] = command, kwargs.get("env", {})
+            raise store.StoreError("stop here")
+
+        with patch.dict(os.environ, {"GIT_DIR": "elsewhere"}), patch("subprocess.run", fake_run):
+            with self.assertRaises(store.StoreError):
+                cli._manifest_of_vault("seafile://lib/vault", None)
+        self.assertEqual(seen["command"][:5], ["git", "clone", "--bare", "--quiet", "--"])
+        self.assertNotIn("GIT_DIR", seen["env"])
 
     def test_the_json_answer_names_the_files_and_the_other_files(self):
         recfile = self.work / "r.txt"
