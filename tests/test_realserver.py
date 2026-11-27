@@ -1367,12 +1367,24 @@ class LargeListingTests(_RealServerFixture):
     def test_a_listing_holds_every_entry_of_a_large_folder(self):
         from concurrent.futures import ThreadPoolExecutor
 
+        from git_remote_seafile.client import SeafileAPIError
+
         folder = f"/{self.base}/s1-large"
         self.client.mkdir_p(self.rid, folder)
         names = [f"e{n:05d}" for n in range(self.COUNT)]
 
         def put(name: str) -> None:
-            self.client.upload_file(self.rid, folder, name, b"x", replace=True)
+            # 5,100 uploads from six threads can trip the server's rate limiter (Pro 13.0.29 answered 429 once, in the
+            # release run of 0.11, after the client's own three retries): the test is about the listing, so it waits
+            # the throttle out and tries again instead of failing on the load it makes itself.
+            for attempt in range(6):
+                try:
+                    self.client.upload_file(self.rid, folder, name, b"x", replace=True)
+                    return
+                except SeafileAPIError as exc:
+                    if "429" not in str(exc) or attempt == 5:
+                        raise
+                    time.sleep(1.0 + attempt)
 
         started = time.time()
         with ThreadPoolExecutor(max_workers=self.WRITERS) as pool:
