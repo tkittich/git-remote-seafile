@@ -520,6 +520,12 @@ class Store:
                              f"run `sfblob verify --deep {ref}`") from None
         if not found:
             raise StoreError(f"{ref} was not there to read back; run again")
+        if seen.size < size:
+            # A body that ended early is a read that failed, not proof that the stored bytes are wrong (a connection that
+            # closed cleanly, a proxy that cut the response): the object under the name may be another writer's, already
+            # verified, so nothing is deleted (round 9, Opus P5).  ``put`` and ``verify --deep`` can be run again.
+            raise StoreError(f"only {seen.size} of {size} bytes of {ref} came back to prove it; the object was left as it is: "
+                             f"run `sfblob verify --deep {ref}`")
         if seen.size != size or seen.hexdigest() != ref.hex:
             raise ReadBackMismatch(f"{ref} did not read back as the bytes that were sent; run again")
 

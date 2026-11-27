@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **A short read-back no longer deletes a stored object.** Over plain `http://` a blob `put` proves its object by reading it back. A body that ended early (a connection that closed cleanly, a proxy that cut the response, no error raised) counted as a *proven mismatch*, and `put` then deleted the object at its hash name, which may be another writer's already verified object. A short read is now a failed read: the object is left as it is and the error says to run `verify --deep`. Only the right number of bytes with another hash deletes. Found by the round 9 review (Opus P5); present in every blob release.
+
 ## [0.11.1] - 2026-11-27
 
 Replaces 0.11.0, which was withdrawn the day it was published (its release and tag were deleted; the number is not reused). Everything in 0.11.0 is in this release. One thing changed, and it is the reason for the withdrawal: the `seafile` command is removed.

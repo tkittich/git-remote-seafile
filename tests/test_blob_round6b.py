@@ -36,9 +36,26 @@ class ReadBackProofTests(StoreCase):
 
     def _lying_download(self, client: SeafileClient):
         def fake(repo_id, path, destination, **kwargs):
-            pathlib.Path(destination).write_bytes(bytes(reversed(DATA)))          # the right size, other bytes
+            kwargs["hasher"].update(bytes(reversed(DATA)))          # the right size, other bytes (the stream is what is hashed)
             return True
         return patch.object(client, "download_file_to", fake)
+
+    def _short_download(self, client: SeafileClient):
+        def fake(repo_id, path, destination, **kwargs):
+            kwargs["hasher"].update(DATA[:-3])          # a body that ended early, with no error
+            return True
+        return patch.object(client, "download_file_to", fake)
+
+    def test_a_body_that_ended_early_proves_nothing_and_deletes_nothing(self):
+        # Round 9 (Opus P5): a short read-back counted as a proven mismatch and put deleted the object at its hash name,
+        # which may be another writer's verified object.  A short read is a failed read.
+        self.store.verify_by_download = True
+        with self._short_download(self.store.client):
+            with self.assertRaises(store.StoreError) as caught:
+                self.store.put(self.source)
+        self.assertNotIsInstance(caught.exception, store.ReadBackMismatch)
+        self.assertIn("came back", str(caught.exception))
+        self.assertIn(f"{ROOT}/blobs/{SHA[:2]}/{SHA}", self.files())          # still there
 
     def test_a_failed_read_back_raises_and_removes_the_object(self):
         self.store.verify_by_download = True
